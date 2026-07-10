@@ -1,10 +1,10 @@
 pub use ployz_core::cert::{
     AcmeChallengeError, AcmeChallengeToken, AcmeChallengeTtlError, AcmeChallengeTtlSeconds,
     AcmeChallengeValue, AcmeHttp01Challenge, ActiveCertState, CertBundleRef, CertTextError,
-    CertValidAt, CertValidAtError, CertValidityError, CertValidityWindow, CustomCertBundle,
-    CustomCertBundleError, LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, LeaseTimestampError,
-    ManagedCertBundle, ManagedLeaseAcquireRequest, ManagedLeaseAcquired, ManagedLeaseError,
-    ManagedLeaseName, ManagedLeaseRecord, ManagedLeaseRenewed, PublicUrlMode,
+    CertValidAt, CertValidAtError, CertValidityError, CertValidityWindow,
+    CertificateProvisionFailure, LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt,
+    LeaseTimestampError, ManagedCertBundle, ManagedLeaseAcquireRequest, ManagedLeaseAcquired,
+    ManagedLeaseError, ManagedLeaseName, ManagedLeaseRecord, ManagedLeaseRenewed, PublicUrlMode,
 };
 pub use ployz_core::dataplane::{
     DataplaneMember, DataplaneProviderFailure, EbpfForwardingReady, EbpfForwardingReadyEvidence,
@@ -67,7 +67,7 @@ pub use ployz_core::ops::{
     VolumeRemoveRunningStage,
 };
 pub use ployz_core::ops::{
-    CertOperationFailure, CertOperationState, CertRunningStage, CertificateProvisionFailure,
+    CertOperationFailure, CertOperationFailureError, CertOperationState, CertRunningStage,
     ControlPlaneCommitScope, CoreReplaceFailure, CoreReplaceOperationState, DeployCleanupFailure,
     DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, DeployRunningStage,
     PreStartHookFailure,

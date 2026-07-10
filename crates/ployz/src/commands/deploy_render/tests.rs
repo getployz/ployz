@@ -1,11 +1,12 @@
 use super::*;
+use ployz_core::cert::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
 use ployz_core::deploy::{
     ContainerRuntimeSpec, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute,
     DeployRouteTarget, DeployServicePlan, DeployServiceSpec, ImageReference, ImageSource,
     ReplicaCount, ReplicaSlot,
 };
 use ployz_core::ids::{
-    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
+    CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
     OperationId, ServiceId,
 };
 use ployz_core::image::OciDigest;
@@ -639,6 +640,81 @@ fn certificate_dns_preflight_failure_names_scope_and_keeps_container_evidence() 
     assert!(output.contains("    failed container web-1 retained on hetzner-1\n"));
     assert!(output.contains("Serving is unchanged."));
     assert!(!output.contains("route committed"));
+}
+
+#[test]
+fn every_certificate_failure_renders_typed_deploy_evidence() {
+    let message = || FailureMessage::try_new("failed evidence").expect("valid failure message");
+    let cases = [
+        (
+            CertificateProvisionFailure::OperationEvidenceWrite { message: message() },
+            "certificate operation evidence write failed",
+        ),
+        (
+            CertificateProvisionFailure::DnsPreflight { message: message() },
+            "certificate DNS preflight failed",
+        ),
+        (
+            CertificateProvisionFailure::ChallengePublish { message: message() },
+            "certificate HTTP-01 challenge publish failed",
+        ),
+        (
+            CertificateProvisionFailure::ChallengeReadiness {
+                missing_machine_ids: vec![machine_id("gateway-1")],
+            },
+            "missing gateway acknowledgements from gateway-1",
+        ),
+        (
+            CertificateProvisionFailure::AcmeValidation { message: message() },
+            "certificate ACME validation failed",
+        ),
+        (
+            CertificateProvisionFailure::GatewayArtifactPush {
+                machine_id: machine_id("gateway-1"),
+                message: message(),
+            },
+            "certificate gateway artifact push failed",
+        ),
+        (
+            CertificateProvisionFailure::ActiveCertCommit {
+                attempted_active_cert: attempted_active_certificate(),
+                message: message(),
+            },
+            "active certificate commit failed",
+        ),
+    ];
+
+    for (certificate_failure, expected) in cases {
+        let failure = DeployOperationFailure::CertificateProvisionFailed {
+            hostname: RouteHostname::try_new("app.example.com").expect("valid hostname"),
+            namespace_revision_id: NamespaceRevisionId::try_new("revision_318")
+                .expect("valid namespace revision id"),
+            failure: certificate_failure,
+            retained_artifacts: Vec::new(),
+        };
+
+        assert!(
+            failure_cause(&single_service_target(), &failure).contains(expected),
+            "missing typed failure detail: {expected}"
+        );
+    }
+}
+
+fn attempted_active_certificate() -> ActiveCertState {
+    ActiveCertState {
+        cert_id: CertId::try_new("cert_app").expect("valid cert id"),
+        hostname: RouteHostname::try_new("app.example.com").expect("valid hostname"),
+        bundle_ref: CertBundleRef::try_new(format!(
+            "sha256:{}:/var/lib/ployz/certificates/cert_app.bundle",
+            "a".repeat(64)
+        ))
+        .expect("valid bundle ref"),
+        validity: CertValidityWindow::try_new(
+            CertValidAt::try_new(1).expect("valid not-before"),
+            CertValidAt::try_new(2).expect("valid not-after"),
+        )
+        .expect("valid validity"),
+    }
 }
 
 #[test]

@@ -137,7 +137,19 @@ fn record_operation_event_txn(
     event: OperationEvent,
 ) -> Result<RecordTxn, rusqlite::Error> {
     let transaction = conn.transaction()?;
-    let Some(current) = select_status(&transaction, operation_id)? else {
+    let outcome = record_operation_event_in_txn(&transaction, operation_id, event)?;
+    if matches!(&outcome, RecordTxn::Stored { .. }) {
+        transaction.commit()?;
+    }
+    Ok(outcome)
+}
+
+fn record_operation_event_in_txn(
+    conn: &Connection,
+    operation_id: &OperationId,
+    event: OperationEvent,
+) -> Result<RecordTxn, rusqlite::Error> {
+    let Some(current) = select_status(conn, operation_id)? else {
         return Ok(RecordTxn::Missing);
     };
     // The next sequence is the projection's own: status is authoritative and
@@ -171,9 +183,9 @@ fn record_operation_event_txn(
     };
     let status = *status;
     let subject = event.singleton_subject();
-    if let Err(error) = insert_event(&transaction, &event, sequence) {
+    if let Err(error) = insert_event(conn, &event, sequence) {
         if is_unique_constraint(&error)
-            && singleton_event_exists(&transaction, event.operation_id(), subject)?
+            && singleton_event_exists(conn, event.operation_id(), subject)?
         {
             return Ok(RecordTxn::AlreadySatisfied {
                 current_sequence: current.last_event_sequence(),
@@ -182,9 +194,8 @@ fn record_operation_event_txn(
         }
         return Err(error);
     }
-    upsert_status(&transaction, operation_id, &status)?;
-    scrub_failed_machine_add_secrets(&transaction, &status)?;
-    transaction.commit()?;
+    upsert_status(conn, operation_id, &status)?;
+    scrub_failed_machine_add_secrets(conn, &status)?;
     Ok(RecordTxn::Stored {
         sequence,
         event,

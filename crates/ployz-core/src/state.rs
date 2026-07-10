@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cert::{AcmeHttp01Challenge, CustomCertBundle, ManagedCertBundle, ManagedLeaseRecord};
+use crate::cert::{AcmeHttp01Challenge, ActiveCertState, ManagedCertBundle, ManagedLeaseRecord};
 use crate::dataplane::MachineEndpointSubnet;
 use crate::deploy::{ImageReference, ReplicaCount, VolumeName};
 use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
@@ -141,7 +141,7 @@ pub struct IntentSnapshot {
     #[serde(default)]
     pub managed_lease: ManagedLeaseProjection,
     #[serde(default)]
-    pub custom_certificates: Vec<CustomCertBundle>,
+    pub custom_certificates: Vec<ActiveCertState>,
     #[serde(default)]
     pub acme_http01_challenges: Vec<AcmeHttp01Challenge>,
 }
@@ -169,7 +169,7 @@ struct IntentSnapshotWire {
     #[serde(default)]
     managed_cert_bundle: Option<ManagedCertBundle>,
     #[serde(default)]
-    custom_certificates: Vec<CustomCertBundle>,
+    custom_certificates: Vec<ActiveCertState>,
     #[serde(default)]
     acme_http01_challenges: Vec<AcmeHttp01Challenge>,
 }

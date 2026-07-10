@@ -1,6 +1,6 @@
 //! Owned deploy execution started by the control service.
 
-use crate::certificate::{CertificateManager, CertificateManagerError};
+use crate::certificate::{CertificateManager, GatewayCertificateTarget};
 use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::intent::service::NatsIntentReader;
 use crate::operation_api::admission::{AcceptedDeployExecution, OperationControllers};
@@ -31,7 +31,6 @@ use ployz_core::ops::{
     OperatorHint, RouteHostname, StatusProjectionError,
 };
 use ployz_core::subjects::INTENT_CHANGED;
-use std::net::IpAddr;
 use std::time::Duration;
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -43,30 +42,11 @@ const DEPLOY_RUNNING_CONFIRMATION_WINDOW: Duration = Duration::from_millis(1_500
 impl CertificateProvisioner for CertificateManager {
     async fn ensure(
         &mut self,
+        owner_operation_id: &ployz_core::ids::OperationId,
         hostname: &RouteHostname,
-        expected_gateway_ips: &[IpAddr],
+        targets: &[GatewayCertificateTarget],
     ) -> Result<ActiveCertState, CertificateProvisionFailure> {
-        CertificateManager::ensure(self, hostname, expected_gateway_ips)
-            .await
-            .map_err(certificate_provision_failure)
-    }
-}
-
-fn certificate_provision_failure(error: CertificateManagerError) -> CertificateProvisionFailure {
-    let message = error.failure_message();
-    match error {
-        CertificateManagerError::DnsPreflight { guidance: _ } => {
-            CertificateProvisionFailure::DnsPreflight { message }
-        }
-        CertificateManagerError::ChallengePublish { message: _ } => {
-            CertificateProvisionFailure::ChallengePublish { message }
-        }
-        CertificateManagerError::AcmeValidation { message: _ } => {
-            CertificateProvisionFailure::AcmeValidation { message }
-        }
-        CertificateManagerError::ActiveCertCommit { message: _ } => {
-            CertificateProvisionFailure::ActiveCertCommit { message }
-        }
+        CertificateManager::ensure(self, owner_operation_id, hostname, targets).await
     }
 }
 

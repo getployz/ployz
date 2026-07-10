@@ -35,6 +35,7 @@ pub const PLOYZ_CORE_DB_ENV: &str = "PLOYZ_CORE_DB";
 pub const PLOYZ_LEASE_WORKER_URL_ENV: &str = "PLOYZ_LEASE_WORKER_URL";
 pub const PLOYZ_ACME_DIRECTORY_URL_ENV: &str = "PLOYZ_ACME_DIRECTORY_URL";
 pub const DEFAULT_CORE_DB: &str = "/var/lib/ployz/ployz-core.db";
+pub const DEFAULT_GATEWAY_CERTIFICATE_STATE_DIR: &str = "/var/lib/ployz/certificates";
 /// Set by `core-promote` on the new core's control unit: the machine's local
 /// intent mirror to seed a fresh core store from on first startup (ADR 0031).
 pub const PLOYZ_SEED_FROM_MIRROR_ENV: &str = "PLOYZ_SEED_FROM_MIRROR";
@@ -894,6 +895,7 @@ pub struct GatewayProcessConfig {
     pub machine_id: MachineId,
     pub nats: RoleNatsConnect,
     pub listen_addr: SocketAddr,
+    pub certificate_state_dir: PathBuf,
 }
 
 impl GatewayProcessConfig {
@@ -903,7 +905,14 @@ impl GatewayProcessConfig {
             machine_id,
             nats,
             listen_addr,
+            certificate_state_dir: PathBuf::from(DEFAULT_GATEWAY_CERTIFICATE_STATE_DIR),
         }
+    }
+
+    #[must_use]
+    pub fn with_certificate_state_dir(mut self, certificate_state_dir: PathBuf) -> Self {
+        self.certificate_state_dir = certificate_state_dir;
+        self
     }
 }
 

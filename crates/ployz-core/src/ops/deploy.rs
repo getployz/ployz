@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::cert::CertificateProvisionFailure;
 use crate::dataplane::{DataplaneProviderFailure, PloyzNativeMeshPrepareReport};
 use crate::deploy::VolumeName;
 use crate::deploy::{DeployCleanupContainer, DeployPlan, ImageReference};
@@ -249,16 +250,6 @@ pub enum DeployOperationFailure {
         reason: RouteCutoverFailureReason,
         retained_artifacts: Vec<RetainedArtifact>,
     },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(tag = "class", rename_all = "snake_case", deny_unknown_fields)]
-pub enum CertificateProvisionFailure {
-    DnsPreflight { message: FailureMessage },
-    ChallengePublish { message: FailureMessage },
-    AcmeValidation { message: FailureMessage },
-    ActiveCertCommit { message: FailureMessage },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

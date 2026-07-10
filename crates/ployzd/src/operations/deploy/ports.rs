@@ -10,7 +10,8 @@ use ployz_core::ops::{
 };
 use ployz_core::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
 use std::future::Future;
-use std::net::IpAddr;
+
+use crate::certificate::GatewayCertificateTarget;
 
 use crate::roles::machine::client::{MachineImageEnsureError, MachineImageResolveError};
 use crate::roles::machine::protocol::{
@@ -113,8 +114,9 @@ pub trait DeployHealthChecker {
 pub trait CertificateProvisioner {
     fn ensure(
         &mut self,
+        owner_operation_id: &OperationId,
         hostname: &RouteHostname,
-        expected_gateway_ips: &[IpAddr],
+        targets: &[GatewayCertificateTarget],
     ) -> impl Future<Output = Result<ActiveCertState, CertificateProvisionFailure>> + Send;
 }
 

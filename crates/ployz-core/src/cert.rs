@@ -5,7 +5,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::ids::CertId;
+use crate::ids::{CertId, MachineId};
 use crate::install::{AbsoluteInstallPath, InstallSha256Digest};
 use crate::ops::RouteHostname;
 use crate::state_key::id_prefixed_state_key;
@@ -16,6 +16,18 @@ pub const ACME_LOCK_PREFIX: &str = "acme";
 pub const ACME_CHALLENGE_PREFIX: &str = "acme.challenges";
 pub const MANAGED_LEASE_DOMAIN_SUFFIX: &str = "up.ployz.app";
 pub const DEFAULT_LEASE_WORKER_URL: &str = "https://up.ployz.app";
+
+mod custom_bundle;
+mod gateway_rpc;
+
+pub use custom_bundle::{CustomCertBundle, CustomCertBundleError, custom_bundle_digest};
+pub use gateway_rpc::{
+    CertificateArtifactKind, CertificateArtifactPushOk, CertificateArtifactPushOutcome,
+    CertificateArtifactPushRequest, CertificateArtifactPushResponse,
+    CertificateChallengeApplicationStatus, CertificateChallengeStatusOk,
+    CertificateChallengeStatusRequest, CertificateChallengeStatusResponse,
+    GatewayCertificateRpcError,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -113,6 +125,13 @@ pub struct ActiveCertState {
 }
 
 impl ActiveCertState {
+    /// A certificate can be served only inside its declared validity window.
+    #[must_use]
+    pub fn is_usable_at(&self, now_seconds: u64) -> bool {
+        self.validity.not_before.unix_seconds() <= now_seconds
+            && now_seconds < self.validity.not_after.unix_seconds()
+    }
+
     /// Custom certificates renew once two thirds of their validity has elapsed.
     #[must_use]
     pub fn needs_renewal(&self, now_seconds: u64) -> bool {
@@ -124,89 +143,34 @@ impl ActiveCertState {
     }
 }
 
-/// Active custom certificate material mirrored to data-plane readers.
+/// One typed failure taxonomy shared by deploy-time issuance and renewal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(try_from = "CustomCertBundleWire", into = "CustomCertBundleWire")]
-pub struct CustomCertBundle {
-    pub active_cert: ActiveCertState,
-    pub certificate_chain_pem: String,
-    pub private_key_pem: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CustomCertBundleWire {
-    active_cert: ActiveCertState,
-    certificate_chain_pem: String,
-    private_key_pem: String,
-}
-
-impl CustomCertBundle {
-    pub fn try_new(
-        active_cert: ActiveCertState,
-        certificate_chain_pem: String,
-        private_key_pem: String,
-    ) -> Result<Self, CustomCertBundleError> {
-        let expected = custom_bundle_digest(&certificate_chain_pem, &private_key_pem)?;
-        let expected_prefix = format!("sha256:{}:", expected.as_str());
-        if !active_cert
-            .bundle_ref
-            .as_str()
-            .starts_with(&expected_prefix)
-        {
-            return Err(CustomCertBundleError::DigestMismatch);
-        }
-
-        Ok(Self {
-            active_cert,
-            certificate_chain_pem,
-            private_key_pem,
-        })
-    }
-
-    /// Bytes stored by the core-local bundle artifact referenced by
-    /// [`ActiveCertState::bundle_ref`].
-    #[must_use]
-    pub fn material_bytes(&self) -> Vec<u8> {
-        custom_bundle_material_bytes(&self.certificate_chain_pem, &self.private_key_pem)
-    }
-}
-
-impl TryFrom<CustomCertBundleWire> for CustomCertBundle {
-    type Error = CustomCertBundleError;
-
-    fn try_from(value: CustomCertBundleWire) -> Result<Self, Self::Error> {
-        let CustomCertBundleWire {
-            active_cert,
-            certificate_chain_pem,
-            private_key_pem,
-        } = value;
-        Self::try_new(active_cert, certificate_chain_pem, private_key_pem)
-    }
-}
-
-impl From<CustomCertBundle> for CustomCertBundleWire {
-    fn from(value: CustomCertBundle) -> Self {
-        let CustomCertBundle {
-            active_cert,
-            certificate_chain_pem,
-            private_key_pem,
-        } = value;
-        Self {
-            active_cert,
-            certificate_chain_pem,
-            private_key_pem,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum CustomCertBundleError {
-    #[error("custom cert bundle digest does not match its certificate and private key")]
-    DigestMismatch,
-    #[error("custom cert bundle digest is invalid: {0}")]
-    Digest(#[from] crate::install::InstallContractError),
+#[serde(tag = "class", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CertificateProvisionFailure {
+    OperationEvidenceWrite {
+        message: crate::ops::FailureMessage,
+    },
+    DnsPreflight {
+        message: crate::ops::FailureMessage,
+    },
+    ChallengePublish {
+        message: crate::ops::FailureMessage,
+    },
+    ChallengeReadiness {
+        missing_machine_ids: Vec<MachineId>,
+    },
+    AcmeValidation {
+        message: crate::ops::FailureMessage,
+    },
+    GatewayArtifactPush {
+        machine_id: MachineId,
+        message: crate::ops::FailureMessage,
+    },
+    ActiveCertCommit {
+        attempted_active_cert: ActiveCertState,
+        message: crate::ops::FailureMessage,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -969,26 +933,6 @@ fn bundle_digest(
     InstallSha256Digest::try_new(format!("{digest:x}"))
 }
 
-/// Digest used by both the custom bundle reference and its core-local file.
-pub fn custom_bundle_digest(
-    certificate_chain_pem: &str,
-    private_key_pem: &str,
-) -> Result<InstallSha256Digest, crate::install::InstallContractError> {
-    let digest = Sha256::digest(custom_bundle_material_bytes(
-        certificate_chain_pem,
-        private_key_pem,
-    ));
-    InstallSha256Digest::try_new(format!("{digest:x}"))
-}
-
-fn custom_bundle_material_bytes(certificate_chain_pem: &str, private_key_pem: &str) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(certificate_chain_pem.len() + private_key_pem.len() + 1);
-    bytes.extend_from_slice(certificate_chain_pem.as_bytes());
-    bytes.push(0);
-    bytes.extend_from_slice(private_key_pem.as_bytes());
-    bytes
-}
-
 fn is_base64_url_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
 }
@@ -1087,5 +1031,28 @@ mod managed_lease_intent_tests {
 
         assert!(!active.needs_renewal(1_199));
         assert!(active.needs_renewal(1_200));
+    }
+
+    #[test]
+    fn custom_certificate_is_usable_only_inside_its_validity_window() {
+        let active = ActiveCertState {
+            cert_id: CertId::try_new("cert_example").expect("cert id"),
+            hostname: RouteHostname::try_new("example.com").expect("hostname"),
+            bundle_ref: CertBundleRef::try_new(format!(
+                "sha256:{}:/var/lib/ployz/certificates/example.bundle",
+                "a".repeat(64)
+            ))
+            .expect("bundle ref"),
+            validity: CertValidityWindow::try_new(
+                CertValidAt::try_new(1_000).expect("not before"),
+                CertValidAt::try_new(1_300).expect("not after"),
+            )
+            .expect("validity"),
+        };
+
+        assert!(!active.is_usable_at(999));
+        assert!(active.is_usable_at(1_000));
+        assert!(active.is_usable_at(1_299));
+        assert!(!active.is_usable_at(1_300));
     }
 }

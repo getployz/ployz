@@ -208,14 +208,6 @@ pub struct AcceptedDeploySubmission {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AcceptedCertSubmission {
-    pub operation_id: OperationId,
-    pub start_sequence: EventSequence,
-    pub cert_id: CertId,
-    pub should_start_execution: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptedMachineAddSubmission {
     pub operation_id: OperationId,
     pub start_sequence: EventSequence,

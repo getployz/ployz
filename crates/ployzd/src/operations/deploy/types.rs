@@ -15,8 +15,9 @@ use ployz_core::ops::{
 use ployz_core::state::VolumePinState;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use std::collections::BTreeMap;
-use std::net::IpAddr;
 use std::time::Duration;
+
+use crate::certificate::GatewayCertificateTarget;
 
 const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(180);
 
@@ -31,7 +32,7 @@ pub struct DeployExecutionCommand {
     pub(super) machine_platforms: BTreeMap<MachineId, OciPlatform>,
     pub(super) dataplane_members: Vec<DataplaneMember>,
     pub(super) custom_certificate_hostnames: Vec<RouteHostname>,
-    pub(super) gateway_public_ips: Vec<IpAddr>,
+    pub(super) gateway_certificate_targets: Vec<GatewayCertificateTarget>,
     pub(super) unusable_machines: Vec<ployz_core::ops::UnusableMachine>,
     pub(super) step_timeout: Duration,
 }
@@ -97,8 +98,8 @@ impl DeployExecutionCommand {
     }
 
     #[must_use]
-    pub fn gateway_public_ips(&self) -> &[IpAddr] {
-        &self.gateway_public_ips
+    pub fn gateway_certificate_targets(&self) -> &[GatewayCertificateTarget] {
+        &self.gateway_certificate_targets
     }
 
     #[must_use]

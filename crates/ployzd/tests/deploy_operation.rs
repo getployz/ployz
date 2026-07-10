@@ -1324,8 +1324,12 @@ async fn custom_https_deploy_ensures_certificate_before_route_commit() {
     assert_eq!(
         certificates.requests,
         vec![(
+            operation_id("op_123"),
             RouteHostname::try_new("api.example.com").expect("valid route hostname"),
-            vec!["203.0.113.10".parse().expect("valid gateway IP")],
+            vec![ployzd::certificate::GatewayCertificateTarget {
+                machine_id: machine_id("gateway_a"),
+                public_ips: vec!["203.0.113.10".parse().expect("valid gateway IP")],
+            }],
         )]
     );
     let [(_, runtime_request)] = runtime.requests.as_slice() else {
@@ -1357,44 +1361,62 @@ async fn custom_https_deploy_ensures_certificate_before_route_commit() {
 
 #[tokio::test]
 async fn custom_https_certificate_failure_leaves_route_uncommitted() {
-    let mut recorder = RecordingOperations::default();
-    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
-    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
-    let mut health = RecordingHealth::healthy();
-    let failure = CertificateProvisionFailure::AcmeValidation {
-        message: FailureMessage::try_new("ACME authorization was rejected")
-            .expect("valid failure message"),
-    };
-    let mut certificates = RecordingCertificates::failing(failure.clone());
-    let mut namespace_state = RecordingNamespaceState::stored();
-
-    execute_deploy(
-        routed_deploy_command(1),
-        DeployExecutionPorts {
-            recorder: &mut recorder,
-            dataplane: &mut wireguard_ebpf,
-            machine_runtime: &mut runtime,
-            health_checker: &mut health,
-            certificate_provisioner: &mut certificates,
-            namespace_state: &mut namespace_state,
+    let hostname = RouteHostname::try_new("api.example.com").expect("valid route hostname");
+    let message = || FailureMessage::try_new("certificate failed").expect("valid failure message");
+    let failures = vec![
+        CertificateProvisionFailure::OperationEvidenceWrite { message: message() },
+        CertificateProvisionFailure::DnsPreflight { message: message() },
+        CertificateProvisionFailure::ChallengePublish { message: message() },
+        CertificateProvisionFailure::ChallengeReadiness {
+            missing_machine_ids: vec![machine_id("gateway_a")],
         },
-    )
-    .await
-    .expect_err("certificate failure fails the deploy");
+        CertificateProvisionFailure::AcmeValidation { message: message() },
+        CertificateProvisionFailure::GatewayArtifactPush {
+            machine_id: machine_id("gateway_a"),
+            message: message(),
+        },
+        CertificateProvisionFailure::ActiveCertCommit {
+            attempted_active_cert: active_certificate(hostname.clone()),
+            message: message(),
+        },
+    ];
 
-    assert_eq!(
-        recorder.records.last(),
-        Some(&RecordedOperation::Transition(DeployTransition::Failed {
-            failure: DeployOperationFailure::CertificateProvisionFailed {
-                hostname: RouteHostname::try_new("api.example.com").expect("valid route hostname"),
-                namespace_revision_id: routed_namespace_revision_id(),
-                failure,
-                retained_artifacts: vec![retained_container("machine_a", "ctr_1")],
+    for failure in failures {
+        let mut recorder = RecordingOperations::default();
+        let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
+        let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
+        let mut health = RecordingHealth::healthy();
+        let mut certificates = RecordingCertificates::failing(failure.clone());
+        let mut namespace_state = RecordingNamespaceState::stored();
+
+        execute_deploy(
+            routed_deploy_command(1),
+            DeployExecutionPorts {
+                recorder: &mut recorder,
+                dataplane: &mut wireguard_ebpf,
+                machine_runtime: &mut runtime,
+                health_checker: &mut health,
+                certificate_provisioner: &mut certificates,
+                namespace_state: &mut namespace_state,
             },
-        }))
-    );
-    assert!(namespace_state.route_requests.is_empty());
-    assert!(namespace_state.serving_requests.is_empty());
+        )
+        .await
+        .expect_err("certificate failure fails the deploy");
+
+        assert_eq!(
+            recorder.records.last(),
+            Some(&RecordedOperation::Transition(DeployTransition::Failed {
+                failure: DeployOperationFailure::CertificateProvisionFailed {
+                    hostname: hostname.clone(),
+                    namespace_revision_id: routed_namespace_revision_id(),
+                    failure,
+                    retained_artifacts: vec![retained_container("machine_a", "ctr_1")],
+                },
+            }))
+        );
+        assert!(namespace_state.route_requests.is_empty());
+        assert!(namespace_state.serving_requests.is_empty());
+    }
 }
 
 #[tokio::test]

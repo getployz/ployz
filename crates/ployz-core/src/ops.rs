@@ -33,15 +33,19 @@ mod service_restart;
 mod text;
 mod volume_remove;
 
+pub use crate::cert::CertificateProvisionFailure;
 pub use accessors::NextEventSequenceError;
-pub use cert::{CertOperationFailure, CertOperationState, CertRunningStage, CertTransition};
+pub use cert::{
+    CertOperationFailure, CertOperationFailureError, CertOperationState, CertRunningStage,
+    CertTransition,
+};
 pub use core_replace::{CoreReplaceFailure, CoreReplaceOperationState, CoreReplaceTransition};
 pub use deploy::{
-    ArtifactUnavailableReason, CertificateProvisionFailure, ControlPlaneCommitScope,
-    DeployCleanupFailure, DeployCompletionOutcome, DeployEvidence, DeployFailureClass,
-    DeployOperationFailure, DeployOperationState, DeployRunningStage, DeployTransition,
-    HealthCheckFailure, PreStartHookFailure, RetainedArtifact, RouteCutoverFailureReason,
-    UnusableMachine, project_deploy_transition, validate_fresh_deploy_evidence,
+    ArtifactUnavailableReason, ControlPlaneCommitScope, DeployCleanupFailure,
+    DeployCompletionOutcome, DeployEvidence, DeployFailureClass, DeployOperationFailure,
+    DeployOperationState, DeployRunningStage, DeployTransition, HealthCheckFailure,
+    PreStartHookFailure, RetainedArtifact, RouteCutoverFailureReason, UnusableMachine,
+    project_deploy_transition, validate_fresh_deploy_evidence,
 };
 pub use events::{OperationEvent, OperationSubject, OperationSubjectRef};
 pub use machine_add::{MachineAddOperationState, MachineAddOperationStateName};

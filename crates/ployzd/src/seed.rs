@@ -91,15 +91,9 @@ pub async fn seed_core_from_snapshot(
     }
     let certificate_store =
         CertificateIntentStore::new(core_store.clone(), certificate_state_dir.to_path_buf());
-    for bundle in &snapshot.custom_certificates {
+    for active_cert in &snapshot.custom_certificates {
         certificate_store
-            .commit_active(
-                bundle.active_cert.cert_id.clone(),
-                bundle.active_cert.hostname.clone(),
-                bundle.active_cert.validity,
-                bundle.certificate_chain_pem.clone(),
-                bundle.private_key_pem.clone(),
-            )
+            .seed_active_metadata(active_cert.clone())
             .await?;
     }
 
@@ -219,7 +213,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn seeding_recreates_custom_certificate_bundle_files() {
+    async fn seeding_restores_custom_certificate_metadata_without_secret_material() {
         let source_store = CoreStore::open_in_memory().await.expect("source store");
         let source_directory = tempfile::tempdir().expect("source certificate state");
         let source_certificates =
@@ -234,28 +228,19 @@ mod tests {
         else {
             panic!("acquire returns certificate");
         };
-        let validity = crate::certificate::material::validate_and_read_validity(
-            &acquired.bundle.certificate_chain_pem,
-            &acquired.bundle.private_key_pem,
-            &ployz_core::ops::RouteHostname::try_new(acquired.bundle.dns_names[1].clone())
-                .expect("fixture hostname"),
-        )
-        .expect("certificate validity");
         let hostname =
             ployz_core::ops::RouteHostname::try_new(acquired.bundle.dns_names[1].clone())
                 .expect("fixture hostname");
         let source_bundle = source_certificates
-            .commit_active(
+            .prepare_active(
                 ployz_test_support::ids::cert_id("cert_app_example_com"),
                 hostname,
-                validity,
                 acquired.bundle.certificate_chain_pem,
                 acquired.bundle.private_key_pem,
             )
-            .await
             .expect("source certificate");
         let mut snapshot = snapshot_at_epoch(ControlPlaneEpoch::initial());
-        snapshot.custom_certificates = vec![source_bundle];
+        snapshot.custom_certificates = vec![source_bundle.active_cert().clone()];
         let target_store = CoreStore::open_in_memory().await.expect("target store");
         let target_directory = tempfile::tempdir().expect("target certificate state");
 
@@ -263,21 +248,25 @@ mod tests {
             .await
             .expect("seed custom certificate");
 
-        let seeded_bundles =
+        let seeded_certificates =
             CertificateIntentStore::new(target_store, target_directory.path().to_path_buf())
                 .active_certificates()
                 .await
                 .expect("seeded certificates");
-        let [seeded] = seeded_bundles.as_slice() else {
+        let [seeded] = seeded_certificates.as_slice() else {
             panic!("one certificate is seeded");
         };
-        let (_, path) = seeded
-            .active_cert
-            .bundle_ref
-            .artifact_parts()
-            .expect("bundle reference");
-        assert!(std::path::Path::new(path.as_str()).is_file());
-        assert!(std::path::Path::new(path.as_str()).starts_with(target_directory.path()));
+        assert_eq!(seeded, source_bundle.active_cert());
+        assert!(
+            CertificateIntentStore::new(
+                CoreStore::open_in_memory()
+                    .await
+                    .expect("material probe store"),
+                target_directory.path().to_path_buf(),
+            )
+            .load_bundle(seeded)
+            .is_err()
+        );
     }
 
     #[tokio::test]

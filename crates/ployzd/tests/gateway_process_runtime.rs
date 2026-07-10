@@ -1,7 +1,10 @@
 use futures_util::StreamExt;
 use ployz_core::cert::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
+    CertificateChallengeApplicationStatus, CertificateChallengeStatusRequest,
+    CertificateChallengeStatusResponse,
 };
+use ployz_core::machine_rpc::MachineRpcResponse;
 use ployz_core::machine_runtime::{
     MachineContainerObservationSnapshot, MachineFactsSnapshot, ManagedContainerObservation,
 };
@@ -10,8 +13,13 @@ use ployz_core::state::{
     ControlPlaneEpoch, GatewayServingStatus, IntentSnapshot, ManagedLeaseProjection,
     RouteBindingState,
 };
-use ployz_core::subjects::{gateway_status, machine_facts};
-use ployz_nats::service_runtime::{NatsServiceResponse, RunningNatsService, start_nats_service};
+use ployz_core::subjects::{
+    MachineServiceEndpoint, gateway_status, machine_facts, machine_service,
+};
+use ployz_nats::service_runtime::{
+    NatsJsonServiceRequestError, NatsServiceRequestFailure, NatsServiceResponse,
+    RunningNatsService, request_json, start_nats_service,
+};
 use ployz_test_support::containers;
 use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{
@@ -164,6 +172,62 @@ async fn gateway_process_serves_http01_challenge_before_route_attachment() {
     assert!(response.ends_with("\r\n\r\nchallenge-token.account-thumbprint"));
 
     runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn gateway_process_owns_certificate_service_lifecycle() {
+    let nats = TestNats::start().await;
+    let runtime = start_gateway_process_with_client(
+        nats.machine_client.clone(),
+        Duration::from_millis(10),
+        socket_addr("127.0.0.1:0"),
+        machine_id("machine_7"),
+        None,
+    )
+    .await
+    .expect("gateway runtime starts");
+    let subject = machine_service(
+        &machine_id("machine_7"),
+        MachineServiceEndpoint::CertificateChallengeStatus,
+    );
+    let request = CertificateChallengeStatusRequest {
+        challenge: AcmeHttp01Challenge::try_new(
+            route_hostname("app.example.com"),
+            AcmeChallengeToken::try_new("token").expect("token"),
+            AcmeChallengeValue::try_new("token.account-thumbprint").expect("value"),
+            AcmeChallengeTtlSeconds::try_new(900).expect("ttl"),
+        )
+        .expect("challenge"),
+    };
+    let response: CertificateChallengeStatusResponse = request_json(
+        &nats.client,
+        subject.clone(),
+        &request,
+        Duration::from_millis(100),
+    )
+    .await
+    .expect("certificate service responds");
+    assert!(matches!(
+        response,
+        MachineRpcResponse::Ok(ok)
+            if ok.machine_id == machine_id("machine_7")
+                && ok.application == CertificateChallengeApplicationStatus::NotApplied
+    ));
+
+    runtime.shutdown().await;
+
+    assert!(matches!(
+        request_json::<_, CertificateChallengeStatusResponse>(
+            &nats.client,
+            subject,
+            &request,
+            Duration::from_millis(100),
+        )
+        .await,
+        Err(NatsJsonServiceRequestError::Request {
+            failure: NatsServiceRequestFailure::NoResponders,
+        })
+    ));
 }
 
 #[tokio::test]

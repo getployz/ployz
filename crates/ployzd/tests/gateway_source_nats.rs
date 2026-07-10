@@ -15,7 +15,9 @@ use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_inte
 use ployzd::roles::gateway::projection::{
     GatewayProjectedRoute, GatewayProjectionUpdate, GatewayUpstream, project_gateway,
 };
-use ployzd::roles::gateway::source::load_gateway_projection_update_from_nats;
+use ployzd::roles::gateway::source::{
+    GatewayCertificateStore, load_gateway_projection_update_from_nats,
+};
 use std::time::Duration;
 
 #[tokio::test]
@@ -47,7 +49,14 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
             )],
         )));
 
-    let update = load_gateway_projection_update_from_nats(&nats.intent_reader, &nats.facts).await;
+    let certificate_dir = tempfile::tempdir().expect("gateway certificate directory");
+    let update = load_gateway_projection_update_from_nats(
+        &nats.intent_reader,
+        &nats.facts,
+        &GatewayCertificateStore::new(certificate_dir.path().to_path_buf()),
+        1_800_000_000,
+    )
+    .await;
     let GatewayProjectionUpdate::SourceAvailable(input) = update else {
         panic!("gateway source should be available, got {update:?}");
     };

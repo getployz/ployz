@@ -22,7 +22,9 @@ use pingora::protocols::l4::socket::SocketAddr as PingoraSocketAddr;
 use pingora::protocols::tls::TlsRef;
 use pingora::proxy::{FailToProxy, ProxyHttp, Session};
 use pingora::upstreams::peer::HttpPeer;
-use ployz_core::cert::ManagedCertBundle;
+use ployz_core::cert::{
+    AcmeHttp01Challenge, CertificateChallengeApplicationStatus, ManagedCertBundle,
+};
 use ployz_core::ops::{RouteHostname, RouteHostnameError, RoutePort, RouteTarget};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
@@ -39,7 +41,6 @@ pub struct PingoraRouteRegistry {
 struct PingoraGatewaySnapshot {
     routes: BTreeMap<RouteTarget, Arc<PingoraRoutePool>>,
     tls_by_hostname: BTreeMap<String, PreparedGatewayTls>,
-    managed_hostnames: BTreeSet<String>,
     https_hostnames: BTreeSet<String>,
     challenges: BTreeMap<(String, String), String>,
 }
@@ -57,7 +58,6 @@ impl PingoraRouteRegistry {
             inner: Arc::new(RwLock::new(PingoraGatewaySnapshot {
                 routes: BTreeMap::new(),
                 tls_by_hostname: BTreeMap::new(),
-                managed_hostnames: BTreeSet::new(),
                 https_hostnames: BTreeSet::new(),
                 challenges: BTreeMap::new(),
             })),
@@ -77,15 +77,6 @@ impl PingoraRouteRegistry {
     }
 
     #[must_use]
-    pub fn is_managed_hostname(&self, hostname: &str) -> bool {
-        self.inner
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .managed_hostnames
-            .contains(&hostname.to_ascii_lowercase())
-    }
-
-    #[must_use]
     pub fn is_https_hostname(&self, hostname: &str) -> bool {
         self.inner
             .read()
@@ -102,6 +93,20 @@ impl PingoraRouteRegistry {
             .challenges
             .get(&(hostname.to_ascii_lowercase(), token.to_owned()))
             .cloned()
+    }
+
+    #[must_use]
+    pub fn challenge_application_status(
+        &self,
+        challenge: &AcmeHttp01Challenge,
+    ) -> CertificateChallengeApplicationStatus {
+        if self.http01_challenge(challenge.hostname().as_str(), challenge.token().as_str())
+            == Some(challenge.value().as_str().to_owned())
+        {
+            CertificateChallengeApplicationStatus::Applied
+        } else {
+            CertificateChallengeApplicationStatus::NotApplied
+        }
     }
 
     #[must_use]
@@ -471,14 +476,12 @@ fn prepare_gateway_snapshot(
     }
 
     let mut tls_by_hostname = BTreeMap::new();
-    let mut managed_hostnames = BTreeSet::new();
     let mut https_hostnames = BTreeSet::new();
     if let Some(bundle) = projection.managed_cert_bundle.as_ref() {
         let tls = prepare_gateway_tls(&bundle.certificate_chain_pem, &bundle.private_key_pem)?;
         for route in &projection.routes {
             let hostname = route.target.hostname.as_str();
             if managed_bundle_serves_hostname(bundle, hostname) {
-                managed_hostnames.insert(hostname.to_owned());
                 tls_by_hostname.insert(hostname.to_owned(), tls.clone());
                 if route.target.port.get() == 443 {
                     https_hostnames.insert(hostname.to_owned());
@@ -488,13 +491,13 @@ fn prepare_gateway_snapshot(
     }
 
     for bundle in &projection.custom_cert_bundles {
-        let hostname = bundle.active_cert.hostname.as_str();
+        let hostname = bundle.active_cert().hostname.as_str();
         if !projection.routes.iter().any(|route| {
             route.target.port.get() == 443 && route.target.hostname.as_str() == hostname
         }) {
             continue;
         }
-        let tls = prepare_gateway_tls(&bundle.certificate_chain_pem, &bundle.private_key_pem)?;
+        let tls = prepare_gateway_tls(bundle.certificate_chain_pem(), bundle.private_key_pem())?;
         tls_by_hostname.insert(hostname.to_owned(), tls);
         https_hostnames.insert(hostname.to_owned());
     }
@@ -516,7 +519,6 @@ fn prepare_gateway_snapshot(
     Ok(PingoraGatewaySnapshot {
         routes,
         tls_by_hostname,
-        managed_hostnames,
         https_hostnames,
         challenges,
     })

@@ -15,6 +15,9 @@ pub const API_SERVICE_ID: &str = "plz-api.core";
 pub const API_SERVICE_DESCRIPTION: &str = "Ployz operator-facing command service";
 pub const MACHINE_SERVICE_NAME: &str = "plz-machine";
 pub const MACHINE_SERVICE_DESCRIPTION: &str = "Ployz machine-local runtime service";
+pub const GATEWAY_MACHINE_SERVICE_NAME: &str = "plz-gateway-machine";
+pub const GATEWAY_MACHINE_SERVICE_DESCRIPTION: &str =
+    "Ployz gateway machine-local certificate service";
 pub const INTENT_SERVICE_NAME: &str = "plz-intent";
 pub const INTENT_SERVICE_ID: &str = "plz-intent.core";
 pub const INTENT_SERVICE_DESCRIPTION: &str = "Ployz operator intent service";
@@ -63,6 +66,13 @@ impl DaemonServiceCatalog {
     pub fn for_machine(machine_id: &MachineId) -> Self {
         Self {
             services: vec![machine_role_service(machine_id)],
+        }
+    }
+
+    #[must_use]
+    pub fn for_gateway(machine_id: &MachineId) -> Self {
+        Self {
+            services: vec![gateway_role_service(machine_id)],
         }
     }
 
@@ -178,6 +188,27 @@ pub fn machine_role_service_base(machine_id: &MachineId) -> NatsServiceSpec {
 }
 
 #[must_use]
+pub fn gateway_role_service(machine_id: &MachineId) -> NatsServiceSpec {
+    NatsServiceSpec::new(
+        format!("{GATEWAY_MACHINE_SERVICE_NAME}.{}", machine_id.as_str()),
+        GATEWAY_MACHINE_SERVICE_NAME,
+        SERVICE_VERSION,
+        GATEWAY_MACHINE_SERVICE_DESCRIPTION,
+        ServiceMetadata::from_entries(vec![ServiceMetadataEntry::new(
+            "machine_id",
+            machine_id.as_str(),
+        )]),
+        vec![
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::CertificateArtifactPush),
+            machine_endpoint_spec(
+                machine_id,
+                MachineServiceEndpoint::CertificateChallengeStatus,
+            ),
+        ],
+    )
+}
+
+#[must_use]
 pub fn machine_endpoint_spec(
     machine_id: &MachineId,
     endpoint: MachineServiceEndpoint,
@@ -214,6 +245,10 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         MachineServiceEndpoint::ImageBlobPush => "machine.image.blob.push",
         MachineServiceEndpoint::ImageManifestPush => "machine.image.manifest.push",
         MachineServiceEndpoint::ImageEnsure => "machine.image.ensure",
+        MachineServiceEndpoint::CertificateArtifactPush => "machine.certificate.artifact.push",
+        MachineServiceEndpoint::CertificateChallengeStatus => {
+            "machine.certificate.challenge.status"
+        }
     }
 }
 

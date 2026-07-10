@@ -36,7 +36,7 @@ impl CertificateIntentStore {
     pub async fn active_for_hostname(
         &self,
         hostname: &RouteHostname,
-    ) -> Result<Option<CustomCertBundle>, CertificateIntentStoreError> {
+    ) -> Result<Option<ActiveCertState>, CertificateIntentStoreError> {
         let hostname = hostname.as_str().to_owned();
         self.store
             .call(move |conn| {
@@ -53,17 +53,17 @@ impl CertificateIntentStore {
     pub async fn active_for_cert_id(
         &self,
         cert_id: &CertId,
-    ) -> Result<Option<CustomCertBundle>, CertificateIntentStoreError> {
+    ) -> Result<Option<ActiveCertState>, CertificateIntentStoreError> {
         let cert_id = cert_id.clone();
         self.store
             .call(move |conn| {
-                let bundles: Vec<CustomCertBundle> = query_json_list(
+                let active_certificates: Vec<ActiveCertState> = query_json_list(
                     conn,
                     "SELECT json FROM custom_certificate_intent ORDER BY hostname",
                 )?;
-                Ok(bundles
+                Ok(active_certificates
                     .into_iter()
-                    .find(|bundle| bundle.active_cert.cert_id == cert_id))
+                    .find(|active| active.cert_id == cert_id))
             })
             .await
             .map_err(store_error)
@@ -71,7 +71,7 @@ impl CertificateIntentStore {
 
     pub async fn active_certificates(
         &self,
-    ) -> Result<Vec<CustomCertBundle>, CertificateIntentStoreError> {
+    ) -> Result<Vec<ActiveCertState>, CertificateIntentStoreError> {
         self.store
             .call(|conn| {
                 query_json_list(
@@ -83,44 +83,35 @@ impl CertificateIntentStore {
             .map_err(store_error)
     }
 
-    pub async fn commit_active(
+    pub(crate) async fn seed_active_metadata(
         &self,
-        cert_id: CertId,
-        hostname: RouteHostname,
-        validity: CertValidityWindow,
-        certificate_chain_pem: String,
-        private_key_pem: String,
-    ) -> Result<CustomCertBundle, CertificateIntentStoreError> {
-        let bundle = self.prepare_active(
-            cert_id,
-            hostname,
-            validity,
-            certificate_chain_pem,
-            private_key_pem,
-        )?;
-        self.commit_prepared(bundle.clone()).await?;
-        Ok(bundle)
+        active_cert: ActiveCertState,
+    ) -> Result<(), CertificateIntentStoreError> {
+        self.store
+            .call(move |conn| {
+                conn.execute(
+                    "INSERT INTO custom_certificate_intent (hostname, json) VALUES (?1, ?2)
+                     ON CONFLICT(hostname) DO UPDATE SET json = excluded.json",
+                    params![active_cert.hostname.as_str(), to_json(&active_cert)?],
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(store_error)
     }
 
     pub(crate) fn prepare_active(
         &self,
         cert_id: CertId,
         hostname: RouteHostname,
-        validity: CertValidityWindow,
         certificate_chain_pem: String,
         private_key_pem: String,
     ) -> Result<CustomCertBundle, CertificateIntentStoreError> {
-        let material_validity =
+        let validity =
             validate_and_read_validity(&certificate_chain_pem, &private_key_pem, &hostname)
                 .map_err(|error| CertificateIntentStoreError::InvalidMaterial {
                     message: error.to_string(),
                 })?;
-        if material_validity != validity {
-            return Err(CertificateIntentStoreError::ValidityMismatch {
-                expected: validity,
-                actual: material_validity,
-            });
-        }
 
         let digest =
             custom_bundle_digest(&certificate_chain_pem, &private_key_pem).map_err(|error| {
@@ -165,50 +156,77 @@ impl CertificateIntentStore {
         })
     }
 
-    pub(crate) async fn commit_prepared(
+    pub(crate) fn write_prepared_material(
         &self,
-        bundle: CustomCertBundle,
+        bundle: &CustomCertBundle,
     ) -> Result<(), CertificateIntentStoreError> {
-        CustomCertBundle::try_new(
-            bundle.active_cert.clone(),
-            bundle.certificate_chain_pem.clone(),
-            bundle.private_key_pem.clone(),
+        let path = self.bundle_path(bundle.active_cert())?;
+        write_secret_bundle(&path, &bundle.material_bytes())
+    }
+
+    pub(crate) fn load_bundle(
+        &self,
+        active_cert: &ActiveCertState,
+    ) -> Result<CustomCertBundle, CertificateIntentStoreError> {
+        let path = self.bundle_path(active_cert)?;
+        let material =
+            std::fs::read(&path).map_err(|error| CertificateIntentStoreError::BundleFile {
+                path: path.clone(),
+                message: error.to_string(),
+            })?;
+        let Some(separator) = material.iter().position(|byte| *byte == 0) else {
+            return Err(CertificateIntentStoreError::InvalidMaterial {
+                message: "certificate bundle has no material separator".to_owned(),
+            });
+        };
+        let certificate_chain_pem =
+            String::from_utf8(material[..separator].to_vec()).map_err(|error| {
+                CertificateIntentStoreError::InvalidMaterial {
+                    message: error.to_string(),
+                }
+            })?;
+        let private_key_pem =
+            String::from_utf8(material[separator + 1..].to_vec()).map_err(|error| {
+                CertificateIntentStoreError::InvalidMaterial {
+                    message: error.to_string(),
+                }
+            })?;
+        let bundle =
+            CustomCertBundle::try_new(active_cert.clone(), certificate_chain_pem, private_key_pem)
+                .map_err(|error| CertificateIntentStoreError::InvalidMaterial {
+                    message: error.to_string(),
+                })?;
+        let actual_validity = validate_and_read_validity(
+            bundle.certificate_chain_pem(),
+            bundle.private_key_pem(),
+            &active_cert.hostname,
         )
         .map_err(|error| CertificateIntentStoreError::InvalidMaterial {
             message: error.to_string(),
         })?;
-        let (_, path) = bundle
-            .active_cert
-            .bundle_ref
-            .artifact_parts()
-            .map_err(|error| CertificateIntentStoreError::InvalidBundlePath {
-                message: error.to_string(),
-            })?;
-        let bundle_path = PathBuf::from(path.as_str());
-        let bundle_directory = self.state_dir.join("bundles");
-        if bundle_path.parent() != Some(bundle_directory.as_path()) {
-            return Err(CertificateIntentStoreError::InvalidBundlePath {
-                message: format!(
-                    "{} is outside {}",
-                    bundle_path.display(),
-                    bundle_directory.display()
-                ),
+        if actual_validity != active_cert.validity {
+            return Err(CertificateIntentStoreError::ValidityMismatch {
+                expected: active_cert.validity,
+                actual: actual_validity,
             });
         }
-        write_secret_bundle(&bundle_path, &bundle.material_bytes())?;
-        let stored = bundle.clone();
-        self.store
-            .call(move |conn| {
-                conn.execute(
-                    "INSERT INTO custom_certificate_intent (hostname, json) VALUES (?1, ?2)
-                     ON CONFLICT(hostname) DO UPDATE SET json = excluded.json",
-                    params![stored.active_cert.hostname.as_str(), to_json(&stored)?,],
-                )?;
-                Ok(())
-            })
-            .await
-            .map_err(store_error)?;
-        Ok(())
+        Ok(bundle)
+    }
+
+    fn bundle_path(
+        &self,
+        active_cert: &ActiveCertState,
+    ) -> Result<PathBuf, CertificateIntentStoreError> {
+        let (digest, _) = active_cert.bundle_ref.artifact_parts().map_err(|error| {
+            CertificateIntentStoreError::InvalidBundlePath {
+                message: error.to_string(),
+            }
+        })?;
+        Ok(self.state_dir.join("bundles").join(format!(
+            "{}-{}.bundle",
+            active_cert.cert_id.as_str(),
+            digest.as_str()
+        )))
     }
 
     pub async fn store_challenge(
@@ -398,48 +416,43 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn active_bundle_round_trips_through_the_store_and_file() {
+    async fn active_metadata_and_local_bundle_round_trip_separately() {
         let directory = tempfile::tempdir().expect("certificate directory");
         let store = CertificateIntentStore::new(
             CoreStore::open_in_memory().await.expect("core store"),
             directory.path().to_path_buf(),
         );
         let (hostname, certificate_chain_pem, private_key_pem) = certificate_material();
-        let validity =
-            validate_and_read_validity(&certificate_chain_pem, &private_key_pem, &hostname)
-                .expect("certificate validity");
-
-        let committed = store
-            .commit_active(
+        let prepared = store
+            .prepare_active(
                 cert_id("cert_app_example_com"),
                 hostname.clone(),
-                validity,
                 certificate_chain_pem,
                 private_key_pem,
             )
+            .expect("prepare bundle");
+        store
+            .write_prepared_material(&prepared)
+            .expect("write material");
+        store
+            .seed_active_metadata(prepared.active_cert().clone())
             .await
-            .expect("commit bundle");
+            .expect("store metadata");
 
         let loaded = store
             .active_for_hostname(&hostname)
             .await
-            .expect("load bundle");
-        let (_, bundle_path) = committed
-            .active_cert
-            .bundle_ref
-            .artifact_parts()
-            .expect("bundle reference");
-        assert_eq!(loaded, Some(committed.clone()));
-        assert_eq!(
-            std::fs::read(bundle_path.as_str()).expect("bundle file"),
-            committed.material_bytes()
-        );
+            .expect("load metadata")
+            .expect("active metadata");
+        assert_eq!(loaded, *prepared.active_cert());
+        assert_eq!(store.load_bundle(&loaded).expect("load bundle"), prepared);
+        let bundle_path = store.bundle_path(&loaded).expect("bundle path");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
 
             assert_eq!(
-                std::fs::metadata(bundle_path.as_str())
+                std::fs::metadata(bundle_path)
                     .expect("bundle metadata")
                     .permissions()
                     .mode()
@@ -447,6 +460,50 @@ mod tests {
                 0o600
             );
         }
+    }
+
+    #[tokio::test]
+    async fn promoted_metadata_survives_without_local_secret_material() {
+        let source_directory = tempfile::tempdir().expect("source certificate directory");
+        let source = CertificateIntentStore::new(
+            CoreStore::open_in_memory()
+                .await
+                .expect("source core store"),
+            source_directory.path().to_path_buf(),
+        );
+        let (hostname, certificate_chain_pem, private_key_pem) = certificate_material();
+        let prepared = source
+            .prepare_active(
+                cert_id("cert_app_example_com"),
+                hostname.clone(),
+                certificate_chain_pem,
+                private_key_pem,
+            )
+            .expect("prepare source bundle");
+        let target_directory = tempfile::tempdir().expect("target certificate directory");
+        let target = CertificateIntentStore::new(
+            CoreStore::open_in_memory()
+                .await
+                .expect("target core store"),
+            target_directory.path().to_path_buf(),
+        );
+
+        target
+            .seed_active_metadata(prepared.active_cert().clone())
+            .await
+            .expect("seed active metadata");
+
+        assert_eq!(
+            target
+                .active_for_hostname(&hostname)
+                .await
+                .expect("load metadata"),
+            Some(prepared.active_cert().clone())
+        );
+        assert!(matches!(
+            target.load_bundle(prepared.active_cert()),
+            Err(CertificateIntentStoreError::BundleFile { .. })
+        ));
     }
 
     #[tokio::test]

@@ -4,14 +4,14 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cert::{ActiveCertState, CertBundleRef, CertValidityWindow};
+use crate::cert::{ActiveCertState, CertificateProvisionFailure};
 use crate::ids::{CertId, OperationId};
 
 use super::events::OperationSubjectRef;
 use super::projection::{
     OperationProjection, ProjectionOperationState, StatusProjectionError, verify_subject,
 };
-use super::text::{CancellationReason, FailureMessage};
+use super::text::CancellationReason;
 use super::{EventSequence, OperationStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,41 +45,122 @@ impl CertOperationState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum CertOperationFailure {
-    DnsPreflightFailed {
-        cert_id: CertId,
-        message: FailureMessage,
-        retained_active_cert: Option<ActiveCertState>,
-    },
-    ChallengePublishFailed {
-        cert_id: CertId,
-        message: FailureMessage,
-    },
-    AcmeValidationFailed {
-        cert_id: CertId,
-        message: FailureMessage,
-        retained_active_cert: Option<ActiveCertState>,
-    },
-    ActiveCertCommitFailed {
-        cert_id: CertId,
-        bundle_ref: CertBundleRef,
-        validity: CertValidityWindow,
-        message: FailureMessage,
-        retained_active_cert: Option<ActiveCertState>,
-    },
+#[serde(
+    try_from = "CertOperationFailureWire",
+    into = "CertOperationFailureWire"
+)]
+pub struct CertOperationFailure {
+    cert_id: CertId,
+    failure: CertificateProvisionFailure,
+    retained_active_cert: Option<ActiveCertState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CertOperationFailureWire {
+    cert_id: CertId,
+    failure: CertificateProvisionFailure,
+    retained_active_cert: Option<ActiveCertState>,
 }
 
 impl CertOperationFailure {
+    pub fn try_new(
+        cert_id: CertId,
+        failure: CertificateProvisionFailure,
+        retained_active_cert: Option<ActiveCertState>,
+    ) -> Result<Self, CertOperationFailureError> {
+        if let CertificateProvisionFailure::ActiveCertCommit {
+            attempted_active_cert,
+            ..
+        } = &failure
+            && attempted_active_cert.cert_id != cert_id
+        {
+            return Err(CertOperationFailureError::AttemptedCertIdMismatch {
+                cert_id,
+                attempted_cert_id: attempted_active_cert.cert_id.clone(),
+            });
+        }
+        if let Some(retained_active_cert) = &retained_active_cert
+            && retained_active_cert.cert_id != cert_id
+        {
+            return Err(CertOperationFailureError::RetainedCertIdMismatch {
+                cert_id,
+                retained_cert_id: retained_active_cert.cert_id.clone(),
+            });
+        }
+
+        Ok(Self {
+            cert_id,
+            failure,
+            retained_active_cert,
+        })
+    }
+
     #[must_use]
     pub const fn cert_id(&self) -> &CertId {
-        match self {
-            Self::DnsPreflightFailed { cert_id, .. }
-            | Self::ChallengePublishFailed { cert_id, .. }
-            | Self::AcmeValidationFailed { cert_id, .. }
-            | Self::ActiveCertCommitFailed { cert_id, .. } => cert_id,
+        &self.cert_id
+    }
+
+    #[must_use]
+    pub const fn failure(&self) -> &CertificateProvisionFailure {
+        &self.failure
+    }
+
+    #[must_use]
+    pub const fn retained_active_cert(&self) -> Option<&ActiveCertState> {
+        self.retained_active_cert.as_ref()
+    }
+
+    #[must_use]
+    pub fn into_parts(self) -> (CertId, CertificateProvisionFailure, Option<ActiveCertState>) {
+        (self.cert_id, self.failure, self.retained_active_cert)
+    }
+}
+
+impl TryFrom<CertOperationFailureWire> for CertOperationFailure {
+    type Error = CertOperationFailureError;
+
+    fn try_from(value: CertOperationFailureWire) -> Result<Self, Self::Error> {
+        let CertOperationFailureWire {
+            cert_id,
+            failure,
+            retained_active_cert,
+        } = value;
+        Self::try_new(cert_id, failure, retained_active_cert)
+    }
+}
+
+impl From<CertOperationFailure> for CertOperationFailureWire {
+    fn from(value: CertOperationFailure) -> Self {
+        let (cert_id, failure, retained_active_cert) = value.into_parts();
+        Self {
+            cert_id,
+            failure,
+            retained_active_cert,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CertOperationFailureError {
+    #[error(
+        "certificate operation failure for {} carries attempted certificate {}",
+        .cert_id.as_str(),
+        .attempted_cert_id.as_str()
+    )]
+    AttemptedCertIdMismatch {
+        cert_id: CertId,
+        attempted_cert_id: CertId,
+    },
+    #[error(
+        "certificate operation failure for {} carries retained certificate {}",
+        .cert_id.as_str(),
+        .retained_cert_id.as_str()
+    )]
+    RetainedCertIdMismatch {
+        cert_id: CertId,
+        retained_cert_id: CertId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,6 +287,7 @@ fn transition_allowed(current: &CertOperationState, attempted: &CertOperationSta
                 stage: CertRunningStage::ChallengePublished,
             },
         )
+        | (CertOperationState::Accepted, CertOperationState::Completed)
         | (CertOperationState::Accepted, CertOperationState::Cancelled { .. })
         | (CertOperationState::Accepted, CertOperationState::Failed { .. })
         | (CertOperationState::Running { .. }, CertOperationState::Cancelled { .. })

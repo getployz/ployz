@@ -76,6 +76,23 @@ impl<'a> DeployFailureView<'a> {
                 }
                 HealthCheckFailure::TimedOut { .. } => {}
             },
+            DeployOperationFailure::CertificateProvisionFailed { failure, .. } => match failure {
+                CertificateProvisionFailure::ChallengeReadiness {
+                    missing_machine_ids,
+                } => {
+                    for machine_id in missing_machine_ids {
+                        push_unique(&mut machines, machine_id);
+                    }
+                }
+                CertificateProvisionFailure::GatewayArtifactPush { machine_id, .. } => {
+                    push_unique(&mut machines, machine_id);
+                }
+                CertificateProvisionFailure::OperationEvidenceWrite { .. }
+                | CertificateProvisionFailure::DnsPreflight { .. }
+                | CertificateProvisionFailure::ChallengePublish { .. }
+                | CertificateProvisionFailure::AcmeValidation { .. }
+                | CertificateProvisionFailure::ActiveCertCommit { .. } => {}
+            },
             DeployOperationFailure::RouteCutoverFailed { reason, .. } => match reason {
                 RouteCutoverFailureReason::GatewayUnavailable { machine_id } => {
                     push_unique(&mut machines, machine_id);
@@ -93,7 +110,6 @@ impl<'a> DeployFailureView<'a> {
                 ..
             }
             | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
-            | DeployOperationFailure::CertificateProvisionFailed { .. }
             | DeployOperationFailure::CertificateProvisionTimedOut { .. }
             | DeployOperationFailure::ControlPlaneCommitFailed { .. } => {}
         }
@@ -565,26 +581,73 @@ fn certificate_provision_failure_cause(
     namespace_revision_id: &NamespaceRevisionId,
     failure: &CertificateProvisionFailure,
 ) -> String {
-    let (stage, message) = match failure {
+    certificate_provision_failure_detail(
+        failure,
+        Some(&format!(
+            "for {} (namespace revision {})",
+            hostname.as_str(),
+            namespace_revision_id.as_str(),
+        )),
+    )
+}
+
+pub(crate) fn certificate_provision_failure_detail(
+    failure: &CertificateProvisionFailure,
+    scope: Option<&str>,
+) -> String {
+    let scope = scope.map_or_else(String::new, |scope| format!(" {scope}"));
+    match failure {
+        CertificateProvisionFailure::OperationEvidenceWrite { message } => format!(
+            "certificate operation evidence write failed{scope}: {}",
+            message.as_str()
+        ),
         CertificateProvisionFailure::DnsPreflight { message } => {
-            ("certificate DNS preflight", message)
+            format!(
+                "certificate DNS preflight failed{scope}: {}",
+                message.as_str()
+            )
         }
         CertificateProvisionFailure::ChallengePublish { message } => {
-            ("certificate HTTP-01 challenge publish", message)
+            format!(
+                "certificate HTTP-01 challenge publish failed{scope}: {}",
+                message.as_str()
+            )
+        }
+        CertificateProvisionFailure::ChallengeReadiness {
+            missing_machine_ids,
+        } => {
+            let machines = missing_machine_ids
+                .iter()
+                .map(|machine_id| machine_id.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "certificate HTTP-01 challenge readiness failed{scope}: missing gateway acknowledgements from {machines}"
+            )
         }
         CertificateProvisionFailure::AcmeValidation { message } => {
-            ("certificate ACME validation", message)
+            format!(
+                "certificate ACME validation failed{scope}: {}",
+                message.as_str()
+            )
         }
-        CertificateProvisionFailure::ActiveCertCommit { message } => {
-            ("active certificate commit", message)
-        }
-    };
-    format!(
-        "{stage} failed for {} (namespace revision {}): {}",
-        hostname.as_str(),
-        namespace_revision_id.as_str(),
-        message.as_str()
-    )
+        CertificateProvisionFailure::GatewayArtifactPush {
+            machine_id,
+            message,
+        } => format!(
+            "certificate gateway artifact push failed on {}{scope}: {}",
+            machine_id.as_str(),
+            message.as_str()
+        ),
+        CertificateProvisionFailure::ActiveCertCommit {
+            attempted_active_cert,
+            message,
+        } => format!(
+            "active certificate commit failed for {}{scope}: {}",
+            attempted_active_cert.cert_id.as_str(),
+            message.as_str()
+        ),
+    }
 }
 
 fn certificate_provision_timeout_cause(

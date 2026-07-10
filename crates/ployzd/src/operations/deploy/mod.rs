@@ -381,7 +381,11 @@ where
                 },
                 async {
                     (*ports.certificate_provisioner)
-                        .ensure(hostname, command.gateway_public_ips())
+                        .ensure(
+                            command.operation_id(),
+                            hostname,
+                            command.gateway_certificate_targets(),
+                        )
                         .await
                         .map(|_| ())
                         .map_err(|failure| DeployExecutionError::ProvisionCertificate {

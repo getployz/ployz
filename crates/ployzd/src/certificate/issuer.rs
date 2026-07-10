@@ -6,7 +6,7 @@ use instant_acme::{
 use ployz_core::cert::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
 };
-use ployz_core::ids::{CertId, OperationId};
+use ployz_core::ids::{CertId, MachineId, OperationId};
 use ployz_core::ops::RouteHostname;
 use ployz_core::subjects::INTENT_CHANGED;
 use std::sync::Arc;
@@ -14,6 +14,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::intent::certificate_intent::CertificateIntentStore;
 use crate::operations::log::OperationRepository;
+
+use super::gateway::GatewayCertificateClient;
 
 const CHALLENGE_TTL_SECONDS: u64 = 15 * 60;
 
@@ -39,6 +41,9 @@ pub struct AcmeIssueContext {
     client: async_nats::Client,
     operation_id: OperationId,
     cert_id: CertId,
+    gateway_client: GatewayCertificateClient,
+    challenge_machine_ids: Vec<MachineId>,
+    challenge_readiness_timeout: std::time::Duration,
     challenge_published: Arc<AtomicBool>,
 }
 
@@ -49,13 +54,18 @@ impl AcmeIssueContext {
         client: async_nats::Client,
         operation_id: OperationId,
         cert_id: CertId,
+        challenge_machine_ids: Vec<MachineId>,
+        challenge_readiness_timeout: std::time::Duration,
     ) -> Self {
         Self {
             store,
             repository,
-            client,
+            client: client.clone(),
             operation_id,
             cert_id,
+            gateway_client: GatewayCertificateClient::new(client),
+            challenge_machine_ids,
+            challenge_readiness_timeout,
             challenge_published: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -70,9 +80,24 @@ impl AcmeIssueContext {
             .map_err(challenge_publish_error)?;
         self.publish_intent_changed().await?;
         self.repository
-            .record_cert_challenge(&self.operation_id, self.cert_id.clone(), challenge)
+            .record_cert_challenge(&self.operation_id, self.cert_id.clone(), challenge.clone())
             .await
-            .map_err(challenge_publish_error)?;
+            .map_err(operation_evidence_error)?;
+        self.gateway_client
+            .wait_until_challenge_applied(
+                &challenge,
+                &self.challenge_machine_ids,
+                self.challenge_readiness_timeout,
+            )
+            .await
+            .map_err(|failure| match failure {
+                ployz_core::cert::CertificateProvisionFailure::ChallengeReadiness {
+                    missing_machine_ids,
+                } => AcmeIssuerError::ChallengeReadiness {
+                    missing_machine_ids,
+                },
+                _ => unreachable!("challenge wait returns only readiness failures"),
+            })?;
         self.challenge_published.store(true, Ordering::Release);
         Ok(())
     }
@@ -87,7 +112,7 @@ impl AcmeIssueContext {
         self.repository
             .record_cert_validation_started(&self.operation_id, self.cert_id.clone())
             .await
-            .map_err(validation_error)?;
+            .map_err(operation_evidence_error)?;
         Ok(())
     }
 
@@ -99,7 +124,8 @@ impl AcmeIssueContext {
             .remove_challenges_for_hostname(hostname)
             .await
             .map_err(challenge_publish_error)?;
-        self.publish_intent_changed().await
+        let _ = self.publish_intent_changed().await;
+        Ok(())
     }
 
     async fn publish_intent_changed(&self) -> Result<(), AcmeIssuerError> {
@@ -112,8 +138,12 @@ impl AcmeIssueContext {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AcmeIssuerError {
+    #[error("certificate operation evidence write failed: {message}")]
+    OperationEvidenceWrite { message: String },
     #[error("ACME challenge publication failed: {message}")]
     ChallengePublish { message: String },
+    #[error("HTTP-01 challenge is not applied on gateways {missing_machine_ids:?}")]
+    ChallengeReadiness { missing_machine_ids: Vec<MachineId> },
     #[error("ACME validation failed: {message}")]
     Validation { message: String },
 }
@@ -130,21 +160,21 @@ fn validation_error(error: impl std::fmt::Display) -> AcmeIssuerError {
     }
 }
 
+fn operation_evidence_error(error: impl std::fmt::Display) -> AcmeIssuerError {
+    AcmeIssuerError::OperationEvidenceWrite {
+        message: error.to_string(),
+    }
+}
+
 pub(super) struct InstantAcmeIssuer {
     directory_url: String,
-    contact_email: Option<String>,
     store: CertificateIntentStore,
 }
 
 impl InstantAcmeIssuer {
-    pub(super) fn new(
-        directory_url: String,
-        contact_email: Option<String>,
-        store: CertificateIntentStore,
-    ) -> Self {
+    pub(super) fn new(directory_url: String, store: CertificateIntentStore) -> Self {
         Self {
             directory_url,
-            contact_email,
             store,
         }
     }
@@ -245,24 +275,11 @@ async fn load_or_create_account(issuer: &InstantAcmeIssuer) -> Result<Account, A
             .map_err(validation_error);
     }
 
-    let contacts = issuer
-        .contact_email
-        .as_deref()
-        .map(|email| {
-            if email.starts_with("mailto:") {
-                email.to_owned()
-            } else {
-                format!("mailto:{email}")
-            }
-        })
-        .into_iter()
-        .collect::<Vec<_>>();
-    let contact_refs = contacts.iter().map(String::as_str).collect::<Vec<_>>();
     let (account, credentials) = Account::builder()
         .map_err(validation_error)?
         .create(
             &NewAccount {
-                contact: &contact_refs,
+                contact: &[],
                 terms_of_service_agreed: true,
                 only_return_existing: false,
             },

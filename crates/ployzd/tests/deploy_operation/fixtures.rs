@@ -31,6 +31,7 @@ pub(crate) use ployz_test_support::ids::{
     cert_id, container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id,
     service_id,
 };
+use ployzd::certificate::GatewayCertificateTarget;
 use ployzd::operations::deploy::{
     CertificateProvisioner, DataplanePreparer, DeployExecutionFacts, DeployExecutionInput,
     DeployHealthCheckError, DeployHealthChecker, DeployOperationRecordError,
@@ -46,7 +47,7 @@ use ployzd::roles::machine::protocol::{
     MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
     MachineRunContainerOutcome,
 };
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -384,7 +385,7 @@ impl NamespaceStateCommitter for RecordingNamespaceState {
 }
 
 pub(super) struct RecordingCertificates {
-    pub(super) requests: Vec<(RouteHostname, Vec<IpAddr>)>,
+    pub(super) requests: Vec<(OperationId, RouteHostname, Vec<GatewayCertificateTarget>)>,
     result: Result<(), CertificateProvisionFailure>,
     certificate_ready: Arc<AtomicBool>,
 }
@@ -414,18 +415,22 @@ impl RecordingCertificates {
 impl CertificateProvisioner for RecordingCertificates {
     async fn ensure(
         &mut self,
+        owner_operation_id: &OperationId,
         hostname: &RouteHostname,
-        expected_gateway_ips: &[IpAddr],
+        targets: &[GatewayCertificateTarget],
     ) -> Result<ActiveCertState, CertificateProvisionFailure> {
-        self.requests
-            .push((hostname.clone(), expected_gateway_ips.to_vec()));
+        self.requests.push((
+            owner_operation_id.clone(),
+            hostname.clone(),
+            targets.to_vec(),
+        ));
         self.result.clone()?;
         self.certificate_ready.store(true, Ordering::SeqCst);
         Ok(active_certificate(hostname.clone()))
     }
 }
 
-fn active_certificate(hostname: RouteHostname) -> ActiveCertState {
+pub(super) fn active_certificate(hostname: RouteHostname) -> ActiveCertState {
     ActiveCertState {
         cert_id: cert_id("cert_api"),
         hostname,
@@ -879,7 +884,7 @@ pub(super) fn pinned_deploy_command() -> DeployExecutionInput {
             namespace_cleanup_candidates: Vec::new(),
             observed_machines: Vec::new(),
             managed_lease: None,
-            gateway_public_ips: Vec::new(),
+            gateway_certificate_targets: Vec::new(),
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -913,7 +918,7 @@ pub(super) fn deploy_command_with_healthcheck(replicas: u16) -> DeployExecutionI
             namespace_volume_pins: Vec::new(),
             observed_machines: Vec::new(),
             managed_lease: None,
-            gateway_public_ips: Vec::new(),
+            gateway_certificate_targets: Vec::new(),
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -959,7 +964,7 @@ pub(super) fn deploy_command_with_pre_start() -> DeployExecutionInput {
             namespace_volume_pins: Vec::new(),
             observed_machines: Vec::new(),
             managed_lease: None,
-            gateway_public_ips: Vec::new(),
+            gateway_certificate_targets: Vec::new(),
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -980,7 +985,10 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionInput {
             observed_machines: Vec::new(),
             namespace_cleanup_candidates: Vec::new(),
             managed_lease: None,
-            gateway_public_ips: vec![IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10))],
+            gateway_certificate_targets: vec![GatewayCertificateTarget {
+                machine_id: machine_id("gateway_a"),
+                public_ips: vec![Ipv4Addr::new(203, 0, 113, 10).into()],
+            }],
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -1053,7 +1061,10 @@ pub(super) fn managed_https_and_custom_http_deploy_command() -> DeployExecutionI
             managed_lease: Some(
                 ManagedLeaseName::try_new("cluster-one").expect("valid managed lease name"),
             ),
-            gateway_public_ips: vec![IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10))],
+            gateway_certificate_targets: vec![GatewayCertificateTarget {
+                machine_id: machine_id("gateway_a"),
+                public_ips: vec![Ipv4Addr::new(203, 0, 113, 10).into()],
+            }],
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -1114,7 +1125,7 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
             observed_machines: Vec::new(),
             namespace_cleanup_candidates: Vec::new(),
             managed_lease: None,
-            gateway_public_ips: Vec::new(),
+            gateway_certificate_targets: Vec::new(),
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -1147,7 +1158,7 @@ pub(super) fn volume_backed_deploy_command(replicas: u16) -> DeployExecutionInpu
             namespace_cleanup_candidates: Vec::new(),
             observed_machines: Vec::new(),
             managed_lease: None,
-            gateway_public_ips: Vec::new(),
+            gateway_certificate_targets: Vec::new(),
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -1243,7 +1254,7 @@ fn prepared_deploy_command(
             namespace_cleanup_candidates: namespace_cleanup_candidates(&observed_machines),
             observed_machines,
             managed_lease: None,
-            gateway_public_ips: Vec::new(),
+            gateway_certificate_targets: Vec::new(),
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -1289,7 +1300,7 @@ pub(super) fn empty_deploy_command_with_running_container(
             namespace_cleanup_candidates,
             observed_machines: vec![snapshot],
             managed_lease: None,
-            gateway_public_ips: Vec::new(),
+            gateway_certificate_targets: Vec::new(),
             step_timeout: Duration::from_secs(5),
         },
     )

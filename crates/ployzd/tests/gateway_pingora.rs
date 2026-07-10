@@ -1,8 +1,9 @@
 use pingora::protocols::l4::socket::SocketAddr as PingoraSocketAddr;
 use ployz_core::cert::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
-    ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, CustomCertBundle,
-    ManagedLeaseAcquireRequest,
+    ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
+    CertificateChallengeApplicationStatus, CustomCertBundle, ManagedLeaseAcquireRequest,
+    custom_bundle_digest,
 };
 use ployz_core::cert::{LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle, ManagedLeaseName};
 use ployz_core::ops::{RouteHostnameError, RouteTarget};
@@ -59,7 +60,7 @@ fn registry_serves_only_the_projected_http01_challenge() {
         .replace_projection(&GatewayProjection {
             managed_cert_bundle: None,
             custom_cert_bundles: Vec::new(),
-            challenges: vec![challenge],
+            challenges: vec![challenge.clone()],
             routes: Vec::new(),
         })
         .expect("challenge projection");
@@ -75,6 +76,21 @@ fn registry_serves_only_the_projected_http01_challenge() {
     assert_eq!(
         registry.http01_challenge("app.example.com", "other-token"),
         None
+    );
+    assert_eq!(
+        registry.challenge_application_status(&challenge),
+        CertificateChallengeApplicationStatus::Applied
+    );
+    let stale = AcmeHttp01Challenge::try_new(
+        route_hostname("app.example.com"),
+        AcmeChallengeToken::try_new("stale-token").expect("token"),
+        AcmeChallengeValue::try_new("stale-token.account-thumbprint").expect("value"),
+        AcmeChallengeTtlSeconds::try_new(900).expect("ttl"),
+    )
+    .expect("challenge");
+    assert_eq!(
+        registry.challenge_application_status(&stale),
+        CertificateChallengeApplicationStatus::NotApplied
     );
 }
 
@@ -97,9 +113,7 @@ fn registry_prepares_tls_for_routed_managed_hostnames_only() {
         })
         .expect("valid TLS projection");
 
-    assert!(registry.is_managed_hostname(&hostname));
     assert!(registry.is_https_hostname(&hostname));
-    assert!(!registry.is_managed_hostname(&format!("unrouted.{}", bundle.lease.hostname_suffix())));
 }
 
 #[test]
@@ -157,8 +171,12 @@ fn invalid_routed_custom_tls_retains_the_previous_snapshot() {
             )],
         })
         .expect("valid custom TLS projection");
-    let mut invalid = custom_bundle(hostname);
-    invalid.certificate_chain_pem = "not a certificate".to_owned();
+    let valid = valid_bundle();
+    let invalid = custom_bundle_with_material(
+        hostname,
+        "not a certificate".to_owned(),
+        valid.private_key_pem,
+    );
 
     assert!(
         registry
@@ -202,8 +220,12 @@ fn invalid_unrouted_custom_tls_is_ignored_by_empty_replacement() {
             )],
         })
         .expect("valid custom TLS projection");
-    let mut invalid = custom_bundle("unrouted.example.com");
-    invalid.certificate_chain_pem = "not a certificate".to_owned();
+    let valid = valid_bundle();
+    let invalid = custom_bundle_with_material(
+        "unrouted.example.com",
+        "not a certificate".to_owned(),
+        valid.private_key_pem,
+    );
 
     registry
         .replace_projection(&GatewayProjection {
@@ -263,7 +285,7 @@ fn invalid_tls_projection_retains_previous_routes_and_tls() {
             })
             .is_err()
     );
-    assert!(registry.is_managed_hostname(&hostname));
+    assert!(registry.is_https_hostname(&hostname));
     assert_eq!(registry.backend_count(&route_target(&hostname, 443)), 1);
 }
 
@@ -305,7 +327,7 @@ fn mismatched_tls_key_rejects_projection_and_retains_last_good() {
         }),
         Err(PingoraRouteRegistryError::CertificateKeyMismatch)
     ));
-    assert!(registry.is_managed_hostname(&hostname));
+    assert!(registry.is_https_hostname(&hostname));
 }
 
 fn valid_bundle() -> ManagedCertBundle {
@@ -324,13 +346,27 @@ fn valid_bundle() -> ManagedCertBundle {
 
 fn custom_bundle(hostname: &str) -> CustomCertBundle {
     let managed = valid_bundle();
-    CustomCertBundle {
-        active_cert: ActiveCertState {
+    custom_bundle_with_material(
+        hostname,
+        managed.certificate_chain_pem,
+        managed.private_key_pem,
+    )
+}
+
+fn custom_bundle_with_material(
+    hostname: &str,
+    certificate_chain_pem: String,
+    private_key_pem: String,
+) -> CustomCertBundle {
+    let digest = custom_bundle_digest(&certificate_chain_pem, &private_key_pem).expect("digest");
+    CustomCertBundle::try_new(
+        ActiveCertState {
             cert_id: cert_id("cert_custom"),
             hostname: route_hostname(hostname),
-            bundle_ref: CertBundleRef::try_new(
-                "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:/var/lib/ployz/certs/cert_custom.pem",
-            )
+            bundle_ref: CertBundleRef::try_new(format!(
+                "sha256:{}:/var/lib/ployz/certs/cert_custom.pem",
+                digest.as_str()
+            ))
             .expect("valid bundle ref"),
             validity: CertValidityWindow::try_new(
                 CertValidAt::try_new(1).expect("valid not-before"),
@@ -338,9 +374,10 @@ fn custom_bundle(hostname: &str) -> CustomCertBundle {
             )
             .expect("valid certificate window"),
         },
-        certificate_chain_pem: managed.certificate_chain_pem,
-        private_key_pem: managed.private_key_pem,
-    }
+        certificate_chain_pem,
+        private_key_pem,
+    )
+    .expect("bundle digest matches material")
 }
 
 #[test]

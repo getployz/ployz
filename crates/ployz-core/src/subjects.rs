@@ -334,6 +334,8 @@ pub enum MachineServiceEndpoint {
     ImageBlobPush,
     ImageManifestPush,
     ImageEnsure,
+    CertificateArtifactPush,
+    CertificateChallengeStatus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -370,6 +372,8 @@ impl MachineServiceEndpoint {
             // under the controller-only container command namespace while the
             // three staging endpoints above stay operator-reachable.
             Self::ImageEnsure => "container.ensure_image",
+            Self::CertificateArtifactPush => "certificate.artifact.push",
+            Self::CertificateChallengeStatus => "certificate.challenge.status",
         }
     }
 
@@ -383,7 +387,8 @@ impl MachineServiceEndpoint {
             | Self::DataplaneProbeMtu
             | Self::SubstrateReport
             | Self::LogsTail
-            | Self::ImageBlobCheck => MachineServiceEndpointExecution::Query,
+            | Self::ImageBlobCheck
+            | Self::CertificateChallengeStatus => MachineServiceEndpointExecution::Query,
             Self::ContainerEnsureEndpointNetwork
             | Self::ContainerRun
             | Self::ContainerRunHook
@@ -395,7 +400,30 @@ impl MachineServiceEndpoint {
             | Self::SubstrateUpdate
             | Self::ImageBlobPush
             | Self::ImageManifestPush
-            | Self::ImageEnsure => MachineServiceEndpointExecution::Command,
+            | Self::ImageEnsure
+            | Self::CertificateArtifactPush => MachineServiceEndpointExecution::Command,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn certificate_gateway_endpoints_are_machine_scoped_by_execution_class() {
+        let machine_id = MachineId::try_new("machine_7").expect("machine id");
+
+        assert_eq!(
+            machine_service(&machine_id, MachineServiceEndpoint::CertificateArtifactPush),
+            "plz.v1.rpc.machine.command.machine_7.certificate.artifact.push"
+        );
+        assert_eq!(
+            machine_service(
+                &machine_id,
+                MachineServiceEndpoint::CertificateChallengeStatus,
+            ),
+            "plz.v1.rpc.machine.query.machine_7.certificate.challenge.status"
+        );
     }
 }

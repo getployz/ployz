@@ -5,7 +5,9 @@ use crate::adapters::nats_authorization::{
     NatsReloadRunner, RenderFailure, SystemctlNatsReloadRunner,
 };
 use crate::certificate::CertificateManager;
-use crate::certificate::task::start_certificate_renewal_task;
+use crate::certificate::task::{
+    CertificateRenewalHealth, CertificateRenewalHealthState, start_certificate_renewal_task,
+};
 use crate::config::ControlProcessConfig;
 use crate::core_store::{CoreStore, CoreStoreError};
 use crate::fact_cache::{FactCache, FactCacheError, RunningFactCache, start_fact_cache};
@@ -53,12 +55,19 @@ pub struct RunningControlProcess {
     mint_tasks: TaskRegistry,
     reachability_tasks: TaskRegistry,
     managed_lease_tasks: TaskRegistry,
-    certificate_tasks: TaskRegistry,
+    certificate_issuance_tasks: TaskRegistry,
+    certificate_renewal_tasks: TaskRegistry,
+    certificate_renewal_health: CertificateRenewalHealth,
     facts_cache: RunningFactCache,
     authorization: NatsAuthorizationWriter,
 }
 
 impl RunningControlProcess {
+    #[must_use]
+    pub fn certificate_renewal_health(&self) -> CertificateRenewalHealthState {
+        self.certificate_renewal_health.snapshot()
+    }
+
     pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
         self.operation_api.shutdown().await?;
         self.intent.shutdown().await?;
@@ -71,7 +80,8 @@ impl RunningControlProcess {
         self.mint_tasks.abort_all();
         self.reachability_tasks.abort_all();
         self.managed_lease_tasks.abort_all();
-        self.certificate_tasks.abort_all();
+        self.certificate_issuance_tasks.abort_all();
+        self.certificate_renewal_tasks.abort_all();
         self.facts_cache.shutdown().await;
         self.authorization.shutdown();
         Ok(())
@@ -190,13 +200,14 @@ pub async fn start_control_process_with_client_and_reload(
     let namespace_intent = NamespaceIntentStore::new(core_store.clone());
     let lease_intent = LeaseIntentStore::new(core_store.clone());
     let managed_lease_tasks = TaskRegistry::default();
-    let certificate_tasks = TaskRegistry::default();
+    let certificate_issuance_tasks = TaskRegistry::default();
+    let certificate_renewal_tasks = TaskRegistry::default();
     let certificate_manager = CertificateManager::new(
         core_store.clone(),
         client.clone(),
         config.certificate_manager.clone(),
     )
-    .with_task_registry(certificate_tasks.clone());
+    .with_task_registry(certificate_issuance_tasks.clone());
     let machine_roster = MachineRosterStore::new(core_store.clone());
     let reachability_tasks = TaskRegistry::default();
     reachability_tasks.spawn(reconcile_reachability_loop(
@@ -263,8 +274,8 @@ pub async fn start_control_process_with_client_and_reload(
         facts.clone(),
         machine_roster.clone(),
     );
-    start_certificate_renewal_task(
-        &certificate_tasks,
+    let certificate_renewal_health = start_certificate_renewal_task(
+        &certificate_renewal_tasks,
         certificate_manager,
         NatsMachineFactsReader::new(client.clone()),
         machine_roster.clone(),
@@ -334,7 +345,9 @@ pub async fn start_control_process_with_client_and_reload(
         mint_tasks,
         reachability_tasks,
         managed_lease_tasks,
-        certificate_tasks,
+        certificate_issuance_tasks,
+        certificate_renewal_tasks,
+        certificate_renewal_health,
         facts_cache,
         authorization,
     })

@@ -49,7 +49,7 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
         ],
         namespace_cleanup_candidates: Vec::new(),
         managed_lease: None,
-        gateway_public_ips: Vec::new(),
+        gateway_certificate_targets: Vec::new(),
         step_timeout: Duration::from_secs(5),
     };
 
@@ -90,7 +90,7 @@ async fn reuses_running_target_entry_and_marks_service_containers_for_cleanup() 
         ],
         namespace_cleanup_candidates: Vec::new(),
         managed_lease: None,
-        gateway_public_ips: Vec::new(),
+        gateway_certificate_targets: Vec::new(),
         step_timeout: Duration::from_secs(5),
     };
 
@@ -154,7 +154,7 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
             &[omitted_container],
         ),
         managed_lease: None,
-        gateway_public_ips: Vec::new(),
+        gateway_certificate_targets: Vec::new(),
         step_timeout: Duration::from_secs(5),
     };
 
@@ -184,7 +184,7 @@ async fn empty_manifest_prepares_no_services() {
         observed_machines: Vec::new(),
         namespace_cleanup_candidates: Vec::new(),
         managed_lease: None,
-        gateway_public_ips: Vec::new(),
+        gateway_certificate_targets: Vec::new(),
         step_timeout: Duration::from_secs(5),
     };
     let command = prepare_deploy_execution_command(
@@ -242,7 +242,7 @@ fn auto_hostname_is_stable_and_collision_safe() {
         machine_platforms: std::collections::BTreeMap::new(),
         namespace_cleanup_candidates: Vec::new(),
         managed_lease: Some(ManagedLeaseName::try_new("demo").expect("valid lease")),
-        gateway_public_ips: Vec::new(),
+        gateway_certificate_targets: Vec::new(),
         step_timeout: Duration::from_secs(5),
     };
 

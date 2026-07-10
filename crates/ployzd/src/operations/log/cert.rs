@@ -3,30 +3,24 @@ use ployz_core::ids::{CertId, OperationId};
 use ployz_core::ops::{CertOperationFailure, CertOperationState, OperationEvent, OperationStatus};
 
 use super::{
-    AcceptedCertSubmission, CertOperationPayload, CertOperationSubmission, OperationRepository,
-    OperationStatusWrite, RecordCertTransitionError, RecordOperationEventOutcome,
-    SubmitOperationError,
+    CertOperationPayload, CertOperationSubmission, OperationRepository, OperationStatusWrite,
+    RecordCertTransitionError, RecordOperationEventError, RecordOperationEventOutcome, RecordTxn,
+    SubmitOperationError, index_error, publish_progress, record_operation_event_in_txn,
 };
 
 impl OperationRepository {
     pub async fn submit_cert(
         &self,
         submission: CertOperationSubmission,
-    ) -> Result<AcceptedCertSubmission, SubmitOperationError> {
-        let submitted = self
-            .submit_operation::<CertOperationSubmission>(
-                submission.operation_id,
-                CertOperationPayload {
-                    cert_id: submission.cert_id,
-                },
-            )
-            .await?;
-        Ok(AcceptedCertSubmission {
-            operation_id: submitted.operation_id,
-            start_sequence: submitted.start_sequence,
-            cert_id: submitted.payload.cert_id,
-            should_start_execution: submitted.should_start_execution,
-        })
+    ) -> Result<(), SubmitOperationError> {
+        self.submit_operation::<CertOperationSubmission>(
+            submission.operation_id,
+            CertOperationPayload {
+                cert_id: submission.cert_id,
+            },
+        )
+        .await?;
+        Ok(())
     }
 
     pub async fn unfinished_cert_operations(
@@ -90,20 +84,58 @@ impl OperationRepository {
         .map(RecordOperationEventOutcome::into_status_write)
     }
 
-    pub async fn record_cert_completed(
+    pub async fn activate_cert(
         &self,
         operation_id: &OperationId,
         active_cert: ActiveCertState,
     ) -> Result<OperationStatusWrite, RecordCertTransitionError> {
-        self.record_operation_event(
-            operation_id,
-            OperationEvent::CertCompleted {
+        let closure_operation_id = operation_id.clone();
+        let event = OperationEvent::CertCompleted {
+            operation_id: operation_id.clone(),
+            active_cert: active_cert.clone(),
+        };
+        let outcome = self
+            .store
+            .call(move |conn| {
+                let transaction = conn.transaction()?;
+                let outcome =
+                    record_operation_event_in_txn(&transaction, &closure_operation_id, event)?;
+                if matches!(&outcome, RecordTxn::Stored { .. }) {
+                    transaction.execute(
+                        "INSERT INTO custom_certificate_intent (hostname, json) VALUES (?1, ?2)
+                         ON CONFLICT(hostname) DO UPDATE SET json = excluded.json",
+                        rusqlite::params![
+                            active_cert.hostname.as_str(),
+                            crate::core_store::to_json(&active_cert)?,
+                        ],
+                    )?;
+                    transaction.commit()?;
+                }
+                Ok(outcome)
+            })
+            .await
+            .map_err(|error| RecordOperationEventError::StoreStatus(index_error(&error)))?;
+        match outcome {
+            RecordTxn::Missing => Err(RecordOperationEventError::MissingOperation {
                 operation_id: operation_id.clone(),
-                active_cert,
-            },
-        )
-        .await
-        .map(RecordOperationEventOutcome::into_status_write)
+            }),
+            RecordTxn::InvalidNextSequence(error) => {
+                Err(RecordOperationEventError::InvalidNextSequence(error))
+            }
+            RecordTxn::Projection(error) => Err(RecordOperationEventError::ProjectStatus(error)),
+            RecordTxn::AlreadySatisfied {
+                current_sequence,
+                status: _,
+            } => Ok(OperationStatusWrite::AlreadySatisfied { current_sequence }),
+            RecordTxn::Stored {
+                event,
+                status,
+                sequence: _,
+            } => {
+                publish_progress(&self.progress, event, &status).await;
+                Ok(OperationStatusWrite::Stored)
+            }
+        }
     }
 
     pub async fn record_cert_failed(

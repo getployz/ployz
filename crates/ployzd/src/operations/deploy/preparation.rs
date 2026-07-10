@@ -14,8 +14,9 @@ use ployz_core::ops::RouteHostname;
 use ployz_core::state::VolumePinState;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::IpAddr;
 use std::time::Duration;
+
+use crate::certificate::GatewayCertificateTarget;
 
 use super::{DeployExecutionCommand, DeployServiceExecutionCommand};
 
@@ -31,7 +32,7 @@ pub struct DeployExecutionFacts {
     pub machine_platforms: BTreeMap<MachineId, OciPlatform>,
     pub namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
     pub managed_lease: Option<ManagedLeaseName>,
-    pub gateway_public_ips: Vec<IpAddr>,
+    pub gateway_certificate_targets: Vec<GatewayCertificateTarget>,
     pub step_timeout: Duration,
 }
 
@@ -185,7 +186,7 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         machine_platforms: facts.machine_platforms,
         dataplane_members: facts.dataplane_members,
         custom_certificate_hostnames,
-        gateway_public_ips: facts.gateway_public_ips,
+        gateway_certificate_targets: facts.gateway_certificate_targets,
         unusable_machines: facts.unusable_machines,
         step_timeout: facts.step_timeout,
     }
