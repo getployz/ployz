@@ -67,6 +67,9 @@ impl OperationEvent {
             ),
             Self::ServiceRestartCompleted { .. } => "service.restart.completed".to_owned(),
             Self::ServiceRestartFailed { .. } => "service.restart.failed".to_owned(),
+            Self::ManagedLeaseSubmitted { .. } => "managed.lease.submitted".to_owned(),
+            Self::ManagedLeaseCompleted { .. } => "managed.lease.completed".to_owned(),
+            Self::ManagedLeaseFailed { .. } => "managed.lease.failed".to_owned(),
             Self::NamespaceRemoveSubmitted { .. } => "namespace.remove.submitted".to_owned(),
             Self::NamespaceRemoveRunning { stage, .. } => {
                 format!("namespace.remove.running.{}", stage.as_subject())

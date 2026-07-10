@@ -46,3 +46,57 @@ fn managed_bundle_covers_wildcard_and_apex_for_lease() {
         ]
     );
 }
+
+#[test]
+fn managed_lease_record_deserialization_rejects_inverted_validity() {
+    let value = serde_json::json!({
+        "name": "brisk-river-x7f3",
+        "token": "lease_token_123",
+        "issued_at": "1700604800",
+        "expires_at": "1700000000"
+    });
+
+    assert!(serde_json::from_value::<ManagedLeaseRecord>(value).is_err());
+}
+
+#[test]
+fn managed_bundle_deserialization_rejects_wrong_digest() {
+    let lease = ManagedLeaseName::try_new("brisk-river-x7f3").expect("valid lease name");
+    let bundle = ManagedCertBundle::try_new(
+        lease.clone(),
+        lease.wildcard_and_apex(),
+        "certificate".to_owned(),
+        "private-key".to_owned(),
+        LeaseIssuedAt::try_new(1_700_000_000).expect("issued at"),
+        LeaseExpiresAt::try_new(1_700_604_800).expect("expires at"),
+    )
+    .expect("valid bundle");
+    let mut value = serde_json::to_value(bundle).expect("bundle serializes");
+    value.as_object_mut().expect("bundle is an object").insert(
+        "digest".to_owned(),
+        serde_json::Value::String("0".repeat(64)),
+    );
+
+    assert!(serde_json::from_value::<ManagedCertBundle>(value).is_err());
+}
+
+#[test]
+fn managed_bundle_deserialization_rejects_wrong_dns_names() {
+    let lease = ManagedLeaseName::try_new("brisk-river-x7f3").expect("valid lease name");
+    let bundle = ManagedCertBundle::try_new(
+        lease.clone(),
+        lease.wildcard_and_apex(),
+        "certificate".to_owned(),
+        "private-key".to_owned(),
+        LeaseIssuedAt::try_new(1_700_000_000).expect("issued at"),
+        LeaseExpiresAt::try_new(1_700_604_800).expect("expires at"),
+    )
+    .expect("valid bundle");
+    let mut value = serde_json::to_value(bundle).expect("bundle serializes");
+    value.as_object_mut().expect("bundle is an object").insert(
+        "dns_names".to_owned(),
+        serde_json::json!(["*.example.com", "example.com"]),
+    );
+
+    assert!(serde_json::from_value::<ManagedCertBundle>(value).is_err());
+}

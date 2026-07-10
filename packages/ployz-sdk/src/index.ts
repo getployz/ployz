@@ -102,6 +102,7 @@ import type {
   OpsListResult,
   OpsStatusError,
   OpsWatchError,
+  PublicUrlMode,
   RuntimeSnapshotError,
   RuntimeSnapshot,
   RuntimeSnapshotRequest,
@@ -162,6 +163,8 @@ export interface PloyzMachineUpdateInput {
 export interface PloyzFirstMachineActivateInput {
   machineId: string;
   roles: InstallRolePolicy;
+  /** Public-URL choice recorded at init; omitted means the daemon default, "auto". */
+  publicUrlMode?: PublicUrlMode;
 }
 
 export interface PloyzMachineJoinRedeemInput {
@@ -382,6 +385,7 @@ export function initFirstMachineActivateRequest(
   return {
     machine_id: machineId(input.machineId),
     roles: input.roles,
+    public_url_mode: input.publicUrlMode ?? "auto",
   };
 }
 

@@ -27,11 +27,11 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::MachineId;
 use ployz_core::machine::MachineCredentialProvisioningStep;
-use ployz_core::ops::MachineAddOperationState;
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, NamespaceRemoveOperationState, OperationEvent,
     OperationStatus, VolumeRemoveOperationState,
 };
+use ployz_core::ops::{MachineAddOperationState, ManagedLeaseOperationState};
 use ployz_core::permissions::inbox_subscribe_scope;
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{MachineServiceEndpoint, OPERATOR_RUNTIME_SNAPSHOT, machine_service};
@@ -46,7 +46,7 @@ use ployz_nats::connect::{NatsClientUrl, connect_with_timeout};
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
     DeploySubmitRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineListRequest,
-    MachineSnapshot, MachineTestimony, NamespaceRemoveRequest, VolumeListRequest,
+    MachineSnapshot, MachineTestimony, NamespaceRemoveRequest, OpsListRequest, VolumeListRequest,
     VolumeRemoveRequest, VolumeStatus,
 };
 use ployz_test_support::ids::{
@@ -222,6 +222,30 @@ async fn scenario_init_and_activate_first_machine() {
                 "authorized-users.conf must contain {principal}: {authorized}"
             );
         }
+
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut last_operations = Vec::new();
+        while Instant::now() < deadline {
+            last_operations = core
+                .api
+                .ops_list(&OpsListRequest { active_only: false })
+                .await
+                .expect("list operations")
+                .operations;
+            if last_operations.iter().any(|snapshot| {
+                matches!(
+                    &snapshot.status,
+                    OperationStatus::ManagedLease {
+                        state: ManagedLeaseOperationState::Completed,
+                        ..
+                    }
+                )
+            }) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        panic!("managed lease acquisition did not complete: {last_operations:?}");
     })
     .await;
 

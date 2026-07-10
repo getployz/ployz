@@ -256,6 +256,7 @@ mod tests {
                 machine_id: machine_id("machine_a"),
             }],
             authorized_users: Vec::new(),
+            managed_lease: None,
         };
 
         assert_eq!(

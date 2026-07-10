@@ -7,10 +7,13 @@ use crate::adapters::nats_authorization::{
 use crate::config::ControlProcessConfig;
 use crate::core_store::{CoreStore, CoreStoreError};
 use crate::fact_cache::{FactCache, FactCacheError, RunningFactCache, start_fact_cache};
+use crate::intent::lease_intent::LeaseIntentStore;
 use crate::intent::machine_roster::MachineRosterStore;
 use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::intent::nats_authorizations::{NatsAuthorizationStore, NatsAuthorizationStoreError};
 use crate::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
+use crate::lease::LeaseClient;
+use crate::lease::task::start_managed_lease_task;
 use crate::operation_api::admission::OperationControllers;
 use crate::operation_api::service::{ApiServiceError, start_operation_api_service_with_handlers};
 use crate::operation_api::{OperationApiHandlers, OperationWorkers};
@@ -47,6 +50,7 @@ pub struct RunningControlProcess {
     machine_lifecycle_tasks: TaskRegistry,
     mint_tasks: TaskRegistry,
     reachability_tasks: TaskRegistry,
+    managed_lease_tasks: TaskRegistry,
     facts_cache: RunningFactCache,
     authorization: NatsAuthorizationWriter,
 }
@@ -63,6 +67,7 @@ impl RunningControlProcess {
         self.machine_lifecycle_tasks.abort_all();
         self.mint_tasks.abort_all();
         self.reachability_tasks.abort_all();
+        self.managed_lease_tasks.abort_all();
         self.facts_cache.shutdown().await;
         self.authorization.shutdown();
         Ok(())
@@ -174,6 +179,8 @@ pub async fn start_control_process_with_client_and_reload(
     let machine_lifecycle_tasks = TaskRegistry::default();
     let mint_tasks = TaskRegistry::default();
     let namespace_intent = NamespaceIntentStore::new(core_store.clone());
+    let lease_intent = LeaseIntentStore::new(core_store.clone());
+    let managed_lease_tasks = TaskRegistry::default();
     let machine_roster = MachineRosterStore::new(core_store.clone());
     let reachability_tasks = TaskRegistry::default();
     reachability_tasks.spawn(reconcile_reachability_loop(
@@ -231,6 +238,13 @@ pub async fn start_control_process_with_client_and_reload(
         .first()
         .cloned()
         .ok_or(ControlProcessError::MissingDeployMachine)?;
+    start_managed_lease_task(
+        &managed_lease_tasks,
+        lease_intent.clone(),
+        controllers.repository().clone(),
+        LeaseClient::new(config.lease_worker_url.clone()),
+        core_machine_id.clone(),
+    );
     let intent = start_intent_service(
         client.clone(),
         core_machine_id.clone(),
@@ -295,6 +309,7 @@ pub async fn start_control_process_with_client_and_reload(
         machine_lifecycle_tasks,
         mint_tasks,
         reachability_tasks,
+        managed_lease_tasks,
         facts_cache,
         authorization,
     })
@@ -476,6 +491,7 @@ mod tests {
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),
             authorized_users: Vec::new(),
+            managed_lease: None,
         }
     }
 

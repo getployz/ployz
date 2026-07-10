@@ -485,7 +485,20 @@ test("sdk maps raw first-machine activation input to the wire request", () => {
   assert.deepEqual(initFirstMachineActivateRequest({ machineId: "core_1", roles: installAllRoles() }), {
     machine_id: "core_1",
     roles: installAllRoles(),
+    public_url_mode: "auto",
   });
+  assert.deepEqual(
+    initFirstMachineActivateRequest({
+      machineId: "core_1",
+      roles: installAllRoles(),
+      publicUrlMode: "none",
+    }),
+    {
+      machine_id: "core_1",
+      roles: installAllRoles(),
+      public_url_mode: "none",
+    },
+  );
   assert.throws(
     () => initFirstMachineActivateRequest({ machineId: "core.1", roles: gatewaySkippedRoles() }),
     /machine id/,

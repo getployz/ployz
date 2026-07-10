@@ -83,6 +83,7 @@ mod tests {
                 },
             ],
             authorized_users: Vec::new(),
+            managed_lease: None,
         };
 
         let projected = volume_snapshots(&intent);

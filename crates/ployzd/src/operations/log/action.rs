@@ -1,9 +1,9 @@
 use super::{
     CoreReplaceOperationSubmission, CoreReplacePayload, DeployOperationSubmission,
     MachineLifecycleOperationSubmission, MachineLifecyclePayload, MachineUpdateOperationSubmission,
-    MachineUpdatePayload, NamespaceRemoveOperationSubmission, NamespaceRemovePayload,
-    ServiceRestartOperationSubmission, ServiceRestartPayload, VolumeRemoveOperationSubmission,
-    VolumeRemovePayload,
+    MachineUpdatePayload, ManagedLeaseOperationSubmission, ManagedLeasePayload,
+    NamespaceRemoveOperationSubmission, NamespaceRemovePayload, ServiceRestartOperationSubmission,
+    ServiceRestartPayload, VolumeRemoveOperationSubmission, VolumeRemovePayload,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{EventSequence, OperationEvent, OperationKind, OperationStatus};
@@ -302,5 +302,36 @@ impl OperationAction for VolumeRemoveOperationSubmission {
             payload.volume_name.clone(),
             sequence,
         )
+    }
+}
+
+impl OperationAction for ManagedLeaseOperationSubmission {
+    type Payload = ManagedLeasePayload;
+    const KIND: OperationKind = OperationKind::ManagedLease;
+
+    fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEvent {
+        OperationEvent::ManagedLeaseSubmitted {
+            operation_id,
+            subject: payload.subject,
+        }
+    }
+
+    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
+        let OperationEvent::ManagedLeaseSubmitted {
+            operation_id,
+            subject,
+        } = event
+        else {
+            return None;
+        };
+        Some((operation_id, ManagedLeasePayload { subject }))
+    }
+
+    fn accepted_status(
+        operation_id: OperationId,
+        payload: &Self::Payload,
+        sequence: EventSequence,
+    ) -> OperationStatus {
+        OperationStatus::managed_lease_accepted(operation_id, payload.subject.clone(), sequence)
     }
 }

@@ -23,6 +23,7 @@ pub struct DeployExecutionFacts {
     pub dataplane_members: Vec<DataplaneMember>,
     pub observed_machines: Vec<MachineContainerObservationSnapshot>,
     pub namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
+    pub has_managed_lease: bool,
     pub step_timeout: Duration,
 }
 
