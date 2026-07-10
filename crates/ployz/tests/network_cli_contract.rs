@@ -1,7 +1,10 @@
 use ployz::commands::network::NetworkStatusOutput;
 use ployz::commands::ops::{OpsWatchOutput, StatusOutput, WatchOutput};
 use ployz::commands::{PloyzctlCommand, parse_command};
-use ployz_core::dataplane::MachineEndpointSubnet;
+use ployz_core::dataplane::{
+    EbpfForwardingReady, MachineEndpointSubnet, PloyzNativeMeshMachineReady,
+    PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady,
+};
 use ployz_core::machine::MachineName;
 use ployz_core::state::{ActiveMachineState, MachineLifecycle};
 use ployz_sdk_types::{MachineSnapshot, MachineTestimony};
@@ -114,4 +117,35 @@ fn network_repair_watch_renders_dataplane_failure_evidence() {
         output,
         "3 network.repair.failed dataplane-convergence-failed machine=machine_a component=wireguard message=prepare rejected\n"
     );
+}
+
+#[test]
+fn network_repair_watch_renders_dataplane_prepared_evidence() {
+    let report = PloyzNativeMeshPrepareReport::from_machines([PloyzNativeMeshMachineReady {
+        machine_id: machine_id("machine_a"),
+        ready: PloyzNativeMeshReady {
+            wireguard: WireGuardReady {
+                public_key: WireGuardPublicKey::try_new("public-key-a")
+                    .expect("valid wireguard public key"),
+                evidence: Vec::new(),
+            },
+            ebpf_forwarding: EbpfForwardingReady {
+                evidence: Vec::new(),
+            },
+        },
+    }])
+    .expect("valid dataplane report");
+    let output = WatchOutput {
+        events: vec![ployz_sdk_types::ReplayedOperationEvent {
+            sequence: event_sequence(3),
+            event: ployz_sdk_types::OperationEvent::NetworkRepairDataplanePrepared {
+                operation_id: operation_id("op_network_repair"),
+                report,
+            },
+        }],
+        output: OpsWatchOutput::Text,
+    }
+    .render();
+
+    assert_eq!(output, "3 network.repair.dataplane_prepared\n");
 }

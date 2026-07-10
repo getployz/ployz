@@ -23,7 +23,7 @@ use super::machine_lifecycle::{MachineLifecycleEvent, MachineLifecycleTransition
 use super::machine_update::{MachineUpdateEvent, MachineUpdateTransition};
 use super::managed_lease::{ManagedLeaseEvent, ManagedLeaseTransition};
 use super::namespace_remove::{NamespaceRemoveEvent, NamespaceRemoveTransition};
-use super::network_repair::{NetworkRepairEvent, NetworkRepairTransition};
+use super::network_repair::{NetworkRepairEvent, NetworkRepairEvidence, NetworkRepairTransition};
 use super::service_restart::{ServiceRestartEvent, ServiceRestartTransition};
 use super::text::CancellationReason;
 use super::volume_remove::{VolumeRemoveEvent, VolumeRemoveTransition};
@@ -220,6 +220,10 @@ pub enum OperationEvent {
         operation_id: OperationId,
         stage: NetworkRepairRunningStage,
     },
+    NetworkRepairDataplanePrepared {
+        operation_id: OperationId,
+        report: PloyzNativeMeshPrepareReport,
+    },
     NetworkRepairCompleted {
         operation_id: OperationId,
     },
@@ -344,6 +348,7 @@ impl OperationEvent {
             | Self::CoreReplaceFailed { operation_id, .. }
             | Self::NetworkRepairSubmitted { operation_id }
             | Self::NetworkRepairRunning { operation_id, .. }
+            | Self::NetworkRepairDataplanePrepared { operation_id, .. }
             | Self::NetworkRepairCompleted { operation_id }
             | Self::NetworkRepairFailed { operation_id, .. }
             | Self::ServiceRestartSubmitted { operation_id, .. }
@@ -368,15 +373,18 @@ impl OperationEvent {
         }
     }
 
-    /// The subject key of singleton deploy evidence — evidence recorded once
-    /// per deploy (plan, dataplane, health-check start, cleanup). `None` for
-    /// multi-instance evidence (per-container starts) and every non-evidence
-    /// event. The store keys idempotent singleton evidence on this.
+    /// The subject key of operation evidence recorded once per operation
+    /// phase. `None` for multi-instance evidence (per-container starts) and
+    /// every non-evidence event. The store keys idempotent singleton evidence
+    /// on this.
     #[must_use]
     pub fn singleton_subject(&self) -> Option<&'static str> {
         match self {
             Self::DeployPlanCreated { .. } => Some("deploy.plan.created"),
             Self::DeployDataplanePrepared { .. } => Some("deploy.dataplane.prepared"),
+            Self::NetworkRepairDataplanePrepared { .. } => {
+                Some("network.repair.dataplane.prepared")
+            }
             Self::DeployHealthCheckStarted { .. } => Some("deploy.health_check.started"),
             Self::DeployCleanupFinished { .. } => Some("deploy.cleanup.finished"),
             Self::DeploySubmitted { .. }
@@ -486,6 +494,7 @@ impl OperationEvent {
             | Self::CoreReplaceFailed { .. }
             | Self::NetworkRepairSubmitted { .. }
             | Self::NetworkRepairRunning { .. }
+            | Self::NetworkRepairDataplanePrepared { .. }
             | Self::NetworkRepairCompleted { .. }
             | Self::NetworkRepairFailed { .. }
             | Self::ServiceRestartSubmitted { .. }
@@ -865,6 +874,15 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
             } => Self::NetworkRepair {
                 operation_id,
                 event: NetworkRepairEvent::Transition(NetworkRepairTransition::Running { stage }),
+            },
+            OperationEvent::NetworkRepairDataplanePrepared {
+                operation_id,
+                report,
+            } => Self::NetworkRepair {
+                operation_id,
+                event: NetworkRepairEvent::Evidence(NetworkRepairEvidence::DataplanePrepared {
+                    report,
+                }),
             },
             OperationEvent::NetworkRepairCompleted { operation_id } => Self::NetworkRepair {
                 operation_id,

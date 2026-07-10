@@ -62,8 +62,8 @@ pub use namespace_remove::{
     NamespaceRemoveTransition, project_namespace_remove_transition,
 };
 pub use network_repair::{
-    NetworkRepairFailure, NetworkRepairOperationState, NetworkRepairRunningStage,
-    NetworkRepairTransition, project_network_repair_transition,
+    NetworkRepairEvidence, NetworkRepairFailure, NetworkRepairOperationState,
+    NetworkRepairRunningStage, NetworkRepairTransition, project_network_repair_transition,
 };
 pub use projection::{
     OperationProjection, ProjectionOperationState, StatusProjectionError, project_operation_event,

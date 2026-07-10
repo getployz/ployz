@@ -1,9 +1,31 @@
+use ployz_core::dataplane::{
+    EbpfForwardingReady, PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport,
+    PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady,
+};
 use ployz_core::ops::{
     NetworkRepairOperationState, NetworkRepairRunningStage, NetworkRepairTransition,
-    OperationProjection, OperationStatus, ProjectionOperationState, StatusProjectionError,
-    project_network_repair_transition,
+    OperationEvent, OperationProjection, OperationStatus, ProjectionOperationState,
+    StatusProjectionError, project_network_repair_transition, project_operation_event,
 };
+use ployz_test_support::ids::machine_id;
 use ployz_test_support::ids::{event_sequence, operation_id};
+
+fn dataplane_report() -> PloyzNativeMeshPrepareReport {
+    PloyzNativeMeshPrepareReport::from_machines([PloyzNativeMeshMachineReady {
+        machine_id: machine_id("machine_a"),
+        ready: PloyzNativeMeshReady {
+            wireguard: WireGuardReady {
+                public_key: WireGuardPublicKey::try_new("public-key-a")
+                    .expect("valid wireguard public key"),
+                evidence: Vec::new(),
+            },
+            ebpf_forwarding: EbpfForwardingReady {
+                evidence: Vec::new(),
+            },
+        },
+    }])
+    .expect("valid dataplane report")
+}
 
 #[test]
 fn network_repair_projects_running_then_completed() {
@@ -37,6 +59,54 @@ fn network_repair_projects_running_then_completed() {
                 last_event_sequence: event_sequence(3),
             }),
         }
+    );
+}
+
+#[test]
+fn network_repair_dataplane_prepared_evidence_advances_projection_cursor() {
+    let running = OperationStatus::NetworkRepair {
+        id: operation_id("op_network_repair"),
+        state: NetworkRepairOperationState::Running {
+            stage: NetworkRepairRunningStage::PreparingDataplane,
+        },
+        last_event_sequence: event_sequence(2),
+    };
+
+    assert_eq!(
+        project_operation_event(
+            &running,
+            OperationEvent::NetworkRepairDataplanePrepared {
+                operation_id: operation_id("op_network_repair"),
+                report: dataplane_report(),
+            },
+            event_sequence(3),
+        )
+        .expect("dataplane evidence projects"),
+        OperationProjection::StatusChanged {
+            status: Box::new(OperationStatus::NetworkRepair {
+                id: operation_id("op_network_repair"),
+                state: NetworkRepairOperationState::Running {
+                    stage: NetworkRepairRunningStage::PreparingDataplane,
+                },
+                last_event_sequence: event_sequence(3),
+            }),
+        }
+    );
+}
+
+#[test]
+fn network_repair_dataplane_prepared_evidence_has_stable_singleton_subject() {
+    let event = OperationEvent::NetworkRepairDataplanePrepared {
+        operation_id: operation_id("op_network_repair"),
+        report: dataplane_report(),
+    };
+
+    assert_eq!(
+        (event.subject_suffix(), event.singleton_subject()),
+        (
+            "network.repair.dataplane.prepared".to_owned(),
+            Some("network.repair.dataplane.prepared"),
+        )
     );
 }
 

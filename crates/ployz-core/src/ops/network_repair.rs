@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::dataplane::PloyzNativeMeshComponent;
+use crate::dataplane::{PloyzNativeMeshComponent, PloyzNativeMeshPrepareReport};
 use crate::ids::{MachineId, OperationId};
 
 use super::events::OperationEvent;
@@ -68,6 +68,25 @@ pub enum NetworkRepairTransition {
     Cancelled { reason: CancellationReason },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NetworkRepairEvidence {
+    DataplanePrepared {
+        report: PloyzNativeMeshPrepareReport,
+    },
+}
+
+impl NetworkRepairEvidence {
+    #[must_use]
+    pub fn event(&self, operation_id: &OperationId) -> OperationEvent {
+        match self {
+            Self::DataplanePrepared { report } => OperationEvent::NetworkRepairDataplanePrepared {
+                operation_id: operation_id.clone(),
+                report: report.clone(),
+            },
+        }
+    }
+}
+
 impl NetworkRepairTransition {
     #[must_use]
     pub fn event(&self, operation_id: &OperationId) -> OperationEvent {
@@ -108,6 +127,7 @@ impl NetworkRepairTransition {
 
 pub(super) enum NetworkRepairEvent {
     Submitted,
+    Evidence(NetworkRepairEvidence),
     Transition(NetworkRepairTransition),
 }
 
@@ -119,6 +139,23 @@ pub(super) fn project_event(
 ) -> Result<OperationProjection, StatusProjectionError> {
     match event {
         NetworkRepairEvent::Submitted => Ok(OperationProjection::AlreadySatisfied),
+        NetworkRepairEvent::Evidence(NetworkRepairEvidence::DataplanePrepared { .. }) => {
+            if !matches!(
+                state,
+                NetworkRepairOperationState::Running {
+                    stage: NetworkRepairRunningStage::PreparingDataplane,
+                }
+            ) {
+                return Ok(OperationProjection::AlreadySatisfied);
+            }
+            Ok(OperationProjection::StatusChanged {
+                status: Box::new(OperationStatus::NetworkRepair {
+                    id: id.clone(),
+                    state: state.clone(),
+                    last_event_sequence: event_sequence,
+                }),
+            })
+        }
         NetworkRepairEvent::Transition(transition) => {
             project_state(id, state, transition.state(), event_sequence)
         }

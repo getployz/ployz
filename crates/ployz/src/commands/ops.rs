@@ -13,6 +13,10 @@ use ployz_sdk_types::{OpsListRequest, OpsListResult, OpsStatusRequest};
 
 use crate::commands::PloyzctlCliError;
 
+mod network_repair;
+
+use network_repair::{network_repair_state, render_network_repair_failure};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpsStatusCommand {
     pub operation_id: OperationId,
@@ -344,22 +348,6 @@ fn operation_state(status: &OperationStatus) -> String {
     }
 }
 
-const fn network_repair_state(
-    state: &ployz_sdk_types::NetworkRepairOperationState,
-) -> &'static str {
-    match state {
-        ployz_sdk_types::NetworkRepairOperationState::Accepted => "accepted",
-        ployz_sdk_types::NetworkRepairOperationState::Running { stage } => match stage {
-            ployz_sdk_types::NetworkRepairRunningStage::PreparingDataplane => {
-                "running:preparing-dataplane"
-            }
-        },
-        ployz_sdk_types::NetworkRepairOperationState::Completed => "completed",
-        ployz_sdk_types::NetworkRepairOperationState::Failed { .. } => "failed",
-        ployz_sdk_types::NetworkRepairOperationState::Cancelled { .. } => "cancelled",
-    }
-}
-
 const fn managed_lease_state(state: &ployz_sdk_types::ManagedLeaseOperationState) -> &'static str {
     match state {
         ployz_sdk_types::ManagedLeaseOperationState::Accepted => "accepted",
@@ -613,6 +601,7 @@ impl DeployEventRenderContext {
             | OperationEvent::CoreReplaceFailed { .. }
             | OperationEvent::NetworkRepairSubmitted { .. }
             | OperationEvent::NetworkRepairRunning { .. }
+            | OperationEvent::NetworkRepairDataplanePrepared { .. }
             | OperationEvent::NetworkRepairCompleted { .. }
             | OperationEvent::NetworkRepairFailed { .. }
             | OperationEvent::ServiceRestartSubmitted { .. }
@@ -687,6 +676,7 @@ fn render_replayed_event_text(
         | OperationEvent::CoreReplaceFailed { .. }
         | OperationEvent::NetworkRepairSubmitted { .. }
         | OperationEvent::NetworkRepairRunning { .. }
+        | OperationEvent::NetworkRepairDataplanePrepared { .. }
         | OperationEvent::NetworkRepairCompleted { .. }
         | OperationEvent::ServiceRestartSubmitted { .. }
         | OperationEvent::ServiceRestartRunning { .. }
@@ -708,31 +698,6 @@ fn render_replayed_event_text(
         | OperationEvent::VolumeRemoveFailed { .. }
         | OperationEvent::Cancelled { .. } => {
             format!("{} {}", event.sequence.get(), label)
-        }
-    }
-}
-
-fn render_network_repair_failure(failure: &ployz_sdk_types::NetworkRepairFailure) -> String {
-    match failure {
-        ployz_sdk_types::NetworkRepairFailure::NoActiveMachines => "no-active-machines".to_owned(),
-        ployz_sdk_types::NetworkRepairFailure::IntentReadFailed { message } => {
-            format!("intent-read-failed message={}", message.as_str())
-        }
-        ployz_sdk_types::NetworkRepairFailure::DataplaneConvergenceFailed {
-            machine_id,
-            component,
-            message,
-        } => format!(
-            "dataplane-convergence-failed machine={} component={} message={}",
-            machine_id.as_str(),
-            match component {
-                ployz_sdk_types::PloyzNativeMeshComponent::WireGuard => "wireguard",
-                ployz_sdk_types::PloyzNativeMeshComponent::EbpfForwarding => "ebpf-forwarding",
-            },
-            message.as_str(),
-        ),
-        ployz_sdk_types::NetworkRepairFailure::DataplaneReportInvalid { message } => {
-            format!("dataplane-report-invalid message={}", message.as_str())
         }
     }
 }
@@ -791,6 +756,9 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::CoreReplaceFailed { .. } => "core.replace.failed",
         OperationEvent::NetworkRepairSubmitted { .. } => "network.repair.submitted",
         OperationEvent::NetworkRepairRunning { .. } => "network.repair.running",
+        OperationEvent::NetworkRepairDataplanePrepared { .. } => {
+            "network.repair.dataplane_prepared"
+        }
         OperationEvent::NetworkRepairCompleted { .. } => "network.repair.completed",
         OperationEvent::NetworkRepairFailed { .. } => "network.repair.failed",
         OperationEvent::ServiceRestartSubmitted { .. } => "service.restart.submitted",

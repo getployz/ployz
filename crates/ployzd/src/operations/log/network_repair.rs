@@ -1,10 +1,10 @@
 use super::{
     AcceptedNetworkRepairSubmission, NetworkRepairOperationSubmission, NetworkRepairPayload,
-    OperationRepository, OperationStatusWrite, RecordNetworkRepairTransitionError,
-    RecordOperationEventOutcome, SubmitOperationError,
+    OperationRepository, OperationStatusWrite, RecordNetworkRepairEvidenceError,
+    RecordNetworkRepairTransitionError, RecordOperationEventOutcome, SubmitOperationError,
 };
 use ployz_core::ids::OperationId;
-use ployz_core::ops::NetworkRepairTransition;
+use ployz_core::ops::{EventSequence, NetworkRepairEvidence, NetworkRepairTransition};
 
 impl OperationRepository {
     pub async fn submit_network_repair(
@@ -32,5 +32,15 @@ impl OperationRepository {
         self.record_operation_event(operation_id, transition.event(operation_id))
             .await
             .map(RecordOperationEventOutcome::into_status_write)
+    }
+
+    pub async fn record_network_repair_evidence(
+        &self,
+        operation_id: &OperationId,
+        evidence: NetworkRepairEvidence,
+    ) -> Result<EventSequence, RecordNetworkRepairEvidenceError> {
+        self.record_operation_event(operation_id, evidence.event(operation_id))
+            .await
+            .map(RecordOperationEventOutcome::sequence)
     }
 }

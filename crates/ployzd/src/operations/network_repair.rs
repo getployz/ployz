@@ -11,7 +11,8 @@ use ployz_core::dataplane::{
 };
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{
-    FailureMessage, NetworkRepairFailure, NetworkRepairRunningStage, NetworkRepairTransition,
+    FailureMessage, NetworkRepairEvidence, NetworkRepairFailure, NetworkRepairRunningStage,
+    NetworkRepairTransition,
 };
 
 #[derive(Debug, Clone)]
@@ -102,7 +103,21 @@ impl NetworkRepairOperation {
             membership,
         };
         let transition = match self.dataplane.prepare_dataplane(request).await {
-            Ok(_) => NetworkRepairTransition::Completed,
+            Ok(report) => {
+                if let Err(error) = self
+                    .controllers
+                    .repository()
+                    .record_network_repair_evidence(
+                        &operation_id,
+                        NetworkRepairEvidence::DataplanePrepared { report },
+                    )
+                    .await
+                {
+                    record_warning(&operation_id, "record-dataplane-prepared", &error);
+                    return;
+                }
+                NetworkRepairTransition::Completed
+            }
             Err(error) => NetworkRepairTransition::Failed {
                 failure: network_repair_failure(error),
             },

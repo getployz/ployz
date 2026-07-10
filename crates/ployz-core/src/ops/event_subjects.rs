@@ -56,6 +56,9 @@ impl OperationEvent {
             Self::NetworkRepairRunning { stage, .. } => {
                 format!("network.repair.running.{}", stage.as_subject())
             }
+            Self::NetworkRepairDataplanePrepared { .. } => {
+                "network.repair.dataplane.prepared".to_owned()
+            }
             Self::NetworkRepairCompleted { .. } => "network.repair.completed".to_owned(),
             Self::NetworkRepairFailed { .. } => "network.repair.failed".to_owned(),
             Self::ServiceRestartSubmitted { .. } => "service.restart.submitted".to_owned(),

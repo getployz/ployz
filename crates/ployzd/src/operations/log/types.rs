@@ -342,6 +342,7 @@ pub type RecordDeployEvidenceError = RecordOperationEventError;
 pub type RecordServiceRestartTransitionError = RecordOperationEventError;
 pub type RecordNamespaceRemoveTransitionError = RecordOperationEventError;
 pub type RecordNetworkRepairTransitionError = RecordOperationEventError;
+pub type RecordNetworkRepairEvidenceError = RecordOperationEventError;
 pub type RecordVolumeRemoveTransitionError = RecordOperationEventError;
 pub type RecordManagedLeaseTransitionError = RecordOperationEventError;
 pub type RecordLifecycleEventError = RecordOperationEventError;
