@@ -282,10 +282,14 @@ async fn scenario_auto_hostname_https_survives_core_stop() {
     with_evidence(&core.cluster, async {
         let first = core
             .api
-            .deploy_submit(&DeploySubmitRequest {
-                idempotency_key: idempotency_key("idem_auto_https_first"),
-                target: auto_hostname_deploy_target(),
-            })
+            .deploy_submit(
+                &reserved_deploy_request(
+                    &core,
+                    "idem_auto_https_first",
+                    auto_hostname_deploy_target(),
+                )
+                .await,
+            )
             .await
             .expect("auto-hostname deploy submits");
         let status =
@@ -329,10 +333,14 @@ async fn scenario_auto_hostname_https_survives_core_stop() {
 
         let second = core
             .api
-            .deploy_submit(&DeploySubmitRequest {
-                idempotency_key: idempotency_key("idem_auto_https_second"),
-                target: auto_hostname_deploy_target(),
-            })
+            .deploy_submit(
+                &reserved_deploy_request(
+                    &core,
+                    "idem_auto_https_second",
+                    auto_hostname_deploy_target(),
+                )
+                .await,
+            )
             .await
             .expect("auto-hostname redeploy submits");
         let second_status =
