@@ -115,6 +115,30 @@ impl MachineContainerRunner for ObservingContainerRunner {
         Ok(())
     }
 
+    async fn wait_managed_container(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<i64, MachineContainerRunnerError> {
+        let snapshot = self.snapshot();
+        let Some(observation) = snapshot.container(container_id).cloned() else {
+            return Err(MachineContainerRunnerError::Wait {
+                container_id: container_id.clone(),
+                message: "container not found".to_owned(),
+            });
+        };
+        let snapshot = snapshot
+            .with_container_replaced(ManagedContainerObservation {
+                state: ContainerRuntimeState::Exited,
+                ..observation
+            })
+            .map_err(|error| MachineContainerRunnerError::Wait {
+                container_id: container_id.clone(),
+                message: error.to_string(),
+            })?;
+        self.replace_snapshot(snapshot);
+        Ok(0)
+    }
+
     async fn remove_managed_container(
         &self,
         container_id: &ContainerId,

@@ -86,16 +86,19 @@ fn network_status_keeps_no_answer_machine_row() {
 
 #[test]
 fn network_repair_status_renders_typed_failure() {
-    let output = StatusOutput::new(ployz_sdk_types::OperationStatusSnapshot {
-        status: ployz_sdk_types::OperationStatus::NetworkRepair {
-            id: operation_id("op_network_repair"),
-            target_machine_id: None,
-            state: ployz_sdk_types::NetworkRepairOperationState::Failed {
-                failure: ployz_sdk_types::NetworkRepairFailure::NoActiveMachines,
+    let output = StatusOutput::new(
+        ployz_sdk_types::OperationStatusSnapshot {
+            status: ployz_sdk_types::OperationStatus::NetworkRepair {
+                id: operation_id("op_network_repair"),
+                target_machine_id: None,
+                state: ployz_sdk_types::NetworkRepairOperationState::Failed {
+                    failure: ployz_sdk_types::NetworkRepairFailure::NoActiveMachines,
+                },
+                last_event_sequence: event_sequence(3),
             },
-            last_event_sequence: event_sequence(3),
         },
-    })
+        Vec::new(),
+    )
     .render();
 
     assert!(output.contains("failure no-active-machines\n"));
@@ -103,16 +106,19 @@ fn network_repair_status_renders_typed_failure() {
 
 #[test]
 fn targeted_network_repair_status_renders_machine_subject() {
-    let output = StatusOutput::new(ployz_sdk_types::OperationStatusSnapshot {
-        status: ployz_sdk_types::OperationStatus::NetworkRepair {
-            id: operation_id("op_network_repair"),
-            target_machine_id: Some(machine_id("machine_a")),
-            state: ployz_sdk_types::NetworkRepairOperationState::Running {
-                stage: ployz_sdk_types::NetworkRepairRunningStage::PreparingDataplane,
+    let output = StatusOutput::new(
+        ployz_sdk_types::OperationStatusSnapshot {
+            status: ployz_sdk_types::OperationStatus::NetworkRepair {
+                id: operation_id("op_network_repair"),
+                target_machine_id: Some(machine_id("machine_a")),
+                state: ployz_sdk_types::NetworkRepairOperationState::Running {
+                    stage: ployz_sdk_types::NetworkRepairRunningStage::PreparingDataplane,
+                },
+                last_event_sequence: event_sequence(2),
             },
-            last_event_sequence: event_sequence(2),
         },
-    })
+        Vec::new(),
+    )
     .render();
 
     assert!(output.contains("\nmachine machine_a\n"));

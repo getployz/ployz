@@ -339,6 +339,7 @@ pub enum MachineServiceEndpoint {
     ContainerEnsureEndpointNetwork,
     ContainerInspect,
     ContainerRun,
+    ContainerRunHook,
     ContainerRestart,
     ContainerStop,
     ContainerRemove,
@@ -368,6 +369,7 @@ impl MachineServiceEndpoint {
             Self::ContainerEnsureEndpointNetwork => "container.ensure_endpoint_network",
             Self::ContainerInspect => "container.inspect",
             Self::ContainerRun => "container.run",
+            Self::ContainerRunHook => "container.run_hook",
             Self::ContainerRestart => "container.restart",
             Self::ContainerStop => "container.stop",
             Self::ContainerRemove => "container.remove",
@@ -394,6 +396,7 @@ impl MachineServiceEndpoint {
             Self::ContainerEnsureEndpointNetwork
             | Self::FactsRefresh
             | Self::ContainerRun
+            | Self::ContainerRunHook
             | Self::ContainerRestart
             | Self::ContainerStop
             | Self::ContainerRemove

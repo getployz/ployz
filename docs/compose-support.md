@@ -26,11 +26,12 @@ Supported and translated fields become a Ployz deploy request. Unsupported and u
 | `services.*.cap_drop` | Translated | Drops Linux capabilities from the created container. |
 | `services.*.healthcheck` | Translated | Maps to Docker healthcheck and gates only newly-created containers. |
 | `services.*.restart` | Translated | Maps to Docker restart policy. |
+| `services.*.depends_on` | Translated (ordering only) | Short form and long form with `condition: service_started` order service startup. Health/completion conditions are rejected. |
+| `services.*.pre_start` | Translated | Runs one retry-safe hook before new containers for that service. Failed hook containers are retained as operation evidence. |
 | `services.*.x-route` | Translated | Ployz extension for route bindings; Compose `ports` do not imply routes. |
 | `services.*.build` | Unsupported (planned) | build images before deploy |
 | `services.*.cgroup_parent` | Unsupported (unsupported) | cgroup parent is not part of the deploy model |
 | `configs`, `services.*.configs` | Unsupported (planned) | configs are not deployed yet |
-| `services.*.depends_on` | Unsupported (planned) | service dependency phases are not imported yet |
 | `services.*.deploy.mode` | Unsupported (planned) | global deploy mode is not deployed yet |
 | `services.*.deploy.placement` | Unsupported (planned) | placement constraints are not deployed yet |
 | `services.*.deploy.resources.reservations` | Unsupported (planned) | reservations are not deployed yet |
@@ -58,7 +59,7 @@ Supported and translated fields become a Ployz deploy request. Unsupported and u
 | `services.*.user` | Unsupported (unsupported) | container user is not deployed yet |
 | `services.*.volumes` | Unsupported (planned) | volumes are not deployed yet |
 | `services.*.working_dir` | Unsupported (unsupported) | working directory is not deployed yet |
-| `services.*.x-pre_deploy` | Unsupported (planned) | pre-start hooks are not deployed yet |
+| `services.*.x-pre_deploy` | Unsupported | rename the hook to Compose `pre_start` |
 | Any other field | Unsupported | Unknown field; remove it or pass `--allow-unsupported`. |
 
 ## Environment

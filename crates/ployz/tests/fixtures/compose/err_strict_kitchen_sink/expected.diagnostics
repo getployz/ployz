@@ -3,4 +3,3 @@ services.web.deploy.update_config  unsupported (planned)  update order is not de
 services.web.mystery_option  unknown field  remove it or pass --allow-unsupported
 services.web.ports  invalid value  standard Compose ports publish host ports; use x-ports for Ployz Route Bindings
 services.web.profiles  unsupported (planned)  profile resolution is deferred; remove it or pass --allow-unsupported
-services.web.x-pre_deploy  unsupported (planned)  pre-start hooks are not deployed yet; remove it or pass --allow-unsupported

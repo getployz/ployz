@@ -192,6 +192,62 @@ pub type MachineContainerRunRpcResponse =
     MachineRpcResponse<MachineContainerRunRpcOk, MachineContainerRunDomainError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineContainerRunHookRpcRequest {
+    pub image: ImageReference,
+    pub runtime: ContainerRuntimeSpec,
+    pub container: ManagedContainerIdentity,
+    pub timeout_millis: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineContainerRunHookRpcOk {
+    pub machine_id: MachineId,
+    pub container_id: ContainerId,
+    pub exit_code: i64,
+}
+
+impl MachineRpcResponder for MachineContainerRunHookRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        let Self { machine_id, .. } = self;
+        machine_id
+    }
+}
+
+pub type MachineContainerRunHookRpcResponse =
+    MachineRpcResponse<MachineContainerRunHookRpcOk, MachineContainerRunHookDomainError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineContainerRunHookDomainError {
+    OperationStepAmbiguous {
+        operation_id: OperationId,
+        step_id: StepId,
+        container_ids: Vec<ContainerId>,
+    },
+    CreateFailed {
+        message: FailureMessage,
+    },
+    StartFailed {
+        container_id: ContainerId,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
+    WaitFailed {
+        container_id: ContainerId,
+        message: FailureMessage,
+        log_hint: OperatorHint,
+    },
+    TimedOut {
+        container_id: ContainerId,
+        timeout_millis: u64,
+        message: FailureMessage,
+        inspect_hint: OperatorHint,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineContainerRunDomainError {
     OperationStepAmbiguous {
@@ -797,6 +853,77 @@ mod tests {
             serde_json::from_value::<MachineContainerRunRpcResponse>(ok_json)
                 .expect("response deserializes"),
             ok
+        );
+    }
+
+    #[test]
+    fn container_run_hook_wire_shape_is_pinned() {
+        let request = MachineContainerRunHookRpcRequest {
+            image: ImageReference::try_new("registry.example/api:rev_2").expect("valid image"),
+            runtime: ContainerRuntimeSpec::image_defaults(),
+            container: ManagedContainerIdentity {
+                namespace_id: ployz_core::ids::NamespaceId::try_new("default")
+                    .expect("valid namespace id"),
+                service_id: ployz_core::ids::ServiceId::try_new("svc_api")
+                    .expect("valid service id"),
+                namespace_revision_entry_id: ployz_core::ids::NamespaceRevisionEntryId::try_new(
+                    "entry_2",
+                )
+                .expect("valid entry id"),
+                operation_id: operation_id("op_123"),
+                step_id: StepId::try_new("pre_start").expect("valid step id"),
+                kind: ployz_core::machine_runtime::ManagedContainerKind::Predeploy,
+            },
+            timeout_millis: 1_000,
+        };
+        let request_json = json!({
+            "image": "registry.example/api:rev_2",
+            "runtime": {
+                "command": null,
+                "entrypoint": null,
+                "environment": {},
+                "stop_grace_period": 10,
+            },
+            "container": {
+                "namespace_id": "default",
+                "service_id": "svc_api",
+                "namespace_revision_entry_id": "entry_2",
+                "operation_id": "op_123",
+                "step_id": "pre_start",
+                "kind": "predeploy",
+            },
+            "timeout_millis": 1000,
+        });
+        assert_eq!(
+            serde_json::to_value(&request).expect("request serializes"),
+            request_json
+        );
+        assert_eq!(
+            serde_json::from_value::<MachineContainerRunHookRpcRequest>(request_json)
+                .expect("request deserializes"),
+            request
+        );
+
+        let response = MachineContainerRunHookRpcResponse::Ok(MachineContainerRunHookRpcOk {
+            machine_id: machine_id("machine_a"),
+            container_id: container_id("ctr_hook"),
+            exit_code: 7,
+        });
+        let response_json = json!({
+            "status": "ok",
+            "machine_id": "machine_a",
+            "container_id": "ctr_hook",
+            "exit_code": 7,
+        });
+
+        assert_eq!(
+            serde_json::to_value(&response).expect("response serializes"),
+            response_json
+        );
+        assert_eq!(
+            serde_json::from_value::<MachineContainerRunHookRpcResponse>(response_json)
+                .expect("response deserializes"),
+            response
         );
     }
 

@@ -3,9 +3,10 @@ use ployz_core::deploy::{
     ContainerMountPath, ContainerRuntimeSpec, DeployCleanupContainer, DeployPlan, DeployPlanError,
     DeployPlanStep, DeployPlanningInput, DeployPreparationInput, DeployRoute, DeployRouteTarget,
     DeployServicePlan, DeployServiceRequest, EnvName, EnvValue, ExistingServiceReplica,
-    HealthcheckShellCommand, ImageReference, ReplicaCount, ReplicaSlot, ServiceEnvironment,
-    ServiceVolumeMount, StopGracePeriod, VolumeName, namespace_route_binding_removals,
-    namespace_serving_target_removals, plan_namespace_deploy, prepare_deploy,
+    HealthcheckShellCommand, ImageReference, PreStartHook, PreStartHookStep, ReplicaCount,
+    ReplicaSlot, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeName,
+    namespace_revision_id_for, namespace_route_binding_removals, namespace_serving_target_removals,
+    plan_namespace_deploy, prepare_deploy,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::machine_runtime::{
@@ -292,6 +293,115 @@ fn deploy_plan_requires_eligible_machine() {
         plan_single_service(planning_input(1, [])),
         Err(DeployPlanError::NoEligibleMachines)
     );
+}
+
+#[test]
+fn service_dependencies_reorder_namespace_plan_stably() {
+    let mut worker = planning_input(1, [machine_id("machine_a")]);
+    worker.request.service_id = service_id("svc_worker");
+    worker.request.depends_on = vec![service_id("svc_api")];
+    let api = planning_input(1, [machine_id("machine_a")]);
+
+    let plan = plan_namespace_deploy(
+        namespace_id("default"),
+        namespace_revision_id("rev_1"),
+        vec![worker, api],
+        Vec::new(),
+    )
+    .expect("dependency plan succeeds");
+
+    assert_eq!(
+        plan.services
+            .iter()
+            .map(|service| service.service_id.clone())
+            .collect::<Vec<_>>(),
+        vec![service_id("svc_api"), service_id("svc_worker")]
+    );
+}
+
+#[test]
+fn unknown_service_dependency_fails_planning() {
+    let mut api = planning_input(1, [machine_id("machine_a")]);
+    api.request.depends_on = vec![service_id("svc_missing")];
+
+    assert_eq!(
+        plan_namespace_deploy(
+            namespace_id("default"),
+            namespace_revision_id("rev_1"),
+            vec![api],
+            Vec::new(),
+        ),
+        Err(DeployPlanError::UnknownServiceDependency {
+            service_id: service_id("svc_api"),
+            dependency: service_id("svc_missing"),
+        })
+    );
+}
+
+#[test]
+fn namespace_revision_identity_includes_hooks_and_dependencies() {
+    let base = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 1, None);
+    let mut changed = base.clone();
+    changed.pre_start = Some(pre_start_hook());
+    changed.depends_on = vec![service_id("svc_database")];
+
+    assert_ne!(
+        namespace_revision_id_for(&namespace_id("default"), &[base]),
+        namespace_revision_id_for(&namespace_id("default"), &[changed])
+    );
+}
+
+#[test]
+fn service_dependency_cycle_reports_sorted_unplaced_services() {
+    let mut api = planning_input(1, [machine_id("machine_a")]);
+    api.request.depends_on = vec![service_id("svc_worker")];
+    let mut worker = planning_input(1, [machine_id("machine_a")]);
+    worker.request.service_id = service_id("svc_worker");
+    worker.request.depends_on = vec![service_id("svc_api")];
+
+    assert_eq!(
+        plan_namespace_deploy(
+            namespace_id("default"),
+            namespace_revision_id("rev_1"),
+            vec![worker, api],
+            Vec::new(),
+        ),
+        Err(DeployPlanError::ServiceDependencyCycle {
+            service_ids: vec![service_id("svc_api"), service_id("svc_worker")],
+        })
+    );
+}
+
+#[test]
+fn pre_start_hook_step_uses_first_run_container_machine() {
+    let mut input = planning_input(2, [machine_id("machine_a"), machine_id("machine_b")]);
+    input.request.pre_start = Some(pre_start_hook());
+
+    let plan = plan_single_service(input).expect("plan succeeds");
+    let [service] = plan.services.as_slice() else {
+        panic!("plan contains one service");
+    };
+
+    assert_eq!(
+        service.pre_start,
+        Some(PreStartHookStep {
+            machine_id: machine_id("machine_a"),
+        })
+    );
+}
+
+#[test]
+fn pre_start_hook_step_is_absent_when_all_containers_are_reused() {
+    let mut input = planning_input(1, []);
+    input.request.pre_start = Some(pre_start_hook());
+    input.existing_replicas = vec![existing_replica("machine_b", "ctr_existing")];
+
+    let plan = plan_single_service(input).expect("existing reality satisfies target");
+    let [service] = plan.services.as_slice() else {
+        panic!("plan contains one service");
+    };
+
+    assert_eq!(service.pre_start, None);
 }
 
 #[test]
@@ -763,6 +873,8 @@ fn service_spec(
         image: ImageReference::try_new(image).expect("valid image"),
         replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
         runtime: ContainerRuntimeSpec::image_defaults(),
+        pre_start: None,
+        depends_on: Vec::new(),
         routes: route
             .map(|route| {
                 vec![deploy_route(
@@ -785,6 +897,8 @@ fn service_spec_with_runtime(
         image: ImageReference::try_new(image).expect("valid image"),
         replicas: ReplicaCount::try_new(1).expect("valid replica count"),
         runtime,
+        pre_start: None,
+        depends_on: Vec::new(),
         routes: Vec::new(),
     }
 }
@@ -834,6 +948,12 @@ fn args_to_vec(args: impl IntoIterator<Item = &'static str>) -> Vec<String> {
     args.into_iter().map(str::to_owned).collect()
 }
 
+fn pre_start_hook() -> PreStartHook {
+    PreStartHook {
+        command: ContainerCommand::try_new(vec!["true".to_owned()]).expect("valid command"),
+    }
+}
+
 fn planning_input(
     replicas: u16,
     eligible_machines: impl IntoIterator<Item = MachineId>,
@@ -865,6 +985,8 @@ fn deploy_request(replicas: u16) -> DeployServiceRequest {
         image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
         replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
         runtime: ContainerRuntimeSpec::image_defaults(),
+        pre_start: None,
+        depends_on: Vec::new(),
         routes: Vec::new(),
     }
 }
@@ -898,6 +1020,7 @@ fn deploy_plan_with_volume_pins(
         services: vec![DeployServicePlan {
             service_id: service_id("svc_api"),
             steps,
+            pre_start: None,
         }],
         volume_pin_commits,
         cleanup_containers,

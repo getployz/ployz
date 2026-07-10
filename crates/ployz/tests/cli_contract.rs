@@ -1180,57 +1180,73 @@ fn ops_watch_renders_no_output_when_no_events_are_replayed() {
 
 #[test]
 fn ops_status_renders_operation_state() {
-    let output = StatusOutput::new(OperationStatusSnapshot::new(OperationStatus::Deploy {
-        id: operation_id("op_deploy"),
-        namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
-        service_id: ServiceId::try_new("svc_api").expect("valid service id"),
-        state: DeployOperationState::Running {
-            stage: DeployRunningStage::WaitingForHealth,
-        },
-        last_event_sequence: event_sequence(7),
-    }))
+    let operation_id = operation_id("op_deploy");
+    let output = StatusOutput::new(
+        OperationStatusSnapshot::new(OperationStatus::Deploy {
+            id: operation_id.clone(),
+            namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
+            service_id: ServiceId::try_new("svc_api").expect("valid service id"),
+            state: DeployOperationState::Running {
+                stage: DeployRunningStage::WaitingForHealth,
+            },
+            last_event_sequence: event_sequence(7),
+        }),
+        vec![replayed(
+            7,
+            ployz_core::ops::OperationEvent::DeployRunning {
+                operation_id,
+                stage: DeployRunningStage::WaitingForHealth,
+            },
+        )],
+    )
     .render();
 
     assert_eq!(
         output,
-        "operation op_deploy\nkind deploy\nservice svc_api\nstate running:waiting-for-health\nlast-event 7\n"
+        "operation op_deploy\nkind deploy\nservice svc_api\nstate running:waiting-for-health\nlast-event 7\ntimeline\n7 deploy.running\n"
     );
 }
 
 #[test]
 fn ops_status_renders_failed_deploy_details() {
-    let output = StatusOutput::new(OperationStatusSnapshot::new(OperationStatus::Deploy {
-        id: operation_id("op_deploy"),
-        namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
-        service_id: ServiceId::try_new("svc_api").expect("valid service id"),
-        state: DeployOperationState::Failed {
-            failure: health_check_failure(),
-        },
-        last_event_sequence: event_sequence(8),
-    }))
+    let output = StatusOutput::new(
+        OperationStatusSnapshot::new(OperationStatus::Deploy {
+            id: operation_id("op_deploy"),
+            namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
+            service_id: ServiceId::try_new("svc_api").expect("valid service id"),
+            state: DeployOperationState::Failed {
+                failure: health_check_failure(),
+            },
+            last_event_sequence: event_sequence(8),
+        }),
+        Vec::new(),
+    )
     .render();
 
     assert_eq!(
         output,
-        "operation op_deploy\nkind deploy\nservice svc_api\nstate failed\nfailure class health-gate-failed service svc_api machine machine_7 evidence ctr_123 logs ployzctl logs ctr_123\nlast-event 8\n"
+        "operation op_deploy\nkind deploy\nservice svc_api\nstate failed\nfailure class health-gate-failed service svc_api machine machine_7 evidence ctr_123 logs ployzctl logs ctr_123\nlast-event 8\ntimeline\n"
     );
 }
 
 #[test]
 fn ops_status_renders_unclaimed_machine_add() {
-    let output = StatusOutput::new(OperationStatusSnapshot::new(OperationStatus::MachineAdd {
-        id: operation_id("op_machine"),
-        machine_id: machine_id("machine_2"),
-        name: MachineName::try_new("edge_2").expect("valid machine name"),
-        roles: InstallRolePolicy::install_all().without_gateway(),
-        state: ployz_core::ops::MachineAddOperationState::Completed,
-        last_event_sequence: event_sequence(9),
-    }))
+    let output = StatusOutput::new(
+        OperationStatusSnapshot::new(OperationStatus::MachineAdd {
+            id: operation_id("op_machine"),
+            machine_id: machine_id("machine_2"),
+            name: MachineName::try_new("edge_2").expect("valid machine name"),
+            roles: InstallRolePolicy::install_all().without_gateway(),
+            state: ployz_core::ops::MachineAddOperationState::Completed,
+            last_event_sequence: event_sequence(9),
+        }),
+        Vec::new(),
+    )
     .render();
 
     assert_eq!(
         output,
-        "operation op_machine\nkind machine-add\nmachine machine_2 name edge_2 gateway skip dns install\nstate completed\nlast-event 9\n"
+        "operation op_machine\nkind machine-add\nmachine machine_2 name edge_2 gateway skip dns install\nstate completed\nlast-event 9\ntimeline\n"
     );
 }
 
@@ -1374,6 +1390,8 @@ fn deploy_request() -> DeployRequest {
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+            pre_start: None,
+            depends_on: Vec::new(),
             routes: Vec::new(),
         }],
     }
