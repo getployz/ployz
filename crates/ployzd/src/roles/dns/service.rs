@@ -186,6 +186,7 @@ mod tests {
             dns_machine_id.clone(),
             None,
             NatsServiceRequest {
+                headers: None,
                 payload: serde_json::to_vec(&DnsResolveRpcRequest { name: name.clone() })
                     .expect("request"),
             },
@@ -207,6 +208,7 @@ mod tests {
                 .expect("container facts"),
             None,
             ployz_test_support::fixtures::test_disk_space(),
+            ployz_core::image::OciPlatform::current(),
             42,
         )
         .expect("machine facts");
@@ -218,6 +220,7 @@ mod tests {
             cache,
             None,
             NatsServiceRequest {
+                headers: None,
                 payload: serde_json::to_vec(&DnsStatusRpcRequest {}).expect("request"),
             },
         );

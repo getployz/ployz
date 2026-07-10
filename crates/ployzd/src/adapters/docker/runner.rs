@@ -154,7 +154,8 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
         &self,
         command: CreateManagedContainer,
     ) -> Result<ContainerId, MachineContainerRunnerError> {
-        self.pull_image(command.image.as_str()).await?;
+        let pull_reference = command.pull.reference();
+        self.pull_image(&pull_reference).await?;
 
         // Every service container joins the endpoint network at creation;
         // route state alone decides whether anything dials it (ADR 0023).
@@ -452,18 +453,18 @@ impl MachineLogReader for DockerManagedContainerRunner {
 }
 
 impl DockerManagedContainerRunner {
-    async fn pull_image(&self, image: &str) -> Result<(), MachineContainerRunnerError> {
-        let docker = self
-            .docker()
-            .await
-            .map_err(|error| MachineContainerRunnerError::Create {
-                message: error.to_string(),
-            })?;
+    pub(crate) async fn pull_image(&self, image: &str) -> Result<(), MachineContainerRunnerError> {
+        let docker =
+            self.docker()
+                .await
+                .map_err(|error| MachineContainerRunnerError::ImagePull {
+                    message: error.to_string(),
+                })?;
         let options = CreateImageOptionsBuilder::new().from_image(image).build();
         let mut stream = docker.create_image(Some(options), None, None);
 
         while let Some(result) = stream.next().await {
-            result.map_err(|error| MachineContainerRunnerError::Create {
+            result.map_err(|error| MachineContainerRunnerError::ImagePull {
                 message: format!("pull Docker image {image}: {error}"),
             })?;
         }
@@ -660,6 +661,7 @@ fn create_body(
     command: CreateManagedContainer,
     endpoint_network_subnet: &str,
 ) -> ContainerCreateBody {
+    let image = command.pull.reference();
     let runtime = command.runtime;
     let env = if runtime.environment.is_empty() {
         None
@@ -703,7 +705,7 @@ fn create_body(
         .to_ascii_lowercase(),
     ]);
     ContainerCreateBody {
-        image: Some(command.image.as_str().to_owned()),
+        image: Some(image),
         env,
         cmd,
         entrypoint,
@@ -946,6 +948,7 @@ fn btree_from_hashmap(map: HashMap<String, String>) -> BTreeMap<String, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::roles::machine::protocol::MachineImagePull;
     use ployz_core::deploy::{
         ContainerCommand, ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest,
         ContainerMountPath, ContainerResourceLimits, ContainerRestartPolicy, ContainerRuntimeSpec,
@@ -976,7 +979,9 @@ mod tests {
     fn create_body_preserves_image_and_labels() {
         let body = create_body(
             CreateManagedContainer {
-                image: image("ghcr.io/acme/api:rev-2"),
+                pull: MachineImagePull::Registry {
+                    reference: image("ghcr.io/acme/api:rev-2"),
+                },
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 identity: managed_identity(),
             },
@@ -994,7 +999,9 @@ mod tests {
     fn create_body_sets_runtime_fields() {
         let body = create_body(
             CreateManagedContainer {
-                image: image("ghcr.io/acme/api:rev-2"),
+                pull: MachineImagePull::Registry {
+                    reference: image("ghcr.io/acme/api:rev-2"),
+                },
                 runtime: runtime_spec(),
                 identity: managed_identity(),
             },
@@ -1014,7 +1021,9 @@ mod tests {
     fn create_body_sets_machine_local_dns_and_namespace_search_domain() {
         let body = create_body(
             CreateManagedContainer {
-                image: image("ghcr.io/acme/api:rev-2"),
+                pull: MachineImagePull::Registry {
+                    reference: image("ghcr.io/acme/api:rev-2"),
+                },
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 identity: managed_identity(),
             },
@@ -1051,7 +1060,9 @@ mod tests {
 
         let body = create_body(
             CreateManagedContainer {
-                image: image("ghcr.io/acme/api:rev-2"),
+                pull: MachineImagePull::Registry {
+                    reference: image("ghcr.io/acme/api:rev-2"),
+                },
                 runtime,
                 identity: managed_identity(),
             },
@@ -1083,7 +1094,9 @@ mod tests {
         runtime.entrypoint = Some(ContainerEntrypoint::Clear);
         let body = create_body(
             CreateManagedContainer {
-                image: image("ghcr.io/acme/api:rev-2"),
+                pull: MachineImagePull::Registry {
+                    reference: image("ghcr.io/acme/api:rev-2"),
+                },
                 runtime,
                 identity: managed_identity(),
             },
@@ -1097,7 +1110,9 @@ mod tests {
     fn create_body_sets_default_stop_timeout() {
         let body = create_body(
             CreateManagedContainer {
-                image: image("ghcr.io/acme/api:rev-2"),
+                pull: MachineImagePull::Registry {
+                    reference: image("ghcr.io/acme/api:rev-2"),
+                },
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 identity: managed_identity(),
             },
@@ -1117,7 +1132,9 @@ mod tests {
         }];
         let body = create_body(
             CreateManagedContainer {
-                image: image("ghcr.io/acme/api:rev-2"),
+                pull: MachineImagePull::Registry {
+                    reference: image("ghcr.io/acme/api:rev-2"),
+                },
                 runtime,
                 identity: managed_identity(),
             },
@@ -1158,7 +1175,9 @@ mod tests {
         // later route attach can reach it without recreation.
         let body = create_body(
             CreateManagedContainer {
-                image: image("ghcr.io/acme/api:rev-2"),
+                pull: MachineImagePull::Registry {
+                    reference: image("ghcr.io/acme/api:rev-2"),
+                },
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 identity: managed_identity(),
             },

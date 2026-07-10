@@ -238,6 +238,18 @@ mod tests {
             Ok(())
         }
 
+        fn docker_is_installed(&mut self) -> bool {
+            true
+        }
+
+        fn docker_uses_containerd_snapshotter(&mut self) -> Result<bool, FailureMessage> {
+            Ok(true)
+        }
+
+        fn docker_has_insecure_registry(&mut self, _cidr: &str) -> Result<bool, FailureMessage> {
+            Ok(true)
+        }
+
         fn enable_docker_service(&mut self) -> Result<(), FailureMessage> {
             Ok(())
         }

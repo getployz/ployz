@@ -10,6 +10,7 @@ pub mod compose;
 pub mod config;
 mod confirmation;
 pub mod host_runner_install;
+pub mod image_push;
 pub mod remote_machine_runtime;
 pub mod runtime;
 mod shell;

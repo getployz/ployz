@@ -12,6 +12,7 @@ use crate::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
     OperationId, ServiceId,
 };
+use crate::image::OciDigest;
 use crate::state::MachineUsabilityReason;
 
 use super::events::OperationEvent;
@@ -27,6 +28,7 @@ use super::{EventSequence, OperationKind, OperationStatus};
 #[serde(rename_all = "snake_case")]
 pub enum DeployRunningStage {
     PreparingDataplane,
+    EnsuringImages,
     StartingContainers,
     WaitingForHealth,
     RouteCutover,
@@ -159,6 +161,28 @@ pub enum DeployOperationFailure {
         namespace_revision_entry_id: NamespaceRevisionEntryId,
         reason: ArtifactUnavailableReason,
     },
+    ImageMissingOnSeed {
+        service_id: ServiceId,
+        seed: MachineId,
+        manifest_digest: OciDigest,
+    },
+    ImageDigestMismatch {
+        service_id: ServiceId,
+        seed: MachineId,
+        expected: OciDigest,
+        actual: OciDigest,
+    },
+    SeedUnavailable {
+        service_id: ServiceId,
+        seed: MachineId,
+        message: FailureMessage,
+    },
+    UnsupportedTargetPlatform {
+        service_id: ServiceId,
+        machine_id: MachineId,
+        image_platform: crate::image::OciPlatform,
+        target_platform: crate::image::OciPlatform,
+    },
     DataplaneUnavailable {
         machine_id: MachineId,
         provider_failure: DataplaneProviderFailure,
@@ -267,7 +291,11 @@ impl DeployOperationFailure {
             Self::PlanningFailed { .. } | Self::AutoDnsWithoutLease { .. } => {
                 DeployFailureClass::PreconditionRejected
             }
-            Self::ArtifactUnavailable { .. } => DeployFailureClass::ImageResolvePullFailed,
+            Self::ArtifactUnavailable { .. }
+            | Self::ImageMissingOnSeed { .. }
+            | Self::ImageDigestMismatch { .. }
+            | Self::SeedUnavailable { .. }
+            | Self::UnsupportedTargetPlatform { .. } => DeployFailureClass::ImageResolvePullFailed,
             Self::DataplaneUnavailable { .. } | Self::DataplanePrepareInvalidReport { .. } => {
                 DeployFailureClass::DataplanePrepareFailed
             }
@@ -328,7 +356,11 @@ impl DeployOperationFailure {
             Self::NoUsableMachines { .. }
             | Self::PlanningFailed { .. }
             | Self::AutoDnsWithoutLease { .. }
-            | Self::ArtifactUnavailable { .. } => &[],
+            | Self::ArtifactUnavailable { .. }
+            | Self::ImageMissingOnSeed { .. }
+            | Self::ImageDigestMismatch { .. }
+            | Self::SeedUnavailable { .. }
+            | Self::UnsupportedTargetPlatform { .. } => &[],
         }
     }
 }
@@ -338,7 +370,13 @@ impl DeployOperationFailure {
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ArtifactUnavailableReason {
     BundleMissing,
-    BundleUnreadable { message: FailureMessage },
+    BundleUnreadable {
+        message: FailureMessage,
+    },
+    ImagePullFailed {
+        machine_id: MachineId,
+        message: FailureMessage,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -491,6 +529,11 @@ pub enum DeployEvidence {
     DataplanePrepared {
         report: PloyzNativeMeshPrepareReport,
     },
+    ImageAvailabilityVerified {
+        service_id: ServiceId,
+        seed: MachineId,
+        manifest_digest: OciDigest,
+    },
     ContainerStarted {
         machine_id: MachineId,
         container_id: ContainerId,
@@ -513,6 +556,16 @@ impl DeployEvidence {
             Self::DataplanePrepared { report } => OperationEvent::DeployDataplanePrepared {
                 operation_id: operation_id.clone(),
                 report: report.clone(),
+            },
+            Self::ImageAvailabilityVerified {
+                service_id,
+                seed,
+                manifest_digest,
+            } => OperationEvent::DeployImageAvailabilityVerified {
+                operation_id: operation_id.clone(),
+                service_id: service_id.clone(),
+                seed: seed.clone(),
+                manifest_digest: manifest_digest.clone(),
             },
             Self::ContainerStarted {
                 machine_id,
@@ -556,6 +609,9 @@ const fn evidence_requirement(evidence: &DeployEvidence) -> EvidenceRequirement 
         DeployEvidence::PlanCreated { .. } => EvidenceRequirement::Planning,
         DeployEvidence::DataplanePrepared { .. } => {
             EvidenceRequirement::RunningStage(DeployRunningStage::PreparingDataplane)
+        }
+        DeployEvidence::ImageAvailabilityVerified { .. } => {
+            EvidenceRequirement::RunningStage(DeployRunningStage::EnsuringImages)
         }
         DeployEvidence::ContainerStarted { .. } => {
             EvidenceRequirement::RunningStage(DeployRunningStage::StartingContainers)
@@ -840,11 +896,12 @@ fn transition_allowed(current: &DeployOperationState, attempted: &DeployOperatio
 fn stage_rank(stage: DeployRunningStage) -> u8 {
     match stage {
         DeployRunningStage::PreparingDataplane => 0,
-        DeployRunningStage::StartingContainers => 1,
-        DeployRunningStage::WaitingForHealth => 2,
-        DeployRunningStage::RouteCutover => 3,
-        DeployRunningStage::ServingTargetCommit => 4,
-        DeployRunningStage::RemovingSupersededContainers => 5,
+        DeployRunningStage::EnsuringImages => 1,
+        DeployRunningStage::StartingContainers => 2,
+        DeployRunningStage::WaitingForHealth => 3,
+        DeployRunningStage::RouteCutover => 4,
+        DeployRunningStage::ServingTargetCommit => 5,
+        DeployRunningStage::RemovingSupersededContainers => 6,
     }
 }
 
@@ -853,6 +910,12 @@ fn stage_is_next(current: DeployRunningStage, attempted: DeployRunningStage) -> 
         (current, attempted),
         (
             DeployRunningStage::PreparingDataplane,
+            DeployRunningStage::EnsuringImages
+        ) | (
+            DeployRunningStage::PreparingDataplane,
+            DeployRunningStage::StartingContainers
+        ) | (
+            DeployRunningStage::EnsuringImages,
             DeployRunningStage::StartingContainers
         ) | (
             DeployRunningStage::StartingContainers,

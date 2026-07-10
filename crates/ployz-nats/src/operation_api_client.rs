@@ -53,6 +53,11 @@ impl OperationApiClient {
     }
 
     #[must_use]
+    pub fn nats_client(&self) -> async_nats::Client {
+        self.client.clone()
+    }
+
+    #[must_use]
     pub fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
         self.request_timeout = request_timeout;
         self

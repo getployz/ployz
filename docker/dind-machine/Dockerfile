@@ -18,7 +18,7 @@ RUN apt-get update \
     ca-certificates \
     curl \
     dbus \
-    docker.io \
+    gnupg \
     iproute2 \
     iptables \
     iputils-ping \
@@ -26,7 +26,23 @@ RUN apt-get update \
     systemd \
     systemd-sysv \
     wireguard-tools \
+  && install -m 0755 -d /etc/apt/keyrings \
+  && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+  && chmod a+r /etc/apt/keyrings/docker.asc \
+  && arch="$(dpkg --print-architecture)" \
+  && echo "deb [arch=${arch} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends \
+    containerd.io=1.7.27-1 \
+    docker-ce=5:28.5.2-1~debian.12~bookworm \
+    docker-ce-cli=5:28.5.2-1~debian.12~bookworm \
   && rm -rf /var/lib/apt/lists/*
+
+COPY daemon.json /etc/docker/daemon.json
+
+# The inner containerd overlayfs snapshotter needs a non-overlay backing mount
+# when the machine itself runs inside Docker.
+VOLUME ["/var/lib/containerd"]
 
 # nats-server pinned to the version the repo's scripts pin (2.14.2), for the
 # image's own architecture — never hardcode amd64. The release tarball and its

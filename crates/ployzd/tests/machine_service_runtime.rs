@@ -35,12 +35,12 @@ use ployzd::roles::machine::protocol::{
     MachineContainerStopRpcResponse, MachineDataplanePrepareRpcRequest,
     MachineDataplanePrepareRpcResponse, MachineDataplaneStatusRpcOk,
     MachineDataplaneStatusRpcRequest, MachineDataplaneStatusRpcResponse,
-    MachineEnsureEndpointNetworkRpcRequest, MachineLogsTailRpcOk, MachineLogsTailRpcRequest,
-    MachineLogsTailRpcResponse, MachinePloyzNativeMeshPrepareDomainError,
-    MachinePloyzNativeMeshPrepareRpcOk, MachinePloyzNativeMeshPrepareRpcRequest,
-    MachineRunContainerOutcome, MachineSubstrateReportRpcRequest,
-    MachineSubstrateReportRpcResponse, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
-    MachineVolumeRemoveRpcResponse,
+    MachineEnsureEndpointNetworkRpcRequest, MachineImagePull, MachineLogsTailRpcOk,
+    MachineLogsTailRpcRequest, MachineLogsTailRpcResponse,
+    MachinePloyzNativeMeshPrepareDomainError, MachinePloyzNativeMeshPrepareRpcOk,
+    MachinePloyzNativeMeshPrepareRpcRequest, MachineRunContainerOutcome,
+    MachineSubstrateReportRpcRequest, MachineSubstrateReportRpcResponse, MachineVolumeRemoveRpcOk,
+    MachineVolumeRemoveRpcRequest, MachineVolumeRemoveRpcResponse,
 };
 use ployzd::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
@@ -237,7 +237,9 @@ async fn machine_role_service_creates_missing_container() {
     assert_eq!(
         state.creates(),
         vec![CreateManagedContainer {
-            image: image("registry.example/api:rev_2"),
+            pull: MachineImagePull::Registry {
+                reference: image("registry.example/api:rev_2"),
+            },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             identity: managed_identity(),
         }]
@@ -424,7 +426,9 @@ async fn machine_role_service_creates_when_sibling_service_uses_same_operation_s
     assert_eq!(
         state.creates(),
         vec![CreateManagedContainer {
-            image: image("registry.example/api:rev_2"),
+            pull: MachineImagePull::Registry {
+                reference: image("registry.example/api:rev_2"),
+            },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             identity: managed_identity(),
         }]
@@ -1915,7 +1919,9 @@ async fn test_nats() -> TestNats {
 
 fn run_request() -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
-        image: image("registry.example/api:rev_2"),
+        pull: MachineImagePull::Registry {
+            reference: image("registry.example/api:rev_2"),
+        },
         runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
         container: managed_container_spec(),
     }
@@ -1926,7 +1932,9 @@ fn hook_request() -> MachineContainerRunHookRpcRequest {
     container.step_id = ployz_core::ids::StepId::try_new("pre_start").expect("valid step id");
     container.kind = ManagedContainerKind::Predeploy;
     MachineContainerRunHookRpcRequest {
-        image: image("registry.example/api:rev_2"),
+        pull: MachineImagePull::Registry {
+            reference: image("registry.example/api:rev_2"),
+        },
         runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
         container,
         timeout_millis: 1_000,

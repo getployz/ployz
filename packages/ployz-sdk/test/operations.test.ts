@@ -1131,6 +1131,7 @@ function machineJoinBundle(): MachineJoinBundle {
   return {
     material: {
       cluster_name: "prod",
+      dataplane_endpoint_supernet: "10.198.0.0/16",
       runtime_nats_url: "nats://127.0.0.1:7422",
       trusted_nats: {
         ca_pem:

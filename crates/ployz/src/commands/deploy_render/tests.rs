@@ -1,13 +1,14 @@
 use super::*;
 use ployz_core::deploy::{
     ContainerRuntimeSpec, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute,
-    DeployRouteTarget, DeployServicePlan, DeployServiceSpec, ImageReference, ReplicaCount,
-    ReplicaSlot,
+    DeployRouteTarget, DeployServicePlan, DeployServiceSpec, ImageReference, ImageSource,
+    ReplicaCount, ReplicaSlot,
 };
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
     OperationId, ServiceId,
 };
+use ployz_core::image::OciDigest;
 use ployz_core::ops::{
     ArtifactUnavailableReason, DeployCompletionOutcome, DeployOperationFailure, DeployRunningStage,
     EventSequence, FailureMessage, HealthCheckFailure, OperationEvent, OperatorHint,
@@ -42,6 +43,7 @@ fn service(name: &str, image: &str, replicas: u16, routes: Vec<DeployRoute>) -> 
     DeployServiceSpec {
         service_id: service_id(name),
         image: ImageReference::try_new(image).expect("valid image reference"),
+        image_source: ImageSource::Registry,
         replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
         runtime: ContainerRuntimeSpec::image_defaults(),
         pre_start: None,
@@ -85,6 +87,19 @@ fn target() -> DeployRequest {
 fn single_service_target() -> DeployRequest {
     let mut target = target();
     target.services.truncate(1);
+    target
+}
+
+fn direct_image_target() -> DeployRequest {
+    let mut target = single_service_target();
+    let [service] = target.services.as_mut_slice() else {
+        panic!("single-service target must contain one service");
+    };
+    service.image_source = ImageSource::PushedToSeed {
+        seed: machine_id("hetzner-1"),
+        manifest_digest: OciDigest::sha256(b"manifest"),
+        image_id: OciDigest::sha256(b"image-config"),
+    };
     target
 }
 
@@ -316,6 +331,57 @@ fn starting_container_count_advances_plan_lines_without_attribution() {
     assert!(second_frame.contains("✓ web.1 on hetzner-1 — created"));
     assert!(second_frame.contains("✓ web.2 on hetzner-2 — created"));
     assert!(!second_frame.contains("web.2 on hetzner-2 — running"));
+}
+
+#[test]
+fn pushed_image_stays_pending_until_availability_is_verified() {
+    let operation_id = operation_id();
+    let mut direct_plan = plan();
+    direct_plan.services.truncate(1);
+    let mut tree = DeployTree::new();
+    tree.ingest_page(&[
+        replay(
+            1,
+            OperationEvent::DeploySubmitted {
+                operation_id: operation_id.clone(),
+                target: direct_image_target(),
+            },
+        ),
+        replay(
+            2,
+            OperationEvent::DeployPlanCreated {
+                operation_id: operation_id.clone(),
+                plan: direct_plan,
+            },
+        ),
+        replay(
+            3,
+            OperationEvent::DeployRunning {
+                operation_id: operation_id.clone(),
+                stage: DeployRunningStage::EnsuringImages,
+            },
+        ),
+    ]);
+
+    let ensuring = render_frame(&tree);
+    assert!(ensuring.contains("ghcr.io/acme/web:1 — redistributing"));
+    assert!(!ensuring.contains("✓ ghcr.io/acme/web:1"));
+
+    tree.ingest_page(&[replay(
+        4,
+        OperationEvent::DeployImageAvailabilityVerified {
+            operation_id,
+            service_id: service_id("web"),
+            seed: machine_id("hetzner-1"),
+            manifest_digest: OciDigest::sha256(b"manifest"),
+        },
+    )]);
+
+    assert!(render_frame(&tree).contains("✓ ghcr.io/acme/web:1"));
+    assert!(
+        render_plain_lines(&tree)
+            .contains("deploy op_317: images — ghcr.io/acme/web:1 available from hetzner-1\n")
+    );
 }
 
 #[test]

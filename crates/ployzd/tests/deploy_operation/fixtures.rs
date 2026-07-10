@@ -78,6 +78,7 @@ pub(super) enum RecordedOperation {
     DataplanePrepared {
         machine_count: usize,
     },
+    ImageAvailabilityVerified,
     HealthCheckStarted,
     ContainerStarted {
         machine_id: MachineId,
@@ -129,6 +130,10 @@ impl DeployOperationRecorder for RecordingOperations {
                 self.records.push(RecordedOperation::DataplanePrepared {
                     machine_count: report.machines.len(),
                 });
+            }
+            DeployEvidence::ImageAvailabilityVerified { .. } => {
+                self.records
+                    .push(RecordedOperation::ImageAvailabilityVerified);
             }
             DeployEvidence::ContainerStarted {
                 machine_id,
@@ -572,6 +577,23 @@ impl RecordingRuntime {
 }
 
 impl MachineContainerRuntime for RecordingRuntime {
+    async fn ensure_image(
+        &mut self,
+        machine_id: &MachineId,
+        _request: ployz_core::image::ImageEnsureRequest,
+    ) -> Result<
+        ployz_core::image::ImageEnsureOk,
+        ployzd::roles::machine::client::MachineImageEnsureError,
+    > {
+        Ok(ployz_core::image::ImageEnsureOk {
+            machine_id: machine_id.clone(),
+            platform: ployz_core::image::OciPlatform {
+                os: "linux".to_owned(),
+                architecture: "amd64".to_owned(),
+            },
+        })
+    }
+
     async fn ensure_endpoint_network(
         &mut self,
         machine_id: &MachineId,
@@ -763,6 +785,7 @@ pub(super) fn deploy_command_with_healthcheck(replicas: u16) -> DeployExecutionC
         operation_id("op_123"),
         request,
         DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
@@ -807,6 +830,7 @@ pub(super) fn deploy_command_with_pre_start() -> DeployExecutionCommand {
         operation_id("op_123"),
         request,
         DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
@@ -829,6 +853,7 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
             services: vec![DeployServiceSpec {
                 service_id: service_id("svc_api"),
                 image: image("registry.example/api:rev_2"),
+                image_source: ployz_core::deploy::ImageSource::Registry,
                 replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
                 runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
                 pre_start: None,
@@ -844,12 +869,73 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
             }],
         },
         DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
             namespace_volume_pins: Vec::new(),
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
             dataplane_members: Vec::new(),
+            observed_machines: Vec::new(),
+            namespace_cleanup_candidates: Vec::new(),
+            has_managed_lease: false,
+            step_timeout: Duration::from_secs(5),
+        },
+    )
+}
+
+pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecutionCommand {
+    let request = DeployRequest {
+        namespace_id: namespace_id("default"),
+        services: vec![DeployServiceSpec {
+            service_id: service_id("svc_api"),
+            image: image("local/api:rev_2"),
+            image_source: ployz_core::deploy::ImageSource::PushedToSeed {
+                seed: machine_id("machine_seed"),
+                manifest_digest: ployz_core::image::OciDigest::try_new(format!(
+                    "sha256:{}",
+                    "a".repeat(64)
+                ))
+                .expect("valid manifest digest"),
+                image_id: ployz_core::image::OciDigest::try_new(format!(
+                    "sha256:{}",
+                    "b".repeat(64)
+                ))
+                .expect("valid image id"),
+            },
+            replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+            runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+            pre_start: None,
+            depends_on: Vec::new(),
+            routes: Vec::new(),
+        }],
+    };
+    let platform = ployz_core::image::OciPlatform {
+        os: "linux".to_owned(),
+        architecture: "amd64".to_owned(),
+    };
+    prepare_deploy_execution_command(
+        operation_id("op_123"),
+        request,
+        DeployExecutionFacts {
+            machine_platforms: [
+                (machine_id("machine_a"), platform.clone()),
+                (machine_id("machine_b"), platform),
+            ]
+            .into_iter()
+            .collect(),
+            unusable_machines: Vec::new(),
+            namespace_route_bindings: Vec::new(),
+            namespace_serving_entries: Vec::new(),
+            namespace_volume_pins: Vec::new(),
+            eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+            dataplane_members: vec![ployz_core::dataplane::DataplaneMember {
+                machine_id: machine_id("machine_seed"),
+                endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(
+                    "10.198.99.0/24",
+                )
+                .expect("valid seed subnet"),
+            }],
             observed_machines: Vec::new(),
             namespace_cleanup_candidates: Vec::new(),
             has_managed_lease: false,
@@ -875,6 +961,7 @@ pub(super) fn volume_backed_deploy_command(replicas: u16) -> DeployExecutionComm
         operation_id("op_123"),
         request,
         DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
@@ -937,6 +1024,7 @@ pub(super) fn target_deploy_request(replicas: u16) -> DeployRequest {
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_api"),
             image: image("registry.example/api:rev_2"),
+            image_source: ployz_core::deploy::ImageSource::Registry,
             replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
@@ -955,6 +1043,7 @@ fn prepared_deploy_command(
         operation_id("op_123"),
         target_deploy_request(replicas),
         DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
@@ -991,6 +1080,7 @@ pub(super) fn empty_deploy_command_with_running_container(
             services: Vec::new(),
         },
         DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: vec![RouteBindingState {
                 namespace_id: namespace_id("default"),
@@ -1067,6 +1157,7 @@ pub(super) fn target_namespace_revision_entry_id() -> NamespaceRevisionEntryId {
         &namespace_id("default"),
         &service_id("svc_api"),
         &image("registry.example/api:rev_2"),
+        &ployz_core::deploy::ImageSource::Registry,
         &ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
     )
 }

@@ -9,7 +9,8 @@ use ployz_test_support::ids::{
 use ployzd::operations::deploy::{DataplanePreparer, MachineContainerRuntime};
 use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
 use ployzd::roles::machine::protocol::{
-    MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest, MachineRunContainerOutcome,
+    MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest, MachineImagePull,
+    MachineRunContainerOutcome,
 };
 use ployzd::roles::machine::service::start_machine_role_service;
 
@@ -179,7 +180,9 @@ fn assert_observed_running(
 
 fn run_request(step: &str) -> MachineContainerRunRpcRequest {
     MachineContainerRunRpcRequest {
-        image: image("ghcr.io/acme/api:rev-2"),
+        pull: MachineImagePull::Registry {
+            reference: image("ghcr.io/acme/api:rev-2"),
+        },
         runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
         container: managed_identity(step),
     }

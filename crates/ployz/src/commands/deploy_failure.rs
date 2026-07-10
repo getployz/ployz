@@ -48,9 +48,19 @@ impl<'a> DeployFailureView<'a> {
             DeployOperationFailure::DataplaneUnavailable { machine_id, .. }
             | DeployOperationFailure::RuntimeUnavailable { machine_id, .. }
             | DeployOperationFailure::ContainerStartFailed { machine_id, .. }
+            | DeployOperationFailure::UnsupportedTargetPlatform { machine_id, .. }
             | DeployOperationFailure::PreStartHookFailed { machine_id, .. } => {
                 push_unique(&mut machines, machine_id);
             }
+            DeployOperationFailure::ImageMissingOnSeed { seed, .. }
+            | DeployOperationFailure::ImageDigestMismatch { seed, .. }
+            | DeployOperationFailure::SeedUnavailable { seed, .. } => {
+                push_unique(&mut machines, seed);
+            }
+            DeployOperationFailure::ArtifactUnavailable {
+                reason: ArtifactUnavailableReason::ImagePullFailed { machine_id, .. },
+                ..
+            } => push_unique(&mut machines, machine_id),
             DeployOperationFailure::DataplanePrepareTimedOut {
                 machines: timed_out,
                 ..
@@ -75,7 +85,12 @@ impl<'a> DeployFailureView<'a> {
             },
             DeployOperationFailure::PlanningFailed { .. }
             | DeployOperationFailure::AutoDnsWithoutLease { .. }
-            | DeployOperationFailure::ArtifactUnavailable { .. }
+            | DeployOperationFailure::ArtifactUnavailable {
+                reason:
+                    ArtifactUnavailableReason::BundleMissing
+                    | ArtifactUnavailableReason::BundleUnreadable { .. },
+                ..
+            }
             | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
             | DeployOperationFailure::ControlPlaneCommitFailed { .. } => {}
         }
@@ -181,7 +196,13 @@ impl<'a> DeployFailureView<'a> {
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
             | DeployOperationFailure::AutoDnsWithoutLease { .. }
-            | DeployOperationFailure::ArtifactUnavailable { .. } => FailureSafety::NothingChanged,
+            | DeployOperationFailure::ArtifactUnavailable { .. }
+            | DeployOperationFailure::ImageMissingOnSeed { .. }
+            | DeployOperationFailure::ImageDigestMismatch { .. }
+            | DeployOperationFailure::SeedUnavailable { .. }
+            | DeployOperationFailure::UnsupportedTargetPlatform { .. } => {
+                FailureSafety::NothingChanged
+            }
             DeployOperationFailure::DataplaneUnavailable { .. }
             | DeployOperationFailure::DataplanePrepareTimedOut { .. }
             | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
@@ -194,9 +215,15 @@ impl<'a> DeployFailureView<'a> {
         }
     }
 
-    pub(crate) const fn artifact_service(&self) -> Option<&'a ServiceId> {
+    pub(crate) const fn image_failure_service(&self) -> Option<&'a ServiceId> {
         match self.failure {
-            DeployOperationFailure::ArtifactUnavailable { service_id, .. } => Some(service_id),
+            DeployOperationFailure::ArtifactUnavailable { service_id, .. }
+            | DeployOperationFailure::ImageMissingOnSeed { service_id, .. }
+            | DeployOperationFailure::ImageDigestMismatch { service_id, .. }
+            | DeployOperationFailure::SeedUnavailable { service_id, .. }
+            | DeployOperationFailure::UnsupportedTargetPlatform { service_id, .. } => {
+                Some(service_id)
+            }
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
             | DeployOperationFailure::AutoDnsWithoutLease { .. }
@@ -219,6 +246,10 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::PlanningFailed { .. }
             | DeployOperationFailure::AutoDnsWithoutLease { .. }
             | DeployOperationFailure::ArtifactUnavailable { .. }
+            | DeployOperationFailure::ImageMissingOnSeed { .. }
+            | DeployOperationFailure::ImageDigestMismatch { .. }
+            | DeployOperationFailure::SeedUnavailable { .. }
+            | DeployOperationFailure::UnsupportedTargetPlatform { .. }
             | DeployOperationFailure::DataplaneUnavailable { .. }
             | DeployOperationFailure::DataplanePrepareTimedOut { .. }
             | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
@@ -236,6 +267,10 @@ impl<'a> DeployFailureView<'a> {
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
             | DeployOperationFailure::ArtifactUnavailable { .. }
+            | DeployOperationFailure::ImageMissingOnSeed { .. }
+            | DeployOperationFailure::ImageDigestMismatch { .. }
+            | DeployOperationFailure::SeedUnavailable { .. }
+            | DeployOperationFailure::UnsupportedTargetPlatform { .. }
             | DeployOperationFailure::DataplaneUnavailable { .. }
             | DeployOperationFailure::DataplanePrepareTimedOut { .. }
             | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
@@ -252,7 +287,13 @@ impl<'a> DeployFailureView<'a> {
         match self.failure {
             DeployOperationFailure::PlanningFailed { service_id, .. }
             | DeployOperationFailure::AutoDnsWithoutLease { service_id, .. }
-            | DeployOperationFailure::ArtifactUnavailable { service_id, .. } => Some(service_id),
+            | DeployOperationFailure::ArtifactUnavailable { service_id, .. }
+            | DeployOperationFailure::ImageMissingOnSeed { service_id, .. }
+            | DeployOperationFailure::ImageDigestMismatch { service_id, .. }
+            | DeployOperationFailure::SeedUnavailable { service_id, .. }
+            | DeployOperationFailure::UnsupportedTargetPlatform { service_id, .. } => {
+                Some(service_id)
+            }
             DeployOperationFailure::ControlPlaneCommitFailed { scope, .. } => match scope {
                 ControlPlaneCommitScope::ServiceEntry { service_id, .. } => Some(service_id),
                 ControlPlaneCommitScope::Namespace { .. }
@@ -318,12 +359,63 @@ pub(super) fn failure_cause(tree: &DeployTree, failure: &DeployOperationFailure)
                 .unwrap_or("requested image");
             match reason {
                 ArtifactUnavailableReason::BundleMissing
-                | ArtifactUnavailableReason::BundleUnreadable { .. } => format!(
+                | ArtifactUnavailableReason::BundleUnreadable { .. }
+                | ArtifactUnavailableReason::ImagePullFailed { .. } => format!(
                     "image {image} could not be resolved: {}",
                     artifact_unavailable_reason(reason)
                 ),
             }
         }
+        DeployOperationFailure::ImageMissingOnSeed {
+            service_id,
+            seed,
+            manifest_digest,
+        } => format!(
+            "image {} manifest {} is missing from seed {}",
+            tree.requested_image(service_id)
+                .unwrap_or("requested image"),
+            manifest_digest.as_str(),
+            seed.as_str()
+        ),
+        DeployOperationFailure::ImageDigestMismatch {
+            service_id,
+            seed,
+            expected,
+            actual,
+        } => format!(
+            "image {} digest mismatch on seed {}: expected {}, got {}",
+            tree.requested_image(service_id)
+                .unwrap_or("requested image"),
+            seed.as_str(),
+            expected.as_str(),
+            actual.as_str()
+        ),
+        DeployOperationFailure::SeedUnavailable {
+            service_id,
+            seed,
+            message,
+        } => format!(
+            "image seed {} unavailable for {}: {}",
+            seed.as_str(),
+            tree.requested_image(service_id)
+                .unwrap_or("requested image"),
+            message.as_str()
+        ),
+        DeployOperationFailure::UnsupportedTargetPlatform {
+            service_id,
+            machine_id,
+            image_platform,
+            target_platform,
+        } => format!(
+            "image {} platform {}/{} is incompatible with {} platform {}/{}",
+            tree.requested_image(service_id)
+                .unwrap_or("requested image"),
+            image_platform.os,
+            image_platform.architecture,
+            machine_id.as_str(),
+            target_platform.os,
+            target_platform.architecture
+        ),
         DeployOperationFailure::DataplaneUnavailable {
             provider_failure,
             message,
@@ -458,5 +550,13 @@ pub(super) fn artifact_unavailable_reason(reason: &ArtifactUnavailableReason) ->
     match reason {
         ArtifactUnavailableReason::BundleMissing => "deployment bundle is missing".to_owned(),
         ArtifactUnavailableReason::BundleUnreadable { message } => message.as_str().to_owned(),
+        ArtifactUnavailableReason::ImagePullFailed {
+            machine_id,
+            message,
+        } => format!(
+            "image pull failed on {}: {}",
+            machine_id.as_str(),
+            message.as_str()
+        ),
     }
 }

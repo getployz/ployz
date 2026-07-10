@@ -34,6 +34,7 @@ fn promote_target() -> CorePromoteTarget {
     );
     CorePromoteTarget {
         machine_id: first_machine.machine_id.clone(),
+        dataplane_endpoint_supernet: first_machine.dataplane_endpoint_supernet.clone(),
         nats_server_artifact: first_machine.nats_server_artifact.clone(),
         ployzd_artifact: first_machine.ployzd_artifact.clone(),
         dataplane_artifacts: first_machine.dataplane_artifacts.clone(),
@@ -111,7 +112,7 @@ fn core_promote_authorized_users_carries_only_the_reused_core_principals() {
             HostRunnerStep::WriteNatsAuthorizedUsers(target) => Some(target.render()),
             HostRunnerStep::VerifyHost(_)
             | HostRunnerStep::PrepareDataplaneHost
-            | HostRunnerStep::PrepareContainerRuntime(_)
+            | HostRunnerStep::PrepareContainerRuntime(_, _)
             | HostRunnerStep::VerifyContainerRuntime(_)
             | HostRunnerStep::InstallArtifact(_)
             | HostRunnerStep::WritePloyzdRoleEnvironment(_)

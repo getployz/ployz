@@ -14,6 +14,8 @@ pub const JOIN_RPC_COMMAND_SCOPE: &str = "plz.v1.rpc.join.command.>";
 pub const CORE_RPC_QUERY_SCOPE: &str = "plz.v1.rpc.core.query.>";
 pub const MACHINE_RPC_QUERY_SCOPE: &str = "plz.v1.rpc.machine.query.>";
 pub const MACHINE_RPC_COMMAND_SCOPE: &str = "plz.v1.rpc.machine.command.>";
+pub const OPERATOR_MACHINE_IMAGE_QUERY_SCOPE: &str = "plz.v1.rpc.machine.query.*.image.>";
+pub const OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE: &str = "plz.v1.rpc.machine.command.*.image.>";
 pub const INTENT_GET: &str = "plz.v1.rpc.core.query.intent.get";
 pub const INTENT_CHANGED: &str = "plz.v1.signal.intent.changed";
 pub const PENDING_MACHINE_JOINS_CHANGED: &str = "plz.v1.signal.machine.join.pending";
@@ -279,6 +281,7 @@ impl DeployRunningStage {
     pub const fn as_subject(&self) -> &'static str {
         match self {
             Self::PreparingDataplane => "preparing_dataplane",
+            Self::EnsuringImages => "ensuring_images",
             Self::StartingContainers => "starting_containers",
             Self::WaitingForHealth => "waiting_for_health",
             Self::RouteCutover => "route_cutover",
@@ -350,6 +353,10 @@ pub enum MachineServiceEndpoint {
     SubstrateUpdate,
     SubstrateReport,
     LogsTail,
+    ImageBlobCheck,
+    ImageBlobPush,
+    ImageManifestPush,
+    ImageEnsure,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -381,6 +388,14 @@ impl MachineServiceEndpoint {
             Self::SubstrateUpdate => "substrate.update",
             Self::SubstrateReport => "substrate.report",
             Self::LogsTail => "logs.tail",
+            Self::ImageBlobCheck => "image.blob.check",
+            Self::ImageBlobPush => "image.blob.push",
+            Self::ImageManifestPush => "image.manifest.push",
+            // Deliberately outside the operator-granted `*.image.>` scopes:
+            // ensure mutates the seed's Docker store (self-pull), so it lives
+            // under the controller-only container command namespace while the
+            // three staging endpoints above stay operator-reachable.
+            Self::ImageEnsure => "container.ensure_image",
         }
     }
 
@@ -395,7 +410,8 @@ impl MachineServiceEndpoint {
             | Self::DataplaneProbeMtu
             | Self::SubstrateReport
             | Self::DataplaneStatus
-            | Self::LogsTail => MachineServiceEndpointExecution::Query,
+            | Self::LogsTail
+            | Self::ImageBlobCheck => MachineServiceEndpointExecution::Query,
             Self::ContainerEnsureEndpointNetwork
             | Self::FactsRefresh
             | Self::ContainerRun
@@ -405,7 +421,10 @@ impl MachineServiceEndpoint {
             | Self::ContainerRemove
             | Self::VolumeRemove
             | Self::DataplanePrepare
-            | Self::SubstrateUpdate => MachineServiceEndpointExecution::Command,
+            | Self::SubstrateUpdate
+            | Self::ImageBlobPush
+            | Self::ImageManifestPush
+            | Self::ImageEnsure => MachineServiceEndpointExecution::Command,
         }
     }
 }

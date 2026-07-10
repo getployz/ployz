@@ -631,6 +631,8 @@ fn machine_join_redeem_request() -> MachineJoinRedeemRequest {
 fn machine_join_bundle() -> MachineJoinBundle {
     MachineJoinBundle {
         material: ployz_core::install::MachineJoinMaterial {
+            dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(
+            ),
             cluster_name: ployz_core::install::MachineJoinClusterName::try_new("prod")
                 .expect("valid cluster name"),
             runtime_nats_url: ployz_core::install::MachineJoinRuntimeNatsUrl::try_new(
@@ -738,6 +740,7 @@ fn deploy_target(service_id: &str) -> DeployRequest {
         services: vec![DeployServiceSpec {
             service_id: ployz_core::ids::ServiceId::try_new(service_id).expect("valid service id"),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
+            image_source: ployz_core::deploy::ImageSource::Registry,
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             pre_start: None,

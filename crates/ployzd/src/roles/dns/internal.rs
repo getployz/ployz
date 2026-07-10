@@ -272,7 +272,7 @@ pub(super) fn spawn_internal_resolver(
     mut shutdown: broadcast::Receiver<()>,
     health: Arc<Mutex<InternalResolverHealth>>,
 ) -> JoinHandle<()> {
-    let upstream = load_upstream_nameserver();
+    let upstream = load_upstream_nameserver(bind.ip());
     tokio::spawn(async move {
         let mut backoff = BIND_RETRY_INITIAL;
         let socket = loop {
@@ -397,22 +397,34 @@ async fn forward_to_upstream(upstream: IpAddr, packet: &[u8]) -> Result<Vec<u8>,
     Ok(response)
 }
 
-fn load_upstream_nameserver() -> IpAddr {
+/// The first resolv.conf `nameserver` usable as an upstream: any address that
+/// is not the resolver's own bind. A loopback stub (systemd-resolved, dnsmasq,
+/// Docker's embedded resolver) is a valid upstream; only forwarding to our own
+/// bind address is a self-loop, so that entry is skipped to the next candidate.
+fn upstream_from_resolv_conf(contents: &str, own_bind: IpAddr) -> Option<IpAddr> {
+    contents.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        if fields.next()? != "nameserver" {
+            return None;
+        }
+        let address = fields.next()?.parse::<IpAddr>().ok()?;
+        (address != own_bind).then_some(address)
+    })
+}
+
+fn load_upstream_nameserver(own_bind: IpAddr) -> IpAddr {
     // ponytail: resolv.conf plus a public fallback is the ceiling; per-machine
     // upstream configuration is the upgrade path.
     std::fs::read_to_string("/etc/resolv.conf")
         .ok()
-        .and_then(|contents| {
-            contents.lines().find_map(|line| {
-                let mut fields = line.split_whitespace();
-                if fields.next()? != "nameserver" {
-                    return None;
-                }
-                fields.next()?.parse::<IpAddr>().ok()
-            })
+        .and_then(|contents| upstream_from_resolv_conf(&contents, own_bind))
+        .unwrap_or_else(|| {
+            let fallback = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
+            eprintln!(
+                "ployzd internal DNS warning: phase=upstream reason=no-usable-resolv-conf-nameserver upstream={fallback}"
+            );
+            fallback
         })
-        .filter(|address| !address.is_loopback())
-        .unwrap_or(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)))
 }
 
 #[cfg(test)]
@@ -554,6 +566,24 @@ mod tests {
         task.await.expect("resolver task exits");
     }
 
+    #[test]
+    fn upstream_keeps_loopback_stub_and_skips_own_bind() {
+        let own_bind = IpAddr::V4(Ipv4Addr::new(10, 42, 0, 1));
+
+        assert_eq!(
+            upstream_from_resolv_conf("nameserver 127.0.0.53\n", own_bind),
+            Some(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 53)))
+        );
+        assert_eq!(
+            upstream_from_resolv_conf("nameserver 10.42.0.1\nnameserver 9.9.9.9\n", own_bind),
+            Some(IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)))
+        );
+        assert_eq!(
+            upstream_from_resolv_conf("nameserver 10.42.0.1\n", own_bind),
+            None
+        );
+    }
+
     fn query_packet(name: &str, qtype: u16) -> Vec<u8> {
         let mut packet = Vec::from([
             0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -589,6 +619,7 @@ mod tests {
                 available_bytes: 40,
                 total_bytes: 100,
             },
+            ployz_core::image::OciPlatform::current(),
             1,
         )
         .expect("machine facts")

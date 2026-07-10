@@ -84,7 +84,7 @@ fn role_units_render_the_supervised_ployzd_commands() {
     assert_eq!(machine_unit.unit_name(), "ployzd-machine-machine_7.service");
     assert_eq!(
         machine_unit.render(),
-        "[Unit]\nDescription=Ployz machine\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nEnvironmentFile=/etc/ployz/ployzd.env\nExecStart=/usr/local/bin/ployzd machine --id machine_7\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
+        "[Unit]\nDescription=Ployz machine\nAfter=network-online.target docker.service\nWants=network-online.target docker.service\n\n[Service]\nType=exec\nEnvironmentFile=/etc/ployz/ployzd.env\nExecStart=/usr/local/bin/ployzd machine --id machine_7\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
     );
 }
 

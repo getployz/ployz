@@ -944,6 +944,7 @@ fn machine_facts(
             mesh_endpoints: Vec::new(),
         }),
         test_disk_space(),
+        ployz_core::image::OciPlatform::current(),
         1,
     )
     .expect("machine facts are valid")
@@ -964,6 +965,7 @@ fn deploy_target(service_id: &str) -> DeployRequest {
         services: vec![DeployServiceSpec {
             service_id: self::service_id(service_id),
             image: image("ghcr.io/acme/api:rev-2"),
+            image_source: ployz_core::deploy::ImageSource::Registry,
             replicas: replicas(1),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
@@ -978,6 +980,7 @@ fn deploy_target_entry_id(service_id: &str) -> NamespaceRevisionEntryId {
         &namespace_id("default"),
         &self::service_id(service_id),
         &image("ghcr.io/acme/api:rev-2"),
+        &ployz_core::deploy::ImageSource::Registry,
         &ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
     )
 }

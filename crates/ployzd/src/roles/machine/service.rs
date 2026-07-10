@@ -11,6 +11,10 @@ use super::dataplane::{
 use super::facts::{
     MachineEndpointCache, MachineFactsState, handle_facts_get, handle_facts_refresh,
 };
+use super::images::{
+    AvailableImageService, handle_image_blob_check, handle_image_blob_push, handle_image_ensure,
+    handle_image_manifest_push,
+};
 use super::logs::handle_logs_tail;
 use super::substrate::{handle_substrate_report, handle_substrate_update};
 use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
@@ -69,6 +73,32 @@ pub(crate) async fn start_machine_role_service_with_endpoint_cache<R, P, L>(
     preparer: P,
     log_reader: L,
     endpoint_cache: MachineEndpointCache,
+) -> Result<RunningNatsService, MachineServiceError>
+where
+    R: Clone + MachineContainerRunner + Send + Sync + 'static,
+    P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
+    L: Clone + MachineLogReader + Send + Sync + 'static,
+{
+    start_machine_role_service_with_endpoint_cache_and_image(
+        client,
+        machine_id,
+        runner,
+        preparer,
+        log_reader,
+        endpoint_cache,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn start_machine_role_service_with_endpoint_cache_and_image<R, P, L>(
+    client: ployz_nats::service_runtime::NatsClient,
+    machine_id: MachineId,
+    runner: R,
+    preparer: P,
+    log_reader: L,
+    endpoint_cache: MachineEndpointCache,
+    image_state: Option<AvailableImageService>,
 ) -> Result<RunningNatsService, MachineServiceError>
 where
     R: Clone + MachineContainerRunner + Send + Sync + 'static,
@@ -223,6 +253,38 @@ where
         MachineServiceEndpoint::LogsTail,
         (runner, log_reader),
         handle_logs_tail,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::ImageBlobCheck,
+        image_state.clone(),
+        handle_image_blob_check,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::ImageBlobPush,
+        image_state.clone(),
+        handle_image_blob_push,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::ImageManifestPush,
+        image_state.clone(),
+        handle_image_manifest_push,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::ImageEnsure,
+        image_state,
+        handle_image_ensure,
     )
     .await?;
 

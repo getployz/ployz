@@ -29,5 +29,6 @@ ployz-sdk-types.workspace = true
 ployz = { path = "../ployz" }
 ployzd = { path = "../ployzd" }
 serde_json.workspace = true
+tar = "0.4"
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

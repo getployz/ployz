@@ -27,6 +27,7 @@ fn first_machine_install_spec_wire_shape_is_grouped_json() {
         value,
         serde_json::json!({
             "machine_id": "machine_1",
+            "dataplane_endpoint_supernet": "10.198.0.0/16",
             "gateway": "install",
             "dns": "install",
             "machine_public_ip": "203.0.113.10",
@@ -213,6 +214,7 @@ fn machine_join_bundle_wire_shape_stays_plain_json() {
         serde_json::json!({
             "material": {
                 "cluster_name": "prod",
+                "dataplane_endpoint_supernet": "10.198.0.0/16",
                 "runtime_nats_url": "nats://127.0.0.1:7422",
                 "trusted_nats": {
                     "ca_pem": "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"
@@ -252,6 +254,7 @@ fn machine_join_bundle_debug_redacts_secrets() {
 fn first_machine_install_spec(gateway: GatewayRole, dns: DnsRole) -> FirstMachineInstallSpec {
     FirstMachineInstallSpec {
         machine_id: MachineId::try_new("machine_1").expect("valid machine id"),
+        dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
         gateway,
         dns,
         machine_public_ip: None,
@@ -303,6 +306,8 @@ fn machine_join_bundle() -> MachineJoinBundle {
     MachineJoinBundle {
         material: MachineJoinMaterial {
             cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
+            dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(
+            ),
             runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
                 .expect("valid runtime nats url"),
             trusted_nats: MachineJoinTrustedNats {

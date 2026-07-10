@@ -237,6 +237,7 @@ where
         containers,
         endpoints,
         disk_space,
+        ployz_core::image::OciPlatform::current(),
         observed_at_unix_ms,
     )
     .map_err(MachineFactsReadError::BuildFactsSnapshot)

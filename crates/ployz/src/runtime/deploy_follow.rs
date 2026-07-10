@@ -3,14 +3,54 @@ use std::io::{self, IsTerminal, Write};
 use ployz_core::ids::OperationId;
 
 use crate::api_client::OperationApiClient;
+use crate::commands::deploy::{DeployCommand, DeployOutput};
 use crate::commands::deploy_render::{
     DeployTree, render_failure_block, render_frame, render_plain_lines, render_terminal,
 };
 
 use super::{
-    PloyzctlExecutionError, PloyzctlExecutionOutput, PloyzctlRuntimeConfig,
-    operation_replay_request, watch_operation_until_terminal_with,
+    PloyzctlExecutionError, PloyzctlExecutionOutput, PloyzctlRuntimeConfig, api_error,
+    operation_api_client, operation_replay_request, watch_operation_until_terminal_with,
 };
+
+pub(super) async fn execute_deploy(
+    mut command: DeployCommand,
+    config: &PloyzctlRuntimeConfig,
+) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
+    let detach = command.detach;
+    let warnings = command.warnings.join("\n");
+    if !warnings.is_empty() {
+        eprintln!("{warnings}");
+    }
+    let api = operation_api_client(config).await?;
+    let receipts = crate::image_push::prepare_deploy_images(
+        &api,
+        &mut command.services,
+        command.from_registry,
+    )
+    .await
+    .map_err(|source| PloyzctlExecutionError::ImagePush { source })?;
+    let receipt_output = receipts
+        .iter()
+        .map(crate::image_push::ImagePushReceipt::render)
+        .collect::<String>();
+    let accepted = api
+        .deploy_submit(&command.into_request())
+        .await
+        .map_err(api_error)?;
+    if detach {
+        return Ok(PloyzctlExecutionOutput {
+            stdout: format!(
+                "{receipt_output}{}",
+                DeployOutput::from_accepted(accepted).render()
+            ),
+            stderr: String::new(),
+        });
+    }
+    let mut output = watch_deploy_operation(&api, accepted.operation_id, config).await?;
+    output.stdout.insert_str(0, &receipt_output);
+    Ok(output)
+}
 
 pub(super) async fn watch_deploy_operation(
     api: &OperationApiClient,
