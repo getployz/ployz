@@ -396,6 +396,54 @@ fn early_artifact_failure_is_minimal() {
     assert!(!output.contains("Serving is unchanged."));
 }
 
+/// A cutover-or-later failure with nothing retained must not claim "nothing
+/// changed" (containers ran) nor "serving is unchanged" (the route may have
+/// moved): it makes no safety claim and keeps the recovery hints.
+#[test]
+fn route_cutover_failure_makes_no_safety_claim() {
+    let operation_id = operation_id();
+    let mut tree = DeployTree::new();
+    tree.ingest_page(
+        &[
+            replay(
+                1,
+                OperationEvent::DeploySubmitted {
+                    operation_id: operation_id.clone(),
+                    target: single_service_target(),
+                },
+            ),
+            replay(
+                2,
+                OperationEvent::DeployFailed {
+                    operation_id,
+                    failure: DeployOperationFailure::RouteCutoverFailed {
+                        route: ployz_core::ops::RouteTarget {
+                            hostname: RouteHostname::try_new("app.example.com")
+                                .expect("valid hostname"),
+                            port: route_port(443),
+                        },
+                        reason: RouteCutoverFailureReason::RouteRejected {
+                            message: FailureMessage::try_new("hostname already bound")
+                                .expect("valid failure message"),
+                        },
+                        retained_artifacts: Vec::new(),
+                    },
+                },
+            ),
+        ],
+        Duration::from_secs(12),
+    );
+
+    let output = render_failure_block(&tree);
+    assert!(output.starts_with("Deploy failed in 12s — route-cutover-failed, service web.\n"));
+    assert!(output.contains("  ✗ route app.example.com:443 rejected: hostname already bound\n"));
+    assert!(!output.contains("Nothing changed"));
+    assert!(!output.contains("Serving is unchanged."));
+    assert!(!output.contains("logs:"));
+    assert!(output.contains("timeline:  ployz ops status op_317"));
+    assert!(output.contains("rollback:  ployz deploy rollback -n prod"));
+}
+
 #[test]
 fn deep_health_failure_keeps_container_evidence_and_hints() {
     let operation_id = operation_id();

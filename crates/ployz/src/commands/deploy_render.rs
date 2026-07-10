@@ -236,8 +236,12 @@ impl DeployTree {
                     DeployCompletionOutcome::PartiallyCompleted
                     | DeployCompletionOutcome::PartiallyCompletedWithWarnings => {}
                 }
-                self.plain_lines
-                    .push(render_plain_completion(operation_id, *outcome, elapsed));
+                self.plain_lines.push(format!(
+                    "deploy {}: {} in {}s",
+                    operation_id.as_str(),
+                    completion_text(*outcome),
+                    elapsed.as_secs()
+                ));
                 if let Some(deploy) = &mut self.deploy {
                     deploy.result = DeployResult::Completed {
                         outcome: *outcome,
@@ -320,6 +324,10 @@ impl DeployTree {
         }
     }
 
+    /// The `wanted`-th `RunContainer` step in plan order. Container-started
+    /// events carry no service or slot identity, so attribution is by count:
+    /// the core sequencer starts containers one at a time in plan-step order,
+    /// and that ordering invariant is what makes the positional match honest.
     fn nth_run_step(&self, wanted: usize) -> Option<(&str, &str, u16)> {
         let plan = self.plan()?;
         let mut index = 0;
@@ -431,21 +439,25 @@ impl DeployTree {
     }
 }
 
-/// One child line of a stage group. `queued` marks work that has not begun;
-/// a group whose every child is queued collapses to its title line, per the
-/// pinned rule that pending stages sit collapsed and named.
-struct TreeLine {
-    text: String,
-    queued: bool,
-}
-
-impl TreeLine {
-    fn engaged(text: String) -> Self {
-        Self {
-            text,
-            queued: false,
-        }
-    }
+/// One child line of a stage group.
+///
+/// `Settled` lines carry their own `✓`/`✗` marker and never hold the
+/// spinner. `Pending` lines are spinner candidates: while the deploy is
+/// active, exactly one pending line per frame — the first in display order —
+/// renders as the spinner plus its `active` text; every other pending line
+/// renders as `·` plus its `idle` text. `queued` marks work that has not
+/// begun; a group whose every child is queued and that does not hold the
+/// spinner collapses to its named title line, per the pinned rule that
+/// pending stages sit collapsed and named.
+enum TreeLine {
+    Settled {
+        text: String,
+    },
+    Pending {
+        active: String,
+        idle: String,
+        queued: bool,
+    },
 }
 
 pub(crate) fn render_frame(tree: &DeployTree) -> String {
@@ -455,14 +467,7 @@ pub(crate) fn render_frame(tree: &DeployTree) -> String {
     let operation_id = &deploy.operation_id;
     let target = &deploy.target;
 
-    let mut active_marked = false;
-    let mut groups = vec![(
-        "images".to_owned(),
-        render_image_lines(tree, target, &mut active_marked)
-            .into_iter()
-            .map(TreeLine::engaged)
-            .collect::<Vec<_>>(),
-    )];
+    let mut groups = vec![("images".to_owned(), render_image_lines(tree, target))];
     if let Some(plan) = tree.plan() {
         let mut run_index = 0;
         for service in &plan.services {
@@ -473,7 +478,6 @@ pub(crate) fn render_frame(tree: &DeployTree) -> String {
                     service.service_id.as_str(),
                     step,
                     run_index,
-                    &mut active_marked,
                 ));
                 if matches!(step, DeployPlanStep::RunContainer { .. }) {
                     run_index += 1;
@@ -484,7 +488,7 @@ pub(crate) fn render_frame(tree: &DeployTree) -> String {
     }
 
     let routes = deploy_routes(target)
-        .map(|(service_id, route)| render_route_line(tree, service_id, route, &mut active_marked))
+        .map(|(service_id, route)| render_route_line(tree, service_id, route))
         .collect::<Vec<_>>();
     if !routes.is_empty() {
         groups.push(("routes".to_owned(), routes));
@@ -492,14 +496,21 @@ pub(crate) fn render_frame(tree: &DeployTree) -> String {
     if let Some((removed, failed)) = tree.cleanup()
         && (!removed.is_empty() || !failed.is_empty())
     {
-        groups.push((
-            "cleanup".to_owned(),
-            render_cleanup_lines(removed, failed)
-                .into_iter()
-                .map(TreeLine::engaged)
-                .collect(),
-        ));
+        groups.push(("cleanup".to_owned(), render_cleanup_lines(removed, failed)));
     }
+
+    // The spinner belongs to the first pending line in display order, and
+    // only while the deploy is active; its group stays expanded even when
+    // fully queued so the active step is never hidden.
+    let spinner_group = if tree.is_active() {
+        groups.iter().position(|(_, children)| {
+            children
+                .iter()
+                .any(|child| matches!(child, TreeLine::Pending { .. }))
+        })
+    } else {
+        None
+    };
 
     let mut lines = vec![
         format!(
@@ -510,15 +521,29 @@ pub(crate) fn render_frame(tree: &DeployTree) -> String {
         ),
         String::new(),
     ];
-    for (title, children) in groups {
-        let collapsed = !children.is_empty() && children.iter().all(|child| child.queued);
+    for (group_index, (title, children)) in groups.into_iter().enumerate() {
+        let holds_spinner = spinner_group == Some(group_index);
+        let collapsed = !holds_spinner
+            && !children.is_empty()
+            && children.iter().all(|child| match child {
+                TreeLine::Settled { .. } => false,
+                TreeLine::Pending { queued, .. } => *queued,
+            });
         if collapsed {
             lines.push(format!("  {title}    queued"));
             continue;
         }
         lines.push(format!("  {title}"));
+        let mut spinner_assigned = false;
         for child in children {
-            lines.push(format!("    {}", child.text));
+            lines.push(match child {
+                TreeLine::Settled { text } => format!("    {text}"),
+                TreeLine::Pending { active, .. } if holds_spinner && !spinner_assigned => {
+                    spinner_assigned = true;
+                    format!("    {} {active}", tree.spinner())
+                }
+                TreeLine::Pending { idle, .. } => format!("    · {idle}"),
+            });
         }
     }
     lines.join("\n") + "\n"
@@ -532,7 +557,7 @@ pub(crate) fn render_plain_lines(tree: &DeployTree) -> String {
     }
 }
 
-pub(crate) fn render_success(tree: &DeployTree) -> String {
+fn render_success(tree: &DeployTree) -> String {
     let Some(deploy) = &tree.deploy else {
         return String::new();
     };
@@ -564,6 +589,36 @@ pub(crate) fn render_terminal(tree: &DeployTree) -> String {
     }
 }
 
+/// What the failure permits the block to claim about cluster safety.
+///
+/// The variants that reject before any container work carry no
+/// retained-artifact field at all, so "nothing changed" is a typed fact.
+/// Failures at or after route cutover may already have moved routes or
+/// serving intent, so the block makes no safety claim rather than assert
+/// one it cannot know.
+enum FailureSafety {
+    NothingChanged,
+    ServingUnchanged,
+    NoClaim,
+}
+
+const fn failure_safety(failure: &DeployOperationFailure) -> FailureSafety {
+    match failure {
+        DeployOperationFailure::NoUsableMachines { .. }
+        | DeployOperationFailure::PlanningFailed { .. }
+        | DeployOperationFailure::AutoDnsWithoutLease { .. }
+        | DeployOperationFailure::ArtifactUnavailable { .. } => FailureSafety::NothingChanged,
+        DeployOperationFailure::DataplaneUnavailable { .. }
+        | DeployOperationFailure::DataplanePrepareTimedOut { .. }
+        | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
+        | DeployOperationFailure::RuntimeUnavailable { .. }
+        | DeployOperationFailure::ContainerStartFailed { .. }
+        | DeployOperationFailure::HealthCheckFailed { .. } => FailureSafety::ServingUnchanged,
+        DeployOperationFailure::ControlPlaneCommitFailed { .. }
+        | DeployOperationFailure::RouteCutoverFailed { .. } => FailureSafety::NoClaim,
+    }
+}
+
 pub(crate) fn render_failure_block(tree: &DeployTree) -> String {
     let Some(deploy) = &tree.deploy else {
         return String::new();
@@ -572,51 +627,56 @@ pub(crate) fn render_failure_block(tree: &DeployTree) -> String {
         return String::new();
     };
     let operation_id = deploy.operation_id.as_str();
+    let namespace = deploy.target.namespace_id.as_str();
     let target_service = match deploy.target.services.as_slice() {
         [service] => Some(&service.service_id),
         [] | [_, _, ..] => None,
     };
     let service = deploy_failure_service(failure, target_service);
     let cause = failure_cause(tree, failure);
-    let retained = !failure.retained_artifacts().is_empty();
+    let safety = failure_safety(failure);
+    let machines = deploy_failure_machines(failure);
+    let retained_containers = deploy_failure_containers(failure);
 
-    if retained {
-        let machines = deploy_failure_machines(failure);
-        let machine = machines
+    let mut block = format!(
+        "Deploy failed in {}s — {}, service {}{}.\n",
+        elapsed.as_secs(),
+        failure.failure_class().as_str(),
+        service,
+        machines
             .first()
-            .map_or("unknown", |machine| machine.as_str());
-        let retained_containers = deploy_failure_containers(failure);
-        let retained_machine = retained_containers
-            .last()
-            .map_or(machine, |container| container.machine_id.as_str());
-        let namespace = deploy.target.namespace_id.as_str();
-        let logs_hint = if service == "unknown" {
-            String::new()
-        } else {
-            format!("  logs:      ployz logs {service} -n {namespace} --failed\n")
-        };
-        format!(
-            "Deploy failed in {}s — {}, service {} on {}.\n\n  ✗ {}\n    failed container retained on {}\n\n  Serving is unchanged.\n\n{}  timeline:  ployz ops status {}\n  rollback:  ployz deploy rollback -n {}\n",
-            elapsed.as_secs(),
-            failure.failure_class().as_str(),
-            service,
-            machine,
-            cause,
-            retained_machine,
-            logs_hint,
-            operation_id,
-            namespace
-        )
-    } else {
-        format!(
-            "Deploy failed in {}s — {}, service {}.\n\n  ✗ {}\n\n  Nothing changed: the failure happened before any container work.\n\n  timeline:  ployz ops status {}\n",
-            elapsed.as_secs(),
-            failure.failure_class().as_str(),
-            service,
-            cause,
-            operation_id
-        )
+            .map_or_else(String::new, |machine| format!(" on {}", machine.as_str())),
+    );
+    block.push_str(&format!("\n  ✗ {cause}\n"));
+    // The header names the machine the failure blames; this line names where
+    // the newest body sits — the last retained artifact is the container
+    // this attempt created.
+    if let Some(container) = retained_containers.last() {
+        block.push_str(&format!(
+            "    failed container retained on {}\n",
+            container.machine_id.as_str()
+        ));
     }
+    match safety {
+        FailureSafety::NothingChanged => {
+            block.push_str("\n  Nothing changed: the failure happened before any container work.\n")
+        }
+        FailureSafety::ServingUnchanged => block.push_str("\n  Serving is unchanged.\n"),
+        FailureSafety::NoClaim => {}
+    }
+    block.push('\n');
+    if !retained_containers.is_empty() && service != "unknown" {
+        block.push_str(&format!(
+            "  logs:      ployz logs {service} -n {namespace} --failed\n"
+        ));
+    }
+    block.push_str(&format!("  timeline:  ployz ops status {operation_id}\n"));
+    if !matches!(safety, FailureSafety::NothingChanged) {
+        block.push_str(&format!(
+            "  rollback:  ployz deploy rollback -n {namespace}\n"
+        ));
+    }
+    block
 }
 
 fn distinct_images(target: &DeployRequest) -> Vec<&str> {
@@ -654,11 +714,7 @@ fn route_text(service_id: &str, route: &DeployRoute) -> String {
     }
 }
 
-fn render_image_lines(
-    tree: &DeployTree,
-    target: &DeployRequest,
-    active_marked: &mut bool,
-) -> Vec<String> {
+fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine> {
     let failed_service = tree.failure().and_then(|failure| match failure {
         DeployOperationFailure::ArtifactUnavailable { service_id, .. } => Some(service_id),
         DeployOperationFailure::NoUsableMachines { .. }
@@ -688,14 +744,19 @@ fn render_image_lines(
                     };
                     artifact_unavailable_reason(reason)
                 });
-                format!("✗ {image} — {reason}")
+                TreeLine::Settled {
+                    text: format!("✗ {image} — {reason}"),
+                }
             } else if tree.plan().is_some() {
-                format!("✓ {image}")
-            } else if tree.is_active() && !*active_marked {
-                *active_marked = true;
-                format!("{} {image}", tree.spinner())
+                TreeLine::Settled {
+                    text: format!("✓ {image}"),
+                }
             } else {
-                format!("· {image} — waiting on images")
+                TreeLine::Pending {
+                    active: image.to_owned(),
+                    idle: format!("{image} — waiting on images"),
+                    queued: false,
+                }
             }
         })
         .collect()
@@ -706,19 +767,20 @@ fn render_service_step(
     service_id: &str,
     step: &DeployPlanStep,
     run_index: usize,
-    active_marked: &mut bool,
 ) -> TreeLine {
     match step {
         DeployPlanStep::UseExistingContainer {
             machine_id,
             container_id: _,
             slot,
-        } => TreeLine::engaged(format!(
-            "✓ no changes — already at target ({}.{} on {})",
-            service_id,
-            slot.get(),
-            machine_id.as_str()
-        )),
+        } => TreeLine::Settled {
+            text: format!(
+                "✓ no changes — already at target ({}.{} on {})",
+                service_id,
+                slot.get(),
+                machine_id.as_str()
+            ),
+        },
         DeployPlanStep::RunContainer { machine_id, slot } => {
             let name = format!("{}.{} on {}", service_id, slot.get(), machine_id.as_str());
             if tree.is_complete_success()
@@ -726,111 +788,99 @@ fn render_service_step(
                     stage_rank(stage) >= stage_rank(DeployRunningStage::RouteCutover)
                 })
             {
-                return TreeLine::engaged(format!("✓ {name} — healthy"));
+                return TreeLine::Settled {
+                    text: format!("✓ {name} — healthy"),
+                };
             }
             if tree.stage().is_some_and(|stage| {
                 stage_rank(stage) >= stage_rank(DeployRunningStage::WaitingForHealth)
             }) {
-                return if !*active_marked && tree.is_active() {
-                    *active_marked = true;
-                    TreeLine::engaged(format!(
-                        "{} {name} — running, waiting for health",
-                        tree.spinner()
-                    ))
-                } else {
-                    TreeLine::engaged(format!("· {name} — running, waiting for health"))
+                let text = format!("{name} — running, waiting for health");
+                return TreeLine::Pending {
+                    active: text.clone(),
+                    idle: text,
+                    queued: false,
                 };
             }
             if matches!(tree.stage(), Some(DeployRunningStage::StartingContainers)) {
                 if run_index < tree.started_containers() {
-                    return TreeLine::engaged(format!("✓ {name} — created"));
+                    return TreeLine::Settled {
+                        text: format!("✓ {name} — created"),
+                    };
                 }
-                if !*active_marked && tree.is_active() {
-                    *active_marked = true;
-                    return TreeLine::engaged(format!("{} {name} — creating", tree.spinner()));
-                }
-                return TreeLine {
-                    text: format!("· {name} — queued"),
+                return TreeLine::Pending {
+                    active: format!("{name} — creating"),
+                    idle: format!("{name} — queued"),
                     queued: true,
                 };
             }
-            if !*active_marked && tree.is_active() {
-                *active_marked = true;
-                let step_text =
-                    if matches!(tree.stage(), Some(DeployRunningStage::PreparingDataplane)) {
-                        "preparing dataplane"
-                    } else {
-                        "queued"
-                    };
-                TreeLine::engaged(format!("{} {name} — {step_text}", tree.spinner()))
+            let step_text = if matches!(tree.stage(), Some(DeployRunningStage::PreparingDataplane))
+            {
+                "preparing dataplane"
             } else {
-                TreeLine {
-                    text: format!("· {name} — queued"),
-                    queued: true,
-                }
+                "queued"
+            };
+            TreeLine::Pending {
+                active: format!("{name} — {step_text}"),
+                idle: format!("{name} — queued"),
+                queued: true,
             }
         }
     }
 }
 
-fn render_route_line(
-    tree: &DeployTree,
-    service_id: &str,
-    route: &DeployRoute,
-    active_marked: &mut bool,
-) -> TreeLine {
+fn render_route_line(tree: &DeployTree, service_id: &str, route: &DeployRoute) -> TreeLine {
     let text = route_text(service_id, route);
     if tree.is_complete_success() {
-        return TreeLine::engaged(format!("✓ {text}"));
+        return TreeLine::Settled {
+            text: format!("✓ {text}"),
+        };
     }
     if tree.route_failed(route) {
         let reason = tree
             .failure()
             .map(|failure| failure_cause(tree, failure))
             .unwrap_or_else(|| "route cutover failed".to_owned());
-        return TreeLine::engaged(format!("✗ {text} — {reason}"));
-    }
-    if tree
-        .stage()
-        .is_some_and(|stage| stage_rank(stage) >= stage_rank(DeployRunningStage::RouteCutover))
-        && tree.is_active()
-        && !*active_marked
-    {
-        *active_marked = true;
-        let step_text = if matches!(tree.stage(), Some(DeployRunningStage::RouteCutover)) {
-            "cutting over"
-        } else {
-            "committing"
+        return TreeLine::Settled {
+            text: format!("✗ {text} — {reason}"),
         };
-        TreeLine::engaged(format!("{} {text} — {step_text}", tree.spinner()))
-    } else {
-        TreeLine {
-            text: format!("· {text} — queued"),
-            queued: true,
-        }
+    }
+    let step_text = match tree.stage() {
+        Some(DeployRunningStage::RouteCutover) => "cutting over",
+        Some(DeployRunningStage::ServingTargetCommit)
+        | Some(DeployRunningStage::RemovingSupersededContainers) => "committing",
+        Some(DeployRunningStage::PreparingDataplane)
+        | Some(DeployRunningStage::StartingContainers)
+        | Some(DeployRunningStage::WaitingForHealth)
+        | None => "queued",
+    };
+    TreeLine::Pending {
+        active: format!("{text} — {step_text}"),
+        idle: format!("{text} — queued"),
+        queued: true,
     }
 }
 
 fn render_cleanup_lines(
     removed: &[DeployCleanupContainer],
     failed: &[DeployCleanupFailure],
-) -> Vec<String> {
+) -> Vec<TreeLine> {
     removed
         .iter()
-        .map(|container| {
-            format!(
+        .map(|container| TreeLine::Settled {
+            text: format!(
                 "✓ {} on {} — removed",
                 container.container_id.as_str(),
                 container.machine_id.as_str()
-            )
+            ),
         })
-        .chain(failed.iter().map(|failure| {
-            format!(
+        .chain(failed.iter().map(|failure| TreeLine::Settled {
+            text: format!(
                 "✗ {} on {} — {}",
                 failure.target.container_id.as_str(),
                 failure.target.machine_id.as_str(),
                 failure.message.as_str()
-            )
+            ),
         }))
         .collect()
 }
@@ -884,19 +934,6 @@ const fn stage_rank(stage: DeployRunningStage) -> u8 {
         DeployRunningStage::ServingTargetCommit => 4,
         DeployRunningStage::RemovingSupersededContainers => 5,
     }
-}
-
-fn render_plain_completion(
-    operation_id: &OperationId,
-    outcome: DeployCompletionOutcome,
-    elapsed: Duration,
-) -> String {
-    format!(
-        "deploy {}: {} in {}s",
-        operation_id.as_str(),
-        completion_text(outcome),
-        elapsed.as_secs()
-    )
 }
 
 const fn completion_text(outcome: DeployCompletionOutcome) -> &'static str {

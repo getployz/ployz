@@ -44,12 +44,10 @@ pub(super) async fn watch_deploy_operation(
                 };
                 redraw_frame(&mut stdout, &frame, &mut previous_frame_lines)
             } else {
-                let failure = render_failure_block(&tree);
-                let rendered = if failure.is_empty() {
-                    render_plain_lines(&tree)
-                } else {
-                    render_plain_lines(&tree) + "\n" + &failure
-                };
+                // The streamed body must stay prefix-stable, so only the
+                // append-only plain lines are diffed here; the failure
+                // block is emitted exactly once after the watch ends.
+                let rendered = render_plain_lines(&tree);
                 if let Some(new_output) = rendered.get(rendered_plain_bytes..) {
                     plain_output.push_str(new_output);
                     rendered_plain_bytes = rendered.len();
@@ -63,6 +61,11 @@ pub(super) async fn watch_deploy_operation(
     if stdout_is_terminal {
         Ok(PloyzctlExecutionOutput::stdout(String::new()))
     } else {
+        let failure = render_failure_block(&tree);
+        if !failure.is_empty() {
+            plain_output.push('\n');
+            plain_output.push_str(&failure);
+        }
         Ok(PloyzctlExecutionOutput::stdout(plain_output))
     }
 }

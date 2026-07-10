@@ -726,7 +726,7 @@ fn render_deploy_failure_detail(
     let detail = format!(
         "class {} service {} {} {}",
         failure.failure_class().as_str(),
-        deploy_status_failure_service(failure, service_id),
+        deploy_failure_service(failure, service_id),
         render_deploy_failure_machines(&deploy_failure_machines(failure)),
         deploy_failure_evidence(failure),
     );
@@ -748,22 +748,16 @@ fn render_deploy_failure_detail(
     }
 }
 
-fn deploy_status_failure_service(
-    failure: &DeployOperationFailure,
-    service_id: Option<&ServiceId>,
-) -> String {
-    service_id
-        .or_else(|| deploy_failure_service_id(failure))
-        .map(|service_id| service_id.as_str().to_owned())
-        .unwrap_or_else(|| "unknown".to_owned())
-}
-
+/// The service a deploy failure is about. The failure's own typed evidence
+/// wins over the caller's operation-subject fallback: for a multi-service
+/// deploy the subject names only the primary service, while the failure
+/// names the service that actually failed.
 pub(crate) fn deploy_failure_service(
     failure: &DeployOperationFailure,
-    service_id: Option<&ServiceId>,
+    fallback: Option<&ServiceId>,
 ) -> String {
     deploy_failure_service_id(failure)
-        .or(service_id)
+        .or(fallback)
         .map(|service_id| service_id.as_str().to_owned())
         .unwrap_or_else(|| "unknown".to_owned())
 }
