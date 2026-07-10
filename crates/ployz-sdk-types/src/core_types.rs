@@ -40,8 +40,8 @@ pub use ployz_core::install::{
     MachineJoinTrustedNats, NatsServerInstallSpec, WrappedCaKey, WrappedCoreSeeds,
 };
 pub use ployz_core::internal_dns::{
-    InternalDnsFactWatermark, InternalDnsResolverStatus, InternalDnsStatus, InternalServiceName,
-    InternalServiceNameError,
+    InternalDnsFactGeneration, InternalDnsFactWatermark, InternalDnsResolverStatus,
+    InternalDnsStatus, InternalServiceName, InternalServiceNameError,
 };
 pub use ployz_core::machine::{
     ConnectivityProofEvidence, ConnectivityProofUnreachablePeer, IssuedJoinToken,
@@ -50,8 +50,9 @@ pub use ployz_core::machine::{
     MachineReadinessEvidence,
 };
 pub use ployz_core::machine_runtime::{
-    ContainerHealth, ContainerRuntimeState, MachineDiskSpace, ManagedContainerHealthStatus,
-    ManagedContainerIdentity, ManagedContainerKind, ManagedContainerObservation,
+    ContainerHealth, ContainerRuntimeState, MachineDiskSpace, MachineFactsRefreshConfirmation,
+    ManagedContainerHealthStatus, ManagedContainerIdentity, ManagedContainerKind,
+    ManagedContainerObservation,
 };
 pub use ployz_core::nats_config::{
     NatsAuthorizedUser, NatsCaCertificatePem, NatsUserPublicKey, NatsUserSeed,

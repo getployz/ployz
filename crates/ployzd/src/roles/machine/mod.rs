@@ -24,8 +24,6 @@ pub mod runner;
 pub mod service;
 mod substrate;
 
-pub(crate) use facts::machine_facts_watermark;
-
 pub(crate) fn current_unix_ms() -> u64 {
     let Ok(elapsed) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
         return 0;

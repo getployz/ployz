@@ -183,7 +183,7 @@ async fn machine_role_service_refreshes_and_publishes_full_facts() {
         .flush()
         .await
         .expect("flush snapshot subscription");
-    let watermark = NatsMachineFactsReader::new(nats.client)
+    let refresh = NatsMachineFactsReader::new(nats.client)
         .with_request_timeout(Duration::from_secs(1))
         .refresh_machine_facts(&machine_id("machine_a"))
         .await
@@ -195,7 +195,7 @@ async fn machine_role_service_refreshes_and_publishes_full_facts() {
     let facts = serde_json::from_slice::<MachineFactsSnapshot>(&message.payload)
         .expect("snapshot payload decodes");
 
-    assert_eq!(facts.observed_at_unix_ms(), watermark.observed_at_unix_ms);
+    assert_eq!(facts.observed_at_unix_ms(), refresh.observed_at_unix_ms);
     assert!(
         facts
             .containers()

@@ -88,13 +88,10 @@ fn render_machine_facts_outcome(
     outcome: &ployz_sdk_types::NetworkRepairMachineFactsRefreshOutcome,
 ) -> String {
     match outcome {
-        ployz_sdk_types::NetworkRepairMachineFactsRefreshOutcome::Refreshed {
-            machine_id,
-            observed_at_unix_ms,
-            snapshot_sha256,
-        } => format!(
-            "machine={}:refreshed@{observed_at_unix_ms}:sha256={snapshot_sha256}",
-            machine_id.as_str(),
+        ployz_sdk_types::NetworkRepairMachineFactsRefreshOutcome::Refreshed { refresh } => format!(
+            "machine={}:refreshed@{}",
+            refresh.machine_id.as_str(),
+            refresh.observed_at_unix_ms,
         ),
         ployz_sdk_types::NetworkRepairMachineFactsRefreshOutcome::Unavailable {
             machine_id,

@@ -153,11 +153,12 @@ fn network_repair_refresh_evidence_advances_only_its_stage_cursor() {
     };
     let event = OperationEvent::NetworkRepairMachineFactsRefreshed {
         operation_id: operation_id("op_network_repair"),
-        watermarks: vec![ployz_core::internal_dns::InternalDnsFactWatermark {
-            machine_id: machine_id("machine_a"),
-            observed_at_unix_ms: 42,
-            snapshot_sha256: "snapshot-a".to_owned(),
-        }],
+        refreshes: vec![
+            ployz_core::machine_runtime::MachineFactsRefreshConfirmation {
+                machine_id: machine_id("machine_a"),
+                observed_at_unix_ms: 42,
+            },
+        ],
     };
 
     assert!(matches!(

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::dataplane::INTERNAL_DNS_SUFFIX;
 use crate::ids::{MachineId, NamespaceId, ServiceId};
 use crate::machine_runtime::{ContainerRuntimeState, MachineFactsSnapshot};
+use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 const MAX_DNS_LABEL_LEN: usize = 63;
 
@@ -34,7 +35,27 @@ pub enum InternalDnsResolverStatus {
 pub struct InternalDnsFactWatermark {
     pub machine_id: MachineId,
     pub observed_at_unix_ms: u64,
-    pub snapshot_sha256: String,
+    pub generation: InternalDnsFactGeneration,
+}
+
+positive_u64_wire_newtype! {
+    /// A resolver-local count of full snapshots recorded for one machine.
+    pub struct InternalDnsFactGeneration;
+    ts_brand: "Brand<string, \"InternalDnsFactGeneration\">";
+    accessor: get;
+    error: InternalDnsFactGenerationError;
+}
+
+positive_u64_wire_error! {
+    pub enum InternalDnsFactGenerationError;
+    noun: "internal DNS fact generation";
+}
+
+impl InternalDnsFactGeneration {
+    #[must_use]
+    pub fn next(self) -> Self {
+        Self::try_new(self.get().saturating_add(1)).unwrap_or(self)
+    }
 }
 
 /// A validated, lower-case `<service>.<namespace>.internal` wire name.

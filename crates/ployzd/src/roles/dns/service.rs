@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use crate::fact_cache::FactCache;
 use crate::roles::dns::InternalResolverHealth;
 use crate::roles::dns::internal::query_bound_resolver;
-use crate::roles::machine::machine_facts_watermark;
 use crate::service_catalog::{dns_role_service_base, machine_endpoint_spec};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,26 +98,11 @@ fn status_from_local_cache(
                 }
             },
         );
-    let fact_watermarks = match facts
-        .machine_facts_all()
-        .into_iter()
-        .map(|facts| machine_facts_watermark(&facts))
-        .collect::<Result<Vec<_>, _>>()
-    {
-        Ok(watermarks) => watermarks,
-        Err(error) => {
-            return NatsServiceResponse::transport_error(
-                ployz_nats::service_protocol::NatsServiceError::unavailable(format!(
-                    "encode machine facts fingerprint: {error}"
-                )),
-            );
-        }
-    };
     NatsServiceResponse::json_ok(&DnsStatusRpcOk {
         machine_id,
         value: InternalDnsStatus {
             resolver,
-            fact_watermarks,
+            fact_watermarks: facts.machine_fact_watermarks(),
         },
     })
 }
@@ -243,6 +227,6 @@ mod tests {
             panic!("expected one fact watermark");
         };
         assert_eq!(watermark.machine_id, observed_machine_id);
-        assert_eq!(watermark.observed_at_unix_ms, 42);
+        assert_eq!(watermark.generation.get(), 1);
     }
 }

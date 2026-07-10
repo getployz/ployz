@@ -239,7 +239,7 @@ pub enum OperationEvent {
     },
     NetworkRepairMachineFactsRefreshed {
         operation_id: OperationId,
-        watermarks: Vec<crate::internal_dns::InternalDnsFactWatermark>,
+        refreshes: Vec<crate::machine_runtime::MachineFactsRefreshConfirmation>,
     },
     NetworkRepairDnsRefreshConfirmed {
         operation_id: OperationId,
@@ -945,11 +945,11 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
             },
             OperationEvent::NetworkRepairMachineFactsRefreshed {
                 operation_id,
-                watermarks,
+                refreshes,
             } => Self::NetworkRepair {
                 operation_id,
                 event: NetworkRepairEvent::Evidence(NetworkRepairEvidence::MachineFactsRefreshed {
-                    watermarks,
+                    refreshes,
                 }),
             },
             OperationEvent::NetworkRepairDnsRefreshConfirmed {

@@ -28,10 +28,19 @@ pub(super) async fn status(
     let api = operation_api_client(config)
         .await?
         .with_request_timeout(timeout);
-    let result = api
-        .network_status(&command.into_request())
-        .await
-        .map_err(api_error)?;
+    let mut request = command.into_request();
+    let mut result = ployz_sdk_types::NetworkStatusResult {
+        machines: Vec::new(),
+        next_cursor: None,
+    };
+    loop {
+        let page = api.network_status(&request).await.map_err(api_error)?;
+        result.machines.extend(page.machines);
+        let Some(next_cursor) = page.next_cursor else {
+            break;
+        };
+        request.cursor = Some(next_cursor);
+    }
     Ok(PloyzctlExecutionOutput::stdout(
         NetworkStatusOutput::from_result(result).render(),
     ))

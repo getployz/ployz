@@ -1,6 +1,5 @@
 use ployz_core::ids::MachineId;
-use ployz_core::internal_dns::InternalDnsFactWatermark;
-use ployz_core::machine_runtime::MachineFactsSnapshot;
+use ployz_core::machine_runtime::{MachineFactsRefreshConfirmation, MachineFactsSnapshot};
 use ployz_core::ops::FailureMessage;
 use serde::{Deserialize, Serialize};
 
@@ -39,17 +38,16 @@ pub struct MachineFactsRefreshRpcRequest {}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineFactsRefreshRpcOk {
-    pub watermark: InternalDnsFactWatermark,
+    pub refresh: MachineFactsRefreshConfirmation,
 }
 
 impl MachineRpcResponder for MachineFactsRefreshRpcOk {
     fn responder_machine_id(&self) -> &MachineId {
         let Self {
-            watermark:
-                InternalDnsFactWatermark {
+            refresh:
+                MachineFactsRefreshConfirmation {
                     machine_id,
                     observed_at_unix_ms: _,
-                    snapshot_sha256: _,
                 },
         } = self;
         machine_id

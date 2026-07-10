@@ -241,13 +241,14 @@ pub async fn network_repair(
     request: NetworkRepairRequest,
 ) -> Result<AcceptedOperation, NetworkRepairError> {
     let active_machine_ids = handlers
-        .machine_roster
-        .active_machines()
+        .intent_reader()
+        .intent()
         .await
         .map_err(|error| NetworkRepairError::Unavailable {
             operation_id: request.operation_id.clone(),
             message: error.to_string(),
         })?
+        .active_machines
         .into_iter()
         .map(|machine| machine.machine_id)
         .collect::<Vec<_>>();

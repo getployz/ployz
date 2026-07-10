@@ -13,12 +13,18 @@ use crate::ops::{AcceptedOperation, OperationApiResponse};
 #[serde(deny_unknown_fields)]
 pub struct NetworkStatusRequest {
     pub mode: NetworkStatusMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub cursor: Option<MachineId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkStatusResult {
     pub machines: Vec<NetworkStatusMachine>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub next_cursor: Option<MachineId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

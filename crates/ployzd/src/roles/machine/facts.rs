@@ -10,16 +10,14 @@ use crate::roles::machine::runner::{
     ExistingManagedContainerState, MachineContainerRunner, MachineContainerRunnerError,
 };
 use ployz_core::ids::MachineId;
-use ployz_core::internal_dns::InternalDnsFactWatermark;
 use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot,
-    MachineContainerObservationSnapshotError, MachineDiskSpace, MachineFactsSnapshot,
-    MachineFactsSnapshotError, ManagedContainerObservation,
+    MachineContainerObservationSnapshotError, MachineDiskSpace, MachineFactsRefreshConfirmation,
+    MachineFactsSnapshot, MachineFactsSnapshotError, ManagedContainerObservation,
 };
 use ployz_core::state::MachineEndpointObservation;
 use ployz_core::subjects::machine_facts;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decode_json_request};
-use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -55,19 +53,11 @@ where
     )
     .await;
     match refreshed {
-        Ok(Ok(facts)) => match machine_facts_watermark(&facts) {
-            Ok(watermark) => machine_success(MachineFactsRefreshRpcResponse::Ok(
-                MachineFactsRefreshRpcOk { watermark },
-            )),
-            Err(error) => machine_domain_error(MachineFactsRefreshRpcResponse::DomainError {
-                machine_id,
-                error: MachineFactsRefreshDomainError::RefreshFailed {
-                    message: failure_message(format!(
-                        "encode refreshed machine facts fingerprint: {error}"
-                    )),
-                },
-            }),
-        },
+        Ok(Ok(facts)) => machine_success(MachineFactsRefreshRpcResponse::Ok(
+            MachineFactsRefreshRpcOk {
+                refresh: MachineFactsRefreshConfirmation::from(&facts),
+            },
+        )),
         Ok(Err(error)) => machine_domain_error(MachineFactsRefreshRpcResponse::DomainError {
             machine_id,
             error: MachineFactsRefreshDomainError::RefreshFailed {
@@ -84,17 +74,6 @@ where
             },
         }),
     }
-}
-
-pub(crate) fn machine_facts_watermark(
-    facts: &MachineFactsSnapshot,
-) -> Result<InternalDnsFactWatermark, serde_json::Error> {
-    let encoded = serde_json::to_vec(facts)?;
-    Ok(InternalDnsFactWatermark {
-        machine_id: facts.machine_id().clone(),
-        observed_at_unix_ms: facts.observed_at_unix_ms(),
-        snapshot_sha256: format!("{:x}", Sha256::digest(encoded)),
-    })
 }
 
 pub(crate) async fn publish_machine_facts<R>(

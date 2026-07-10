@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dataplane::{PloyzNativeMeshComponent, PloyzNativeMeshPrepareReport};
 use crate::ids::{MachineId, OperationId};
-use crate::internal_dns::InternalDnsFactWatermark;
+use crate::machine_runtime::MachineFactsRefreshConfirmation;
 
 use super::events::OperationEvent;
 use super::projection::{
@@ -127,9 +127,7 @@ pub enum NetworkRepairRequestFailure {
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NetworkRepairMachineFactsRefreshOutcome {
     Refreshed {
-        machine_id: MachineId,
-        observed_at_unix_ms: u64,
-        snapshot_sha256: String,
+        refresh: MachineFactsRefreshConfirmation,
     },
     Unavailable {
         machine_id: MachineId,
@@ -172,7 +170,7 @@ pub enum NetworkRepairEvidence {
         report: PloyzNativeMeshPrepareReport,
     },
     MachineFactsRefreshed {
-        watermarks: Vec<InternalDnsFactWatermark>,
+        refreshes: Vec<MachineFactsRefreshConfirmation>,
     },
     DnsRefreshConfirmed {
         machine_ids: Vec<MachineId>,
@@ -187,10 +185,10 @@ impl NetworkRepairEvidence {
                 operation_id: operation_id.clone(),
                 report: report.clone(),
             },
-            Self::MachineFactsRefreshed { watermarks } => {
+            Self::MachineFactsRefreshed { refreshes } => {
                 OperationEvent::NetworkRepairMachineFactsRefreshed {
                     operation_id: operation_id.clone(),
-                    watermarks: watermarks.clone(),
+                    refreshes: refreshes.clone(),
                 }
             }
             Self::DnsRefreshConfirmed { machine_ids } => {

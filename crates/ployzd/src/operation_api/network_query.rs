@@ -29,6 +29,7 @@ use crate::roles::machine::protocol::{
 };
 
 const NETWORK_PROBE_GATHER_TIMEOUT: Duration = Duration::from_secs(60);
+const NETWORK_STATUS_PAGE_SIZE: usize = 8;
 
 enum NetworkRequestFailure {
     NoAnswer,
@@ -121,15 +122,37 @@ impl NetworkQueryService {
             NetworkStatusMode::Snapshot => DEFAULT_MACHINE_RPC_TIMEOUT,
             NetworkStatusMode::ProbePathMtu => NETWORK_PROBE_GATHER_TIMEOUT,
         };
-        let machines = gather_network_status(
-            &self.client,
-            gather_timeout,
-            request.mode,
-            intent.active_machines,
-        )
-        .await;
-        Ok(NetworkStatusResult { machines })
+        let (page, next_cursor) =
+            network_status_page(intent.active_machines, request.cursor.as_ref());
+        let machines =
+            gather_network_status(&self.client, gather_timeout, request.mode, page).await;
+        Ok(NetworkStatusResult {
+            machines,
+            next_cursor,
+        })
     }
+}
+
+fn network_status_page(
+    mut active_machines: Vec<ActiveMachineState>,
+    cursor: Option<&MachineId>,
+) -> (Vec<ActiveMachineState>, Option<MachineId>) {
+    active_machines.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
+    let start = cursor.map_or(0, |cursor| {
+        active_machines.partition_point(|machine| machine.machine_id <= *cursor)
+    });
+    let has_more = active_machines.len() > start + NETWORK_STATUS_PAGE_SIZE;
+    let page = active_machines
+        .into_iter()
+        .skip(start)
+        .take(NETWORK_STATUS_PAGE_SIZE)
+        .collect::<Vec<_>>();
+    let next_cursor = if has_more {
+        page.last().map(|machine| machine.machine_id.clone())
+    } else {
+        None
+    };
+    (page, next_cursor)
 }
 
 async fn gather_network_status(
@@ -383,7 +406,8 @@ mod tests {
 
     use super::{
         dataplane_testimony, dns_resolve_error_testimony, dns_resolve_testimony,
-        dns_status_testimony, gather_dns_answers, gather_network_status, normalize_internal_name,
+        dns_status_testimony, gather_dns_answers, gather_network_status, network_status_page,
+        normalize_internal_name,
     };
     use crate::fact_cache::FactCache;
     use crate::roles::dns::InternalResolverHealth;
@@ -416,6 +440,48 @@ mod tests {
         assert!(normalize_internal_name("db.team-a.internal.extra").is_none());
         assert!(normalize_internal_name("db.internal").is_none());
         assert!(normalize_internal_name("db.Internal").is_none());
+    }
+
+    #[test]
+    fn status_pages_intended_machines_in_lexicographic_order() {
+        let machines = (0..10)
+            .rev()
+            .map(|index| {
+                active_machine(
+                    &format!("machine_{index:02}"),
+                    &format!("10.198.{}.0/24", index + 1),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let (first, next_cursor) = network_status_page(machines.clone(), None);
+        assert_eq!(
+            first
+                .iter()
+                .map(|machine| machine.machine_id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "machine_00",
+                "machine_01",
+                "machine_02",
+                "machine_03",
+                "machine_04",
+                "machine_05",
+                "machine_06",
+                "machine_07",
+            ]
+        );
+        assert_eq!(next_cursor, Some(machine_id("machine_07")));
+
+        let (second, next_cursor) = network_status_page(machines, next_cursor.as_ref());
+        assert_eq!(
+            second
+                .iter()
+                .map(|machine| machine.machine_id.as_str())
+                .collect::<Vec<_>>(),
+            ["machine_08", "machine_09"]
+        );
+        assert_eq!(next_cursor, None);
     }
 
     #[test]

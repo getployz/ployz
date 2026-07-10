@@ -22,7 +22,10 @@ pub struct NetworkStatusCommand {
 impl NetworkStatusCommand {
     #[must_use]
     pub const fn into_request(self) -> NetworkStatusRequest {
-        NetworkStatusRequest { mode: self.mode }
+        NetworkStatusRequest {
+            mode: self.mode,
+            cursor: None,
+        }
     }
 }
 
@@ -114,9 +117,11 @@ pub struct NetworkStatusOutput {
 impl NetworkStatusOutput {
     #[must_use]
     pub fn from_result(result: NetworkStatusResult) -> Self {
-        Self {
-            machines: result.machines,
-        }
+        let NetworkStatusResult {
+            machines,
+            next_cursor: _,
+        } = result;
+        Self { machines }
     }
 
     #[must_use]

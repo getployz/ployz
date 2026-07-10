@@ -1,6 +1,8 @@
 use std::time::{Duration, Instant};
 
-use ployz_core::ops::{NetworkRepairOperationState, OperationStatus};
+use ployz_core::ops::{
+    DeployCompletionOutcome, DeployOperationState, NetworkRepairOperationState, OperationStatus,
+};
 use ployz_e2e::dind::{self, exec_in_container};
 use ployz_sdk_types::{
     NetworkDataplaneTestimony, NetworkInternalDnsTestimony, NetworkRepairRequest,
@@ -11,8 +13,9 @@ use ployz_test_support::ids::{machine_id, operation_id};
 use ployz_test_support::ops::wait_for_terminal_status;
 
 use super::{
-    DEPLOY_TERMINAL_BUDGET, add_and_join_edge, assert_unit_active, finish, init_core_cluster,
-    wait_for_machine_observations, with_evidence,
+    DEPLOY_TERMINAL_BUDGET, OVERLAY_FIRST_CONTACT_BUDGET, add_and_join_edge, assert_unit_active,
+    finish, init_core_cluster, internal_dns_deploy_target, reserved_deploy_request,
+    wait_for_machine_observations, wait_for_terminal_deploy_status, with_evidence,
 };
 
 /// Network observability is driven by intended membership, resolver answers
@@ -42,6 +45,7 @@ async fn scenario_network_status_resolve_and_repair() {
                 .api
                 .network_status(&NetworkStatusRequest {
                     mode: ployz_sdk_types::NetworkStatusMode::Snapshot,
+                    cursor: None,
                 })
                 .await
                 .expect("network status succeeds");
@@ -77,6 +81,73 @@ async fn scenario_network_status_resolve_and_repair() {
             "unexpected resolver testimony: {resolved:?}"
         );
 
+        let accepted = core
+            .api
+            .deploy_submit(
+                &reserved_deploy_request(
+                    &core,
+                    "idem_dind_network_resolve",
+                    internal_dns_deploy_target(),
+                )
+                .await,
+            )
+            .await
+            .expect("network resolve fixture deploy submits");
+        let deploy =
+            wait_for_terminal_deploy_status(&core, &accepted.operation_id, DEPLOY_TERMINAL_BUDGET)
+                .await;
+        assert!(
+            matches!(
+                &deploy,
+                OperationStatus::Deploy {
+                    state: DeployOperationState::Completed {
+                        outcome: DeployCompletionOutcome::Completed,
+                    },
+                    ..
+                }
+            ),
+            "network resolve fixture deploy did not complete: {deploy:?}"
+        );
+        let deadline = Instant::now() + OVERLAY_FIRST_CONTACT_BUDGET;
+        let resolved = loop {
+            let resolved = core
+                .api
+                .network_resolve(&NetworkResolveRequest {
+                    name: "server.internal_dns.internal".to_owned(),
+                })
+                .await
+                .expect("known network resolve succeeds");
+            if resolved.machines.len() == 2
+                && resolved.machines.iter().all(|testimony| {
+                    matches!(
+                        testimony,
+                        NetworkResolveMachineTestimony::Answered { addresses, .. }
+                            if addresses.len() == 1
+                    )
+                })
+            {
+                break resolved;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "known service did not resolve on every machine: {resolved:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        };
+        let mut answer_sets = resolved.machines.iter().map(|testimony| {
+            let NetworkResolveMachineTestimony::Answered { addresses, .. } = testimony else {
+                unreachable!("loop accepts answered testimony only")
+            };
+            addresses
+        });
+        let Some(first) = answer_sets.next() else {
+            panic!("known resolve omitted intended machines")
+        };
+        assert!(
+            answer_sets.all(|addresses| addresses == first),
+            "known service answers diverged: {resolved:?}"
+        );
+
         let stopped = exec_in_container(
             &docker,
             &edge.container_id,
@@ -91,6 +162,7 @@ async fn scenario_network_status_resolve_and_repair() {
             .api
             .network_status(&NetworkStatusRequest {
                 mode: ployz_sdk_types::NetworkStatusMode::Snapshot,
+                cursor: None,
             })
             .await
             .expect("network status retains silent intended machine");
@@ -129,6 +201,7 @@ async fn scenario_network_status_resolve_and_repair() {
                 .api
                 .network_status(&NetworkStatusRequest {
                     mode: ployz_sdk_types::NetworkStatusMode::Snapshot,
+                    cursor: None,
                 })
                 .await
                 .expect("network status after restart");

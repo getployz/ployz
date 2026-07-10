@@ -74,6 +74,7 @@ pub struct OperationApiHandlers {
     intent_change_client: async_nats::Client,
     machine_roster: MachineRosterStore,
     lease_intent: LeaseIntentStore,
+    intent_reader: NatsIntentReader,
     machine_query: Arc<MachineQueryService>,
     service_query: Arc<ServiceQueryService>,
     network_query: Arc<NetworkQueryService>,
@@ -119,7 +120,7 @@ impl OperationApiHandlers {
             facts.clone(),
             facts_reader.clone(),
         );
-        let logs_query = LogsQueryService::new(intent_reader, facts_reader, logs_tailer);
+        let logs_query = LogsQueryService::new(intent_reader.clone(), facts_reader, logs_tailer);
         let lease_intent = LeaseIntentStore::new(core_store.clone());
         Self {
             controllers,
@@ -137,6 +138,7 @@ impl OperationApiHandlers {
             intent_change_client,
             machine_roster,
             lease_intent,
+            intent_reader,
             machine_query: Arc::new(machine_query),
             service_query: Arc::new(service_query),
             network_query: Arc::new(network_query),
@@ -161,6 +163,10 @@ impl OperationApiHandlers {
 
     pub(crate) fn network_query(&self) -> &NetworkQueryService {
         &self.network_query
+    }
+
+    pub(crate) fn intent_reader(&self) -> &NatsIntentReader {
+        &self.intent_reader
     }
 
     pub(crate) fn volume_query(&self) -> &VolumeQueryService {

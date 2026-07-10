@@ -18,7 +18,10 @@ use ployz_core::dataplane::{
     PloyzNativeMeshPrepareReport,
 };
 use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::internal_dns::{InternalDnsFactWatermark, InternalDnsResolverStatus};
+use ployz_core::internal_dns::{
+    InternalDnsFactWatermark, InternalDnsResolverStatus, InternalDnsStatus,
+};
+use ployz_core::machine_runtime::MachineFactsRefreshConfirmation;
 use ployz_core::ops::{
     FailureMessage, NetworkRepairDnsRefreshProblem, NetworkRepairEvidence, NetworkRepairFailure,
     NetworkRepairMachineFactsRefreshOutcome, NetworkRepairProgressPhase,
@@ -33,6 +36,12 @@ const DNS_REFRESH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const DNS_STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
 const RECORD_ATTEMPTS: usize = 3;
 const RECORD_RETRY_DELAY: Duration = Duration::from_millis(100);
+
+#[derive(Debug, Clone)]
+struct DnsRefreshBaseline {
+    resolver_machine_id: MachineId,
+    fact_watermarks: Vec<InternalDnsFactWatermark>,
+}
 
 #[derive(Debug, Clone)]
 pub struct NetworkRepairOperation {
@@ -187,8 +196,16 @@ impl NetworkRepairOperation {
         {
             return;
         }
-        let watermarks = match self.refresh_machine_facts(&machine_ids).await {
-            Ok(watermarks) => watermarks,
+        let baselines = match self.gather_dns_refresh_baselines(&machine_ids).await {
+            Ok(baselines) => baselines,
+            Err(failure) => {
+                self.record_terminal(&operation_id, NetworkRepairTransition::Failed { failure })
+                    .await;
+                return;
+            }
+        };
+        let refreshes = match self.refresh_machine_facts(&machine_ids).await {
+            Ok(refreshes) => refreshes,
             Err(failure) => {
                 self.record_terminal(&operation_id, NetworkRepairTransition::Failed { failure })
                     .await;
@@ -198,9 +215,7 @@ impl NetworkRepairOperation {
         if !self
             .record_evidence(
                 &operation_id,
-                NetworkRepairEvidence::MachineFactsRefreshed {
-                    watermarks: watermarks.clone(),
-                },
+                NetworkRepairEvidence::MachineFactsRefreshed { refreshes },
                 NetworkRepairProgressPhase::RecordingMachineFactsEvidence,
             )
             .await
@@ -217,7 +232,7 @@ impl NetworkRepairOperation {
         {
             return;
         }
-        let confirmed = match self.confirm_dns_refresh(&machine_ids, &watermarks).await {
+        let confirmed = match self.confirm_dns_refresh(&machine_ids, &baselines).await {
             Ok(confirmed) => confirmed,
             Err(failure) => {
                 self.record_terminal(&operation_id, NetworkRepairTransition::Failed { failure })
@@ -288,20 +303,24 @@ impl NetworkRepairOperation {
     async fn refresh_machine_facts(
         &self,
         machine_ids: &[MachineId],
-    ) -> Result<Vec<InternalDnsFactWatermark>, NetworkRepairFailure> {
+    ) -> Result<Vec<MachineFactsRefreshConfirmation>, NetworkRepairFailure> {
+        let deadline = tokio::time::Instant::now() + self.operation_timeout;
         let outcomes = stream::iter(machine_ids.iter().cloned())
             .map(|machine_id| async move {
-                match self.facts_reader.refresh_machine_facts(&machine_id).await {
-                    Ok(InternalDnsFactWatermark {
+                match tokio::time::timeout_at(
+                    deadline,
+                    self.facts_reader.refresh_machine_facts(&machine_id),
+                )
+                .await
+                {
+                    Ok(Ok(refresh)) => {
+                        NetworkRepairMachineFactsRefreshOutcome::Refreshed { refresh }
+                    }
+                    Ok(Err(error)) => machine_facts_refresh_outcome(error),
+                    Err(_) => NetworkRepairMachineFactsRefreshOutcome::Unavailable {
                         machine_id,
-                        observed_at_unix_ms,
-                        snapshot_sha256,
-                    }) => NetworkRepairMachineFactsRefreshOutcome::Refreshed {
-                        machine_id,
-                        observed_at_unix_ms,
-                        snapshot_sha256,
+                        failure: NetworkRepairRequestFailure::TimedOut,
                     },
-                    Err(error) => machine_facts_refresh_outcome(error),
                 }
             })
             .buffer_unordered(MAX_CONCURRENT_MACHINE_READS)
@@ -318,15 +337,7 @@ impl NetworkRepairOperation {
         Ok(outcomes
             .into_iter()
             .map(|outcome| match outcome {
-                NetworkRepairMachineFactsRefreshOutcome::Refreshed {
-                    machine_id,
-                    observed_at_unix_ms,
-                    snapshot_sha256,
-                } => InternalDnsFactWatermark {
-                    machine_id,
-                    observed_at_unix_ms,
-                    snapshot_sha256,
-                },
+                NetworkRepairMachineFactsRefreshOutcome::Refreshed { refresh } => refresh,
                 NetworkRepairMachineFactsRefreshOutcome::Unavailable { .. }
                 | NetworkRepairMachineFactsRefreshOutcome::Failed { .. } => {
                     unreachable!("failed outcomes returned above")
@@ -335,10 +346,63 @@ impl NetworkRepairOperation {
             .collect())
     }
 
+    async fn gather_dns_refresh_baselines(
+        &self,
+        machine_ids: &[MachineId],
+    ) -> Result<Vec<DnsRefreshBaseline>, NetworkRepairFailure> {
+        let results = self.gather_dns_statuses(machine_ids).await;
+        let mut baselines = Vec::new();
+        let mut problems = Vec::new();
+        for (machine_id, result) in results {
+            match dns_status(&machine_id, result) {
+                Ok(status) => baselines.push(DnsRefreshBaseline {
+                    resolver_machine_id: machine_id,
+                    fact_watermarks: status.fact_watermarks,
+                }),
+                Err(problem) => problems.push(problem),
+            }
+        }
+        if problems.is_empty() {
+            Ok(baselines)
+        } else {
+            Err(NetworkRepairFailure::DnsRefreshFailed {
+                confirmed_machine_ids: baselines
+                    .into_iter()
+                    .map(|baseline| baseline.resolver_machine_id)
+                    .collect(),
+                problems,
+            })
+        }
+    }
+
+    async fn gather_dns_statuses(
+        &self,
+        machine_ids: &[MachineId],
+    ) -> Vec<(
+        MachineId,
+        Result<DnsStatusRpcOk, NatsJsonServiceRequestError>,
+    )> {
+        let timeout = DNS_STATUS_REQUEST_TIMEOUT.min(self.operation_timeout);
+        stream::iter(machine_ids.iter().cloned())
+            .map(|machine_id| async move {
+                let result = request_json::<_, DnsStatusRpcOk>(
+                    &self.client,
+                    machine_service(&machine_id, MachineServiceEndpoint::DnsStatus),
+                    &DnsStatusRpcRequest {},
+                    timeout,
+                )
+                .await;
+                (machine_id, result)
+            })
+            .buffer_unordered(MAX_CONCURRENT_MACHINE_READS)
+            .collect()
+            .await
+    }
+
     async fn confirm_dns_refresh(
         &self,
         machine_ids: &[MachineId],
-        watermarks: &[InternalDnsFactWatermark],
+        baselines: &[DnsRefreshBaseline],
     ) -> Result<Vec<MachineId>, NetworkRepairFailure> {
         let deadline = tokio::time::Instant::now() + self.operation_timeout;
         loop {
@@ -360,7 +424,19 @@ impl NetworkRepairOperation {
             let mut confirmed_machine_ids = Vec::new();
             let mut problems = Vec::new();
             for (machine_id, result) in results {
-                if let Some(problem) = dns_refresh_problem(&machine_id, result, watermarks) {
+                let Some(baseline) = baselines
+                    .iter()
+                    .find(|baseline| baseline.resolver_machine_id == machine_id)
+                else {
+                    problems.push(NetworkRepairDnsRefreshProblem::Stale {
+                        machine_id,
+                        stale_machine_ids: machine_ids.to_vec(),
+                    });
+                    continue;
+                };
+                if let Some(problem) =
+                    dns_refresh_problem(&machine_id, result, machine_ids, baseline)
+                {
                     problems.push(problem);
                 } else {
                     confirmed_machine_ids.push(machine_id);
@@ -562,29 +638,33 @@ fn dns_request_failure(error: NatsJsonServiceRequestError) -> NetworkRepairReque
 
 fn stale_machine_ids(
     observed: &[InternalDnsFactWatermark],
-    expected: &[InternalDnsFactWatermark],
+    expected_machine_ids: &[MachineId],
+    baseline: &[InternalDnsFactWatermark],
 ) -> Vec<MachineId> {
-    expected
+    expected_machine_ids
         .iter()
-        .filter(|expected| {
-            !observed.iter().any(|observed| {
-                observed.machine_id == expected.machine_id
-                    && observed.snapshot_sha256 == expected.snapshot_sha256
+        .filter(|machine_id| {
+            let previous = baseline
+                .iter()
+                .find(|watermark| watermark.machine_id == **machine_id)
+                .map(|watermark| watermark.generation);
+            !observed.iter().any(|watermark| {
+                watermark.machine_id == **machine_id
+                    && previous.is_none_or(|generation| watermark.generation > generation)
             })
         })
-        .map(|expected| expected.machine_id.clone())
+        .cloned()
         .collect()
 }
 
-fn dns_refresh_problem(
+fn dns_status(
     machine_id: &MachineId,
     result: Result<DnsStatusRpcOk, NatsJsonServiceRequestError>,
-    expected: &[InternalDnsFactWatermark],
-) -> Option<NetworkRepairDnsRefreshProblem> {
+) -> Result<InternalDnsStatus, NetworkRepairDnsRefreshProblem> {
     let status = match result {
         Ok(status) if status.machine_id == *machine_id => status.value,
         Ok(status) => {
-            return Some(NetworkRepairDnsRefreshProblem::Unavailable {
+            return Err(NetworkRepairDnsRefreshProblem::Unavailable {
                 machine_id: machine_id.clone(),
                 failure: NetworkRepairRequestFailure::WrongResponder {
                     actual_machine_id: status.machine_id,
@@ -592,18 +672,43 @@ fn dns_refresh_problem(
             });
         }
         Err(error) => {
-            return Some(NetworkRepairDnsRefreshProblem::Unavailable {
+            return Err(NetworkRepairDnsRefreshProblem::Unavailable {
                 machine_id: machine_id.clone(),
                 failure: dns_request_failure(error),
             });
         }
     };
+    Ok(status)
+}
+
+fn serving_dns_status(
+    machine_id: &MachineId,
+    result: Result<DnsStatusRpcOk, NatsJsonServiceRequestError>,
+) -> Result<InternalDnsStatus, NetworkRepairDnsRefreshProblem> {
+    let status = dns_status(machine_id, result)?;
     if !matches!(status.resolver, InternalDnsResolverStatus::Serving { .. }) {
-        return Some(NetworkRepairDnsRefreshProblem::ResolverNotServing {
+        return Err(NetworkRepairDnsRefreshProblem::ResolverNotServing {
             machine_id: machine_id.clone(),
         });
     }
-    let stale_machine_ids = stale_machine_ids(&status.fact_watermarks, expected);
+    Ok(status)
+}
+
+fn dns_refresh_problem(
+    machine_id: &MachineId,
+    result: Result<DnsStatusRpcOk, NatsJsonServiceRequestError>,
+    expected_machine_ids: &[MachineId],
+    baseline: &DnsRefreshBaseline,
+) -> Option<NetworkRepairDnsRefreshProblem> {
+    let status = match serving_dns_status(machine_id, result) {
+        Ok(status) => status,
+        Err(problem) => return Some(problem),
+    };
+    let stale_machine_ids = stale_machine_ids(
+        &status.fact_watermarks,
+        expected_machine_ids,
+        &baseline.fact_watermarks,
+    );
     if stale_machine_ids.is_empty() {
         None
     } else {
@@ -629,7 +734,7 @@ fn record_warning(operation_id: &OperationId, phase: &str, error: &RecordOperati
 mod tests {
     use super::*;
     use futures_util::future;
-    use ployz_core::internal_dns::InternalDnsStatus;
+    use ployz_core::internal_dns::InternalDnsFactGeneration;
     use ployz_nats::service_runtime::NatsServiceRequestFailure;
 
     fn machine_id(value: &str) -> MachineId {
@@ -663,17 +768,18 @@ mod tests {
 
     #[test]
     fn dns_refresh_check_distinguishes_silence_health_and_stale_cache() {
-        let expected = vec![InternalDnsFactWatermark {
-            machine_id: machine_id("machine_a"),
-            observed_at_unix_ms: 42,
-            snapshot_sha256: "new".to_owned(),
-        }];
+        let expected_machine_ids = vec![machine_id("machine_a")];
+        let baseline = DnsRefreshBaseline {
+            resolver_machine_id: machine_id("machine_b"),
+            fact_watermarks: vec![fact_watermark("machine_a", 42, 1)],
+        };
         let silence = dns_refresh_problem(
             &machine_id("machine_b"),
             Err(NatsJsonServiceRequestError::Request {
                 failure: NatsServiceRequestFailure::NoResponders,
             }),
-            &expected,
+            &expected_machine_ids,
+            &baseline,
         );
         let stale = dns_refresh_problem(
             &machine_id("machine_b"),
@@ -683,14 +789,11 @@ mod tests {
                     resolver: InternalDnsResolverStatus::Serving {
                         bound: "10.198.2.1:53".parse().expect("resolver address"),
                     },
-                    fact_watermarks: vec![InternalDnsFactWatermark {
-                        machine_id: machine_id("machine_a"),
-                        observed_at_unix_ms: 42,
-                        snapshot_sha256: "old".to_owned(),
-                    }],
+                    fact_watermarks: vec![fact_watermark("machine_a", 42, 1)],
                 },
             }),
-            &expected,
+            &expected_machine_ids,
+            &baseline,
         );
         let not_serving = dns_refresh_problem(
             &machine_id("machine_b"),
@@ -698,14 +801,11 @@ mod tests {
                 machine_id: machine_id("machine_b"),
                 value: InternalDnsStatus {
                     resolver: InternalDnsResolverStatus::AwaitingBind { attempts: 2 },
-                    fact_watermarks: vec![InternalDnsFactWatermark {
-                        machine_id: machine_id("machine_a"),
-                        observed_at_unix_ms: 42,
-                        snapshot_sha256: "new".to_owned(),
-                    }],
+                    fact_watermarks: vec![fact_watermark("machine_a", 42, 2)],
                 },
             }),
-            &expected,
+            &expected_machine_ids,
+            &baseline,
         );
 
         assert!(matches!(
@@ -728,5 +828,61 @@ mod tests {
             Some(NetworkRepairDnsRefreshProblem::ResolverNotServing { machine_id })
                 if machine_id == self::machine_id("machine_b")
         ));
+    }
+
+    #[test]
+    fn dns_baseline_preserves_watermarks_while_resolver_is_starting() {
+        let status = dns_status(
+            &machine_id("machine_b"),
+            Ok(DnsStatusRpcOk {
+                machine_id: machine_id("machine_b"),
+                value: InternalDnsStatus {
+                    resolver: InternalDnsResolverStatus::AwaitingBind { attempts: 1 },
+                    fact_watermarks: vec![fact_watermark("machine_a", 42, 1)],
+                },
+            }),
+        )
+        .expect("a non-serving resolver still provides a refresh baseline");
+
+        assert_eq!(
+            status.fact_watermarks,
+            vec![fact_watermark("machine_a", 42, 1)]
+        );
+    }
+
+    #[test]
+    fn dns_refresh_accepts_a_later_periodic_full_snapshot() {
+        let baseline = DnsRefreshBaseline {
+            resolver_machine_id: machine_id("machine_b"),
+            fact_watermarks: vec![fact_watermark("machine_a", 42, 1)],
+        };
+        let problem = dns_refresh_problem(
+            &machine_id("machine_b"),
+            Ok(DnsStatusRpcOk {
+                machine_id: machine_id("machine_b"),
+                value: InternalDnsStatus {
+                    resolver: InternalDnsResolverStatus::Serving {
+                        bound: "10.198.2.1:53".parse().expect("resolver address"),
+                    },
+                    fact_watermarks: vec![fact_watermark("machine_a", 42, 3)],
+                },
+            }),
+            &[machine_id("machine_a")],
+            &baseline,
+        );
+
+        assert_eq!(problem, None);
+    }
+
+    fn fact_watermark(
+        machine_id_value: &str,
+        observed_at_unix_ms: u64,
+        generation: u64,
+    ) -> InternalDnsFactWatermark {
+        InternalDnsFactWatermark {
+            machine_id: machine_id(machine_id_value),
+            observed_at_unix_ms,
+            generation: InternalDnsFactGeneration::try_new(generation).expect("generation"),
+        }
     }
 }
