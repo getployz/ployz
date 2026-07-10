@@ -39,16 +39,19 @@ fn cli_parses_network_resolve() {
 
 #[test]
 fn cli_parses_detached_network_repair() {
-    let command = parse_command(["network", "repair", "--detach"].map(str::to_owned))
-        .expect("network repair parses");
+    let command = parse_command(
+        ["network", "repair", "--machine", "machine_a", "--detach"].map(str::to_owned),
+    )
+    .expect("network repair parses");
     let PloyzctlCommand::NetworkRepair(command) = command else {
         panic!("expected network repair command");
     };
 
     assert!(command.detach);
+    let request = command.into_request();
+    assert_eq!(request.machine_id, Some(machine_id("machine_a")));
     assert!(
-        command
-            .into_request()
+        request
             .operation_id
             .as_str()
             .starts_with("op_network_repair_cluster_")
@@ -86,6 +89,7 @@ fn network_repair_status_renders_typed_failure() {
     let output = StatusOutput::new(ployz_sdk_types::OperationStatusSnapshot {
         status: ployz_sdk_types::OperationStatus::NetworkRepair {
             id: operation_id("op_network_repair"),
+            target_machine_id: None,
             state: ployz_sdk_types::NetworkRepairOperationState::Failed {
                 failure: ployz_sdk_types::NetworkRepairFailure::NoActiveMachines,
             },
@@ -95,6 +99,23 @@ fn network_repair_status_renders_typed_failure() {
     .render();
 
     assert!(output.contains("failure no-active-machines\n"));
+}
+
+#[test]
+fn targeted_network_repair_status_renders_machine_subject() {
+    let output = StatusOutput::new(ployz_sdk_types::OperationStatusSnapshot {
+        status: ployz_sdk_types::OperationStatus::NetworkRepair {
+            id: operation_id("op_network_repair"),
+            target_machine_id: Some(machine_id("machine_a")),
+            state: ployz_sdk_types::NetworkRepairOperationState::Running {
+                stage: ployz_sdk_types::NetworkRepairRunningStage::PreparingDataplane,
+            },
+            last_event_sequence: event_sequence(2),
+        },
+    })
+    .render();
+
+    assert!(output.contains("\nmachine machine_a\n"));
 }
 
 #[test]

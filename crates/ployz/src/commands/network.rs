@@ -49,6 +49,7 @@ pub(crate) fn network_resolve_command(parsed: NetworkResolveCli) -> NetworkResol
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkRepairCommand {
     pub operation_id: OperationId,
+    pub machine_id: Option<ployz_core::ids::MachineId>,
     pub detach: bool,
 }
 
@@ -57,6 +58,7 @@ impl NetworkRepairCommand {
     pub fn into_request(self) -> NetworkRepairRequest {
         NetworkRepairRequest {
             operation_id: self.operation_id,
+            machine_id: self.machine_id,
         }
     }
 }
@@ -69,6 +71,11 @@ pub(crate) fn network_repair_command(
         .operation_id;
     Ok(NetworkRepairCommand {
         operation_id,
+        machine_id: parsed
+            .machine
+            .map(ployz_core::ids::MachineId::try_new)
+            .transpose()
+            .map_err(|error| invalid_value("machine id", error))?,
         detach: parsed.detach,
     })
 }
@@ -86,6 +93,8 @@ pub(crate) struct NetworkResolveCli {
 
 #[derive(Debug, Args)]
 pub(crate) struct NetworkRepairCli {
+    #[arg(long)]
+    machine: Option<String>,
     #[arg(long)]
     detach: bool,
 }

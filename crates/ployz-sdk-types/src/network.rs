@@ -93,6 +93,9 @@ pub type NetworkResolveResponse = OperationApiResponse<NetworkResolveResult, Net
 #[serde(deny_unknown_fields)]
 pub struct NetworkRepairRequest {
     pub operation_id: OperationId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub machine_id: Option<MachineId>,
 }
 
 pub type NetworkRepairResponse = OperationApiResponse<AcceptedOperation, NetworkRepairError>;

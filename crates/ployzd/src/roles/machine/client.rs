@@ -12,6 +12,7 @@ use crate::roles::machine::protocol::{
     MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkDomainError,
     MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcRequest,
     MachineFactsGetDomainError, MachineFactsGetRpcOk, MachineFactsGetRpcRequest,
+    MachineFactsRefreshDomainError, MachineFactsRefreshRpcOk, MachineFactsRefreshRpcRequest,
     MachineLogsTailDomainError, MachineLogsTailResult, MachineLogsTailRpcOk,
     MachineLogsTailRpcRequest, MachineRpcResponder, MachineRpcResponse, MachineRunContainerOutcome,
     MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
@@ -108,6 +109,24 @@ pub enum MachineFactsReadError {
     },
     #[error(
         "machine {} facts unavailable: {}",
+        machine_id.as_str(),
+        reason.failure_message().as_str()
+    )]
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MachineFactsRefreshError {
+    #[error("machine {} facts refresh failed: {}", machine_id.as_str(), message.as_str())]
+    RefreshFailed {
+        machine_id: MachineId,
+        message: ployz_core::ops::FailureMessage,
+    },
+    #[error(
+        "machine {} facts refresh unavailable: {}",
         machine_id.as_str(),
         reason.failure_message().as_str()
     )]
@@ -260,6 +279,34 @@ impl NatsMachineFactsReader {
                 reason,
             },
             MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
+        })
+    }
+
+    pub async fn refresh_machine_facts(
+        &self,
+        machine_id: &MachineId,
+        operation_id: OperationId,
+    ) -> Result<u64, MachineFactsRefreshError> {
+        call_machine::<MachineFactsRefreshRpcOk, MachineFactsRefreshDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::FactsRefresh,
+            &MachineFactsRefreshRpcRequest { operation_id },
+        )
+        .await
+        .map(|ok| ok.observed_at_unix_ms)
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => MachineFactsRefreshError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason,
+            },
+            MachineCallError::Domain(MachineFactsRefreshDomainError::RefreshFailed { message }) => {
+                MachineFactsRefreshError::RefreshFailed {
+                    machine_id: machine_id.clone(),
+                    message,
+                }
+            }
         })
     }
 }

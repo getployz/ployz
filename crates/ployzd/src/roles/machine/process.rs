@@ -10,7 +10,7 @@ use crate::adapters::host_dataplane::{
 use crate::config::MachineProcessConfig;
 use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, shutdown_signal};
 use crate::roles::machine::facts::{
-    MachineEndpointCache, current_unix_ms, read_machine_facts_snapshot, refresh_machine_endpoints,
+    MachineEndpointCache, MachineFactsPublishError, publish_machine_facts,
 };
 use crate::roles::machine::intent_mirror::{MachineIntentMirror, MachinePendingJoinMirror};
 use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
@@ -23,7 +23,7 @@ use crate::roles::nats_failover::{
 use futures_util::StreamExt;
 use ployz_core::ids::MachineId;
 use ployz_core::state::PendingMachineJoinRecoverySnapshot;
-use ployz_core::subjects::{PENDING_MACHINE_JOINS_CHANGED, machine_facts};
+use ployz_core::subjects::PENDING_MACHINE_JOINS_CHANGED;
 use ployz_nats::connect::{NatsClientUrl, NatsConnectError, connect_authenticated_pool};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
 use std::sync::{Arc, Mutex};
@@ -337,25 +337,16 @@ impl MachineObservationPublisher {
     where
         R: MachineContainerRunner,
     {
-        let endpoints = refresh_machine_endpoints(machine_id, &self.endpoint_cache).await;
-        let facts = read_machine_facts_snapshot(machine_id, runner, endpoints, current_unix_ms())
+        publish_machine_facts(&self.client, machine_id, runner, &self.endpoint_cache)
             .await
-            .map_err(MachineProcessError::ReadFacts)?;
-        let payload = serde_json::to_vec(&facts).map_err(MachineProcessError::EncodeFacts)?;
-        self.client
-            .publish(machine_facts(machine_id), payload.into())
-            .await
-            .map_err(|error| MachineProcessError::PublishFacts {
-                message: error.to_string(),
-            })?;
-        self.client
-            .flush()
-            .await
-            .map_err(|error| MachineProcessError::PublishFacts {
-                message: error.to_string(),
-            })?;
-
-        Ok(())
+            .map(|_| ())
+            .map_err(|error| match error {
+                MachineFactsPublishError::Read(error) => MachineProcessError::ReadFacts(error),
+                MachineFactsPublishError::Encode(error) => MachineProcessError::EncodeFacts(error),
+                MachineFactsPublishError::Publish { message } => {
+                    MachineProcessError::PublishFacts { message }
+                }
+            })
     }
 }
 

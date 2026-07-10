@@ -143,6 +143,81 @@ async fn nats_machine_preparer_bootstraps_public_keys_then_programs_peers() {
 }
 
 #[tokio::test]
+async fn nats_machine_preparer_applies_full_projection_only_to_repair_target() {
+    let nats = test_nats().await;
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let mut services = Vec::new();
+    for (machine, machine_client) in [
+        ("machine_a", nats.machine_a.clone()),
+        ("machine_b", nats.machine_b.clone()),
+    ] {
+        let received = Arc::clone(&received);
+        services.push(
+            start_wireguard_ebpf_prepare_service(
+                machine_client,
+                &machine_id(machine),
+                move |request| {
+                    received
+                        .lock()
+                        .expect("received request lock is not poisoned")
+                        .push((machine.to_owned(), request));
+                },
+            )
+            .await,
+        );
+    }
+    let _machine_a_facts =
+        start_machine_facts_service(nats.machine_a.clone(), "machine_a", Some(1)).await;
+    let _machine_b_facts =
+        start_machine_facts_service(nats.machine_b.clone(), "machine_b", Some(2)).await;
+    let preparer = NatsMachineDataplanePreparer::new(nats.client);
+
+    let report = preparer
+        .prepare_dataplane_for_targets(
+            dataplane_request(&["machine_a", "machine_b"]),
+            &[machine_id("machine_b")],
+        )
+        .await
+        .expect("targeted dataplane prepare succeeds");
+
+    assert_eq!(report.machines, vec![ready_machine("machine_b")]);
+    let received = received
+        .lock()
+        .expect("received request lock is not poisoned");
+    let target_request = received
+        .iter()
+        .find(|(machine, request)| {
+            machine == "machine_b"
+                && matches!(
+                    request.request,
+                    MachinePloyzNativeMeshPrepareRpcRequest::PrepareDataplane { .. }
+                )
+        })
+        .map(|(_, request)| native_mesh_request(request))
+        .expect("target receives dataplane projection");
+    let MachinePloyzNativeMeshPrepareRpcRequest::PrepareDataplane {
+        endpoint_routes,
+        peers,
+    } = target_request
+    else {
+        panic!("target receives prepare request");
+    };
+    assert_eq!(endpoint_routes.len(), 2);
+    assert_eq!(peers.len(), 2);
+    assert_eq!(
+        received
+            .iter()
+            .filter(|(_, request)| matches!(
+                request.request,
+                MachinePloyzNativeMeshPrepareRpcRequest::PrepareDataplane { .. }
+            ))
+            .map(|(machine, _)| machine.as_str())
+            .collect::<Vec<_>>(),
+        vec!["machine_b"]
+    );
+}
+
+#[tokio::test]
 async fn nats_machine_preparer_maps_missing_responder_to_wireguard_unavailable() {
     let nats = test_nats().await;
     let mut preparer = NatsMachineDataplanePreparer::new(nats.client);

@@ -144,6 +144,7 @@ pub async fn network_repair(
         .controllers()
         .submit_network_repair(NetworkRepairSubmitCommand {
             operation_id: request.operation_id,
+            target_machine_id: request.machine_id,
         })
         .await
         .map_err(|error| {

@@ -266,23 +266,34 @@ impl OperationAction for NetworkRepairOperationSubmission {
     type Payload = NetworkRepairPayload;
     const KIND: OperationKind = OperationKind::NetworkRepair;
 
-    fn submitted_event(operation_id: OperationId, _payload: Self::Payload) -> OperationEvent {
-        OperationEvent::NetworkRepairSubmitted { operation_id }
+    fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEvent {
+        OperationEvent::NetworkRepairSubmitted {
+            operation_id,
+            target_machine_id: payload.target_machine_id,
+        }
     }
 
     fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
-        let OperationEvent::NetworkRepairSubmitted { operation_id } = event else {
+        let OperationEvent::NetworkRepairSubmitted {
+            operation_id,
+            target_machine_id,
+        } = event
+        else {
             return None;
         };
-        Some((operation_id, NetworkRepairPayload))
+        Some((operation_id, NetworkRepairPayload { target_machine_id }))
     }
 
     fn accepted_status(
         operation_id: OperationId,
-        _payload: &Self::Payload,
+        payload: &Self::Payload,
         sequence: EventSequence,
     ) -> OperationStatus {
-        OperationStatus::network_repair_accepted(operation_id, sequence)
+        OperationStatus::network_repair_accepted(
+            operation_id,
+            payload.target_machine_id.clone(),
+            sequence,
+        )
     }
 }
 

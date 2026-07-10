@@ -97,6 +97,35 @@ pub enum MachineFactsGetDomainError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineFactsRefreshRpcRequest {
+    pub operation_id: OperationId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineFactsRefreshRpcOk {
+    pub machine_id: MachineId,
+    pub observed_at_unix_ms: u64,
+}
+
+impl MachineRpcResponder for MachineFactsRefreshRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        let Self { machine_id, .. } = self;
+        machine_id
+    }
+}
+
+pub type MachineFactsRefreshRpcResponse =
+    MachineRpcResponse<MachineFactsRefreshRpcOk, MachineFactsRefreshDomainError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineFactsRefreshDomainError {
+    RefreshFailed { message: FailureMessage },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineEnsureEndpointNetworkDomainError {
     EnsureFailed { message: FailureMessage },

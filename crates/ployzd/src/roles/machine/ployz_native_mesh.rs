@@ -37,6 +37,28 @@ impl DataplanePreparer for NatsMachineDataplanePreparer {
 }
 
 impl NatsMachineDataplanePreparer {
+    pub async fn prepare_dataplane_for_targets(
+        &self,
+        request: DataplanePrepareRequest,
+        targets: &[MachineId],
+    ) -> Result<PloyzNativeMeshPrepareReport, DataplanePrepareError> {
+        let members = request.machines().into_iter().collect::<BTreeSet<_>>();
+        if targets.is_empty() || targets.iter().any(|target| !members.contains(target)) {
+            return Err(DataplanePrepareError::InvalidReport {
+                message: failure_message(
+                    "network repair dataplane targets must be active members".to_owned(),
+                ),
+            });
+        }
+        let request = self
+            .ployz_native_mesh_prepare_request(request)
+            .await
+            .map_err(DataplanePrepareError::from)?;
+        self.prepare_ployz_native_mesh_targets(request, targets)
+            .await
+            .map_err(DataplanePrepareError::from)
+    }
+
     async fn ployz_native_mesh_prepare_request(
         &self,
         request: DataplanePrepareRequest,
@@ -73,6 +95,16 @@ impl NatsMachineDataplanePreparer {
         &self,
         request: PloyzNativeMeshPrepareRequest,
     ) -> Result<PloyzNativeMeshPrepareReport, WireGuardEbpfPrepareError> {
+        let targets = request.machines.clone();
+        self.prepare_ployz_native_mesh_targets(request, &targets)
+            .await
+    }
+
+    async fn prepare_ployz_native_mesh_targets(
+        &self,
+        request: PloyzNativeMeshPrepareRequest,
+        targets: &[MachineId],
+    ) -> Result<PloyzNativeMeshPrepareReport, WireGuardEbpfPrepareError> {
         let peers = if request.peers.is_empty() && request.machines.len() > 1 {
             let rpc_request = read_public_key_request(&request);
             let public_keys = try_join_all(request.machines.iter().map(|machine_id| {
@@ -87,12 +119,12 @@ impl NatsMachineDataplanePreparer {
         let final_request = request.with_peers(peers);
         let rpc_request = MachineDataplanePrepareRpcRequest::from(final_request.clone());
         let machines =
-            try_join_all(final_request.machines.iter().map(|machine_id| {
+            try_join_all(targets.iter().map(|machine_id| {
                 prepare_machine_ployz_native_mesh(self, machine_id, &rpc_request)
             }))
             .await?;
 
-        PloyzNativeMeshPrepareReport::for_request(&final_request, machines)
+        PloyzNativeMeshPrepareReport::from_machines(machines)
             .map_err(ployz_native_mesh_report_error)
     }
 }

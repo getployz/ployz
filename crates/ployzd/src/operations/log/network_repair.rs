@@ -14,12 +14,15 @@ impl OperationRepository {
         let submitted = self
             .submit_operation::<NetworkRepairOperationSubmission>(
                 submission.operation_id,
-                NetworkRepairPayload,
+                NetworkRepairPayload {
+                    target_machine_id: submission.target_machine_id,
+                },
             )
             .await?;
         Ok(AcceptedNetworkRepairSubmission {
             operation_id: submitted.operation_id,
             start_sequence: submitted.start_sequence,
+            target_machine_id: submitted.payload.target_machine_id,
             should_start_execution: submitted.should_start_execution,
         })
     }

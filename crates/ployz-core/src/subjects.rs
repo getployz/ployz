@@ -303,6 +303,8 @@ impl NetworkRepairRunningStage {
     pub const fn as_subject(&self) -> &'static str {
         match self {
             Self::PreparingDataplane => "preparing_dataplane",
+            Self::RefreshingMachineFacts => "refreshing_machine_facts",
+            Self::ConfirmingDnsRefresh => "confirming_dns_refresh",
         }
     }
 }
@@ -331,6 +333,7 @@ impl VolumeRemoveRunningStage {
 pub enum MachineServiceEndpoint {
     Inspect,
     FactsGet,
+    FactsRefresh,
     DnsResolve,
     DnsStatus,
     ContainerEnsureEndpointNetwork,
@@ -359,6 +362,7 @@ impl MachineServiceEndpoint {
         match self {
             Self::Inspect => "inspect",
             Self::FactsGet => "facts.get",
+            Self::FactsRefresh => "facts.refresh",
             Self::DnsResolve => "dns.resolve",
             Self::DnsStatus => "dns.status",
             Self::ContainerEnsureEndpointNetwork => "container.ensure_endpoint_network",
@@ -388,6 +392,7 @@ impl MachineServiceEndpoint {
             | Self::DataplaneStatus
             | Self::LogsTail => MachineServiceEndpointExecution::Query,
             Self::ContainerEnsureEndpointNetwork
+            | Self::FactsRefresh
             | Self::ContainerRun
             | Self::ContainerRestart
             | Self::ContainerStop

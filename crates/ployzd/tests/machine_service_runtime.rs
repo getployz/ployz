@@ -9,9 +9,12 @@ use ployz_core::dataplane::{
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
 use ployz_core::machine_runtime::{
-    ContainerRuntimeState, MachineContainerFactDelta, ManagedContainerIdentity,
+    ContainerRuntimeState, MachineContainerFactDelta, MachineFactsSnapshot,
+    ManagedContainerIdentity,
 };
-use ployz_core::subjects::{MachineServiceEndpoint, machine_container_facts, machine_service};
+use ployz_core::subjects::{
+    MachineServiceEndpoint, machine_container_facts, machine_facts, machine_service,
+};
 use ployz_nats::service_runtime::request_json;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{container_id, failure_message, machine_id, operation_id};
@@ -154,6 +157,49 @@ async fn machine_role_service_gets_fresh_facts_without_observation_tick() {
         ContainerRuntimeState::running_unroutable()
     );
     assert!(facts.observed_at_unix_ms() > 0);
+}
+
+#[tokio::test]
+async fn machine_role_service_refreshes_and_publishes_full_facts() {
+    let nats = test_nats().await;
+    let mut snapshots = nats
+        .client
+        .subscribe(machine_facts(&machine_id("machine_a")))
+        .await
+        .expect("subscribe machine facts");
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(RecordingRunnerState::default())
+            .with_existing(existing_container("ctr_existing", managed_identity())),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.client
+        .flush()
+        .await
+        .expect("flush snapshot subscription");
+    let watermark = NatsMachineFactsReader::new(nats.client)
+        .with_request_timeout(Duration::from_secs(1))
+        .refresh_machine_facts(&machine_id("machine_a"), operation_id("op_repair"))
+        .await
+        .expect("facts refresh succeeds");
+    let message = tokio::time::timeout(Duration::from_secs(1), snapshots.next())
+        .await
+        .expect("snapshot arrives")
+        .expect("snapshot subscription stays open");
+    let facts = serde_json::from_slice::<MachineFactsSnapshot>(&message.payload)
+        .expect("snapshot payload decodes");
+
+    assert_eq!(facts.observed_at_unix_ms(), watermark);
+    assert!(
+        facts
+            .containers()
+            .container(&container_id("ctr_existing"))
+            .is_some()
+    );
 }
 
 #[tokio::test]

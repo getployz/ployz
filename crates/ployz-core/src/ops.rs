@@ -62,8 +62,9 @@ pub use namespace_remove::{
     NamespaceRemoveTransition, project_namespace_remove_transition,
 };
 pub use network_repair::{
-    NetworkRepairEvidence, NetworkRepairFailure, NetworkRepairOperationState,
-    NetworkRepairRunningStage, NetworkRepairTransition, project_network_repair_transition,
+    NetworkRepairEvidence, NetworkRepairFailure, NetworkRepairMachineFactWatermark,
+    NetworkRepairOperationState, NetworkRepairRunningStage, NetworkRepairTransition,
+    project_network_repair_transition,
 };
 pub use projection::{
     OperationProjection, ProjectionOperationState, StatusProjectionError, project_operation_event,
@@ -154,6 +155,8 @@ pub enum OperationStatus {
     },
     NetworkRepair {
         id: OperationId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_machine_id: Option<MachineId>,
         state: NetworkRepairOperationState,
         last_event_sequence: EventSequence,
     },
@@ -310,9 +313,14 @@ impl OperationStatus {
     }
 
     #[must_use]
-    pub fn network_repair_accepted(id: OperationId, event_sequence: EventSequence) -> Self {
+    pub fn network_repair_accepted(
+        id: OperationId,
+        target_machine_id: Option<MachineId>,
+        event_sequence: EventSequence,
+    ) -> Self {
         Self::NetworkRepair {
             id,
+            target_machine_id,
             state: NetworkRepairOperationState::Accepted,
             last_event_sequence: event_sequence,
         }

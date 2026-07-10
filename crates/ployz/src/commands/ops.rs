@@ -288,7 +288,12 @@ fn operation_subject(status: &OperationStatus) -> String {
             machine_id.as_str(),
             successor_nats_url.as_str()
         ),
-        OperationStatus::NetworkRepair { .. } => "cluster".to_owned(),
+        OperationStatus::NetworkRepair {
+            target_machine_id, ..
+        } => target_machine_id.as_ref().map_or_else(
+            || "cluster".to_owned(),
+            |machine_id| format!("machine {}", machine_id.as_str()),
+        ),
         OperationStatus::ServiceRestart { service_id, .. } => {
             format!("service {}", service_id.as_str())
         }
@@ -602,6 +607,8 @@ impl DeployEventRenderContext {
             | OperationEvent::NetworkRepairSubmitted { .. }
             | OperationEvent::NetworkRepairRunning { .. }
             | OperationEvent::NetworkRepairDataplanePrepared { .. }
+            | OperationEvent::NetworkRepairMachineFactsRefreshed { .. }
+            | OperationEvent::NetworkRepairDnsRefreshConfirmed { .. }
             | OperationEvent::NetworkRepairCompleted { .. }
             | OperationEvent::NetworkRepairFailed { .. }
             | OperationEvent::ServiceRestartSubmitted { .. }
@@ -677,6 +684,8 @@ fn render_replayed_event_text(
         | OperationEvent::NetworkRepairSubmitted { .. }
         | OperationEvent::NetworkRepairRunning { .. }
         | OperationEvent::NetworkRepairDataplanePrepared { .. }
+        | OperationEvent::NetworkRepairMachineFactsRefreshed { .. }
+        | OperationEvent::NetworkRepairDnsRefreshConfirmed { .. }
         | OperationEvent::NetworkRepairCompleted { .. }
         | OperationEvent::ServiceRestartSubmitted { .. }
         | OperationEvent::ServiceRestartRunning { .. }
@@ -758,6 +767,12 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::NetworkRepairRunning { .. } => "network.repair.running",
         OperationEvent::NetworkRepairDataplanePrepared { .. } => {
             "network.repair.dataplane_prepared"
+        }
+        OperationEvent::NetworkRepairMachineFactsRefreshed { .. } => {
+            "network.repair.machine_facts_refreshed"
+        }
+        OperationEvent::NetworkRepairDnsRefreshConfirmed { .. } => {
+            "network.repair.dns_refresh_confirmed"
         }
         OperationEvent::NetworkRepairCompleted { .. } => "network.repair.completed",
         OperationEvent::NetworkRepairFailed { .. } => "network.repair.failed",

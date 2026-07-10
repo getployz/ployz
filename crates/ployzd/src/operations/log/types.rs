@@ -154,10 +154,13 @@ pub struct NamespaceRemoveOperationSubmission {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkRepairOperationSubmission {
     pub operation_id: OperationId,
+    pub target_machine_id: Option<MachineId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct NetworkRepairPayload;
+pub(super) struct NetworkRepairPayload {
+    pub(super) target_machine_id: Option<MachineId>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedLeaseOperationSubmission {
@@ -251,6 +254,7 @@ pub struct AcceptedNamespaceRemoveSubmission {
 pub struct AcceptedNetworkRepairSubmission {
     pub operation_id: OperationId,
     pub start_sequence: EventSequence,
+    pub target_machine_id: Option<MachineId>,
     pub should_start_execution: bool,
 }
 

@@ -6,7 +6,9 @@ use super::containers::{
     handle_ensure_endpoint_network, handle_volume_remove,
 };
 use super::dataplane::{handle_dataplane_prepare, handle_dataplane_status};
-use super::facts::{MachineEndpointCache, MachineFactsState, handle_facts_get};
+use super::facts::{
+    MachineEndpointCache, MachineFactsState, handle_facts_get, handle_facts_refresh,
+};
 use super::logs::handle_logs_tail;
 use super::substrate::{handle_substrate_report, handle_substrate_update};
 use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
@@ -66,7 +68,7 @@ where
         runner: runner.clone(),
         client: client.clone(),
     };
-    let mut runtime = start_nats_service(client, &spec)
+    let mut runtime = start_nats_service(client.clone(), &spec)
         .await
         .map_err(MachineServiceError::Nats)?;
 
@@ -76,9 +78,22 @@ where
         MachineServiceEndpoint::FactsGet,
         MachineFactsState {
             runner: runner.clone(),
-            endpoint_cache,
+            endpoint_cache: endpoint_cache.clone(),
+            client: client.clone(),
         },
         handle_facts_get,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::FactsRefresh,
+        MachineFactsState {
+            runner: runner.clone(),
+            endpoint_cache,
+            client: client.clone(),
+        },
+        handle_facts_refresh,
     )
     .await?;
     bind_machine_endpoint(

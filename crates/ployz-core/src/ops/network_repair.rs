@@ -19,6 +19,8 @@ use super::{EventSequence, OperationKind, OperationStatus};
 #[serde(rename_all = "snake_case")]
 pub enum NetworkRepairRunningStage {
     PreparingDataplane,
+    RefreshingMachineFacts,
+    ConfirmingDnsRefresh,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +49,9 @@ impl NetworkRepairOperationState {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NetworkRepairFailure {
     NoActiveMachines,
+    TargetMachineNotFound {
+        machine_id: MachineId,
+    },
     IntentReadFailed {
         message: FailureMessage,
     },
@@ -58,6 +63,30 @@ pub enum NetworkRepairFailure {
     DataplaneReportInvalid {
         message: FailureMessage,
     },
+    MachineFactsRefreshUnavailable {
+        machine_id: MachineId,
+        message: FailureMessage,
+    },
+    MachineFactsRefreshFailed {
+        machine_id: MachineId,
+        message: FailureMessage,
+    },
+    DnsRefreshUnavailable {
+        machine_id: MachineId,
+        message: FailureMessage,
+    },
+    DnsRefreshStale {
+        machine_id: MachineId,
+        stale_machine_ids: Vec<MachineId>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct NetworkRepairMachineFactWatermark {
+    pub machine_id: MachineId,
+    pub observed_at_unix_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +102,12 @@ pub enum NetworkRepairEvidence {
     DataplanePrepared {
         report: PloyzNativeMeshPrepareReport,
     },
+    MachineFactsRefreshed {
+        watermarks: Vec<NetworkRepairMachineFactWatermark>,
+    },
+    DnsRefreshConfirmed {
+        machine_ids: Vec<MachineId>,
+    },
 }
 
 impl NetworkRepairEvidence {
@@ -83,6 +118,18 @@ impl NetworkRepairEvidence {
                 operation_id: operation_id.clone(),
                 report: report.clone(),
             },
+            Self::MachineFactsRefreshed { watermarks } => {
+                OperationEvent::NetworkRepairMachineFactsRefreshed {
+                    operation_id: operation_id.clone(),
+                    watermarks: watermarks.clone(),
+                }
+            }
+            Self::DnsRefreshConfirmed { machine_ids } => {
+                OperationEvent::NetworkRepairDnsRefreshConfirmed {
+                    operation_id: operation_id.clone(),
+                    machine_ids: machine_ids.clone(),
+                }
+            }
         }
     }
 }
@@ -133,37 +180,51 @@ pub(super) enum NetworkRepairEvent {
 
 pub(super) fn project_event(
     id: &OperationId,
+    target_machine_id: &Option<MachineId>,
     state: &NetworkRepairOperationState,
     event: NetworkRepairEvent,
     event_sequence: EventSequence,
 ) -> Result<OperationProjection, StatusProjectionError> {
     match event {
         NetworkRepairEvent::Submitted => Ok(OperationProjection::AlreadySatisfied),
-        NetworkRepairEvent::Evidence(NetworkRepairEvidence::DataplanePrepared { .. }) => {
-            if !matches!(
-                state,
-                NetworkRepairOperationState::Running {
-                    stage: NetworkRepairRunningStage::PreparingDataplane,
+        NetworkRepairEvent::Evidence(evidence) => {
+            let expected_stage = match evidence {
+                NetworkRepairEvidence::DataplanePrepared { .. } => {
+                    NetworkRepairRunningStage::PreparingDataplane
                 }
-            ) {
+                NetworkRepairEvidence::MachineFactsRefreshed { .. } => {
+                    NetworkRepairRunningStage::RefreshingMachineFacts
+                }
+                NetworkRepairEvidence::DnsRefreshConfirmed { .. } => {
+                    NetworkRepairRunningStage::ConfirmingDnsRefresh
+                }
+            };
+            if !matches!(state, NetworkRepairOperationState::Running { stage } if *stage == expected_stage)
+            {
                 return Ok(OperationProjection::AlreadySatisfied);
             }
             Ok(OperationProjection::StatusChanged {
                 status: Box::new(OperationStatus::NetworkRepair {
                     id: id.clone(),
+                    target_machine_id: target_machine_id.clone(),
                     state: state.clone(),
                     last_event_sequence: event_sequence,
                 }),
             })
         }
-        NetworkRepairEvent::Transition(transition) => {
-            project_state(id, state, transition.state(), event_sequence)
-        }
+        NetworkRepairEvent::Transition(transition) => project_state(
+            id,
+            target_machine_id,
+            state,
+            transition.state(),
+            event_sequence,
+        ),
     }
 }
 
 fn project_state(
     id: &OperationId,
+    target_machine_id: &Option<MachineId>,
     current: &NetworkRepairOperationState,
     attempted: NetworkRepairOperationState,
     event_sequence: EventSequence,
@@ -177,6 +238,7 @@ fn project_state(
         ProjectionOperationState::NetworkRepair,
         |state| OperationStatus::NetworkRepair {
             id: id.clone(),
+            target_machine_id: target_machine_id.clone(),
             state,
             last_event_sequence: event_sequence,
         },
@@ -199,6 +261,26 @@ fn transition_allowed(
             NetworkRepairOperationState::Running {
                 stage: NetworkRepairRunningStage::PreparingDataplane,
             },
+            NetworkRepairOperationState::Running {
+                stage: NetworkRepairRunningStage::RefreshingMachineFacts,
+            }
+            | NetworkRepairOperationState::Failed { .. }
+            | NetworkRepairOperationState::Cancelled { .. },
+        )
+        | (
+            NetworkRepairOperationState::Running {
+                stage: NetworkRepairRunningStage::RefreshingMachineFacts,
+            },
+            NetworkRepairOperationState::Running {
+                stage: NetworkRepairRunningStage::ConfirmingDnsRefresh,
+            }
+            | NetworkRepairOperationState::Failed { .. }
+            | NetworkRepairOperationState::Cancelled { .. },
+        )
+        | (
+            NetworkRepairOperationState::Running {
+                stage: NetworkRepairRunningStage::ConfirmingDnsRefresh,
+            },
             NetworkRepairOperationState::Completed
             | NetworkRepairOperationState::Failed { .. }
             | NetworkRepairOperationState::Cancelled { .. },
@@ -212,12 +294,26 @@ fn transition_allowed(
         )
         | (
             NetworkRepairOperationState::Running {
-                stage: NetworkRepairRunningStage::PreparingDataplane,
+                stage:
+                    NetworkRepairRunningStage::PreparingDataplane
+                    | NetworkRepairRunningStage::RefreshingMachineFacts
+                    | NetworkRepairRunningStage::ConfirmingDnsRefresh,
             },
             NetworkRepairOperationState::Accepted
             | NetworkRepairOperationState::Running {
-                stage: NetworkRepairRunningStage::PreparingDataplane,
+                stage:
+                    NetworkRepairRunningStage::PreparingDataplane
+                    | NetworkRepairRunningStage::RefreshingMachineFacts
+                    | NetworkRepairRunningStage::ConfirmingDnsRefresh,
             },
+        )
+        | (
+            NetworkRepairOperationState::Running {
+                stage:
+                    NetworkRepairRunningStage::PreparingDataplane
+                    | NetworkRepairRunningStage::RefreshingMachineFacts,
+            },
+            NetworkRepairOperationState::Completed,
         ) => false,
     }
 }
@@ -227,8 +323,20 @@ pub fn project_network_repair_transition(
     transition: NetworkRepairTransition,
     event_sequence: EventSequence,
 ) -> Result<OperationProjection, StatusProjectionError> {
-    let OperationStatus::NetworkRepair { id, state, .. } = current else {
+    let OperationStatus::NetworkRepair {
+        id,
+        target_machine_id,
+        state,
+        ..
+    } = current
+    else {
         return Err(kind_mismatch(current, OperationKind::NetworkRepair));
     };
-    project_state(id, state, transition.state(), event_sequence)
+    project_state(
+        id,
+        target_machine_id,
+        state,
+        transition.state(),
+        event_sequence,
+    )
 }

@@ -215,6 +215,8 @@ pub enum OperationEvent {
     },
     NetworkRepairSubmitted {
         operation_id: OperationId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_machine_id: Option<MachineId>,
     },
     NetworkRepairRunning {
         operation_id: OperationId,
@@ -223,6 +225,14 @@ pub enum OperationEvent {
     NetworkRepairDataplanePrepared {
         operation_id: OperationId,
         report: PloyzNativeMeshPrepareReport,
+    },
+    NetworkRepairMachineFactsRefreshed {
+        operation_id: OperationId,
+        watermarks: Vec<super::NetworkRepairMachineFactWatermark>,
+    },
+    NetworkRepairDnsRefreshConfirmed {
+        operation_id: OperationId,
+        machine_ids: Vec<MachineId>,
     },
     NetworkRepairCompleted {
         operation_id: OperationId,
@@ -346,9 +356,11 @@ impl OperationEvent {
             | Self::CoreReplaceSubmitted { operation_id, .. }
             | Self::CoreReplaceCompleted { operation_id, .. }
             | Self::CoreReplaceFailed { operation_id, .. }
-            | Self::NetworkRepairSubmitted { operation_id }
+            | Self::NetworkRepairSubmitted { operation_id, .. }
             | Self::NetworkRepairRunning { operation_id, .. }
             | Self::NetworkRepairDataplanePrepared { operation_id, .. }
+            | Self::NetworkRepairMachineFactsRefreshed { operation_id, .. }
+            | Self::NetworkRepairDnsRefreshConfirmed { operation_id, .. }
             | Self::NetworkRepairCompleted { operation_id }
             | Self::NetworkRepairFailed { operation_id, .. }
             | Self::ServiceRestartSubmitted { operation_id, .. }
@@ -384,6 +396,12 @@ impl OperationEvent {
             Self::DeployDataplanePrepared { .. } => Some("deploy.dataplane.prepared"),
             Self::NetworkRepairDataplanePrepared { .. } => {
                 Some("network.repair.dataplane.prepared")
+            }
+            Self::NetworkRepairMachineFactsRefreshed { .. } => {
+                Some("network.repair.machine_facts.refreshed")
+            }
+            Self::NetworkRepairDnsRefreshConfirmed { .. } => {
+                Some("network.repair.dns_refresh.confirmed")
             }
             Self::DeployHealthCheckStarted { .. } => Some("deploy.health_check.started"),
             Self::DeployCleanupFinished { .. } => Some("deploy.cleanup.finished"),
@@ -495,6 +513,8 @@ impl OperationEvent {
             | Self::NetworkRepairSubmitted { .. }
             | Self::NetworkRepairRunning { .. }
             | Self::NetworkRepairDataplanePrepared { .. }
+            | Self::NetworkRepairMachineFactsRefreshed { .. }
+            | Self::NetworkRepairDnsRefreshConfirmed { .. }
             | Self::NetworkRepairCompleted { .. }
             | Self::NetworkRepairFailed { .. }
             | Self::ServiceRestartSubmitted { .. }
@@ -864,7 +884,10 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                     transition: CoreReplaceTransition::Failed { failure },
                 },
             },
-            OperationEvent::NetworkRepairSubmitted { operation_id } => Self::NetworkRepair {
+            OperationEvent::NetworkRepairSubmitted {
+                operation_id,
+                target_machine_id: _,
+            } => Self::NetworkRepair {
                 operation_id,
                 event: NetworkRepairEvent::Submitted,
             },
@@ -882,6 +905,24 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 event: NetworkRepairEvent::Evidence(NetworkRepairEvidence::DataplanePrepared {
                     report,
+                }),
+            },
+            OperationEvent::NetworkRepairMachineFactsRefreshed {
+                operation_id,
+                watermarks,
+            } => Self::NetworkRepair {
+                operation_id,
+                event: NetworkRepairEvent::Evidence(NetworkRepairEvidence::MachineFactsRefreshed {
+                    watermarks,
+                }),
+            },
+            OperationEvent::NetworkRepairDnsRefreshConfirmed {
+                operation_id,
+                machine_ids,
+            } => Self::NetworkRepair {
+                operation_id,
+                event: NetworkRepairEvent::Evidence(NetworkRepairEvidence::DnsRefreshConfirmed {
+                    machine_ids,
                 }),
             },
             OperationEvent::NetworkRepairCompleted { operation_id } => Self::NetworkRepair {

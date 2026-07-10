@@ -339,10 +339,16 @@ pub fn project_operation_event(
             )
         }
         ClassifiedOperationEvent::NetworkRepair { event, .. } => {
-            let OperationStatus::NetworkRepair { id, state, .. } = current else {
+            let OperationStatus::NetworkRepair {
+                id,
+                target_machine_id,
+                state,
+                ..
+            } = current
+            else {
                 return Err(kind_mismatch(current, OperationKind::NetworkRepair));
             };
-            network_repair::project_event(id, state, event, event_sequence)
+            network_repair::project_event(id, target_machine_id, state, event, event_sequence)
         }
         ClassifiedOperationEvent::ServiceRestart { event, .. } => {
             let OperationStatus::ServiceRestart {

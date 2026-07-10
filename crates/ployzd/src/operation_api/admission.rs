@@ -86,6 +86,7 @@ pub struct NamespaceRemoveSubmitCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkRepairSubmitCommand {
     pub operation_id: OperationId,
+    pub target_machine_id: Option<ployz_core::ids::MachineId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -312,6 +313,7 @@ impl OperationControllers {
             .repository
             .submit_network_repair(NetworkRepairOperationSubmission {
                 operation_id: command.operation_id,
+                target_machine_id: command.target_machine_id,
             })
             .await?)
     }

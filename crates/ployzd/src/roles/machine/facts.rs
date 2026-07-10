@@ -2,7 +2,8 @@ use super::response::{failure_message, machine_domain_error, machine_success};
 use crate::roles::machine::endpoints::{observe_interface_endpoints, observe_machine_endpoints};
 use crate::roles::machine::protocol::{
     MachineFactsGetDomainError, MachineFactsGetRpcOk, MachineFactsGetRpcRequest,
-    MachineFactsGetRpcResponse,
+    MachineFactsGetRpcResponse, MachineFactsRefreshDomainError, MachineFactsRefreshRpcOk,
+    MachineFactsRefreshRpcRequest, MachineFactsRefreshRpcResponse,
 };
 use crate::roles::machine::runner::{
     ExistingManagedContainerState, MachineContainerRunner, MachineContainerRunnerError,
@@ -14,17 +15,105 @@ use ployz_core::machine_runtime::{
     MachineFactsSnapshotError, ManagedContainerObservation,
 };
 use ployz_core::state::MachineEndpointObservation;
+use ployz_core::subjects::machine_facts;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decode_json_request};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MACHINE_DATA_PATH: &str = "/var/lib/ployz";
+pub(crate) const MACHINE_FACTS_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub(crate) struct MachineFactsState<R> {
     pub(crate) runner: R,
     pub(crate) endpoint_cache: MachineEndpointCache,
+    pub(crate) client: async_nats::Client,
+}
+
+pub(crate) async fn handle_facts_refresh<R>(
+    machine_id: MachineId,
+    state: MachineFactsState<R>,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse
+where
+    R: MachineContainerRunner,
+{
+    if let Err(response) = decode_json_request::<MachineFactsRefreshRpcRequest>(&request) {
+        return response;
+    }
+    let refreshed = tokio::time::timeout(
+        MACHINE_FACTS_REFRESH_TIMEOUT,
+        publish_machine_facts(
+            &state.client,
+            &machine_id,
+            &state.runner,
+            &state.endpoint_cache,
+        ),
+    )
+    .await;
+    match refreshed {
+        Ok(Ok(facts)) => machine_success(MachineFactsRefreshRpcResponse::Ok(
+            MachineFactsRefreshRpcOk {
+                machine_id,
+                observed_at_unix_ms: facts.observed_at_unix_ms(),
+            },
+        )),
+        Ok(Err(error)) => machine_domain_error(MachineFactsRefreshRpcResponse::DomainError {
+            machine_id,
+            error: MachineFactsRefreshDomainError::RefreshFailed {
+                message: failure_message(error.to_string()),
+            },
+        }),
+        Err(_) => machine_domain_error(MachineFactsRefreshRpcResponse::DomainError {
+            machine_id,
+            error: MachineFactsRefreshDomainError::RefreshFailed {
+                message: failure_message(format!(
+                    "machine facts refresh timed out after {}s",
+                    MACHINE_FACTS_REFRESH_TIMEOUT.as_secs()
+                )),
+            },
+        }),
+    }
+}
+
+pub(crate) async fn publish_machine_facts<R>(
+    client: &async_nats::Client,
+    machine_id: &MachineId,
+    runner: &R,
+    endpoint_cache: &MachineEndpointCache,
+) -> Result<MachineFactsSnapshot, MachineFactsPublishError>
+where
+    R: MachineContainerRunner,
+{
+    let endpoints = refresh_machine_endpoints(machine_id, endpoint_cache).await;
+    let facts = read_machine_facts_snapshot(machine_id, runner, endpoints, current_unix_ms())
+        .await
+        .map_err(MachineFactsPublishError::Read)?;
+    let payload = serde_json::to_vec(&facts).map_err(MachineFactsPublishError::Encode)?;
+    client
+        .publish(machine_facts(machine_id), payload.into())
+        .await
+        .map_err(|error| MachineFactsPublishError::Publish {
+            message: error.to_string(),
+        })?;
+    client
+        .flush()
+        .await
+        .map_err(|error| MachineFactsPublishError::Publish {
+            message: error.to_string(),
+        })?;
+    Ok(facts)
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum MachineFactsPublishError {
+    #[error("failed to read machine facts: {0}")]
+    Read(MachineFactsReadError),
+    #[error("failed to encode machine facts: {0}")]
+    Encode(serde_json::Error),
+    #[error("failed to publish machine facts: {message}")]
+    Publish { message: String },
 }
 
 pub(crate) async fn handle_facts_get<R>(

@@ -244,6 +244,10 @@ pub async fn start_control_process_with_client_and_reload(
             .with_request_timeout(config.deploy_step_timeout),
         NatsMachineDataplanePreparer::new(client.clone())
             .with_request_timeout(config.deploy_step_timeout),
+        NatsMachineFactsReader::new(client.clone())
+            .with_request_timeout(config.deploy_step_timeout),
+        client.clone(),
+        config.deploy_step_timeout,
         network_repair_tasks.clone(),
     );
     let core_machine_id = config
