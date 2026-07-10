@@ -214,7 +214,7 @@ async fn nats_machine_preparer_rejects_duplicate_native_mesh_subnets_before_rpc(
                 component: PloyzNativeMeshComponent::WireGuard,
             },
             message: failure_message(
-                "ployz native mesh endpoint subnet is already assigned: 10.42.1.0/24"
+                "ployz native mesh endpoint subnet is already assigned: 10.198.1.0/24"
             ),
         }
     );

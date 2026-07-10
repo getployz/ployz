@@ -132,6 +132,17 @@ async fn boots_machine_image() {
             "inner docker not ready: {inner_docker:?}"
         );
 
+        let nested_workload = exec_in_container(
+            &docker,
+            &cluster.core().container_id,
+            &["docker", "run", "--rm", WORKLOAD_IMAGE, "true"],
+        )
+        .await;
+        assert!(
+            matches!(&nested_workload, Ok(outcome) if outcome.success()),
+            "inner docker cannot start a workload: {nested_workload:?}"
+        );
+
         let artifacts = exec_in_container(
             &docker,
             &cluster.core().container_id,

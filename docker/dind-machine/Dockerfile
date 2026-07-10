@@ -39,6 +39,10 @@ RUN apt-get update \
 
 COPY daemon.json /etc/docker/daemon.json
 
+# The inner containerd overlayfs snapshotter needs a non-overlay backing mount
+# when the machine itself runs inside Docker.
+VOLUME ["/var/lib/containerd"]
+
 # nats-server pinned to the version the repo's scripts pin (2.14.2), for the
 # image's own architecture — never hardcode amd64. The release tarball and its
 # version stay baked at /opt/ployz/ so the e2e release manifest can name the
