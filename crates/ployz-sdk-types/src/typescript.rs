@@ -21,13 +21,15 @@ use crate::{
     CoreReplaceReportOutcome, CoreReplaceReportRequest, CoreReplaceReported, CoreReplaceRequest,
     DEFAULT_MANAGED_LEASE_TTL_SECONDS, DataplaneMember, DataplaneProviderFailure,
     DeployCleanupContainer, DeployCleanupFailure, DeployCompletionOutcome, DeployOperationFailure,
-    DeployOperationState, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute,
-    DeployRouteTarget, DeployRunningStage, DeployServicePlan, DeployServiceSpec, DeploySubmitError,
-    DeploySubmitRequest, DeploySubmitResponse, EbpfForwardingReady, EbpfForwardingReadyEvidence,
-    EnvName, EnvValue, EventSequence, FailureMessage, FirstMachineInstallArtifacts,
-    FirstMachineInstallSpec, GatewayRole, GatewayServingStatus, GatewayStatusObservation,
-    HealthCheckFailure, HealthcheckDurationNanos, HealthcheckRetries, HealthcheckShellCommand,
-    ImageReference, ImageSource, InitFirstMachineActivateError, InitFirstMachineActivateRequest,
+    DeployOperationState, DeployPlan, DeployPlanStep, DeployRequest, DeployReservationExpiresAt,
+    DeployReservationId, DeployReserveError, DeployReserveRequest, DeployReserveResponse,
+    DeployReserved, DeployRoute, DeployRouteTarget, DeployRunningStage, DeployServicePlan,
+    DeployServiceSpec, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse,
+    EbpfForwardingReady, EbpfForwardingReadyEvidence, EnvName, EnvValue, EventSequence,
+    FailureMessage, FirstMachineInstallArtifacts, FirstMachineInstallSpec, GatewayRole,
+    GatewayServingStatus, GatewayStatusObservation, HealthCheckFailure, HealthcheckDurationNanos,
+    HealthcheckRetries, HealthcheckShellCommand, ImageReference, ImageSource,
+    InitFirstMachineActivateError, InitFirstMachineActivateRequest,
     InitFirstMachineActivateResponse, InitFirstMachineActivated, InstallArtifactSource,
     InstallArtifactSpec, InstallArtifactVersion, InstallRolePolicy, InstallSha256Digest,
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt,
@@ -106,7 +108,6 @@ pub fn generated_typescript() -> String {
     output.push_str(&format!(
         "export const DEFAULT_MANAGED_LEASE_TTL_SECONDS = {DEFAULT_MANAGED_LEASE_TTL_SECONDS} as const;\n\n"
     ));
-
     push_contract_decls(&mut output, &config);
     push_operation_api_contracts(&mut output, &config);
 
@@ -128,6 +129,8 @@ macro_rules! exported_types {
             OperationId,
             OperationIdempotencyKey,
             EventSequence,
+            DeployReservationId,
+            DeployReservationExpiresAt,
             ServiceId,
             MachineId,
             ContainerId,
@@ -313,6 +316,8 @@ macro_rules! exported_types {
             InitFirstMachineActivateRequest,
             InitFirstMachineActivated,
             InitFirstMachineActivateError,
+            DeployReserveRequest,
+            DeployReserved,
             DeploySubmitRequest,
             MachineAddRequest,
             MachineAddAccepted,
@@ -395,6 +400,7 @@ macro_rules! exported_types {
             OpsListError,
             OpsStatusRequest,
             AcceptedOperation,
+            DeployReserveError,
             OperationApiResponse<AcceptedOperation, DeploySubmitError>,
             DeploySubmitError,
             MachineAddError,
@@ -579,6 +585,7 @@ pub fn operation_contract_fixture() -> Value {
             sequence: event_sequence(1),
             event: OperationEvent::DeploySubmitted {
                 operation_id: operation_id("op_123"),
+                reservation_id: Some(DeployReservationId::first()),
                 target: deploy_target.clone(),
             },
         }],
@@ -595,7 +602,18 @@ pub fn operation_contract_fixture() -> Value {
         "deploy_submit_request": value(DeploySubmitRequest {
             idempotency_key: OperationIdempotencyKey::try_new("idem_deploy_123")
                 .expect("valid idempotency key"),
+            reservation_id: DeployReservationId::first(),
             target: deploy_target,
+        }),
+        "deploy_reserve_request": value(DeployReserveRequest {
+            namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
+        }),
+        "deploy_reserve_response": value(DeployReserveResponse::Ok {
+            value: DeployReserved {
+                reservation_id: DeployReservationId::first(),
+                expires_at: DeployReservationExpiresAt::try_new(4_102_444_800)
+                    .expect("valid expiration"),
+            },
         }),
         "ops_watch_request": value(OperationEventReplayRequest {
             operation_id: operation_id("op_123"),

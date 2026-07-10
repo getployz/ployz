@@ -12,6 +12,28 @@ use crate::image::OciDigest;
 use crate::machine_runtime::{MachineContainerObservationSnapshot, ManagedContainerIdentity};
 use crate::ops::{RoutePort, RouteTarget};
 use crate::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
+use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
+
+pub const DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS: u64 = 60 * 60;
+
+positive_u64_wire_newtype! {
+    pub struct DeployReservationId;
+    ts_brand: "Brand<string, \"DeployReservationId\">";
+    accessor: get;
+    error: DeployReservationNumberError;
+}
+
+positive_u64_wire_newtype! {
+    pub struct DeployReservationExpiresAt;
+    ts_brand: "Brand<string, \"DeployReservationExpiresAt\">";
+    accessor: unix_seconds;
+    error: DeployReservationNumberError;
+}
+
+positive_u64_wire_error! {
+    pub enum DeployReservationNumberError;
+    noun: "deploy reservation number";
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]

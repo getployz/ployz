@@ -152,6 +152,7 @@ fn happy_events() -> Vec<ReplayedOperationEvent> {
             1,
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
+                reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
                 target: target(),
             },
         ),
@@ -344,6 +345,7 @@ fn pushed_image_stays_pending_until_availability_is_verified() {
             1,
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
+                reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
                 target: direct_image_target(),
             },
         ),
@@ -393,6 +395,7 @@ fn partial_completion_stays_distinct_from_success() {
             1,
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
+                reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
                 target: single_service_target(),
             },
         ),
@@ -423,6 +426,7 @@ fn early_artifact_failure_is_minimal() {
             1,
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
+                reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
                 target: target(),
             },
         ),
@@ -467,6 +471,7 @@ fn route_cutover_failure_makes_no_safety_claim() {
             1,
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
+                reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
                 target: single_service_target(),
             },
         ),
@@ -509,6 +514,7 @@ fn deep_health_failure_keeps_container_evidence_and_hints() {
             1,
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
+                reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
                 target: single_service_target(),
             },
         ),
@@ -555,6 +561,7 @@ fn pre_start_failure_keeps_hook_evidence_and_serving_safety() {
             1,
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
+                reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
                 target: single_service_target(),
             },
         ),

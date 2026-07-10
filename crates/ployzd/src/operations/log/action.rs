@@ -1,9 +1,10 @@
 use super::{
-    CoreReplaceOperationSubmission, CoreReplacePayload, DeployOperationSubmission,
-    MachineLifecycleOperationSubmission, MachineLifecyclePayload, MachineUpdateOperationSubmission,
-    MachineUpdatePayload, ManagedLeaseOperationSubmission, ManagedLeasePayload,
-    NamespaceRemoveOperationSubmission, NamespaceRemovePayload, ServiceRestartOperationSubmission,
-    ServiceRestartPayload, VolumeRemoveOperationSubmission, VolumeRemovePayload,
+    CoreReplaceOperationSubmission, CoreReplacePayload, DeployOperationPayload,
+    DeployOperationSubmission, MachineLifecycleOperationSubmission, MachineLifecyclePayload,
+    MachineUpdateOperationSubmission, MachineUpdatePayload, ManagedLeaseOperationSubmission,
+    ManagedLeasePayload, NamespaceRemoveOperationSubmission, NamespaceRemovePayload,
+    ServiceRestartOperationSubmission, ServiceRestartPayload, VolumeRemoveOperationSubmission,
+    VolumeRemovePayload,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{EventSequence, OperationEvent, OperationKind, OperationStatus};
@@ -21,25 +22,33 @@ pub(super) trait OperationAction: Sized {
 }
 
 impl OperationAction for DeployOperationSubmission {
-    type Payload = ployz_core::deploy::DeployRequest;
+    type Payload = DeployOperationPayload;
     const KIND: OperationKind = OperationKind::Deploy;
 
     fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEvent {
         OperationEvent::DeploySubmitted {
             operation_id,
-            target: payload,
+            reservation_id: payload.reservation_id,
+            target: payload.target,
         }
     }
 
     fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
         let OperationEvent::DeploySubmitted {
             operation_id,
+            reservation_id,
             target,
         } = event
         else {
             return None;
         };
-        Some((operation_id, target))
+        Some((
+            operation_id,
+            DeployOperationPayload {
+                reservation_id,
+                target,
+            },
+        ))
     }
 
     fn accepted_status(
@@ -49,8 +58,8 @@ impl OperationAction for DeployOperationSubmission {
     ) -> OperationStatus {
         OperationStatus::deploy_accepted(
             operation_id,
-            payload.namespace_id.clone(),
-            payload.status_service_id(),
+            payload.target.namespace_id.clone(),
+            payload.target.status_service_id(),
             sequence,
         )
     }

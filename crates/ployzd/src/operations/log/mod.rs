@@ -59,6 +59,18 @@ impl OperationRepository {
             .call(move |conn| submit_operation_txn::<K>(conn, closure_id, closure_payload))
             .await
             .map_err(store_status)?;
+        self.finish_submit(operation_id, payload, outcome).await
+    }
+
+    async fn finish_submit<P>(
+        &self,
+        operation_id: OperationId,
+        payload: P,
+        outcome: SubmitTxn<P>,
+    ) -> Result<SubmittedOperation<P>, SubmitOperationError>
+    where
+        P: Clone,
+    {
         match outcome {
             SubmitTxn::DuplicateSequenceMismatch { sequence } => {
                 Err(SubmitOperationError::DuplicateSequenceMismatch { sequence })
@@ -204,40 +216,58 @@ fn submit_operation_txn<K: OperationAction>(
     payload: K::Payload,
 ) -> Result<SubmitTxn<K::Payload>, rusqlite::Error> {
     let transaction = conn.transaction()?;
-    if let Some(current) = select_status(&transaction, &operation_id)? {
-        if current.kind() != K::KIND {
-            return Ok(SubmitTxn::DuplicateSequenceMismatch {
-                sequence: current.last_event_sequence(),
-            });
-        }
-        let Some((first_event, first_sequence)) = select_first_event(&transaction, &operation_id)?
-        else {
-            return Ok(SubmitTxn::DuplicateSequenceMismatch {
-                sequence: EventSequence::first(),
-            });
-        };
-        let Some((stored_operation_id, payload)) = K::submitted_event_parts(first_event) else {
-            return Ok(SubmitTxn::DuplicateSequenceMismatch {
-                sequence: first_sequence,
-            });
-        };
-        if stored_operation_id != operation_id {
-            return Ok(SubmitTxn::DuplicateSequenceMismatch {
-                sequence: first_sequence,
-            });
-        }
-        return Ok(SubmitTxn::Existing {
-            start_sequence: first_sequence,
-            payload,
-            should_start_execution: current.last_event_sequence() == first_sequence,
-        });
+    if let Some(existing) = existing_submit::<K>(&transaction, &operation_id)? {
+        return Ok(existing);
     }
+    let created = create_submit::<K>(&transaction, operation_id, payload)?;
+    transaction.commit()?;
+    Ok(created)
+}
+
+fn existing_submit<K: OperationAction>(
+    conn: &Connection,
+    operation_id: &OperationId,
+) -> Result<Option<SubmitTxn<K::Payload>>, rusqlite::Error> {
+    let Some(current) = select_status(conn, operation_id)? else {
+        return Ok(None);
+    };
+    if current.kind() != K::KIND {
+        return Ok(Some(SubmitTxn::DuplicateSequenceMismatch {
+            sequence: current.last_event_sequence(),
+        }));
+    }
+    let Some((first_event, first_sequence)) = select_first_event(conn, operation_id)? else {
+        return Ok(Some(SubmitTxn::DuplicateSequenceMismatch {
+            sequence: EventSequence::first(),
+        }));
+    };
+    let Some((stored_operation_id, payload)) = K::submitted_event_parts(first_event) else {
+        return Ok(Some(SubmitTxn::DuplicateSequenceMismatch {
+            sequence: first_sequence,
+        }));
+    };
+    if stored_operation_id != *operation_id {
+        return Ok(Some(SubmitTxn::DuplicateSequenceMismatch {
+            sequence: first_sequence,
+        }));
+    }
+    Ok(Some(SubmitTxn::Existing {
+        start_sequence: first_sequence,
+        payload,
+        should_start_execution: current.last_event_sequence() == first_sequence,
+    }))
+}
+
+fn create_submit<K: OperationAction>(
+    conn: &Connection,
+    operation_id: OperationId,
+    payload: K::Payload,
+) -> Result<SubmitTxn<K::Payload>, rusqlite::Error> {
     let sequence = EventSequence::first();
     let event = K::submitted_event(operation_id.clone(), payload.clone());
     let status = K::accepted_status(operation_id.clone(), &payload, sequence);
-    insert_event(&transaction, &event, sequence)?;
-    upsert_status(&transaction, &operation_id, &status)?;
-    transaction.commit()?;
+    insert_event(conn, &event, sequence)?;
+    upsert_status(conn, &operation_id, &status)?;
     Ok(SubmitTxn::Created {
         start_sequence: sequence,
         event,
@@ -474,7 +504,9 @@ fn sequence_conversion(error: ployz_core::ops::EventSequenceError) -> rusqlite::
     )
 }
 
-fn subject_token_conversion(error: ployz_core::ids::SubjectTokenError) -> rusqlite::Error {
+pub(super) fn subject_token_conversion(
+    error: ployz_core::ids::SubjectTokenError,
+) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(
         0,
         rusqlite::types::Type::Text,

@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::cert::{AcmeHttp01Challenge, ActiveCertState};
 use crate::dataplane::PloyzNativeMeshPrepareReport;
-use crate::deploy::{DeployCleanupContainer, DeployPlan, DeployRequest, VolumeName};
+use crate::deploy::{
+    DeployCleanupContainer, DeployPlan, DeployRequest, DeployReservationId, VolumeName,
+};
 use crate::ids::{CertId, ContainerId, MachineId, NamespaceId, OperationId, ServiceId};
 use crate::image::OciDigest;
 use crate::install::{InstallArtifactVersion, MachineJoinRuntimeNatsUrl};
@@ -79,6 +81,8 @@ pub enum OperationSubject {
 pub enum OperationEvent {
     DeploySubmitted {
         operation_id: OperationId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reservation_id: Option<DeployReservationId>,
         target: DeployRequest,
     },
     DeployPlanningStarted {
