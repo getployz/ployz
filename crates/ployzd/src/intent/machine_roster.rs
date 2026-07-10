@@ -195,6 +195,7 @@ mod tests {
                 machine_id: id.clone(),
                 name: MachineName::try_new(machine).expect("name"),
                 activated_by: operation_id("op_activate"),
+                roles: ployz_core::roles::InstallRolePolicy::install_all(),
                 lifecycle: MachineLifecycle::Active,
                 control_endpoints: Vec::new(),
                 mesh_endpoints: Vec::new(),

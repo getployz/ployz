@@ -799,7 +799,7 @@ pub(super) fn deploy_command_with_healthcheck(replicas: u16) -> DeployExecutionC
             namespace_cleanup_candidates: Vec::new(),
             namespace_volume_pins: Vec::new(),
             observed_machines: Vec::new(),
-            has_managed_lease: false,
+            managed_lease: None,
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -844,7 +844,7 @@ pub(super) fn deploy_command_with_pre_start() -> DeployExecutionCommand {
             namespace_cleanup_candidates: Vec::new(),
             namespace_volume_pins: Vec::new(),
             observed_machines: Vec::new(),
-            has_managed_lease: false,
+            managed_lease: None,
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -883,7 +883,7 @@ pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionCommand {
             dataplane_members: Vec::new(),
             observed_machines: Vec::new(),
             namespace_cleanup_candidates: Vec::new(),
-            has_managed_lease: false,
+            managed_lease: None,
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -943,7 +943,7 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
             }],
             observed_machines: Vec::new(),
             namespace_cleanup_candidates: Vec::new(),
-            has_managed_lease: false,
+            managed_lease: None,
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -975,7 +975,7 @@ pub(super) fn volume_backed_deploy_command(replicas: u16) -> DeployExecutionComm
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
             namespace_cleanup_candidates: Vec::new(),
             observed_machines: Vec::new(),
-            has_managed_lease: false,
+            managed_lease: None,
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -1057,7 +1057,7 @@ fn prepared_deploy_command(
             eligible_machines,
             namespace_cleanup_candidates: namespace_cleanup_candidates(&observed_machines),
             observed_machines,
-            has_managed_lease: false,
+            managed_lease: None,
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -1102,7 +1102,7 @@ pub(super) fn empty_deploy_command_with_running_container(
             eligible_machines: vec![self::machine_id("machine_a")],
             namespace_cleanup_candidates,
             observed_machines: vec![snapshot],
-            has_managed_lease: false,
+            managed_lease: None,
             step_timeout: Duration::from_secs(5),
         },
     )

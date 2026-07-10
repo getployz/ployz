@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cert::ManagedLeaseRecord;
+use crate::cert::{ManagedCertBundle, ManagedLeaseRecord};
 use crate::dataplane::MachineEndpointSubnet;
 use crate::deploy::{ImageReference, ReplicaCount, VolumeName};
 use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
@@ -55,6 +55,8 @@ pub struct ActiveMachineState {
     pub machine_id: MachineId,
     pub name: MachineName,
     pub activated_by: OperationId,
+    #[serde(default = "InstallRolePolicy::install_all")]
+    pub roles: InstallRolePolicy,
     /// Durable operator intent for this machine (Machine Lifecycle in the
     /// glossary). Absent in records written before lifecycle existed, so the
     /// default is active.
@@ -124,7 +126,7 @@ impl ControlPlaneEpoch {
 /// Full operator intent visible to readers, stamped with the epoch it reflects.
 /// The authorized-users grant set rides here too (ADR 0031): a promoted core
 /// reuses it verbatim rather than re-deriving grants from the roster.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct IntentSnapshot {
@@ -137,7 +139,85 @@ pub struct IntentSnapshot {
     pub volume_pins: Vec<VolumePinState>,
     pub authorized_users: Vec<NatsAuthorizedUser>,
     #[serde(default)]
-    pub managed_lease: Option<ManagedLeaseRecord>,
+    pub managed_lease: ManagedLeaseProjection,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ManagedLeaseProjectionWire {
+    Projection(ManagedLeaseProjection),
+    Legacy(ManagedLeaseRecord),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IntentSnapshotWire {
+    epoch: ControlPlaneEpoch,
+    core_machine_id: MachineId,
+    active_machines: Vec<ActiveMachineState>,
+    route_bindings: Vec<RouteBindingState>,
+    serving_target_entries: Vec<ServingTargetEntry>,
+    #[serde(default)]
+    volume_pins: Vec<VolumePinState>,
+    authorized_users: Vec<NatsAuthorizedUser>,
+    #[serde(default)]
+    managed_lease: Option<ManagedLeaseProjectionWire>,
+    #[serde(default)]
+    managed_cert_bundle: Option<ManagedCertBundle>,
+}
+
+impl<'de> Deserialize<'de> for IntentSnapshot {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = IntentSnapshotWire::deserialize(deserializer)?;
+        let managed_lease = match (wire.managed_lease, wire.managed_cert_bundle) {
+            (Some(ManagedLeaseProjectionWire::Projection(projection)), None) => projection,
+            (Some(ManagedLeaseProjectionWire::Projection(_)), Some(_)) => {
+                return Err(serde::de::Error::custom(
+                    "typed managed lease projection conflicts with legacy certificate bundle",
+                ));
+            }
+            (Some(ManagedLeaseProjectionWire::Legacy(lease)), Some(bundle)) => {
+                ManagedLeaseProjection::Ready { lease, bundle }
+            }
+            (Some(ManagedLeaseProjectionWire::Legacy(lease)), None) => {
+                ManagedLeaseProjection::RecordOnly { lease }
+            }
+            (None, None) => ManagedLeaseProjection::Unacquired,
+            (None, Some(_)) => {
+                return Err(serde::de::Error::custom(
+                    "legacy certificate bundle requires a managed lease record",
+                ));
+            }
+        };
+        Ok(Self {
+            epoch: wire.epoch,
+            core_machine_id: wire.core_machine_id,
+            active_machines: wire.active_machines,
+            route_bindings: wire.route_bindings,
+            serving_target_entries: wire.serving_target_entries,
+            volume_pins: wire.volume_pins,
+            authorized_users: wire.authorized_users,
+            managed_lease,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ManagedLeaseProjection {
+    #[default]
+    Unacquired,
+    RecordOnly {
+        lease: ManagedLeaseRecord,
+    },
+    Ready {
+        lease: ManagedLeaseRecord,
+        bundle: ManagedCertBundle,
+    },
 }
 
 impl IntentSnapshot {
@@ -234,7 +314,11 @@ pub enum GatewayServingStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::{MachineLifecycle, MachineUsabilityReason, placement_rejection};
+    use super::*;
+    use crate::cert::{
+        LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle, ManagedLeaseName,
+        ManagedLeaseRecord,
+    };
 
     #[test]
     fn only_draining_excludes_placement() {
@@ -243,5 +327,68 @@ mod tests {
             placement_rejection(MachineLifecycle::Draining),
             Some(MachineUsabilityReason::Draining)
         );
+    }
+
+    #[test]
+    fn intent_snapshot_rejects_typed_projection_with_legacy_bundle() {
+        let mut value = serde_json::to_value(ready_snapshot()).expect("serialize snapshot");
+        let bundle = value
+            .get("managed_lease")
+            .and_then(|lease| lease.get("bundle"))
+            .cloned()
+            .expect("bundle");
+        value
+            .as_object_mut()
+            .expect("snapshot object")
+            .insert("managed_cert_bundle".to_owned(), bundle);
+
+        assert!(serde_json::from_value::<IntentSnapshot>(value).is_err());
+    }
+
+    #[test]
+    fn intent_snapshot_rejects_orphaned_legacy_bundle() {
+        let mut value = serde_json::to_value(ready_snapshot()).expect("serialize snapshot");
+        let bundle = value
+            .get("managed_lease")
+            .and_then(|lease| lease.get("bundle"))
+            .cloned()
+            .expect("bundle");
+        let object = value.as_object_mut().expect("snapshot object");
+        object.remove("managed_lease");
+        object.insert("managed_cert_bundle".to_owned(), bundle);
+
+        assert!(serde_json::from_value::<IntentSnapshot>(value).is_err());
+    }
+
+    fn ready_snapshot() -> IntentSnapshot {
+        let name = ManagedLeaseName::try_new("lease").expect("lease name");
+        let issued_at = LeaseIssuedAt::try_new(1).expect("issued");
+        let expires_at = LeaseExpiresAt::try_new(2).expect("expires");
+        let lease = ManagedLeaseRecord::try_new(
+            name.clone(),
+            LeaseBearerToken::try_new("token").expect("token"),
+            issued_at,
+            expires_at,
+        )
+        .expect("lease");
+        let bundle = ManagedCertBundle::try_new(
+            name.clone(),
+            name.wildcard_and_apex(),
+            "certificate".to_owned(),
+            "private-key".to_owned(),
+            issued_at,
+            expires_at,
+        )
+        .expect("bundle");
+        IntentSnapshot {
+            epoch: ControlPlaneEpoch::initial(),
+            core_machine_id: MachineId::try_new("core").expect("machine id"),
+            active_machines: Vec::new(),
+            route_bindings: Vec::new(),
+            serving_target_entries: Vec::new(),
+            volume_pins: Vec::new(),
+            authorized_users: Vec::new(),
+            managed_lease: ManagedLeaseProjection::Ready { lease, bundle },
+        }
     }
 }

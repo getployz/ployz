@@ -22,7 +22,7 @@ async fn http_worker_acquires_downloads_and_renews_bundle_with_bearer_auth() {
         "POST",
         "/v1/leases",
         &[],
-        r#"{"cluster_id":"cluster-a"}"#,
+        r#"{"ipv4":["203.0.113.8"],"ipv6":["2001:db8::8"]}"#,
     )
     .await
     .expect("lease acquired");

@@ -6,12 +6,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::num::{NonZeroI64, NonZeroU16, NonZeroU64};
 
+use crate::cert::ManagedLeaseName;
 use crate::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId, ServiceId,
 };
 use crate::image::OciDigest;
 use crate::machine_runtime::{MachineContainerObservationSnapshot, ManagedContainerIdentity};
-use crate::ops::{RoutePort, RouteTarget};
+use crate::ops::{RouteHostname, RoutePort, RouteTarget};
 use crate::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
@@ -1604,6 +1605,81 @@ fn route_binding_commits(request: &DeployServiceRequest) -> Vec<RouteBindingStat
                 })
         })
         .collect()
+}
+
+/// Mint concrete bindings for a service's auto-hostname declarations.
+/// Existing bindings for the same service and endpoint are reused so a
+/// redeploy cannot rename a public route.
+#[must_use]
+pub fn auto_hostname_route_binding_commits(
+    request: &DeployServiceRequest,
+    lease: Option<&ManagedLeaseName>,
+    occupied: &[RouteBindingState],
+) -> Vec<RouteBindingState> {
+    let Some(lease) = lease else {
+        return Vec::new();
+    };
+    let suffix = lease.hostname_suffix();
+    let base = request
+        .service_id
+        .as_str()
+        .replace('_', "-")
+        .trim_matches('-')
+        .to_owned();
+    let base = if base.is_empty() { "service" } else { &base };
+    let mut bindings = Vec::new();
+
+    for route in &request.routes {
+        let DeployRouteTarget::AutoHostname { port } = &route.target else {
+            continue;
+        };
+        if let Some(existing) = occupied.iter().find(|binding| {
+            binding.service_id == request.service_id
+                && binding.endpoint_port == route.endpoint_port
+                && binding.target.port == *port
+                && auto_hostname_label(binding.target.hostname.as_str(), &suffix, base)
+        }) {
+            bindings.push(existing.clone());
+            continue;
+        }
+
+        let mut sequence = 1;
+        loop {
+            let label = if sequence == 1 {
+                base.to_owned()
+            } else {
+                format!("{base}-{sequence}")
+            };
+            let hostname = RouteHostname::try_new(format!("{label}.{suffix}"))
+                .expect("service id and managed lease form a valid hostname");
+            let target = RouteTarget::new(hostname, *port);
+            if !occupied
+                .iter()
+                .chain(&bindings)
+                .any(|binding| binding.target == target)
+            {
+                bindings.push(RouteBindingState {
+                    namespace_id: request.namespace_id.clone(),
+                    target,
+                    endpoint_port: route.endpoint_port,
+                    service_id: request.service_id.clone(),
+                });
+                break;
+            }
+            sequence += 1;
+        }
+    }
+    bindings
+}
+
+fn auto_hostname_label(hostname: &str, suffix: &str, base: &str) -> bool {
+    let Some(label) = hostname.strip_suffix(&format!(".{suffix}")) else {
+        return false;
+    };
+    label == base
+        || label
+            .strip_prefix(&format!("{base}-"))
+            .is_some_and(|sequence| sequence.parse::<u32>().is_ok_and(|sequence| sequence >= 2))
 }
 
 pub fn plan_namespace_deploy(

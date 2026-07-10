@@ -5,14 +5,15 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ployz_core::cert::{
-    DEFAULT_MANAGED_LEASE_TTL_SECONDS, LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt,
-    ManagedCertBundle, ManagedLeaseAcquireRequest, ManagedLeaseAcquired, ManagedLeaseName,
-    ManagedLeaseRecord, ManagedLeaseRenewed,
+    LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle, ManagedLeaseAcquireRequest,
+    ManagedLeaseAcquired, ManagedLeaseName, ManagedLeaseRecord, ManagedLeaseRenewed,
 };
 use rcgen::CertifiedKey;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
+
+pub const STUB_LEASE_TTL_SECONDS: u64 = 365 * 24 * 60 * 60;
 
 pub trait Clock {
     fn now_seconds(&self) -> Result<u64, ClockError>;
@@ -58,8 +59,6 @@ pub enum LeaseWorkerResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LeaseWorkerError {
-    #[error("cluster id is empty")]
-    EmptyClusterId,
     #[error("managed lease not found")]
     LeaseNotFound,
     #[error("lease bearer token does not match")]
@@ -75,7 +74,6 @@ pub enum LeaseWorkerError {
 }
 
 pub struct StubLeaseWorker<C = SystemClock> {
-    leases_by_cluster: BTreeMap<String, ManagedLeaseName>,
     records: BTreeMap<ManagedLeaseName, ManagedLeaseRecord>,
     bundles: BTreeMap<ManagedLeaseName, ManagedCertBundle>,
     clock: C,
@@ -92,7 +90,6 @@ impl<C: Clock> StubLeaseWorker<C> {
     #[must_use]
     pub fn with_clock(clock: C) -> Self {
         Self {
-            leases_by_cluster: BTreeMap::new(),
             records: BTreeMap::new(),
             bundles: BTreeMap::new(),
             clock,
@@ -116,24 +113,10 @@ impl<C: Clock> StubLeaseWorker<C> {
         &mut self,
         request: ManagedLeaseAcquireRequest,
     ) -> Result<LeaseWorkerResponse, LeaseWorkerError> {
-        if request.cluster_id.trim().is_empty() {
-            return Err(LeaseWorkerError::EmptyClusterId);
-        }
-
-        if let Some(lease) = self.leases_by_cluster.get(&request.cluster_id).cloned() {
-            let record = self.record(&lease)?.clone();
-            let bundle = self.bundle(&lease)?.clone();
-            return Ok(LeaseWorkerResponse::LeaseAcquired(ManagedLeaseAcquired {
-                lease: record,
-                bundle,
-            }));
-        }
-
+        let ManagedLeaseAcquireRequest { ipv4: _, ipv6: _ } = request;
         let lease = self.next_lease_name()?;
         let record = self.issue_record(lease.clone(), self.next_token()?)?;
         let bundle = self.issue_bundle(&record)?;
-        self.leases_by_cluster
-            .insert(request.cluster_id, lease.clone());
         self.records.insert(lease.clone(), record.clone());
         self.bundles.insert(lease, bundle.clone());
 
@@ -181,7 +164,7 @@ impl<C: Clock> StubLeaseWorker<C> {
             lease,
             token,
             LeaseIssuedAt::try_new(issued_at)?,
-            LeaseExpiresAt::try_new(issued_at + DEFAULT_MANAGED_LEASE_TTL_SECONDS)?,
+            LeaseExpiresAt::try_new(issued_at + STUB_LEASE_TTL_SECONDS)?,
         )
         .map_err(Into::into)
     }

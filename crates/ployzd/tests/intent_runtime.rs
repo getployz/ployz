@@ -33,6 +33,7 @@ async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
             name: ployz_core::machine::MachineName::try_new("machine_a")
                 .expect("valid machine name"),
             activated_by: operation_id("op_machine_add"),
+            roles: ployz_core::roles::InstallRolePolicy::install_all(),
             lifecycle: MachineLifecycle::Active,
             endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
                 .expect("valid endpoint subnet"),
@@ -179,6 +180,7 @@ async fn intent_reader_overlays_machine_lifecycle_evidence() {
             name: ployz_core::machine::MachineName::try_new("machine_a")
                 .expect("valid machine name"),
             activated_by: operation_id("op_machine_add"),
+            roles: ployz_core::roles::InstallRolePolicy::install_all(),
             lifecycle: MachineLifecycle::Draining,
             endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
                 .expect("valid endpoint subnet"),

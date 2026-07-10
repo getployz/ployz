@@ -1,5 +1,6 @@
 //! Gateway projection read-model.
 
+use ployz_core::cert::ManagedCertBundle;
 use ployz_core::ids::{ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, ServiceId};
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
 use ployz_core::ops::{RoutePort, RouteTarget};
@@ -26,6 +27,7 @@ pub struct GatewayServingEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayProjectionInput {
+    pub managed_cert_bundle: Option<ManagedCertBundle>,
     pub routes: Vec<GatewayRoute>,
     pub serving: Vec<GatewayServingEntry>,
     /// Machines' self-reported container snapshots. Gateways serve every
@@ -38,6 +40,7 @@ pub struct GatewayProjectionInput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayProjection {
+    pub managed_cert_bundle: Option<ManagedCertBundle>,
     pub routes: Vec<GatewayProjectedRoute>,
 }
 
@@ -153,6 +156,7 @@ pub fn apply_gateway_update(
 pub fn project_gateway(
     input: GatewayProjectionInput,
 ) -> Result<GatewayProjection, GatewayProjectionError> {
+    let managed_cert_bundle = input.managed_cert_bundle;
     let mut input_routes = input.routes;
     input_routes.sort_by(|left, right| left.target.cmp(&right.target));
 
@@ -219,7 +223,10 @@ pub fn project_gateway(
         });
     }
 
-    Ok(GatewayProjection { routes })
+    Ok(GatewayProjection {
+        managed_cert_bundle,
+        routes,
+    })
 }
 
 struct GatewayContainerAddress {

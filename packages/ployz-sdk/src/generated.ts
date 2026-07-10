@@ -10,8 +10,6 @@ export const MAX_LOGS_TAIL_LINES = 1000 as const;
 
 export const CLOUD_BOOTSTRAP_PROTOCOL_VERSION = 1 as const;
 
-export const DEFAULT_MANAGED_LEASE_TTL_SECONDS = 604800 as const;
-
 export type OperationId = Brand<string, "OperationId">;
 
 export type OperationIdempotencyKey = Brand<string, "OperationIdempotencyKey">;
@@ -364,7 +362,7 @@ export type ManagedLeaseRecord = { name: ManagedLeaseName, token: LeaseBearerTok
 
 export type ManagedCertBundle = { lease: ManagedLeaseName, dns_names: [string, string], certificate_chain_pem: string, private_key_pem: string, issued_at: LeaseIssuedAt, expires_at: LeaseExpiresAt, digest: InstallSha256Digest, };
 
-export type ManagedLeaseAcquireRequest = { cluster_id: string, };
+export type ManagedLeaseAcquireRequest = { ipv4: Array<string>, ipv6: Array<string>, };
 
 export type ManagedLeaseAcquired = { lease: ManagedLeaseRecord, bundle: ManagedCertBundle, };
 
@@ -382,7 +380,7 @@ export type AcmeHttp01Challenge = { hostname: RouteHostname, token: AcmeChalleng
 
 export type ActiveCertState = { cert_id: CertId, hostname: RouteHostname, bundle_ref: CertBundleRef, validity: CertValidityWindow, };
 
-export type ActiveMachineState = { machine_id: MachineId, name: MachineName, activated_by: OperationId,
+export type ActiveMachineState = { machine_id: MachineId, name: MachineName, activated_by: OperationId, roles: InstallRolePolicy,
 /**
  * Durable operator intent for this machine (Machine Lifecycle in the
  * glossary). Absent in records written before lifecycle existed, so the

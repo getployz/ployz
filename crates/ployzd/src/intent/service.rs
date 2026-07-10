@@ -231,12 +231,20 @@ async fn load_intent(
         .map_err(|error| error.to_string())?
     {
         ployz_core::cert::ManagedLeaseIntent::Auto { state } => match *state {
-            ployz_core::cert::AutoLeaseState::RecordOnly { lease }
-            | ployz_core::cert::AutoLeaseState::Ready { lease, .. } => Some(lease),
-            ployz_core::cert::AutoLeaseState::Unacquired => None,
+            ployz_core::cert::AutoLeaseState::RecordOnly { lease } => {
+                ployz_core::state::ManagedLeaseProjection::RecordOnly { lease }
+            }
+            ployz_core::cert::AutoLeaseState::Ready { lease, bundle } => {
+                ployz_core::state::ManagedLeaseProjection::Ready { lease, bundle }
+            }
+            ployz_core::cert::AutoLeaseState::Unacquired => {
+                ployz_core::state::ManagedLeaseProjection::Unacquired
+            }
         },
         ployz_core::cert::ManagedLeaseIntent::BringYourOwn
-        | ployz_core::cert::ManagedLeaseIntent::None => None,
+        | ployz_core::cert::ManagedLeaseIntent::None => {
+            ployz_core::state::ManagedLeaseProjection::Unacquired
+        }
     };
 
     Ok(IntentSnapshot {

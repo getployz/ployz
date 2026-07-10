@@ -87,7 +87,7 @@ where
             });
         }
     };
-    if !facts.has_managed_lease
+    if facts.managed_lease.is_none()
         && let Some(service) = request.services.iter().find(|service| {
             service
                 .routes

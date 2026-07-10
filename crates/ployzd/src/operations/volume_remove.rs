@@ -256,7 +256,7 @@ mod tests {
                 machine_id: machine_id("machine_a"),
             }],
             authorized_users: Vec::new(),
-            managed_lease: None,
+            managed_lease: ployz_core::state::ManagedLeaseProjection::Unacquired,
         };
 
         assert_eq!(

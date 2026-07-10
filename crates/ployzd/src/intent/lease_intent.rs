@@ -140,10 +140,7 @@ fn store_error(error: CoreStoreError) -> LeaseIntentStoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::cert::{
-        DEFAULT_MANAGED_LEASE_TTL_SECONDS, LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt,
-        ManagedLeaseName,
-    };
+    use ployz_core::cert::{LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, ManagedLeaseName};
 
     #[tokio::test]
     async fn absent_row_loads_auto_without_lease() {
@@ -167,8 +164,7 @@ mod tests {
         let name = ManagedLeaseName::try_new("cluster-one").expect("lease name");
         let issued_at = LeaseIssuedAt::try_new(1_700_000_000).expect("issued at");
         let expires_at =
-            LeaseExpiresAt::try_new(issued_at.unix_seconds() + DEFAULT_MANAGED_LEASE_TTL_SECONDS)
-                .expect("expires at");
+            LeaseExpiresAt::try_new(issued_at.unix_seconds() + 60).expect("expires at");
         let record = ManagedLeaseRecord::try_new(
             name.clone(),
             LeaseBearerToken::try_new("lease-token").expect("token"),
