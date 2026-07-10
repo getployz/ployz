@@ -42,9 +42,7 @@ fn host_runner_plan_executor_runs_steps_in_order_and_records_progress() {
         ployzd_artifact(),
         dataplane_artifacts(),
         nats_server_artifact(),
-        InstallRolePolicy::install_all()
-            .without_gateway()
-            .without_dns(),
+        InstallRolePolicy::install_all().without_gateway(),
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
         WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),

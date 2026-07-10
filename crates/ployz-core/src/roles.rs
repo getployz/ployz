@@ -51,33 +51,25 @@ pub enum GatewayRole {
     Skip,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(rename_all = "snake_case")]
-pub enum DnsRole {
-    Install,
-    Skip,
-}
-
 /// Which optional roles an installed machine runs next to its required
-/// processes. The alpha default installs everything (`install_all`);
-/// skipping a role is an explicit opt-out (`--no-gateway` / `--no-dns`
-/// shaped).
+/// processes.
+///
+/// DNS is required while every accepted machine is workload-eligible. Making
+/// DNS optional requires workload-ineligible machine intent and matching DNS
+/// scoping in network status, resolve, and repair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct InstallRolePolicy {
     pub gateway: GatewayRole,
-    pub dns: DnsRole,
 }
 
 impl InstallRolePolicy {
-    /// The default alpha machine shape: gateway and DNS roles installed.
+    /// Installs the optional gateway role; DNS is always planned separately.
     #[must_use]
     pub const fn install_all() -> Self {
         Self {
             gateway: GatewayRole::Install,
-            dns: DnsRole::Install,
         }
     }
 
@@ -85,13 +77,6 @@ impl InstallRolePolicy {
     #[must_use]
     pub const fn without_gateway(mut self) -> Self {
         self.gateway = GatewayRole::Skip;
-        self
-    }
-
-    /// Explicit `--no-dns` opt-out.
-    #[must_use]
-    pub const fn without_dns(mut self) -> Self {
-        self.dns = DnsRole::Skip;
         self
     }
 }
@@ -144,7 +129,7 @@ pub fn plan_first_machine_process_set(
         DaemonProcessRole::Control,
         DaemonProcessRole::Machine(machine_id.clone()),
     ];
-    planned.extend(optional_roles(roles));
+    planned.extend(machine_roles(roles));
     FirstMachineProcessSet {
         nats_server: FirstMachineNatsServer::Supervised,
         roles: planned,
@@ -157,22 +142,16 @@ pub fn plan_joined_machine_process_set(
     roles: InstallRolePolicy,
 ) -> JoinedMachineProcessSet {
     let mut planned = vec![DaemonProcessRole::Machine(machine_id.clone())];
-    planned.extend(optional_roles(roles));
+    planned.extend(machine_roles(roles));
     JoinedMachineProcessSet { roles: planned }
 }
 
-fn optional_roles(roles: InstallRolePolicy) -> Vec<DaemonProcessRole> {
-    let InstallRolePolicy { gateway, dns } = roles;
-    let mut planned = Vec::new();
+fn machine_roles(roles: InstallRolePolicy) -> Vec<DaemonProcessRole> {
+    let InstallRolePolicy { gateway } = roles;
     match gateway {
-        GatewayRole::Install => planned.push(DaemonProcessRole::Gateway),
-        GatewayRole::Skip => {}
+        GatewayRole::Install => vec![DaemonProcessRole::Gateway, DaemonProcessRole::Dns],
+        GatewayRole::Skip => vec![DaemonProcessRole::Dns],
     }
-    match dns {
-        DnsRole::Install => planned.push(DaemonProcessRole::Dns),
-        DnsRole::Skip => {}
-    }
-    planned
 }
 
 #[cfg(test)]
@@ -241,60 +220,6 @@ mod tests {
                 DaemonProcessRole::Machine(machine_id("machine_2")),
                 DaemonProcessRole::Dns,
             ]
-        );
-    }
-
-    #[test]
-    fn no_dns_opt_out_skips_only_the_dns_role() {
-        assert_eq!(
-            plan_first_machine_process_set(
-                &machine_id("machine_1"),
-                InstallRolePolicy::install_all().without_dns()
-            )
-            .roles(),
-            &[
-                DaemonProcessRole::Control,
-                DaemonProcessRole::Machine(machine_id("machine_1")),
-                DaemonProcessRole::Gateway,
-            ]
-        );
-        assert_eq!(
-            plan_joined_machine_process_set(
-                &machine_id("machine_2"),
-                InstallRolePolicy::install_all().without_dns()
-            )
-            .roles(),
-            &[
-                DaemonProcessRole::Machine(machine_id("machine_2")),
-                DaemonProcessRole::Gateway,
-            ]
-        );
-    }
-
-    #[test]
-    fn both_opt_outs_leave_the_required_roles() {
-        assert_eq!(
-            plan_first_machine_process_set(
-                &machine_id("machine_1"),
-                InstallRolePolicy::install_all()
-                    .without_gateway()
-                    .without_dns()
-            )
-            .roles(),
-            &[
-                DaemonProcessRole::Control,
-                DaemonProcessRole::Machine(machine_id("machine_1")),
-            ]
-        );
-        assert_eq!(
-            plan_joined_machine_process_set(
-                &machine_id("machine_2"),
-                InstallRolePolicy::install_all()
-                    .without_gateway()
-                    .without_dns()
-            )
-            .roles(),
-            &[DaemonProcessRole::Machine(machine_id("machine_2"))]
         );
     }
 

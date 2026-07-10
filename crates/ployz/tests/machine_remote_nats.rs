@@ -667,7 +667,6 @@ async fn machine_init_installs_activates_and_writes_local_context() {
         "PLOYZ_MACHINE_ID='sg-core-1'",
         "PLOYZ_CHANNEL='alpha'",
         "PLOYZ_GATEWAY='install'",
-        "PLOYZ_DNS='install'",
         "PLOYZ_MACHINE_BOOTSTRAP_URL='https://ployz.sh'",
         "PLOYZ_MACHINE_JOIN_CLUSTER_NAME='testcluster'",
         "PLOYZ_MACHINE_JOIN_NATS_URL='tls://203.0.113.10:4222'",
