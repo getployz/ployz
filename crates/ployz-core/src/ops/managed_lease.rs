@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cert::ManagedLeaseName;
+use crate::cert::{ManagedLeaseAddressSet, ManagedLeaseName};
 use crate::ids::OperationId;
 
 use super::events::{OperationEvent, OperationSubjectRef};
@@ -17,8 +17,13 @@ use super::{EventSequence, FailureMessage, OperationStatus};
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ManagedLeaseSubject {
     Acquire,
-    DownloadBundle { lease: ManagedLeaseName },
-    Renew { lease: ManagedLeaseName },
+    DownloadBundle {
+        lease: ManagedLeaseName,
+    },
+    Renew {
+        lease: ManagedLeaseName,
+        addresses: ManagedLeaseAddressSet,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,7 +208,28 @@ mod tests {
     fn subject() -> ManagedLeaseSubject {
         ManagedLeaseSubject::Renew {
             lease: ManagedLeaseName::try_new("cluster-one").expect("valid lease name"),
+            addresses: ManagedLeaseAddressSet::new(
+                vec!["203.0.113.8".parse().expect("IPv4")],
+                vec!["2001:db8::8".parse().expect("IPv6")],
+            ),
         }
+    }
+
+    #[test]
+    fn renew_subject_records_requested_addresses() {
+        let value = serde_json::to_value(subject()).expect("renew subject serializes");
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "kind": "renew",
+                "lease": "cluster-one",
+                "addresses": {
+                    "ipv4": ["203.0.113.8"],
+                    "ipv6": ["2001:db8::8"]
+                }
+            })
+        );
     }
 
     #[test]

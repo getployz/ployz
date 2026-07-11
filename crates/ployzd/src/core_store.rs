@@ -133,6 +133,12 @@ const MIGRATIONS: &[&str] = &[
         )
     );
     ",
+    "
+    CREATE TABLE managed_lease_applied_addresses (
+        id   INTEGER PRIMARY KEY CHECK (id = 1),
+        json TEXT NOT NULL
+    );
+    ",
 ];
 
 /// A cloneable handle to the core database. Clones share one connection and one
@@ -377,6 +383,7 @@ mod tests {
             "control_plane",
             "machines",
             "managed_lease_intent",
+            "managed_lease_applied_addresses",
             "operation_events",
             "operations",
             "deploy_reservations",

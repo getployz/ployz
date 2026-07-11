@@ -322,8 +322,25 @@ fn operation_subject(status: &OperationStatus) -> String {
             ployz_sdk_types::ManagedLeaseSubject::DownloadBundle { lease } => {
                 format!("lease {} bundle download", lease.as_str())
             }
-            ployz_sdk_types::ManagedLeaseSubject::Renew { lease } => {
-                format!("lease {} renewal", lease.as_str())
+            ployz_sdk_types::ManagedLeaseSubject::Renew { lease, addresses } => {
+                let ipv4 = addresses
+                    .ipv4()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let ipv6 = addresses
+                    .ipv6()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(
+                    "lease {} renewal ipv4 {} ipv6 {}",
+                    lease.as_str(),
+                    if ipv4.is_empty() { "none" } else { &ipv4 },
+                    if ipv6.is_empty() { "none" } else { &ipv6 },
+                )
             }
         },
     }

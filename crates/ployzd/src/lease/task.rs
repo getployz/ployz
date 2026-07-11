@@ -1,9 +1,10 @@
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ployz_core::cert::{
-    AutoLeaseState, ManagedCertBundle, ManagedLeaseAcquireRequest, ManagedLeaseIntent,
-    ManagedLeaseRecord,
+    AutoLeaseState, ManagedCertBundle, ManagedLeaseAcquireRequest, ManagedLeaseAddressSet,
+    ManagedLeaseIntent, ManagedLeaseRecord,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{
@@ -11,14 +12,15 @@ use ployz_core::ops::{
     ManagedLeaseTransition, OperationStatus,
 };
 
-use crate::fact_cache::FactCache;
 use crate::intent::lease_intent::{LeaseIntentStore, LeaseIntentStoreError, StoreLeaseOutcome};
 use crate::intent::machine_roster::{MachineRosterStore, MachineRosterStoreError};
 use crate::lease::{LeaseClient, LeaseClientError};
 use crate::operations::log::{
     ManagedLeaseOperationSubmission, OperationRepository, RecordManagedLeaseTransitionError,
 };
+use crate::roles::machine::client::{MAX_CONCURRENT_MACHINE_READS, NatsMachineFactsReader};
 use crate::tasks::TaskRegistry;
+use futures_util::{StreamExt, stream};
 
 use super::client::BundleDownloadOutcome;
 
@@ -31,17 +33,23 @@ pub fn start_managed_lease_task(
     lease_intent: LeaseIntentStore,
     repository: OperationRepository,
     client: LeaseClient,
-    facts: FactCache,
+    facts_reader: NatsMachineFactsReader,
     roster: MachineRosterStore,
 ) {
-    registry.spawn(run_loop(lease_intent, repository, client, facts, roster));
+    registry.spawn(run_loop(
+        lease_intent,
+        repository,
+        client,
+        facts_reader,
+        roster,
+    ));
 }
 
 async fn run_loop(
     lease_intent: LeaseIntentStore,
     repository: OperationRepository,
     client: LeaseClient,
-    facts: FactCache,
+    facts_reader: NatsMachineFactsReader,
     roster: MachineRosterStore,
 ) {
     if let Err(error) = recover_accepted_operations(&repository).await {
@@ -63,7 +71,7 @@ async fn run_loop(
             acquisition_attempted = false;
         }
         let outcome =
-            run_once_with_roster(&lease_intent, &repository, &client, &facts, &roster).await;
+            run_once_with_roster(&lease_intent, &repository, &client, &facts_reader, &roster).await;
         let posted_acquisition = acquiring
             && !matches!(
                 &outcome,
@@ -132,27 +140,16 @@ pub async fn run_once(
     lease_intent: &LeaseIntentStore,
     repository: &OperationRepository,
     client: &LeaseClient,
-    facts: &FactCache,
+    acquisition: ManagedLeaseAcquireRequest,
 ) -> Result<ManagedLeaseTaskOutcome, ManagedLeaseTaskError> {
-    let acquisition = known_gateway_addresses_from_ids(
-        &std::collections::BTreeSet::new(),
-        facts.machine_endpoint_observations(),
-    );
-    run_once_with_addresses(
-        lease_intent,
-        repository,
-        client,
-        acquisition.request,
-        acquisition.missing,
-    )
-    .await
+    run_once_with_addresses(lease_intent, repository, client, acquisition).await
 }
 
 async fn run_once_with_roster(
     lease_intent: &LeaseIntentStore,
     repository: &OperationRepository,
     client: &LeaseClient,
-    facts: &FactCache,
+    facts_reader: &NatsMachineFactsReader,
     roster: &MachineRosterStore,
 ) -> Result<ManagedLeaseTaskOutcome, ManagedLeaseTaskError> {
     let gateway_ids = roster
@@ -167,21 +164,13 @@ async fn run_once_with_roster(
         })
         .map(|machine| machine.machine_id)
         .collect();
-    let acquisition =
-        known_gateway_addresses_from_ids(&gateway_ids, facts.machine_endpoint_observations());
+    let acquisition = gateway_addresses_from_facts(facts_reader, &gateway_ids).await;
     if !acquisition.missing.is_empty() {
         return Ok(ManagedLeaseTaskOutcome::AwaitingGatewayTestimony {
             missing: acquisition.missing,
         });
     }
-    run_once_with_addresses(
-        lease_intent,
-        repository,
-        client,
-        acquisition.request,
-        Vec::new(),
-    )
-    .await
+    run_once_with_addresses(lease_intent, repository, client, acquisition.request).await
 }
 
 async fn run_once_with_addresses(
@@ -189,8 +178,12 @@ async fn run_once_with_addresses(
     repository: &OperationRepository,
     client: &LeaseClient,
     acquisition: ManagedLeaseAcquireRequest,
-    missing_gateways: Vec<ployz_core::ids::MachineId>,
 ) -> Result<ManagedLeaseTaskOutcome, ManagedLeaseTaskError> {
+    let addresses = ManagedLeaseAddressSet::new(acquisition.ipv4, acquisition.ipv6);
+    let acquisition = ManagedLeaseAcquireRequest {
+        ipv4: addresses.ipv4().to_vec(),
+        ipv6: addresses.ipv6().to_vec(),
+    };
     let Some(intent) = lease_intent.load_if_configured().await? else {
         return Ok(ManagedLeaseTaskOutcome::AwaitingConfiguration);
     };
@@ -219,19 +212,8 @@ async fn run_once_with_addresses(
                 lease_intent,
                 repository,
                 ManagedLeaseSubject::Acquire,
+                Some(addresses),
                 || async {
-                    if !missing_gateways.is_empty() {
-                        return Err(LeaseClientError::Transport {
-                            message: format!(
-                                "gateway endpoint testimony unavailable for {}",
-                                missing_gateways
-                                    .iter()
-                                    .map(ployz_core::ids::MachineId::as_str)
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            ),
-                        });
-                    }
                     client
                         .acquire(acquisition)
                         .await
@@ -242,33 +224,66 @@ async fn run_once_with_addresses(
             .await
         }
         AutoLeaseState::RecordOnly { lease } => {
+            if lease_intent.applied_address_set_differs(&addresses).await? {
+                return run_renew_step(
+                    lease_intent,
+                    repository,
+                    client,
+                    lease,
+                    acquisition,
+                    addresses,
+                )
+                .await;
+            }
             run_download_step(lease_intent, repository, client, lease).await
         }
         AutoLeaseState::Ready { lease, bundle: _ } => {
-            if needs_certificate_refresh && !needs_lease_renewal {
+            let addresses_differ = lease_intent.applied_address_set_differs(&addresses).await?;
+            if needs_certificate_refresh && !needs_lease_renewal && !addresses_differ {
                 return run_download_step(lease_intent, repository, client, lease).await;
             }
-            if !needs_lease_renewal {
+            if !needs_lease_renewal && !addresses_differ {
                 return Ok(ManagedLeaseTaskOutcome::NoAction);
             }
-            let subject = ManagedLeaseSubject::Renew {
-                lease: lease.name.clone(),
-            };
-            run_step(
+            run_renew_step(
                 lease_intent,
                 repository,
-                subject,
-                || async {
-                    client
-                        .renew(lease.name, lease.token)
-                        .await
-                        .map(|renewed| (renewed.lease, renewed.bundle))
-                },
-                |operation_id| ManagedLeaseTaskOutcome::Renewed { operation_id },
+                client,
+                lease,
+                acquisition,
+                addresses,
             )
             .await
         }
     }
+}
+
+async fn run_renew_step(
+    lease_intent: &LeaseIntentStore,
+    repository: &OperationRepository,
+    client: &LeaseClient,
+    lease: ManagedLeaseRecord,
+    acquisition: ManagedLeaseAcquireRequest,
+    addresses: ManagedLeaseAddressSet,
+) -> Result<ManagedLeaseTaskOutcome, ManagedLeaseTaskError> {
+    let subject = ManagedLeaseSubject::Renew {
+        lease: lease.name.clone(),
+        addresses: addresses.clone(),
+    };
+    run_step(
+        lease_intent,
+        repository,
+        subject,
+        Some(addresses),
+        || async {
+            client
+                .renew(lease.name, lease.token, acquisition)
+                .await
+                .map(|renewed| (renewed.lease, renewed.bundle))
+        },
+        |operation_id| ManagedLeaseTaskOutcome::Renewed { operation_id },
+    )
+    .await
 }
 
 async fn run_download_step(
@@ -294,6 +309,7 @@ async fn run_download_step(
         lease_intent,
         repository,
         subject,
+        None,
         || async { result },
         |operation_id| ManagedLeaseTaskOutcome::BundleDownloaded { operation_id },
     )
@@ -305,8 +321,30 @@ struct GatewayAddressCandidates {
     missing: Vec<ployz_core::ids::MachineId>,
 }
 
+async fn gateway_addresses_from_facts(
+    facts_reader: &NatsMachineFactsReader,
+    gateways: &BTreeSet<ployz_core::ids::MachineId>,
+) -> GatewayAddressCandidates {
+    let mut reads = stream::iter(gateways.iter().cloned())
+        .map(|gateway| async move {
+            facts_reader
+                .machine_facts(&gateway)
+                .await
+                .ok()
+                .and_then(|facts| facts.endpoints().cloned())
+        })
+        .buffer_unordered(MAX_CONCURRENT_MACHINE_READS);
+    let mut endpoints = Vec::new();
+    while let Some(endpoint) = reads.next().await {
+        if let Some(endpoint) = endpoint {
+            endpoints.push(endpoint);
+        }
+    }
+    known_gateway_addresses_from_ids(gateways, endpoints)
+}
+
 fn known_gateway_addresses_from_ids(
-    gateways: &std::collections::BTreeSet<ployz_core::ids::MachineId>,
+    gateways: &BTreeSet<ployz_core::ids::MachineId>,
     endpoints: Vec<ployz_core::state::MachineEndpointObservation>,
 ) -> GatewayAddressCandidates {
     let answering = endpoints
@@ -341,6 +379,7 @@ async fn run_step<Worker, WorkerFuture, Success>(
     lease_intent: &LeaseIntentStore,
     repository: &OperationRepository,
     subject: ManagedLeaseSubject,
+    applied_addresses: Option<ManagedLeaseAddressSet>,
     worker: Worker,
     success: Success,
 ) -> Result<ManagedLeaseTaskOutcome, ManagedLeaseTaskError>
@@ -365,7 +404,15 @@ where
             return Ok(ManagedLeaseTaskOutcome::Failed { operation_id });
         }
     };
-    match lease_intent.store_lease(record, bundle).await {
+    let storage = match applied_addresses {
+        Some(addresses) => {
+            lease_intent
+                .store_successful_lease_application(record, bundle, addresses)
+                .await
+        }
+        None => lease_intent.store_lease(record, bundle).await,
+    };
+    match storage {
         Ok(StoreLeaseOutcome::Stored) => {
             record_completed(repository, &operation_id, &subject).await?;
             Ok(success(operation_id))

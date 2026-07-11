@@ -120,6 +120,60 @@ pub struct ManagedLeaseAcquireRequest {
     pub ipv6: Vec<Ipv6Addr>,
 }
 
+/// Canonical public gateway addresses applied to a managed lease.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(
+    from = "ManagedLeaseAddressSetWire",
+    into = "ManagedLeaseAddressSetWire"
+)]
+pub struct ManagedLeaseAddressSet {
+    ipv4: Vec<Ipv4Addr>,
+    ipv6: Vec<Ipv6Addr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManagedLeaseAddressSetWire {
+    ipv4: Vec<Ipv4Addr>,
+    ipv6: Vec<Ipv6Addr>,
+}
+
+impl ManagedLeaseAddressSet {
+    #[must_use]
+    pub fn new(mut ipv4: Vec<Ipv4Addr>, mut ipv6: Vec<Ipv6Addr>) -> Self {
+        ipv4.sort_unstable();
+        ipv4.dedup();
+        ipv6.sort_unstable();
+        ipv6.dedup();
+        Self { ipv4, ipv6 }
+    }
+
+    #[must_use]
+    pub fn ipv4(&self) -> &[Ipv4Addr] {
+        &self.ipv4
+    }
+
+    #[must_use]
+    pub fn ipv6(&self) -> &[Ipv6Addr] {
+        &self.ipv6
+    }
+}
+
+impl From<ManagedLeaseAddressSetWire> for ManagedLeaseAddressSet {
+    fn from(value: ManagedLeaseAddressSetWire) -> Self {
+        let ManagedLeaseAddressSetWire { ipv4, ipv6 } = value;
+        Self::new(ipv4, ipv6)
+    }
+}
+
+impl From<ManagedLeaseAddressSet> for ManagedLeaseAddressSetWire {
+    fn from(value: ManagedLeaseAddressSet) -> Self {
+        let ManagedLeaseAddressSet { ipv4, ipv6 } = value;
+        Self { ipv4, ipv6 }
+    }
+}
+
 fn two_thirds_due(issued_at: u64, expires_at: u64, now_seconds: u64) -> bool {
     now_seconds
         >= issued_at.saturating_add(expires_at.saturating_sub(issued_at).saturating_mul(2) / 3)
@@ -862,6 +916,37 @@ fn is_base64_url_byte(byte: u8) -> bool {
 #[cfg(test)]
 mod managed_lease_intent_tests {
     use super::*;
+
+    #[test]
+    fn managed_lease_address_set_sorts_and_deduplicates_each_family() {
+        let addresses = ManagedLeaseAddressSet::new(
+            vec![
+                "203.0.113.8".parse().expect("IPv4"),
+                "198.51.100.2".parse().expect("IPv4"),
+                "203.0.113.8".parse().expect("IPv4"),
+            ],
+            vec![
+                "2001:db8::8".parse().expect("IPv6"),
+                "2001:db8::2".parse().expect("IPv6"),
+                "2001:db8::8".parse().expect("IPv6"),
+            ],
+        );
+
+        assert_eq!(
+            addresses.ipv4(),
+            [
+                "198.51.100.2".parse::<Ipv4Addr>().expect("IPv4"),
+                "203.0.113.8".parse::<Ipv4Addr>().expect("IPv4"),
+            ]
+        );
+        assert_eq!(
+            addresses.ipv6(),
+            [
+                "2001:db8::2".parse::<Ipv6Addr>().expect("IPv6"),
+                "2001:db8::8".parse::<Ipv6Addr>().expect("IPv6"),
+            ]
+        );
+    }
 
     #[test]
     fn auto_without_lease_needs_acquisition() {

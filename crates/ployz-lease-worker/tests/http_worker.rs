@@ -96,7 +96,7 @@ async fn http_worker_returns_pending_once_before_bundle_ready() {
             "Authorization",
             format!("Bearer {}", acquired.lease.token.as_str()),
         )],
-        "",
+        r#"{"ipv4":["203.0.113.8"],"ipv6":["2001:db8::8"]}"#,
     )
     .await
     .expect("lease renewed");
@@ -139,7 +139,7 @@ async fn http_worker_renew_returns_no_bundle_while_issuance_is_pending() {
             "Authorization",
             format!("Bearer {}", acquired.lease.token.as_str()),
         )],
-        "",
+        r#"{"ipv4":["203.0.113.8"],"ipv6":[]}"#,
     )
     .await
     .expect("lease renewed");
