@@ -36,14 +36,12 @@ pub(crate) fn generate_client_deploy_id(
     })
 }
 
-pub(crate) fn generate_client_deploy_rollback_id(
-) -> Result<ClientGeneratedDeployId, ClientGeneratedIdsError> {
+pub(crate) fn generate_client_deploy_rollback_id()
+-> Result<ClientGeneratedDeployId, ClientGeneratedIdsError> {
     let suffix = generated_id_suffix();
     Ok(ClientGeneratedDeployId {
-        idempotency_key: OperationIdempotencyKey::try_new(format!(
-            "idem_deploy_rollback_{suffix}"
-        ))
-        .map_err(|source| ClientGeneratedIdsError::IdempotencyKey { source })?,
+        idempotency_key: OperationIdempotencyKey::try_new(format!("idem_deploy_rollback_{suffix}"))
+            .map_err(|source| ClientGeneratedIdsError::IdempotencyKey { source })?,
     })
 }
 

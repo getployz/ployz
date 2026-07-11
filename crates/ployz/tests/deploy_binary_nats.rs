@@ -175,9 +175,7 @@ async fn binary_rollback_replays_the_selected_pinned_payload_as_a_new_deploy() {
                             .expect("valid expiration"),
                     },
                 };
-                NatsServiceResponse::ok(
-                    serde_json::to_vec(&response).expect("response serializes"),
-                )
+                NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
             }
         })
         .await
@@ -197,9 +195,7 @@ async fn binary_rollback_replays_the_selected_pinned_payload_as_a_new_deploy() {
             let response: DeploySubmitResponse = OperationApiResponse::Ok {
                 value: accepted_operation("op_rollback"),
             };
-            NatsServiceResponse::ok(
-                serde_json::to_vec(&response).expect("response serializes"),
-            )
+            NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
         })
         .await
         .expect("submit endpoint binds");
@@ -217,8 +213,7 @@ async fn binary_rollback_replays_the_selected_pinned_payload_as_a_new_deploy() {
                             operation_id: operation_id("op_rollback"),
                             reservation_id: Some(DeployReservationId::first()),
                             target: pinned_request(Some(
-                                DeployOrigin::try_new("rollback")
-                                    .expect("valid rollback origin"),
+                                DeployOrigin::try_new("rollback").expect("valid rollback origin"),
                             )),
                         },
                     ),
@@ -231,9 +226,7 @@ async fn binary_rollback_replays_the_selected_pinned_payload_as_a_new_deploy() {
                     ),
                 ]),
             };
-            NatsServiceResponse::ok(
-                serde_json::to_vec(&response).expect("response serializes"),
-            )
+            NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
         })
         .await
         .expect("watch endpoint binds");
