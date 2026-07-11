@@ -1,10 +1,8 @@
-//! Control-owned NATS authorization: the durable authorized principal set,
-//! its on-disk recovery evidence, and the per-machine credential mint.
+//! Control-owned NATS authorization: durable client grants and internal
+//! authorities, their rendered projection, and per-machine credential minting.
 //!
-//! Truth model: `/etc/nats/authorized-users.conf` is the core-local durable
-//! authority for NATS principals. Machine-add appends or replaces its machine
-//! principal through the single writer; revocation returns with the
-//! machine-remove operation when it exists.
+//! The core store is durable intent. `/etc/nats/authorized-users.conf` is its
+//! rendered projection into the running NATS server.
 //!
 //! Fencing (ADR-0015): all read-set -> render -> reload -> verify work
 //! serializes through one single-writer task owning the file. Concurrent
@@ -24,6 +22,7 @@ pub use reload::{
     SignalNatsReloadRunner, SystemctlNatsReloadRunner,
 };
 pub use writer::{
-    AuthorizedUsersFileError, NatsAuthorizationHandle, NatsAuthorizationWriter, RenderFailure,
-    RenderPrepareFailure, RenderedAuthorization,
+    AuthorizedUsersFileError, CredentialMutationChange, CredentialMutationFailure,
+    CredentialMutationRejection, CredentialMutationResult, NatsAuthorizationHandle,
+    NatsAuthorizationWriter, RenderFailure, RenderPrepareFailure, RenderedAuthorization,
 };

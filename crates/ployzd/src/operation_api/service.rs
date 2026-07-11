@@ -1,10 +1,11 @@
 //! NATS Service API wiring for daemon commands.
 
 use crate::operation_api::{
-    OperationApiHandlers, core_replace, core_replace_report, deploy_reserve, deploy_submit,
-    init_first_machine_activate, machine_add, machine_drain, machine_join_redeem,
-    machine_join_report, machine_resume, machine_update, namespace_remove, network_repair,
-    ops_list, ops_status, ops_watch, service_restart, volume_remove,
+    OperationApiHandlers, core_replace, core_replace_report, credential_add, credential_list,
+    credential_remove, deploy_reserve, deploy_submit, init_first_machine_activate, machine_add,
+    machine_drain, machine_join_redeem, machine_join_report, machine_resume, machine_update,
+    namespace_remove, network_repair, ops_list, ops_status, ops_watch, service_restart,
+    volume_remove,
 };
 use crate::service_catalog::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
 use ployz_core::subjects::OperationApiEndpoint;
@@ -15,13 +16,13 @@ use ployz_nats::service_runtime::{
 use ployz_sdk_types::{
     OperationApiResponse,
     operation_api::{
-        CoreReplaceApi, CoreReplaceReportApi, DeployReserveApi, DeploySubmitApi,
-        InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineDrainApi,
-        MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
-        MachineResumeApi, MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi,
-        NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi,
-        OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi,
-        VolumeListApi, VolumeRemoveApi,
+        CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi, CredentialListApi,
+        CredentialRemoveApi, DeployReserveApi, DeploySubmitApi, InitFirstMachineActivateApi,
+        LogsTailApi, MachineAddApi, MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi,
+        MachineJoinReportApi, MachineListApi, MachineResumeApi, MachineUpdateApi,
+        NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, NetworkStatusApi,
+        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
+        ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -61,6 +62,30 @@ async fn bind_operation_endpoint(
                 runtime,
                 handlers,
                 |handlers, request| async move { deploy_reserve(&handlers, request).await },
+            )
+            .await
+        }
+        OperationApiEndpoint::CredentialAdd => {
+            bind_operation_contract::<CredentialAddApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move { credential_add(&handlers, request).await },
+            )
+            .await
+        }
+        OperationApiEndpoint::CredentialList => {
+            bind_operation_contract::<CredentialListApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, _request| async move { credential_list(handlers.intent_reader()).await },
+            )
+            .await
+        }
+        OperationApiEndpoint::CredentialRemove => {
+            bind_operation_contract::<CredentialRemoveApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move { credential_remove(&handlers, request).await },
             )
             .await
         }

@@ -5,6 +5,7 @@
 
 use super::cert::{self, CertOperationState};
 use super::core_replace::{self, CoreReplaceOperationState};
+use super::credential_grant::{self, CredentialGrantOperationState};
 use super::deploy::{self, DeployOperationState};
 use super::events::{ClassifiedOperationEvent, OperationSubjectRef};
 use super::machine_add::{self, MachineAddFields, MachineAddOperationState};
@@ -58,6 +59,8 @@ pub enum StatusProjectionError {
         expected_operation_id: OperationId,
         actual_operation_id: OperationId,
     },
+    #[error("credential grant operation {} action does not match its submitted action", .operation_id.as_str())]
+    CredentialGrantActionMismatch { operation_id: OperationId },
     #[error(
         "operation {} is terminal in its {} state; a {} transition was attempted",
         .operation_id.as_str(),
@@ -92,6 +95,7 @@ pub enum ProjectionOperationState {
     MachineUpdate(MachineUpdateOperationState),
     MachineLifecycle(MachineLifecycleOperationState),
     CoreReplace(CoreReplaceOperationState),
+    CredentialGrant(CredentialGrantOperationState),
     NetworkRepair(NetworkRepairOperationState),
     ServiceRestart(ServiceRestartOperationState),
     ManagedLease(ManagedLeaseOperationState),
@@ -109,6 +113,7 @@ impl ProjectionOperationState {
             Self::MachineUpdate(_) => OperationKind::MachineUpdate,
             Self::MachineLifecycle(_) => OperationKind::MachineLifecycle,
             Self::CoreReplace(_) => OperationKind::CoreReplace,
+            Self::CredentialGrant(_) => OperationKind::CredentialGrant,
             Self::NetworkRepair(_) => OperationKind::NetworkRepair,
             Self::ServiceRestart(_) => OperationKind::ServiceRestart,
             Self::ManagedLease(_) => OperationKind::ManagedLease,
@@ -126,6 +131,7 @@ pub(crate) const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::MachineUpdate => "machine-update",
         OperationKind::MachineLifecycle => "machine-lifecycle",
         OperationKind::CoreReplace => "core-replace",
+        OperationKind::CredentialGrant => "credential-grant",
         OperationKind::NetworkRepair => "network-repair",
         OperationKind::ServiceRestart => "service-restart",
         OperationKind::ManagedLease => "managed-lease",
@@ -149,6 +155,7 @@ fn subject_ref_text(subject: &OperationSubjectRef) -> String {
         OperationSubjectRef::CoreReplace(machine_id) => {
             format!("core-replace {}", machine_id.as_str())
         }
+        OperationSubjectRef::CredentialGrant => "credential-grant".to_owned(),
         OperationSubjectRef::ManagedLease(subject) => format!("managed-lease {subject:?}"),
     }
 }
@@ -346,6 +353,15 @@ pub fn project_operation_event(
                 event,
                 event_sequence,
             )
+        }
+        ClassifiedOperationEvent::CredentialGrant { event, .. } => {
+            let OperationStatus::CredentialGrant {
+                id, action, state, ..
+            } = current
+            else {
+                return Err(kind_mismatch(current, OperationKind::CredentialGrant));
+            };
+            credential_grant::project_event(id, action, state, event, event_sequence)
         }
         ClassifiedOperationEvent::NetworkRepair { event, .. } => {
             let OperationStatus::NetworkRepair {

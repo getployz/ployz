@@ -17,12 +17,12 @@ pub use machine_join::{machine_join_redeem, machine_join_report};
 pub use network_query::NetworkQueryService;
 pub use queries::{
     LogsQueryService, MachineQueryService, RuntimeSnapshotQueryService, ServiceQueryService,
-    VolumeQueryService, ops_list, ops_status, ops_status_missing, ops_watch,
+    VolumeQueryService, credential_list, ops_list, ops_status, ops_status_missing, ops_watch,
 };
 pub use submit::{
-    core_replace, deploy_reserve, deploy_submit, machine_add, machine_drain, machine_resume,
-    machine_update, namespace_remove, network_repair, owned_operation, service_restart,
-    volume_remove,
+    core_replace, credential_add, credential_remove, deploy_reserve, deploy_submit, machine_add,
+    machine_drain, machine_resume, machine_update, namespace_remove, network_repair,
+    owned_operation, service_restart, volume_remove,
 };
 
 use crate::adapters::nats_authorization::MachineCredentialMint;
@@ -32,6 +32,7 @@ use crate::intent::lease_intent::LeaseIntentStore;
 use crate::intent::machine_roster::MachineRosterStore;
 use crate::intent::service::{NatsIntentReader, publish_pending_machine_joins};
 use crate::operation_api::admission::OperationControllers;
+use crate::operations::credential_grant::CredentialGrantOperation;
 use crate::operations::deploy::driver::DeployOperationDriver;
 use crate::operations::machine_lifecycle::MachineLifecycleOperation;
 use crate::operations::machine_update::MachineUpdateOperation;
@@ -47,6 +48,7 @@ use std::sync::Arc;
 /// The operation drivers, bundled so a new kind adds a field here instead of
 /// another positional parameter threaded through `execute_operations`.
 pub struct OperationWorkers {
+    pub credential_grant: CredentialGrantOperation,
     pub deploy: DeployOperationDriver,
     pub service_restart: ServiceRestartOperation,
     pub namespace_remove: NamespaceRemoveOperation,
@@ -68,6 +70,7 @@ pub struct OperationApiHandlers {
     machine_update: Arc<MachineUpdateOperation>,
     machine_lifecycle: Arc<MachineLifecycleOperation>,
     machine_mint: Arc<MachineCredentialMint>,
+    credential_grant: Arc<CredentialGrantOperation>,
     dataplane_endpoint_supernet: MachineEndpointSupernet,
     core_store: CoreStore,
     local_machine_id: MachineId,
@@ -100,6 +103,7 @@ impl OperationApiHandlers {
         logs_tailer: NatsMachineLogsTailer,
     ) -> Self {
         let OperationWorkers {
+            credential_grant,
             deploy: deploy_driver,
             service_restart,
             namespace_remove,
@@ -132,6 +136,7 @@ impl OperationApiHandlers {
             machine_update: Arc::new(machine_update),
             machine_lifecycle: Arc::new(machine_lifecycle),
             machine_mint: Arc::new(machine_mint),
+            credential_grant: Arc::new(credential_grant),
             dataplane_endpoint_supernet,
             core_store,
             local_machine_id,
@@ -183,6 +188,10 @@ impl OperationApiHandlers {
 
     pub(crate) fn machine_update(&self) -> &MachineUpdateOperation {
         &self.machine_update
+    }
+
+    pub(crate) fn credential_grant(&self) -> &CredentialGrantOperation {
+        &self.credential_grant
     }
 
     pub(crate) fn service_restart(&self) -> &ServiceRestartOperation {

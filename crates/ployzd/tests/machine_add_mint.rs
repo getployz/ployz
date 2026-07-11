@@ -7,11 +7,13 @@
 //! fence and the ADR-0001 authority-file durability rules.
 
 use ployz_core::machine::{JoinTokenRedeemedAt, MachineAddFailure, RawJoinToken};
-use ployz_core::nats_config::{NatsUserPublicKey, parse_authorized_users, render_authorized_users};
+use ployz_core::nats_config::{
+    CredentialGrant, CredentialName, CredentialRole, NatsAuthorizationGrant, NatsInternalAuthority,
+    NatsUserPublicKey, parse_authorized_users, render_authorized_users,
+};
 use ployz_core::ops::MachineAddOperationState;
 use ployz_core::ops::OperationStatus;
 use ployz_core::roles::InstallRolePolicy;
-use ployz_core::security::NatsPrincipal;
 use ployz_core::state::{ControlPlaneEpoch, IntentSnapshot, PendingMachineJoinRecoverySnapshot};
 use ployz_core::subjects::{OPERATION_PROGRESS_SCOPE, OperationApiEndpoint};
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
@@ -250,16 +252,17 @@ async fn startup_preserves_existing_authorized_users_when_rendering() {
     let existing = std::fs::read_to_string(nats.server().authorized_users_path())
         .expect("fixture authority file is readable");
     let mut users = parse_authorized_users(&existing).expect("fixture authority file parses");
-    users.push(ployz_core::nats_config::NatsAuthorizedUser {
-        principal: NatsPrincipal::Machine {
+    users.push(NatsAuthorizationGrant::Internal {
+        authority: NatsInternalAuthority::Machine {
             machine_id: machine_id("machine_ghost"),
         },
-        nkey_public: ghost_public.clone(),
+        public_key: ghost_public.clone(),
     });
-    users.push(ployz_core::nats_config::NatsAuthorizedUser {
-        principal: NatsPrincipal::Operator,
-        nkey_public: cloud_public.clone(),
-    });
+    users.push(NatsAuthorizationGrant::Credential(CredentialGrant {
+        public_key: cloud_public.clone(),
+        name: CredentialName::try_new("Ployz Cloud").expect("credential name"),
+        role: CredentialRole::Operator,
+    }));
     std::fs::write(
         nats.server().authorized_users_path(),
         render_authorized_users(&users),
@@ -288,8 +291,12 @@ async fn startup_preserves_existing_authorized_users_when_rendering() {
         "minted user is rendered alongside the existing one"
     );
     assert!(
-        users.iter().any(|user| {
-            user.principal == NatsPrincipal::Operator && user.nkey_public == cloud_public
+        users.iter().any(|grant| {
+            matches!(
+                grant,
+                NatsAuthorizationGrant::Credential(CredentialGrant { public_key, .. })
+                    if public_key == &cloud_public
+            )
         }),
         "extra Operator credential survives the render"
     );
@@ -323,9 +330,13 @@ async fn startup_renders_current_authorization_permissions() {
 
     let reload = nats.reload_runner();
     let config = nats.control_config();
-    let runtime = nats
-        .start_control_with_reload(&config, reload.clone())
-        .await;
+    let runtime = ployzd::roles::control::start_control_process_with_client_and_reload(
+        nats.connected.controller.clone(),
+        &config,
+        reload.clone(),
+    )
+    .await
+    .expect("control runtime starts");
 
     let repaired = std::fs::read_to_string(nats.server().authorized_users_path())
         .expect("repaired authorized-users file is readable");
@@ -485,7 +496,7 @@ async fn promoted_core_recovers_pending_join_without_old_operation_log() {
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),
-            authorized_users: Vec::new(),
+            nats_authorizations: Vec::new(),
             managed_lease: ployz_core::state::ManagedLeaseProjection::Unacquired,
             custom_certificates: Vec::new(),
             acme_http01_challenges: Vec::new(),
@@ -880,16 +891,20 @@ fn public_key_of(seed: &str) -> NatsUserPublicKey {
 }
 
 fn rendered_principal_key(
-    users: &[ployz_core::nats_config::NatsAuthorizedUser],
+    users: &[NatsAuthorizationGrant],
     machine: &str,
 ) -> Option<NatsUserPublicKey> {
-    users
-        .iter()
-        .find(|user| {
-            user.principal
-                == NatsPrincipal::Machine {
-                    machine_id: machine_id(machine),
-                }
-        })
-        .map(|user| user.nkey_public.clone())
+    users.iter().find_map(|grant| {
+        let NatsAuthorizationGrant::Internal {
+            authority:
+                NatsInternalAuthority::Machine {
+                    machine_id: granted,
+                },
+            public_key,
+        } = grant
+        else {
+            return None;
+        };
+        (granted == &machine_id(machine)).then(|| public_key.clone())
+    })
 }

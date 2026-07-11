@@ -478,8 +478,9 @@ pub fn first_machine_install_target_from_spec(
         None => discover_machine_public_ips(),
     };
     let machine_public_ip = machine_public_ips.first().copied();
+    let hostname = machine_hostname();
     let certificate_sans =
-        ServerCertificateSans::try_new_many(machine_public_ips, machine_hostname())?;
+        ServerCertificateSans::try_new_many(machine_public_ips, hostname.clone())?;
     let nats_identity = generate_cluster_nats_identity(&certificate_sans)?;
     let recovery_secret = resolve_recovery_secret();
     let recovery_key_wrapped = WrappedCaKey::new(
@@ -502,6 +503,9 @@ pub fn first_machine_install_target_from_spec(
     )
     .with_nats_server_unit(nats_server_unit)
     .with_dataplane_endpoint_supernet(dataplane_endpoint_supernet);
+    if let Some(hostname) = hostname {
+        target = target.with_founder_hostname(hostname);
+    }
     if let Some(url) = machine_bootstrap_url {
         target = target.with_machine_bootstrap_url(url);
     }

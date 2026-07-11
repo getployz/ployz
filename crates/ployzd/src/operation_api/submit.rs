@@ -3,19 +3,21 @@
 
 use crate::adapters::nats_authorization::MintRequest;
 use crate::operation_api::admission::{
-    CoreReplaceSubmitCommand, DeploySubmitCommand, MachineAddBootstrapMaterial,
-    MachineAddBootstrapMaterialError, MachineAddSubmitCommand, MachineLifecycleSubmitCommand,
-    MachineUpdateSubmitCommand, NamespaceRemoveSubmitCommand, NetworkRepairSubmitCommand,
-    OperationControllers, ServiceRestartSubmitCommand, VolumeRemoveSubmitCommand,
+    CoreReplaceSubmitCommand, CredentialGrantSubmitCommand, DeploySubmitCommand,
+    MachineAddBootstrapMaterial, MachineAddBootstrapMaterialError, MachineAddSubmitCommand,
+    MachineLifecycleSubmitCommand, MachineUpdateSubmitCommand, NamespaceRemoveSubmitCommand,
+    NetworkRepairSubmitCommand, OperationControllers, ServiceRestartSubmitCommand,
+    VolumeRemoveSubmitCommand,
 };
 use ployz_core::deploy::ImageSource;
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::internal_dns::InternalServiceName;
-use ployz_core::ops::EventSequence;
+use ployz_core::ops::{CredentialGrantAction, EventSequence};
 use ployz_core::state::MachineLifecycle;
 use ployz_core::subjects::{OperationProgressScope, operation_progress_watch};
 use ployz_sdk_types::{
-    AcceptedOperation, CoreReplaceError, CoreReplaceRequest, DeployReserveError,
+    AcceptedOperation, CoreReplaceError, CoreReplaceRequest, CredentialAddError,
+    CredentialAddRequest, CredentialRemoveError, CredentialRemoveRequest, DeployReserveError,
     DeployReserveRequest, DeployReserved, DeploySubmitError, DeploySubmitRequest,
     MachineAddAccepted, MachineAddError, MachineAddRequest, MachineJoinToken,
     MachineLifecycleError, MachineLifecycleRequest, MachineUpdateError, MachineUpdateRequest,
@@ -75,6 +77,102 @@ pub async fn deploy_reserve(
         .map_err(|error| DeployReserveError::Unavailable {
             message: error.to_string(),
         })
+}
+
+pub async fn credential_add(
+    handlers: &OperationApiHandlers,
+    request: CredentialAddRequest,
+) -> Result<AcceptedOperation, CredentialAddError> {
+    let operation_id = request.operation_id.clone();
+    let accepted = handlers
+        .controllers()
+        .submit_credential_grant(CredentialGrantSubmitCommand {
+            operation_id: request.operation_id,
+            action: CredentialGrantAction::Add {
+                grant: request.grant,
+            },
+        })
+        .await
+        .map_err(|error| credential_add_submit_error(operation_id.clone(), error))?;
+    let operation = owned_operation(
+        accepted.operation_id.clone(),
+        OperationProgressScope::Cluster,
+        accepted.start_sequence,
+    );
+    handlers.credential_grant().start(accepted);
+    Ok(operation)
+}
+
+pub async fn credential_remove(
+    handlers: &OperationApiHandlers,
+    request: CredentialRemoveRequest,
+) -> Result<AcceptedOperation, CredentialRemoveError> {
+    let operation_id = request.operation_id.clone();
+    let accepted = handlers
+        .controllers()
+        .submit_credential_grant(CredentialGrantSubmitCommand {
+            operation_id: request.operation_id,
+            action: CredentialGrantAction::Remove {
+                public_key: request.public_key,
+            },
+        })
+        .await
+        .map_err(|error| credential_remove_submit_error(operation_id.clone(), error))?;
+    let operation = owned_operation(
+        accepted.operation_id.clone(),
+        OperationProgressScope::Cluster,
+        accepted.start_sequence,
+    );
+    handlers.credential_grant().start(accepted);
+    Ok(operation)
+}
+
+fn credential_add_submit_error(
+    operation_id: OperationId,
+    error: crate::operation_api::admission::SubmitCommandError,
+) -> CredentialAddError {
+    match super::error_map::submit_failure(error) {
+        super::error_map::SubmitFailure::Unavailable { message } => {
+            CredentialAddError::Unavailable {
+                operation_id,
+                message,
+            }
+        }
+        super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence } => {
+            CredentialAddError::DuplicateSequenceMismatch {
+                operation_id,
+                sequence,
+            }
+        }
+        super::error_map::SubmitFailure::InvalidDeployTarget
+        | super::error_map::SubmitFailure::ResourceBusy { .. } => {
+            unreachable!("credential grants have no deploy target or namespace fence")
+        }
+    }
+}
+
+fn credential_remove_submit_error(
+    operation_id: OperationId,
+    error: crate::operation_api::admission::SubmitCommandError,
+) -> CredentialRemoveError {
+    match super::error_map::submit_failure(error) {
+        super::error_map::SubmitFailure::Unavailable { message } => {
+            CredentialRemoveError::Unavailable {
+                operation_id,
+                message,
+            }
+        }
+        super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence } => {
+            CredentialRemoveError::DuplicateSequenceMismatch {
+                operation_id,
+                sequence,
+            }
+        }
+        super::error_map::SubmitFailure::InvalidDeployTarget
+        | super::error_map::SubmitFailure::ResourceBusy { .. } => {
+            unreachable!("credential grants have no deploy target or namespace fence")
+        }
+    }
 }
 
 fn mint_deploy_operation_id() -> OperationId {

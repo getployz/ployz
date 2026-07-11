@@ -426,7 +426,7 @@ impl TestNats {
                     route_bindings: Vec::new(),
                     serving_target_entries: Vec::new(),
                     volume_pins: Vec::new(),
-                    authorized_users: Vec::new(),
+                    nats_authorizations: Vec::new(),
                     managed_lease: ManagedLeaseProjection::Unacquired,
                     custom_certificates: Vec::new(),
                     acme_http01_challenges: vec![challenge.clone()],

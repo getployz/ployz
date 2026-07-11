@@ -65,6 +65,14 @@ impl OperationEvent {
             Self::CoreReplaceSubmitted { .. } => "core.replace.submitted".to_owned(),
             Self::CoreReplaceCompleted { .. } => "core.replace.completed".to_owned(),
             Self::CoreReplaceFailed { .. } => "core.replace.failed".to_owned(),
+            Self::CredentialGrantSubmitted { action, .. } => match action {
+                super::CredentialGrantAction::Add { .. } => "credential.add.submitted".to_owned(),
+                super::CredentialGrantAction::Remove { .. } => {
+                    "credential.remove.submitted".to_owned()
+                }
+            },
+            Self::CredentialGrantCompleted { .. } => "credential.grant.completed".to_owned(),
+            Self::CredentialGrantFailed { .. } => "credential.grant.failed".to_owned(),
             Self::NetworkRepairSubmitted { .. } => "network.repair.submitted".to_owned(),
             Self::NetworkRepairRunning { stage, .. } => {
                 format!("network.repair.running.{}", stage.as_subject())

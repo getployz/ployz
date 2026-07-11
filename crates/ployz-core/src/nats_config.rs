@@ -116,34 +116,139 @@ impl NatsServerConfig {
     }
 }
 
-/// One rendered entry of the ployzd-owned `authorized-users.conf`.
-///
-/// Public keys plus permissions are non-secret recovery evidence; seeds
-/// never appear in the authorization file.
+/// Human-facing name attached to a client credential grant.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "string"))]
+#[serde(try_from = "String", into = "String")]
+pub struct CredentialName(String);
+
+impl CredentialName {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, CredentialNameError> {
+        let value = value.into();
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(CredentialNameError::Empty);
+        }
+        if trimmed.contains(['\r', '\n', '\0']) {
+            return Err(CredentialNameError::InvalidControlCharacter);
+        }
+        Ok(Self(trimmed.to_owned()))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for CredentialName {
+    type Error = CredentialNameError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<CredentialName> for String {
+    fn from(value: CredentialName) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CredentialNameError {
+    #[error("credential name must not be empty")]
+    Empty,
+    #[error("credential name must not contain CR, LF, or NUL")]
+    InvalidControlCharacter,
+}
+
+/// Authority granted to a human or automation client credential.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialRole {
+    Operator,
+}
+
+/// One named client credential. The public key is its stable identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct NatsAuthorizedUser {
-    pub principal: NatsPrincipal,
-    pub nkey_public: NatsUserPublicKey,
+pub struct CredentialGrant {
+    pub public_key: NatsUserPublicKey,
+    pub name: CredentialName,
+    pub role: CredentialRole,
 }
 
-impl NatsAuthorizedUser {
-    /// Stable identity for one authorization file entry.
-    ///
-    /// Most principals are unique by role or machine id. Operator credentials are
-    /// intentionally plural: the local operator and Cloud can both hold Operator
-    /// authority, so the public NKey is part of their durable record key.
+/// NATS authorities owned by the control plane rather than a client.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "authority", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NatsInternalAuthority {
+    Machine { machine_id: MachineId },
+    Controller,
+    Join,
+    System,
+}
+
+impl NatsInternalAuthority {
+    #[must_use]
+    pub fn principal(&self) -> NatsPrincipal {
+        match self {
+            Self::Machine { machine_id } => NatsPrincipal::Machine {
+                machine_id: machine_id.clone(),
+            },
+            Self::Controller => NatsPrincipal::Controller,
+            Self::Join => NatsPrincipal::Join,
+            Self::System => NatsPrincipal::System,
+        }
+    }
+}
+
+/// One rendered entry of the ployzd-owned `authorized-users.conf`.
+///
+/// Client credentials and internal authorities are separate variants, so an
+/// internal principal cannot accidentally acquire client-facing metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NatsAuthorizationGrant {
+    Credential(CredentialGrant),
+    Internal {
+        authority: NatsInternalAuthority,
+        public_key: NatsUserPublicKey,
+    },
+}
+
+impl NatsAuthorizationGrant {
+    #[must_use]
+    pub fn principal(&self) -> NatsPrincipal {
+        match self {
+            Self::Credential(CredentialGrant { role, .. }) => match role {
+                CredentialRole::Operator => NatsPrincipal::Operator,
+            },
+            Self::Internal { authority, .. } => authority.principal(),
+        }
+    }
+
+    #[must_use]
+    pub const fn public_key(&self) -> &NatsUserPublicKey {
+        match self {
+            Self::Credential(CredentialGrant { public_key, .. })
+            | Self::Internal { public_key, .. } => public_key,
+        }
+    }
+
+    /// Stable identity for one durable authorization record.
     #[must_use]
     pub fn authority_record_key(&self) -> String {
-        match self.principal {
-            NatsPrincipal::Operator => {
-                format!("user.{}", self.nkey_public.as_str())
+        match self {
+            Self::Credential(CredentialGrant { public_key, .. }) => {
+                format!("user.{}", public_key.as_str())
             }
-            NatsPrincipal::Machine { .. }
-            | NatsPrincipal::Controller
-            | NatsPrincipal::Join
-            | NatsPrincipal::System => self.principal.authority_key(),
+            Self::Internal { authority, .. } => authority.principal().authority_key(),
         }
     }
 }
@@ -151,24 +256,43 @@ impl NatsAuthorizedUser {
 /// The marker comment that precedes each rendered user entry. It names the
 /// entry's principal so the on-disk file is durable authorization evidence.
 const PRINCIPAL_MARKER_PREFIX: &str = "# ployz-principal: ";
+const CREDENTIAL_NAME_MARKER_PREFIX: &str = "# ployz-credential-name: ";
+const CREDENTIAL_ROLE_MARKER_PREFIX: &str = "# ployz-credential-role: ";
+
+struct PendingAuthorization {
+    principal: NatsPrincipal,
+    credential_name: Option<CredentialName>,
+    credential_role: Option<CredentialRole>,
+}
 
 /// Renders the `authorization { users [...] }` include file from the
 /// principals' permission profiles.
 #[must_use]
-pub fn render_authorized_users(users: &[NatsAuthorizedUser]) -> String {
+pub fn render_authorized_users(users: &[NatsAuthorizationGrant]) -> String {
     let mut rendered = String::from("authorization {\n  users [\n");
     for user in users {
-        let NatsAuthorizedUser {
-            principal,
-            nkey_public,
-        } = user;
-        let profile = NatsPermissionProfile::render(principal.clone());
+        let principal = user.principal();
+        let credential = match user {
+            NatsAuthorizationGrant::Credential(grant) => Some(grant),
+            NatsAuthorizationGrant::Internal { .. } => None,
+        };
+        let profile = NatsPermissionProfile::render(principal);
         rendered.push_str("    {\n");
         rendered.push_str(&format!(
             "      {PRINCIPAL_MARKER_PREFIX}{}\n",
-            principal.authority_key()
+            profile.principal.authority_key()
         ));
-        rendered.push_str(&format!("      nkey: {}\n", nkey_public.as_str()));
+        if let Some(CredentialGrant { name, role, .. }) = credential {
+            rendered.push_str(&format!(
+                "      {CREDENTIAL_NAME_MARKER_PREFIX}{}\n",
+                name.as_str()
+            ));
+            let role = match role {
+                CredentialRole::Operator => "operator",
+            };
+            rendered.push_str(&format!("      {CREDENTIAL_ROLE_MARKER_PREFIX}{role}\n"));
+        }
+        rendered.push_str(&format!("      nkey: {}\n", user.public_key().as_str()));
         rendered.push_str("      permissions {\n");
         rendered.push_str("        publish {\n");
         rendered.push_str(&render_subject_list(
@@ -213,26 +337,60 @@ pub fn render_authorized_users(users: &[NatsAuthorizedUser]) -> String {
 /// profile.
 pub fn parse_authorized_users(
     rendered: &str,
-) -> Result<Vec<NatsAuthorizedUser>, AuthorizedUsersParseError> {
+) -> Result<Vec<NatsAuthorizationGrant>, AuthorizedUsersParseError> {
     let mut users = Vec::new();
-    let mut pending_principal: Option<NatsPrincipal> = None;
+    let mut pending: Option<PendingAuthorization> = None;
     for (index, line) in rendered.lines().enumerate() {
         let line_number = index + 1;
         let trimmed = line.trim();
-        if let Some(key) = trimmed.strip_prefix(PRINCIPAL_MARKER_PREFIX) {
-            if pending_principal.is_some() {
+        if let Some(value) = trimmed.strip_prefix(PRINCIPAL_MARKER_PREFIX) {
+            if pending.is_some() {
                 return Err(AuthorizedUsersParseError::MarkerWithoutNkey { line_number });
             }
-            pending_principal = Some(NatsPrincipal::try_from_authority_key(key.trim()).map_err(
-                |_| AuthorizedUsersParseError::InvalidPrincipal {
+            let principal = NatsPrincipal::try_from_authority_key(value.trim()).map_err(|_| {
+                AuthorizedUsersParseError::InvalidPrincipal {
                     line_number,
-                    value: key.trim().to_owned(),
-                },
-            )?);
+                    value: value.to_owned(),
+                }
+            })?;
+            pending = Some(PendingAuthorization {
+                principal,
+                credential_name: None,
+                credential_role: None,
+            });
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix(CREDENTIAL_NAME_MARKER_PREFIX) {
+            let Some(pending) = pending.as_mut() else {
+                return Err(
+                    AuthorizedUsersParseError::CredentialMarkerWithoutPrincipal { line_number },
+                );
+            };
+            pending.credential_name =
+                Some(CredentialName::try_new(value).map_err(|_| {
+                    AuthorizedUsersParseError::InvalidCredentialName { line_number }
+                })?);
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix(CREDENTIAL_ROLE_MARKER_PREFIX) {
+            let Some(pending) = pending.as_mut() else {
+                return Err(
+                    AuthorizedUsersParseError::CredentialMarkerWithoutPrincipal { line_number },
+                );
+            };
+            pending.credential_role = Some(match value.trim() {
+                "operator" => CredentialRole::Operator,
+                value => {
+                    return Err(AuthorizedUsersParseError::InvalidCredentialRole {
+                        line_number,
+                        value: value.to_owned(),
+                    });
+                }
+            });
             continue;
         }
         if let Some(value) = trimmed.strip_prefix("nkey:") {
-            let Some(principal) = pending_principal.take() else {
+            let Some(pending) = pending.take() else {
                 return Err(AuthorizedUsersParseError::NkeyWithoutMarker { line_number });
             };
             let nkey_public = NatsUserPublicKey::try_new(value.trim()).map_err(|_| {
@@ -241,17 +399,78 @@ pub fn parse_authorized_users(
                     value: value.trim().to_owned(),
                 }
             })?;
-            users.push(NatsAuthorizedUser {
+            let PendingAuthorization {
                 principal,
-                nkey_public,
+                credential_name,
+                credential_role,
+            } = pending;
+            users.push(match principal {
+                NatsPrincipal::Operator => {
+                    let (Some(name), Some(role)) = (credential_name, credential_role) else {
+                        return Err(AuthorizedUsersParseError::MissingCredentialMetadata {
+                            line_number,
+                        });
+                    };
+                    NatsAuthorizationGrant::Credential(CredentialGrant {
+                        public_key: nkey_public,
+                        name,
+                        role,
+                    })
+                }
+                NatsPrincipal::Machine { machine_id } => internal_authorization(
+                    NatsInternalAuthority::Machine { machine_id },
+                    credential_name,
+                    credential_role,
+                    nkey_public,
+                    line_number,
+                )?,
+                NatsPrincipal::Controller => internal_authorization(
+                    NatsInternalAuthority::Controller,
+                    credential_name,
+                    credential_role,
+                    nkey_public,
+                    line_number,
+                )?,
+                NatsPrincipal::Join => internal_authorization(
+                    NatsInternalAuthority::Join,
+                    credential_name,
+                    credential_role,
+                    nkey_public,
+                    line_number,
+                )?,
+                NatsPrincipal::System => internal_authorization(
+                    NatsInternalAuthority::System,
+                    credential_name,
+                    credential_role,
+                    nkey_public,
+                    line_number,
+                )?,
             });
         }
     }
-    if pending_principal.is_some() {
+    if pending.is_some() {
         return Err(AuthorizedUsersParseError::TrailingMarker);
     }
 
     Ok(users)
+}
+
+fn internal_authorization(
+    authority: NatsInternalAuthority,
+    credential_name: Option<CredentialName>,
+    credential_role: Option<CredentialRole>,
+    public_key: NatsUserPublicKey,
+    line_number: usize,
+) -> Result<NatsAuthorizationGrant, AuthorizedUsersParseError> {
+    if credential_name.is_some() || credential_role.is_some() {
+        return Err(
+            AuthorizedUsersParseError::InternalPrincipalHasCredentialMetadata { line_number },
+        );
+    }
+    Ok(NatsAuthorizationGrant::Internal {
+        authority,
+        public_key,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -264,6 +483,16 @@ pub enum AuthorizedUsersParseError {
     TrailingMarker,
     #[error("authorized-users line {line_number}: {value:?} is not a principal authority key")]
     InvalidPrincipal { line_number: usize, value: String },
+    #[error("authorized-users line {line_number}: credential marker has no principal marker")]
+    CredentialMarkerWithoutPrincipal { line_number: usize },
+    #[error("authorized-users line {line_number}: credential name is invalid")]
+    InvalidCredentialName { line_number: usize },
+    #[error("authorized-users line {line_number}: {value:?} is not a credential role")]
+    InvalidCredentialRole { line_number: usize, value: String },
+    #[error("authorized-users line {line_number}: operator credential metadata is incomplete")]
+    MissingCredentialMetadata { line_number: usize },
+    #[error("authorized-users line {line_number}: internal principal has credential metadata")]
+    InternalPrincipalHasCredentialMetadata { line_number: usize },
     #[error("authorized-users line {line_number}: {value:?} is not an NKey user public key")]
     InvalidPublicKey { line_number: usize, value: String },
 }

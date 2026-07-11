@@ -57,12 +57,10 @@ async fn e2e_operations_over_real_nats() -> Result<(), Box<dyn Error + Send + Sy
 async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
 -> Result<(), Box<dyn Error + Send + Sync>> {
     let nats = TestNats::start_with_machines(&[]).await;
-    let client = nats.controller_client();
     let config = nats
         .control_config(machine_id("core_1"))
         .with_machine_bootstrap(machine_bootstrap_config());
-    let _runtime =
-        ployzd::roles::control::start_control_process_with_client(client.clone(), &config).await?;
+    let _runtime = nats.start_control(&config).await?;
     let api = OperationApiClient::new(nats.user_client());
     let request = reserved_deploy_request(&api, "idem_api_123", deploy_target("svc_api")).await?;
     let reservation_id = request.reservation_id;
@@ -125,11 +123,7 @@ async fn e2e_newer_deploy_reservation_fences_older_submit_over_real_nats()
     let config = nats
         .control_config(machine_id("core_1"))
         .with_machine_bootstrap(machine_bootstrap_config());
-    let _runtime = ployzd::roles::control::start_control_process_with_client(
-        nats.controller_client(),
-        &config,
-    )
-    .await?;
+    let _runtime = nats.start_control(&config).await?;
     let api = OperationApiClient::new(nats.user_client());
     let namespace_id = namespace_id("default");
     let older = api
@@ -185,14 +179,12 @@ async fn e2e_newer_deploy_reservation_fences_older_submit_over_real_nats()
 async fn e2e_control_and_machine_complete_deploy_over_real_nats()
 -> Result<(), Box<dyn Error + Send + Sync>> {
     let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
-    let client = nats.controller_client();
     let config = nats
         .control_config(machine_id("core_1"))
         .with_deploy_machines(vec![machine_id("machine_a")])
         .with_deploy_step_timeout(Duration::from_secs(2))
         .with_machine_bootstrap(machine_bootstrap_config());
-    let control_runtime =
-        ployzd::roles::control::start_control_process_with_client(client.clone(), &config).await?;
+    let control_runtime = nats.start_control(&config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
     let machine_runtime = start_machine_role_service(
@@ -358,14 +350,12 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
 async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn Error + Send + Sync>>
 {
     let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
-    let client = nats.controller_client();
     let config = nats
         .control_config(machine_id("core_1"))
         .with_deploy_machines(vec![machine_id("machine_a")])
         .with_deploy_step_timeout(Duration::from_secs(2))
         .with_machine_bootstrap(machine_bootstrap_config());
-    let control_runtime =
-        ployzd::roles::control::start_control_process_with_client(client.clone(), &config).await?;
+    let control_runtime = nats.start_control(&config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
     let machine_runtime = start_machine_role_service(
@@ -452,8 +442,7 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
         .with_deploy_machines(vec![machine_id("machine_a")])
         .with_deploy_step_timeout(Duration::from_secs(2))
         .with_machine_bootstrap(machine_bootstrap_config());
-    let control_runtime =
-        ployzd::roles::control::start_control_process_with_client(client.clone(), &config).await?;
+    let control_runtime = nats.start_control(&config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
     let machine_runtime = start_machine_role_service(
@@ -552,14 +541,12 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
 async fn e2e_gateway_keeps_serving_last_projection_after_control_shutdown()
 -> Result<(), Box<dyn Error + Send + Sync>> {
     let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
-    let client = nats.controller_client();
     let config = nats
         .control_config(machine_id("core_1"))
         .with_deploy_machines(vec![machine_id("machine_a")])
         .with_deploy_step_timeout(Duration::from_secs(2))
         .with_machine_bootstrap(machine_bootstrap_config());
-    let control_runtime =
-        ployzd::roles::control::start_control_process_with_client(client.clone(), &config).await?;
+    let control_runtime = nats.start_control(&config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
     let machine_runtime = start_machine_role_service(
@@ -654,15 +641,13 @@ async fn e2e_gateway_keeps_serving_last_projection_after_control_shutdown()
 async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
 -> Result<(), Box<dyn Error + Send + Sync>> {
     let nats = TestNats::start_with_machines(&[machine_id("core_1"), machine_id("edge_2")]).await;
-    let client = nats.controller_client();
     let route_port = free_loopback_port().await?;
     let config = nats
         .control_config(machine_id("core_1"))
         .with_deploy_machines(vec![machine_id("core_1"), machine_id("edge_2")])
         .with_deploy_step_timeout(Duration::from_secs(2))
         .with_machine_bootstrap(machine_bootstrap_config());
-    let control_runtime =
-        ployzd::roles::control::start_control_process_with_client(client.clone(), &config).await?;
+    let control_runtime = nats.start_control(&config).await?;
     let core_machine_client = nats.machine_client(&machine_id("core_1")).await;
     let edge_machine_client = nats.machine_client(&machine_id("edge_2")).await;
     let core_runner = ObservingContainerRunner::new(machine_id("core_1"));

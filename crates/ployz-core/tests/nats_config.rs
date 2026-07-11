@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
 use ployz_core::nats_config::{
-    NatsAdvertisedHost, NatsAuthorizedUser, NatsListener, NatsServerCertificatePem,
-    NatsServerConfig, NatsServerConfigError, NatsServerTlsFiles, NatsUserPublicKey, NatsUserSeed,
-    render_authorized_users,
+    CredentialGrant, CredentialName, CredentialRole, NatsAdvertisedHost, NatsAuthorizationGrant,
+    NatsInternalAuthority, NatsListener, NatsServerCertificatePem, NatsServerConfig,
+    NatsServerConfigError, NatsServerTlsFiles, NatsUserPublicKey, NatsUserSeed,
+    parse_authorized_users, render_authorized_users,
 };
-use ployz_core::security::NatsPrincipal;
 use ployz_test_support::ids::machine_id;
 
 const CA_PEM: &str = "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n";
@@ -80,13 +80,13 @@ fn single_machine_nats_config_requires_absolute_tls_paths() {
 #[test]
 fn authorized_users_render_one_block_per_principal_with_own_inbox() {
     let rendered = render_authorized_users(&[
-        NatsAuthorizedUser {
-            principal: NatsPrincipal::Controller,
-            nkey_public: user_public_key('A'),
+        NatsAuthorizationGrant::Internal {
+            authority: NatsInternalAuthority::Controller,
+            public_key: user_public_key('A'),
         },
-        NatsAuthorizedUser {
-            principal: NatsPrincipal::Join,
-            nkey_public: user_public_key('B'),
+        NatsAuthorizationGrant::Internal {
+            authority: NatsInternalAuthority::Join,
+            public_key: user_public_key('B'),
         },
     ]);
 
@@ -103,11 +103,11 @@ fn authorized_users_render_one_block_per_principal_with_own_inbox() {
 
 #[test]
 fn authorized_machine_user_uses_intent_service_without_core_kv_access() {
-    let rendered = render_authorized_users(&[NatsAuthorizedUser {
-        principal: NatsPrincipal::Machine {
+    let rendered = render_authorized_users(&[NatsAuthorizationGrant::Internal {
+        authority: NatsInternalAuthority::Machine {
             machine_id: machine_id("machine_7"),
         },
-        nkey_public: user_public_key('C'),
+        public_key: user_public_key('C'),
     }]);
 
     assert!(rendered.contains("\"_INBOX_machine_machine_7.>\""));
@@ -119,17 +119,11 @@ fn authorized_machine_user_uses_intent_service_without_core_kv_access() {
 fn authorized_user_record_keys_include_user_public_key() {
     let first = generated_user_public_key();
     let second = generated_user_public_key();
-    let first_user = NatsAuthorizedUser {
-        principal: NatsPrincipal::Operator,
-        nkey_public: first.clone(),
-    };
-    let second_user = NatsAuthorizedUser {
-        principal: NatsPrincipal::Operator,
-        nkey_public: second.clone(),
-    };
-    let controller = NatsAuthorizedUser {
-        principal: NatsPrincipal::Controller,
-        nkey_public: generated_user_public_key(),
+    let first_user = credential(first.clone(), "Nick's laptop");
+    let second_user = credential(second.clone(), "Ployz Cloud");
+    let controller = NatsAuthorizationGrant::Internal {
+        authority: NatsInternalAuthority::Controller,
+        public_key: generated_user_public_key(),
     };
 
     assert_eq!(
@@ -145,6 +139,31 @@ fn authorized_user_record_keys_include_user_public_key() {
         second_user.authority_record_key()
     );
     assert_eq!(controller.authority_record_key(), "controller");
+}
+
+#[test]
+fn credential_name_trims_unicode_text_and_rejects_blank_text() {
+    let name = CredentialName::try_new("  Ník's laptop  ").expect("valid credential name");
+
+    assert_eq!(name.as_str(), "Ník's laptop");
+    assert!(CredentialName::try_new(" \n\t ").is_err());
+    assert!(CredentialName::try_new("Ployz\nCloud").is_err());
+}
+
+#[test]
+fn authorized_users_round_trip_named_credentials_and_internal_authorities() {
+    let grants = vec![
+        credential(generated_user_public_key(), "Ployz Cloud"),
+        NatsAuthorizationGrant::Internal {
+            authority: NatsInternalAuthority::Controller,
+            public_key: generated_user_public_key(),
+        },
+    ];
+
+    let parsed = parse_authorized_users(&render_authorized_users(&grants))
+        .expect("rendered authorizations parse");
+
+    assert_eq!(parsed, grants);
 }
 
 #[test]
@@ -204,4 +223,12 @@ fn user_public_key(_fill: char) -> NatsUserPublicKey {
 fn generated_user_public_key() -> NatsUserPublicKey {
     NatsUserPublicKey::try_new(nkeys::KeyPair::new_user().public_key())
         .expect("generated user public key is valid")
+}
+
+fn credential(public_key: NatsUserPublicKey, name: &str) -> NatsAuthorizationGrant {
+    NatsAuthorizationGrant::Credential(CredentialGrant {
+        public_key,
+        name: CredentialName::try_new(name).expect("credential name"),
+        role: CredentialRole::Operator,
+    })
 }
