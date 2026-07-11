@@ -545,7 +545,7 @@ async fn atomic_activation_cannot_be_rewritten_as_failed() {
     assert!(matches!(
         repository.get(&operation_id).await.expect("status"),
         Some(OperationStatus::Cert {
-            state: CertOperationState::Completed { .. },
+            state: CertOperationState::Completed,
             ..
         })
     ));
