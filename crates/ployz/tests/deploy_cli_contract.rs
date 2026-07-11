@@ -348,6 +348,52 @@ fn cli_allows_unsupported_compose_when_flag_is_set() {
 }
 
 #[test]
+fn compose_check_and_deploy_render_identical_rejections() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let compose_path = dir.path().join("compose.yaml");
+    std::fs::write(
+        &compose_path,
+        "name: parity\nservices:\n  web:\n    image: nginx\n    mystery: true\n",
+    )
+    .expect("write compose");
+    let path = compose_path.display().to_string();
+
+    let deploy = parse_command(["deploy", "-f", &path].map(str::to_owned))
+        .expect_err("deploy rejects unsupported compose");
+    let check = parse_command(["compose", "check", &path].map(str::to_owned))
+        .expect_err("compose check rejects unsupported compose");
+
+    assert_eq!(check.to_string(), deploy.to_string());
+}
+
+#[test]
+fn compose_check_and_deploy_render_identical_warnings() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let compose_path = dir.path().join("compose.yaml");
+    std::fs::write(
+        &compose_path,
+        "name: parity\nservices:\n  web:\n    image: nginx\n    mystery: true\n",
+    )
+    .expect("write compose");
+    let path = compose_path.display().to_string();
+
+    let PloyzctlCommand::Deploy(deploy) = parse_command(
+        ["deploy", "-f", &path, "--allow-unsupported", "--detach"].map(str::to_owned),
+    )
+    .expect("deploy accepts unsupported compose") else {
+        panic!("expected deploy command");
+    };
+    let PloyzctlCommand::ComposeCheck(check) =
+        parse_command(["compose", "check", &path, "--allow-unsupported"].map(str::to_owned))
+            .expect("compose check accepts unsupported compose")
+    else {
+        panic!("expected compose check command");
+    };
+
+    assert_eq!(check.diagnostics, deploy.warnings);
+}
+
+#[test]
 fn cli_deploy_route_without_port_fails_clearly() {
     let error = parse_command(
         [

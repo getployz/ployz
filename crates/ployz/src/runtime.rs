@@ -222,6 +222,15 @@ pub async fn execute_command(
         }
         PloyzctlCommand::CorePromote(command) => execute_core_promote_remote(command, config).await,
         PloyzctlCommand::CoreReplace(command) => execute_core_replace_remote(command, config).await,
+        PloyzctlCommand::ComposeCheck(command) => Ok(PloyzctlExecutionOutput {
+            stdout: String::new(),
+            stderr: command.diagnostics.join("\n")
+                + if command.diagnostics.is_empty() {
+                    ""
+                } else {
+                    "\n"
+                },
+        }),
         PloyzctlCommand::Deploy(command) => deploy_follow::execute_deploy(command, config).await,
         PloyzctlCommand::DeployHistory(command) => deploy_history::inspect(command, config),
         PloyzctlCommand::DeployRollback(command) => deploy_rollback::execute(command, config).await,

@@ -1,0 +1,11 @@
+name  invalid value  compose file needs top-level name or deploy -n NAMESPACE
+services.both.cpus  unknown field  remove it or pass --allow-unsupported
+services.both.deploy.resources.reservations  unsupported (planned)  resource reservations are not deployed yet; remove it or pass --allow-unsupported
+services.both.mem_limit  unknown field  remove it or pass --allow-unsupported
+services.both.mem_reservation  unknown field  remove it or pass --allow-unsupported
+services.both.scale  unknown field  remove it or pass --allow-unsupported
+services.deploy.deploy.resources.reservations  unsupported (planned)  resource reservations are not deployed yet; remove it or pass --allow-unsupported
+services.no-deploy.cpus  unknown field  remove it or pass --allow-unsupported
+services.no-deploy.mem_limit  unknown field  remove it or pass --allow-unsupported
+services.no-deploy.mem_reservation  unknown field  remove it or pass --allow-unsupported
+services.no-deploy.scale  unknown field  remove it or pass --allow-unsupported

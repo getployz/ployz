@@ -5,6 +5,7 @@ use std::fmt;
 use clap::{Args, Parser, Subcommand};
 use ployz_core::state::MachineLifecycle;
 
+pub mod compose;
 pub mod core;
 pub mod deploy;
 pub(crate) mod deploy_failure;
@@ -30,6 +31,7 @@ pub enum PloyzctlCommand {
     Login,
     CorePromote(core::CorePromoteCommand),
     CoreReplace(core::CoreReplaceCommand),
+    ComposeCheck(compose::ComposeCheckCommand),
     Deploy(deploy::DeployCommand),
     DeployHistory(deploy::DeployHistoryCommand),
     DeployRollback(deploy::DeployRollbackCommand),
@@ -102,6 +104,7 @@ enum CommandCli {
     Login(service::EmptyCli),
     Init(machine::MachineInitCli),
     Deploy(deploy::DeployRootCli),
+    Compose(compose::ComposeRootCli),
     Core {
         #[command(subcommand)]
         command: CoreCli,
@@ -239,6 +242,9 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
                     PloyzctlCommand::DeployRollback(command)
                 }
             })
+        }
+        CommandCli::Compose(command) => {
+            compose::compose_command(command).map(PloyzctlCommand::ComposeCheck)
         }
         CommandCli::List(command) => Ok(PloyzctlCommand::ServiceList(
             service::service_list_command(command),
