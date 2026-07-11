@@ -12,7 +12,7 @@ use ployz_core::roles::GatewayRole;
 use ployz_sdk_types::{OpsListRequest, OpsListResult, OpsStatusRequest};
 
 use crate::commands::PloyzctlCliError;
-use crate::commands::deploy_failure::DeployFailureView;
+use crate::commands::deploy_failure::{DeployFailureView, certificate_provision_failure_detail};
 
 mod network_repair;
 
@@ -322,9 +322,34 @@ fn operation_subject(status: &OperationStatus) -> String {
             ployz_sdk_types::ManagedLeaseSubject::DownloadBundle { lease } => {
                 format!("lease {} bundle download", lease.as_str())
             }
-            ployz_sdk_types::ManagedLeaseSubject::Renew { lease } => {
-                format!("lease {} renewal", lease.as_str())
+            ployz_sdk_types::ManagedLeaseSubject::Renew { lease, addresses } => {
+                let ipv4 = addresses
+                    .ipv4()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let ipv6 = addresses
+                    .ipv6()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(
+                    "lease {} renewal ipv4 {} ipv6 {}",
+                    lease.as_str(),
+                    if ipv4.is_empty() { "none" } else { &ipv4 },
+                    if ipv6.is_empty() { "none" } else { &ipv6 },
+                )
             }
+            ployz_sdk_types::ManagedLeaseSubject::GatewayTestimony { missing } => format!(
+                "gateway testimony unavailable from {}",
+                missing
+                    .iter()
+                    .map(ployz_sdk_types::MachineId::as_str)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
         },
     }
 }
@@ -473,6 +498,13 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
             state: ployz_sdk_types::ManagedLeaseOperationState::Failed { failure },
             ..
         } => Some(format!("failure {}", failure.message.as_str())),
+        OperationStatus::Cert {
+            state: CertOperationState::Failed { failure },
+            ..
+        } => Some(format!(
+            "failure {}",
+            certificate_provision_failure_detail(failure.failure(), None)
+        )),
         OperationStatus::Deploy { .. }
         | OperationStatus::Cert { .. }
         | OperationStatus::MachineAdd { .. }
@@ -535,6 +567,7 @@ const fn deploy_running_stage(stage: DeployRunningStage) -> &'static str {
         DeployRunningStage::EnsuringImages => "running:ensuring-images",
         DeployRunningStage::StartingContainers => "running:starting-containers",
         DeployRunningStage::WaitingForHealth => "running:waiting-for-health",
+        DeployRunningStage::EnsuringCertificates => "running:ensuring-certificates",
         DeployRunningStage::RouteCutover => "running:route-cutover",
         DeployRunningStage::ServingTargetCommit => "running:active-service-commit",
         DeployRunningStage::RemovingSupersededContainers => {
@@ -602,7 +635,7 @@ impl DeployEventRenderContext {
             | OperationEvent::DeployCleanupFinished { .. }
             | OperationEvent::DeployCompleted { .. }
             | OperationEvent::DeployFailed { .. }
-            | OperationEvent::CertRenewalSubmitted { .. }
+            | OperationEvent::CertProvisionSubmitted { .. }
             | OperationEvent::CertChallengePublished { .. }
             | OperationEvent::CertValidationStarted { .. }
             | OperationEvent::CertCompleted { .. }
@@ -712,7 +745,7 @@ fn render_replayed_event_text(
         | OperationEvent::DeployImageAvailabilityVerified { .. }
         | OperationEvent::DeployCleanupFinished { .. }
         | OperationEvent::DeployCompleted { .. }
-        | OperationEvent::CertRenewalSubmitted { .. }
+        | OperationEvent::CertProvisionSubmitted { .. }
         | OperationEvent::CertChallengePublished { .. }
         | OperationEvent::CertValidationStarted { .. }
         | OperationEvent::CertCompleted { .. }
@@ -785,7 +818,7 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::DeployCleanupFinished { .. } => "deploy.cleanup_finished",
         OperationEvent::DeployCompleted { .. } => "deploy.completed",
         OperationEvent::DeployFailed { .. } => "deploy.failed",
-        OperationEvent::CertRenewalSubmitted { .. } => "cert.submitted",
+        OperationEvent::CertProvisionSubmitted { .. } => "cert.submitted",
         OperationEvent::CertChallengePublished { .. } => "cert.challenge_published",
         OperationEvent::CertValidationStarted { .. } => "cert.validation_started",
         OperationEvent::CertCompleted { .. } => "cert.completed",
@@ -878,4 +911,105 @@ fn render_deploy_failure_detail(
         return detail;
     };
     format!("{detail} guidance {guidance}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::status_failure_detail;
+    use ployz_core::cert::{
+        ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
+        CertificateProvisionFailure,
+    };
+    use ployz_core::ids::{CertId, MachineId, OperationId};
+    use ployz_core::ops::{
+        CertOperationFailure, CertOperationState, EventSequence, FailureMessage, OperationStatus,
+        RouteHostname,
+    };
+
+    #[test]
+    fn every_certificate_failure_renders_in_cert_status() {
+        let message = || FailureMessage::try_new("failed evidence").expect("valid message");
+        let cases = [
+            (
+                CertificateProvisionFailure::OperationEvidenceWrite { message: message() },
+                "operation evidence write",
+            ),
+            (
+                CertificateProvisionFailure::DnsPreflight { message: message() },
+                "DNS preflight",
+            ),
+            (
+                CertificateProvisionFailure::ChallengePublish { message: message() },
+                "challenge publish",
+            ),
+            (
+                CertificateProvisionFailure::ChallengeReadiness {
+                    missing_machine_ids: vec![machine_id("gateway_a")],
+                },
+                "missing gateway acknowledgements from gateway_a",
+            ),
+            (
+                CertificateProvisionFailure::AcmeValidation { message: message() },
+                "ACME validation",
+            ),
+            (
+                CertificateProvisionFailure::GatewayArtifactPush {
+                    machine_id: machine_id("gateway_a"),
+                    message: message(),
+                },
+                "gateway artifact push",
+            ),
+            (
+                CertificateProvisionFailure::ActiveCertCommit {
+                    attempted_active_cert: active_certificate(),
+                    message: message(),
+                },
+                "active certificate commit",
+            ),
+        ];
+
+        for (failure, expected) in cases {
+            let cert_id = cert_id();
+            let failure = CertOperationFailure::try_new(cert_id.clone(), failure, None)
+                .expect("matching certificate evidence");
+            let status = OperationStatus::Cert {
+                id: OperationId::try_new("op_cert").expect("valid operation id"),
+                cert_id,
+                state: CertOperationState::Failed { failure },
+                last_event_sequence: EventSequence::try_new(2).expect("valid event sequence"),
+            };
+
+            assert!(
+                status_failure_detail(&status)
+                    .expect("failed cert has detail")
+                    .contains(expected),
+                "missing typed failure detail: {expected}"
+            );
+        }
+    }
+
+    fn active_certificate() -> ActiveCertState {
+        ActiveCertState {
+            cert_id: cert_id(),
+            hostname: RouteHostname::try_new("api.example.com").expect("valid hostname"),
+            bundle_ref: CertBundleRef::try_new(format!(
+                "sha256:{}:/var/lib/ployz/certificates/cert_api.bundle",
+                "a".repeat(64)
+            ))
+            .expect("valid bundle ref"),
+            validity: CertValidityWindow::try_new(
+                CertValidAt::try_new(1).expect("valid not-before"),
+                CertValidAt::try_new(2).expect("valid not-after"),
+            )
+            .expect("valid validity"),
+        }
+    }
+
+    fn cert_id() -> CertId {
+        CertId::try_new("cert_api").expect("valid cert id")
+    }
+
+    fn machine_id(value: &str) -> MachineId {
+        MachineId::try_new(value).expect("valid machine id")
+    }
 }

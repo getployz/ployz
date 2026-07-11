@@ -89,9 +89,10 @@ impl LeaseClient {
         &self,
         name: ManagedLeaseName,
         token: LeaseBearerToken,
+        request: ManagedLeaseAcquireRequest,
     ) -> Result<ManagedLeaseRenewed, LeaseClientError> {
         let path = format!("/v1/leases/{}/renew", name.as_str());
-        self.post_json(&path, Some(token), ()).await
+        self.post_json(&path, Some(token), request).await
     }
 
     pub async fn download_bundle(
@@ -239,10 +240,8 @@ mod tests {
             .await
             .expect("bind stub worker");
         let address = listener.local_addr().expect("stub worker address");
-        let server = tokio::spawn(serve(
-            listener,
-            Arc::new(Mutex::new(StubLeaseWorker::new())),
-        ));
+        let worker = Arc::new(Mutex::new(StubLeaseWorker::new()));
+        let server = tokio::spawn(serve(listener, Arc::clone(&worker)));
         let client = LeaseClient::new(
             LeaseWorkerUrl::try_new(format!("http://{address}")).expect("valid worker URL"),
         );
@@ -265,8 +264,16 @@ mod tests {
         else {
             panic!("bundle ready");
         };
+        let renewal_request = ManagedLeaseAcquireRequest {
+            ipv4: vec!["203.0.113.8".parse().expect("IPv4")],
+            ipv6: vec!["2001:db8::8".parse().expect("IPv6")],
+        };
         let renewed = client
-            .renew(acquired.lease.name.clone(), acquired.lease.token.clone())
+            .renew(
+                acquired.lease.name.clone(),
+                acquired.lease.token.clone(),
+                renewal_request.clone(),
+            )
             .await
             .expect("lease renewed");
 
@@ -274,6 +281,10 @@ mod tests {
         assert!(acquired.bundle.is_none());
         assert_eq!(bundle.dns_names, acquired.lease.name.wildcard_and_apex());
         assert_eq!(renewed.lease.name, acquired.lease.name);
+        assert_eq!(
+            worker.lock().await.renewal_request(&acquired.lease.name),
+            Some(&renewal_request)
+        );
         assert!(
             bundle
                 .certificate_chain_pem
@@ -305,7 +316,14 @@ mod tests {
         let wrong_token = LeaseBearerToken::try_new("wrong-token").expect("valid token shape");
 
         let error = client
-            .renew(acquired.lease.name, wrong_token)
+            .renew(
+                acquired.lease.name,
+                wrong_token,
+                ManagedLeaseAcquireRequest {
+                    ipv4: Vec::new(),
+                    ipv6: Vec::new(),
+                },
+            )
             .await
             .expect_err("wrong token must fail");
 

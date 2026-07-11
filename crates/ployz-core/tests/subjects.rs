@@ -283,7 +283,7 @@ fn lifecycle_completed(operation_id: &OperationId) -> OperationEvent {
 }
 
 fn cert_submitted(operation_id: &OperationId) -> OperationEvent {
-    OperationEvent::CertRenewalSubmitted {
+    OperationEvent::CertProvisionSubmitted {
         operation_id: operation_id.clone(),
         cert_id: CertId::try_new("cert_api").expect("valid cert id"),
     }

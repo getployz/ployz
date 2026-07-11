@@ -1,12 +1,13 @@
 //! Docker-owned containerd content access for pushed OCI image blobs.
 
 use containerd_client::services::v1::{
-    CreateRequest, DeleteRequest, InfoRequest, ReadContentRequest, WriteAction, WriteContentRequest,
+    CreateRequest, DeleteRequest, InfoRequest, ReadContentRequest, WriteAction,
+    WriteContentRequest, WriteContentResponse,
 };
 use containerd_client::tonic::metadata::{Ascii, MetadataValue};
 use containerd_client::tonic::transport::Channel;
 use containerd_client::tonic::{Code, Request, Status};
-use futures_util::stream;
+use futures_util::{Stream, StreamExt, stream};
 use ployz_core::image::OciDigest;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -250,7 +251,7 @@ impl ContainerdContentStore {
         &self,
         ingest: &ContentIngest,
         message: WriteContentRequest,
-    ) -> Result<containerd_client::services::v1::WriteContentResponse, ContainerdContentError> {
+    ) -> Result<WriteContentResponse, ContainerdContentError> {
         let messages = stream::iter([message]);
         let mut request = scoped_request(messages)?;
         let lease = metadata_value(&ingest.lease.id, "lease id")?;
@@ -263,16 +264,7 @@ impl ContainerdContentStore {
             .await
             .map_err(|status| rpc_error("write content", status))?
             .into_inner();
-        let Some(response) = responses
-            .message()
-            .await
-            .map_err(|status| rpc_error("write content response", status))?
-        else {
-            return Err(ContainerdContentError::Protocol {
-                message: "content write returned no status".to_owned(),
-            });
-        };
-        Ok(response)
+        first_write_response_after_eof(&mut responses).await
     }
 }
 
@@ -377,6 +369,30 @@ fn checked_u64(value: i64, field: &'static str) -> Result<u64, ContainerdContent
     })
 }
 
+async fn first_write_response_after_eof<S>(
+    responses: &mut S,
+) -> Result<WriteContentResponse, ContainerdContentError>
+where
+    S: Stream<Item = Result<WriteContentResponse, Status>> + Unpin,
+{
+    let mut first_response = None;
+    let mut first_error = None;
+    while let Some(response) = responses.next().await {
+        match response {
+            Ok(response) if first_response.is_none() => first_response = Some(response),
+            Ok(_) => {}
+            Err(status) if first_error.is_none() => first_error = Some(status),
+            Err(_) => {}
+        }
+    }
+    if let Some(status) = first_error {
+        return Err(rpc_error("write content response", status));
+    }
+    first_response.ok_or_else(|| ContainerdContentError::Protocol {
+        message: "content write returned no status".to_owned(),
+    })
+}
+
 fn rpc_error(action: &'static str, status: Status) -> ContainerdContentError {
     ContainerdContentError::Rpc {
         action,
@@ -413,7 +429,69 @@ pub enum ContainerdContentError {
 
 #[cfg(test)]
 mod tests {
-    use super::{ContainerdContentError, validate_chunk};
+    use containerd_client::services::v1::{WriteAction, WriteContentResponse};
+    use containerd_client::tonic::{Code, Status};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::Poll;
+
+    use super::{ContainerdContentError, first_write_response_after_eof, validate_chunk};
+
+    fn write_response(offset: i64) -> WriteContentResponse {
+        WriteContentResponse {
+            action: WriteAction::Write.into(),
+            started_at: None,
+            updated_at: None,
+            offset,
+            total: 0,
+            digest: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn write_response_waits_for_stream_eof() {
+        let reached_eof = Arc::new(AtomicBool::new(false));
+        let stream_reached_eof = Arc::clone(&reached_eof);
+        let mut response = Some(Ok(write_response(7)));
+        let mut responses = futures_util::stream::poll_fn(move |_| {
+            if let Some(response) = response.take() {
+                Poll::Ready(Some(response))
+            } else {
+                stream_reached_eof.store(true, Ordering::SeqCst);
+                Poll::Ready(None)
+            }
+        });
+
+        let response = first_write_response_after_eof(&mut responses)
+            .await
+            .expect("response stream should succeed");
+
+        assert_eq!(
+            (response.offset, reached_eof.load(Ordering::SeqCst)),
+            (7, true)
+        );
+    }
+
+    #[tokio::test]
+    async fn write_response_propagates_trailing_stream_error() {
+        let mut responses = futures_util::stream::iter([
+            Ok(write_response(7)),
+            Err(Status::internal("trailing response error")),
+        ]);
+
+        let error = first_write_response_after_eof(&mut responses)
+            .await
+            .expect_err("trailing response error should fail the write");
+
+        assert!(matches!(
+            error,
+            ContainerdContentError::Rpc {
+                action: "write content response",
+                code: Code::Internal,
+                message,
+            } if message == "trailing response error"
+        ));
+    }
 
     #[test]
     fn chunk_validation_accepts_the_final_exact_chunk() {

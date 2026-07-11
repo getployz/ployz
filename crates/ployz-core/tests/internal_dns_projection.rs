@@ -158,6 +158,8 @@ fn intent<const N: usize>(machines: [&str; N], entry: &str) -> IntentSnapshot {
         volume_pins: Vec::new(),
         authorized_users: Vec::new(),
         managed_lease: ManagedLeaseProjection::Unacquired,
+        custom_certificates: Vec::new(),
+        acme_http01_challenges: Vec::new(),
     }
 }
 
