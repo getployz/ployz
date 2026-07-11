@@ -11,7 +11,8 @@ const POSTGRES_IMAGE: &str = "postgres:15-alpine";
 const ACCEPTANCE_NAMESPACE: &str = "v1_acceptance";
 
 struct DeployedApp {
-    initial: DeployHistoryEntry,
+    database_bootstrap: DeployHistoryEntry,
+    application: DeployHistoryEntry,
     hostname: String,
     certificate_chain: String,
 }
@@ -101,13 +102,42 @@ async fn step_2_deploy_real_application(
     history: &DeployHistory,
     compose_path: &Path,
 ) -> DeployedApp {
+    std::fs::write(compose_path, database_bootstrap_compose())
+        .expect("write Postgres bootstrap Compose file");
+    execute_compose(compose_path, config).await;
+
+    let bootstrap_entries = history.load().expect("load database bootstrap history");
+    let [database_bootstrap] = bootstrap_entries.as_slice() else {
+        panic!("database bootstrap must record exactly one history entry");
+    };
+    let client = connect_core_client(
+        core,
+        NatsPrincipal::Controller,
+        &core.material.controller_seed,
+    )
+    .await
+    .expect("connect controller for acceptance intent");
+    let intent_reader = NatsIntentReader::new(client);
+    let bootstrap_intent = intent_reader
+        .intent()
+        .await
+        .expect("read database bootstrap intent");
+    let [database_target] = bootstrap_intent.serving_target_entries.as_slice() else {
+        panic!("database bootstrap must commit one Serving Target entry");
+    };
+    assert_eq!(
+        (&database_target.namespace_id, &database_target.service_id),
+        (&namespace_id(ACCEPTANCE_NAMESPACE), &service_id("db"))
+    );
+
     std::fs::write(compose_path, umami_compose()).expect("write Umami Compose file");
     execute_compose(compose_path, config).await;
 
-    let initial_entries = history.load().expect("load initial deploy history");
-    let [initial] = initial_entries.as_slice() else {
-        panic!("successful Compose deploy must record exactly one history entry");
+    let application_entries = history.load().expect("load application deploy history");
+    let [recorded_database_bootstrap, application] = application_entries.as_slice() else {
+        panic!("database bootstrap and full application deploy must both be recorded");
     };
+    assert_eq!(recorded_database_bootstrap, database_bootstrap);
 
     let all_machines = all_machines(core);
     let workloads = namespace_workloads(core, &all_machines, ACCEPTANCE_NAMESPACE).await;
@@ -179,14 +209,7 @@ async fn step_2_deploy_real_application(
     }));
     assert_service_name_database_reachability(core, first_app.0, &first_app.1).await;
 
-    let client = connect_core_client(
-        core,
-        NatsPrincipal::Controller,
-        &core.material.controller_seed,
-    )
-    .await
-    .expect("connect controller for acceptance route intent");
-    let intent = NatsIntentReader::new(client)
+    let intent = intent_reader
         .intent()
         .await
         .expect("read acceptance route intent");
@@ -221,7 +244,8 @@ async fn step_2_deploy_real_application(
     );
 
     DeployedApp {
-        initial: initial.clone(),
+        database_bootstrap: database_bootstrap.clone(),
+        application: application.clone(),
         hostname,
         certificate_chain,
     }
@@ -330,13 +354,14 @@ async fn step_5_retry_and_rollback(
     std::fs::write(compose_path, bad_deploy_input_compose()).expect("write bad deploy input");
     execute_compose(compose_path, config).await;
     let entries = history.load().expect("load bad deploy-input history");
-    let [recorded_initial, bad_deploy_entry] = entries.as_slice() else {
-        panic!("initial and bad deploys must both be recorded: {entries:?}");
+    let [recorded_database_bootstrap, recorded_full, bad_deploy_entry] = entries.as_slice() else {
+        panic!("database bootstrap, full app, and bad deploy must be recorded: {entries:?}");
     };
-    assert_eq!(recorded_initial, &app.initial);
+    assert_eq!(recorded_database_bootstrap, &app.database_bootstrap);
+    assert_eq!(recorded_full, &app.application);
     assert_ne!(
         bad_deploy_entry.request.services,
-        app.initial.request.services
+        app.application.request.services
     );
 
     let rollback = parse_command(
@@ -346,7 +371,7 @@ async fn step_5_retry_and_rollback(
             "--namespace",
             ACCEPTANCE_NAMESPACE,
             "--to",
-            app.initial.operation_id.as_str(),
+            app.application.operation_id.as_str(),
         ]
         .map(str::to_owned),
     )
@@ -356,14 +381,24 @@ async fn step_5_retry_and_rollback(
         .expect("acceptance rollback executes");
 
     let entries = history.load().expect("load rollback history");
-    let [_, bad_deploy_entry, rollback_entry] = entries.as_slice() else {
-        panic!("rollback must append a third successful deploy: {entries:?}");
+    let [
+        recorded_database_bootstrap,
+        recorded_full,
+        bad_deploy_entry,
+        rollback_entry,
+    ] = entries.as_slice()
+    else {
+        panic!(
+            "rollback must append after database bootstrap, full app, and bad deploy: {entries:?}"
+        );
     };
-    assert_ne!(rollback_entry.operation_id, app.initial.operation_id);
+    assert_eq!(recorded_database_bootstrap, &app.database_bootstrap);
+    assert_eq!(recorded_full, &app.application);
+    assert_ne!(rollback_entry.operation_id, app.application.operation_id);
     assert_ne!(rollback_entry.operation_id, bad_deploy_entry.operation_id);
     assert_eq!(
         rollback_entry.request.services,
-        app.initial.request.services
+        app.application.request.services
     );
 
     let restored = gateway_https_get(
@@ -508,6 +543,29 @@ fn service_is(container: &ManagedWorkloadContainer, service: &str) -> bool {
         .is_some_and(|value| value == service)
 }
 
+fn database_bootstrap_compose() -> String {
+    format!(
+        r#"name: {ACCEPTANCE_NAMESPACE}
+services:
+  db:
+    image: {POSTGRES_IMAGE}
+    environment:
+      POSTGRES_DB: umami
+      POSTGRES_USER: umami
+      POSTGRES_PASSWORD: umami
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U umami -d umami"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+volumes:
+  postgres-data: {{}}
+"#
+    )
+}
+
 fn umami_compose() -> String {
     format!(
         r#"name: {ACCEPTANCE_NAMESPACE}
@@ -645,6 +703,28 @@ async fn assert_service_name_database_reachability(
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     panic!("Umami could not reach Postgres by service name: {last:?}");
+}
+
+#[test]
+fn database_bootstrap_is_a_full_single_service_namespace_revision() {
+    let compose = database_bootstrap_compose();
+    let (parsed, warnings) = parse_deploy_file(ComposeInput {
+        source: &compose,
+        base_dir: Path::new("."),
+        interpolation_env: BTreeMap::new(),
+        namespace_override: None,
+        mode: UnsupportedFieldMode::Strict,
+    })
+    .expect("database bootstrap Compose parses");
+    assert!(warnings.is_empty());
+    let [database] = parsed.services.as_slice() else {
+        panic!("database bootstrap must contain exactly one service");
+    };
+
+    assert_eq!(
+        (&parsed.namespace_id, &database.service_id),
+        (&namespace_id(ACCEPTANCE_NAMESPACE), &service_id("db"))
+    );
 }
 
 #[test]
