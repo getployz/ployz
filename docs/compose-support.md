@@ -26,7 +26,7 @@ Supported and translated fields become a Ployz deploy request. Unsupported and u
 | `services.*.cap_drop` | Translated | Drops Linux capabilities from the created container. |
 | `services.*.healthcheck` | Translated | Maps to Docker healthcheck and gates only newly-created containers. |
 | `services.*.restart` | Translated | Maps to Docker restart policy. |
-| `services.*.depends_on` | Translated (ordering only) | Short form and long form with `condition: service_started` order service startup. Health/completion conditions are rejected. |
+| `services.*.depends_on` | Translated | Short form and `service_started` map to `started`; `service_healthy` maps to `healthy` and requires the target service to define an executable healthcheck. `service_completed_successfully` is rejected. |
 | `services.*.pre_start` | Translated | Runs one retry-safe hook before new containers for that service. Failed hook containers are retained as operation evidence. |
 | `services.*.x-route` | Translated | Ployz extension for route bindings; Compose `ports` do not imply routes. |
 | `services.*.build` | Unsupported (planned) | build images before deploy |
@@ -124,6 +124,15 @@ Known boundary rules:
 - Ployz extensions should stay adapter-level unless the concept becomes core language.
 
 ## Deploy Results
+
+Dependencies divide a namespace deploy into topological phases. Every service
+whose dependencies are satisfied at the same point belongs to the same phase.
+After every service in a phase passes its creation gate, Ployz atomically
+promotes that phase's Serving Target entries and route-binding changes. Later
+phases reach promoted dependencies through ordinary internal service DNS.
+`started` remains subject to the dependency service's own creation gate;
+`healthy` requires an executable healthcheck. Completion-gated jobs are not
+part of the deploy model.
 
 Core deploy evidence should include first-class service deploy results:
 

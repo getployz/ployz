@@ -1,10 +1,11 @@
 use ployz_core::deploy::{
     ContainerCommand, ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest,
-    ContainerMountPath, ContainerRuntimeSpec, DeployCleanupContainer, DeployPlan, DeployPlanError,
-    DeployPlanStep, DeployPlanningInput, DeployPreparationInput, DeployRoute, DeployRouteTarget,
-    DeployServicePlan, DeployServiceRequest, EnvName, EnvValue, ExistingServiceReplica,
-    HealthcheckShellCommand, ImageReference, ImageSource, PreStartHook, PreStartHookStep,
-    ReplicaCount, ReplicaSlot, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeName,
+    ContainerMountPath, ContainerRuntimeSpec, DependencyCondition, DeployCleanupContainer,
+    DeployPhasePlan, DeployPlan, DeployPlanError, DeployPlanStep, DeployPlanningInput,
+    DeployPreparationInput, DeployRoute, DeployRouteTarget, DeployServicePlan,
+    DeployServiceRequest, EnvName, EnvValue, ExistingServiceReplica, HealthcheckShellCommand,
+    ImageReference, ImageSource, PreStartHook, PreStartHookStep, ReplicaCount, ReplicaSlot,
+    ServiceDependency, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeName,
     namespace_revision_id_for, namespace_route_binding_removals, namespace_serving_target_removals,
     plan_namespace_deploy, prepare_deploy,
 };
@@ -335,7 +336,7 @@ fn deploy_plan_requires_eligible_machine() {
 fn service_dependencies_reorder_namespace_plan_stably() {
     let mut worker = planning_input(1, [machine_id("machine_a")]);
     worker.request.service_id = service_id("svc_worker");
-    worker.request.depends_on = vec![service_id("svc_api")];
+    worker.request.depends_on = vec![dependency("svc_api", DependencyCondition::Started)];
     let api = planning_input(1, [machine_id("machine_a")]);
 
     let plan = plan_namespace_deploy(
@@ -347,8 +348,9 @@ fn service_dependencies_reorder_namespace_plan_stably() {
     .expect("dependency plan succeeds");
 
     assert_eq!(
-        plan.services
+        plan.phases
             .iter()
+            .flat_map(|phase| &phase.services)
             .map(|service| service.service_id.clone())
             .collect::<Vec<_>>(),
         vec![service_id("svc_api"), service_id("svc_worker")]
@@ -356,9 +358,65 @@ fn service_dependencies_reorder_namespace_plan_stably() {
 }
 
 #[test]
+fn namespace_plan_groups_all_simultaneously_eligible_services_into_deterministic_phases() {
+    let mut worker = planning_input(1, [machine_id("machine_a")]);
+    worker.request.service_id = service_id("svc_worker");
+    worker.request.depends_on = vec![dependency("svc_api", DependencyCondition::Started)];
+    let api = planning_input(1, [machine_id("machine_a")]);
+    let mut database = planning_input(1, [machine_id("machine_a")]);
+    database.request.service_id = service_id("svc_database");
+
+    let plan = plan_namespace_deploy(
+        namespace_id("default"),
+        namespace_revision_id("rev_1"),
+        vec![worker, database, api],
+        Vec::new(),
+    )
+    .expect("dependency plan succeeds");
+
+    assert_eq!(
+        plan.phases
+            .iter()
+            .map(|phase| {
+                phase
+                    .services
+                    .iter()
+                    .map(|service| service.service_id.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            vec![service_id("svc_api"), service_id("svc_database")],
+            vec![service_id("svc_worker")],
+        ]
+    );
+}
+
+#[test]
+fn healthy_dependency_requires_an_executable_healthcheck() {
+    let database = planning_input(1, [machine_id("machine_a")]);
+    let mut api = planning_input(1, [machine_id("machine_a")]);
+    api.request.service_id = service_id("svc_web");
+    api.request.depends_on = vec![dependency("svc_api", DependencyCondition::Healthy)];
+
+    assert_eq!(
+        plan_namespace_deploy(
+            namespace_id("default"),
+            namespace_revision_id("rev_1"),
+            vec![api, database],
+            Vec::new(),
+        ),
+        Err(DeployPlanError::HealthyDependencyWithoutHealthcheck {
+            service_id: service_id("svc_web"),
+            dependency: service_id("svc_api"),
+        })
+    );
+}
+
+#[test]
 fn unknown_service_dependency_fails_planning() {
     let mut api = planning_input(1, [machine_id("machine_a")]);
-    api.request.depends_on = vec![service_id("svc_missing")];
+    api.request.depends_on = vec![dependency("svc_missing", DependencyCondition::Started)];
 
     assert_eq!(
         plan_namespace_deploy(
@@ -379,7 +437,7 @@ fn namespace_revision_identity_includes_hooks_and_dependencies() {
     let base = service_spec("svc_api", "ghcr.io/acme/api:rev-1", 1, None);
     let mut changed = base.clone();
     changed.pre_start = Some(pre_start_hook());
-    changed.depends_on = vec![service_id("svc_database")];
+    changed.depends_on = vec![dependency("svc_database", DependencyCondition::Started)];
 
     assert_ne!(
         namespace_revision_id_for(&namespace_id("default"), &[base]),
@@ -390,10 +448,10 @@ fn namespace_revision_identity_includes_hooks_and_dependencies() {
 #[test]
 fn service_dependency_cycle_reports_sorted_unplaced_services() {
     let mut api = planning_input(1, [machine_id("machine_a")]);
-    api.request.depends_on = vec![service_id("svc_worker")];
+    api.request.depends_on = vec![dependency("svc_worker", DependencyCondition::Started)];
     let mut worker = planning_input(1, [machine_id("machine_a")]);
     worker.request.service_id = service_id("svc_worker");
-    worker.request.depends_on = vec![service_id("svc_api")];
+    worker.request.depends_on = vec![dependency("svc_api", DependencyCondition::Started)];
 
     assert_eq!(
         plan_namespace_deploy(
@@ -414,7 +472,10 @@ fn pre_start_hook_step_uses_first_run_container_machine() {
     input.request.pre_start = Some(pre_start_hook());
 
     let plan = plan_single_service(input).expect("plan succeeds");
-    let [service] = plan.services.as_slice() else {
+    let [phase] = plan.phases.as_slice() else {
+        panic!("plan contains one phase");
+    };
+    let [service] = phase.services.as_slice() else {
         panic!("plan contains one service");
     };
 
@@ -433,7 +494,10 @@ fn pre_start_hook_step_is_absent_when_all_containers_are_reused() {
     input.existing_replicas = vec![existing_replica("machine_b", "ctr_existing")];
 
     let plan = plan_single_service(input).expect("existing reality satisfies target");
-    let [service] = plan.services.as_slice() else {
+    let [phase] = plan.phases.as_slice() else {
+        panic!("plan contains one phase");
+    };
+    let [service] = phase.services.as_slice() else {
         panic!("plan contains one service");
     };
 
@@ -1056,13 +1120,22 @@ fn deploy_plan_with_volume_pins(
     DeployPlan {
         namespace_id: namespace_id("default"),
         namespace_revision_id: namespace_revision_id("rev_1"),
-        services: vec![DeployServicePlan {
-            service_id: service_id("svc_api"),
-            steps,
-            pre_start: None,
+        phases: vec![DeployPhasePlan {
+            services: vec![DeployServicePlan {
+                service_id: service_id("svc_api"),
+                steps,
+                pre_start: None,
+            }],
         }],
         volume_pin_commits,
         cleanup_containers,
+    }
+}
+
+fn dependency(service: &str, condition: DependencyCondition) -> ServiceDependency {
+    ServiceDependency {
+        service_id: service_id(service),
+        condition,
     }
 }
 

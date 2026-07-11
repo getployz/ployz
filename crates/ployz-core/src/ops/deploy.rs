@@ -4,6 +4,7 @@
 //! here.
 
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroU16;
 
 use crate::cert::CertificateProvisionFailure;
 use crate::cert::ManagedCertificateIssuanceFailureKind;
@@ -51,6 +52,49 @@ pub enum DeployCompletionOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "result", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeployServiceResult {
+    Completed {
+        service_id: ServiceId,
+    },
+    Failed {
+        service_id: ServiceId,
+        failure: DeployOperationFailure,
+    },
+    Skipped {
+        service_id: ServiceId,
+    },
+    Unchanged {
+        service_id: ServiceId,
+    },
+    Removed {
+        service_id: ServiceId,
+    },
+}
+
+impl DeployServiceResult {
+    #[must_use]
+    pub fn service_id(&self) -> &ServiceId {
+        match self {
+            Self::Completed { service_id }
+            | Self::Failed { service_id, .. }
+            | Self::Skipped { service_id }
+            | Self::Unchanged { service_id }
+            | Self::Removed { service_id } => service_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum DeployPhaseOutcome {
+    Promoted,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployOperationState {
     Accepted,
@@ -87,6 +131,55 @@ pub struct UnusableMachine {
     pub reason: crate::state::MachineUsabilityReason,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(type = "SafeInteger<\"DeployPhaseNumber\">")
+)]
+#[serde(try_from = "u16", into = "u16")]
+pub struct DeployPhaseNumber(NonZeroU16);
+
+impl DeployPhaseNumber {
+    pub fn try_new(value: u16) -> Result<Self, DeployPhaseNumberError> {
+        let Some(value) = NonZeroU16::new(value) else {
+            return Err(DeployPhaseNumberError::Zero);
+        };
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0.get()
+    }
+}
+
+impl TryFrom<u16> for DeployPhaseNumber {
+    type Error = DeployPhaseNumberError;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<DeployPhaseNumber> for u16 {
+    fn from(value: DeployPhaseNumber) -> Self {
+        value.get()
+    }
+}
+
+impl std::fmt::Display for DeployPhaseNumber {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.get().fmt(formatter)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum DeployPhaseNumberError {
+    #[error("deploy phase number must be greater than zero")]
+    Zero,
+}
+
 /// What a failed control-plane commit was writing. Empty-manifest deploys
 /// commit no service entry, so namespace-level record failures carry the
 /// namespace revision id instead of a counterfeit entry digest.
@@ -94,6 +187,10 @@ pub struct UnusableMachine {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "scope", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlPlaneCommitScope {
+    DeployPhase {
+        namespace_revision_id: NamespaceRevisionId,
+        phase: DeployPhaseNumber,
+    },
     ServiceEntry {
         service_id: ServiceId,
         namespace_revision_entry_id: NamespaceRevisionEntryId,
@@ -587,6 +684,15 @@ pub enum DeployEvidence {
         container_id: ContainerId,
     },
     HealthCheckStarted,
+    PhaseStarted {
+        phase: DeployPhaseNumber,
+        service_ids: Vec<ServiceId>,
+    },
+    PhaseFinished {
+        phase: DeployPhaseNumber,
+        outcome: DeployPhaseOutcome,
+        services: Vec<DeployServiceResult>,
+    },
     CleanupFinished {
         removed: Vec<DeployCleanupContainer>,
         failed: Vec<DeployCleanupFailure>,
@@ -645,6 +751,21 @@ impl DeployEvidence {
             Self::HealthCheckStarted => OperationEvent::DeployHealthCheckStarted {
                 operation_id: operation_id.clone(),
             },
+            Self::PhaseStarted { phase, service_ids } => OperationEvent::DeployPhaseStarted {
+                operation_id: operation_id.clone(),
+                phase: *phase,
+                service_ids: service_ids.clone(),
+            },
+            Self::PhaseFinished {
+                phase,
+                outcome,
+                services,
+            } => OperationEvent::DeployPhaseFinished {
+                operation_id: operation_id.clone(),
+                phase: *phase,
+                outcome: *outcome,
+                services: services.clone(),
+            },
             Self::CleanupFinished { removed, failed } => OperationEvent::DeployCleanupFinished {
                 operation_id: operation_id.clone(),
                 removed: removed.clone(),
@@ -667,6 +788,7 @@ pub(super) enum DeployEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EvidenceRequirement {
     Planning,
+    Running,
     RunningStage(DeployRunningStage),
     Cleanup,
 }
@@ -688,6 +810,8 @@ const fn evidence_requirement(evidence: &DeployEvidence) -> EvidenceRequirement 
         DeployEvidence::HealthCheckStarted => {
             EvidenceRequirement::RunningStage(DeployRunningStage::WaitingForHealth)
         }
+        DeployEvidence::PhaseStarted { .. } => EvidenceRequirement::Running,
+        DeployEvidence::PhaseFinished { .. } => EvidenceRequirement::Running,
         DeployEvidence::CleanupFinished { .. } => EvidenceRequirement::Cleanup,
     }
 }
@@ -701,6 +825,7 @@ pub fn validate_fresh_deploy_evidence(
     };
     let valid = match evidence_requirement(evidence) {
         EvidenceRequirement::Planning => matches!(state, DeployOperationState::Planning),
+        EvidenceRequirement::Running => matches!(state, DeployOperationState::Running { .. }),
         EvidenceRequirement::RunningStage(stage) => {
             evidence_is_current_or_past_running_stage(state, stage)
         }
@@ -731,18 +856,15 @@ fn evidence_is_current_or_past_running_stage(
 }
 
 fn cleanup_evidence_is_valid(state: &DeployOperationState) -> bool {
-    matches!(
-        state,
-        DeployOperationState::Running {
-            stage: DeployRunningStage::ServingTargetCommit
-                | DeployRunningStage::RemovingSupersededContainers
-        }
-    )
+    matches!(state, DeployOperationState::Running { .. })
 }
 
 fn evidence_required_state(evidence: &DeployEvidence) -> DeployOperationState {
     match evidence_requirement(evidence) {
         EvidenceRequirement::Planning => DeployOperationState::Planning,
+        EvidenceRequirement::Running => DeployOperationState::Running {
+            stage: DeployRunningStage::StartingContainers,
+        },
         EvidenceRequirement::RunningStage(stage) => DeployOperationState::Running { stage },
         EvidenceRequirement::Cleanup => DeployOperationState::Running {
             stage: DeployRunningStage::RemovingSupersededContainers,
@@ -823,6 +945,10 @@ pub(super) fn project_event(
             // is already satisfied.
             let records = match evidence_requirement(&evidence) {
                 EvidenceRequirement::Planning => !matches!(state, DeployOperationState::Accepted),
+                EvidenceRequirement::Running => matches!(
+                    state,
+                    DeployOperationState::Running { .. } | DeployOperationState::Completed { .. }
+                ),
                 EvidenceRequirement::RunningStage(required) => {
                     evidence_is_current_or_past_running_stage(state, required)
                         || matches!(state, DeployOperationState::Completed { .. })

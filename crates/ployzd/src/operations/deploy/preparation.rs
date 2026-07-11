@@ -118,11 +118,17 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         .iter()
         .map(|service| service.service_id.clone())
         .collect::<Vec<_>>();
-    let route_binding_removals = namespace_route_binding_removals(
+    let route_binding_removal_targets = namespace_route_binding_removals(
         &request.namespace_id,
         &namespace_declared_targets,
         &facts.namespace_route_bindings,
     );
+    let route_binding_removals = facts
+        .namespace_route_bindings
+        .iter()
+        .filter(|binding| route_binding_removal_targets.contains(&binding.target))
+        .cloned()
+        .collect();
     let serving_target_removals = namespace_serving_target_removals(
         &request.namespace_id,
         &declared_services,
@@ -139,12 +145,20 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         .collect::<Vec<_>>();
     let mut services = Vec::new();
     for service_request in service_requests {
-        let prepared = prepare_deploy(DeployPreparationInput {
+        let mut prepared = prepare_deploy(DeployPreparationInput {
             request: service_request,
             eligible_machines: facts.eligible_machines.clone(),
             draining_machines: draining_machines.clone(),
             observed_machines: facts.observed_machines.clone(),
         });
+        let is_promoted = facts.namespace_serving_entries.iter().any(|entry| {
+            entry.namespace_id == prepared.request.namespace_id
+                && entry.service_id == prepared.request.service_id
+                && entry.namespace_revision_entry_id == prepared.request.namespace_revision_entry_id
+        });
+        if !is_promoted {
+            prepared.existing_replicas.clear();
+        }
         let mut route_commits = prepared.route_commits;
         route_commits.extend(
             declared_auto_bindings

@@ -599,17 +599,6 @@ async fn watch_operation_until_terminal_with(
             OperationEventReplayCursor::CaughtUp => {}
         }
 
-        let snapshot = api
-            .ops_status(&OpsStatusRequest {
-                operation_id: operation_id.clone(),
-            })
-            .await
-            .map_err(api_error)?;
-
-        if let Some(outcome) = snapshot.status.terminal_outcome() {
-            return Ok((events, Some(outcome)));
-        }
-
         if started_at.elapsed() >= timeout {
             return Err(PloyzctlExecutionError::OpsWatchTimedOut {
                 operation_id,

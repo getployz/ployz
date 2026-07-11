@@ -1,5 +1,4 @@
 use crate::machine_runtime::MachineRuntimeUnavailableReason;
-use crate::operations::log::{RecordDeployEvidenceError, RecordDeployTransitionError};
 use crate::roles::machine::response::log_hint;
 use ployz_core::dataplane::DataplanePrepareError;
 use ployz_core::deploy::DeployPlanError;
@@ -11,11 +10,12 @@ use ployz_core::ops::{
     HealthCheckFailure, OperatorHint, PreStartHookFailure, RetainedArtifact,
     RouteCutoverFailureReason, RouteHostname,
 };
-use std::future::Future;
 use std::time::Duration;
 
+use super::phase::{DeployFailedPhase, DeployFailurePhase};
 use super::{
-    DeployContainer, DeployExecutionCommand, DeployOperationRecorder, NamespaceCommitError,
+    DeployContainer, DeployExecutionCommand, DeployExecutionStep, DeployFailureRecordError,
+    DeployOperationRecordError, DeployOperationRecorder, NamespaceCommitError,
 };
 
 fn failure_service_id(command: &DeployExecutionCommand) -> ServiceId {
@@ -45,7 +45,10 @@ fn failure_commit_scope(command: &DeployExecutionCommand) -> ControlPlaneCommitS
 pub(super) struct DeployExecutionFailure {
     source: DeployExecutionError,
     operation_failure: DeployOperationFailure,
-    retained_stop_targets: Vec<DeployContainer>,
+    failed_phase_cleanup_targets: Vec<DeployContainer>,
+    phase: DeployFailurePhase,
+    promoted_phases: u16,
+    evidence_record_error: Option<DeployFailureRecordError>,
 }
 
 impl DeployExecutionFailure {
@@ -68,12 +71,36 @@ impl DeployExecutionFailure {
         Self {
             source,
             operation_failure,
-            retained_stop_targets: retained_stop_targets.to_vec(),
+            failed_phase_cleanup_targets: retained_stop_targets.to_vec(),
+            phase: DeployFailurePhase::OutsidePhase,
+            promoted_phases: 0,
+            evidence_record_error: None,
         }
     }
 
-    pub(super) fn retained_stop_targets(&self) -> &[DeployContainer] {
-        &self.retained_stop_targets
+    #[must_use]
+    pub(super) fn with_phase(mut self, phase: DeployFailedPhase, promoted_phases: u16) -> Self {
+        self.phase = DeployFailurePhase::During(phase);
+        self.promoted_phases = promoted_phases;
+        self
+    }
+
+    #[must_use]
+    pub(super) fn with_promoted_phases(mut self, promoted_phases: u16) -> Self {
+        self.promoted_phases = promoted_phases;
+        self
+    }
+
+    pub(super) fn failed_phase_cleanup_targets(&self) -> &[DeployContainer] {
+        &self.failed_phase_cleanup_targets
+    }
+
+    pub(super) fn phase(&self) -> &DeployFailurePhase {
+        &self.phase
+    }
+
+    pub(super) fn operation_failure(&self) -> &DeployOperationFailure {
+        &self.operation_failure
     }
 
     pub(super) fn add_retained_artifacts(&mut self, artifacts: Vec<RetainedArtifact>) {
@@ -81,6 +108,12 @@ impl DeployExecutionFailure {
             return;
         }
         add_retained_artifacts(&mut self.operation_failure, artifacts);
+    }
+
+    pub(super) fn add_evidence_record_error(&mut self, error: DeployFailureRecordError) {
+        if self.evidence_record_error.is_none() {
+            self.evidence_record_error = Some(error);
+        }
     }
 }
 
@@ -92,14 +125,35 @@ pub(super) async fn fail_deploy<R>(
 where
     R: DeployOperationRecorder,
 {
-    let failure_record_error = record_failed_transition(
-        command.step_timeout(),
-        recorder,
-        &command,
-        &failure.operation_failure,
-    )
-    .await;
+    let transition_record_error = if failure.promoted_phases > 0 {
+        match tokio::time::timeout(
+            command.step_timeout(),
+            recorder.record_deploy_transition(
+                &command.operation_id,
+                ployz_core::ops::DeployTransition::Completed {
+                    outcome: ployz_core::ops::DeployCompletionOutcome::PartiallyCompleted,
+                },
+            ),
+        )
+        .await
+        {
+            Ok(Ok(())) => None,
+            Ok(Err(source)) => Some(DeployFailureRecordError::Record(source)),
+            Err(_) => Some(DeployFailureRecordError::TimedOut {
+                timeout: command.step_timeout(),
+            }),
+        }
+    } else {
+        record_failed_transition(
+            command.step_timeout(),
+            recorder,
+            &command,
+            &failure.operation_failure,
+        )
+        .await
+    };
 
+    let failure_record_error = transition_record_error.or(failure.evidence_record_error);
     Err(DeployExecutionError::Failed {
         failure: Box::new(failure.operation_failure),
         source: Box::new(failure.source),
@@ -131,22 +185,6 @@ where
         Ok(Err(source)) => Some(DeployFailureRecordError::Record(source)),
         Err(_) => Some(DeployFailureRecordError::TimedOut { timeout }),
     }
-}
-
-pub(super) async fn with_step_timeout<T, E, F>(
-    command: &DeployExecutionCommand,
-    step: DeployExecutionStep,
-    future: F,
-) -> Result<T, DeployExecutionError>
-where
-    F: Future<Output = Result<T, E>>,
-    E: Into<DeployExecutionError>,
-{
-    let timeout = command.step_timeout();
-    tokio::time::timeout(timeout, future)
-        .await
-        .map_err(|_| DeployExecutionError::StepTimedOut { step, timeout })?
-        .map_err(Into::into)
 }
 
 #[derive(Debug)]
@@ -358,22 +396,6 @@ impl PreStartHookRuntimeError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DeployExecutionStep {
-    RecordOperationEvent,
-    EnsureEndpointNetwork { machine_id: MachineId },
-    PrepareDataplane { machines: Vec<MachineId> },
-    RunContainer { machine_id: MachineId },
-    RunPreStartHook { machine_id: MachineId },
-    WaitHealthy,
-    EnsureCertificate { hostname: RouteHostname },
-    CommitVolumePins,
-    CommitRoute { route: ployz_core::ops::RouteTarget },
-    RemoveRoute { route: ployz_core::ops::RouteTarget },
-    CommitServingTarget,
-    RemoveServingTarget { scope: ControlPlaneCommitScope },
-}
-
 impl From<DeployPlanError> for DeployExecutionError {
     fn from(value: DeployPlanError) -> Self {
         Self::Plan(value)
@@ -392,10 +414,9 @@ impl DeployExecutionStep {
             Self::WaitHealthy => "wait_healthy",
             Self::EnsureCertificate { .. } => "ensure_certificate",
             Self::CommitVolumePins => "commit_volume_pins",
-            Self::CommitRoute { .. } => "commit_route",
             Self::RemoveRoute { .. } => "remove_route",
             Self::RemoveServingTarget { .. } => "remove_serving_target",
-            Self::CommitServingTarget => "commit_serving_target_entry",
+            Self::CommitServingTarget { .. } => "commit_serving_target_entry",
         }
     }
 
@@ -451,20 +472,20 @@ impl DeployExecutionStep {
                 message: timeout_failure_message("volume pin commit", timeout),
                 retained_artifacts,
             },
-            Self::CommitRoute { route } | Self::RemoveRoute { route } => {
-                DeployOperationFailure::RouteCutoverFailed {
-                    route: route.clone(),
-                    reason: RouteCutoverFailureReason::TimedOut {
-                        timeout_seconds: timeout_seconds(timeout),
-                    },
+            Self::RemoveRoute { route } => DeployOperationFailure::RouteCutoverFailed {
+                route: route.clone(),
+                reason: RouteCutoverFailureReason::TimedOut {
+                    timeout_seconds: timeout_seconds(timeout),
+                },
+                retained_artifacts,
+            },
+            Self::CommitServingTarget { scope } => {
+                DeployOperationFailure::ControlPlaneCommitFailed {
+                    scope: scope.clone(),
+                    message: timeout_failure_message("serving target commit", timeout),
                     retained_artifacts,
                 }
             }
-            Self::CommitServingTarget => DeployOperationFailure::ControlPlaneCommitFailed {
-                scope: failure_commit_scope(command),
-                message: timeout_failure_message("serving target commit", timeout),
-                retained_artifacts,
-            },
             Self::RemoveServingTarget { scope } => {
                 DeployOperationFailure::ControlPlaneCommitFailed {
                     scope: scope.clone(),
@@ -544,6 +565,17 @@ impl DeployExecutionError {
                     message: failure_message("service dependencies contain a cycle"),
                 }
             }
+            Self::Plan(DeployPlanError::HealthyDependencyWithoutHealthcheck {
+                service_id,
+                dependency,
+            }) => DeployOperationFailure::PlanningFailed {
+                service_id: service_id.clone(),
+                namespace_revision_id: failure_namespace_revision_id(command),
+                message: failure_message(format!(
+                    "healthy dependency {} requires an executable healthcheck",
+                    dependency.as_str()
+                )),
+            },
             Self::PlanInconsistent { service_id } => DeployOperationFailure::PlanningFailed {
                 service_id: service_id.clone(),
                 namespace_revision_id: failure_namespace_revision_id(command),
@@ -691,19 +723,6 @@ impl NamespaceCommitError {
             }
         }
     }
-}
-
-#[derive(Debug)]
-pub enum DeployOperationRecordError {
-    RecordTransition(RecordDeployTransitionError),
-    RecordEvidence(RecordDeployEvidenceError),
-    Synthetic { message: &'static str },
-}
-
-#[derive(Debug)]
-pub enum DeployFailureRecordError {
-    TimedOut { timeout: Duration },
-    Record(DeployOperationRecordError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

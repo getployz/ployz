@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
-use ployz_core::deploy::DeployServiceSpec;
+use ployz_core::deploy::{DependencyCondition, DeployServiceSpec};
 use ployz_core::ids::NamespaceId;
 use serde_yaml::Value;
 
@@ -173,17 +173,39 @@ pub fn parse_deploy_file(
         .collect::<BTreeSet<_>>();
     for service in &deploy_services {
         for dependency in &service.depends_on {
-            if !service_ids.contains(dependency) {
+            let dependency_path = ComposePath::root()
+                .field("services")
+                .field(service.service_id.as_str())
+                .field("depends_on")
+                .field(dependency.service_id.as_str());
+            if !service_ids.contains(&dependency.service_id) {
                 findings.push(ComposeFinding::invalid(
-                    ComposePath::root()
-                        .field("services")
-                        .field(service.service_id.as_str())
-                        .field("depends_on"),
+                    dependency_path,
                     format!(
                         "dependency {:?} does not name a service in this file",
-                        dependency.as_str()
+                        dependency.service_id.as_str()
                     ),
                 ));
+                continue;
+            }
+            if dependency.condition == DependencyCondition::Healthy {
+                let target_has_executable_healthcheck = deploy_services.iter().any(|target| {
+                    target.service_id == dependency.service_id
+                        && target
+                            .runtime
+                            .healthcheck
+                            .as_ref()
+                            .is_some_and(|healthcheck| healthcheck.reports_docker_health())
+                });
+                if !target_has_executable_healthcheck {
+                    findings.push(ComposeFinding::invalid(
+                        dependency_path.field("condition"),
+                        format!(
+                            "service_healthy dependency {:?} requires that service to define an executable CMD or CMD-SHELL healthcheck",
+                            dependency.service_id.as_str()
+                        ),
+                    ));
+                }
             }
         }
     }
@@ -345,6 +367,32 @@ mod tests {
         let rendered = error.to_string();
         assert!(rendered.contains("services.web.ports"));
         assert!(rendered.contains("x-ports"));
+    }
+
+    #[test]
+    fn healthy_dependency_requires_an_executable_target_healthcheck() {
+        let error = parse_deploy_file(ComposeInput {
+            source: r#"
+            name: default
+            services:
+              database:
+                image: postgres:17
+              api:
+                image: api:latest
+                depends_on:
+                  database:
+                    condition: service_healthy
+            "#,
+            base_dir: Path::new("."),
+            interpolation_env: BTreeMap::new(),
+            namespace_override: None,
+            mode: UnsupportedFieldMode::Strict,
+        })
+        .expect_err("healthy dependency without a target healthcheck rejects");
+
+        let rendered = error.to_string();
+        assert!(rendered.contains("services.api.depends_on.database.condition"));
+        assert!(rendered.contains("executable CMD or CMD-SHELL healthcheck"));
     }
 
     #[test]

@@ -296,6 +296,45 @@ async fn namespace_intent_store_persists_volume_pins() {
     );
 }
 
+#[tokio::test]
+async fn namespace_intent_store_commits_a_deploy_phase_atomically() {
+    let namespace_intent = temp_namespace_intent().await;
+    let route = RouteBindingState {
+        namespace_id: ployz_test_support::ids::namespace_id("default"),
+        target: route_target("api.example.com", 443),
+        endpoint_port: ployz_core::ops::RoutePort::try_new(8080).expect("valid route port"),
+        service_id: service_id("svc_api"),
+    };
+    let old_route = RouteBindingState {
+        namespace_id: ployz_test_support::ids::namespace_id("default"),
+        target: route_target("old.example.com", 443),
+        endpoint_port: ployz_core::ops::RoutePort::try_new(8080).expect("valid route port"),
+        service_id: service_id("svc_api"),
+    };
+    let serving = serving_target_entry("svc_api", "entry_api");
+
+    namespace_intent
+        .replace_route_binding(old_route.clone())
+        .await
+        .expect("old route stores");
+
+    namespace_intent
+        .commit_deploy_phase(
+            vec![route.clone()],
+            vec![old_route.target],
+            vec![serving.clone()],
+        )
+        .await
+        .expect("phase commits");
+
+    let stored = namespace_intent
+        .load()
+        .await
+        .expect("namespace intent loads");
+    assert_eq!(stored.route_bindings, vec![route]);
+    assert_eq!(stored.serving_target_entries, vec![serving]);
+}
+
 async fn temp_namespace_intent() -> NamespaceIntentStore {
     NamespaceIntentStore::new(
         ployzd::core_store::CoreStore::open_in_memory()

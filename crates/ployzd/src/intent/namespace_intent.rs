@@ -40,6 +40,51 @@ impl NamespaceIntentStore {
             .map_err(store_error)
     }
 
+    /// Promote one deploy phase as one intent decision. Route bindings and
+    /// serving entries become visible together or not at all.
+    pub async fn commit_deploy_phase(
+        &self,
+        route_bindings: Vec<RouteBindingState>,
+        route_binding_removals: Vec<RouteTarget>,
+        serving_target_entries: Vec<ServingTargetEntry>,
+    ) -> Result<(), NamespaceIntentStoreError> {
+        self.store
+            .call(move |conn| {
+                let transaction = conn.transaction()?;
+                for state in route_bindings {
+                    transaction.execute(
+                        "INSERT INTO route_bindings (hostname, port, json) VALUES (?1, ?2, ?3)
+                         ON CONFLICT(hostname, port) DO UPDATE SET json = excluded.json",
+                        params![
+                            state.target.hostname.as_str(),
+                            state.target.port.get(),
+                            to_json(&state)?
+                        ],
+                    )?;
+                }
+                for target in route_binding_removals {
+                    transaction.execute(
+                        "DELETE FROM route_bindings WHERE hostname = ?1 AND port = ?2",
+                        params![target.hostname.as_str(), target.port.get()],
+                    )?;
+                }
+                for state in serving_target_entries {
+                    transaction.execute(
+                        "INSERT INTO serving_targets (namespace_id, service_id, json) VALUES (?1, ?2, ?3)
+                         ON CONFLICT(namespace_id, service_id) DO UPDATE SET json = excluded.json",
+                        params![
+                            state.namespace_id.as_str(),
+                            state.service_id.as_str(),
+                            to_json(&state)?
+                        ],
+                    )?;
+                }
+                transaction.commit()
+            })
+            .await
+            .map_err(store_error)
+    }
+
     pub async fn remove_route_binding(
         &self,
         target: &RouteTarget,

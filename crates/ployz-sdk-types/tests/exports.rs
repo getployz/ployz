@@ -10,32 +10,33 @@ use ployz_sdk_types::{
     CloudFounderBootstrapResult, CoreReplaceError, CoreReplaceReportError,
     CoreReplaceReportRequest, CoreReplaceReported, CoreReplaceRequest, CredentialAddError,
     CredentialAddRequest, CredentialListError, CredentialListRequest, CredentialListResult,
-    CredentialRemoveError, CredentialRemoveRequest, DeployOperationState, DeployRequest,
-    DeployReservationId, DeployReserveError, DeployReserveRequest, DeployReserved,
-    DeployRunningStage, DeployServiceSpec, DeploySubmitError, DeploySubmitRequest,
-    DeploySubmitResponse, EventSequence, EventSequenceError, ImageReference, ImageReferenceError,
-    InitFirstMachineActivateError, InitFirstMachineActivateRequest, InitFirstMachineActivated,
-    InstallContractError, InstallRolePolicy, LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt,
-    LogsTailError, LogsTailRequest, LogsTailResult, MAX_OPERATION_EVENT_REPLAY_LIMIT,
-    MachineAddAccepted, MachineAddError, MachineAddRequest, MachineAddResponse,
-    MachineBootstrapUrl, MachineInspectError, MachineInspectRequest, MachineJoinBundle,
-    MachineJoinMaterial, MachineJoinRedeemError, MachineJoinRedeemRequest,
-    MachineJoinRedeemResponse, MachineJoinRedeemResult, MachineJoinRedeemed,
-    MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
-    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinToken,
-    MachineJoinTrustedNats, MachineListError, MachineListRequest, MachineListResult, MachineName,
-    MachineSnapshot, MachineUpdateError, MachineUpdateRequest, MachineUpdateResponse,
-    ManagedCertBundle, ManagedLeaseAcquired, ManagedLeaseName, ManagedLeaseRecord, NamespaceId,
-    NamespaceRemoveError, NamespaceRemoveRequest, NatsCaCertificatePem, NatsUserSeed,
-    NetworkRepairError, NetworkRepairRequest, NetworkResolveError, NetworkResolveRequest,
-    NetworkResolveResult, NetworkStatusError, NetworkStatusRequest, NetworkStatusResult,
-    NonEmptyTextError, OperationApiResponse, OperationEvent, OperationEventReplayCursor,
-    OperationEventReplayLimit, OperationEventReplayLimitError, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot,
-    OperationSubject, OpsListError, OpsListRequest, OpsListResult, OpsStatusError,
-    OpsStatusRequest, OpsStatusResponse, OpsWatchResponse, ReplicaCount, ReplicaCountError,
-    RouteHostname, RouteHostnameError, RoutePort, RoutePortError, RuntimeSnapshotError,
-    RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceId, ServiceInspectError,
+    CredentialRemoveError, CredentialRemoveRequest, DependencyCondition, DeployOperationState,
+    DeployPhaseNumber, DeployPhaseNumberError, DeployRequest, DeployReservationId,
+    DeployReserveError, DeployReserveRequest, DeployReserved, DeployRunningStage,
+    DeployServiceSpec, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse, EventSequence,
+    EventSequenceError, ImageReference, ImageReferenceError, InitFirstMachineActivateError,
+    InitFirstMachineActivateRequest, InitFirstMachineActivated, InstallContractError,
+    InstallRolePolicy, LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, LogsTailError,
+    LogsTailRequest, LogsTailResult, MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted,
+    MachineAddError, MachineAddRequest, MachineAddResponse, MachineBootstrapUrl,
+    MachineInspectError, MachineInspectRequest, MachineJoinBundle, MachineJoinMaterial,
+    MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResponse,
+    MachineJoinRedeemResult, MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportRequest,
+    MachineJoinReported, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
+    MachineJoinToken, MachineJoinTrustedNats, MachineListError, MachineListRequest,
+    MachineListResult, MachineName, MachineSnapshot, MachineUpdateError, MachineUpdateRequest,
+    MachineUpdateResponse, ManagedCertBundle, ManagedLeaseAcquired, ManagedLeaseName,
+    ManagedLeaseRecord, NamespaceId, NamespaceRemoveError, NamespaceRemoveRequest,
+    NatsCaCertificatePem, NatsUserSeed, NetworkRepairError, NetworkRepairRequest,
+    NetworkResolveError, NetworkResolveRequest, NetworkResolveResult, NetworkStatusError,
+    NetworkStatusRequest, NetworkStatusResult, NonEmptyTextError, OperationApiResponse,
+    OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
+    OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
+    OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot, OperationSubject,
+    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest,
+    OpsStatusResponse, OpsWatchResponse, ReplicaCount, ReplicaCountError, RouteHostname,
+    RouteHostnameError, RoutePort, RoutePortError, RuntimeSnapshotError, RuntimeSnapshotRequest,
+    RuntimeSnapshotResult, ServiceDependency, ServiceId, ServiceInspectError,
     ServiceInspectRequest, ServiceListError, ServiceListRequest, ServiceListResult,
     ServiceRestartError, ServiceRestartRequest, ServiceSnapshot, SubjectTokenError,
     VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
@@ -86,6 +87,10 @@ fn sdk_exports_core_wire_types() {
         limit: OperationEventReplayLimit::try_new(100).expect("valid replay limit"),
     };
     let replay_page = OperationEventReplayPage::caught_up(Vec::new());
+    let dependency = ServiceDependency {
+        service_id: ServiceId::try_new("svc_database").expect("valid service id"),
+        condition: DependencyCondition::Healthy,
+    };
 
     assert_eq!(
         serde_json::to_string(&subject).expect("subject serializes"),
@@ -105,6 +110,10 @@ fn sdk_exports_core_wire_types() {
     );
     assert_eq!(replay_request.limit.get(), 100);
     assert_eq!(replay_page.cursor, OperationEventReplayCursor::CaughtUp);
+    assert_eq!(
+        serde_json::to_string(&dependency).expect("dependency serializes"),
+        r#"{"service_id":"svc_database","condition":"healthy"}"#
+    );
 }
 
 #[test]
@@ -1022,6 +1031,10 @@ fn sdk_exports_constructor_error_types() {
     assert!(matches!(
         ReplicaCount::try_new(0),
         Err(ReplicaCountError::Zero)
+    ));
+    assert!(matches!(
+        DeployPhaseNumber::try_new(0),
+        Err(DeployPhaseNumberError::Zero)
     ));
     assert!(matches!(
         ServiceId::try_new("svc.api"),
