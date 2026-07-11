@@ -21,16 +21,16 @@ fn gateway_runtime_serves_new_projection_from_available_source() {
     let mut runtime = GatewayProjector::new();
     let api = projected_route("api.example.com", "machine_1", "ctr_1");
 
-    let tick = runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(source_input(
-        "api.example.com",
-        "machine_1",
-        "ctr_1",
+    let tick = runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(Box::new(
+        source_input("api.example.com", "machine_1", "ctr_1"),
     )));
 
     assert_eq!(
         tick.state,
         current_state(GatewayProjection {
             managed_cert_bundle: None,
+            custom_cert_bundles: Vec::new(),
+            challenges: Vec::new(),
             routes: vec![api.clone()],
         })
     );
@@ -41,10 +41,8 @@ fn gateway_runtime_serves_new_projection_from_available_source() {
 fn gateway_runtime_keeps_serving_last_good_routes_when_source_disappears() {
     let mut runtime = GatewayProjector::new();
     let api = projected_route("api.example.com", "machine_1", "ctr_1");
-    runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(source_input(
-        "api.example.com",
-        "machine_1",
-        "ctr_1",
+    runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(Box::new(
+        source_input("api.example.com", "machine_1", "ctr_1"),
     )));
 
     let tick = runtime.apply_source_update(GatewayProjectionUpdate::SourceUnavailable(
@@ -56,6 +54,8 @@ fn gateway_runtime_keeps_serving_last_good_routes_when_source_disappears() {
         failed_state(
             GatewayProjection {
                 managed_cert_bundle: None,
+                custom_cert_bundles: Vec::new(),
+                challenges: Vec::new(),
                 routes: vec![api.clone()],
             },
             source_unavailable(),
@@ -68,10 +68,8 @@ fn gateway_runtime_keeps_serving_last_good_routes_when_source_disappears() {
 fn gateway_runtime_keeps_serving_last_good_routes_when_source_is_invalid() {
     let mut runtime = GatewayProjector::new();
     let api = projected_route("api.example.com", "machine_1", "ctr_1");
-    runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(source_input(
-        "api.example.com",
-        "machine_1",
-        "ctr_1",
+    runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(Box::new(
+        source_input("api.example.com", "machine_1", "ctr_1"),
     )));
 
     let tick =
@@ -82,6 +80,8 @@ fn gateway_runtime_keeps_serving_last_good_routes_when_source_is_invalid() {
         failed_state(
             GatewayProjection {
                 managed_cert_bundle: None,
+                custom_cert_bundles: Vec::new(),
+                challenges: Vec::new(),
                 routes: vec![api.clone()],
             },
             invalid_source(),
@@ -94,25 +94,23 @@ fn gateway_runtime_keeps_serving_last_good_routes_when_source_is_invalid() {
 fn gateway_runtime_applies_later_route_changes_after_outage() {
     let mut runtime = GatewayProjector::new();
     let api_v2 = projected_route("api.example.com", "machine_2", "ctr_2");
-    runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(source_input(
-        "api.example.com",
-        "machine_1",
-        "ctr_1",
+    runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(Box::new(
+        source_input("api.example.com", "machine_1", "ctr_1"),
     )));
     runtime.apply_source_update(GatewayProjectionUpdate::SourceUnavailable(
         source_unavailable(),
     ));
 
-    let tick = runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(source_input(
-        "api.example.com",
-        "machine_2",
-        "ctr_2",
+    let tick = runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(Box::new(
+        source_input("api.example.com", "machine_2", "ctr_2"),
     )));
 
     assert_eq!(
         tick.state,
         current_state(GatewayProjection {
             managed_cert_bundle: None,
+            custom_cert_bundles: Vec::new(),
+            challenges: Vec::new(),
             routes: vec![api_v2.clone()],
         })
     );
@@ -206,6 +204,9 @@ fn source_input(
 ) -> GatewayProjectionInput {
     GatewayProjectionInput {
         managed_cert_bundle: None,
+        custom_cert_bundles: Vec::new(),
+        custom_cert_failures: Vec::new(),
+        challenges: Vec::new(),
         routes: vec![GatewayRoute {
             namespace_id: namespace_id("default"),
             target: route_target(hostname, 443),
@@ -272,6 +273,8 @@ fn projected_route_with_upstreams(
 fn route_table(routes: impl IntoIterator<Item = GatewayProjectedRoute>) -> GatewayRouteTable {
     GatewayRouteTable::from_projection(GatewayProjection {
         managed_cert_bundle: None,
+        custom_cert_bundles: Vec::new(),
+        challenges: Vec::new(),
         routes: routes.into_iter().collect(),
     })
 }

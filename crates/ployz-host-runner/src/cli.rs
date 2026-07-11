@@ -24,6 +24,7 @@ use ployz_core::install::{
     NatsServerInstallSpec, WrappedCaKey,
 };
 use ployz_nats::connect::{NatsClientUrl, NatsClientUrlError};
+use ployz_sdk_types::CloudBootstrapToken;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostRunnerCommand {
@@ -45,9 +46,17 @@ pub struct HostRunnerBootstrap {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostRunnerBootstrapMode {
     LocalGuidance,
-    Cloud { cloud_host: Option<CloudHost> },
+    CloudInteractive {
+        cloud_host: Option<CloudHost>,
+    },
+    CloudToken {
+        cloud_host: Option<CloudHost>,
+        cloud_token: CloudBootstrapToken,
+    },
     Core,
-    Join { join_token: JoinToken },
+    Join {
+        join_token: JoinToken,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -298,6 +307,8 @@ enum HostRunnerBootstrapSubcommand {
     Cloud {
         #[arg(long, value_name = "host-or-https-url")]
         cloud_host: Option<CloudHost>,
+        #[arg(long, value_name = "secret", value_parser = parse_cloud_bootstrap_token)]
+        cloud_token: Option<CloudBootstrapToken>,
     },
 }
 
@@ -325,6 +336,10 @@ fn parse_operation_id(value: &str) -> Result<OperationId, String> {
     OperationId::try_new(value).map_err(|error| error.to_string())
 }
 
+fn parse_cloud_bootstrap_token(value: &str) -> Result<CloudBootstrapToken, String> {
+    CloudBootstrapToken::try_new(value).map_err(|_| "cloud bootstrap token is invalid".to_owned())
+}
+
 fn parse_nats_client_url(value: &str) -> Result<NatsClientUrl, NatsClientUrlError> {
     NatsClientUrl::try_new(value)
 }
@@ -341,9 +356,16 @@ fn load_bootstrap(command: Option<HostRunnerBootstrapSubcommand>) -> HostRunnerB
                 join_token: join_token.0,
             }
         }
-        Some(HostRunnerBootstrapSubcommand::Cloud { cloud_host }) => {
-            HostRunnerBootstrapMode::Cloud { cloud_host }
-        }
+        Some(HostRunnerBootstrapSubcommand::Cloud {
+            cloud_host,
+            cloud_token,
+        }) => match cloud_token {
+            Some(cloud_token) => HostRunnerBootstrapMode::CloudToken {
+                cloud_host,
+                cloud_token,
+            },
+            None => HostRunnerBootstrapMode::CloudInteractive { cloud_host },
+        },
     };
     HostRunnerBootstrap { mode }
 }
@@ -711,11 +733,75 @@ mod tests {
         assert_eq!(
             command,
             HostRunnerCommand::Bootstrap(HostRunnerBootstrap {
-                mode: HostRunnerBootstrapMode::Cloud {
+                mode: HostRunnerBootstrapMode::CloudInteractive {
                     cloud_host: Some(CloudHost::try_new("https://cloud.example.com").unwrap()),
                 },
             })
         );
+    }
+
+    #[test]
+    fn parser_accepts_cloud_bootstrap_token_without_custom_host_and_redacts_debug() {
+        let secret = "cloud_bootstrap_secret_123";
+        let command = load_command([
+            "bootstrap".into(),
+            "cloud".into(),
+            "--cloud-token".into(),
+            secret.into(),
+        ])
+        .expect("cloud bootstrap token is valid");
+
+        let debug = format!("{command:?}");
+        assert!(debug.contains("CloudBootstrapToken([redacted])"));
+        assert!(!debug.contains(secret));
+        assert!(matches!(
+            command,
+            HostRunnerCommand::Bootstrap(HostRunnerBootstrap {
+                mode: HostRunnerBootstrapMode::CloudToken {
+                    cloud_host: None,
+                    cloud_token: _,
+                },
+            })
+        ));
+    }
+
+    #[test]
+    fn parser_accepts_cloud_bootstrap_token_with_custom_host() {
+        let command = load_command([
+            "bootstrap".into(),
+            "cloud".into(),
+            "--cloud-host".into(),
+            "cloud.example.com".into(),
+            "--cloud-token".into(),
+            "cloud_bootstrap_secret_123".into(),
+        ])
+        .expect("cloud bootstrap token and host are valid");
+
+        assert!(matches!(
+            command,
+            HostRunnerCommand::Bootstrap(HostRunnerBootstrap {
+                mode: HostRunnerBootstrapMode::CloudToken {
+                    cloud_host: Some(host),
+                    cloud_token: _,
+                },
+            }) if host == CloudHost::try_new("cloud.example.com").unwrap()
+        ));
+    }
+
+    #[test]
+    fn parser_rejects_invalid_cloud_bootstrap_tokens() {
+        for token in ["cloud bootstrap token", "cloud\nbootstrap-token"] {
+            assert!(matches!(
+                load_command([
+                    "bootstrap".into(),
+                    "cloud".into(),
+                    "--cloud-token".into(),
+                    token.into(),
+                ]),
+                Err(HostRunnerCliError::Clap(error))
+                    if error.kind() == clap::error::ErrorKind::ValueValidation
+            ));
+        }
     }
 
     #[test]

@@ -6,16 +6,18 @@ use ployz_core::dataplane::DataplaneMember;
 use ployz_core::deploy::{ContainerCommand, ContainerRestartPolicy, ReplicaCount};
 use ployz_core::machine_runtime::ManagedContainerKind;
 use ployz_core::ops::{
-    DeployCompletionOutcome, DeployOperationFailure, DeployRunningStage, DeployTransition,
-    PreStartHookFailure, RouteHostname, RouteTarget,
+    CertificateProvisionFailure, DeployCompletionOutcome, DeployOperationFailure,
+    DeployRunningStage, DeployTransition, FailureMessage, PreStartHookFailure, RouteHostname,
+    RouteTarget,
 };
 use ployz_core::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
 use ployz_test_support::ids::{failure_message, namespace_id};
 use ployzd::operations::deploy::{
-    DataplanePreparer, DeployCleanupResult, DeployExecutionError, DeployExecutionInput,
-    DeployExecutionOutcome, DeployExecutionPorts, DeployExecutionStep, DeployHealthCheckError,
-    DeployHealthChecker, DeployOperationRecorder, DeployTerminalEvent, MachineContainerRuntime,
-    MachineContainerRuntimeError, NamespaceStateCommitter, execute_deploy_operation,
+    CertificateProvisioner, DataplanePreparer, DeployCleanupResult, DeployExecutionError,
+    DeployExecutionInput, DeployExecutionOutcome, DeployExecutionPorts, DeployExecutionStep,
+    DeployHealthCheckError, DeployHealthChecker, DeployOperationRecorder, DeployTerminalEvent,
+    MachineContainerRuntime, MachineContainerRuntimeError, NamespaceStateCommitter,
+    execute_deploy_operation,
 };
 use ployzd::roles::machine::protocol::MachineEnsureEndpointNetworkRpcRequest;
 use std::time::Duration;
@@ -44,15 +46,16 @@ fn assert_deploy_event_order(
     );
 }
 
-async fn execute_deploy<R, D, N, H, S>(
+async fn execute_deploy<R, D, N, H, C, S>(
     command: DeployExecutionInput,
-    ports: DeployExecutionPorts<'_, R, D, N, H, S>,
+    ports: DeployExecutionPorts<'_, R, D, N, H, C, S>,
 ) -> Result<DeployExecutionOutcome, DeployExecutionError>
 where
     R: DeployOperationRecorder,
     D: DataplanePreparer,
     N: MachineContainerRuntime,
     H: DeployHealthChecker,
+    C: CertificateProvisioner,
     S: NamespaceStateCommitter,
 {
     execute_deploy_operation(command, ports).await
@@ -74,6 +77,7 @@ async fn deploy_worker_runs_containers_then_completes() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -204,6 +208,7 @@ async fn digest_pinned_registry_image_skips_resolution() {
             dataplane: &mut dataplane,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -228,6 +233,7 @@ async fn route_less_pushed_deploy_uses_one_membership_for_prepare_and_seed_pull(
             dataplane: &mut dataplane,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -270,6 +276,7 @@ async fn pre_start_hook_runs_before_service_with_derived_runtime() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -317,6 +324,7 @@ async fn nonzero_pre_start_hook_fails_before_service_start_and_retains_hook() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -364,6 +372,7 @@ async fn pre_start_hook_cleanup_failure_is_typed_and_blocks_service_start() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -404,6 +413,7 @@ async fn deploy_worker_commits_volume_pin_and_mounts_volume() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -445,6 +455,7 @@ async fn deploy_worker_reuses_running_target_containers_from_observed_reality() 
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -512,6 +523,7 @@ async fn deploy_worker_removes_superseded_containers_after_active_commit() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -570,6 +582,7 @@ async fn deploy_worker_reports_cleanup_failure_without_failing_successful_deploy
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -626,6 +639,7 @@ async fn empty_deploy_removes_running_namespace_containers() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -689,6 +703,7 @@ async fn deploy_worker_does_not_record_warning_completion_without_cleanup_failur
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -726,6 +741,7 @@ async fn deploy_worker_counts_warning_completion_write_failure() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -756,6 +772,7 @@ async fn deploy_worker_does_not_health_check_existing_container() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -792,6 +809,7 @@ async fn deploy_worker_treats_reused_operation_step_container_as_progress() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -837,6 +855,7 @@ async fn deploy_worker_does_not_health_check_started_existing_container() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -870,6 +889,7 @@ async fn deploy_worker_records_failure_when_container_run_fails() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -931,6 +951,7 @@ async fn deploy_worker_retains_created_container_when_start_fails() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -1005,6 +1026,7 @@ async fn deploy_worker_reports_retained_stop_failure_in_terminal_failure() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -1046,6 +1068,7 @@ async fn deploy_worker_records_planning_before_plan_failure() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -1092,6 +1115,7 @@ async fn deploy_worker_fails_before_wireguard_ebpf_when_endpoint_network_is_unav
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -1147,6 +1171,7 @@ async fn deploy_worker_fails_before_container_run_when_wireguard_ebpf_is_unavail
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -1202,6 +1227,7 @@ async fn deploy_worker_waits_for_health_before_completing() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -1261,12 +1287,14 @@ async fn deploy_worker_waits_for_health_before_completing() {
 }
 
 #[tokio::test]
-async fn routed_deploy_commits_route_before_completion() {
+async fn custom_https_deploy_ensures_certificate_before_route_commit() {
     let mut recorder = RecordingOperations::default();
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
-    let mut namespace_state = RecordingNamespaceState::stored();
+    let mut certificates = RecordingCertificates::successful();
+    let mut namespace_state =
+        RecordingNamespaceState::requiring_certificate_ready(certificates.readiness());
     let command = routed_deploy_command(1);
 
     execute_deploy(
@@ -1276,6 +1304,7 @@ async fn routed_deploy_commits_route_before_completion() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut certificates,
             namespace_state: &mut namespace_state,
         },
     )
@@ -1292,6 +1321,17 @@ async fn routed_deploy_commits_route_before_completion() {
         }]
     );
     assert_eq!(namespace_state.serving_requests.len(), 1);
+    assert_eq!(
+        certificates.requests,
+        vec![(
+            operation_id("op_123"),
+            RouteHostname::try_new("api.example.com").expect("valid route hostname"),
+            vec![ployzd::certificate::GatewayCertificateTarget {
+                machine_id: machine_id("gateway_a"),
+                public_ips: vec!["203.0.113.10".parse().expect("valid gateway IP")],
+            }],
+        )]
+    );
     let [(_, runtime_request)] = runtime.requests.as_slice() else {
         panic!("expected one runtime request");
     };
@@ -1309,9 +1349,101 @@ async fn routed_deploy_commits_route_before_completion() {
     );
     assert_deploy_event_order(
         &recorder.records,
+        DeployRunningStage::EnsuringCertificates,
+        DeployRunningStage::RouteCutover,
+    );
+    assert_deploy_event_order(
+        &recorder.records,
         DeployRunningStage::RouteCutover,
         DeployRunningStage::ServingTargetCommit,
     );
+}
+
+#[tokio::test]
+async fn custom_https_certificate_failure_leaves_route_uncommitted() {
+    let hostname = RouteHostname::try_new("api.example.com").expect("valid route hostname");
+    let message = || FailureMessage::try_new("certificate failed").expect("valid failure message");
+    let failures = vec![
+        CertificateProvisionFailure::OperationEvidenceWrite { message: message() },
+        CertificateProvisionFailure::DnsPreflight { message: message() },
+        CertificateProvisionFailure::ChallengePublish { message: message() },
+        CertificateProvisionFailure::ChallengeReadiness {
+            missing_machine_ids: vec![machine_id("gateway_a")],
+        },
+        CertificateProvisionFailure::AcmeValidation { message: message() },
+        CertificateProvisionFailure::GatewayArtifactPush {
+            machine_id: machine_id("gateway_a"),
+            message: message(),
+        },
+        CertificateProvisionFailure::ActiveCertCommit {
+            attempted_active_cert: active_certificate(hostname.clone()),
+            message: message(),
+        },
+    ];
+
+    for failure in failures {
+        let mut recorder = RecordingOperations::default();
+        let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
+        let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
+        let mut health = RecordingHealth::healthy();
+        let mut certificates = RecordingCertificates::failing(failure.clone());
+        let mut namespace_state = RecordingNamespaceState::stored();
+
+        execute_deploy(
+            routed_deploy_command(1),
+            DeployExecutionPorts {
+                recorder: &mut recorder,
+                dataplane: &mut wireguard_ebpf,
+                machine_runtime: &mut runtime,
+                health_checker: &mut health,
+                certificate_provisioner: &mut certificates,
+                namespace_state: &mut namespace_state,
+            },
+        )
+        .await
+        .expect_err("certificate failure fails the deploy");
+
+        assert_eq!(
+            recorder.records.last(),
+            Some(&RecordedOperation::Transition(DeployTransition::Failed {
+                failure: DeployOperationFailure::CertificateProvisionFailed {
+                    hostname: hostname.clone(),
+                    namespace_revision_id: routed_namespace_revision_id(),
+                    failure,
+                    retained_artifacts: vec![retained_container("machine_a", "ctr_1")],
+                },
+            }))
+        );
+        assert!(namespace_state.route_requests.is_empty());
+        assert!(namespace_state.serving_requests.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn managed_https_and_plain_http_routes_skip_custom_certificate_provisioning() {
+    let mut recorder = RecordingOperations::default();
+    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
+    let mut health = RecordingHealth::healthy();
+    let mut certificates = RecordingCertificates::successful();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        managed_https_and_custom_http_deploy_command(),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            dataplane: &mut wireguard_ebpf,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut certificates,
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("managed HTTPS and plain HTTP routes deploy");
+
+    assert!(certificates.requests.is_empty());
+    assert_eq!(namespace_state.route_requests.len(), 2);
 }
 
 #[tokio::test]
@@ -1330,6 +1462,7 @@ async fn deploy_worker_times_out_hanging_steps() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -1371,6 +1504,7 @@ async fn deploy_worker_keeps_success_when_completed_event_fails_after_active_com
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -1427,6 +1561,7 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )
@@ -1502,6 +1637,7 @@ async fn deploy_worker_records_retained_artifacts_when_namespace_lock_is_lost_be
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
             namespace_state: &mut namespace_state,
         },
     )

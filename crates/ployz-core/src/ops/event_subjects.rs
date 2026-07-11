@@ -40,7 +40,7 @@ impl OperationEvent {
             Self::DeployCleanupFinished { .. } => "deploy.cleanup.finished".to_owned(),
             Self::DeployCompleted { .. } => "deploy.completed".to_owned(),
             Self::DeployFailed { .. } => "deploy.failed".to_owned(),
-            Self::CertRenewalSubmitted { .. } => "cert.submitted".to_owned(),
+            Self::CertProvisionSubmitted { .. } => "cert.submitted".to_owned(),
             Self::CertChallengePublished { .. } => "cert.challenge.published".to_owned(),
             Self::CertValidationStarted { .. } => "cert.validation.started".to_owned(),
             Self::CertCompleted { .. } => "cert.completed".to_owned(),

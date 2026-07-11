@@ -73,6 +73,19 @@
     },
     "session_secret": "pcbsess_secret_123"
   },
+  "cloud_bootstrap_token_redeem_request": {
+    "attempt_id": "pcba_123",
+    "client": {
+      "host_runner_version": "0.1.0",
+      "protocol_version": 1
+    },
+    "machine": {
+      "arch": "x86_64",
+      "candidate_runtime_nats_url": "tls://203.0.113.10:4222",
+      "hostname": "web-01",
+      "os": "linux"
+    }
+  },
   "deploy_reserve_request": {
     "namespace_id": "default"
   },

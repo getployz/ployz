@@ -796,6 +796,8 @@ mod tests {
             volume_pins: Vec::new(),
             nats_authorizations: Vec::new(),
             managed_lease: ManagedLeaseProjection::Unacquired,
+            custom_certificates: Vec::new(),
+            acme_http01_challenges: Vec::new(),
         }
     }
 }

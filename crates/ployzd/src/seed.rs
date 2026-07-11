@@ -9,11 +9,13 @@
 //! intent back.
 
 use crate::core_store::{CoreStore, CoreStoreError};
+use crate::intent::certificate_intent::{CertificateIntentStore, CertificateIntentStoreError};
 use crate::intent::lease_intent::{LeaseIntentStore, LeaseIntentStoreError};
 use crate::intent::machine_roster::{MachineRosterStore, MachineRosterStoreError};
 use crate::intent::namespace_intent::{NamespaceIntentStore, NamespaceIntentStoreError};
 use crate::intent::nats_authorizations::{NatsAuthorizationStore, NatsAuthorizationStoreError};
 use ployz_core::state::IntentSnapshot;
+use std::path::Path;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SeedCoreError {
@@ -25,6 +27,8 @@ pub enum SeedCoreError {
     Authorizations(#[from] NatsAuthorizationStoreError),
     #[error("seeding managed lease intent: {0}")]
     ManagedLease(#[from] LeaseIntentStoreError),
+    #[error("seeding custom certificate intent: {0}")]
+    Certificate(#[from] CertificateIntentStoreError),
     #[error("seeding control-plane epoch: {0}")]
     Epoch(#[from] CoreStoreError),
 }
@@ -44,6 +48,7 @@ pub enum SeedOutcome {
 pub async fn seed_core_from_snapshot(
     core_store: &CoreStore,
     snapshot: &IntentSnapshot,
+    _certificate_state_dir: &Path,
 ) -> Result<SeedOutcome, SeedCoreError> {
     // Only a fresh store (never promoted) may be seeded. Once a store has an epoch
     // row it is a live core, and ControlPlaneEpoch is a promotion generation, not an
@@ -84,6 +89,12 @@ pub async fn seed_core_from_snapshot(
         }
         ployz_core::state::ManagedLeaseProjection::Unacquired => {}
     }
+    let certificate_store = CertificateIntentStore::new(core_store.clone());
+    for active_cert in &snapshot.custom_certificates {
+        certificate_store
+            .seed_active_metadata(active_cert.clone())
+            .await?;
+    }
 
     // Reuse the succeeded core's grant set verbatim: the promoted core authorizes
     // the same operator, Cloud, and machine credentials, so nothing is locked out
@@ -104,7 +115,10 @@ pub async fn seed_core_from_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::cert::{AutoLeaseState, ManagedLeaseAcquireRequest, ManagedLeaseIntent};
+    use ployz_core::cert::{
+        ActiveCertState, AutoLeaseState, CertBundleRef, CertValidAt, CertValidityWindow,
+        ManagedLeaseAcquireRequest, ManagedLeaseIntent,
+    };
     use ployz_core::state::{ActiveMachineState, ControlPlaneEpoch, MachineLifecycle};
     use ployz_lease_worker::{LeaseWorkerRequest, LeaseWorkerResponse, StubLeaseWorker};
     use ployz_test_support::ids::{machine_id, operation_id};
@@ -139,6 +153,8 @@ mod tests {
                 role: CredentialRole::Operator,
             })],
             managed_lease: ployz_core::state::ManagedLeaseProjection::Unacquired,
+            custom_certificates: Vec::new(),
+            acme_http01_challenges: Vec::new(),
         }
     }
 
@@ -148,7 +164,8 @@ mod tests {
         // Mirror is at epoch 3; a fresh store mints 1.
         let snapshot = snapshot_at_epoch(ControlPlaneEpoch::initial().next().next());
 
-        let outcome = seed_core_from_snapshot(&store, &snapshot)
+        let certificates = tempfile::tempdir().expect("certificate state");
+        let outcome = seed_core_from_snapshot(&store, &snapshot, certificates.path())
             .await
             .expect("seed");
 
@@ -197,7 +214,8 @@ mod tests {
             bundle: bundle.clone(),
         };
 
-        seed_core_from_snapshot(&store, &snapshot)
+        let certificates = tempfile::tempdir().expect("certificate state");
+        seed_core_from_snapshot(&store, &snapshot, certificates.path())
             .await
             .expect("seed ready lease");
 
@@ -216,20 +234,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn seeding_restores_custom_certificate_metadata_without_secret_material() {
+        let active = active_certificate();
+        let mut snapshot = snapshot_at_epoch(ControlPlaneEpoch::initial());
+        snapshot.custom_certificates = vec![active.clone()];
+        let target_store = CoreStore::open_in_memory().await.expect("target store");
+        let target_directory = tempfile::tempdir().expect("target certificate state");
+
+        seed_core_from_snapshot(&target_store, &snapshot, target_directory.path())
+            .await
+            .expect("seed custom certificate");
+
+        let seeded_certificates = CertificateIntentStore::new(target_store)
+            .active_certificates()
+            .await
+            .expect("seeded certificates");
+        let [seeded] = seeded_certificates.as_slice() else {
+            panic!("one certificate is seeded");
+        };
+        assert_eq!(seeded, &active);
+    }
+
+    #[tokio::test]
     async fn re_running_on_an_advanced_store_is_a_no_op() {
         let store = CoreStore::open_in_memory().await.expect("store");
-        let first =
-            seed_core_from_snapshot(&store, &snapshot_at_epoch(ControlPlaneEpoch::initial()))
-                .await
-                .expect("first seed");
+        let first = seed_core_from_snapshot(
+            &store,
+            &snapshot_at_epoch(ControlPlaneEpoch::initial()),
+            tempfile::tempdir().expect("certificate state").path(),
+        )
+        .await
+        .expect("first seed");
         assert_eq!(first, SeedOutcome::Seeded);
         let after_first = store.control_plane_epoch().await.expect("epoch");
 
         // The store now fences above the mirror; a stale re-run must not roll back.
-        let second =
-            seed_core_from_snapshot(&store, &snapshot_at_epoch(ControlPlaneEpoch::initial()))
-                .await
-                .expect("second seed");
+        let second = seed_core_from_snapshot(
+            &store,
+            &snapshot_at_epoch(ControlPlaneEpoch::initial()),
+            tempfile::tempdir().expect("certificate state").path(),
+        )
+        .await
+        .expect("second seed");
         assert_eq!(second, SeedOutcome::AlreadyPromoted);
         assert_eq!(
             store.control_plane_epoch().await.expect("epoch"),
@@ -243,6 +289,7 @@ mod tests {
         seed_core_from_snapshot(
             &store,
             &snapshot_at_epoch(ControlPlaneEpoch::initial().next()),
+            tempfile::tempdir().expect("certificate state").path(),
         )
         .await
         .expect("first seed");
@@ -251,13 +298,34 @@ mod tests {
         // A mirror captured at the store's own generation (operator changes keep the
         // epoch, which is a promotion generation not an intent revision) must not
         // re-seed — that would replay stale intent under a higher epoch.
-        let outcome = seed_core_from_snapshot(&store, &snapshot_at_epoch(after_first))
-            .await
-            .expect("same-epoch seed");
+        let outcome = seed_core_from_snapshot(
+            &store,
+            &snapshot_at_epoch(after_first),
+            tempfile::tempdir().expect("certificate state").path(),
+        )
+        .await
+        .expect("same-epoch seed");
         assert_eq!(outcome, SeedOutcome::AlreadyPromoted);
         assert_eq!(
             store.control_plane_epoch().await.expect("epoch"),
             after_first
         );
+    }
+
+    fn active_certificate() -> ActiveCertState {
+        ActiveCertState {
+            cert_id: ployz_test_support::ids::cert_id("cert_app_example_com"),
+            hostname: ployz_test_support::ids::route_hostname("app.example.com"),
+            bundle_ref: CertBundleRef::try_new(format!(
+                "sha256:{}:/var/lib/ployz/certificates/cert_app_example_com.bundle",
+                "a".repeat(64)
+            ))
+            .expect("bundle ref"),
+            validity: CertValidityWindow::try_new(
+                CertValidAt::try_new(1).expect("not before"),
+                CertValidAt::try_new(2).expect("not after"),
+            )
+            .expect("validity"),
+        }
     }
 }

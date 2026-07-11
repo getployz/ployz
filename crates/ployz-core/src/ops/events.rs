@@ -145,7 +145,7 @@ pub enum OperationEvent {
         operation_id: OperationId,
         failure: DeployOperationFailure,
     },
-    CertRenewalSubmitted {
+    CertProvisionSubmitted {
         operation_id: OperationId,
         cert_id: CertId,
     },
@@ -376,7 +376,7 @@ impl OperationEvent {
             | Self::DeployCleanupFinished { operation_id, .. }
             | Self::DeployCompleted { operation_id, .. }
             | Self::DeployFailed { operation_id, .. }
-            | Self::CertRenewalSubmitted { operation_id, .. }
+            | Self::CertProvisionSubmitted { operation_id, .. }
             | Self::CertChallengePublished { operation_id, .. }
             | Self::CertValidationStarted { operation_id, .. }
             | Self::CertCompleted { operation_id, .. }
@@ -459,7 +459,7 @@ impl OperationEvent {
             | Self::DeployRunning { .. }
             | Self::DeployCompleted { .. }
             | Self::DeployFailed { .. }
-            | Self::CertRenewalSubmitted { .. }
+            | Self::CertProvisionSubmitted { .. }
             | Self::CertChallengePublished { .. }
             | Self::CertValidationStarted { .. }
             | Self::CertCompleted { .. }
@@ -568,7 +568,7 @@ impl OperationEvent {
             | Self::DeployRunning { .. }
             | Self::DeployCompleted { .. }
             | Self::DeployFailed { .. }
-            | Self::CertRenewalSubmitted { .. }
+            | Self::CertProvisionSubmitted { .. }
             | Self::CertChallengePublished { .. }
             | Self::CertValidationStarted { .. }
             | Self::CertCompleted { .. }
@@ -807,7 +807,7 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 event: DeployEvent::Transition(DeployTransition::Failed { failure }),
             },
-            OperationEvent::CertRenewalSubmitted {
+            OperationEvent::CertProvisionSubmitted {
                 operation_id,
                 cert_id,
             } => Self::Cert {
@@ -822,9 +822,9 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 event: CertEvent::Transition {
                     cert_id,
-                    transition: CertTransition::Running {
+                    transition: Box::new(CertTransition::Running {
                         stage: CertRunningStage::ChallengePublished,
-                    },
+                    }),
                 },
             },
             OperationEvent::CertValidationStarted {
@@ -834,9 +834,9 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 event: CertEvent::Transition {
                     cert_id,
-                    transition: CertTransition::Running {
+                    transition: Box::new(CertTransition::Running {
                         stage: CertRunningStage::ValidationStarted,
-                    },
+                    }),
                 },
             },
             OperationEvent::CertCompleted {
@@ -846,7 +846,7 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 event: CertEvent::Transition {
                     cert_id: active_cert.cert_id.clone(),
-                    transition: CertTransition::Completed,
+                    transition: Box::new(CertTransition::Completed),
                 },
             },
             OperationEvent::CertFailed {
@@ -856,7 +856,7 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 event: CertEvent::Transition {
                     cert_id: failure.cert_id().clone(),
-                    transition: CertTransition::Failed { failure },
+                    transition: Box::new(CertTransition::Failed { failure }),
                 },
             },
             OperationEvent::MachineAddSubmitted {

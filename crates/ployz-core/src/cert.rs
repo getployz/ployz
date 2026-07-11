@@ -1,14 +1,15 @@
 //! Certificate state and ACME challenge models.
 
+use std::collections::BTreeSet;
+use std::net::{Ipv4Addr, Ipv6Addr};
+
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::ids::CertId;
 use crate::install::{AbsoluteInstallPath, InstallSha256Digest};
 use crate::ops::RouteHostname;
 use crate::state_key::id_prefixed_state_key;
-use sha2::{Digest, Sha256};
-use std::net::{Ipv4Addr, Ipv6Addr};
-
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 pub const CERT_STATE_PREFIX: &str = "certs";
@@ -16,6 +17,20 @@ pub const ACME_LOCK_PREFIX: &str = "acme";
 pub const ACME_CHALLENGE_PREFIX: &str = "acme.challenges";
 pub const MANAGED_LEASE_DOMAIN_SUFFIX: &str = "up.ployz.app";
 pub const DEFAULT_LEASE_WORKER_URL: &str = "https://dns.ployz.app";
+
+mod custom_bundle;
+mod gateway_rpc;
+
+pub use crate::ops::CertificateProvisionFailure;
+pub use custom_bundle::{
+    ActiveCertState, CustomCertBundle, CustomCertBundleError, custom_bundle_digest,
+};
+pub use gateway_rpc::{
+    CertificateArtifactPushOk, CertificateArtifactPushRequest, CertificateArtifactPushResponse,
+    CertificateChallengeApplicationStatus, CertificateChallengeStatusOk,
+    CertificateChallengeStatusRequest, CertificateChallengeStatusResponse,
+    GatewayCertificateRpcError,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -101,23 +116,41 @@ impl ManagedLeaseIntent {
     }
 }
 
-/// Active certificate intent/evidence value.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct ActiveCertState {
-    pub cert_id: CertId,
-    pub hostname: RouteHostname,
-    pub bundle_ref: CertBundleRef,
-    pub validity: CertValidityWindow,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ManagedLeaseAcquireRequest {
     pub ipv4: Vec<Ipv4Addr>,
     pub ipv6: Vec<Ipv6Addr>,
+}
+
+/// Canonical public gateway addresses applied to a managed lease.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct ManagedLeaseAddressSet {
+    ipv4: BTreeSet<Ipv4Addr>,
+    ipv6: BTreeSet<Ipv6Addr>,
+}
+
+impl ManagedLeaseAddressSet {
+    #[must_use]
+    pub fn new(ipv4: Vec<Ipv4Addr>, ipv6: Vec<Ipv6Addr>) -> Self {
+        Self {
+            ipv4: ipv4.into_iter().collect(),
+            ipv6: ipv6.into_iter().collect(),
+        }
+    }
+
+    #[must_use]
+    pub const fn ipv4(&self) -> &BTreeSet<Ipv4Addr> {
+        &self.ipv4
+    }
+
+    #[must_use]
+    pub const fn ipv6(&self) -> &BTreeSet<Ipv6Addr> {
+        &self.ipv6
+    }
 }
 
 fn two_thirds_due(issued_at: u64, expires_at: u64, now_seconds: u64) -> bool {
@@ -752,6 +785,37 @@ impl CertBundleRef {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    pub fn for_bundle(
+        digest: &InstallSha256Digest,
+        path: &AbsoluteInstallPath,
+    ) -> Result<Self, CertTextError> {
+        Self::try_new(format!("sha256:{}:{}", digest.as_str(), path.as_str()))
+    }
+
+    pub fn artifact_parts(
+        &self,
+    ) -> Result<(InstallSha256Digest, AbsoluteInstallPath), CertTextError> {
+        let Some(rest) = self.0.strip_prefix("sha256:") else {
+            return Err(CertTextError::InvalidBundleRef {
+                value: self.0.clone(),
+            });
+        };
+        let Some((digest, path)) = rest.split_once(':') else {
+            return Err(CertTextError::InvalidBundleRef {
+                value: self.0.clone(),
+            });
+        };
+        let digest =
+            InstallSha256Digest::try_new(digest).map_err(|_| CertTextError::InvalidBundleRef {
+                value: self.0.clone(),
+            })?;
+        let path =
+            AbsoluteInstallPath::try_new(path).map_err(|_| CertTextError::InvalidBundleRef {
+                value: self.0.clone(),
+            })?;
+        Ok((digest, path))
+    }
 }
 
 impl TryFrom<String> for CertBundleRef {
@@ -864,6 +928,37 @@ mod managed_lease_intent_tests {
     use super::*;
 
     #[test]
+    fn managed_lease_address_set_sorts_and_deduplicates_each_family() {
+        let addresses = ManagedLeaseAddressSet::new(
+            vec![
+                "203.0.113.8".parse().expect("IPv4"),
+                "198.51.100.2".parse().expect("IPv4"),
+                "203.0.113.8".parse().expect("IPv4"),
+            ],
+            vec![
+                "2001:db8::8".parse().expect("IPv6"),
+                "2001:db8::2".parse().expect("IPv6"),
+                "2001:db8::8".parse().expect("IPv6"),
+            ],
+        );
+
+        assert_eq!(
+            addresses.ipv4().iter().copied().collect::<Vec<_>>(),
+            [
+                "198.51.100.2".parse::<Ipv4Addr>().expect("IPv4"),
+                "203.0.113.8".parse::<Ipv4Addr>().expect("IPv4"),
+            ]
+        );
+        assert_eq!(
+            addresses.ipv6().iter().copied().collect::<Vec<_>>(),
+            [
+                "2001:db8::2".parse::<Ipv6Addr>().expect("IPv6"),
+                "2001:db8::8".parse::<Ipv6Addr>().expect("IPv6"),
+            ]
+        );
+    }
+
+    #[test]
     fn auto_without_lease_needs_acquisition() {
         let ManagedLeaseIntent::Auto { state } = ManagedLeaseIntent::empty(PublicUrlMode::Auto)
         else {
@@ -932,5 +1027,49 @@ mod managed_lease_intent_tests {
 
         assert!(!intent.needs_lease_renewal(1_065));
         assert!(intent.needs_lease_renewal(1_066));
+    }
+
+    #[test]
+    fn custom_certificate_renews_at_two_thirds_of_validity() {
+        let active = ActiveCertState {
+            cert_id: CertId::try_new("cert_example").expect("cert id"),
+            hostname: RouteHostname::try_new("example.com").expect("hostname"),
+            bundle_ref: CertBundleRef::try_new(format!(
+                "sha256:{}:/var/lib/ployz/certificates/example.bundle",
+                "a".repeat(64)
+            ))
+            .expect("bundle ref"),
+            validity: CertValidityWindow::try_new(
+                CertValidAt::try_new(1_000).expect("not before"),
+                CertValidAt::try_new(1_300).expect("not after"),
+            )
+            .expect("validity"),
+        };
+
+        assert!(!active.needs_renewal(1_199));
+        assert!(active.needs_renewal(1_200));
+    }
+
+    #[test]
+    fn custom_certificate_is_usable_only_inside_its_validity_window() {
+        let active = ActiveCertState {
+            cert_id: CertId::try_new("cert_example").expect("cert id"),
+            hostname: RouteHostname::try_new("example.com").expect("hostname"),
+            bundle_ref: CertBundleRef::try_new(format!(
+                "sha256:{}:/var/lib/ployz/certificates/example.bundle",
+                "a".repeat(64)
+            ))
+            .expect("bundle ref"),
+            validity: CertValidityWindow::try_new(
+                CertValidAt::try_new(1_000).expect("not before"),
+                CertValidAt::try_new(1_300).expect("not after"),
+            )
+            .expect("validity"),
+        };
+
+        assert!(!active.is_usable_at(999));
+        assert!(active.is_usable_at(1_000));
+        assert!(active.is_usable_at(1_299));
+        assert!(!active.is_usable_at(1_300));
     }
 }

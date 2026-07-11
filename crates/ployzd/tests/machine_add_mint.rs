@@ -494,6 +494,8 @@ async fn promoted_core_recovers_pending_join_without_old_operation_log() {
             volume_pins: Vec::new(),
             nats_authorizations: Vec::new(),
             managed_lease: ployz_core::state::ManagedLeaseProjection::Unacquired,
+            custom_certificates: Vec::new(),
+            acme_http01_challenges: Vec::new(),
         })
         .expect("intent mirror stores");
     MachinePendingJoinMirror::new(mirror_dir.path().join("pending-machine-joins.json"))
