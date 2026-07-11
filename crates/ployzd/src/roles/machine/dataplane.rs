@@ -3,12 +3,39 @@ use super::service::MachinePloyzNativeMeshPreparer;
 use crate::roles::machine::protocol::{
     MachineDataplaneMtuProbeRpcOk, MachineDataplaneMtuProbeRpcRequest,
     MachineDataplaneMtuProbeRpcResponse, MachineDataplanePrepareRpcRequest,
-    MachineDataplanePrepareRpcResponse, MachinePloyzNativeMeshPrepareDomainError,
+    MachineDataplanePrepareRpcResponse, MachineDataplaneStatusDomainError,
+    MachineDataplaneStatusRpcOk, MachineDataplaneStatusRpcRequest,
+    MachineDataplaneStatusRpcResponse, MachinePloyzNativeMeshPrepareDomainError,
     MachinePloyzNativeMeshPrepareRpcOk, MachinePloyzNativeMeshPrepareRpcRequest,
 };
 use ployz_core::dataplane::PloyzNativeMeshMachineReady;
 use ployz_core::ids::MachineId;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decode_json_request};
+
+pub(crate) async fn handle_dataplane_status<P>(
+    machine_id: MachineId,
+    preparer: P,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse
+where
+    P: MachinePloyzNativeMeshPreparer,
+{
+    let request = match decode_json_request::<MachineDataplaneStatusRpcRequest>(&request) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    match preparer.read_ployz_native_mesh_status(request.mode).await {
+        Ok(value) => machine_success(MachineDataplaneStatusRpcResponse::Ok(
+            MachineDataplaneStatusRpcOk { machine_id, value },
+        )),
+        Err(message) => machine_domain_error(MachineDataplaneStatusRpcResponse::DomainError {
+            machine_id,
+            error: MachineDataplaneStatusDomainError::ReadFailed {
+                message: failure_message(message),
+            },
+        }),
+    }
+}
 
 pub(crate) async fn handle_dataplane_prepare<P>(
     machine_id: MachineId,

@@ -8,7 +8,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
 #[tokio::test]
-async fn http_worker_acquires_downloads_and_renews_bundle_with_bearer_auth() {
+async fn http_worker_returns_pending_once_before_bundle_ready() {
     let clock = ManualClock::new(1_700_000_000);
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -17,7 +17,7 @@ async fn http_worker_acquires_downloads_and_renews_bundle_with_bearer_auth() {
     let worker = Arc::new(Mutex::new(StubLeaseWorker::with_clock(clock.clone())));
     let server = tokio::spawn(serve(listener, worker));
 
-    let acquired: ManagedLeaseAcquired = request_json(
+    let acquired_response = request(
         addr,
         "POST",
         "/v1/leases",
@@ -26,6 +26,43 @@ async fn http_worker_acquires_downloads_and_renews_bundle_with_bearer_auth() {
     )
     .await
     .expect("lease acquired");
+    assert_eq!(acquired_response.status, 201);
+    let acquired_json: serde_json::Value =
+        serde_json::from_str(&acquired_response.body).expect("lease acquired response is JSON");
+    assert_eq!(acquired_json.get("bundle"), Some(&serde_json::Value::Null));
+    assert_eq!(acquired_json.as_object().map(serde_json::Map::len), Some(2));
+    let acquired: ManagedLeaseAcquired =
+        serde_json::from_value(acquired_json).expect("lease acquired response matches contract");
+    assert_eq!(
+        acquired.lease.expires_at.unix_seconds() - acquired.lease.issued_at.unix_seconds(),
+        7_776_000
+    );
+
+    let unauthorized = request(
+        addr,
+        "GET",
+        &format!("/v1/leases/{}/cert-bundle", acquired.lease.name.as_str()),
+        &[("Authorization", "Bearer wrong-token".to_owned())],
+        "",
+    )
+    .await
+    .expect("unauthorized response");
+    assert_eq!(unauthorized.status, 401);
+
+    let pending = request(
+        addr,
+        "GET",
+        &format!("/v1/leases/{}/cert-bundle", acquired.lease.name.as_str()),
+        &[(
+            "Authorization",
+            format!("Bearer {}", acquired.lease.token.as_str()),
+        )],
+        "",
+    )
+    .await
+    .expect("pending response");
+    assert_eq!(pending.status, 202);
+    assert_eq!(pending.body, r#"{"status":"pending"}"#);
 
     let bundle: ManagedCertBundle = request_json(
         addr,
@@ -50,16 +87,48 @@ async fn http_worker_acquires_downloads_and_renews_bundle_with_bearer_auth() {
             .starts_with("-----BEGIN PRIVATE KEY-----")
     );
 
-    let unauthorized = request(
+    clock.advance(60);
+    let renewed: ManagedLeaseRenewed = request_json(
         addr,
-        "GET",
-        &format!("/v1/leases/{}/cert-bundle", acquired.lease.name.as_str()),
-        &[("Authorization", "Bearer wrong-token".to_owned())],
+        "POST",
+        &format!("/v1/leases/{}/renew", acquired.lease.name.as_str()),
+        &[(
+            "Authorization",
+            format!("Bearer {}", acquired.lease.token.as_str()),
+        )],
         "",
     )
     .await
-    .expect("unauthorized response");
-    assert_eq!(unauthorized.status, 401);
+    .expect("lease renewed");
+    let renewed_bundle = renewed.bundle.expect("ready renewal returns bundle");
+    assert_ne!(renewed_bundle.digest, bundle.digest);
+    assert!(renewed.lease.issued_at > acquired.lease.issued_at);
+    assert!(renewed.lease.expires_at > acquired.lease.expires_at);
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn http_worker_renew_returns_no_bundle_while_issuance_is_pending() {
+    let clock = ManualClock::new(1_700_000_000);
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback listener");
+    let addr = listener.local_addr().expect("listener addr");
+    let worker = Arc::new(Mutex::new(StubLeaseWorker::with_clock(clock.clone())));
+    let server = tokio::spawn(serve(listener, worker));
+
+    let acquired_response = request(
+        addr,
+        "POST",
+        "/v1/leases",
+        &[],
+        r#"{"ipv4":["203.0.113.8"],"ipv6":[]}"#,
+    )
+    .await
+    .expect("lease acquired");
+    let acquired: ManagedLeaseAcquired = serde_json::from_str(&acquired_response.body)
+        .expect("lease acquired response matches contract");
 
     clock.advance(60);
     let renewed: ManagedLeaseRenewed = request_json(
@@ -74,9 +143,7 @@ async fn http_worker_acquires_downloads_and_renews_bundle_with_bearer_auth() {
     )
     .await
     .expect("lease renewed");
-    assert_ne!(renewed.bundle.digest, bundle.digest);
-    assert!(renewed.lease.issued_at > acquired.lease.issued_at);
-    assert!(renewed.lease.expires_at > acquired.lease.expires_at);
+    assert!(renewed.bundle.is_none());
 
     server.abort();
 }

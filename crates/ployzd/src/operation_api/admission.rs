@@ -4,9 +4,9 @@ use crate::operations::log::{
     AcceptedDeploySubmission, AcceptedMachineAddSubmission, CoreReplaceOperationSubmission,
     DeployOperationSubmission, MachineAddOperationSubmission, MachineJoinIdentity,
     MachineJoinRedemption, MachineLifecycleOperationSubmission, MachineUpdateOperationSubmission,
-    NamespaceRemoveOperationSubmission, OperationRepository, OperationStatusStoreError,
-    RedeemMachineJoinTokenError, ServiceRestartOperationSubmission, SubmitMachineAddError,
-    SubmitOperationError, VolumeRemoveOperationSubmission,
+    NamespaceRemoveOperationSubmission, NetworkRepairOperationSubmission, OperationRepository,
+    OperationStatusStoreError, RedeemMachineJoinTokenError, ServiceRestartOperationSubmission,
+    SubmitMachineAddError, SubmitOperationError, VolumeRemoveOperationSubmission,
 };
 use ployz_core::deploy::{
     DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS, DeployRequest, DeployReservationExpiresAt,
@@ -101,6 +101,12 @@ pub struct ServiceRestartSubmitCommand {
 pub struct NamespaceRemoveSubmitCommand {
     pub operation_id: OperationId,
     pub namespace_id: NamespaceId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkRepairSubmitCommand {
+    pub operation_id: OperationId,
+    pub target_machine_id: Option<ployz_core::ids::MachineId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -384,6 +390,19 @@ impl OperationControllers {
                 operation_id: command.operation_id,
                 machine_id: command.machine_id,
                 successor_nats_url: command.successor_nats_url,
+            })
+            .await?)
+    }
+
+    pub async fn submit_network_repair(
+        &self,
+        command: NetworkRepairSubmitCommand,
+    ) -> Result<crate::operations::log::AcceptedNetworkRepairSubmission, SubmitCommandError> {
+        Ok(self
+            .repository
+            .submit_network_repair(NetworkRepairOperationSubmission {
+                operation_id: command.operation_id,
+                target_machine_id: command.target_machine_id,
             })
             .await?)
     }

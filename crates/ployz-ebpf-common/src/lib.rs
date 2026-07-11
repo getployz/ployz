@@ -13,6 +13,12 @@ use std::string::ToString;
 pub const REQUIRED_TC_SYMBOLS: [&str; 4] =
     ["ployz_egress", "ployz_ingress", "ROUTES", "WG_IFINDEX"];
 
+/// Default BPF filesystem pin directory for the Ployz TC programs and maps.
+pub const DEFAULT_PIN_PATH: &str = "/sys/fs/bpf/ployz";
+
+/// Stable `ployz-ebpf-ctl status` exit code for a known detached state.
+pub const EBPF_STATUS_DETACHED_EXIT_CODE: u8 = 2;
+
 /// BPF map key for an IPv4 network prefix.
 #[repr(C)]
 #[derive(Clone, Copy)]

@@ -1,6 +1,7 @@
 use ployz_core::cert::{
-    LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle, ManagedLeaseName,
-    ManagedLeaseRecord,
+    LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle,
+    ManagedCertificateIssuanceFailureKind, ManagedLeaseAcquired, ManagedLeaseName,
+    ManagedLeaseRecord, ManagedLeaseRenewed,
 };
 
 #[test]
@@ -48,6 +49,25 @@ fn managed_bundle_covers_wildcard_and_apex_for_lease() {
 }
 
 #[test]
+fn managed_bundle_validity_is_a_half_open_time_window() {
+    let lease = ManagedLeaseName::try_new("brisk-river-x7f3").expect("valid lease name");
+    let bundle = ManagedCertBundle::try_new(
+        lease.clone(),
+        lease.wildcard_and_apex(),
+        "certificate".to_owned(),
+        "private-key".to_owned(),
+        LeaseIssuedAt::try_new(100).expect("issued at"),
+        LeaseExpiresAt::try_new(200).expect("expires at"),
+    )
+    .expect("valid bundle");
+
+    assert!(!bundle.is_valid_at(99));
+    assert!(bundle.is_valid_at(100));
+    assert!(bundle.is_valid_at(199));
+    assert!(!bundle.is_valid_at(200));
+}
+
+#[test]
 fn managed_lease_record_deserialization_rejects_inverted_validity() {
     let value = serde_json::json!({
         "name": "brisk-river-x7f3",
@@ -57,6 +77,62 @@ fn managed_lease_record_deserialization_rejects_inverted_validity() {
     });
 
     assert!(serde_json::from_value::<ManagedLeaseRecord>(value).is_err());
+}
+
+#[test]
+fn managed_lease_acquisition_accepts_pending_bundle() {
+    let acquired: ManagedLeaseAcquired = serde_json::from_value(serde_json::json!({
+        "lease": {
+            "name": "brisk-river-x7f3",
+            "token": "lease_token_123",
+            "issued_at": "1700000000",
+            "expires_at": "1700604800"
+        },
+        "bundle": null
+    }))
+    .expect("pending acquisition response");
+
+    assert!(acquired.bundle.is_none());
+}
+
+#[test]
+fn managed_lease_renewal_accepts_pending_bundle() {
+    let renewed: ManagedLeaseRenewed = serde_json::from_value(serde_json::json!({
+        "lease": {
+            "name": "brisk-river-x7f3",
+            "token": "lease_token_123",
+            "issued_at": "1700000000",
+            "expires_at": "1700604800"
+        },
+        "bundle": null
+    }))
+    .expect("pending renewal response");
+
+    assert!(renewed.bundle.is_none());
+}
+
+#[test]
+fn managed_certificate_issuance_failures_use_worker_wire_values() {
+    let failures = [
+        ManagedCertificateIssuanceFailureKind::RateLimit,
+        ManagedCertificateIssuanceFailureKind::Provider5xx,
+        ManagedCertificateIssuanceFailureKind::ValidationTimeout,
+        ManagedCertificateIssuanceFailureKind::Caa,
+        ManagedCertificateIssuanceFailureKind::DnsTxtMissing,
+        ManagedCertificateIssuanceFailureKind::ProviderError,
+    ];
+
+    assert_eq!(
+        serde_json::to_value(failures).expect("failure kinds serialize"),
+        serde_json::json!([
+            "rate_limit",
+            "provider_5xx",
+            "validation_timeout",
+            "caa",
+            "dns_txt_missing",
+            "provider_error"
+        ])
+    );
 }
 
 #[test]

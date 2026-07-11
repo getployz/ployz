@@ -12,6 +12,7 @@ use super::machine_lifecycle::{self, MachineLifecycleOperationState};
 use super::machine_update::{self, MachineUpdateOperationState};
 use super::managed_lease::{self, ManagedLeaseOperationState};
 use super::namespace_remove::{self, NamespaceRemoveOperationState};
+use super::network_repair::{self, NetworkRepairOperationState};
 use super::service_restart::{self, ServiceRestartOperationState};
 use super::volume_remove::{self, VolumeRemoveOperationState};
 use super::{EventSequence, OperationEvent, OperationId, OperationKind, OperationStatus};
@@ -91,6 +92,7 @@ pub enum ProjectionOperationState {
     MachineUpdate(MachineUpdateOperationState),
     MachineLifecycle(MachineLifecycleOperationState),
     CoreReplace(CoreReplaceOperationState),
+    NetworkRepair(NetworkRepairOperationState),
     ServiceRestart(ServiceRestartOperationState),
     ManagedLease(ManagedLeaseOperationState),
     NamespaceRemove(NamespaceRemoveOperationState),
@@ -107,6 +109,7 @@ impl ProjectionOperationState {
             Self::MachineUpdate(_) => OperationKind::MachineUpdate,
             Self::MachineLifecycle(_) => OperationKind::MachineLifecycle,
             Self::CoreReplace(_) => OperationKind::CoreReplace,
+            Self::NetworkRepair(_) => OperationKind::NetworkRepair,
             Self::ServiceRestart(_) => OperationKind::ServiceRestart,
             Self::ManagedLease(_) => OperationKind::ManagedLease,
             Self::NamespaceRemove(_) => OperationKind::NamespaceRemove,
@@ -123,6 +126,7 @@ pub(crate) const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::MachineUpdate => "machine-update",
         OperationKind::MachineLifecycle => "machine-lifecycle",
         OperationKind::CoreReplace => "core-replace",
+        OperationKind::NetworkRepair => "network-repair",
         OperationKind::ServiceRestart => "service-restart",
         OperationKind::ManagedLease => "managed-lease",
         OperationKind::NamespaceRemove => "namespace-remove",
@@ -243,13 +247,22 @@ pub fn project_operation_event(
                 id,
                 namespace_id,
                 service_id,
+                origin,
                 state,
                 ..
             } = current
             else {
                 return Err(kind_mismatch(current, OperationKind::Deploy));
             };
-            deploy::project_event(id, namespace_id, service_id, state, event, event_sequence)
+            deploy::project_event(
+                id,
+                namespace_id,
+                service_id,
+                origin,
+                state,
+                event,
+                event_sequence,
+            )
         }
         ClassifiedOperationEvent::Cert { event, .. } => {
             let OperationStatus::Cert {
@@ -333,6 +346,18 @@ pub fn project_operation_event(
                 event,
                 event_sequence,
             )
+        }
+        ClassifiedOperationEvent::NetworkRepair { event, .. } => {
+            let OperationStatus::NetworkRepair {
+                id,
+                target_machine_id,
+                state,
+                ..
+            } = current
+            else {
+                return Err(kind_mismatch(current, OperationKind::NetworkRepair));
+            };
+            network_repair::project_event(id, target_machine_id, state, event, event_sequence)
         }
         ClassifiedOperationEvent::ServiceRestart { event, .. } => {
             let OperationStatus::ServiceRestart {

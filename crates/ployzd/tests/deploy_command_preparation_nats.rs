@@ -534,6 +534,13 @@ impl MachineLogReader for UnusedLogs {
 struct UnusedPreparer;
 
 impl MachinePloyzNativeMeshPreparer for UnusedPreparer {
+    async fn read_ployz_native_mesh_status(
+        &self,
+        _mode: ployz_core::dataplane::NetworkStatusMode,
+    ) -> Result<ployz_core::dataplane::MachineDataplaneStatus, String> {
+        Err("dataplane status is unavailable".to_owned())
+    }
+
     async fn read_wireguard_public_key(
         &self,
     ) -> Result<
@@ -648,6 +655,7 @@ async fn test_nats() -> TestNats {
 fn deploy_request() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
+        origin: None,
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_api"),
             image: ImageReference::try_new("registry.example/api:rev_2")

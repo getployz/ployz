@@ -1,15 +1,17 @@
 //! Owned deploy execution started by the control service.
 
 use crate::certificate::{CertificateManager, GatewayCertificateTarget};
+use crate::intent::lease_intent::LeaseIntentStore;
 use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::intent::service::NatsIntentReader;
+use crate::lease::LeaseClient;
 use crate::operation_api::admission::{AcceptedDeployExecution, OperationControllers};
 use crate::operations::deploy::{
     CertificateProvisioner, DataplanePreparer, DeployContainer, DeployExecutionError,
     DeployExecutionInput, DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError,
     DeployHealthCheckError, DeployHealthChecker, DeployMachineCandidates, MachineContainerRuntime,
-    NamespaceCommitError, NamespaceStateCommitter, execute_deploy_operation,
-    load_deploy_execution_facts_from_nats,
+    ManagedCertificateWaitPolicy, NamespaceCommitError, NamespaceStateCommitter,
+    execute_deploy_operation, load_deploy_execution_facts_from_nats,
 };
 use crate::operations::log::{
     AcceptedDeploySubmission, OperationStatusWrite, RecordDeployTransitionError,
@@ -32,6 +34,8 @@ use ployz_core::ops::{
 };
 use ployz_core::subjects::INTENT_CHANGED;
 use std::time::Duration;
+
+use super::facts::{ManagedCertificateWaitContext, ensure_managed_certificate_for_deploy};
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// A container without a Docker healthcheck must stay running this long
@@ -67,11 +71,9 @@ where
         submission: accepted,
         registry_credentials,
     } = accepted_execution;
-    let DeployOperationStores {
-        intent_change_client,
-        namespace_intent,
-        controllers,
-    } = stores;
+    if !claim_deploy_execution(&stores.controllers, &accepted.operation_id).await? {
+        return Err(DeployOperationRunError::AlreadyStarted);
+    }
     let DeployOperationPorts {
         facts_reader,
         intent_reader,
@@ -82,19 +84,34 @@ where
     } = ports;
     let request = accepted.target.clone();
 
-    let facts = match load_deploy_execution_facts_from_nats(
-        &request,
-        machine_candidates,
-        intent_reader,
-        facts_reader,
-        step_timeout,
-    )
+    let facts = match async {
+        ensure_managed_certificate_for_deploy(
+            &request,
+            &accepted.operation_id,
+            intent_reader,
+            ManagedCertificateWaitContext {
+                lease_intent: &stores.lease_intent,
+                lease_client: &stores.lease_client,
+                repository: stores.controllers.repository(),
+                policy: stores.managed_certificate_wait,
+            },
+        )
+        .await?;
+        load_deploy_execution_facts_from_nats(
+            &request,
+            machine_candidates,
+            intent_reader,
+            facts_reader,
+            step_timeout,
+        )
+        .await
+    }
     .await
     {
         Ok(facts) => facts,
         Err(source) => {
             let failure_record_error = record_operation_failure(
-                &controllers,
+                &stores.controllers,
                 &accepted,
                 fact_load_failure(&request, &source),
             )
@@ -106,6 +123,14 @@ where
             });
         }
     };
+    let DeployOperationStores {
+        intent_change_client,
+        namespace_intent,
+        lease_intent: _,
+        lease_client: _,
+        managed_certificate_wait: _,
+        controllers,
+    } = stores;
     if facts.managed_lease.is_none()
         && let Some(service) = request.services.iter().find(|service| {
             service
@@ -169,11 +194,24 @@ fn fact_load_failure(
     request: &ployz_core::deploy::DeployRequest,
     source: &DeployFactLoadError,
 ) -> DeployOperationFailure {
-    DeployOperationFailure::PlanningFailed {
-        service_id: request.status_service_id(),
-        namespace_revision_id: request.namespace_revision_id(),
-        message: FailureMessage::try_new(source.to_string())
-            .expect("rendered fact load failure message is non-empty"),
+    match source {
+        DeployFactLoadError::CertificatePending { last_error } => {
+            DeployOperationFailure::CertificatePending {
+                last_error: *last_error,
+            }
+        }
+        DeployFactLoadError::IntentRead { .. }
+        | DeployFactLoadError::ManagedCertificateWorker { .. }
+        | DeployFactLoadError::ManagedCertificateStore { .. }
+        | DeployFactLoadError::ManagedCertificateSuperseded
+        | DeployFactLoadError::ManagedCertificateProgress { .. } => {
+            DeployOperationFailure::PlanningFailed {
+                service_id: request.status_service_id(),
+                namespace_revision_id: request.namespace_revision_id(),
+                message: FailureMessage::try_new(source.to_string())
+                    .expect("rendered fact load failure message is non-empty"),
+            }
+        }
     }
 }
 
@@ -181,6 +219,9 @@ fn fact_load_failure(
 pub struct DeployOperationStores {
     pub intent_change_client: async_nats::Client,
     pub namespace_intent: NamespaceIntentStore,
+    pub lease_intent: LeaseIntentStore,
+    pub lease_client: LeaseClient,
+    pub managed_certificate_wait: ManagedCertificateWaitPolicy,
     pub controllers: OperationControllers,
 }
 
@@ -319,9 +360,7 @@ pub enum DeployOperationRunError {
 
 #[derive(Debug, Clone)]
 pub struct DeployOperationDriver {
-    client: async_nats::Client,
-    namespace_intent: NamespaceIntentStore,
-    controllers: OperationControllers,
+    stores: DeployOperationStores,
     machine_candidates: DeployMachineCandidates,
     certificate_manager: CertificateManager,
     step_timeout: Duration,
@@ -331,18 +370,14 @@ pub struct DeployOperationDriver {
 impl DeployOperationDriver {
     #[must_use]
     pub fn new(
-        client: async_nats::Client,
-        namespace_intent: NamespaceIntentStore,
-        controllers: OperationControllers,
+        stores: DeployOperationStores,
         machine_candidates: DeployMachineCandidates,
         certificate_manager: CertificateManager,
         step_timeout: Duration,
         task_registry: TaskRegistry,
     ) -> Self {
         Self {
-            client,
-            namespace_intent,
-            controllers,
+            stores,
             machine_candidates,
             certificate_manager,
             step_timeout,
@@ -365,37 +400,28 @@ impl DeployOperationDriver {
         self,
         accepted: AcceptedDeployExecution,
     ) -> Result<DeployExecutionOutcome, DeployOperationRunError> {
-        if !claim_deploy_execution(&self.controllers, &accepted.submission.operation_id).await? {
-            return Err(DeployOperationRunError::AlreadyStarted);
-        }
-
-        let mut dataplane = NatsMachineDataplanePreparer::new(self.client.clone())
+        let client = self.stores.intent_change_client.clone();
+        let mut dataplane = NatsMachineDataplanePreparer::new(client.clone())
             .with_request_timeout(self.step_timeout)
-            .with_mesh_lock(self.controllers.mesh_lock());
-        let mut machine_runtime = NatsMachineContainerRuntime::new(self.client.clone())
+            .with_mesh_lock(self.stores.controllers.mesh_lock());
+        let mut machine_runtime = NatsMachineContainerRuntime::new(client.clone())
             .with_request_timeout(self.step_timeout);
-        let facts_reader = NatsMachineFactsReader::new(self.client.clone())
-            .with_request_timeout(self.step_timeout);
-        let health_runtime = NatsMachineContainerRuntime::new(self.client.clone())
+        let facts_reader =
+            NatsMachineFactsReader::new(client.clone()).with_request_timeout(self.step_timeout);
+        let health_runtime = NatsMachineContainerRuntime::new(client.clone())
             .with_request_timeout(self.step_timeout);
         let mut health_checker =
             LiveContainerHealthChecker::new(health_runtime, DEPLOY_HEALTH_POLL_INTERVAL);
-        let intent_reader =
-            NatsIntentReader::new(self.client.clone()).with_request_timeout(self.step_timeout);
+        let intent_reader = NatsIntentReader::new(client).with_request_timeout(self.step_timeout);
         let mut certificate_manager = self.certificate_manager.clone();
 
         let namespace_id = accepted.submission.target.namespace_id.clone();
         let operation_id = accepted.submission.operation_id.clone();
-        let namespace_intent = self.namespace_intent.clone();
-        let controllers = self.controllers.clone();
+        let controllers = self.stores.controllers.clone();
         let result = run_deploy_operation(
             accepted,
             self.machine_candidates,
-            DeployOperationStores {
-                intent_change_client: self.client.clone(),
-                namespace_intent,
-                controllers: controllers.clone(),
-            },
+            self.stores,
             DeployOperationPorts {
                 facts_reader: &facts_reader,
                 intent_reader: &intent_reader,
@@ -407,9 +433,11 @@ impl DeployOperationDriver {
             self.step_timeout,
         )
         .await;
-        controllers
-            .release_namespace(&namespace_id, &operation_id)
-            .await;
+        if !matches!(&result, Err(DeployOperationRunError::AlreadyStarted)) {
+            controllers
+                .release_namespace(&namespace_id, &operation_id)
+                .await;
+        }
         result
     }
 }

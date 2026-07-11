@@ -3,7 +3,7 @@ use super::{
     CoreReplacePayload, DeployOperationPayload, DeployOperationSubmission,
     MachineLifecycleOperationSubmission, MachineLifecyclePayload, MachineUpdateOperationSubmission,
     MachineUpdatePayload, ManagedLeaseOperationSubmission, ManagedLeasePayload,
-    NamespaceRemoveOperationSubmission, NamespaceRemovePayload, ServiceRestartOperationSubmission,
+    NetworkRepairOperationSubmission, NetworkRepairPayload, ServiceRestartOperationSubmission,
     ServiceRestartPayload, VolumeRemoveOperationSubmission, VolumeRemovePayload,
 };
 use ployz_core::ids::OperationId;
@@ -60,6 +60,7 @@ impl OperationAction for DeployOperationSubmission {
             operation_id,
             payload.target.namespace_id.clone(),
             payload.target.status_service_id(),
+            payload.target.origin.clone(),
             sequence,
         )
     }
@@ -296,6 +297,42 @@ impl OperationAction for NamespaceRemoveOperationSubmission {
         OperationStatus::namespace_remove_accepted(
             operation_id,
             payload.namespace_id.clone(),
+            sequence,
+        )
+    }
+}
+
+impl OperationAction for NetworkRepairOperationSubmission {
+    type Payload = NetworkRepairPayload;
+    const KIND: OperationKind = OperationKind::NetworkRepair;
+
+    fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEvent {
+        let NetworkRepairPayload { target_machine_id } = payload;
+        OperationEvent::NetworkRepairSubmitted {
+            operation_id,
+            target_machine_id,
+        }
+    }
+
+    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
+        let OperationEvent::NetworkRepairSubmitted {
+            operation_id,
+            target_machine_id,
+        } = event
+        else {
+            return None;
+        };
+        Some((operation_id, NetworkRepairPayload { target_machine_id }))
+    }
+
+    fn accepted_status(
+        operation_id: OperationId,
+        payload: &Self::Payload,
+        sequence: EventSequence,
+    ) -> OperationStatus {
+        OperationStatus::network_repair_accepted(
+            operation_id,
+            payload.target_machine_id.clone(),
             sequence,
         )
     }

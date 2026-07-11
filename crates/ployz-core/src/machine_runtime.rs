@@ -15,6 +15,31 @@ use crate::state::MachineEndpointObservation;
 pub const OBSERVATION_PUBLISH_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct MachineFactsRefreshConfirmation {
+    pub machine_id: MachineId,
+    pub observed_at_unix_ms: u64,
+}
+
+impl From<&MachineFactsSnapshot> for MachineFactsRefreshConfirmation {
+    fn from(facts: &MachineFactsSnapshot) -> Self {
+        let MachineFactsSnapshot {
+            machine_id,
+            containers: _,
+            endpoints: _,
+            disk_space: _,
+            platform: _,
+            observed_at_unix_ms,
+        } = facts;
+        Self {
+            machine_id: machine_id.clone(),
+            observed_at_unix_ms: *observed_at_unix_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     try_from = "MachineFactsSnapshotWire",
     into = "MachineFactsSnapshotWire"

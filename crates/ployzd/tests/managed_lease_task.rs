@@ -22,7 +22,7 @@ use tokio::sync::Mutex;
 // harness owns auxiliary-process lifecycle and request-count assertions.
 
 #[tokio::test]
-async fn auto_acquires_wildcard_bundle_and_completes_operation() {
+async fn auto_acquires_lease_record_and_completes_operation() {
     let nats = ployz_test_support::nats::TestNats::start().await;
     let core_store = CoreStore::open_in_memory().await.expect("core store");
     let intent = LeaseIntentStore::new(core_store.clone());
@@ -41,10 +41,10 @@ async fn auto_acquires_wildcard_bundle_and_completes_operation() {
     };
     let stored = intent.load().await.expect("stored lease intent");
     let ManagedLeaseIntent::Auto { state } = stored else {
-        panic!("ready lease stored");
+        panic!("lease stored");
     };
-    let AutoLeaseState::Ready { lease, bundle } = *state else {
-        panic!("ready lease stored");
+    let AutoLeaseState::RecordOnly { .. } = *state else {
+        panic!("lease record stored");
     };
     let status = repository
         .get(&operation_id)
@@ -52,12 +52,6 @@ async fn auto_acquires_wildcard_bundle_and_completes_operation() {
         .expect("operation read")
         .expect("operation exists");
 
-    assert_eq!(bundle.dns_names, lease.name.wildcard_and_apex());
-    assert!(
-        bundle
-            .certificate_chain_pem
-            .starts_with("-----BEGIN CERTIFICATE-----")
-    );
     assert!(matches!(
         status,
         OperationStatus::ManagedLease {
@@ -79,19 +73,18 @@ async fn due_lease_renews_and_completes_operation() {
         .await
         .expect("set auto mode");
     let repository = OperationRepository::open(core_store, nats.controller.clone());
-    let clock = ManualClock::new(1_700_000_000);
-    let (client, server) = stub_client(StubLeaseWorker::with_clock(clock)).await;
-    let acquired = client
-        .acquire(ManagedLeaseAcquireRequest {
-            ipv4: Vec::new(),
-            ipv6: Vec::new(),
-        })
+    let (client, server) =
+        stub_client(StubLeaseWorker::with_clock(ManualClock::new(1_700_000_000))).await;
+    run_once(&intent, &repository, &client, &FactCache::default())
         .await
-        .expect("seed lease in worker");
-    intent
-        .store_lease(acquired.lease, acquired.bundle)
+        .expect("acquire lease");
+    let pending = run_once(&intent, &repository, &client, &FactCache::default())
         .await
-        .expect("seed local lease");
+        .expect("pending bundle tick");
+    assert_eq!(pending, ManagedLeaseTaskOutcome::NoAction);
+    run_once(&intent, &repository, &client, &FactCache::default())
+        .await
+        .expect("download bundle");
 
     let outcome = run_once(&intent, &repository, &client, &FactCache::default())
         .await
@@ -130,25 +123,32 @@ async fn due_certificate_refresh_downloads_bundle_without_renewing_lease() {
         .expect("clock")
         .as_secs();
     let (client, server) = stub_client(StubLeaseWorker::with_clock(ManualClock::new(now))).await;
-    let acquired = client
-        .acquire(ManagedLeaseAcquireRequest {
-            ipv4: Vec::new(),
-            ipv6: Vec::new(),
-        })
+    run_once(&intent, &repository, &client, &FactCache::default())
         .await
-        .expect("seed lease");
-    let lease = acquired.lease.clone();
+        .expect("acquire lease");
+    run_once(&intent, &repository, &client, &FactCache::default())
+        .await
+        .expect("pending bundle tick");
+    run_once(&intent, &repository, &client, &FactCache::default())
+        .await
+        .expect("download bundle");
+    let ManagedLeaseIntent::Auto { state } = intent.load().await.expect("ready intent") else {
+        panic!("auto intent");
+    };
+    let AutoLeaseState::Ready { lease, bundle } = *state else {
+        panic!("ready lease");
+    };
     let short_bundle = ployz_core::cert::ManagedCertBundle::try_new(
         lease.name.clone(),
         lease.name.wildcard_and_apex(),
-        acquired.bundle.certificate_chain_pem,
-        acquired.bundle.private_key_pem,
+        bundle.certificate_chain_pem,
+        bundle.private_key_pem,
         ployz_core::cert::LeaseIssuedAt::try_new(now - 90).expect("issued"),
         ployz_core::cert::LeaseExpiresAt::try_new(now + 10).expect("expires"),
     )
     .expect("short bundle");
     intent
-        .store_lease(lease.clone(), short_bundle)
+        .store_lease(lease.clone(), Some(short_bundle))
         .await
         .expect("store local lease");
 
@@ -189,9 +189,20 @@ async fn mirrored_lease_downloads_missing_local_bundle() {
         .await
         .expect("restore mirrored lease record");
 
+    let pending = run_once(&intent, &repository, &client, &FactCache::default())
+        .await
+        .expect("pending bundle recovery tick");
+
+    assert_eq!(pending, ManagedLeaseTaskOutcome::NoAction);
+    assert!(matches!(
+        intent.load().await.expect("record-only intent"),
+        ManagedLeaseIntent::Auto { state }
+            if matches!(*state, AutoLeaseState::RecordOnly { .. })
+    ));
+
     let outcome = run_once(&intent, &repository, &client, &FactCache::default())
         .await
-        .expect("bundle recovery tick");
+        .expect("ready bundle recovery tick");
 
     assert!(matches!(
         outcome,
@@ -201,6 +212,55 @@ async fn mirrored_lease_downloads_missing_local_bundle() {
         panic!("auto lease intent");
     };
     assert!(matches!(*state, AutoLeaseState::Ready { .. }));
+    server.abort();
+}
+
+#[tokio::test]
+async fn ready_refresh_pending_preserves_ready_state() {
+    let nats = ployz_test_support::nats::TestNats::start().await;
+    let core_store = CoreStore::open_in_memory().await.expect("core store");
+    let intent = LeaseIntentStore::new(core_store.clone());
+    let repository = OperationRepository::open(core_store, nats.controller.clone());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs();
+    let (client, server) = stub_client(StubLeaseWorker::with_clock(ManualClock::new(now))).await;
+    let acquired = client
+        .acquire(ManagedLeaseAcquireRequest {
+            ipv4: Vec::new(),
+            ipv6: Vec::new(),
+        })
+        .await
+        .expect("seed lease in worker");
+    let bundle = ployz_core::cert::ManagedCertBundle::try_new(
+        acquired.lease.name.clone(),
+        acquired.lease.name.wildcard_and_apex(),
+        "certificate".to_owned(),
+        "private-key".to_owned(),
+        ployz_core::cert::LeaseIssuedAt::try_new(now - 90).expect("issued"),
+        ployz_core::cert::LeaseExpiresAt::try_new(now + 10).expect("expires"),
+    )
+    .expect("bundle");
+    intent
+        .store_lease(acquired.lease.clone(), Some(bundle.clone()))
+        .await
+        .expect("store ready lease");
+
+    let outcome = run_once(&intent, &repository, &client, &FactCache::default())
+        .await
+        .expect("pending refresh tick");
+
+    assert_eq!(outcome, ManagedLeaseTaskOutcome::NoAction);
+    assert_eq!(
+        intent.load().await.expect("ready intent"),
+        ManagedLeaseIntent::Auto {
+            state: Box::new(AutoLeaseState::Ready {
+                lease: acquired.lease,
+                bundle,
+            })
+        }
+    );
     server.abort();
 }
 

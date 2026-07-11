@@ -21,14 +21,15 @@ use crate::lease::task::start_managed_lease_task;
 use crate::operation_api::admission::OperationControllers;
 use crate::operation_api::service::{ApiServiceError, start_operation_api_service_with_handlers};
 use crate::operation_api::{OperationApiHandlers, OperationWorkers};
-use crate::operations::deploy::DeployMachineCandidates;
-use crate::operations::deploy::driver::DeployOperationDriver;
+use crate::operations::deploy::driver::{DeployOperationDriver, DeployOperationStores};
+use crate::operations::deploy::{DeployMachineCandidates, ManagedCertificateWaitPolicy};
 use crate::operations::log::OperationRepository;
 use crate::operations::machine_lifecycle::MachineLifecycleOperation;
 use crate::operations::machine_update::MachineUpdateOperation;
 use crate::process_support::shutdown_signal;
 use crate::roles::machine::client::{
-    NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
+    NatsMachineDataplanePreparer, NatsMachineFactsReader, NatsMachineLogsTailer,
+    NatsMachineSubstrateUpdater,
 };
 use crate::roles::machine::intent_mirror::{MachineIntentMirror, MachinePendingJoinMirror};
 use crate::seed::{SeedCoreError, seed_core_from_snapshot};
@@ -49,6 +50,7 @@ pub struct RunningControlProcess {
     deploy_tasks: TaskRegistry,
     service_restart_tasks: TaskRegistry,
     namespace_remove_tasks: TaskRegistry,
+    network_repair_tasks: TaskRegistry,
     volume_remove_tasks: TaskRegistry,
     machine_update_tasks: TaskRegistry,
     machine_lifecycle_tasks: TaskRegistry,
@@ -74,6 +76,7 @@ impl RunningControlProcess {
         self.deploy_tasks.abort_all();
         self.service_restart_tasks.abort_all();
         self.namespace_remove_tasks.abort_all();
+        self.network_repair_tasks.abort_all();
         self.volume_remove_tasks.abort_all();
         self.machine_update_tasks.abort_all();
         self.machine_lifecycle_tasks.abort_all();
@@ -193,12 +196,14 @@ pub async fn start_control_process_with_client_and_reload(
     let deploy_tasks = TaskRegistry::default();
     let service_restart_tasks = TaskRegistry::default();
     let namespace_remove_tasks = TaskRegistry::default();
+    let network_repair_tasks = TaskRegistry::default();
     let volume_remove_tasks = TaskRegistry::default();
     let machine_update_tasks = TaskRegistry::default();
     let machine_lifecycle_tasks = TaskRegistry::default();
     let mint_tasks = TaskRegistry::default();
     let namespace_intent = NamespaceIntentStore::new(core_store.clone());
     let lease_intent = LeaseIntentStore::new(core_store.clone());
+    let lease_client = LeaseClient::new(config.lease_worker_url.clone());
     let managed_lease_tasks = TaskRegistry::default();
     let certificate_issuance_tasks = TaskRegistry::default();
     let certificate_renewal_tasks = TaskRegistry::default();
@@ -215,9 +220,14 @@ pub async fn start_control_process_with_client_and_reload(
         machine_roster.clone(),
     ));
     let deploy_driver = DeployOperationDriver::new(
-        client.clone(),
-        namespace_intent.clone(),
-        controllers.clone(),
+        DeployOperationStores {
+            intent_change_client: client.clone(),
+            namespace_intent: namespace_intent.clone(),
+            lease_intent: lease_intent.clone(),
+            lease_client: lease_client.clone(),
+            managed_certificate_wait: ManagedCertificateWaitPolicy::production(),
+            controllers: controllers.clone(),
+        },
         DeployMachineCandidates::same_machines(config.deploy_machines.clone()),
         certificate_manager.clone(),
         config.deploy_step_timeout,
@@ -261,6 +271,20 @@ pub async fn start_control_process_with_client_and_reload(
     let logs_tailer = NatsMachineLogsTailer::new(client.clone());
     let facts_reader = NatsMachineFactsReader::new(client.clone());
     let intent_reader = NatsIntentReader::new(client.clone());
+    let network_repair = crate::operations::network_repair::NetworkRepairOperation::new(
+        controllers.clone(),
+        intent_reader
+            .clone()
+            .with_request_timeout(config.deploy_step_timeout),
+        NatsMachineDataplanePreparer::new(client.clone())
+            .with_request_timeout(config.deploy_step_timeout)
+            .with_mesh_lock(controllers.mesh_lock()),
+        NatsMachineFactsReader::new(client.clone())
+            .with_request_timeout(config.deploy_step_timeout),
+        client.clone(),
+        config.deploy_step_timeout,
+        network_repair_tasks.clone(),
+    );
     let core_machine_id = config
         .deploy_machines
         .first()
@@ -270,7 +294,7 @@ pub async fn start_control_process_with_client_and_reload(
         &managed_lease_tasks,
         lease_intent.clone(),
         controllers.repository().clone(),
-        LeaseClient::new(config.lease_worker_url.clone()),
+        lease_client,
         facts.clone(),
         machine_roster.clone(),
     );
@@ -310,6 +334,7 @@ pub async fn start_control_process_with_client_and_reload(
                 deploy: deploy_driver,
                 service_restart,
                 namespace_remove,
+                network_repair,
                 volume_remove,
                 machine_update,
                 machine_lifecycle,
@@ -339,6 +364,7 @@ pub async fn start_control_process_with_client_and_reload(
         deploy_tasks,
         service_restart_tasks,
         namespace_remove_tasks,
+        network_repair_tasks,
         volume_remove_tasks,
         machine_update_tasks,
         machine_lifecycle_tasks,

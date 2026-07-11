@@ -1,4 +1,6 @@
 mod client;
 pub mod task;
 
-pub use client::{LeaseClient, LeaseClientError, LeaseWorkerUrl, LeaseWorkerUrlError};
+pub use client::{
+    BundleDownloadOutcome, LeaseClient, LeaseClientError, LeaseWorkerUrl, LeaseWorkerUrlError,
+};

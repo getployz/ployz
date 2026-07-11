@@ -6,19 +6,48 @@ use crate::roles::dns::projection::{
     DnsAnswer, DnsProjectionError, DnsProjectionInput, DnsProjectionUpdate, DnsRecordSet,
 };
 use ployz_core::ops::RouteHostname;
-use ployz_core::state::{GatewayServingStatus, MachineEndpointObservation, RouteBindingState};
+use ployz_core::state::{
+    GatewayServingStatus, IntentSnapshot, MachineEndpointObservation, RouteBindingState,
+};
 use std::collections::{BTreeMap, BTreeSet};
+
+pub(crate) struct DnsSourceRefresh {
+    pub projection: DnsProjectionUpdate,
+    pub intent: Option<IntentSnapshot>,
+}
 
 pub async fn load_dns_projection_update_from_nats(
     intent_reader: &NatsIntentReader,
     facts: &FactCache,
 ) -> DnsProjectionUpdate {
-    match load_dns_projection_input_from_nats(intent_reader, facts).await {
+    load_dns_source_refresh_from_nats(intent_reader, facts)
+        .await
+        .projection
+}
+
+pub(crate) async fn load_dns_source_refresh_from_nats(
+    intent_reader: &NatsIntentReader,
+    facts: &FactCache,
+) -> DnsSourceRefresh {
+    let intent = match intent_reader.intent().await {
+        Ok(intent) => intent,
+        Err(_) => {
+            return DnsSourceRefresh {
+                projection: DnsProjectionUpdate::SourceUnavailable,
+                intent: None,
+            };
+        }
+    };
+    let projection = match load_dns_projection_input_from_intent(&intent, facts) {
         Ok(input) => DnsProjectionUpdate::SourceAvailable(input),
         Err(DnsSourceError::Invalid { message }) => {
             DnsProjectionUpdate::SourceInvalid(DnsProjectionError::InvalidSource { message })
         }
         Err(DnsSourceError::Unavailable { .. }) => DnsProjectionUpdate::SourceUnavailable,
+    };
+    DnsSourceRefresh {
+        projection,
+        intent: Some(intent),
     }
 }
 
@@ -26,8 +55,14 @@ pub async fn load_dns_projection_input_from_nats(
     intent_reader: &NatsIntentReader,
     facts: &FactCache,
 ) -> Result<DnsProjectionInput, DnsSourceError> {
-    let intent = async { intent_reader.intent().await.map_err(DnsSourceError::from) };
-    let intent = intent.await?;
+    let intent = intent_reader.intent().await.map_err(DnsSourceError::from)?;
+    load_dns_projection_input_from_intent(&intent, facts)
+}
+
+fn load_dns_projection_input_from_intent(
+    intent: &IntentSnapshot,
+    facts: &FactCache,
+) -> Result<DnsProjectionInput, DnsSourceError> {
     let gateway_statuses = facts.gateway_statuses();
     let endpoint_observations = facts.machine_endpoint_observations();
 
@@ -61,7 +96,7 @@ pub async fn load_dns_projection_input_from_nats(
     }
 
     Ok(dns_projection_input_from_state(
-        intent.route_bindings,
+        &intent.route_bindings,
         gateway_answers,
     ))
 }
@@ -83,7 +118,7 @@ impl From<IntentReadError> for DnsSourceError {
 }
 
 fn dns_projection_input_from_state(
-    routes: Vec<RouteBindingState>,
+    routes: &[RouteBindingState],
     gateway_answers: Vec<MachineEndpointObservation>,
 ) -> DnsProjectionInput {
     let answers = gateway_answers
@@ -95,7 +130,7 @@ fn dns_projection_input_from_state(
 
     for route in routes {
         records_by_hostname
-            .entry(route.target.hostname)
+            .entry(route.target.hostname.clone())
             .or_insert_with(|| answers.clone());
     }
 

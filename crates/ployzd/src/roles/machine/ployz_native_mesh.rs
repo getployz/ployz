@@ -55,6 +55,24 @@ impl DataplanePreparer for NatsMachineDataplanePreparer {
 }
 
 impl NatsMachineDataplanePreparer {
+    pub async fn prepare_dataplane_for_targets(
+        &self,
+        request: DataplanePrepareRequest,
+        targets: &[MachineId],
+    ) -> Result<PloyzNativeMeshPrepareReport, DataplanePrepareError> {
+        let _mesh_guard = match &self.mesh_lock {
+            Some(lock) => Some(lock.lock().await),
+            None => None,
+        };
+        let request = self
+            .ployz_native_mesh_prepare_request(request)
+            .await
+            .map_err(DataplanePrepareError::from)?;
+        self.prepare_ployz_native_mesh_targets(request, targets)
+            .await
+            .map_err(DataplanePrepareError::from)
+    }
+
     pub async fn probe_link_mtu(
         &self,
         machine_id: &MachineId,
@@ -204,15 +222,25 @@ impl NatsMachineDataplanePreparer {
         &self,
         request: PloyzNativeMeshPrepareRequest,
     ) -> Result<PloyzNativeMeshPrepareReport, WireGuardEbpfPrepareError> {
+        let targets = request.machines.clone();
+        self.prepare_ployz_native_mesh_targets(request, &targets)
+            .await
+    }
+
+    async fn prepare_ployz_native_mesh_targets(
+        &self,
+        request: PloyzNativeMeshPrepareRequest,
+        targets: &[MachineId],
+    ) -> Result<PloyzNativeMeshPrepareReport, WireGuardEbpfPrepareError> {
         let final_request = self.with_wireguard_peers(request).await?;
         let rpc_request = MachineDataplanePrepareRpcRequest::from(final_request.clone());
         let machines =
-            try_join_all(final_request.machines.iter().map(|machine_id| {
+            try_join_all(targets.iter().map(|machine_id| {
                 prepare_machine_ployz_native_mesh(self, machine_id, &rpc_request)
             }))
             .await?;
 
-        PloyzNativeMeshPrepareReport::for_request(&final_request, machines)
+        PloyzNativeMeshPrepareReport::for_targets(targets, machines)
             .map_err(ployz_native_mesh_report_error)
     }
 

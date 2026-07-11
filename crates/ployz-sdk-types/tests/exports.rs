@@ -24,6 +24,8 @@ use ployz_sdk_types::{
     MachineSnapshot, MachineUpdateError, MachineUpdateRequest, MachineUpdateResponse,
     ManagedCertBundle, ManagedLeaseAcquired, ManagedLeaseName, ManagedLeaseRecord, NamespaceId,
     NamespaceRemoveError, NamespaceRemoveRequest, NatsCaCertificatePem, NatsUserSeed,
+    NetworkRepairError, NetworkRepairRequest, NetworkResolveError, NetworkResolveRequest,
+    NetworkResolveResult, NetworkStatusError, NetworkStatusRequest, NetworkStatusResult,
     NonEmptyTextError, OperationApiResponse, OperationEvent, OperationEventReplayCursor,
     OperationEventReplayLimit, OperationEventReplayLimitError, OperationEventReplayPage,
     OperationEventReplayRequest, OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot,
@@ -38,9 +40,9 @@ use ployz_sdk_types::{
         CoreReplaceApi, CoreReplaceReportApi, DeployReserveApi, DeploySubmitApi,
         InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineInspectApi,
         MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi, MachineUpdateApi,
-        NamespaceRemoveApi, OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi,
-        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeListApi,
-        VolumeRemoveApi,
+        NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, NetworkStatusApi,
+        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
+        ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
     },
 };
 use ts_rs::{Config, TS};
@@ -55,6 +57,7 @@ fn sdk_exports_core_wire_types() {
     let running = DeployRunningStage::ServingTargetCommit;
     let deploy = DeployRequest {
         namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
+        origin: None,
         services: vec![DeployServiceSpec {
             service_id: service_id.clone(),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
@@ -70,6 +73,7 @@ fn sdk_exports_core_wire_types() {
         ployz_sdk_types::OperationId::try_new("op_123").expect("valid operation id"),
         deploy.namespace_id.clone(),
         service_id,
+        None,
         EventSequence::try_new(1).expect("valid event sequence"),
     );
     let replay_request = OperationEventReplayRequest {
@@ -156,15 +160,17 @@ fn sdk_exports_cert_wire_types() {
     .expect("valid lease record");
     let managed = ManagedLeaseAcquired {
         lease: lease_record.clone(),
-        bundle: ManagedCertBundle::try_new(
-            lease_record.name.clone(),
-            lease_record.name.wildcard_and_apex(),
-            "-----BEGIN CERTIFICATE-----\nplaceholder\n-----END CERTIFICATE-----\n".to_owned(),
-            "-----BEGIN PRIVATE KEY-----\nplaceholder\n-----END PRIVATE KEY-----\n".to_owned(),
-            lease_record.issued_at,
-            lease_record.expires_at,
-        )
-        .expect("valid bundle"),
+        bundle: Some(
+            ManagedCertBundle::try_new(
+                lease_record.name.clone(),
+                lease_record.name.wildcard_and_apex(),
+                "-----BEGIN CERTIFICATE-----\nplaceholder\n-----END CERTIFICATE-----\n".to_owned(),
+                "-----BEGIN PRIVATE KEY-----\nplaceholder\n-----END PRIVATE KEY-----\n".to_owned(),
+                lease_record.issued_at,
+                lease_record.expires_at,
+            )
+            .expect("valid bundle"),
+        ),
     };
     assert!(
         serde_json::to_string(&managed)
@@ -183,6 +189,7 @@ fn sdk_exports_operation_api_wire_types() {
         reservation_id: DeployReservationId::first(),
         target: DeployRequest {
             namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
+            origin: None,
             services: vec![DeployServiceSpec {
                 service_id: ServiceId::try_new("svc_api").expect("valid service id"),
                 image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
@@ -459,6 +466,20 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
     assert_contract::<MachineListApi, MachineListRequest, MachineListResult, MachineListError>();
     assert_contract::<MachineInspectApi, MachineInspectRequest, MachineSnapshot, MachineInspectError>(
     );
+    assert_contract::<
+        NetworkStatusApi,
+        NetworkStatusRequest,
+        NetworkStatusResult,
+        NetworkStatusError,
+    >();
+    assert_contract::<
+        NetworkResolveApi,
+        NetworkResolveRequest,
+        NetworkResolveResult,
+        NetworkResolveError,
+    >();
+    assert_contract::<NetworkRepairApi, NetworkRepairRequest, AcceptedOperation, NetworkRepairError>(
+    );
     assert_contract::<ServiceListApi, ServiceListRequest, ServiceListResult, ServiceListError>();
     assert_contract::<VolumeListApi, VolumeListRequest, VolumeListResult, VolumeListError>();
     assert_contract::<ServiceInspectApi, ServiceInspectRequest, ServiceSnapshot, ServiceInspectError>(
@@ -526,6 +547,9 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             OperationApiEndpoint::CoreReplaceReport,
             OperationApiEndpoint::MachineList,
             OperationApiEndpoint::MachineInspect,
+            OperationApiEndpoint::NetworkStatus,
+            OperationApiEndpoint::NetworkResolve,
+            OperationApiEndpoint::NetworkRepair,
             OperationApiEndpoint::MachineJoinRedeem,
             OperationApiEndpoint::MachineJoinReport,
             OperationApiEndpoint::ServiceList,
@@ -666,6 +690,33 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "MachineSnapshot".to_owned(),
                 "MachineInspectError".to_owned(),
                 "MachineInspectResponse",
+            ),
+            (
+                "network.status",
+                "plz.v1.rpc.operator.query.network.status",
+                OperationApiEndpointExecution::Query,
+                "NetworkStatusRequest".to_owned(),
+                "NetworkStatusResult".to_owned(),
+                "NetworkStatusError".to_owned(),
+                "NetworkStatusResponse",
+            ),
+            (
+                "network.resolve",
+                "plz.v1.rpc.operator.query.network.resolve",
+                OperationApiEndpointExecution::Query,
+                "NetworkResolveRequest".to_owned(),
+                "NetworkResolveResult".to_owned(),
+                "NetworkResolveError".to_owned(),
+                "NetworkResolveResponse",
+            ),
+            (
+                "network.repair",
+                "plz.v1.rpc.operator.command.network.repair",
+                OperationApiEndpointExecution::AcceptsOperation,
+                "NetworkRepairRequest".to_owned(),
+                "AcceptedOperation".to_owned(),
+                "NetworkRepairError".to_owned(),
+                "NetworkRepairResponse",
             ),
             (
                 "machine.redeem",

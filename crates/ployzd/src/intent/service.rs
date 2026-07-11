@@ -8,8 +8,11 @@ use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::intent::nats_authorizations::NatsAuthorizationStore;
 use crate::operations::log::OperationRepository;
 use crate::service_catalog::{intent_get_endpoint_spec, intent_service};
+use ployz_core::cert::{AutoLeaseState, ManagedLeaseIntent};
 use ployz_core::ids::MachineId;
-use ployz_core::state::{IntentSnapshot, PendingMachineJoinRecoverySnapshot};
+use ployz_core::state::{
+    IntentSnapshot, ManagedLeaseProjection, PendingMachineJoinRecoverySnapshot,
+};
 use ployz_core::subjects::{INTENT_CHANGED, INTENT_GET, PENDING_MACHINE_JOINS_CHANGED};
 use ployz_nats::service_protocol::NatsServiceError;
 use ployz_nats::service_runtime::{
@@ -18,7 +21,7 @@ use ployz_nats::service_runtime::{
     start_nats_service,
 };
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,27 +237,15 @@ async fn load_intent(
         .list()
         .await
         .map_err(|error| error.to_string())?;
-    let managed_lease = match lease_intent
+    let managed_lease_intent = lease_intent
         .load()
         .await
+        .map_err(|error| error.to_string())?;
+    let now_seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .map_err(|error| error.to_string())?
-    {
-        ployz_core::cert::ManagedLeaseIntent::Auto { state } => match *state {
-            ployz_core::cert::AutoLeaseState::RecordOnly { lease } => {
-                ployz_core::state::ManagedLeaseProjection::RecordOnly { lease }
-            }
-            ployz_core::cert::AutoLeaseState::Ready { lease, bundle } => {
-                ployz_core::state::ManagedLeaseProjection::Ready { lease, bundle }
-            }
-            ployz_core::cert::AutoLeaseState::Unacquired => {
-                ployz_core::state::ManagedLeaseProjection::Unacquired
-            }
-        },
-        ployz_core::cert::ManagedLeaseIntent::BringYourOwn
-        | ployz_core::cert::ManagedLeaseIntent::None => {
-            ployz_core::state::ManagedLeaseProjection::Unacquired
-        }
-    };
+        .as_secs();
+    let managed_lease = project_managed_lease(managed_lease_intent, now_seconds);
     let custom_certificates = certificate_intent
         .active_certificates()
         .await
@@ -276,6 +267,22 @@ async fn load_intent(
         custom_certificates,
         acme_http01_challenges,
     })
+}
+
+fn project_managed_lease(intent: ManagedLeaseIntent, now_seconds: u64) -> ManagedLeaseProjection {
+    match intent {
+        ManagedLeaseIntent::Auto { state } => match *state {
+            AutoLeaseState::RecordOnly { lease } => ManagedLeaseProjection::RecordOnly { lease },
+            AutoLeaseState::Ready { lease, bundle } if bundle.is_valid_at(now_seconds) => {
+                ManagedLeaseProjection::Ready { lease, bundle }
+            }
+            AutoLeaseState::Ready { lease, .. } => ManagedLeaseProjection::RecordOnly { lease },
+            AutoLeaseState::Unacquired => ManagedLeaseProjection::Unacquired,
+        },
+        ManagedLeaseIntent::BringYourOwn | ManagedLeaseIntent::None => {
+            ManagedLeaseProjection::Unacquired
+        }
+    }
 }
 
 pub async fn publish_pending_machine_joins(
@@ -309,4 +316,65 @@ fn warn_publisher_failure(
         "ployzd intent publisher warning: phase={phase} consecutive_failures={} error={error}",
         *consecutive_failures
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ployz_core::cert::{
+        LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle, ManagedLeaseName,
+        ManagedLeaseRecord,
+    };
+
+    #[test]
+    fn ready_bundle_projects_only_within_its_validity_window() {
+        let lease_name = ManagedLeaseName::try_new("brisk-river-x7f3").expect("lease name");
+        let lease = ManagedLeaseRecord::try_new(
+            lease_name.clone(),
+            LeaseBearerToken::try_new("lease_token_123").expect("lease token"),
+            LeaseIssuedAt::try_new(50).expect("lease issue time"),
+            LeaseExpiresAt::try_new(300).expect("lease expiry time"),
+        )
+        .expect("lease record");
+        let bundle = ManagedCertBundle::try_new(
+            lease_name.clone(),
+            lease_name.wildcard_and_apex(),
+            "certificate".to_owned(),
+            "private-key".to_owned(),
+            LeaseIssuedAt::try_new(100).expect("bundle issue time"),
+            LeaseExpiresAt::try_new(200).expect("bundle expiry time"),
+        )
+        .expect("certificate bundle");
+        let ready = || ManagedLeaseIntent::Auto {
+            state: Box::new(AutoLeaseState::Ready {
+                lease: lease.clone(),
+                bundle: bundle.clone(),
+            }),
+        };
+
+        assert_eq!(
+            project_managed_lease(ready(), 99),
+            ManagedLeaseProjection::RecordOnly {
+                lease: lease.clone()
+            }
+        );
+        assert_eq!(
+            project_managed_lease(ready(), 100),
+            ManagedLeaseProjection::Ready {
+                lease: lease.clone(),
+                bundle: bundle.clone(),
+            }
+        );
+        assert_eq!(
+            project_managed_lease(ready(), 199),
+            ManagedLeaseProjection::Ready {
+                lease: lease.clone(),
+                bundle: bundle.clone(),
+            }
+        );
+        assert_eq!(
+            project_managed_lease(ready(), 200),
+            ManagedLeaseProjection::RecordOnly { lease }
+        );
+    }
 }

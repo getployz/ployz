@@ -103,6 +103,7 @@ impl<'a> DeployFailureView<'a> {
             },
             DeployOperationFailure::PlanningFailed { .. }
             | DeployOperationFailure::AutoDnsWithoutLease { .. }
+            | DeployOperationFailure::CertificatePending { .. }
             | DeployOperationFailure::ArtifactUnavailable {
                 reason:
                     ArtifactUnavailableReason::BundleMissing
@@ -215,6 +216,7 @@ impl<'a> DeployFailureView<'a> {
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
             | DeployOperationFailure::AutoDnsWithoutLease { .. }
+            | DeployOperationFailure::CertificatePending { .. }
             | DeployOperationFailure::ImageResolutionFailed { .. }
             | DeployOperationFailure::ArtifactUnavailable { .. }
             | DeployOperationFailure::ImageMissingOnSeed { .. }
@@ -252,6 +254,7 @@ impl<'a> DeployFailureView<'a> {
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
             | DeployOperationFailure::AutoDnsWithoutLease { .. }
+            | DeployOperationFailure::CertificatePending { .. }
             | DeployOperationFailure::DataplaneUnavailable { .. }
             | DeployOperationFailure::DataplanePrepareTimedOut { .. }
             | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
@@ -272,6 +275,7 @@ impl<'a> DeployFailureView<'a> {
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
             | DeployOperationFailure::AutoDnsWithoutLease { .. }
+            | DeployOperationFailure::CertificatePending { .. }
             | DeployOperationFailure::ImageResolutionFailed { .. }
             | DeployOperationFailure::ArtifactUnavailable { .. }
             | DeployOperationFailure::ImageMissingOnSeed { .. }
@@ -318,6 +322,7 @@ impl<'a> DeployFailureView<'a> {
             )),
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
+            | DeployOperationFailure::CertificatePending { .. }
             | DeployOperationFailure::ImageResolutionFailed { .. }
             | DeployOperationFailure::ArtifactUnavailable { .. }
             | DeployOperationFailure::ImageMissingOnSeed { .. }
@@ -354,6 +359,7 @@ impl<'a> DeployFailureView<'a> {
                 | ControlPlaneCommitScope::VolumePin { .. } => None,
             },
             DeployOperationFailure::NoUsableMachines { .. }
+            | DeployOperationFailure::CertificatePending { .. }
             | DeployOperationFailure::DataplaneUnavailable { .. }
             | DeployOperationFailure::DataplanePrepareTimedOut { .. }
             | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
@@ -415,6 +421,10 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
             format!("deploy planning failed: {}", message.as_str())
         }
         DeployOperationFailure::AutoDnsWithoutLease { message, .. } => message.as_str().to_owned(),
+        DeployOperationFailure::CertificatePending { last_error } => last_error.map_or_else(
+            || "managed certificate is still pending".to_owned(),
+            |last_error| format!("managed certificate is still pending: {last_error:?}"),
+        ),
         DeployOperationFailure::ImageResolutionFailed {
             image,
             machine_id,

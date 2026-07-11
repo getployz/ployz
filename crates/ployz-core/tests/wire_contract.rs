@@ -1,9 +1,10 @@
+use ployz_core::cert::ManagedCertificateIssuanceFailureKind;
 use ployz_core::dataplane::{
     DataplaneProviderFailure, EbpfForwardingReady, EbpfForwardingReadyEvidence,
     PloyzNativeMeshComponent, PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport,
     PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
-use ployz_core::deploy::DeployRequest;
+use ployz_core::deploy::{DeployOrigin, DeployOriginError, DeployRequest};
 use ployz_core::ops::{
     ArtifactUnavailableReason, ControlPlaneCommitScope, DeployFailureClass, DeployOperationFailure,
     DeployOperationState, DeployRunningStage, EventSequence, HealthCheckFailure,
@@ -47,24 +48,27 @@ fn dataplane_running_stage_has_stable_wire_name() {
 fn dataplane_prepared_event_has_stable_wire_shape() {
     let event = OperationEvent::DeployDataplanePrepared {
         operation_id: operation_id("op_123"),
-        report: PloyzNativeMeshPrepareReport::from_machines([PloyzNativeMeshMachineReady {
-            machine_id: machine_id("machine_7"),
-            ready: PloyzNativeMeshReady {
-                wireguard: WireGuardReady {
-                    public_key: wireguard_public_key("test-public-key"),
-                    evidence: vec![WireGuardReadyEvidence::Command {
-                        program: "wg".to_owned(),
-                        args: vec!["--version".to_owned()],
-                    }],
+        report: PloyzNativeMeshPrepareReport::for_targets(
+            &[machine_id("machine_7")],
+            [PloyzNativeMeshMachineReady {
+                machine_id: machine_id("machine_7"),
+                ready: PloyzNativeMeshReady {
+                    wireguard: WireGuardReady {
+                        public_key: wireguard_public_key("test-public-key"),
+                        evidence: vec![WireGuardReadyEvidence::Command {
+                            program: "wg".to_owned(),
+                            args: vec!["--version".to_owned()],
+                        }],
+                    },
+                    ebpf_forwarding: EbpfForwardingReady {
+                        evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
+                            path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
+                            symbols: vec!["ployz_egress".to_owned(), "ployz_ingress".to_owned()],
+                        }],
+                    },
                 },
-                ebpf_forwarding: EbpfForwardingReady {
-                    evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
-                        path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
-                        symbols: vec!["ployz_egress".to_owned(), "ployz_ingress".to_owned()],
-                    }],
-                },
-            },
-        }])
+            }],
+        )
         .expect("valid report"),
     };
 
@@ -79,6 +83,31 @@ fn dataplane_prepared_event_has_stable_wire_shape() {
             r#""symbols":["ployz_egress","ployz_ingress"]}]}}]}}"#
         )
     );
+}
+
+#[test]
+fn waiting_for_managed_certificate_event_has_stable_wire_shape() {
+    let event = OperationEvent::DeployWaitingForManagedCertificate {
+        operation_id: operation_id("op_123"),
+    };
+
+    assert_eq!(
+        serde_json::to_string(&event).expect("event serializes"),
+        r#"{"event":"deploy_waiting_for_managed_certificate","operation_id":"op_123"}"#
+    );
+}
+
+#[test]
+fn certificate_pending_failure_carries_the_latest_worker_error() {
+    let failure = DeployOperationFailure::CertificatePending {
+        last_error: Some(ManagedCertificateIssuanceFailureKind::ValidationTimeout),
+    };
+
+    assert_eq!(
+        serde_json::to_string(&failure).expect("failure serializes"),
+        r#"{"kind":"certificate_pending","last_error":"validation_timeout"}"#
+    );
+    assert_eq!(failure.failure_class(), DeployFailureClass::Timeout);
 }
 
 #[test]
@@ -119,6 +148,7 @@ fn running_operation_status_round_trips_through_json() {
         id: operation_id("op_123"),
         namespace_id: namespace_id("default"),
         service_id: service_id("svc_api"),
+        origin: None,
         state: DeployOperationState::Running {
             stage: DeployRunningStage::StartingContainers,
         },
@@ -408,6 +438,7 @@ fn operation_status_subject_is_variant_specific_data() {
         operation_id("op_123"),
         namespace_id("default"),
         service_id("svc_api"),
+        None,
         event_sequence(42),
     );
 
@@ -524,6 +555,56 @@ fn deploy_request_rejects_empty_image_and_zero_replicas() {
     }"#;
 
     assert!(serde_json::from_str::<DeployRequest>(whitespace_image).is_err());
+}
+
+#[test]
+fn deploy_origin_is_a_single_bounded_caption() {
+    assert_eq!(
+        DeployOrigin::try_new("rollback to last good")
+            .expect("ordinary caption is accepted")
+            .as_str(),
+        "rollback to last good"
+    );
+    assert_eq!(DeployOrigin::try_new("\n"), Err(DeployOriginError::Empty));
+    assert!(DeployOrigin::try_new("é".repeat(64)).is_ok());
+    assert_eq!(
+        DeployOrigin::try_new("é".repeat(65)),
+        Err(DeployOriginError::TooLong { bytes: 130 })
+    );
+    assert_eq!(
+        DeployOrigin::try_new("rollback\nto last good"),
+        Err(DeployOriginError::ControlCharacter)
+    );
+    assert!(serde_json::from_str::<DeployOrigin>(r#""rollback\nto last good""#).is_err());
+}
+
+#[test]
+fn deploy_origin_round_trips_on_request_and_status() {
+    let origin = DeployOrigin::try_new("manual release").expect("valid deploy origin");
+    let request = DeployRequest {
+        namespace_id: namespace_id("default"),
+        origin: Some(origin.clone()),
+        services: Vec::new(),
+    };
+    let status = OperationStatus::deploy_accepted(
+        operation_id("op_origin"),
+        namespace_id("default"),
+        service_id("default"),
+        Some(origin),
+        event_sequence(1),
+    );
+
+    let request_json = serde_json::to_string(&request).expect("request serializes");
+    let status_json = serde_json::to_string(&status).expect("status serializes");
+
+    assert_eq!(
+        serde_json::from_str::<DeployRequest>(&request_json).expect("request deserializes"),
+        request
+    );
+    assert_eq!(
+        serde_json::from_str::<OperationStatus>(&status_json).expect("status deserializes"),
+        status
+    );
 }
 
 #[test]

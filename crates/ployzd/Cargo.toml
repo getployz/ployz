@@ -28,6 +28,7 @@ ployz-nats.workspace = true
 ployz-sdk-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 nkeys = "0.4"
 nuid.workspace = true
 sysctl.workspace = true

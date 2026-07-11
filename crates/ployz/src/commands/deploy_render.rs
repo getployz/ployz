@@ -90,6 +90,12 @@ impl DeployTree {
                 ));
             }
             OperationEvent::DeployPlanningStarted { operation_id: _ } => {}
+            OperationEvent::DeployWaitingForManagedCertificate { operation_id } => {
+                self.plain_lines.push(format!(
+                    "deploy {}: waiting for managed certificate",
+                    operation_id.as_str()
+                ));
+            }
             OperationEvent::DeployImageResolved {
                 operation_id,
                 service_id,
@@ -308,6 +314,7 @@ impl DeployTree {
                 | OperationKind::MachineUpdate
                 | OperationKind::MachineLifecycle
                 | OperationKind::CoreReplace
+                | OperationKind::NetworkRepair
                 | OperationKind::ServiceRestart
                 | OperationKind::NamespaceRemove
                 | OperationKind::VolumeRemove => {}
@@ -335,6 +342,13 @@ impl DeployTree {
             | OperationEvent::CoreReplaceSubmitted { .. }
             | OperationEvent::CoreReplaceCompleted { .. }
             | OperationEvent::CoreReplaceFailed { .. }
+            | OperationEvent::NetworkRepairSubmitted { .. }
+            | OperationEvent::NetworkRepairRunning { .. }
+            | OperationEvent::NetworkRepairDataplanePrepared { .. }
+            | OperationEvent::NetworkRepairMachineFactsRefreshed { .. }
+            | OperationEvent::NetworkRepairDnsRefreshConfirmed { .. }
+            | OperationEvent::NetworkRepairCompleted { .. }
+            | OperationEvent::NetworkRepairFailed { .. }
             | OperationEvent::ServiceRestartSubmitted { .. }
             | OperationEvent::ServiceRestartRunning { .. }
             | OperationEvent::ServiceRestartContainerRestarted { .. }
@@ -773,6 +787,7 @@ fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine
                         DeployOperationFailure::NoUsableMachines { .. }
                         | DeployOperationFailure::PlanningFailed { .. }
                         | DeployOperationFailure::AutoDnsWithoutLease { .. }
+                        | DeployOperationFailure::CertificatePending { .. }
                         | DeployOperationFailure::DataplaneUnavailable { .. }
                         | DeployOperationFailure::DataplanePrepareTimedOut { .. }
                         | DeployOperationFailure::DataplanePrepareInvalidReport { .. }

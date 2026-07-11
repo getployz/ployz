@@ -1,8 +1,8 @@
 //! Request-side NATS adapters for machine-local services.
 
+use crate::machine_runtime::MachineRuntimeUnavailableReason;
 use crate::operations::deploy::{
-    MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
-    PreStartHookRuntimeError,
+    MachineContainerRuntime, MachineContainerRuntimeError, PreStartHookRuntimeError,
 };
 use crate::roles::machine::protocol::{
     MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
@@ -15,7 +15,8 @@ use crate::roles::machine::protocol::{
     MachineContainerRunRpcRequest, MachineContainerStopDomainError, MachineContainerStopRpcRequest,
     MachineEnsureEndpointNetworkDomainError, MachineEnsureEndpointNetworkRpcOk,
     MachineEnsureEndpointNetworkRpcRequest, MachineFactsGetDomainError, MachineFactsGetRpcOk,
-    MachineFactsGetRpcRequest, MachineLogsTailDomainError, MachineLogsTailResult,
+    MachineFactsGetRpcRequest, MachineFactsRefreshDomainError, MachineFactsRefreshRpcOk,
+    MachineFactsRefreshRpcRequest, MachineLogsTailDomainError, MachineLogsTailResult,
     MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineRpcResponder, MachineRpcResponse,
     MachineRunContainerOutcome, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
     MachineSubstrateUpdateDomainError, MachineSubstrateUpdateRpcOk,
@@ -41,7 +42,7 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 pub const DEFAULT_MACHINE_RPC_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_CONCURRENT_MACHINE_READS: usize = 16;
+pub(crate) const MAX_CONCURRENT_MACHINE_READS: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct NatsMachineContainerRuntime {
@@ -143,6 +144,24 @@ pub enum MachineFactsReadError {
     },
     #[error(
         "machine {} facts unavailable: {}",
+        machine_id.as_str(),
+        reason.failure_message().as_str()
+    )]
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MachineFactsRefreshError {
+    #[error("machine {} facts refresh failed: {}", machine_id.as_str(), message.as_str())]
+    RefreshFailed {
+        machine_id: MachineId,
+        message: ployz_core::ops::FailureMessage,
+    },
+    #[error(
+        "machine {} facts refresh unavailable: {}",
         machine_id.as_str(),
         reason.failure_message().as_str()
     )]
@@ -336,6 +355,36 @@ impl NatsMachineFactsReader {
                 reason,
             },
             MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
+        })
+    }
+
+    pub async fn refresh_machine_facts(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<
+        ployz_core::machine_runtime::MachineFactsRefreshConfirmation,
+        MachineFactsRefreshError,
+    > {
+        call_machine::<MachineFactsRefreshRpcOk, MachineFactsRefreshDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::FactsRefresh,
+            &MachineFactsRefreshRpcRequest {},
+        )
+        .await
+        .map(|ok| ok.refresh)
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => MachineFactsRefreshError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason,
+            },
+            MachineCallError::Domain(MachineFactsRefreshDomainError::RefreshFailed { message }) => {
+                MachineFactsRefreshError::RefreshFailed {
+                    machine_id: machine_id.clone(),
+                    message,
+                }
+            }
         })
     }
 }
@@ -1036,7 +1085,7 @@ pub(super) fn wrong_response_machine(
     Some(MachineRuntimeUnavailableReason::WrongResponder { actual_machine_id })
 }
 
-pub(super) fn unavailable_reason(
+pub(crate) fn unavailable_reason(
     error: NatsJsonServiceRequestError,
 ) -> MachineRuntimeUnavailableReason {
     match error {

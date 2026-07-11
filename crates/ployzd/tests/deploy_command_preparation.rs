@@ -191,6 +191,7 @@ async fn empty_manifest_prepares_no_services() {
         operation_id("op_123"),
         DeployRequest {
             namespace_id: namespace_id("default"),
+            origin: None,
             services: Vec::new(),
         },
         facts,
@@ -261,6 +262,7 @@ fn single_service(command: &DeployExecutionCommand) -> &DeployServiceExecutionCo
 fn deploy_request() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
+        origin: None,
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_api"),
             image: ImageReference::try_new("registry.example/api:rev_2")

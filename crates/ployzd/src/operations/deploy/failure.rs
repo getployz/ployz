@@ -1,3 +1,4 @@
+use crate::machine_runtime::MachineRuntimeUnavailableReason;
 use crate::operations::log::{RecordDeployEvidenceError, RecordDeployTransitionError};
 use crate::roles::machine::response::log_hint;
 use ployz_core::dataplane::DataplanePrepareError;
@@ -861,69 +862,6 @@ impl MachineContainerRuntimeError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MachineRuntimeUnavailableReason {
-    EncodeRequest { message: String },
-    RequestTimedOut,
-    NoResponders,
-    InvalidSubject,
-    MaxPayloadExceeded,
-    RequestFailed { message: String },
-    ServiceBadRequest { message: String },
-    ServiceConflict { message: String },
-    ServiceUnavailable { message: String },
-    ServiceTimedOut { message: String },
-    ServiceInternal { message: String },
-    MalformedServiceError { message: String },
-    DecodeResponse { message: String },
-    WrongResponder { actual_machine_id: MachineId },
-}
-
-impl MachineRuntimeUnavailableReason {
-    pub(crate) fn failure_message(&self) -> FailureMessage {
-        let message = match self {
-            Self::EncodeRequest { message } => {
-                format!("machine runtime request could not be encoded: {message}")
-            }
-            Self::RequestTimedOut => "machine runtime request timed out".to_owned(),
-            Self::NoResponders => "machine runtime has no responders".to_owned(),
-            Self::InvalidSubject => "machine runtime subject was invalid".to_owned(),
-            Self::MaxPayloadExceeded => {
-                "machine runtime request exceeded NATS max payload".to_owned()
-            }
-            Self::RequestFailed { message } => format!("machine runtime request failed: {message}"),
-            Self::ServiceBadRequest { message } => {
-                format!("machine runtime rejected the request: {message}")
-            }
-            Self::ServiceConflict { message } => {
-                format!("machine runtime reported a conflict: {message}")
-            }
-            Self::ServiceUnavailable { message } => {
-                format!("machine runtime service unavailable: {message}")
-            }
-            Self::ServiceTimedOut { message } => {
-                format!("machine runtime service timed out: {message}")
-            }
-            Self::ServiceInternal { message } => {
-                format!("machine runtime service failed internally: {message}")
-            }
-            Self::MalformedServiceError { message } => {
-                format!("machine runtime returned malformed service error headers: {message}")
-            }
-            Self::DecodeResponse { message } => {
-                format!("machine runtime response could not be decoded: {message}")
-            }
-            Self::WrongResponder { actual_machine_id } => {
-                format!(
-                    "machine runtime replied for a different machine: {}",
-                    actual_machine_id.as_str()
-                )
-            }
-        };
-        FailureMessage::try_new(message).expect("generated runtime failure message is non-empty")
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployHealthCheckError {
     Unhealthy {
         machine_id: MachineId,
@@ -1002,6 +940,7 @@ fn add_retained_artifacts(failure: &mut DeployOperationFailure, artifacts: Vec<R
         } => retained_artifacts,
         DeployOperationFailure::PlanningFailed { .. }
         | DeployOperationFailure::AutoDnsWithoutLease { .. }
+        | DeployOperationFailure::CertificatePending { .. }
         | DeployOperationFailure::ImageResolutionFailed { .. }
         | DeployOperationFailure::NoUsableMachines { .. }
         | DeployOperationFailure::ArtifactUnavailable { .. }

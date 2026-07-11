@@ -81,7 +81,7 @@ pub async fn seed_core_from_snapshot(
     match &snapshot.managed_lease {
         ployz_core::state::ManagedLeaseProjection::Ready { lease, bundle } => {
             lease_store
-                .store_lease(lease.clone(), bundle.clone())
+                .store_lease(lease.clone(), Some(bundle.clone()))
                 .await?;
         }
         ployz_core::state::ManagedLeaseProjection::RecordOnly { lease } => {
@@ -189,10 +189,26 @@ mod tests {
         else {
             panic!("acquire returns lease");
         };
+        let pending = worker
+            .handle(LeaseWorkerRequest::DownloadBundle {
+                lease: acquired.lease.name.clone(),
+                token: acquired.lease.token.clone(),
+            })
+            .expect("bundle pending");
+        assert!(matches!(pending, LeaseWorkerResponse::BundlePending));
+        let LeaseWorkerResponse::Bundle(bundle) = worker
+            .handle(LeaseWorkerRequest::DownloadBundle {
+                lease: acquired.lease.name.clone(),
+                token: acquired.lease.token.clone(),
+            })
+            .expect("bundle ready")
+        else {
+            panic!("bundle ready");
+        };
         let mut snapshot = snapshot_at_epoch(ControlPlaneEpoch::initial());
         snapshot.managed_lease = ployz_core::state::ManagedLeaseProjection::Ready {
             lease: acquired.lease.clone(),
-            bundle: acquired.bundle.clone(),
+            bundle: bundle.clone(),
         };
 
         let certificates = tempfile::tempdir().expect("certificate state");
@@ -208,7 +224,7 @@ mod tests {
             ManagedLeaseIntent::Auto {
                 state: Box::new(AutoLeaseState::Ready {
                     lease: acquired.lease,
-                    bundle: acquired.bundle,
+                    bundle,
                 }),
             }
         );
