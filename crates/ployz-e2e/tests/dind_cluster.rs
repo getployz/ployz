@@ -15,6 +15,8 @@
 //! failed assertion captures whole-cluster evidence before the panic
 //! propagates.
 
+#[path = "dind_cluster/acceptance.rs"]
+mod acceptance;
 #[path = "dind_cluster/network.rs"]
 mod network;
 #[path = "dind_cluster/rollback.rs"]

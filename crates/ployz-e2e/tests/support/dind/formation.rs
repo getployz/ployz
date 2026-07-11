@@ -222,16 +222,16 @@ async fn collect_cluster_material(docker: &Docker, core: &DindMachine) -> Cluste
 /// Where the harness writes the local release manifest inside a machine.
 const RELEASE_MANIFEST_PATH: &str = "/tmp/ployz-release.env";
 
-/// Host-side plumbing for one product CLI run against one machine: a
-/// docker-exec-backed stand-in `ssh` plus an isolated cluster context path.
-struct HostCliHarness {
+/// Host-side plumbing for product CLI runs against one machine: a
+/// docker-exec-backed stand-in `ssh` plus isolated product state.
+pub struct ProductCliHarness {
     _dir: tempfile::TempDir,
     ssh_program: PathBuf,
     context_path: PathBuf,
 }
 
-impl HostCliHarness {
-    fn new(machine: &DindMachine) -> Self {
+impl ProductCliHarness {
+    pub fn new(machine: &DindMachine) -> Self {
         let dir = tempfile::TempDir::new().expect("create host cli harness dir");
         let ssh_program = dir.path().join("fake-ssh");
         // The product runs `ssh <options...> <dest> <command>` with the
@@ -254,7 +254,7 @@ impl HostCliHarness {
     /// Runtime config for the product CLI: published NATS port (bridge IPs
     /// are not reachable from every host), stand-in ssh, isolated context.
     /// `material` carries the credential files once the cluster exists.
-    fn runtime_config(
+    pub fn runtime_config(
         &self,
         cluster: &DindCluster,
         material: Option<&ClusterMaterial>,
@@ -321,7 +321,7 @@ async fn product_init_core(
     write_release_manifest(docker, &core, &shas).await;
     write_installer_wrapper(docker, &core).await;
 
-    let harness = HostCliHarness::new(&core);
+    let harness = ProductCliHarness::new(&core);
     let config = harness.runtime_config(cluster, None);
     let command = MachineInitCommand {
         target: SshTarget::parse(&format!("root@{}", core.bridge_ip))
@@ -499,7 +499,7 @@ pub async fn submit_machine_add(core: &CoreContext) -> MachineAddAccepted {
 /// detailed join assertions through the explicit low-level path).
 pub async fn add_and_join_edge(core: &CoreContext, edge: &DindMachine) {
     write_installer_wrapper(&core.docker, edge).await;
-    let harness = HostCliHarness::new(edge);
+    let harness = ProductCliHarness::new(edge);
     let config = harness.runtime_config(&core.cluster, Some(&core.material));
     let edge_number = core
         .cluster
