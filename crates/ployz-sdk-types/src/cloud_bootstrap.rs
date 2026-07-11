@@ -8,9 +8,8 @@ use crate::machine::{MachineJoinRedeemResult, MachineJoinToken};
 
 pub const CLOUD_BOOTSTRAP_PROTOCOL_VERSION: u16 = 1;
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, PartialEq, Eq, TS)]
 #[ts(type = "Brand<string, \"CloudBootstrapToken\">")]
-#[serde(transparent)]
 pub struct CloudBootstrapToken(String);
 
 impl CloudBootstrapToken {

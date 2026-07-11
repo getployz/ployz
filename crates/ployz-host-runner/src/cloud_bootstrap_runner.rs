@@ -78,61 +78,24 @@ pub(super) fn run_interactive_cloud_bootstrap(cloud_host: &str) -> ExitCode {
     println!("{}", created.browser_url);
     println!("Waiting for approval...");
 
-    let mut poll_after_seconds = created.poll_after_seconds;
-    for _ in 0..CLOUD_BOOTSTRAP_MAX_POLLS {
-        std::thread::sleep(Duration::from_secs(poll_after_seconds.into()));
-        let decision = match client.post_json::<_, CloudBootstrapDecision>(
-            "/api/bootstrap/sessions/poll",
-            None,
-            &CloudBootstrapSessionPollRequest {
-                attempt_id: attempt.attempt_id.clone(),
-                session_secret: created.session_secret.clone(),
-                machine: machine.clone(),
-            },
-        ) {
-            Ok(decision) => decision,
-            Err(error) => {
-                eprintln!("{error}");
-                return ExitCode::FAILURE;
-            }
-        };
-
-        if update_poll_delay_from_pending(&decision, &mut poll_after_seconds) {
-            continue;
-        }
-        match decision {
-            CloudBootstrapDecision::Pending { .. } => continue,
-            CloudBootstrapDecision::Expired => {
-                if let Err(error) = reset_cloud_attempt(std::path::Path::new(HOST_RUNNER_STATE_DIR))
-                {
-                    eprintln!(
-                        "Cloud bootstrap session expired and local retry reset failed: {error}"
-                    );
-                    return ExitCode::FAILURE;
-                }
-                eprintln!("Cloud bootstrap session expired; rerun sudo ployz host bootstrap");
-                return ExitCode::FAILURE;
-            }
-            CloudBootstrapDecision::Failed { failure } => {
-                eprintln!("Cloud bootstrap failed: {failure:?}");
-                return ExitCode::FAILURE;
-            }
-            CloudBootstrapDecision::Ready { envelope } => match &envelope.intent {
-                CloudBootstrapIntent::WaitForFounder {
-                    retry_after_seconds,
-                } => {
-                    println!("Waiting for the first machine to finish...");
-                    std::thread::sleep(Duration::from_secs((*retry_after_seconds).into()));
-                }
-                CloudBootstrapIntent::Founder { .. } | CloudBootstrapIntent::Joiner { .. } => {
-                    return run_cloud_bootstrap_envelope(*envelope, &attempt, &client);
-                }
-            },
-        }
-    }
-
-    eprintln!("Cloud bootstrap approval timed out; rerun sudo ployz host bootstrap");
-    ExitCode::FAILURE
+    let poll_request = CloudBootstrapSessionPollRequest {
+        attempt_id: attempt.attempt_id.clone(),
+        session_secret: created.session_secret,
+        machine,
+    };
+    run_cloud_bootstrap_decisions(
+        &attempt,
+        &client,
+        CloudBootstrapFlow::InteractiveSession,
+        Duration::from_secs(created.poll_after_seconds.into()),
+        || {
+            client.post_json::<_, CloudBootstrapDecision>(
+                "/api/bootstrap/sessions/poll",
+                None,
+                &poll_request,
+            )
+        },
+    )
 }
 
 pub(super) fn run_token_cloud_bootstrap(
@@ -152,12 +115,40 @@ pub(super) fn run_token_cloud_bootstrap(
         client: CloudBootstrapClientInfo::current(env!("CARGO_PKG_VERSION")),
         machine: cloud_machine_facts(),
     };
+    run_cloud_bootstrap_decisions(
+        &attempt,
+        &client,
+        CloudBootstrapFlow::Token,
+        Duration::ZERO,
+        || {
+            client.post_json::<_, CloudBootstrapDecision>(
+                "/api/bootstrap/tokens/redeem",
+                Some(cloud_token.secret()),
+                &request,
+            )
+        },
+    )
+}
+
+#[derive(Clone, Copy)]
+enum CloudBootstrapFlow {
+    InteractiveSession,
+    Token,
+}
+
+fn run_cloud_bootstrap_decisions<E>(
+    attempt: &CloudBootstrapAttemptState,
+    client: &CloudClient,
+    flow: CloudBootstrapFlow,
+    mut retry_after: Duration,
+    mut next_decision: impl FnMut() -> Result<CloudBootstrapDecision, E>,
+) -> ExitCode
+where
+    E: std::fmt::Display,
+{
     for _ in 0..CLOUD_BOOTSTRAP_MAX_POLLS {
-        let decision = match client.post_json::<_, CloudBootstrapDecision>(
-            "/api/bootstrap/tokens/redeem",
-            Some(cloud_token.secret()),
-            &request,
-        ) {
+        std::thread::sleep(retry_after);
+        let decision = match next_decision() {
             Ok(decision) => decision,
             Err(error) => {
                 eprintln!("{error}");
@@ -168,11 +159,8 @@ pub(super) fn run_token_cloud_bootstrap(
         match decision {
             CloudBootstrapDecision::Pending {
                 retry_after_seconds,
-            } => std::thread::sleep(Duration::from_secs(retry_after_seconds.into())),
-            CloudBootstrapDecision::Expired => {
-                eprintln!("Cloud Bootstrap Token expired");
-                return ExitCode::FAILURE;
-            }
+            } => retry_after = Duration::from_secs(retry_after_seconds.into()),
+            CloudBootstrapDecision::Expired => return flow.expired(),
             CloudBootstrapDecision::Failed { failure } => {
                 eprintln!("Cloud bootstrap failed: {failure:?}");
                 return ExitCode::FAILURE;
@@ -182,17 +170,47 @@ pub(super) fn run_token_cloud_bootstrap(
                     retry_after_seconds,
                 } => {
                     println!("Waiting for the first machine to finish...");
-                    std::thread::sleep(Duration::from_secs((*retry_after_seconds).into()));
+                    retry_after = Duration::from_secs((*retry_after_seconds).into());
                 }
                 CloudBootstrapIntent::Founder { .. } | CloudBootstrapIntent::Joiner { .. } => {
-                    return run_cloud_bootstrap_envelope(*envelope, &attempt, &client);
+                    return run_cloud_bootstrap_envelope(*envelope, attempt, client);
                 }
             },
         }
     }
 
-    eprintln!("Cloud bootstrap timed out; rerun with a valid Cloud Bootstrap Token");
-    ExitCode::FAILURE
+    flow.timed_out()
+}
+
+impl CloudBootstrapFlow {
+    fn expired(self) -> ExitCode {
+        match self {
+            Self::InteractiveSession => {
+                if let Err(error) = reset_cloud_attempt(std::path::Path::new(HOST_RUNNER_STATE_DIR))
+                {
+                    eprintln!(
+                        "Cloud bootstrap session expired and local retry reset failed: {error}"
+                    );
+                    return ExitCode::FAILURE;
+                }
+                eprintln!("Cloud bootstrap session expired; rerun sudo ployz host bootstrap");
+            }
+            Self::Token => eprintln!("Cloud Bootstrap Token expired"),
+        }
+        ExitCode::FAILURE
+    }
+
+    fn timed_out(self) -> ExitCode {
+        match self {
+            Self::InteractiveSession => {
+                eprintln!("Cloud bootstrap approval timed out; rerun sudo ployz host bootstrap");
+            }
+            Self::Token => {
+                eprintln!("Cloud bootstrap timed out; rerun with a valid Cloud Bootstrap Token");
+            }
+        }
+        ExitCode::FAILURE
+    }
 }
 
 fn prepare_cloud_bootstrap_attempt() -> Option<CloudBootstrapAttemptState> {
@@ -257,23 +275,6 @@ fn resume_terminal_callback(
         );
     }
     None
-}
-
-fn update_poll_delay_from_pending(
-    decision: &CloudBootstrapDecision,
-    poll_after_seconds: &mut u16,
-) -> bool {
-    match decision {
-        CloudBootstrapDecision::Pending {
-            retry_after_seconds,
-        } => {
-            *poll_after_seconds = *retry_after_seconds;
-            true
-        }
-        CloudBootstrapDecision::Ready { .. }
-        | CloudBootstrapDecision::Expired
-        | CloudBootstrapDecision::Failed { .. } => false,
-    }
 }
 
 fn run_cloud_bootstrap_envelope(
@@ -793,7 +794,7 @@ fn cloud_machine_facts() -> CloudBootstrapMachineFacts {
 mod tests {
     use super::{
         cloud_joiner_failed_terminal_callback, persisted_release_manifest_url,
-        public_ip_from_runtime_nats_url, update_poll_delay_from_pending,
+        public_ip_from_runtime_nats_url,
     };
     use crate::executor::HostRunnerPlanFailure;
     use crate::steps::{HostRunnerStepFailure, HostRunnerStepFailureReason, HostRunnerStepLabel};
@@ -860,20 +861,6 @@ mod tests {
             MachineJoinRuntimeNatsUrl::try_new("tls://core.example.com:4222").expect("valid URL");
 
         assert!(public_ip_from_runtime_nats_url(&url).is_err());
-    }
-
-    #[test]
-    fn pending_decision_updates_next_poll_delay() {
-        let mut poll_after_seconds = 2;
-        let decision = ployz_sdk_types::CloudBootstrapDecision::Pending {
-            retry_after_seconds: 9,
-        };
-
-        assert!(update_poll_delay_from_pending(
-            &decision,
-            &mut poll_after_seconds
-        ));
-        assert_eq!(poll_after_seconds, 9);
     }
 
     #[test]

@@ -46,9 +46,12 @@ pub struct HostRunnerBootstrap {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostRunnerBootstrapMode {
     LocalGuidance,
-    Cloud {
+    CloudInteractive {
         cloud_host: Option<CloudHost>,
-        cloud_token: Option<CloudBootstrapToken>,
+    },
+    CloudToken {
+        cloud_host: Option<CloudHost>,
+        cloud_token: CloudBootstrapToken,
     },
     Core,
     Join {
@@ -356,9 +359,12 @@ fn load_bootstrap(command: Option<HostRunnerBootstrapSubcommand>) -> HostRunnerB
         Some(HostRunnerBootstrapSubcommand::Cloud {
             cloud_host,
             cloud_token,
-        }) => HostRunnerBootstrapMode::Cloud {
-            cloud_host,
-            cloud_token,
+        }) => match cloud_token {
+            Some(cloud_token) => HostRunnerBootstrapMode::CloudToken {
+                cloud_host,
+                cloud_token,
+            },
+            None => HostRunnerBootstrapMode::CloudInteractive { cloud_host },
         },
     };
     HostRunnerBootstrap { mode }
@@ -723,9 +729,8 @@ mod tests {
         assert_eq!(
             command,
             HostRunnerCommand::Bootstrap(HostRunnerBootstrap {
-                mode: HostRunnerBootstrapMode::Cloud {
+                mode: HostRunnerBootstrapMode::CloudInteractive {
                     cloud_host: Some(CloudHost::try_new("https://cloud.example.com").unwrap()),
-                    cloud_token: None,
                 },
             })
         );
@@ -748,9 +753,9 @@ mod tests {
         assert!(matches!(
             command,
             HostRunnerCommand::Bootstrap(HostRunnerBootstrap {
-                mode: HostRunnerBootstrapMode::Cloud {
+                mode: HostRunnerBootstrapMode::CloudToken {
                     cloud_host: None,
-                    cloud_token: Some(_),
+                    cloud_token: _,
                 },
             })
         ));
@@ -771,9 +776,9 @@ mod tests {
         assert!(matches!(
             command,
             HostRunnerCommand::Bootstrap(HostRunnerBootstrap {
-                mode: HostRunnerBootstrapMode::Cloud {
+                mode: HostRunnerBootstrapMode::CloudToken {
                     cloud_host: Some(host),
-                    cloud_token: Some(_),
+                    cloud_token: _,
                 },
             }) if host == CloudHost::try_new("cloud.example.com").unwrap()
         ));

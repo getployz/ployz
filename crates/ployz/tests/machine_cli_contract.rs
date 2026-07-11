@@ -1,8 +1,8 @@
 use std::fs;
 
 use ployz::bootstrap_command::{
-    BootstrapInstaller, BootstrapRelease, CloudBootstrapCommand, DEFAULT_BOOTSTRAP_URL,
-    DEFAULT_RELEASE_CHANNEL, FounderBootstrapCommand,
+    BootstrapInstaller, BootstrapRelease, CloudBootstrapCommand, CloudBootstrapMode,
+    DEFAULT_BOOTSTRAP_URL, DEFAULT_RELEASE_CHANNEL, FounderBootstrapCommand,
 };
 use ployz::commands::machine::{
     MachineAddInstaller, MachineAddOutput, MachineBootstrapUrl, MachineIdentity,
@@ -871,7 +871,7 @@ fn cloud_bootstrap_command_renders_tokenless_interactive_command() {
             MachineBootstrapUrl::try_new("https://ployz.sh").expect("valid bootstrap url"),
         ),
         cloud_host: None,
-        cloud_token: None,
+        mode: CloudBootstrapMode::Interactive,
     };
 
     assert_eq!(
@@ -887,7 +887,7 @@ fn cloud_bootstrap_command_renders_custom_cloud_host_after_installer_pipe() {
             MachineBootstrapUrl::try_new("https://ployz.sh").expect("valid bootstrap url"),
         ),
         cloud_host: Some("cloud.example.com".to_owned()),
-        cloud_token: None,
+        mode: CloudBootstrapMode::Interactive,
     };
 
     let rendered = command.render();
@@ -903,7 +903,7 @@ fn cloud_bootstrap_command_shell_quotes_remote_script_and_host() {
     let command = CloudBootstrapCommand {
         installer: BootstrapInstaller::RemoteScript("/tmp/ployz install.sh".to_owned()),
         cloud_host: Some("cloud.example.com/path?x='quoted'".to_owned()),
-        cloud_token: None,
+        mode: CloudBootstrapMode::Interactive,
     };
 
     let rendered = command.render();
@@ -919,7 +919,7 @@ fn cloud_bootstrap_command_renders_and_redacts_cloud_token() {
             MachineBootstrapUrl::try_new("https://ployz.sh").expect("valid bootstrap url"),
         ),
         cloud_host: None,
-        cloud_token: Some(
+        mode: CloudBootstrapMode::Token(
             CloudBootstrapToken::try_new("token'for-many-machines")
                 .expect("valid cloud bootstrap token"),
         ),

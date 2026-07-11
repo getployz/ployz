@@ -35,11 +35,17 @@ pub enum BootstrapRelease {
     Version(String),
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CloudBootstrapMode {
+    Interactive,
+    Token(CloudBootstrapToken),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloudBootstrapCommand {
     pub installer: BootstrapInstaller,
     pub cloud_host: Option<String>,
-    pub cloud_token: Option<CloudBootstrapToken>,
+    pub mode: CloudBootstrapMode,
 }
 
 impl CloudBootstrapCommand {
@@ -49,7 +55,7 @@ impl CloudBootstrapCommand {
         if let Some(host) = &self.cloud_host {
             bootstrap.push_str(&format!(" --cloud-host {}", shell_quote(host)));
         }
-        if let Some(token) = &self.cloud_token {
+        if let CloudBootstrapMode::Token(token) = &self.mode {
             bootstrap.push_str(&format!(" --cloud-token {}", shell_quote(token.secret())));
         }
 
@@ -64,17 +70,6 @@ impl CloudBootstrapCommand {
                 format!("sh {} && {bootstrap}", shell_quote(path))
             }
         }
-    }
-}
-
-impl std::fmt::Debug for CloudBootstrapCommand {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("CloudBootstrapCommand")
-            .field("installer", &self.installer)
-            .field("cloud_host", &self.cloud_host)
-            .field("cloud_token", &self.cloud_token)
-            .finish()
     }
 }
 
