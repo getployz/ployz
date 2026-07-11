@@ -330,9 +330,13 @@ async fn startup_renders_current_authorization_permissions() {
 
     let reload = nats.reload_runner();
     let config = nats.control_config();
-    let runtime = nats
-        .start_control_with_reload(&config, reload.clone())
-        .await;
+    let runtime = ployzd::roles::control::start_control_process_with_client_and_reload(
+        nats.connected.controller.clone(),
+        &config,
+        reload.clone(),
+    )
+    .await
+    .expect("control runtime starts");
 
     let repaired = std::fs::read_to_string(nats.server().authorized_users_path())
         .expect("repaired authorized-users file is readable");
