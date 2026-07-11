@@ -11,7 +11,7 @@ const POSTGRES_IMAGE: &str = "postgres:15-alpine";
 const ACCEPTANCE_NAMESPACE: &str = "v1_acceptance";
 
 struct DeployedApp {
-    database_bootstrap: DeployHistoryEntry,
+    database_deploy: DeployHistoryEntry,
     application: DeployHistoryEntry,
     hostname: String,
     certificate_chain: String,
@@ -102,13 +102,13 @@ async fn step_2_deploy_real_application(
     history: &DeployHistory,
     compose_path: &Path,
 ) -> DeployedApp {
-    std::fs::write(compose_path, database_bootstrap_compose())
-        .expect("write Postgres bootstrap Compose file");
+    std::fs::write(compose_path, database_deploy_compose())
+        .expect("write Postgres Deploy Compose file");
     execute_compose(compose_path, config).await;
 
-    let bootstrap_entries = history.load().expect("load database bootstrap history");
-    let [database_bootstrap] = bootstrap_entries.as_slice() else {
-        panic!("database bootstrap must record exactly one history entry");
+    let database_entries = history.load().expect("load database Deploy history");
+    let [database_deploy] = database_entries.as_slice() else {
+        panic!("database Deploy must record exactly one history entry");
     };
     let client = connect_core_client(
         core,
@@ -118,12 +118,12 @@ async fn step_2_deploy_real_application(
     .await
     .expect("connect controller for acceptance intent");
     let intent_reader = NatsIntentReader::new(client);
-    let bootstrap_intent = intent_reader
+    let database_intent = intent_reader
         .intent()
         .await
-        .expect("read database bootstrap intent");
-    let [database_target] = bootstrap_intent.serving_target_entries.as_slice() else {
-        panic!("database bootstrap must commit one Serving Target entry");
+        .expect("read database Deploy intent");
+    let [database_target] = database_intent.serving_target_entries.as_slice() else {
+        panic!("database Deploy must commit one Serving Target entry");
     };
     assert_eq!(
         (&database_target.namespace_id, &database_target.service_id),
@@ -134,10 +134,10 @@ async fn step_2_deploy_real_application(
     execute_compose(compose_path, config).await;
 
     let application_entries = history.load().expect("load application deploy history");
-    let [recorded_database_bootstrap, application] = application_entries.as_slice() else {
-        panic!("database bootstrap and full application deploy must both be recorded");
+    let [recorded_database_deploy, application] = application_entries.as_slice() else {
+        panic!("database Deploy and full application Deploy must both be recorded");
     };
-    assert_eq!(recorded_database_bootstrap, database_bootstrap);
+    assert_eq!(recorded_database_deploy, database_deploy);
 
     let all_machines = all_machines(core);
     let workloads = namespace_workloads(core, &all_machines, ACCEPTANCE_NAMESPACE).await;
@@ -244,7 +244,7 @@ async fn step_2_deploy_real_application(
     );
 
     DeployedApp {
-        database_bootstrap: database_bootstrap.clone(),
+        database_deploy: database_deploy.clone(),
         application: application.clone(),
         hostname,
         certificate_chain,
@@ -354,11 +354,16 @@ async fn step_5_retry_and_rollback(
     std::fs::write(compose_path, bad_deploy_input_compose()).expect("write bad deploy input");
     execute_compose(compose_path, config).await;
     let entries = history.load().expect("load bad deploy-input history");
-    let [recorded_database_bootstrap, recorded_full, bad_deploy_entry] = entries.as_slice() else {
-        panic!("database bootstrap, full app, and bad deploy must be recorded: {entries:?}");
+    let [
+        recorded_database_deploy,
+        recorded_application,
+        bad_deploy_entry,
+    ] = entries.as_slice()
+    else {
+        panic!("database Deploy, application Deploy, and bad Deploy must be recorded: {entries:?}");
     };
-    assert_eq!(recorded_database_bootstrap, &app.database_bootstrap);
-    assert_eq!(recorded_full, &app.application);
+    assert_eq!(recorded_database_deploy, &app.database_deploy);
+    assert_eq!(recorded_application, &app.application);
     assert_ne!(
         bad_deploy_entry.request.services,
         app.application.request.services
@@ -382,18 +387,18 @@ async fn step_5_retry_and_rollback(
 
     let entries = history.load().expect("load rollback history");
     let [
-        recorded_database_bootstrap,
-        recorded_full,
+        recorded_database_deploy,
+        recorded_application,
         bad_deploy_entry,
         rollback_entry,
     ] = entries.as_slice()
     else {
         panic!(
-            "rollback must append after database bootstrap, full app, and bad deploy: {entries:?}"
+            "rollback must append after database Deploy, application Deploy, and bad Deploy: {entries:?}"
         );
     };
-    assert_eq!(recorded_database_bootstrap, &app.database_bootstrap);
-    assert_eq!(recorded_full, &app.application);
+    assert_eq!(recorded_database_deploy, &app.database_deploy);
+    assert_eq!(recorded_application, &app.application);
     assert_ne!(rollback_entry.operation_id, app.application.operation_id);
     assert_ne!(rollback_entry.operation_id, bad_deploy_entry.operation_id);
     assert_eq!(
@@ -543,11 +548,9 @@ fn service_is(container: &ManagedWorkloadContainer, service: &str) -> bool {
         .is_some_and(|value| value == service)
 }
 
-fn database_bootstrap_compose() -> String {
+fn database_service_compose() -> String {
     format!(
-        r#"name: {ACCEPTANCE_NAMESPACE}
-services:
-  db:
+        r#"  db:
     image: {POSTGRES_IMAGE}
     environment:
       POSTGRES_DB: umami
@@ -560,32 +563,28 @@ services:
       interval: 2s
       timeout: 2s
       retries: 30
-volumes:
+"#
+    )
+}
+
+fn database_deploy_compose() -> String {
+    let database = database_service_compose();
+    format!(
+        r#"name: {ACCEPTANCE_NAMESPACE}
+services:
+{database}volumes:
   postgres-data: {{}}
 "#
     )
 }
 
 fn umami_compose() -> String {
+    let database = database_service_compose();
     format!(
         r#"name: {ACCEPTANCE_NAMESPACE}
 services:
-  db:
-    image: {POSTGRES_IMAGE}
-    environment:
-      POSTGRES_DB: umami
-      POSTGRES_USER: umami
-      POSTGRES_PASSWORD: umami
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U umami -d umami"]
-      interval: 2s
-      timeout: 2s
-      retries: 30
-  umami:
+{database}  umami:
     image: {UMAMI_IMAGE}
-    depends_on: [db]
     command:
       - sh
       - -c
@@ -609,25 +608,12 @@ volumes:
 }
 
 fn bad_deploy_input_compose() -> String {
+    let database = database_service_compose();
     format!(
         r#"name: {ACCEPTANCE_NAMESPACE}
 services:
-  db:
-    image: {POSTGRES_IMAGE}
-    environment:
-      POSTGRES_DB: umami
-      POSTGRES_USER: umami
-      POSTGRES_PASSWORD: umami
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U umami -d umami"]
-      interval: 2s
-      timeout: 2s
-      retries: 30
-  umami:
+{database}  umami:
     image: {WORKLOAD_IMAGE}
-    depends_on: [db]
     deploy:
       replicas: 2
     x-ports: [80]
@@ -706,8 +692,8 @@ async fn assert_service_name_database_reachability(
 }
 
 #[test]
-fn database_bootstrap_is_a_full_single_service_namespace_revision() {
-    let compose = database_bootstrap_compose();
+fn database_deploy_is_a_full_single_service_namespace_revision() {
+    let compose = database_deploy_compose();
     let (parsed, warnings) = parse_deploy_file(ComposeInput {
         source: &compose,
         base_dir: Path::new("."),
@@ -715,10 +701,10 @@ fn database_bootstrap_is_a_full_single_service_namespace_revision() {
         namespace_override: None,
         mode: UnsupportedFieldMode::Strict,
     })
-    .expect("database bootstrap Compose parses");
+    .expect("database Deploy Compose parses");
     assert!(warnings.is_empty());
     let [database] = parsed.services.as_slice() else {
-        panic!("database bootstrap must contain exactly one service");
+        panic!("database Deploy must contain exactly one service");
     };
 
     assert_eq!(
