@@ -250,8 +250,10 @@ mod tests {
     async fn readiness_gather_reports_only_silent_gateways_when_other_responses_arrive() {
         let ready_id = MachineId::try_new("machine_ready").expect("machine id");
         let silent_id = MachineId::try_new("machine_silent").expect("machine id");
-        let nats =
-            ployz_test_support::nats::TestNats::start_with_machines(&[ready_id.clone()]).await;
+        let nats = ployz_test_support::nats::TestNats::start_with_machines(std::slice::from_ref(
+            &ready_id,
+        ))
+        .await;
         let mut service = start_nats_service(
             nats.machine_client(&ready_id).await,
             &gateway_role_service(&ready_id),

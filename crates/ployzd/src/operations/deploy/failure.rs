@@ -180,7 +180,7 @@ pub enum DeployExecutionError {
     WaitHealthy(DeployHealthCheckError),
     ProvisionCertificate {
         hostname: RouteHostname,
-        failure: CertificateProvisionFailure,
+        failure: Box<CertificateProvisionFailure>,
     },
     CommitNamespaceState(NamespaceCommitError),
     Failed {
@@ -600,7 +600,7 @@ impl DeployExecutionError {
                 DeployOperationFailure::CertificateProvisionFailed {
                     hostname: hostname.clone(),
                     namespace_revision_id: failure_namespace_revision_id(command),
-                    failure: failure.clone(),
+                    failure: (**failure).clone(),
                     retained_artifacts,
                 }
             }

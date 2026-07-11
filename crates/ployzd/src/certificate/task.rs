@@ -16,6 +16,7 @@ use crate::tasks::TaskRegistry;
 pub const CERTIFICATE_RENEWAL_TICK_INTERVAL: Duration = Duration::from_secs(60 * 60);
 const CERTIFICATE_RENEWAL_BACKOFF_CAP: Duration = Duration::from_secs(6 * 60 * 60);
 
+#[must_use]
 pub fn start_certificate_renewal_task(
     registry: &TaskRegistry,
     manager: CertificateManager,

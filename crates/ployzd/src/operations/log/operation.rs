@@ -34,15 +34,18 @@ impl OperationRepository {
                 status,
             } => Ok(RecordOperationEventOutcome::AlreadySatisfied {
                 current_sequence,
-                status,
+                status: *status,
             }),
             RecordTxn::Stored {
                 sequence,
                 event,
                 status,
             } => {
-                publish_progress(&self.progress, event, &status).await;
-                Ok(RecordOperationEventOutcome::Stored { sequence, status })
+                publish_progress(&self.progress, *event, &status).await;
+                Ok(RecordOperationEventOutcome::Stored {
+                    sequence,
+                    status: *status,
+                })
             }
         }
     }

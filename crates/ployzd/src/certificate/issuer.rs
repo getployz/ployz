@@ -227,8 +227,6 @@ impl AcmeIssuer for InstantAcmeIssuer {
             context.validation_started().await?;
             challenge.set_ready().await.map_err(validation_error)?;
         }
-        drop(authorizations);
-
         let status = order
             .poll_ready(&RetryPolicy::default())
             .await

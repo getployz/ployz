@@ -391,7 +391,7 @@ where
                         .map(|_| ())
                         .map_err(|failure| DeployExecutionError::ProvisionCertificate {
                             hostname: hostname.clone(),
-                            failure,
+                            failure: Box::new(failure),
                         })
                 },
             )

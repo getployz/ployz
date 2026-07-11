@@ -62,7 +62,7 @@ pub const DEFAULT_DEPLOY_STEP_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonProcessConfig {
-    Control(ControlProcessConfig),
+    Control(Box<ControlProcessConfig>),
     Machine(MachineProcessConfig),
     Gateway(GatewayProcessConfig),
     Dns(DnsProcessConfig),
@@ -114,7 +114,7 @@ pub fn load_daemon_process_config(
             control = control.with_machine_bootstrap(load_machine_bootstrap(&env)?);
             control =
                 control.with_dataplane_endpoint_supernet(load_dataplane_endpoint_supernet(&env)?);
-            Ok(DaemonProcessConfig::Control(control))
+            Ok(DaemonProcessConfig::Control(Box::new(control)))
         }
         DaemonProcessRole::Machine(machine_id) => {
             let connect = load_nats_connect_config(&role, &env)?;

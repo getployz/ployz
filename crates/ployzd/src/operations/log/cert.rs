@@ -127,7 +127,7 @@ impl OperationRepository {
                 status,
                 sequence: _,
             } => {
-                publish_progress(&self.progress, event, &status).await;
+                publish_progress(&self.progress, *event, &status).await;
                 Ok(OperationStatusWrite::Stored)
             }
         }

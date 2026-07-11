@@ -123,12 +123,12 @@ enum RecordTxn {
     Projection(StatusProjectionError),
     AlreadySatisfied {
         current_sequence: EventSequence,
-        status: OperationStatus,
+        status: Box<OperationStatus>,
     },
     Stored {
         sequence: EventSequence,
-        event: OperationEvent,
-        status: OperationStatus,
+        event: Box<OperationEvent>,
+        status: Box<OperationStatus>,
     },
 }
 
@@ -169,7 +169,7 @@ fn record_operation_event_in_txn(
     if duplicate_machine_add_joined(&current, &event) {
         return Ok(RecordTxn::AlreadySatisfied {
             current_sequence: current.last_event_sequence(),
-            status: current,
+            status: Box::new(current),
         });
     }
     let projection = match project_operation_event(&current, event.clone(), sequence) {
@@ -179,7 +179,7 @@ fn record_operation_event_in_txn(
     let OperationProjection::StatusChanged { status } = projection else {
         return Ok(RecordTxn::AlreadySatisfied {
             current_sequence: current.last_event_sequence(),
-            status: current,
+            status: Box::new(current),
         });
     };
     let status = *status;
@@ -190,7 +190,7 @@ fn record_operation_event_in_txn(
         {
             return Ok(RecordTxn::AlreadySatisfied {
                 current_sequence: current.last_event_sequence(),
-                status: current,
+                status: Box::new(current),
             });
         }
         return Err(error);
@@ -199,8 +199,8 @@ fn record_operation_event_in_txn(
     scrub_failed_machine_add_secrets(conn, &status)?;
     Ok(RecordTxn::Stored {
         sequence,
-        event,
-        status,
+        event: Box::new(event),
+        status: Box::new(status),
     })
 }
 

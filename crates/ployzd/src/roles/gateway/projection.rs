@@ -103,7 +103,7 @@ impl GatewayUpstreamKey {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GatewayProjectionUpdate {
-    SourceAvailable(GatewayProjectionInput),
+    SourceAvailable(Box<GatewayProjectionInput>),
     SourceInvalid(GatewayProjectionError),
     SourceUnavailable(GatewayProjectionError),
 }
@@ -146,7 +146,8 @@ pub fn apply_gateway_update(
     update: GatewayProjectionUpdate,
 ) -> GatewayProjectionState {
     match update {
-        GatewayProjectionUpdate::SourceAvailable(mut input) => {
+        GatewayProjectionUpdate::SourceAvailable(input) => {
+            let mut input = *input;
             let failures = input.custom_cert_failures.clone();
             if let Some(last_good) = previous.last_good.as_ref() {
                 for failure in &failures {

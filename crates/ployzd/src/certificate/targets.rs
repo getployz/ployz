@@ -80,7 +80,7 @@ mod tests {
         };
 
         assert_eq!(
-            gateway_certificate_targets(&[gateway.clone()], &[foreign_facts]),
+            gateway_certificate_targets(std::slice::from_ref(&gateway), &[foreign_facts]),
             [GatewayCertificateTarget {
                 machine_id: gateway.machine_id,
                 public_ips: Vec::new(),

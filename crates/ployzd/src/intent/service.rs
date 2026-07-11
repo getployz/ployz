@@ -34,6 +34,15 @@ pub struct RunningIntentService {
     publisher: JoinHandle<()>,
 }
 
+struct IntentSnapshotSources<'a> {
+    machine_roster: &'a MachineRosterStore,
+    namespace_intent: &'a NamespaceIntentStore,
+    lease_intent: &'a LeaseIntentStore,
+    certificate_intent: &'a CertificateIntentStore,
+    core_store: &'a CoreStore,
+    nats_authorizations: &'a NatsAuthorizationStore,
+}
+
 impl RunningIntentService {
     pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
         self.publisher.abort();
@@ -121,37 +130,33 @@ pub async fn start_intent_service(
             let nats_authorizations = service_authorizations.clone();
             let core_machine_id = service_core_machine_id.clone();
             async move {
-                intent_get_response(
-                    request,
-                    &core_machine_id,
-                    &machine_roster,
-                    &namespace_intent,
-                    &lease_intent,
-                    &certificate_intent,
-                    &core_store,
-                    &nats_authorizations,
-                )
-                .await
+                let sources = IntentSnapshotSources {
+                    machine_roster: &machine_roster,
+                    namespace_intent: &namespace_intent,
+                    lease_intent: &lease_intent,
+                    certificate_intent: &certificate_intent,
+                    core_store: &core_store,
+                    nats_authorizations: &nats_authorizations,
+                };
+                intent_get_response(request, &core_machine_id, &sources).await
             }
         })
         .await?;
 
     let publisher = tokio::spawn(async move {
+        let sources = IntentSnapshotSources {
+            machine_roster: &machine_roster,
+            namespace_intent: &namespace_intent,
+            lease_intent: &lease_intent,
+            certificate_intent: &certificate_intent,
+            core_store: &core_store,
+            nats_authorizations: &nats_authorizations,
+        };
         let mut interval = tokio::time::interval(publish_interval);
         let mut consecutive_failures: u64 = 0;
         loop {
             interval.tick().await;
-            let intent = match load_intent(
-                &publisher_core_machine_id,
-                &machine_roster,
-                &namespace_intent,
-                &lease_intent,
-                &certificate_intent,
-                &core_store,
-                &nats_authorizations,
-            )
-            .await
-            {
+            let intent = match load_intent(&publisher_core_machine_id, &sources).await {
                 Ok(intent) => intent,
                 Err(error) => {
                     warn_publisher_failure(&mut consecutive_failures, "load-intent", error);
@@ -185,28 +190,13 @@ pub async fn start_intent_service(
 async fn intent_get_response(
     request: NatsServiceRequest,
     core_machine_id: &MachineId,
-    machine_roster: &MachineRosterStore,
-    namespace_intent: &NamespaceIntentStore,
-    lease_intent: &LeaseIntentStore,
-    certificate_intent: &CertificateIntentStore,
-    core_store: &CoreStore,
-    nats_authorizations: &NatsAuthorizationStore,
+    sources: &IntentSnapshotSources<'_>,
 ) -> NatsServiceResponse {
     if let Err(response) = decode_json_request::<IntentGetRequest>(&request) {
         return response;
     }
 
-    match load_intent(
-        core_machine_id,
-        machine_roster,
-        namespace_intent,
-        lease_intent,
-        certificate_intent,
-        core_store,
-        nats_authorizations,
-    )
-    .await
-    {
+    match load_intent(core_machine_id, sources).await {
         Ok(intent) => NatsServiceResponse::json_ok(&intent),
         Err(message) => NatsServiceResponse::transport_error(NatsServiceError::internal(message)),
     }
@@ -214,30 +204,30 @@ async fn intent_get_response(
 
 async fn load_intent(
     core_machine_id: &MachineId,
-    machine_roster: &MachineRosterStore,
-    namespace_intent: &NamespaceIntentStore,
-    lease_intent: &LeaseIntentStore,
-    certificate_intent: &CertificateIntentStore,
-    core_store: &CoreStore,
-    nats_authorizations: &NatsAuthorizationStore,
+    sources: &IntentSnapshotSources<'_>,
 ) -> Result<IntentSnapshot, String> {
-    let epoch = core_store
+    let epoch = sources
+        .core_store
         .control_plane_epoch()
         .await
         .map_err(|error| error.to_string())?;
-    let active_machines = machine_roster
+    let active_machines = sources
+        .machine_roster
         .active_machines()
         .await
         .map_err(|error| error.to_string())?;
-    let namespace_intent = namespace_intent
+    let namespace_intent = sources
+        .namespace_intent
         .load()
         .await
         .map_err(|error| error.to_string())?;
-    let authorized_users = nats_authorizations
+    let authorized_users = sources
+        .nats_authorizations
         .list()
         .await
         .map_err(|error| error.to_string())?;
-    let managed_lease_intent = lease_intent
+    let managed_lease_intent = sources
+        .lease_intent
         .load()
         .await
         .map_err(|error| error.to_string())?;
@@ -246,11 +236,13 @@ async fn load_intent(
         .map_err(|error| error.to_string())?
         .as_secs();
     let managed_lease = project_managed_lease(managed_lease_intent, now_seconds);
-    let custom_certificates = certificate_intent
+    let custom_certificates = sources
+        .certificate_intent
         .active_certificates()
         .await
         .map_err(|error| error.to_string())?;
-    let acme_http01_challenges = certificate_intent
+    let acme_http01_challenges = sources
+        .certificate_intent
         .challenges()
         .await
         .map_err(|error| error.to_string())?;

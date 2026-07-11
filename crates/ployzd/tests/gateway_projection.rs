@@ -68,7 +68,7 @@ fn failed_custom_material_retains_prior_tls_and_applies_unrelated_updates() {
 
     let state = apply_gateway_update(
         previous,
-        GatewayProjectionUpdate::SourceAvailable(GatewayProjectionInput {
+        GatewayProjectionUpdate::SourceAvailable(Box::new(GatewayProjectionInput {
             managed_cert_bundle: None,
             custom_cert_bundles: Vec::new(),
             custom_cert_failures: vec![failure.clone()],
@@ -79,7 +79,7 @@ fn failed_custom_material_retains_prior_tls_and_applies_unrelated_updates() {
             ],
             serving: Vec::new(),
             observed_machines: Vec::new(),
-        }),
+        })),
     );
 
     let projection = state.last_good.expect("degraded source still applies");
@@ -462,7 +462,7 @@ fn gateway_rejects_duplicate_route_targets() {
 fn gateway_retains_last_good_projection_when_source_is_invalid() {
     let target = route_target("api.example.com", 443);
     let last_good = single_route_projection();
-    let update = GatewayProjectionUpdate::SourceAvailable(GatewayProjectionInput {
+    let update = GatewayProjectionUpdate::SourceAvailable(Box::new(GatewayProjectionInput {
         managed_cert_bundle: None,
         custom_cert_bundles: Vec::new(),
         custom_cert_failures: Vec::new(),
@@ -483,7 +483,7 @@ fn gateway_retains_last_good_projection_when_source_is_invalid() {
         ],
         serving: vec![],
         observed_machines: vec![],
-    });
+    }));
 
     assert_eq!(
         apply_gateway_update(current_state(last_good), update),

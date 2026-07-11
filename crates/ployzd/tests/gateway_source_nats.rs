@@ -59,7 +59,7 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
     let GatewayProjectionUpdate::SourceAvailable(input) = update else {
         panic!("gateway source should be available, got {update:?}");
     };
-    let projection = project_gateway(input).expect("gateway projection succeeds");
+    let projection = project_gateway(*input).expect("gateway projection succeeds");
 
     assert_eq!(
         projection.routes,
