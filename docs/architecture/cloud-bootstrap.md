@@ -17,7 +17,7 @@ or inspect machine bootstrap state. Host Runner owns the explicit Cloud
 session, typed bootstrap envelope validation, local machine mutation, and
 terminal callback when bootstrap uses Cloud.
 
-The future automation command is:
+The noninteractive automation command is:
 
 ```sh
 curl -fsSL https://ployz.sh | sh && sudo ployz host bootstrap cloud --cloud-token pcbs_...
@@ -52,10 +52,11 @@ Bootstrap Session rather than reusing the expired one.
 V1 approval has no explicit `Reject` action. Closing the page or doing nothing
 leaves the session unapproved until it expires.
 
-Future token bootstrap may redeem a Cloud Bootstrap Token for cloud-init and
-fleet automation. A token is a single-redemption bearer secret issued by a
-time-limited Cloud Bootstrap Invite. The default invite duration is 1 hour;
-multi-machine automation uses multiple tokens from the same invite.
+Token bootstrap redeems a Cloud Bootstrap Token for cloud-init and fleet
+automation. Host Runner sends the token as HTTPS bearer authorization to
+`POST /api/bootstrap/tokens/redeem` with its attempt, client, and machine facts.
+Cloud returns the existing bootstrap decision shape. A token authorizes any
+number of machine redemptions during its 24-hour lifetime; Cloud enforces expiry.
 
 Cloud bootstrap modes produce a Cloud Bootstrap Redemption. The redemption
 is created when Cloud approves a session or token for one machine use. For

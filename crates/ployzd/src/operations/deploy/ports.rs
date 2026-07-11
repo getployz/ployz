@@ -1,12 +1,17 @@
+use ployz_core::cert::ActiveCertState;
 use ployz_core::dataplane::{
     DataplanePrepareError, DataplanePrepareRequest, PloyzNativeMeshPrepareReport,
 };
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::image::{ImageEnsureOk, ImageEnsureRequest};
 use ployz_core::ops::ControlPlaneCommitScope;
-use ployz_core::ops::{DeployEvidence, DeployTransition, RouteTarget};
+use ployz_core::ops::{
+    CertificateProvisionFailure, DeployEvidence, DeployTransition, RouteHostname, RouteTarget,
+};
 use ployz_core::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
 use std::future::Future;
+
+use crate::certificate::GatewayCertificateTarget;
 
 use crate::roles::machine::client::{MachineImageEnsureError, MachineImageResolveError};
 use crate::roles::machine::protocol::{
@@ -104,6 +109,15 @@ pub trait DeployHealthChecker {
         &mut self,
         containers: &[DeployContainer],
     ) -> impl Future<Output = Result<(), DeployHealthCheckError>> + Send;
+}
+
+pub trait CertificateProvisioner {
+    fn ensure(
+        &mut self,
+        owner_operation_id: &OperationId,
+        hostname: &RouteHostname,
+        targets: &[GatewayCertificateTarget],
+    ) -> impl Future<Output = Result<ActiveCertState, CertificateProvisionFailure>> + Send;
 }
 
 /// The one deploy commit port: every namespace-state write (route bindings

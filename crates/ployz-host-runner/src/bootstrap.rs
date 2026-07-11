@@ -20,9 +20,16 @@ pub(crate) fn run_bootstrap_command(bootstrap: HostRunnerBootstrap) -> ExitCode 
             eprintln!("  sudo ployz host bootstrap cloud");
             ExitCode::FAILURE
         }
-        HostRunnerBootstrapMode::Cloud { cloud_host } => {
+        HostRunnerBootstrapMode::CloudInteractive { cloud_host } => {
             let host = choose_cloud_host(cloud_host);
             cloud_bootstrap_runner::run_interactive_cloud_bootstrap(host.as_str())
+        }
+        HostRunnerBootstrapMode::CloudToken {
+            cloud_host,
+            cloud_token,
+        } => {
+            let host = choose_cloud_host(cloud_host);
+            cloud_bootstrap_runner::run_token_cloud_bootstrap(host.as_str(), cloud_token)
         }
         HostRunnerBootstrapMode::Core => run_local_core_bootstrap(),
         HostRunnerBootstrapMode::Join { join_token } => run_bootstrap_join(&join_token),

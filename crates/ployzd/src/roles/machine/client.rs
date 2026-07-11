@@ -394,6 +394,7 @@ pub(crate) struct MachinePlacementFacts {
     pub lifecycle: MachineLifecycle,
     pub containers: Option<MachineContainerObservationSnapshot>,
     pub platform: Option<ployz_core::image::OciPlatform>,
+    pub endpoints: Option<ployz_core::state::MachineEndpointObservation>,
 }
 
 pub(crate) async fn read_machine_placement_facts(
@@ -407,7 +408,8 @@ pub(crate) async fn read_machine_placement_facts(
                 machine_id,
                 lifecycle,
                 containers: facts.as_ref().map(|facts| facts.containers().clone()),
-                platform: facts.map(|facts| facts.platform().clone()),
+                platform: facts.as_ref().map(|facts| facts.platform().clone()),
+                endpoints: facts.and_then(|facts| facts.endpoints().cloned()),
             }
         })
         .buffer_unordered(MAX_CONCURRENT_MACHINE_READS);

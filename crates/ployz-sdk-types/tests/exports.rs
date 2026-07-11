@@ -6,17 +6,18 @@ use ployz_sdk_types::{
     CloudBootstrapCallbackAccepted, CloudBootstrapCallbackRequest, CloudBootstrapCallbackToken,
     CloudBootstrapDecision, CloudBootstrapEnvelope, CloudBootstrapIntent, CloudBootstrapOutcome,
     CloudBootstrapRedemptionId, CloudBootstrapSessionCreateRequest, CloudBootstrapSessionCreated,
-    CloudBootstrapSessionPollRequest, CloudFounderBootstrapResult, CoreReplaceError,
-    CoreReplaceReportError, CoreReplaceReportRequest, CoreReplaceReported, CoreReplaceRequest,
-    DeployOperationState, DeployRequest, DeployReservationId, DeployReserveError,
-    DeployReserveRequest, DeployReserved, DeployRunningStage, DeployServiceSpec, DeploySubmitError,
-    DeploySubmitRequest, DeploySubmitResponse, EventSequence, EventSequenceError, ImageReference,
-    ImageReferenceError, InitFirstMachineActivateError, InitFirstMachineActivateRequest,
-    InitFirstMachineActivated, InstallContractError, InstallRolePolicy, LeaseBearerToken,
-    LeaseExpiresAt, LeaseIssuedAt, LogsTailError, LogsTailRequest, LogsTailResult,
-    MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted, MachineAddError, MachineAddRequest,
-    MachineAddResponse, MachineBootstrapUrl, MachineInspectError, MachineInspectRequest,
-    MachineJoinBundle, MachineJoinMaterial, MachineJoinRedeemError, MachineJoinRedeemRequest,
+    CloudBootstrapSessionPollRequest, CloudBootstrapToken, CloudBootstrapTokenRedeemRequest,
+    CloudFounderBootstrapResult, CoreReplaceError, CoreReplaceReportError,
+    CoreReplaceReportRequest, CoreReplaceReported, CoreReplaceRequest, DeployOperationState,
+    DeployRequest, DeployReservationId, DeployReserveError, DeployReserveRequest, DeployReserved,
+    DeployRunningStage, DeployServiceSpec, DeploySubmitError, DeploySubmitRequest,
+    DeploySubmitResponse, EventSequence, EventSequenceError, ImageReference, ImageReferenceError,
+    InitFirstMachineActivateError, InitFirstMachineActivateRequest, InitFirstMachineActivated,
+    InstallContractError, InstallRolePolicy, LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt,
+    LogsTailError, LogsTailRequest, LogsTailResult, MAX_OPERATION_EVENT_REPLAY_LIMIT,
+    MachineAddAccepted, MachineAddError, MachineAddRequest, MachineAddResponse,
+    MachineBootstrapUrl, MachineInspectError, MachineInspectRequest, MachineJoinBundle,
+    MachineJoinMaterial, MachineJoinRedeemError, MachineJoinRedeemRequest,
     MachineJoinRedeemResponse, MachineJoinRedeemResult, MachineJoinRedeemed,
     MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
     MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinToken,
@@ -325,6 +326,17 @@ fn sdk_exports_operation_api_wire_types() {
 #[test]
 fn sdk_exports_cloud_bootstrap_wire_types() {
     let attempt_id = CloudBootstrapAttemptId::try_new("pcba_123").expect("valid attempt id");
+    let token = CloudBootstrapToken::try_new("pcbt_abc123").expect("valid bootstrap token");
+    let redeem_request = CloudBootstrapTokenRedeemRequest {
+        attempt_id: attempt_id.clone(),
+        client: ployz_sdk_types::CloudBootstrapClientInfo::current("0.1.0"),
+        machine: ployz_sdk_types::CloudBootstrapMachineFacts {
+            hostname: Some("edge-1".to_owned()),
+            os: "linux".to_owned(),
+            arch: "x86_64".to_owned(),
+            candidate_runtime_nats_url: None,
+        },
+    };
     let decision = CloudBootstrapDecision::Ready {
         envelope: Box::new(CloudBootstrapEnvelope {
             attempt_id: attempt_id.clone(),
@@ -369,6 +381,13 @@ fn sdk_exports_cloud_bootstrap_wire_types() {
             },
         },
     };
+
+    assert_eq!(
+        serde_json::to_string(&redeem_request).expect("redeem request serializes"),
+        r#"{"attempt_id":"pcba_123","client":{"protocol_version":1,"host_runner_version":"0.1.0"},"machine":{"hostname":"edge-1","os":"linux","arch":"x86_64","candidate_runtime_nats_url":null}}"#
+    );
+    assert_eq!(token.secret(), "pcbt_abc123");
+    assert_eq!(format!("{token:?}"), "CloudBootstrapToken([redacted])");
 
     assert_eq!(
         serde_json::to_string(&callback).expect("callback serializes"),
