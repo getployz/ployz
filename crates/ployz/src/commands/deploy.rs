@@ -152,24 +152,14 @@ pub(crate) fn deploy_command(
 fn deploy_history_command(
     parsed: DeployHistoryCli,
 ) -> Result<DeployHistoryCommand, PloyzctlCliError> {
-    let namespace_id = parsed
-        .namespace
-        .map(NamespaceId::try_new)
-        .transpose()
-        .map_err(|error| invalid_value("--namespace", error))?
-        .unwrap_or_else(|| NamespaceId::try_new("default").expect("default namespace is valid"));
+    let namespace_id = namespace_id_or_default(parsed.namespace)?;
     Ok(DeployHistoryCommand { namespace_id })
 }
 
 fn deploy_rollback_command(
     parsed: DeployRollbackCli,
 ) -> Result<DeployRollbackCommand, PloyzctlCliError> {
-    let namespace_id = parsed
-        .namespace
-        .map(NamespaceId::try_new)
-        .transpose()
-        .map_err(|error| invalid_value("--namespace", error))?
-        .unwrap_or_else(|| NamespaceId::try_new("default").expect("default namespace is valid"));
+    let namespace_id = namespace_id_or_default(parsed.namespace)?;
     let operation = parsed
         .to
         .map(OperationId::try_new)
@@ -265,11 +255,7 @@ fn deploy_submit_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCli
 
     let image = image.ok_or_else(|| cli_error("--image is required unless -f is used"))?;
     let image = ImageReference::try_new(image).map_err(|error| invalid_value("--image", error))?;
-    let namespace_id = namespace
-        .map(NamespaceId::try_new)
-        .transpose()
-        .map_err(|error| invalid_value("--namespace", error))?
-        .unwrap_or_else(|| NamespaceId::try_new("default").expect("default namespace is valid"));
+    let namespace_id = namespace_id_or_default(namespace)?;
     let service_id = match service {
         Some(value) => {
             ServiceId::try_new(value).map_err(|error| invalid_value("--service", error))?
@@ -323,6 +309,13 @@ fn deploy_submit_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCli
         detach,
         from_registry,
     })
+}
+
+fn namespace_id_or_default(namespace: Option<String>) -> Result<NamespaceId, PloyzctlCliError> {
+    let Some(namespace) = namespace else {
+        return Ok(NamespaceId::try_new("default").expect("default namespace is valid"));
+    };
+    NamespaceId::try_new(namespace).map_err(|error| invalid_value("--namespace", error))
 }
 
 #[derive(Debug, Args)]

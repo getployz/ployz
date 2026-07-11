@@ -34,6 +34,7 @@ use tokio::time::sleep as async_sleep;
 
 mod deploy_follow;
 mod deploy_history;
+mod deploy_rollback;
 mod network;
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
@@ -223,9 +224,7 @@ pub async fn execute_command(
         PloyzctlCommand::CoreReplace(command) => execute_core_replace_remote(command, config).await,
         PloyzctlCommand::Deploy(command) => deploy_follow::execute_deploy(command, config).await,
         PloyzctlCommand::DeployHistory(command) => deploy_history::inspect(command, config),
-        PloyzctlCommand::DeployRollback(command) => {
-            deploy_follow::execute_rollback(command, config).await
-        }
+        PloyzctlCommand::DeployRollback(command) => deploy_rollback::execute(command, config).await,
         PloyzctlCommand::InternalInit(command) => match &command.mode {
             FirstMachineInitMode::RunHostRunnerInstall {
                 host_runner_install,

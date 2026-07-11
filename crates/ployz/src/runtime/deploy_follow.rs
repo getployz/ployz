@@ -1,13 +1,12 @@
 use std::io::{self, IsTerminal, Write};
 
-use ployz_core::deploy::DeployOrigin;
-use ployz_core::ids::OperationId;
+use ployz_core::deploy::DeployReservationId;
+use ployz_core::ids::{NamespaceId, OperationId};
 use ployz_core::ops::ReplayedOperationEvent;
-use ployz_sdk_types::{DeployReserveRequest, DeploySubmitRequest};
+use ployz_sdk_types::{AcceptedOperation, DeployReserveRequest, DeploySubmitRequest};
 
 use crate::api_client::OperationApiClient;
-use crate::client_ids::generate_client_deploy_rollback_id;
-use crate::commands::deploy::{DeployCommand, DeployOutput, DeployRollbackCommand};
+use crate::commands::deploy::{DeployCommand, DeployOutput};
 use crate::commands::deploy_render::{
     DeployTree, render_failure_block, render_frame, render_plain_lines, render_terminal,
 };
@@ -31,12 +30,7 @@ pub(super) async fn execute_deploy(
     }
     let connect = nats_connect_config(&config)?;
     let api = operation_api_client_with_connect(&config, connect).await?;
-    let reservation = api
-        .deploy_reserve(&DeployReserveRequest {
-            namespace_id: command.namespace_id.clone(),
-        })
-        .await
-        .map_err(api_error)?;
+    let reservation_id = reserve_deploy(&api, command.namespace_id.clone()).await?;
     let receipts = crate::image_push::prepare_deploy_images(
         &api,
         &mut command.services,
@@ -48,12 +42,8 @@ pub(super) async fn execute_deploy(
         .iter()
         .map(crate::image_push::ImagePushReceipt::render)
         .collect::<String>();
-    let registry_credentials = crate::registry_auth::deploy_registry_credentials(&command.services)
-        .await
-        .map_err(|source| PloyzctlExecutionError::RegistryAuth { source })?;
-    let mut request = command.into_request(reservation.reservation_id);
-    request.registry_credentials = registry_credentials;
-    let accepted = api.deploy_submit(&request).await.map_err(api_error)?;
+    let request = command.into_request(reservation_id);
+    let accepted = submit_deploy(&api, request).await?;
     if detach {
         return Ok(PloyzctlExecutionOutput {
             stdout: format!(
@@ -63,57 +53,42 @@ pub(super) async fn execute_deploy(
             stderr: String::new(),
         });
     }
-    follow_accepted_deploy(&api, accepted.operation_id, &config, namespace_id, receipt_output).await
-}
-
-pub(super) async fn execute_rollback(
-    command: DeployRollbackCommand,
-    config: &PloyzctlRuntimeConfig,
-) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
-    let config = config.clone().with_cluster_context_from_disk()?;
-    let namespace_id = command.namespace_id.clone();
-    let mut target = deploy_history::select_rollback_request(command, &config)?;
-    target.origin = Some(DeployOrigin::try_new("rollback").expect("rollback origin is valid"));
-    let connect = nats_connect_config(&config)?;
-    let api = operation_api_client_with_connect(&config, connect).await?;
-    let reservation = api
-        .deploy_reserve(&DeployReserveRequest {
-            namespace_id: namespace_id.clone(),
-        })
-        .await
-        .map_err(api_error)?;
-    let registry_credentials = crate::registry_auth::deploy_registry_credentials(&target.services)
-        .await
-        .map_err(|source| PloyzctlExecutionError::RegistryAuth { source })?;
-    let generated = generate_client_deploy_rollback_id().map_err(|error| {
-        PloyzctlExecutionError::GenerateClientOperationIds {
-            message: error.to_string(),
-        }
-    })?;
-    let accepted = api
-        .deploy_submit(&DeploySubmitRequest {
-            idempotency_key: generated.idempotency_key,
-            reservation_id: reservation.reservation_id,
-            target,
-            registry_credentials,
-        })
-        .await
-        .map_err(api_error)?;
     follow_accepted_deploy(
         &api,
         accepted.operation_id,
         &config,
         namespace_id,
-        String::new(),
+        receipt_output,
     )
     .await
 }
 
-async fn follow_accepted_deploy(
+pub(super) async fn reserve_deploy(
+    api: &OperationApiClient,
+    namespace_id: NamespaceId,
+) -> Result<DeployReservationId, PloyzctlExecutionError> {
+    api.deploy_reserve(&DeployReserveRequest { namespace_id })
+        .await
+        .map(|reservation| reservation.reservation_id)
+        .map_err(api_error)
+}
+
+pub(super) async fn submit_deploy(
+    api: &OperationApiClient,
+    mut request: DeploySubmitRequest,
+) -> Result<AcceptedOperation, PloyzctlExecutionError> {
+    request.registry_credentials =
+        crate::registry_auth::deploy_registry_credentials(&request.target.services)
+            .await
+            .map_err(|source| PloyzctlExecutionError::RegistryAuth { source })?;
+    api.deploy_submit(&request).await.map_err(api_error)
+}
+
+pub(super) async fn follow_accepted_deploy(
     api: &OperationApiClient,
     operation_id: OperationId,
     config: &PloyzctlRuntimeConfig,
-    namespace_id: ployz_core::ids::NamespaceId,
+    namespace_id: NamespaceId,
     output_prefix: String,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
     let history = deploy_history::stream(config, namespace_id);

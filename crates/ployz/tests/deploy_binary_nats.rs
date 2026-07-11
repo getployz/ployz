@@ -260,10 +260,12 @@ async fn binary_rollback_replays_the_selected_pinned_payload_as_a_new_deploy() {
     assert!(stdout(&output).contains("deploy op_rollback: succeeded"));
     assert_eq!(stderr(&output), "");
     let entries = history.load().expect("history reloads");
-    assert_eq!(entries.len(), 2);
-    assert_eq!(entries[1].operation_id, operation_id("op_rollback"));
+    let [_selected, rollback] = entries.as_slice() else {
+        panic!("selected deploy and rollback must be recorded: {entries:?}");
+    };
+    assert_eq!(rollback.operation_id, operation_id("op_rollback"));
     assert_eq!(
-        entries[1].request.origin,
+        rollback.request.origin,
         Some(DeployOrigin::try_new("rollback").expect("valid rollback origin"))
     );
 }
