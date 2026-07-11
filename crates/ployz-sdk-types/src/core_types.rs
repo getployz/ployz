@@ -7,15 +7,18 @@ pub use ployz_core::cert::{
     ManagedLeaseError, ManagedLeaseName, ManagedLeaseRecord, ManagedLeaseRenewed, PublicUrlMode,
 };
 pub use ployz_core::dataplane::{
-    DataplaneMember, DataplaneProviderFailure, EbpfForwardingReady, EbpfForwardingReadyEvidence,
-    MachineEndpointSubnet, MachineEndpointSupernet, PloyzNativeMeshComponent,
+    DataplaneMember, DataplaneProviderFailure, EbpfAttachmentStatus, EbpfForwardingReady,
+    EbpfForwardingReadyEvidence, MachineDataplaneStatus, MachineEndpointSubnet,
+    MachineEndpointSupernet, NetworkStatusMode, PloyzNativeMeshComponent,
     PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport, PloyzNativeMeshReady,
-    WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
+    WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardHandshakeStatus, WireGuardInterfaceMtu,
+    WireGuardMtuProbe, WireGuardPeerEndpointSubnet, WireGuardPeerStatus, WireGuardPublicKey,
+    WireGuardReady, WireGuardReadyEvidence, WireGuardRttStatus, WireGuardStatus,
 };
 pub use ployz_core::deploy::{
     ContainerCommand, ContainerCommandError, ContainerEntrypoint, ContainerHealthcheck,
     ContainerHealthcheckTest, ContainerMountPath, ContainerMountPathError, ContainerResourceLimits,
-    ContainerRestartPolicy, ContainerRuntimeSpec, DeployCleanupContainer, DeployPlan,
+    ContainerRestartPolicy, ContainerRuntimeSpec, DeployCleanupContainer, DeployOrigin, DeployPlan,
     DeployPlanStep, DeployRequest, DeployReservationExpiresAt, DeployReservationId,
     DeployReservationNumberError, DeployRoute, DeployRouteTarget, DeployServicePlan,
     DeployServiceSpec, EnvName, EnvNameError, EnvValue, EnvValueError, HealthcheckDurationNanos,
@@ -37,6 +40,10 @@ pub use ployz_core::install::{
     MachineJoinMaterial, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
     MachineJoinTrustedNats, NatsServerInstallSpec, WrappedCaKey, WrappedCoreSeeds,
 };
+pub use ployz_core::internal_dns::{
+    InternalDnsFactGeneration, InternalDnsFactWatermark, InternalDnsResolverCacheIncarnation,
+    InternalDnsResolverStatus, InternalDnsStatus, InternalServiceName, InternalServiceNameError,
+};
 pub use ployz_core::machine::{
     ConnectivityProofEvidence, ConnectivityProofUnreachablePeer, IssuedJoinToken,
     JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt, MachineAddFailure,
@@ -44,8 +51,9 @@ pub use ployz_core::machine::{
     MachineReadinessEvidence,
 };
 pub use ployz_core::machine_runtime::{
-    ContainerHealth, ContainerRuntimeState, MachineDiskSpace, ManagedContainerHealthStatus,
-    ManagedContainerIdentity, ManagedContainerKind, ManagedContainerObservation,
+    ContainerHealth, ContainerRuntimeState, MachineDiskSpace, MachineFactsRefreshConfirmation,
+    ManagedContainerHealthStatus, ManagedContainerIdentity, ManagedContainerKind,
+    ManagedContainerObservation,
 };
 pub use ployz_core::nats_config::{
     NatsAuthorizedUser, NatsCaCertificatePem, NatsUserPublicKey, NatsUserSeed,
@@ -57,14 +65,16 @@ pub use ployz_core::ops::{
     MachineSubstrateVersions, MachineUpdateFailure, MachineUpdateOperationState,
     ManagedLeaseFailureClass, ManagedLeaseOperationFailure, ManagedLeaseOperationState,
     ManagedLeaseSubject, NamespaceRemoveFailure, NamespaceRemoveOperationState,
-    NamespaceRemoveRunningStage, NonEmptyTextError, OperationEvent, OperationEventReplayCursor,
-    OperationEventReplayLimit, OperationEventReplayLimitError, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationIdempotencyKey, OperationKind, OperationStatus,
-    OperationStatusSnapshot, OperationSubject, OperatorHint, ReplayedOperationEvent,
-    RetainedArtifact, RouteCutoverFailureReason, RouteHostname, RouteHostnameError, RoutePort,
-    RoutePortError, RouteTarget, ServiceRestartFailure, ServiceRestartOperationState,
-    ServiceRestartRunningStage, UnusableMachine, VolumeRemoveFailure, VolumeRemoveOperationState,
-    VolumeRemoveRunningStage,
+    NamespaceRemoveRunningStage, NetworkRepairDnsRefreshProblem, NetworkRepairFailure,
+    NetworkRepairMachineFactsRefreshOutcome, NetworkRepairOperationState,
+    NetworkRepairProgressPhase, NetworkRepairRequestFailure, NetworkRepairRunningStage,
+    NonEmptyTextError, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
+    OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
+    OperationIdempotencyKey, OperationKind, OperationStatus, OperationStatusSnapshot,
+    OperationSubject, OperatorHint, ReplayedOperationEvent, RetainedArtifact,
+    RouteCutoverFailureReason, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
+    RouteTarget, ServiceRestartFailure, ServiceRestartOperationState, ServiceRestartRunningStage,
+    UnusableMachine, VolumeRemoveFailure, VolumeRemoveOperationState, VolumeRemoveRunningStage,
 };
 pub use ployz_core::ops::{
     CertOperationFailure, CertOperationState, CertRunningStage, ControlPlaneCommitScope,

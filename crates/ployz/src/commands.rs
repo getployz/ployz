@@ -13,6 +13,7 @@ pub mod init;
 pub mod logs;
 pub mod machine;
 pub mod namespace;
+pub mod network;
 pub mod ops;
 pub mod role_policy;
 pub mod service;
@@ -30,6 +31,7 @@ pub enum PloyzctlCommand {
     CorePromote(core::CorePromoteCommand),
     CoreReplace(core::CoreReplaceCommand),
     Deploy(deploy::DeployCommand),
+    DeployHistory(deploy::DeployHistoryCommand),
     InternalInit(Box<init::FirstMachineInitCommand>),
     InitFirstMachineActivate(init::FirstMachineActivateCommand),
     InitJoinTemplate(init::join_template::MachineJoinTemplateCommand),
@@ -40,6 +42,9 @@ pub enum PloyzctlCommand {
     MachineLifecycle(machine::MachineLifecycleCommand),
     MachineList(machine::MachineListCommand),
     MachineInspect(machine::MachineInspectCommand),
+    NetworkStatus(network::NetworkStatusCommand),
+    NetworkResolve(network::NetworkResolveCommand),
+    NetworkRepair(network::NetworkRepairCommand),
     ServiceList(service::ServiceListCommand),
     ServiceInspect(service::ServiceInspectCommand),
     ServiceRestart(service::ServiceRestartCommand),
@@ -95,7 +100,7 @@ pub fn parse_command(
 enum CommandCli {
     Login(service::EmptyCli),
     Init(machine::MachineInitCli),
-    Deploy(deploy::DeployCli),
+    Deploy(deploy::DeployRootCli),
     Core {
         #[command(subcommand)]
         command: CoreCli,
@@ -106,6 +111,10 @@ enum CommandCli {
     Machine {
         #[command(subcommand)]
         command: MachineCli,
+    },
+    Network {
+        #[command(subcommand)]
+        command: NetworkCli,
     },
     Service {
         #[command(subcommand)]
@@ -173,6 +182,13 @@ enum ServiceCli {
 }
 
 #[derive(Debug, Subcommand)]
+enum NetworkCli {
+    Status(network::NetworkStatusCli),
+    Resolve(network::NetworkResolveCli),
+    Repair(network::NetworkRepairCli),
+}
+
+#[derive(Debug, Subcommand)]
 enum NamespaceCli {
     Rm(namespace::NamespaceRemoveCli),
 }
@@ -212,7 +228,14 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
                 core::core_replace_command(command).map(PloyzctlCommand::CoreReplace)
             }
         },
-        CommandCli::Deploy(command) => deploy::deploy_command(command).map(PloyzctlCommand::Deploy),
+        CommandCli::Deploy(command) => {
+            deploy::deploy_command(command).map(|command| match command {
+                deploy::ParsedDeployCommand::Deploy(command) => PloyzctlCommand::Deploy(command),
+                deploy::ParsedDeployCommand::History(command) => {
+                    PloyzctlCommand::DeployHistory(command)
+                }
+            })
+        }
         CommandCli::List(command) => Ok(PloyzctlCommand::ServiceList(
             service::service_list_command(command),
         )),
@@ -242,6 +265,17 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
             )),
             MachineCli::Inspect(command) => {
                 machine::machine_inspect_command(command).map(PloyzctlCommand::MachineInspect)
+            }
+        },
+        CommandCli::Network { command } => match command {
+            NetworkCli::Status(command) => Ok(PloyzctlCommand::NetworkStatus(
+                network::network_status_command(command),
+            )),
+            NetworkCli::Resolve(command) => Ok(PloyzctlCommand::NetworkResolve(
+                network::network_resolve_command(command),
+            )),
+            NetworkCli::Repair(command) => {
+                network::network_repair_command(command).map(PloyzctlCommand::NetworkRepair)
             }
         },
         CommandCli::Service { command } => match command {

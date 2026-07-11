@@ -16,7 +16,9 @@ use ployz_sdk_types::{
     MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError,
     MachineLifecycleRequest, MachineListError, MachineListRequest, MachineListResult,
     MachineSnapshot, MachineUpdateError, MachineUpdateRequest, NamespaceRemoveError,
-    NamespaceRemoveRequest, OperationApiResponse, OpsListError, OpsListRequest, OpsListResult,
+    NamespaceRemoveRequest, NetworkRepairError, NetworkRepairRequest, NetworkResolveError,
+    NetworkResolveRequest, NetworkResolveResult, NetworkStatusError, NetworkStatusRequest,
+    NetworkStatusResult, OperationApiResponse, OpsListError, OpsListRequest, OpsListResult,
     OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest, RuntimeSnapshotError,
     RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceInspectError, ServiceInspectRequest,
     ServiceListError, ServiceListRequest, ServiceListResult, ServiceRestartError,
@@ -26,9 +28,10 @@ use ployz_sdk_types::{
         CoreReplaceApi, CoreReplaceReportApi, DeployReserveApi, DeploySubmitApi,
         InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineDrainApi,
         MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
-        MachineResumeApi, MachineUpdateApi, NamespaceRemoveApi, OperationApiContract, OpsListApi,
-        OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi,
-        ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
+        MachineResumeApi, MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi,
+        NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi,
+        OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi,
+        VolumeListApi, VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -153,6 +156,27 @@ impl OperationApiClient {
         request: &MachineInspectRequest,
     ) -> Result<MachineSnapshot, OperationApiClientError<MachineInspectError>> {
         self.request_api::<MachineInspectApi>(request).await
+    }
+
+    pub async fn network_resolve(
+        &self,
+        request: &NetworkResolveRequest,
+    ) -> Result<NetworkResolveResult, OperationApiClientError<NetworkResolveError>> {
+        self.request_api::<NetworkResolveApi>(request).await
+    }
+
+    pub async fn network_status(
+        &self,
+        request: &NetworkStatusRequest,
+    ) -> Result<NetworkStatusResult, OperationApiClientError<NetworkStatusError>> {
+        self.request_api::<NetworkStatusApi>(request).await
+    }
+
+    pub async fn network_repair(
+        &self,
+        request: &NetworkRepairRequest,
+    ) -> Result<AcceptedOperation, OperationApiClientError<NetworkRepairError>> {
+        self.request_api::<NetworkRepairApi>(request).await
     }
 
     pub async fn service_list(

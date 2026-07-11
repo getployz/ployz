@@ -9,6 +9,7 @@ pub mod commands;
 pub mod compose;
 pub mod config;
 mod confirmation;
+pub mod deploy_history;
 pub mod host_runner_install;
 pub mod image_push;
 mod registry_auth;

@@ -15,6 +15,8 @@ pub const API_SERVICE_ID: &str = "plz-api.core";
 pub const API_SERVICE_DESCRIPTION: &str = "Ployz operator-facing command service";
 pub const MACHINE_SERVICE_NAME: &str = "plz-machine";
 pub const MACHINE_SERVICE_DESCRIPTION: &str = "Ployz machine-local runtime service";
+pub const DNS_SERVICE_NAME: &str = "plz-dns";
+pub const DNS_SERVICE_DESCRIPTION: &str = "Ployz machine-local DNS role service";
 pub const INTENT_SERVICE_NAME: &str = "plz-intent";
 pub const INTENT_SERVICE_ID: &str = "plz-intent.core";
 pub const INTENT_SERVICE_DESCRIPTION: &str = "Ployz operator intent service";
@@ -34,6 +36,9 @@ pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: &[OperationApiEndpoint] = &[
     OperationApiEndpoint::CoreReplaceReport,
     OperationApiEndpoint::MachineList,
     OperationApiEndpoint::MachineInspect,
+    OperationApiEndpoint::NetworkStatus,
+    OperationApiEndpoint::NetworkResolve,
+    OperationApiEndpoint::NetworkRepair,
     OperationApiEndpoint::MachineJoinRedeem,
     OperationApiEndpoint::MachineJoinReport,
     OperationApiEndpoint::ServiceList,
@@ -147,6 +152,7 @@ pub fn machine_role_service(machine_id: &MachineId) -> NatsServiceSpec {
         vec![
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::Inspect),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::FactsGet),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::FactsRefresh),
             machine_endpoint_spec(
                 machine_id,
                 MachineServiceEndpoint::ContainerEnsureEndpointNetwork,
@@ -160,6 +166,7 @@ pub fn machine_role_service(machine_id: &MachineId) -> NatsServiceSpec {
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerRemove),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::VolumeRemove),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::DataplanePrepare),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::DataplaneStatus),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::DataplaneProbeMtu),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::SubstrateUpdate),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::SubstrateReport),
@@ -175,6 +182,21 @@ pub fn machine_role_service(machine_id: &MachineId) -> NatsServiceSpec {
 #[must_use]
 pub fn machine_role_service_base(machine_id: &MachineId) -> NatsServiceSpec {
     machine_role_service_spec(machine_id, Vec::new())
+}
+
+#[must_use]
+pub fn dns_role_service_base(machine_id: &MachineId) -> NatsServiceSpec {
+    NatsServiceSpec::new(
+        format!("{DNS_SERVICE_NAME}.{}", machine_id.as_str()),
+        DNS_SERVICE_NAME,
+        SERVICE_VERSION,
+        DNS_SERVICE_DESCRIPTION,
+        ServiceMetadata::from_entries(vec![ServiceMetadataEntry::new(
+            "machine_id",
+            machine_id.as_str(),
+        )]),
+        Vec::new(),
+    )
 }
 
 #[must_use]
@@ -194,6 +216,9 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
     match endpoint {
         MachineServiceEndpoint::Inspect => "machine.inspect",
         MachineServiceEndpoint::FactsGet => "machine.facts.get",
+        MachineServiceEndpoint::FactsRefresh => "machine.facts.refresh",
+        MachineServiceEndpoint::DnsResolve => "machine.dns.resolve",
+        MachineServiceEndpoint::DnsStatus => "machine.dns.status",
         MachineServiceEndpoint::ContainerEnsureEndpointNetwork => {
             "machine.container.ensure_endpoint_network"
         }
@@ -206,6 +231,7 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         MachineServiceEndpoint::ContainerRemove => "machine.container.remove",
         MachineServiceEndpoint::VolumeRemove => "machine.volume.remove",
         MachineServiceEndpoint::DataplanePrepare => "machine.dataplane.prepare",
+        MachineServiceEndpoint::DataplaneStatus => "machine.dataplane.status",
         MachineServiceEndpoint::DataplaneProbeMtu => "machine.dataplane.probe_mtu",
         MachineServiceEndpoint::SubstrateUpdate => "machine.substrate.update",
         MachineServiceEndpoint::SubstrateReport => "machine.substrate.report",

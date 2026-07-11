@@ -2,6 +2,9 @@
 
 use futures_util::StreamExt;
 use ployz_core::ids::{ContainerId, MachineId};
+use ployz_core::internal_dns::{
+    InternalDnsFactGeneration, InternalDnsFactWatermark, InternalDnsResolverCacheIncarnation,
+};
 use ployz_core::machine_runtime::{
     MachineContainerFactDelta, MachineContainerObservationSnapshot, MachineFactsSnapshot,
     ManagedContainerObservation,
@@ -12,24 +15,53 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 use tokio::task::JoinHandle;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct FactCache {
+    resolver_cache_incarnation: InternalDnsResolverCacheIncarnation,
     state: Arc<RwLock<RuntimeFactsState>>,
+}
+
+impl Default for FactCache {
+    fn default() -> Self {
+        Self {
+            resolver_cache_incarnation: InternalDnsResolverCacheIncarnation::try_new(
+                nuid::next().to_ascii_lowercase(),
+            )
+            .expect("NUID is a valid resolver cache incarnation"),
+            state: Arc::default(),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
 struct RuntimeFactsState {
     machine_facts: BTreeMap<MachineId, MachineFactsSnapshot>,
+    machine_fact_watermarks: BTreeMap<MachineId, InternalDnsFactWatermark>,
     gateway_statuses: BTreeMap<MachineId, GatewayStatusObservation>,
 }
 
 impl FactCache {
     pub fn record_machine_facts(&self, facts: MachineFactsSnapshot) {
-        self.state
+        let mut state = self
+            .state
             .write()
-            .expect("runtime facts cache lock is not poisoned")
-            .machine_facts
-            .insert(facts.machine_id().clone(), facts);
+            .expect("runtime facts cache lock is not poisoned");
+        let machine_id = facts.machine_id().clone();
+        let observed_at_unix_ms = facts.observed_at_unix_ms();
+        state
+            .machine_fact_watermarks
+            .entry(machine_id.clone())
+            .and_modify(|watermark| {
+                watermark.observed_at_unix_ms = observed_at_unix_ms;
+                watermark.generation = watermark.generation.next();
+            })
+            .or_insert_with(|| InternalDnsFactWatermark {
+                machine_id: machine_id.clone(),
+                observed_at_unix_ms,
+                resolver_cache_incarnation: self.resolver_cache_incarnation.clone(),
+                generation: InternalDnsFactGeneration::first(),
+            });
+        state.machine_facts.insert(machine_id, facts);
     }
 
     pub fn record_machine_container_fact(&self, delta: MachineContainerFactDelta) {
@@ -93,6 +125,17 @@ impl FactCache {
             .read()
             .expect("runtime facts cache lock is not poisoned")
             .machine_facts
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    #[must_use]
+    pub fn machine_fact_watermarks(&self) -> Vec<InternalDnsFactWatermark> {
+        self.state
+            .read()
+            .expect("runtime facts cache lock is not poisoned")
+            .machine_fact_watermarks
             .values()
             .cloned()
             .collect()
@@ -343,6 +386,56 @@ mod tests {
                 .container(&container_id("ctr_2"))
                 .is_some()
         );
+    }
+
+    #[test]
+    fn full_snapshots_with_equal_timestamps_advance_generation() {
+        let cache = FactCache::default();
+        cache.record_machine_facts(machine_facts("machine_a", 42, [observation("ctr_1")]));
+        cache.record_machine_facts(machine_facts("machine_a", 42, [observation("ctr_2")]));
+
+        let watermarks = cache.machine_fact_watermarks();
+        let [watermark] = watermarks.as_slice() else {
+            panic!("expected one watermark");
+        };
+        assert_eq!(watermark.generation.get(), 2);
+    }
+
+    #[test]
+    fn separate_fact_caches_have_distinct_incarnations() {
+        let first = FactCache::default();
+        let second = FactCache::default();
+
+        assert_ne!(
+            first.resolver_cache_incarnation,
+            second.resolver_cache_incarnation
+        );
+    }
+
+    #[test]
+    fn cloned_fact_cache_preserves_incarnation() {
+        let cache = FactCache::default();
+
+        assert_eq!(
+            cache.resolver_cache_incarnation,
+            cache.clone().resolver_cache_incarnation
+        );
+    }
+
+    #[test]
+    fn container_deltas_do_not_advance_full_snapshot_generation() {
+        let cache = FactCache::default();
+        cache.record_machine_facts(machine_facts("machine_a", 1, [observation("ctr_1")]));
+        cache.record_machine_container_fact(MachineContainerFactDelta::ContainerObserved {
+            observed_at_unix_ms: 2,
+            observation: Box::new(observation("ctr_2")),
+        });
+
+        let watermarks = cache.machine_fact_watermarks();
+        let [watermark] = watermarks.as_slice() else {
+            panic!("expected one watermark");
+        };
+        assert_eq!(watermark.generation, InternalDnsFactGeneration::first());
     }
 
     #[test]
