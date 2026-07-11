@@ -72,6 +72,15 @@ Scenarios in `crates/ployz-e2e/tests/dind_cluster.rs`:
   deploy serving through both gateways, daemon restarts invisible to the
   data plane, and auth rejection (bad NKey, no TLS, scope violations, inbox
   isolation) against the live cluster.
+- `scenario_v1_acceptance_five_steps_on_fresh_machines` — the five-step v1
+  acceptance journey on three fresh machines: form the cluster, deploy Umami
+  with PostgreSQL, diagnose failed deploys, prove Core downtime is invisible
+  to traffic, then retry and roll back through explicit operations.
+
+Harness provisioning and observation are test plumbing. Every product action
+in the five steps uses the shipped `ployz` command surface and the real install
+script. Compose compatibility (#314) and custom-domain HTTP-01 (#318) remain
+prerequisite evidence; they do not add steps to this scenario.
 
 ## Environment Variables
 

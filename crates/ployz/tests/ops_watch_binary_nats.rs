@@ -6,8 +6,8 @@ use ployz::runtime::{PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV};
 use ployz_core::deploy::{DeployServiceSpec, ImageReference, ReplicaCount};
 use ployz_core::ids::NamespaceId;
 use ployz_core::ops::{
-    DeployOperationState, DeployRunningStage, OperationEvent, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationStatus, OperationStatusSnapshot, ReplayedOperationEvent,
+    DeployOperationState, OperationEvent, OperationEventReplayPage, OperationEventReplayRequest,
+    OperationStatus, OperationStatusSnapshot, ReplayedOperationEvent,
 };
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
@@ -22,7 +22,7 @@ use ployz_test_support::ids::{event_sequence, operation_id, service_id};
 use ployz_test_support::nats::{SecuredTestNats, TestNats};
 
 #[tokio::test(flavor = "multi_thread")]
-async fn binary_ops_watch_polls_until_operation_is_terminal() {
+async fn binary_ops_watch_replays_terminal_event_after_a_caught_up_page() {
     let server = TestNats::start().await;
     let client = server.controller.clone();
     let env = CliNatsEnv::new(&server.server);
@@ -94,10 +94,10 @@ async fn binary_ops_watch_polls_until_operation_is_terminal() {
                     namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
                     service_id: service_id("svc_api"),
                     origin: None,
-                    state: DeployOperationState::Running {
-                        stage: DeployRunningStage::WaitingForHealth,
+                    state: DeployOperationState::Completed {
+                        outcome: ployz_core::ops::DeployCompletionOutcome::Completed,
                     },
-                    last_event_sequence: event_sequence(1),
+                    last_event_sequence: event_sequence(2),
                 }),
             };
             NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
