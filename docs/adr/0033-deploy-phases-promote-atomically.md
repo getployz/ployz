@@ -1,0 +1,9 @@
+# Deploy Phases Promote Atomically
+
+Service dependencies carry an explicit `started` or `healthy` condition and derive topological phases. Every service whose dependencies are satisfied at the same point belongs to the same phase, including unrelated services. Phase membership defines promotion atomicity, not concurrent execution: services may start in deterministic order, but their Serving Target entries and route-binding changes commit together in one intent transaction with one invalidation only after every service passes its creation gate.
+
+`started` is a minimum dependency condition, not permission to bypass the dependency's own creation gate. A dependency with a configured healthcheck passes that check before its phase promotes; `healthy` additionally requires the dependency to define an executable healthcheck. An unchanged, already-promoted dependency satisfies either condition without rerunning its healthcheck, following ADR 0025.
+
+When a phase fails, none of its intent changes commit. Containers and hook containers that actually failed are retained as evidence; successfully started but unpromoted containers are stopped and removed. Reused containers and earlier promoted phases remain untouched, so a later deploy plans from the useful progress already committed and retries the missing work. The deploy outcome is partial when an earlier phase promoted, following ADR 0011.
+
+This keeps active truth atomic per phase rather than per namespace deploy. Publishing each successful dependency phase also makes its ordinary internal DNS name available to later phases, so Ployz needs no operation-scoped provisional DNS view. Completion-gated dependencies, run-to-completion jobs, dependency-triggered restarts, optional dependencies, and promised concurrency within a phase remain separate work.
