@@ -84,6 +84,9 @@ impl NatsPermissionProfile {
                 subscribe: SubjectPermissions::allowing([
                     inbox_scope,
                     OPERATION_PROGRESS_SCOPE.to_owned(),
+                    machine_facts_scope(),
+                    gateway_status_scope(),
+                    INTENT_CHANGED.to_owned(),
                 ]),
                 allow_responses: ResponsePermission::Denied,
             },
@@ -113,6 +116,7 @@ fn api_service_client_publications() -> SubjectPermissions {
         OPERATOR_RPC_COMMAND_SCOPE.to_owned(),
         OPERATOR_MACHINE_IMAGE_QUERY_SCOPE.to_owned(),
         OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE.to_owned(),
+        INTENT_GET.to_owned(),
     ])
 }
 

@@ -92,13 +92,17 @@ fn operator_credential_renders_operator_rpc_scope_without_machine_or_join_scope(
             OPERATOR_RPC_COMMAND_SCOPE.to_owned(),
             OPERATOR_MACHINE_IMAGE_QUERY_SCOPE.to_owned(),
             OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE.to_owned(),
+            INTENT_GET.to_owned(),
         ]
     );
     assert_eq!(
         profile.subscribe.allowed_subjects(),
         &[
             "_INBOX_operator.>".to_owned(),
-            OPERATION_PROGRESS_SCOPE.to_owned()
+            OPERATION_PROGRESS_SCOPE.to_owned(),
+            machine_facts_scope(),
+            gateway_status_scope(),
+            INTENT_CHANGED.to_owned(),
         ]
     );
     assert!(
@@ -141,6 +145,7 @@ fn runtime_snapshot_endpoint_is_inside_the_operator_query_scope() {
             OPERATOR_RPC_COMMAND_SCOPE.to_owned(),
             OPERATOR_MACHINE_IMAGE_QUERY_SCOPE.to_owned(),
             OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE.to_owned(),
+            INTENT_GET.to_owned(),
         ]
     );
 }
