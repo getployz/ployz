@@ -85,7 +85,7 @@ mod tests {
                     machine_id: machine_id("machine_a"),
                 },
             ],
-            authorized_users: Vec::new(),
+            nats_authorizations: Vec::new(),
             managed_lease: ployz_core::state::ManagedLeaseProjection::Unacquired,
         };
 

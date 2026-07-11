@@ -314,6 +314,7 @@ impl DeployTree {
                 | OperationKind::MachineUpdate
                 | OperationKind::MachineLifecycle
                 | OperationKind::CoreReplace
+                | OperationKind::CredentialGrant
                 | OperationKind::NetworkRepair
                 | OperationKind::ServiceRestart
                 | OperationKind::NamespaceRemove
@@ -342,6 +343,9 @@ impl DeployTree {
             | OperationEvent::CoreReplaceSubmitted { .. }
             | OperationEvent::CoreReplaceCompleted { .. }
             | OperationEvent::CoreReplaceFailed { .. }
+            | OperationEvent::CredentialGrantSubmitted { .. }
+            | OperationEvent::CredentialGrantCompleted { .. }
+            | OperationEvent::CredentialGrantFailed { .. }
             | OperationEvent::NetworkRepairSubmitted { .. }
             | OperationEvent::NetworkRepairRunning { .. }
             | OperationEvent::NetworkRepairDataplanePrepared { .. }

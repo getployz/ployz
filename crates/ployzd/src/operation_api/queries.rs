@@ -8,6 +8,7 @@ pub use volume::VolumeQueryService;
 use crate::fact_cache::FactCache;
 use crate::intent::service::NatsIntentReader;
 use crate::operation_api::admission::OperationControllers;
+use crate::operations::credential_grant::CredentialGrantOperation;
 use crate::roles::machine::client::{
     MachineLogsTailError, NatsMachineFactsReader, NatsMachineLogsTailer,
     read_available_machine_facts, read_available_machine_facts_by_id,
@@ -22,15 +23,28 @@ use ployz_core::ops::{
 };
 use ployz_core::state::{ActiveMachineState, RouteBindingState, ServingTargetEntry};
 use ployz_sdk_types::{
-    LogsTailError, LogsTailRequest, LogsTailResult, LogsTailResultTarget, LogsTailTarget,
-    MachineInspectError, MachineListError, MachineListResult, MachineSnapshot, MachineTestimony,
-    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsWatchError,
-    RuntimeDerivedCollectionSource, RuntimeDerivedCollectionStatus, RuntimeProjectionSource,
-    RuntimeProjectionSources, RuntimeServiceInstance, RuntimeServiceRelease,
-    RuntimeServiceRevision, RuntimeSnapshot, RuntimeSnapshotError, RuntimeSnapshotResult,
-    ServiceContainerMembership, ServiceContainerTestimony, ServiceInspectError, ServiceListError,
-    ServiceListResult, ServiceMachineTestimony, ServiceSnapshot, ServiceTestimony,
+    CredentialListError, CredentialListResult, LogsTailError, LogsTailRequest, LogsTailResult,
+    LogsTailResultTarget, LogsTailTarget, MachineInspectError, MachineListError, MachineListResult,
+    MachineSnapshot, MachineTestimony, OpsListError, OpsListRequest, OpsListResult, OpsStatusError,
+    OpsWatchError, RuntimeDerivedCollectionSource, RuntimeDerivedCollectionStatus,
+    RuntimeProjectionSource, RuntimeProjectionSources, RuntimeServiceInstance,
+    RuntimeServiceRelease, RuntimeServiceRevision, RuntimeSnapshot, RuntimeSnapshotError,
+    RuntimeSnapshotResult, ServiceContainerMembership, ServiceContainerTestimony,
+    ServiceInspectError, ServiceListError, ServiceListResult, ServiceMachineTestimony,
+    ServiceSnapshot, ServiceTestimony,
 };
+
+pub async fn credential_list(
+    operation: &CredentialGrantOperation,
+) -> Result<CredentialListResult, CredentialListError> {
+    operation
+        .list_credentials()
+        .await
+        .map(|credentials| CredentialListResult { credentials })
+        .map_err(|error| CredentialListError::Unavailable {
+            message: error.to_string(),
+        })
+}
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 

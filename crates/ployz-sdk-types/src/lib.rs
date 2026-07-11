@@ -15,6 +15,7 @@
 mod cloud_bootstrap;
 mod core_replace;
 mod core_types;
+mod credential;
 mod deploy;
 mod logs;
 mod machine;
@@ -30,6 +31,7 @@ mod volume;
 pub use cloud_bootstrap::*;
 pub use core_replace::*;
 pub use core_types::*;
+pub use credential::*;
 pub use deploy::*;
 pub use logs::*;
 pub use machine::*;

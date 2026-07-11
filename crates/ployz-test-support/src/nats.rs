@@ -15,8 +15,9 @@ use std::time::Duration;
 
 use ployz_core::ids::MachineId;
 use ployz_core::nats_config::{
-    MintedNatsUser, NatsAuthorizedUser, NatsListener, NatsServerConfig, NatsServerTlsFiles,
-    NatsUserPublicKey, NatsUserSeed, render_authorized_users,
+    CredentialGrant, CredentialName, CredentialRole, MintedNatsUser, NatsAuthorizationGrant,
+    NatsInternalAuthority, NatsListener, NatsServerConfig, NatsServerTlsFiles, NatsUserPublicKey,
+    NatsUserSeed, render_authorized_users,
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_host_runner::nats_identity::{ServerCertificateSans, generate_cluster_nats_identity};
@@ -102,10 +103,12 @@ impl SecuredTestNats {
             ));
         }
         for public_key in extra_user_public_keys {
-            authorized.push(NatsAuthorizedUser {
-                principal: NatsPrincipal::Operator,
-                nkey_public: public_key.clone(),
-            });
+            authorized.push(NatsAuthorizationGrant::Credential(CredentialGrant {
+                public_key: public_key.clone(),
+                name: CredentialName::try_new("Test external operator")
+                    .expect("test credential name"),
+                role: CredentialRole::Operator,
+            }));
         }
         let authorized_users_path = dir.path().join("authorized-users.conf");
         fs::write(&authorized_users_path, render_authorized_users(&authorized))?;
@@ -328,10 +331,31 @@ impl TestNats {
     }
 }
 
-fn authorized_user(principal: NatsPrincipal, minted: &MintedNatsUser) -> NatsAuthorizedUser {
-    NatsAuthorizedUser {
-        principal,
-        nkey_public: minted.public.clone(),
+fn authorized_user(principal: NatsPrincipal, minted: &MintedNatsUser) -> NatsAuthorizationGrant {
+    let public_key = minted.public.clone();
+    match principal {
+        NatsPrincipal::Operator => NatsAuthorizationGrant::Credential(CredentialGrant {
+            public_key,
+            name: CredentialName::try_new("Founder operator (secured-test-core)")
+                .expect("test credential name"),
+            role: CredentialRole::Operator,
+        }),
+        NatsPrincipal::Machine { machine_id } => NatsAuthorizationGrant::Internal {
+            authority: NatsInternalAuthority::Machine { machine_id },
+            public_key,
+        },
+        NatsPrincipal::Controller => NatsAuthorizationGrant::Internal {
+            authority: NatsInternalAuthority::Controller,
+            public_key,
+        },
+        NatsPrincipal::Join => NatsAuthorizationGrant::Internal {
+            authority: NatsInternalAuthority::Join,
+            public_key,
+        },
+        NatsPrincipal::System => NatsAuthorizationGrant::Internal {
+            authority: NatsInternalAuthority::System,
+            public_key,
+        },
     }
 }
 

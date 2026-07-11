@@ -13,7 +13,9 @@ use ployz_core::install::{
     MachineJoinMaterial, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
     MachineJoinTrustedNats, NatsMachineMaterialPaths, WrappedCaKey, WrappedCoreSeeds,
 };
-use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserPublicKey, NatsUserSeed};
+use ployz_core::nats_config::{
+    CredentialGrant, CredentialName, NatsCaCertificatePem, NatsUserSeed,
+};
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy, plan_first_machine_process_set};
 use ployz_nats::connect::NatsClientUrl;
@@ -447,7 +449,8 @@ pub struct FirstMachineInstallTarget {
     /// pre-positioned so a promotion reuses them instead of rotating.
     pub core_seeds_wrapped: WrappedCoreSeeds,
     pub nats_material: NatsMachineMaterialPaths,
-    pub additional_user_public_keys: Vec<NatsUserPublicKey>,
+    pub founder_credential_name: CredentialName,
+    pub additional_credentials: Vec<CredentialGrant>,
     pub machine_public_ip: Option<IpAddr>,
     pub nats_server_unit: NatsServerUnitTarget,
     pub role_environment: PloyzdRoleEnvironmentTarget,
@@ -494,6 +497,9 @@ impl FirstMachineInstallTarget {
         let dataplane_endpoint_supernet = MachineEndpointSupernet::default_v1();
         let role_environment =
             role_environment.with_dataplane_endpoint_supernet(dataplane_endpoint_supernet.clone());
+        let founder_credential_name =
+            CredentialName::try_new(format!("Founder operator ({})", machine_id.as_str()))
+                .expect("machine id forms a non-empty founder credential name");
         Self {
             machine_id,
             dataplane_endpoint_supernet,
@@ -505,7 +511,8 @@ impl FirstMachineInstallTarget {
             recovery_key_wrapped,
             core_seeds_wrapped,
             nats_material,
-            additional_user_public_keys: Vec::new(),
+            founder_credential_name,
+            additional_credentials: Vec::new(),
             machine_public_ip: None,
             nats_server_unit,
             role_environment,
@@ -537,8 +544,16 @@ impl FirstMachineInstallTarget {
     }
 
     #[must_use]
-    pub fn with_additional_user_public_key(mut self, public_key: NatsUserPublicKey) -> Self {
-        self.additional_user_public_keys.push(public_key);
+    pub fn with_founder_hostname(mut self, hostname: impl AsRef<str>) -> Self {
+        self.founder_credential_name =
+            CredentialName::try_new(format!("Founder operator ({})", hostname.as_ref()))
+                .expect("hostname forms a non-empty founder credential name");
+        self
+    }
+
+    #[must_use]
+    pub fn with_additional_credential(mut self, grant: CredentialGrant) -> Self {
+        self.additional_credentials.push(grant);
         self
     }
 
@@ -1055,6 +1070,11 @@ pub fn core_promote_plan(target: CorePromoteTarget) -> HostRunnerStepPlan {
             NatsAuthorizedUsersTarget::initial_for_first_machine(
                 nats_server_config.config_dir().to_path_buf(),
                 &target.nats_identity,
+                &CredentialName::try_new(format!(
+                    "Founder operator ({})",
+                    target.machine_id.as_str()
+                ))
+                .expect("machine id forms a non-empty founder credential name"),
                 &[],
             ),
         ),
@@ -1135,7 +1155,8 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> HostRunn
             NatsAuthorizedUsersTarget::initial_for_first_machine(
                 nats_server_config.config_dir().to_path_buf(),
                 &target.nats_identity,
-                &target.additional_user_public_keys,
+                &target.founder_credential_name,
+                &target.additional_credentials,
             ),
         ),
         HostRunnerStep::WriteNatsClientCredentials(NatsClientCredentialsTarget::new(

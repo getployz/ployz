@@ -306,7 +306,7 @@ mod tests {
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),
-            authorized_users: Vec::new(),
+            nats_authorizations: Vec::new(),
             managed_lease: ployz_core::state::ManagedLeaseProjection::Unacquired,
         }
     }

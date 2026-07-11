@@ -794,7 +794,7 @@ mod tests {
             route_bindings: Vec::new(),
             serving_target_entries: vec![serving_target_entry("db", entry)],
             volume_pins: Vec::new(),
-            authorized_users: Vec::new(),
+            nats_authorizations: Vec::new(),
             managed_lease: ManagedLeaseProjection::Unacquired,
         }
     }

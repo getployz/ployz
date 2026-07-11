@@ -56,11 +56,13 @@ pub use ployz_core::machine_runtime::{
     ManagedContainerObservation,
 };
 pub use ployz_core::nats_config::{
-    NatsAuthorizedUser, NatsCaCertificatePem, NatsUserPublicKey, NatsUserSeed,
+    CredentialGrant, CredentialName, CredentialNameError, CredentialRole, NatsAuthorizationGrant,
+    NatsCaCertificatePem, NatsInternalAuthority, NatsUserPublicKey, NatsUserSeed,
 };
 pub use ployz_core::ops::{
-    ArtifactUnavailableReason, CancellationReason, EventSequence, EventSequenceError,
-    FailureMessage, HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddOperationState,
+    ArtifactUnavailableReason, CancellationReason, CredentialGrantAction, CredentialGrantFailure,
+    CredentialGrantOperationState, EventSequence, EventSequenceError, FailureMessage,
+    HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddOperationState,
     MachineAddOperationStateName, MachineLifecycleFailure, MachineLifecycleOperationState,
     MachineSubstrateVersions, MachineUpdateFailure, MachineUpdateOperationState,
     ManagedLeaseFailureClass, ManagedLeaseOperationFailure, ManagedLeaseOperationState,

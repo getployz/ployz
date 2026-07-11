@@ -22,6 +22,9 @@ pub const INTENT_SERVICE_ID: &str = "plz-intent.core";
 pub const INTENT_SERVICE_DESCRIPTION: &str = "Ployz operator intent service";
 pub const SERVICE_VERSION: ServiceVersion = ServiceVersion::new(0, 1, 0);
 pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: &[OperationApiEndpoint] = &[
+    OperationApiEndpoint::CredentialAdd,
+    OperationApiEndpoint::CredentialList,
+    OperationApiEndpoint::CredentialRemove,
     OperationApiEndpoint::DeployReserve,
     OperationApiEndpoint::DeploySubmit,
     OperationApiEndpoint::ServiceRestart,

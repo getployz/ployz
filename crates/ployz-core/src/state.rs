@@ -7,7 +7,7 @@ use crate::dataplane::MachineEndpointSubnet;
 use crate::deploy::{ImageReference, ReplicaCount, VolumeName};
 use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
 use crate::machine::{IssuedJoinToken, MachineName};
-use crate::nats_config::NatsAuthorizedUser;
+use crate::nats_config::NatsAuthorizationGrant;
 use crate::ops::{RoutePort, RouteTarget};
 use crate::roles::InstallRolePolicy;
 use std::net::{IpAddr, SocketAddr};
@@ -124,8 +124,8 @@ impl ControlPlaneEpoch {
 }
 
 /// Full operator intent visible to readers, stamped with the epoch it reflects.
-/// The authorized-users grant set rides here too (ADR 0031): a promoted core
-/// reuses it verbatim rather than re-deriving grants from the roster.
+/// The NATS authorization grant set rides here too (ADR 0031): a promoted core
+/// reuses it verbatim rather than re-deriving authority from the roster.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -137,7 +137,7 @@ pub struct IntentSnapshot {
     pub serving_target_entries: Vec<ServingTargetEntry>,
     #[serde(default)]
     pub volume_pins: Vec<VolumePinState>,
-    pub authorized_users: Vec<NatsAuthorizedUser>,
+    pub nats_authorizations: Vec<NatsAuthorizationGrant>,
     #[serde(default)]
     pub managed_lease: ManagedLeaseProjection,
 }
@@ -159,7 +159,7 @@ struct IntentSnapshotWire {
     serving_target_entries: Vec<ServingTargetEntry>,
     #[serde(default)]
     volume_pins: Vec<VolumePinState>,
-    authorized_users: Vec<NatsAuthorizedUser>,
+    nats_authorizations: Vec<NatsAuthorizationGrant>,
     #[serde(default)]
     managed_lease: Option<ManagedLeaseProjectionWire>,
     #[serde(default)]
@@ -199,7 +199,7 @@ impl<'de> Deserialize<'de> for IntentSnapshot {
             route_bindings: wire.route_bindings,
             serving_target_entries: wire.serving_target_entries,
             volume_pins: wire.volume_pins,
-            authorized_users: wire.authorized_users,
+            nats_authorizations: wire.nats_authorizations,
             managed_lease,
         })
     }
@@ -319,6 +319,9 @@ mod tests {
         LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle, ManagedLeaseName,
         ManagedLeaseRecord,
     };
+    use crate::nats_config::{
+        CredentialGrant, CredentialName, CredentialRole, NatsAuthorizationGrant, NatsUserPublicKey,
+    };
 
     #[test]
     fn only_draining_excludes_placement() {
@@ -360,6 +363,27 @@ mod tests {
         assert!(serde_json::from_value::<IntentSnapshot>(value).is_err());
     }
 
+    #[test]
+    fn intent_snapshot_round_trips_named_credential_grants() {
+        let mut snapshot = ready_snapshot();
+        snapshot
+            .nats_authorizations
+            .push(NatsAuthorizationGrant::Credential(CredentialGrant {
+                public_key: NatsUserPublicKey::try_new(nkeys::KeyPair::new_user().public_key())
+                    .expect("user public key"),
+                name: CredentialName::try_new("Founder operator (core-1)")
+                    .expect("credential name"),
+                role: CredentialRole::Operator,
+            }));
+
+        let decoded = serde_json::from_value::<IntentSnapshot>(
+            serde_json::to_value(&snapshot).expect("serialize intent snapshot"),
+        )
+        .expect("deserialize intent snapshot");
+
+        assert_eq!(decoded, snapshot);
+    }
+
     fn ready_snapshot() -> IntentSnapshot {
         let name = ManagedLeaseName::try_new("lease").expect("lease name");
         let issued_at = LeaseIssuedAt::try_new(1).expect("issued");
@@ -387,7 +411,7 @@ mod tests {
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),
-            authorized_users: Vec::new(),
+            nats_authorizations: Vec::new(),
             managed_lease: ManagedLeaseProjection::Ready { lease, bundle },
         }
     }

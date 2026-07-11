@@ -23,7 +23,7 @@ use ployz_core::install::{
     AbsoluteInstallPath, DEFAULT_MACHINE_BOOTSTRAP_URL, FirstMachineInstallSpec,
     MachineBootstrapUrl, MachineJoinClusterName, MachineJoinRuntimeNatsUrl,
 };
-use ployz_core::nats_config::NatsUserSeed;
+use ployz_core::nats_config::{CredentialGrant, CredentialName, CredentialRole, NatsUserSeed};
 use ployz_core::roles::GatewayRole;
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{
@@ -285,7 +285,11 @@ fn run_cloud_founder_bootstrap(
             );
         }
     };
-    target = target.with_additional_user_public_key(founder.cloud_nats_user_public_key);
+    target = target.with_additional_credential(CredentialGrant {
+        public_key: founder.cloud_nats_user_public_key,
+        name: CredentialName::try_new("Ployz Cloud").expect("Cloud credential name is non-empty"),
+        role: CredentialRole::Operator,
+    });
     let nats_material = target.nats_material.clone();
 
     let stdout = std::io::stdout();

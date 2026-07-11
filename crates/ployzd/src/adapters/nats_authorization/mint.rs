@@ -6,7 +6,9 @@ use crate::operations::log::{
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::MachineJoinSecretDelivery;
 use ployz_core::machine::{MachineAddFailure, MachineCredentialProvisioningStep};
-use ployz_core::nats_config::{MintedNatsUser, NatsAuthorizedUser, NatsUserSeed};
+use ployz_core::nats_config::{
+    MintedNatsUser, NatsAuthorizationGrant, NatsInternalAuthority, NatsUserSeed,
+};
 use ployz_core::ops::{
     FailureMessage, MachineAddOperationState, OperationIdempotencyKey, OperationStatus,
 };
@@ -223,11 +225,11 @@ impl MachineCredentialMint {
         let verify_config = self
             .verify
             .machine_connect_config(&request.machine_id, claim.nkey_seed.clone());
-        let user = NatsAuthorizedUser {
-            principal: NatsPrincipal::Machine {
+        let user = NatsAuthorizationGrant::Internal {
+            authority: NatsInternalAuthority::Machine {
                 machine_id: request.machine_id.clone(),
             },
-            nkey_public: claim.nkey_public.clone(),
+            public_key: claim.nkey_public.clone(),
         };
         match self
             .authorization

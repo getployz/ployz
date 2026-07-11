@@ -48,6 +48,9 @@ pub const OPERATOR_MACHINE_DRAIN: &str = "plz.v1.rpc.operator.command.machine.dr
 pub const OPERATOR_MACHINE_RESUME: &str = "plz.v1.rpc.operator.command.machine.resume";
 pub const OPERATOR_CORE_REPLACE: &str = "plz.v1.rpc.operator.command.core.replace";
 pub const OPERATOR_CORE_REPLACE_REPORT: &str = "plz.v1.rpc.operator.command.core.replace.report";
+pub const OPERATOR_CREDENTIAL_ADD: &str = "plz.v1.rpc.operator.command.credential.add";
+pub const OPERATOR_CREDENTIAL_LIST: &str = "plz.v1.rpc.operator.query.credential.list";
+pub const OPERATOR_CREDENTIAL_REMOVE: &str = "plz.v1.rpc.operator.command.credential.remove";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApiEndpoint {
     DeployReserve,
@@ -77,6 +80,9 @@ pub enum OperationApiEndpoint {
     OpsWatch,
     CoreReplace,
     CoreReplaceReport,
+    CredentialAdd,
+    CredentialList,
+    CredentialRemove,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +123,9 @@ impl OperationApiEndpoint {
             Self::OpsWatch => "ops.watch",
             Self::CoreReplace => "core.replace",
             Self::CoreReplaceReport => "core.replace.report",
+            Self::CredentialAdd => "credential.add",
+            Self::CredentialList => "credential.list",
+            Self::CredentialRemove => "credential.remove",
         }
     }
 
@@ -150,6 +159,9 @@ impl OperationApiEndpoint {
             Self::OpsWatch => OPERATOR_OPS_WATCH,
             Self::CoreReplace => OPERATOR_CORE_REPLACE,
             Self::CoreReplaceReport => OPERATOR_CORE_REPLACE_REPORT,
+            Self::CredentialAdd => OPERATOR_CREDENTIAL_ADD,
+            Self::CredentialList => OPERATOR_CREDENTIAL_LIST,
+            Self::CredentialRemove => OPERATOR_CREDENTIAL_REMOVE,
         }
     }
 
@@ -165,7 +177,9 @@ impl OperationApiEndpoint {
             | Self::ServiceRestart
             | Self::NamespaceRemove
             | Self::VolumeRemove
-            | Self::CoreReplace => OperationApiEndpointExecution::AcceptsOperation,
+            | Self::CoreReplace
+            | Self::CredentialAdd
+            | Self::CredentialRemove => OperationApiEndpointExecution::AcceptsOperation,
             Self::DeployReserve
             | Self::InitFirstMachineActivate
             | Self::MachineJoinRedeem
@@ -182,7 +196,8 @@ impl OperationApiEndpoint {
             | Self::LogsTail
             | Self::OpsList
             | Self::OpsStatus
-            | Self::OpsWatch => OperationApiEndpointExecution::Query,
+            | Self::OpsWatch
+            | Self::CredentialList => OperationApiEndpointExecution::Query,
         }
     }
 }

@@ -8,12 +8,11 @@ use std::path::{Path, PathBuf};
 use ployz_core::ids::MachineId;
 use ployz_core::install::{NatsMachineMaterialPaths, WrappedCaKey, WrappedCoreSeeds};
 use ployz_core::nats_config::{
-    NatsAdvertisedHost, NatsAuthorizedUser, NatsCaCertificatePem, NatsListener,
-    NatsServerCertificatePem, NatsServerConfig, NatsServerTlsFiles, NatsUserPublicKey,
-    NatsUserSeed, render_authorized_users,
+    CredentialGrant, CredentialName, NatsAdvertisedHost, NatsAuthorizationGrant,
+    NatsCaCertificatePem, NatsInternalAuthority, NatsListener, NatsServerCertificatePem,
+    NatsServerConfig, NatsServerTlsFiles, NatsUserSeed, render_authorized_users,
 };
 use ployz_core::roles::DaemonProcessRole;
-use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::NatsClientUrl;
 
 use crate::join::{JOIN_NATS_CREDENTIALS_FILE, JOIN_TRUSTED_CA_FILE};
@@ -257,19 +256,23 @@ pub struct NatsAuthorizedUsersTarget {
 
 /// The new core's own control-plane principals, the base of every rendered
 /// authorized-users set (first-machine install and promotion alike).
-fn core_principal_users(identity: &ClusterNatsIdentity) -> Vec<NatsAuthorizedUser> {
+fn core_principal_users(
+    identity: &ClusterNatsIdentity,
+    founder_credential_name: &CredentialName,
+) -> Vec<NatsAuthorizationGrant> {
     vec![
-        NatsAuthorizedUser {
-            principal: NatsPrincipal::Controller,
-            nkey_public: identity.controller.public.clone(),
+        NatsAuthorizationGrant::Internal {
+            authority: NatsInternalAuthority::Controller,
+            public_key: identity.controller.public.clone(),
         },
-        NatsAuthorizedUser {
-            principal: NatsPrincipal::Operator,
-            nkey_public: identity.operator.public.clone(),
-        },
-        NatsAuthorizedUser {
-            principal: NatsPrincipal::Join,
-            nkey_public: identity.join.public.clone(),
+        NatsAuthorizationGrant::Credential(CredentialGrant {
+            public_key: identity.operator.public.clone(),
+            name: founder_credential_name.clone(),
+            role: ployz_core::nats_config::CredentialRole::Operator,
+        }),
+        NatsAuthorizationGrant::Internal {
+            authority: NatsInternalAuthority::Join,
+            public_key: identity.join.public.clone(),
         },
     ]
 }
@@ -281,17 +284,15 @@ impl NatsAuthorizedUsersTarget {
     pub fn initial_for_first_machine(
         config_dir: PathBuf,
         identity: &ClusterNatsIdentity,
-        additional_user_public_keys: &[NatsUserPublicKey],
+        founder_credential_name: &CredentialName,
+        additional_credentials: &[CredentialGrant],
     ) -> Self {
-        let mut users = core_principal_users(identity);
+        let mut users = core_principal_users(identity, founder_credential_name);
         users.extend(
-            additional_user_public_keys
+            additional_credentials
                 .iter()
                 .cloned()
-                .map(|nkey_public| NatsAuthorizedUser {
-                    principal: NatsPrincipal::Operator,
-                    nkey_public,
-                }),
+                .map(NatsAuthorizationGrant::Credential),
         );
         Self {
             config_dir,

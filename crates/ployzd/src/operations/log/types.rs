@@ -6,8 +6,8 @@ use ployz_core::machine::{
     IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineName, RawJoinToken,
 };
 use ployz_core::ops::{
-    EventSequence, MachineAddOperationStateName, ManagedLeaseSubject, OperationIdempotencyKey,
-    OperationStatus, StatusProjectionError,
+    CredentialGrantAction, EventSequence, MachineAddOperationStateName, ManagedLeaseSubject,
+    OperationIdempotencyKey, OperationStatus, StatusProjectionError,
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::state::MachineLifecycle;
@@ -148,6 +148,12 @@ pub struct ServiceRestartOperationSubmission {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialGrantOperationSubmission {
+    pub operation_id: OperationId,
+    pub action: CredentialGrantAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ServiceRestartPayload {
     pub(super) namespace_id: NamespaceId,
     pub(super) service_id: ServiceId,
@@ -247,6 +253,14 @@ pub struct AcceptedServiceRestartSubmission {
     pub start_sequence: EventSequence,
     pub namespace_id: NamespaceId,
     pub service_id: ServiceId,
+    pub should_start_execution: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedCredentialGrantSubmission {
+    pub operation_id: OperationId,
+    pub start_sequence: EventSequence,
+    pub action: CredentialGrantAction,
     pub should_start_execution: bool,
 }
 

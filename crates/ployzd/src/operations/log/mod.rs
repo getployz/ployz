@@ -21,6 +21,7 @@ use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 
 mod action;
 mod core_replace;
+mod credential_grant;
 mod deploy;
 mod machine_add;
 mod machine_lifecycle;

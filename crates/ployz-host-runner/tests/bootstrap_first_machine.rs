@@ -2,7 +2,7 @@ mod support;
 
 use ployz_core::dataplane::MachineEndpointSupernet;
 use ployz_core::install::{WrappedCaKey, WrappedCoreSeeds};
-use ployz_core::nats_config::NatsUserPublicKey;
+use ployz_core::nats_config::{CredentialGrant, CredentialName, CredentialRole, NatsUserPublicKey};
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_host_runner::artifacts::ArtifactKind;
 use ployz_host_runner::steps::{
@@ -96,7 +96,7 @@ fn first_machine_install_starts_nats_and_core_roles_without_join_token() {
 }
 
 #[test]
-fn first_machine_can_authorize_cloud_user_public_key() {
+fn first_machine_names_founder_and_cloud_credentials() {
     let cloud_public_key = user_public_key('C');
     let target = FirstMachineInstallTarget::new(
         machine_id("machine_1"),
@@ -108,7 +108,12 @@ fn first_machine_can_authorize_cloud_user_public_key() {
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
         WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
     )
-    .with_additional_user_public_key(cloud_public_key.clone());
+    .with_founder_hostname("founder.example")
+    .with_additional_credential(CredentialGrant {
+        public_key: cloud_public_key.clone(),
+        name: CredentialName::try_new("Ployz Cloud").expect("name"),
+        role: CredentialRole::Operator,
+    });
     let plan = first_machine_install_plan(target);
 
     let rendered = plan
@@ -137,7 +142,8 @@ fn first_machine_can_authorize_cloud_user_public_key() {
     assert!(rendered.contains(test_identity().operator.public.as_str()));
     assert!(rendered.contains(test_identity().join.public.as_str()));
     assert!(rendered.contains(cloud_public_key.as_str()));
-    assert_eq!(rendered.matches("# ployz-principal: operator").count(), 2);
+    assert!(rendered.contains("# ployz-credential-name: Founder operator (founder.example)"));
+    assert!(rendered.contains("# ployz-credential-name: Ployz Cloud"));
 }
 
 #[test]

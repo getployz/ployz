@@ -12,6 +12,7 @@ impl OperationStatus {
             | Self::MachineUpdate { id, .. }
             | Self::MachineLifecycle { id, .. }
             | Self::CoreReplace { id, .. }
+            | Self::CredentialGrant { id, .. }
             | Self::NetworkRepair { id, .. }
             | Self::ServiceRestart { id, .. }
             | Self::ManagedLease { id, .. }
@@ -29,6 +30,7 @@ impl OperationStatus {
             Self::MachineUpdate { .. } => OperationKind::MachineUpdate,
             Self::MachineLifecycle { .. } => OperationKind::MachineLifecycle,
             Self::CoreReplace { .. } => OperationKind::CoreReplace,
+            Self::CredentialGrant { .. } => OperationKind::CredentialGrant,
             Self::NetworkRepair { .. } => OperationKind::NetworkRepair,
             Self::ServiceRestart { .. } => OperationKind::ServiceRestart,
             Self::ManagedLease { .. } => OperationKind::ManagedLease,
@@ -50,9 +52,10 @@ impl OperationStatus {
             Self::VolumeRemove { namespace_id, .. } => OperationProgressScope::Namespace {
                 namespace_id: namespace_id.clone(),
             },
-            Self::Cert { .. } | Self::NetworkRepair { .. } | Self::ManagedLease { .. } => {
-                OperationProgressScope::Cluster
-            }
+            Self::Cert { .. }
+            | Self::CredentialGrant { .. }
+            | Self::NetworkRepair { .. }
+            | Self::ManagedLease { .. } => OperationProgressScope::Cluster,
             Self::MachineAdd { machine_id, .. }
             | Self::MachineUpdate { machine_id, .. }
             | Self::MachineLifecycle { machine_id, .. }
@@ -82,6 +85,10 @@ impl OperationStatus {
                 ..
             }
             | Self::CoreReplace {
+                last_event_sequence,
+                ..
+            }
+            | Self::CredentialGrant {
                 last_event_sequence,
                 ..
             }

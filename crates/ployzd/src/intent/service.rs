@@ -224,7 +224,7 @@ async fn load_intent(
         .load()
         .await
         .map_err(|error| error.to_string())?;
-    let authorized_users = nats_authorizations
+    let nats_authorizations = nats_authorizations
         .list()
         .await
         .map_err(|error| error.to_string())?;
@@ -245,7 +245,7 @@ async fn load_intent(
         route_bindings: namespace_intent.route_bindings,
         serving_target_entries: namespace_intent.serving_target_entries,
         volume_pins: namespace_intent.volume_pins,
-        authorized_users,
+        nats_authorizations,
         managed_lease,
     })
 }

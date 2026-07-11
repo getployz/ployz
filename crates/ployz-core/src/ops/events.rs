@@ -20,6 +20,9 @@ use crate::state::MachineLifecycle;
 
 use super::cert::{CertEvent, CertTransition};
 use super::core_replace::{CoreReplaceEvent, CoreReplaceFailure, CoreReplaceTransition};
+use super::credential_grant::{
+    CredentialGrantAction, CredentialGrantEvent, CredentialGrantFailure, CredentialGrantTransition,
+};
 use super::deploy::{DeployEvent, DeployEvidence, DeployTransition};
 use super::machine_add::MachineAddEvent;
 use super::machine_lifecycle::{MachineLifecycleEvent, MachineLifecycleTransition};
@@ -58,6 +61,7 @@ pub enum OperationSubject {
     CoreReplace {
         machine_id: MachineId,
     },
+    CredentialGrant,
     NetworkRepair,
     ServiceRestart {
         service_id: ServiceId,
@@ -235,6 +239,17 @@ pub enum OperationEvent {
         machine_id: MachineId,
         failure: CoreReplaceFailure,
     },
+    CredentialGrantSubmitted {
+        operation_id: OperationId,
+        action: CredentialGrantAction,
+    },
+    CredentialGrantCompleted {
+        operation_id: OperationId,
+    },
+    CredentialGrantFailed {
+        operation_id: OperationId,
+        failure: CredentialGrantFailure,
+    },
     NetworkRepairSubmitted {
         operation_id: OperationId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -381,6 +396,9 @@ impl OperationEvent {
             | Self::CoreReplaceSubmitted { operation_id, .. }
             | Self::CoreReplaceCompleted { operation_id, .. }
             | Self::CoreReplaceFailed { operation_id, .. }
+            | Self::CredentialGrantSubmitted { operation_id, .. }
+            | Self::CredentialGrantCompleted { operation_id }
+            | Self::CredentialGrantFailed { operation_id, .. }
             | Self::NetworkRepairSubmitted { operation_id, .. }
             | Self::NetworkRepairRunning { operation_id, .. }
             | Self::NetworkRepairDataplanePrepared { operation_id, .. }
@@ -461,6 +479,9 @@ impl OperationEvent {
             | Self::CoreReplaceSubmitted { .. }
             | Self::CoreReplaceCompleted { .. }
             | Self::CoreReplaceFailed { .. }
+            | Self::CredentialGrantSubmitted { .. }
+            | Self::CredentialGrantCompleted { .. }
+            | Self::CredentialGrantFailed { .. }
             | Self::NetworkRepairSubmitted { .. }
             | Self::NetworkRepairRunning { .. }
             | Self::NetworkRepairCompleted { .. }
@@ -567,6 +588,9 @@ impl OperationEvent {
             | Self::CoreReplaceSubmitted { .. }
             | Self::CoreReplaceCompleted { .. }
             | Self::CoreReplaceFailed { .. }
+            | Self::CredentialGrantSubmitted { .. }
+            | Self::CredentialGrantCompleted { .. }
+            | Self::CredentialGrantFailed { .. }
             | Self::NetworkRepairSubmitted { .. }
             | Self::NetworkRepairRunning { .. }
             | Self::NetworkRepairDataplanePrepared { .. }
@@ -607,6 +631,7 @@ pub enum OperationSubjectRef {
     MachineUpdate(MachineId),
     MachineLifecycle(MachineId),
     CoreReplace(MachineId),
+    CredentialGrant,
     ManagedLease(super::ManagedLeaseSubject),
 }
 
@@ -634,6 +659,10 @@ pub(super) enum ClassifiedOperationEvent {
     CoreReplace {
         operation_id: OperationId,
         event: CoreReplaceEvent,
+    },
+    CredentialGrant {
+        operation_id: OperationId,
+        event: CredentialGrantEvent,
     },
     NetworkRepair {
         operation_id: OperationId,
@@ -666,6 +695,7 @@ impl ClassifiedOperationEvent {
             | Self::MachineUpdate { operation_id, .. }
             | Self::MachineLifecycle { operation_id, .. }
             | Self::CoreReplace { operation_id, .. }
+            | Self::CredentialGrant { operation_id, .. }
             | Self::NetworkRepair { operation_id, .. }
             | Self::ServiceRestart { operation_id, .. }
             | Self::ManagedLease { operation_id, .. }
@@ -975,6 +1005,26 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                     transition: CoreReplaceTransition::Failed { failure },
                 },
             },
+            OperationEvent::CredentialGrantSubmitted {
+                operation_id,
+                action,
+            } => Self::CredentialGrant {
+                operation_id,
+                event: CredentialGrantEvent::Submitted { action },
+            },
+            OperationEvent::CredentialGrantCompleted { operation_id } => Self::CredentialGrant {
+                operation_id,
+                event: CredentialGrantEvent::Transition(CredentialGrantTransition::Completed),
+            },
+            OperationEvent::CredentialGrantFailed {
+                operation_id,
+                failure,
+            } => Self::CredentialGrant {
+                operation_id,
+                event: CredentialGrantEvent::Transition(CredentialGrantTransition::Failed {
+                    failure,
+                }),
+            },
             OperationEvent::NetworkRepairSubmitted {
                 operation_id,
                 target_machine_id: _,
@@ -1201,6 +1251,10 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 OperationKind::CoreReplace => Self::CoreReplace {
                     operation_id,
                     event: CoreReplaceEvent::Cancelled(reason),
+                },
+                OperationKind::CredentialGrant => Self::CredentialGrant {
+                    operation_id,
+                    event: CredentialGrantEvent::Cancelled(reason),
                 },
                 OperationKind::NetworkRepair => Self::NetworkRepair {
                     operation_id,

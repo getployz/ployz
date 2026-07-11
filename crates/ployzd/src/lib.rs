@@ -38,6 +38,7 @@ pub mod roles {
     pub mod nats_failover;
 }
 pub mod operations {
+    pub mod credential_grant;
     pub mod deploy;
     pub mod log;
     pub mod machine_lifecycle;

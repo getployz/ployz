@@ -18,6 +18,7 @@ use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 mod accessors;
 mod cert;
 mod core_replace;
+mod credential_grant;
 mod deploy;
 mod event_subjects;
 mod events;
@@ -37,6 +38,10 @@ mod volume_remove;
 pub use accessors::NextEventSequenceError;
 pub use cert::{CertOperationFailure, CertOperationState, CertRunningStage, CertTransition};
 pub use core_replace::{CoreReplaceFailure, CoreReplaceOperationState, CoreReplaceTransition};
+pub use credential_grant::{
+    CredentialGrantAction, CredentialGrantFailure, CredentialGrantOperationState,
+    CredentialGrantTransition,
+};
 pub use deploy::{
     ArtifactUnavailableReason, ControlPlaneCommitScope, DeployCleanupFailure,
     DeployCompletionOutcome, DeployEvidence, DeployFailureClass, DeployOperationFailure,
@@ -97,6 +102,7 @@ pub enum OperationKind {
     MachineUpdate,
     MachineLifecycle,
     CoreReplace,
+    CredentialGrant,
     NetworkRepair,
     ServiceRestart,
     ManagedLease,
@@ -154,6 +160,12 @@ pub enum OperationStatus {
         machine_id: MachineId,
         successor_nats_url: crate::install::MachineJoinRuntimeNatsUrl,
         state: CoreReplaceOperationState,
+        last_event_sequence: EventSequence,
+    },
+    CredentialGrant {
+        id: OperationId,
+        action: CredentialGrantAction,
+        state: CredentialGrantOperationState,
         last_event_sequence: EventSequence,
     },
     NetworkRepair {
@@ -302,6 +314,20 @@ impl OperationStatus {
     }
 
     #[must_use]
+    pub fn credential_grant_accepted(
+        id: OperationId,
+        action: CredentialGrantAction,
+        event_sequence: EventSequence,
+    ) -> Self {
+        Self::CredentialGrant {
+            id,
+            action,
+            state: CredentialGrantOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
     pub fn service_restart_accepted(
         id: OperationId,
         namespace_id: NamespaceId,
@@ -384,6 +410,7 @@ impl OperationStatus {
             Self::MachineUpdate { state, .. } => state.is_terminal(),
             Self::MachineLifecycle { state, .. } => state.is_terminal(),
             Self::CoreReplace { state, .. } => state.is_terminal(),
+            Self::CredentialGrant { state, .. } => state.is_terminal(),
             Self::NetworkRepair { state, .. } => state.is_terminal(),
             Self::ServiceRestart { state, .. } => state.is_terminal(),
             Self::ManagedLease { state, .. } => state.is_terminal(),
