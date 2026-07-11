@@ -295,7 +295,9 @@ pub async fn start_control_process_with_client_and_reload(
         lease_intent.clone(),
         controllers.repository().clone(),
         lease_client,
-        facts.clone(),
+        facts_reader
+            .clone()
+            .with_request_timeout(config.deploy_step_timeout),
         machine_roster.clone(),
     );
     let certificate_renewal_health = start_certificate_renewal_task(

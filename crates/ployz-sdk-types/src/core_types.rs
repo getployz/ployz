@@ -4,8 +4,8 @@ pub use ployz_core::cert::{
     CertValidAt, CertValidAtError, CertValidityError, CertValidityWindow,
     CertificateProvisionFailure, LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt,
     LeaseTimestampError, ManagedCertBundle, ManagedCertificateIssuanceFailureKind,
-    ManagedLeaseAcquireRequest, ManagedLeaseAcquired, ManagedLeaseError, ManagedLeaseName,
-    ManagedLeaseRecord, ManagedLeaseRenewed, PublicUrlMode,
+    ManagedLeaseAcquireRequest, ManagedLeaseAcquired, ManagedLeaseAddressSet, ManagedLeaseError,
+    ManagedLeaseName, ManagedLeaseRecord, ManagedLeaseRenewed, PublicUrlMode,
 };
 pub use ployz_core::dataplane::{
     DataplaneMember, DataplaneProviderFailure, EbpfAttachmentStatus, EbpfForwardingReady,

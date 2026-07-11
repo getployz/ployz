@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cert::ManagedLeaseName;
-use crate::ids::OperationId;
+use crate::cert::{ManagedLeaseAddressSet, ManagedLeaseName};
+use crate::ids::{MachineId, OperationId};
 
 use super::events::{OperationEvent, OperationSubjectRef};
 use super::projection::{
@@ -17,8 +17,17 @@ use super::{EventSequence, FailureMessage, OperationStatus};
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ManagedLeaseSubject {
     Acquire,
-    DownloadBundle { lease: ManagedLeaseName },
-    Renew { lease: ManagedLeaseName },
+    DownloadBundle {
+        lease: ManagedLeaseName,
+    },
+    Renew {
+        lease: ManagedLeaseName,
+        #[serde(default)]
+        addresses: Box<ManagedLeaseAddressSet>,
+    },
+    GatewayTestimony {
+        missing: Vec<MachineId>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +71,7 @@ pub enum ManagedLeaseFailureClass {
     Superseded,
     Storage,
     Interrupted,
+    GatewayTestimonyUnavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,7 +213,59 @@ mod tests {
     fn subject() -> ManagedLeaseSubject {
         ManagedLeaseSubject::Renew {
             lease: ManagedLeaseName::try_new("cluster-one").expect("valid lease name"),
+            addresses: Box::new(ManagedLeaseAddressSet::new(
+                vec!["203.0.113.8".parse().expect("IPv4")],
+                vec!["2001:db8::8".parse().expect("IPv6")],
+            )),
         }
+    }
+
+    #[test]
+    fn renew_subject_records_requested_addresses() {
+        let value = serde_json::to_value(subject()).expect("renew subject serializes");
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "kind": "renew",
+                "lease": "cluster-one",
+                "addresses": {
+                    "ipv4": ["203.0.113.8"],
+                    "ipv6": ["2001:db8::8"]
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn legacy_renew_subject_defaults_missing_addresses() {
+        let subject = serde_json::from_value::<ManagedLeaseSubject>(serde_json::json!({
+            "kind": "renew",
+            "lease": "cluster-one"
+        }))
+        .expect("legacy renew subject deserializes");
+
+        assert!(matches!(
+            subject,
+            ManagedLeaseSubject::Renew { addresses, .. }
+                if addresses.ipv4().is_empty() && addresses.ipv6().is_empty()
+        ));
+    }
+
+    #[test]
+    fn gateway_testimony_subject_records_missing_machines() {
+        let value = serde_json::to_value(ManagedLeaseSubject::GatewayTestimony {
+            missing: vec![MachineId::try_new("gateway-one").expect("valid machine id")],
+        })
+        .expect("gateway testimony subject serializes");
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "kind": "gateway_testimony",
+                "missing": ["gateway-one"]
+            })
+        );
     }
 
     #[test]

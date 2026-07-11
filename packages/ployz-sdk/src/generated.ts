@@ -256,9 +256,9 @@ export type ManagedLeaseOperationState = { "state": "accepted" } | { "state": "c
 
 export type ManagedLeaseOperationFailure = { class: ManagedLeaseFailureClass, message: FailureMessage, };
 
-export type ManagedLeaseFailureClass = "worker_unauthorized" | "lease_not_found" | "worker_http" | "transport" | "decode" | "superseded" | "storage" | "interrupted";
+export type ManagedLeaseFailureClass = "worker_unauthorized" | "lease_not_found" | "worker_http" | "transport" | "decode" | "superseded" | "storage" | "interrupted" | "gateway_testimony_unavailable";
 
-export type ManagedLeaseSubject = { "kind": "acquire" } | { "kind": "download_bundle", lease: ManagedLeaseName, } | { "kind": "renew", lease: ManagedLeaseName, };
+export type ManagedLeaseSubject = { "kind": "acquire" } | { "kind": "download_bundle", lease: ManagedLeaseName, } | { "kind": "renew", lease: ManagedLeaseName, addresses: ManagedLeaseAddressSet, } | { "kind": "gateway_testimony", missing: Array<MachineId>, };
 
 export type NamespaceRemoveOperationState = { "state": "accepted" } | { "state": "running", stage: NamespaceRemoveRunningStage, } | { "state": "completed" } | { "state": "failed", failure: NamespaceRemoveFailure, } | { "state": "cancelled", reason: CancellationReason, };
 
@@ -423,6 +423,8 @@ export type ManagedLeaseRecord = { name: ManagedLeaseName, token: LeaseBearerTok
 export type ManagedCertBundle = { lease: ManagedLeaseName, dns_names: [string, string], certificate_chain_pem: string, private_key_pem: string, issued_at: LeaseIssuedAt, expires_at: LeaseExpiresAt, digest: InstallSha256Digest, };
 
 export type ManagedCertificateIssuanceFailureKind = "rate_limit" | "provider_5xx" | "validation_timeout" | "caa" | "dns_txt_missing" | "provider_error";
+
+export type ManagedLeaseAddressSet = { ipv4: Array<string>, ipv6: Array<string>, };
 
 export type ManagedLeaseAcquireRequest = { ipv4: Array<string>, ipv6: Array<string>, };
 

@@ -1,23 +1,24 @@
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ployz_core::cert::{
-    AutoLeaseState, ManagedCertBundle, ManagedLeaseAcquireRequest, ManagedLeaseIntent,
-    ManagedLeaseRecord,
+    AutoLeaseState, ManagedCertBundle, ManagedLeaseAcquireRequest, ManagedLeaseAddressSet,
+    ManagedLeaseIntent, ManagedLeaseRecord,
 };
-use ployz_core::ids::OperationId;
+use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::ops::{
     FailureMessage, ManagedLeaseFailureClass, ManagedLeaseOperationFailure, ManagedLeaseSubject,
     ManagedLeaseTransition, OperationStatus,
 };
 
-use crate::fact_cache::FactCache;
 use crate::intent::lease_intent::{LeaseIntentStore, LeaseIntentStoreError, StoreLeaseOutcome};
 use crate::intent::machine_roster::{MachineRosterStore, MachineRosterStoreError};
 use crate::lease::{LeaseClient, LeaseClientError};
 use crate::operations::log::{
     ManagedLeaseOperationSubmission, OperationRepository, RecordManagedLeaseTransitionError,
 };
+use crate::roles::machine::client::{NatsMachineFactsReader, read_available_machine_facts};
 use crate::tasks::TaskRegistry;
 
 use super::client::BundleDownloadOutcome;
@@ -31,17 +32,23 @@ pub fn start_managed_lease_task(
     lease_intent: LeaseIntentStore,
     repository: OperationRepository,
     client: LeaseClient,
-    facts: FactCache,
+    facts_reader: NatsMachineFactsReader,
     roster: MachineRosterStore,
 ) {
-    registry.spawn(run_loop(lease_intent, repository, client, facts, roster));
+    registry.spawn(run_loop(
+        lease_intent,
+        repository,
+        client,
+        facts_reader,
+        roster,
+    ));
 }
 
 async fn run_loop(
     lease_intent: LeaseIntentStore,
     repository: OperationRepository,
     client: LeaseClient,
-    facts: FactCache,
+    facts_reader: NatsMachineFactsReader,
     roster: MachineRosterStore,
 ) {
     if let Err(error) = recover_accepted_operations(&repository).await {
@@ -49,6 +56,8 @@ async fn run_loop(
     }
     let mut consecutive_failures = 0;
     let mut acquisition_attempted = false;
+    let mut reported_missing_gateways: Option<Vec<MachineId>> = None;
+    let mut pending_gateway_testimony: Option<PendingGatewayTestimony> = None;
     loop {
         let acquiring = matches!(
             lease_intent.load_if_configured().await,
@@ -62,14 +71,50 @@ async fn run_loop(
         if !acquiring {
             acquisition_attempted = false;
         }
-        let outcome =
-            run_once_with_roster(&lease_intent, &repository, &client, &facts, &roster).await;
-        let posted_acquisition = acquiring
-            && !matches!(
+        let had_pending_gateway_testimony = pending_gateway_testimony.is_some();
+        let mut outcome = match record_pending_gateway_testimony(
+            &repository,
+            &mut pending_gateway_testimony,
+            &mut reported_missing_gateways,
+        )
+        .await
+        {
+            Ok(()) => {
+                run_once_with_roster(&lease_intent, &repository, &client, &facts_reader, &roster)
+                    .await
+            }
+            Err(error) => Err(error),
+        };
+        let awaiting_gateway_testimony = had_pending_gateway_testimony
+            || matches!(
                 &outcome,
                 Ok(ManagedLeaseTaskOutcome::AwaitingGatewayTestimony { .. })
-                    | Err(ManagedLeaseTaskError::Roster(_))
             );
+        match &outcome {
+            Ok(ManagedLeaseTaskOutcome::AwaitingGatewayTestimony { missing })
+                if reported_missing_gateways.as_deref() != Some(missing) =>
+            {
+                let missing = missing.clone();
+                match submit_gateway_testimony_unavailable(&repository, &missing).await {
+                    Ok(pending) => {
+                        pending_gateway_testimony = Some(pending);
+                        outcome = record_pending_gateway_testimony(
+                            &repository,
+                            &mut pending_gateway_testimony,
+                            &mut reported_missing_gateways,
+                        )
+                        .await
+                        .map(|()| ManagedLeaseTaskOutcome::AwaitingGatewayTestimony { missing });
+                    }
+                    Err(error) => outcome = Err(error),
+                }
+            }
+            Ok(ManagedLeaseTaskOutcome::AwaitingGatewayTestimony { .. }) | Err(_) => {}
+            Ok(_) => reported_missing_gateways = None,
+        }
+        let posted_acquisition = acquiring
+            && !awaiting_gateway_testimony
+            && !matches!(&outcome, Err(ManagedLeaseTaskError::Roster(_)));
         let delay = match outcome {
             Ok(ManagedLeaseTaskOutcome::AwaitingConfiguration) => {
                 consecutive_failures = 0;
@@ -80,7 +125,7 @@ async fn run_loop(
                     "ployzd managed lease waiting for gateway endpoint testimony: {}",
                     missing
                         .iter()
-                        .map(ployz_core::ids::MachineId::as_str)
+                        .map(MachineId::as_str)
                         .collect::<Vec<_>>()
                         .join(", ")
                 );
@@ -106,7 +151,9 @@ async fn run_loop(
             }
             Err(error) => {
                 eprintln!("ployzd managed lease warning: {error}");
-                if let Err(recovery_error) = recover_accepted_operations(&repository).await {
+                if pending_gateway_testimony.is_none()
+                    && let Err(recovery_error) = recover_accepted_operations(&repository).await
+                {
                     eprintln!("ployzd managed lease recovery warning: {recovery_error}");
                 }
                 consecutive_failures += 1;
@@ -132,27 +179,16 @@ pub async fn run_once(
     lease_intent: &LeaseIntentStore,
     repository: &OperationRepository,
     client: &LeaseClient,
-    facts: &FactCache,
+    acquisition: ManagedLeaseAcquireRequest,
 ) -> Result<ManagedLeaseTaskOutcome, ManagedLeaseTaskError> {
-    let acquisition = known_gateway_addresses_from_ids(
-        &std::collections::BTreeSet::new(),
-        facts.machine_endpoint_observations(),
-    );
-    run_once_with_addresses(
-        lease_intent,
-        repository,
-        client,
-        acquisition.request,
-        acquisition.missing,
-    )
-    .await
+    run_once_with_addresses(lease_intent, repository, client, acquisition).await
 }
 
 async fn run_once_with_roster(
     lease_intent: &LeaseIntentStore,
     repository: &OperationRepository,
     client: &LeaseClient,
-    facts: &FactCache,
+    facts_reader: &NatsMachineFactsReader,
     roster: &MachineRosterStore,
 ) -> Result<ManagedLeaseTaskOutcome, ManagedLeaseTaskError> {
     let gateway_ids = roster
@@ -167,21 +203,13 @@ async fn run_once_with_roster(
         })
         .map(|machine| machine.machine_id)
         .collect();
-    let acquisition =
-        known_gateway_addresses_from_ids(&gateway_ids, facts.machine_endpoint_observations());
+    let acquisition = gateway_addresses_from_facts(facts_reader, &gateway_ids).await;
     if !acquisition.missing.is_empty() {
         return Ok(ManagedLeaseTaskOutcome::AwaitingGatewayTestimony {
             missing: acquisition.missing,
         });
     }
-    run_once_with_addresses(
-        lease_intent,
-        repository,
-        client,
-        acquisition.request,
-        Vec::new(),
-    )
-    .await
+    run_once_with_addresses(lease_intent, repository, client, acquisition.request).await
 }
 
 async fn run_once_with_addresses(
@@ -189,8 +217,12 @@ async fn run_once_with_addresses(
     repository: &OperationRepository,
     client: &LeaseClient,
     acquisition: ManagedLeaseAcquireRequest,
-    missing_gateways: Vec<ployz_core::ids::MachineId>,
 ) -> Result<ManagedLeaseTaskOutcome, ManagedLeaseTaskError> {
+    let addresses = ManagedLeaseAddressSet::new(acquisition.ipv4, acquisition.ipv6);
+    let acquisition = ManagedLeaseAcquireRequest {
+        ipv4: addresses.ipv4().iter().copied().collect(),
+        ipv6: addresses.ipv6().iter().copied().collect(),
+    };
     let Some(intent) = lease_intent.load_if_configured().await? else {
         return Ok(ManagedLeaseTaskOutcome::AwaitingConfiguration);
     };
@@ -219,19 +251,8 @@ async fn run_once_with_addresses(
                 lease_intent,
                 repository,
                 ManagedLeaseSubject::Acquire,
+                Some(addresses),
                 || async {
-                    if !missing_gateways.is_empty() {
-                        return Err(LeaseClientError::Transport {
-                            message: format!(
-                                "gateway endpoint testimony unavailable for {}",
-                                missing_gateways
-                                    .iter()
-                                    .map(ployz_core::ids::MachineId::as_str)
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            ),
-                        });
-                    }
                     client
                         .acquire(acquisition)
                         .await
@@ -242,33 +263,66 @@ async fn run_once_with_addresses(
             .await
         }
         AutoLeaseState::RecordOnly { lease } => {
+            if lease_intent.applied_address_set_differs(&addresses).await? {
+                return run_renew_step(
+                    lease_intent,
+                    repository,
+                    client,
+                    lease,
+                    acquisition,
+                    addresses,
+                )
+                .await;
+            }
             run_download_step(lease_intent, repository, client, lease).await
         }
         AutoLeaseState::Ready { lease, bundle: _ } => {
-            if needs_certificate_refresh && !needs_lease_renewal {
+            let addresses_differ = lease_intent.applied_address_set_differs(&addresses).await?;
+            if needs_certificate_refresh && !needs_lease_renewal && !addresses_differ {
                 return run_download_step(lease_intent, repository, client, lease).await;
             }
-            if !needs_lease_renewal {
+            if !needs_lease_renewal && !addresses_differ {
                 return Ok(ManagedLeaseTaskOutcome::NoAction);
             }
-            let subject = ManagedLeaseSubject::Renew {
-                lease: lease.name.clone(),
-            };
-            run_step(
+            run_renew_step(
                 lease_intent,
                 repository,
-                subject,
-                || async {
-                    client
-                        .renew(lease.name, lease.token)
-                        .await
-                        .map(|renewed| (renewed.lease, renewed.bundle))
-                },
-                |operation_id| ManagedLeaseTaskOutcome::Renewed { operation_id },
+                client,
+                lease,
+                acquisition,
+                addresses,
             )
             .await
         }
     }
+}
+
+async fn run_renew_step(
+    lease_intent: &LeaseIntentStore,
+    repository: &OperationRepository,
+    client: &LeaseClient,
+    lease: ManagedLeaseRecord,
+    acquisition: ManagedLeaseAcquireRequest,
+    addresses: ManagedLeaseAddressSet,
+) -> Result<ManagedLeaseTaskOutcome, ManagedLeaseTaskError> {
+    let subject = ManagedLeaseSubject::Renew {
+        lease: lease.name.clone(),
+        addresses: Box::new(addresses.clone()),
+    };
+    run_step(
+        lease_intent,
+        repository,
+        subject,
+        Some(addresses),
+        || async {
+            client
+                .renew(lease.name, lease.token, acquisition)
+                .await
+                .map(|renewed| (renewed.lease, renewed.bundle))
+        },
+        |operation_id| ManagedLeaseTaskOutcome::Renewed { operation_id },
+    )
+    .await
 }
 
 async fn run_download_step(
@@ -294,6 +348,7 @@ async fn run_download_step(
         lease_intent,
         repository,
         subject,
+        None,
         || async { result },
         |operation_id| ManagedLeaseTaskOutcome::BundleDownloaded { operation_id },
     )
@@ -302,11 +357,23 @@ async fn run_download_step(
 
 struct GatewayAddressCandidates {
     request: ManagedLeaseAcquireRequest,
-    missing: Vec<ployz_core::ids::MachineId>,
+    missing: Vec<MachineId>,
+}
+
+async fn gateway_addresses_from_facts(
+    facts_reader: &NatsMachineFactsReader,
+    gateways: &BTreeSet<ployz_core::ids::MachineId>,
+) -> GatewayAddressCandidates {
+    let endpoints = read_available_machine_facts(facts_reader, gateways.iter().cloned())
+        .await
+        .into_iter()
+        .filter_map(|facts| facts.endpoints().cloned())
+        .collect();
+    known_gateway_addresses_from_ids(gateways, endpoints)
 }
 
 fn known_gateway_addresses_from_ids(
-    gateways: &std::collections::BTreeSet<ployz_core::ids::MachineId>,
+    gateways: &BTreeSet<ployz_core::ids::MachineId>,
     endpoints: Vec<ployz_core::state::MachineEndpointObservation>,
 ) -> GatewayAddressCandidates {
     let answering = endpoints
@@ -341,6 +408,7 @@ async fn run_step<Worker, WorkerFuture, Success>(
     lease_intent: &LeaseIntentStore,
     repository: &OperationRepository,
     subject: ManagedLeaseSubject,
+    applied_addresses: Option<ManagedLeaseAddressSet>,
     worker: Worker,
     success: Success,
 ) -> Result<ManagedLeaseTaskOutcome, ManagedLeaseTaskError>
@@ -365,7 +433,15 @@ where
             return Ok(ManagedLeaseTaskOutcome::Failed { operation_id });
         }
     };
-    match lease_intent.store_lease(record, bundle).await {
+    let storage = match applied_addresses {
+        Some(addresses) => {
+            lease_intent
+                .store_successful_lease_application(record, bundle, addresses)
+                .await
+        }
+        None => lease_intent.store_lease(record, bundle).await,
+    };
+    match storage {
         Ok(StoreLeaseOutcome::Stored) => {
             record_completed(repository, &operation_id, &subject).await?;
             Ok(success(operation_id))
@@ -438,6 +514,59 @@ async fn record_completed(
     repository
         .record_managed_lease_transition(operation_id, subject, ManagedLeaseTransition::Completed)
         .await?;
+    Ok(())
+}
+
+async fn submit_gateway_testimony_unavailable(
+    repository: &OperationRepository,
+    missing: &[MachineId],
+) -> Result<PendingGatewayTestimony, ManagedLeaseTaskError> {
+    let subject = ManagedLeaseSubject::GatewayTestimony {
+        missing: missing.to_vec(),
+    };
+    Ok(PendingGatewayTestimony {
+        operation_id: submit_operation(repository, subject).await?,
+        missing: missing.to_vec(),
+    })
+}
+
+struct PendingGatewayTestimony {
+    operation_id: OperationId,
+    missing: Vec<MachineId>,
+}
+
+async fn record_pending_gateway_testimony(
+    repository: &OperationRepository,
+    pending: &mut Option<PendingGatewayTestimony>,
+    reported: &mut Option<Vec<MachineId>>,
+) -> Result<(), ManagedLeaseTaskError> {
+    let Some(testimony) = pending.as_ref() else {
+        return Ok(());
+    };
+    let subject = ManagedLeaseSubject::GatewayTestimony {
+        missing: testimony.missing.clone(),
+    };
+    let result = record_failed(
+        repository,
+        &testimony.operation_id,
+        &subject,
+        ManagedLeaseFailureClass::GatewayTestimonyUnavailable,
+        &"gateway endpoint testimony unavailable",
+    )
+    .await;
+    finish_gateway_testimony_transition(pending, reported, result)
+}
+
+fn finish_gateway_testimony_transition(
+    pending: &mut Option<PendingGatewayTestimony>,
+    reported: &mut Option<Vec<MachineId>>,
+    result: Result<(), ManagedLeaseTaskError>,
+) -> Result<(), ManagedLeaseTaskError> {
+    result?;
+    let Some(testimony) = pending.take() else {
+        return Ok(());
+    };
+    *reported = Some(testimony.missing);
     Ok(())
 }
 
@@ -593,5 +722,30 @@ mod tests {
 
         assert!(ready.missing.is_empty());
         assert!(acquisition_allowed(attempted, true));
+    }
+
+    #[test]
+    fn failed_gateway_testimony_transition_stays_pending_for_retry() {
+        let missing = vec![machine_id("gateway")];
+        let mut pending = Some(PendingGatewayTestimony {
+            operation_id: OperationId::try_new("op_testimony").expect("operation id"),
+            missing: missing.clone(),
+        });
+        let mut reported = None;
+
+        let failure = finish_gateway_testimony_transition(
+            &mut pending,
+            &mut reported,
+            Err(ManagedLeaseTaskError::ClockBeforeUnixEpoch),
+        );
+
+        assert!(failure.is_err());
+        assert_eq!(reported, None);
+        assert!(pending.is_some(), "generic recovery must stay bypassed");
+
+        finish_gateway_testimony_transition(&mut pending, &mut reported, Ok(()))
+            .expect("retry succeeds");
+        assert!(pending.is_none());
+        assert_eq!(reported, Some(missing));
     }
 }

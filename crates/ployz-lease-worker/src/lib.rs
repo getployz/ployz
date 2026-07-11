@@ -43,6 +43,7 @@ pub enum LeaseWorkerRequest {
     Renew {
         lease: ManagedLeaseName,
         token: LeaseBearerToken,
+        request: ManagedLeaseAcquireRequest,
     },
     DownloadBundle {
         lease: ManagedLeaseName,
@@ -78,6 +79,7 @@ pub struct StubLeaseWorker<C = SystemClock> {
     records: BTreeMap<ManagedLeaseName, ManagedLeaseRecord>,
     bundles: BTreeMap<ManagedLeaseName, ManagedCertBundle>,
     pending_bundles: BTreeSet<ManagedLeaseName>,
+    renewal_requests: BTreeMap<ManagedLeaseName, ManagedLeaseAcquireRequest>,
     clock: C,
 }
 
@@ -95,6 +97,7 @@ impl<C: Clock> StubLeaseWorker<C> {
             records: BTreeMap::new(),
             bundles: BTreeMap::new(),
             pending_bundles: BTreeSet::new(),
+            renewal_requests: BTreeMap::new(),
             clock,
         }
     }
@@ -105,7 +108,11 @@ impl<C: Clock> StubLeaseWorker<C> {
     ) -> Result<LeaseWorkerResponse, LeaseWorkerError> {
         match request {
             LeaseWorkerRequest::Acquire(request) => self.acquire(request),
-            LeaseWorkerRequest::Renew { lease, token } => self.renew(lease, &token),
+            LeaseWorkerRequest::Renew {
+                lease,
+                token,
+                request,
+            } => self.renew(lease, &token, request),
             LeaseWorkerRequest::DownloadBundle { lease, token } => {
                 self.download_bundle(&lease, &token)
             }
@@ -134,9 +141,11 @@ impl<C: Clock> StubLeaseWorker<C> {
         &mut self,
         lease: ManagedLeaseName,
         token: &LeaseBearerToken,
+        request: ManagedLeaseAcquireRequest,
     ) -> Result<LeaseWorkerResponse, LeaseWorkerError> {
         let current = self.record(&lease)?.clone();
         verify_token(&current, token)?;
+        self.renewal_requests.insert(lease.clone(), request);
         let renewed = self.issue_record(lease.clone(), current.token.clone())?;
         let bundle = self.issue_bundle(&renewed)?;
         let response_bundle = if self.pending_bundles.contains(&lease) {
@@ -151,6 +160,11 @@ impl<C: Clock> StubLeaseWorker<C> {
             lease: renewed,
             bundle: response_bundle,
         }))
+    }
+
+    #[must_use]
+    pub fn renewal_request(&self, lease: &ManagedLeaseName) -> Option<&ManagedLeaseAcquireRequest> {
+        self.renewal_requests.get(lease)
     }
 
     fn download_bundle(
@@ -307,9 +321,12 @@ fn request_to_worker(request: &HttpRequest) -> Result<LeaseWorkerRequest, LeaseW
                 .trim_start_matches("/v1/leases/")
                 .trim_end_matches("/renew")
                 .trim_end_matches('/');
+            let token = bearer_token(request)?;
+            let renewal_request = serde_json::from_slice(&request.body)?;
             Ok(LeaseWorkerRequest::Renew {
                 lease: ManagedLeaseName::try_new(lease)?,
-                token: bearer_token(request)?,
+                token,
+                request: renewal_request,
             })
         }
         ("GET", path) if path.starts_with("/v1/leases/") && path.ends_with("/cert-bundle") => {

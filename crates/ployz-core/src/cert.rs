@@ -1,5 +1,6 @@
 //! Certificate state and ACME challenge models.
 
+use std::collections::BTreeSet;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use serde::{Deserialize, Serialize};
@@ -121,6 +122,35 @@ impl ManagedLeaseIntent {
 pub struct ManagedLeaseAcquireRequest {
     pub ipv4: Vec<Ipv4Addr>,
     pub ipv6: Vec<Ipv6Addr>,
+}
+
+/// Canonical public gateway addresses applied to a managed lease.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct ManagedLeaseAddressSet {
+    ipv4: BTreeSet<Ipv4Addr>,
+    ipv6: BTreeSet<Ipv6Addr>,
+}
+
+impl ManagedLeaseAddressSet {
+    #[must_use]
+    pub fn new(ipv4: Vec<Ipv4Addr>, ipv6: Vec<Ipv6Addr>) -> Self {
+        Self {
+            ipv4: ipv4.into_iter().collect(),
+            ipv6: ipv6.into_iter().collect(),
+        }
+    }
+
+    #[must_use]
+    pub const fn ipv4(&self) -> &BTreeSet<Ipv4Addr> {
+        &self.ipv4
+    }
+
+    #[must_use]
+    pub const fn ipv6(&self) -> &BTreeSet<Ipv6Addr> {
+        &self.ipv6
+    }
 }
 
 fn two_thirds_due(issued_at: u64, expires_at: u64, now_seconds: u64) -> bool {
@@ -896,6 +926,37 @@ fn is_base64_url_byte(byte: u8) -> bool {
 #[cfg(test)]
 mod managed_lease_intent_tests {
     use super::*;
+
+    #[test]
+    fn managed_lease_address_set_sorts_and_deduplicates_each_family() {
+        let addresses = ManagedLeaseAddressSet::new(
+            vec![
+                "203.0.113.8".parse().expect("IPv4"),
+                "198.51.100.2".parse().expect("IPv4"),
+                "203.0.113.8".parse().expect("IPv4"),
+            ],
+            vec![
+                "2001:db8::8".parse().expect("IPv6"),
+                "2001:db8::2".parse().expect("IPv6"),
+                "2001:db8::8".parse().expect("IPv6"),
+            ],
+        );
+
+        assert_eq!(
+            addresses.ipv4().iter().copied().collect::<Vec<_>>(),
+            [
+                "198.51.100.2".parse::<Ipv4Addr>().expect("IPv4"),
+                "203.0.113.8".parse::<Ipv4Addr>().expect("IPv4"),
+            ]
+        );
+        assert_eq!(
+            addresses.ipv6().iter().copied().collect::<Vec<_>>(),
+            [
+                "2001:db8::2".parse::<Ipv6Addr>().expect("IPv6"),
+                "2001:db8::8".parse::<Ipv6Addr>().expect("IPv6"),
+            ]
+        );
+    }
 
     #[test]
     fn auto_without_lease_needs_acquisition() {
