@@ -3,7 +3,7 @@
 use async_nats::HeaderMap;
 use bollard::Docker;
 use bollard::errors::Error as DockerError;
-use flate2::{Compression, GzBuilder};
+use flate2::{Compression, GzBuilder, read::GzDecoder};
 use futures_util::{StreamExt, TryStreamExt, stream};
 use ployz_core::deploy::DeployServiceSpec;
 use ployz_core::deploy::{ImageReference, ImageSource};
@@ -352,7 +352,7 @@ fn prepare_docker_save(bytes: &[u8]) -> Result<PreparedImage, ImagePushError> {
             .ok_or_else(|| ImagePushError::InvalidDockerExport {
                 message: format!("layer {} is missing", path.display()),
             })?;
-        let compressed = deterministic_gzip(&layer)?;
+        let compressed = prepare_layer(layer)?;
         let digest = OciDigest::sha256(&compressed);
         layer_descriptors.push((digest.clone(), compressed.len()));
         blobs.push(PreparedBlob {
@@ -413,6 +413,18 @@ fn deterministic_gzip(bytes: &[u8]) -> Result<Vec<u8>, ImagePushError> {
     encoder.finish().map_err(|error| ImagePushError::Gzip {
         message: error.to_string(),
     })
+}
+
+fn prepare_layer(layer: Vec<u8>) -> Result<Vec<u8>, ImagePushError> {
+    if !layer.starts_with(&[0x1f, 0x8b]) {
+        return deterministic_gzip(&layer);
+    }
+    std::io::copy(&mut GzDecoder::new(layer.as_slice()), &mut std::io::sink()).map_err(
+        |error| ImagePushError::InvalidDockerExport {
+            message: format!("invalid gzip layer: {error}"),
+        },
+    )?;
+    Ok(layer)
 }
 
 async fn blob_check(
@@ -668,8 +680,9 @@ pub enum ImagePushError {
 
 #[cfg(test)]
 mod tests {
-    use super::deterministic_gzip;
+    use super::{PreparedBlobKind, deterministic_gzip, prepare_docker_save};
     use ployz_core::image::OciDigest;
+    use std::io::Cursor;
 
     #[test]
     fn deterministic_gzip_has_a_stable_digest() {
@@ -679,5 +692,61 @@ mod tests {
             OciDigest::sha256(&compressed).as_str(),
             "sha256:63402c3de330966758f6d9c95461b607e966b827cfd73783a5c538eb5e2c235c"
         );
+    }
+
+    #[test]
+    fn docker_save_gzip_layer_is_not_compressed_twice() {
+        let layer = deterministic_gzip(b"already compressed layer").expect("gzip layer");
+        let docker_save = docker_save_with_layer(&layer);
+
+        let prepared = prepare_docker_save(&docker_save).expect("prepare Docker save");
+        let prepared_layers = prepared
+            .blobs
+            .iter()
+            .filter(|blob| matches!(blob.kind, PreparedBlobKind::Layer))
+            .collect::<Vec<_>>();
+        let [prepared_layer] = prepared_layers.as_slice() else {
+            panic!("fixture produces one prepared layer");
+        };
+
+        assert_eq!(prepared_layer.bytes, layer);
+    }
+
+    #[test]
+    fn docker_save_truncated_gzip_layer_is_rejected() {
+        let mut layer = deterministic_gzip(b"truncated layer").expect("gzip layer");
+        layer.pop();
+
+        let error = prepare_docker_save(&docker_save_with_layer(&layer))
+            .expect_err("truncated gzip layer must fail");
+
+        assert!(
+            matches!(error, super::ImagePushError::InvalidDockerExport { message } if message.starts_with("invalid gzip layer:"))
+        );
+    }
+
+    fn docker_save_with_layer(layer: &[u8]) -> Vec<u8> {
+        let config = br#"{"architecture":"amd64","os":"linux"}"#;
+        let manifest =
+            br#"[{"Config":"config.json","RepoTags":["app:test"],"Layers":["layer.tar"]}]"#;
+        let mut docker_save = Vec::new();
+        {
+            let mut archive = tar::Builder::new(&mut docker_save);
+            for (path, bytes) in [
+                ("manifest.json", manifest.as_slice()),
+                ("config.json", config.as_slice()),
+                ("layer.tar", layer),
+            ] {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(u64::try_from(bytes.len()).expect("fixture size"));
+                header.set_mode(0o644);
+                header.set_cksum();
+                archive
+                    .append_data(&mut header, path, Cursor::new(bytes))
+                    .expect("append fixture file");
+            }
+            archive.finish().expect("finish fixture archive");
+        }
+        docker_save
     }
 }

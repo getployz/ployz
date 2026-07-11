@@ -1,5 +1,6 @@
 use super::*;
 use ployz::commands::parse_command;
+use ployz::compose::{ComposeInput, UnsupportedFieldMode, parse_deploy_file};
 use ployz::deploy_history::{ClusterFingerprint, DeployHistory, DeployHistoryEntry};
 use ployz::runtime::{PloyzctlRuntimeConfig, execute_command};
 use ployz_core::ops::{DeployFailureClass, DeployRunningStage, HealthCheckFailure};
@@ -527,6 +528,10 @@ services:
   umami:
     image: {UMAMI_IMAGE}
     depends_on: [db]
+    command:
+      - sh
+      - -c
+      - until node -e "const net=require('net');const s=net.createConnection(5432,'db');s.setTimeout(2000);s.on('connect',()=>process.exit(0));s.on('error',()=>process.exit(1));s.on('timeout',()=>process.exit(1));"; do sleep 1; done; exec npm run start-docker
     environment:
       DATABASE_URL: postgresql://umami:umami@db:5432/umami
       APP_SECRET: ployz-v1-acceptance
@@ -640,4 +645,36 @@ async fn assert_service_name_database_reachability(
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     panic!("Umami could not reach Postgres by service name: {last:?}");
+}
+
+#[test]
+fn umami_waits_for_database_dns_before_starting() {
+    let compose = umami_compose();
+    let (parsed, warnings) = parse_deploy_file(ComposeInput {
+        source: &compose,
+        base_dir: Path::new("."),
+        interpolation_env: BTreeMap::new(),
+        namespace_override: None,
+        mode: UnsupportedFieldMode::Strict,
+    })
+    .expect("acceptance Compose parses");
+    assert!(warnings.is_empty());
+    let umami = parsed
+        .services
+        .iter()
+        .find(|service| service.service_id == service_id("umami"))
+        .expect("Umami service exists");
+
+    assert_eq!(
+        umami.runtime.command.as_ref().map(|command| command.as_slice()),
+        Some(
+            [
+                "sh",
+                "-c",
+                "until node -e \"const net=require('net');const s=net.createConnection(5432,'db');s.setTimeout(2000);s.on('connect',()=>process.exit(0));s.on('error',()=>process.exit(1));s.on('timeout',()=>process.exit(1));\"; do sleep 1; done; exec npm run start-docker",
+            ]
+            .map(str::to_owned)
+            .as_slice()
+        )
+    );
 }
