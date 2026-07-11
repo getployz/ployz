@@ -17,6 +17,8 @@
 
 #[path = "dind_cluster/network.rs"]
 mod network;
+#[path = "dind_cluster/rollback.rs"]
+mod rollback;
 mod support;
 
 use futures_util::StreamExt;
@@ -36,9 +38,9 @@ use ployz_core::machine::{
     ConnectivityProofUnreachablePeer, MachineAddFailure, MachineCredentialProvisioningStep,
 };
 use ployz_core::ops::{
-    DeployCompletionOutcome, DeployOperationFailure, DeployOperationState,
-    NamespaceRemoveOperationState, OperationEvent, OperationStatus, PreStartHookFailure,
-    VolumeRemoveOperationState,
+    ArtifactUnavailableReason, DeployCompletionOutcome, DeployOperationFailure,
+    DeployOperationState, NamespaceRemoveOperationState, OperationEvent, OperationStatus,
+    PreStartHookFailure, VolumeRemoveOperationState,
 };
 use ployz_core::ops::{MachineAddOperationState, ManagedLeaseOperationState};
 use ployz_core::permissions::inbox_subscribe_scope;
