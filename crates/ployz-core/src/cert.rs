@@ -15,7 +15,7 @@ pub const CERT_STATE_PREFIX: &str = "certs";
 pub const ACME_LOCK_PREFIX: &str = "acme";
 pub const ACME_CHALLENGE_PREFIX: &str = "acme.challenges";
 pub const MANAGED_LEASE_DOMAIN_SUFFIX: &str = "up.ployz.app";
-pub const DEFAULT_LEASE_WORKER_URL: &str = "https://up.ployz.app";
+pub const DEFAULT_LEASE_WORKER_URL: &str = "https://dns.ployz.app";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
