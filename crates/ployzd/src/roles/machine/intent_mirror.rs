@@ -118,7 +118,7 @@ mod tests {
             "active_machines": [],
             "route_bindings": [],
             "serving_target_entries": [],
-            "authorized_users": [],
+            "nats_authorizations": [],
             "custom_certificates": [],
             "acme_http01_challenges": [],
         }))

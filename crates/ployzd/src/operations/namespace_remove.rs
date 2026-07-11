@@ -342,6 +342,11 @@ impl NamespaceRemoveOperation {
             ) => Err(error),
             Err(
                 error @ RecordOperationEventError::ProjectStatus(
+                    StatusProjectionError::CredentialGrantActionMismatch { .. },
+                ),
+            ) => Err(error),
+            Err(
+                error @ RecordOperationEventError::ProjectStatus(
                     StatusProjectionError::ManagedLeaseCancellationUnsupported { .. },
                 ),
             ) => Err(error),

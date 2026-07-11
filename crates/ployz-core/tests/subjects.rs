@@ -6,8 +6,9 @@ use ployz_core::ops::{
 };
 use ployz_core::state::MachineLifecycle;
 use ployz_core::subjects::{
-    MachineServiceEndpoint, OperationProgressScope, machine_container_facts, machine_facts,
-    machine_service, operation_progress_watch,
+    MachineServiceEndpoint, OperationApiEndpoint, OperationApiEndpointExecution,
+    OperationProgressScope, machine_container_facts, machine_facts, machine_service,
+    operation_progress_watch,
 };
 use ployz_test_support::ids::{container_id, machine_id, namespace_id, operation_id};
 
@@ -141,6 +142,40 @@ fn machine_subjects_use_known_endpoint_and_event_tokens() {
     assert_eq!(
         machine_container_facts(&machine_id),
         "plz.v1.testimony.machine.machine_7.containers"
+    );
+}
+
+#[test]
+fn credential_endpoints_pin_subjects_and_execution_classes() {
+    assert_eq!(
+        [
+            (
+                OperationApiEndpoint::CredentialAdd.subject(),
+                OperationApiEndpoint::CredentialAdd.execution(),
+            ),
+            (
+                OperationApiEndpoint::CredentialList.subject(),
+                OperationApiEndpoint::CredentialList.execution(),
+            ),
+            (
+                OperationApiEndpoint::CredentialRemove.subject(),
+                OperationApiEndpoint::CredentialRemove.execution(),
+            ),
+        ],
+        [
+            (
+                "plz.v1.rpc.operator.command.credential.add",
+                OperationApiEndpointExecution::AcceptsOperation,
+            ),
+            (
+                "plz.v1.rpc.operator.query.credential.list",
+                OperationApiEndpointExecution::Query,
+            ),
+            (
+                "plz.v1.rpc.operator.command.credential.remove",
+                OperationApiEndpointExecution::AcceptsOperation,
+            ),
+        ]
     );
 }
 

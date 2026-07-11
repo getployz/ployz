@@ -21,6 +21,7 @@ use crate::lease::task::start_managed_lease_task;
 use crate::operation_api::admission::OperationControllers;
 use crate::operation_api::service::{ApiServiceError, start_operation_api_service_with_handlers};
 use crate::operation_api::{OperationApiHandlers, OperationWorkers};
+use crate::operations::credential_grant::CredentialGrantOperation;
 use crate::operations::deploy::driver::{DeployOperationDriver, DeployOperationStores};
 use crate::operations::deploy::{DeployMachineCandidates, ManagedCertificateWaitPolicy};
 use crate::operations::log::OperationRepository;
@@ -47,6 +48,7 @@ const REACHABILITY_RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
 pub struct RunningControlProcess {
     intent: RunningIntentService,
     operation_api: RunningNatsService,
+    credential_grant_tasks: TaskRegistry,
     deploy_tasks: TaskRegistry,
     service_restart_tasks: TaskRegistry,
     namespace_remove_tasks: TaskRegistry,
@@ -73,6 +75,7 @@ impl RunningControlProcess {
     pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
         self.operation_api.shutdown().await?;
         self.intent.shutdown().await?;
+        self.credential_grant_tasks.abort_all();
         self.deploy_tasks.abort_all();
         self.service_restart_tasks.abort_all();
         self.namespace_remove_tasks.abort_all();
@@ -194,6 +197,7 @@ pub async fn start_control_process_with_client_and_reload(
         .map_err(ControlProcessError::StartFactsCache)?;
     let facts = facts_cache.cache();
     let deploy_tasks = TaskRegistry::default();
+    let credential_grant_tasks = TaskRegistry::default();
     let service_restart_tasks = TaskRegistry::default();
     let namespace_remove_tasks = TaskRegistry::default();
     let network_repair_tasks = TaskRegistry::default();
@@ -259,6 +263,12 @@ pub async fn start_control_process_with_client_and_reload(
         MintVerifyEndpoint::from_connect(&config.nats_connect),
         config.nats_authorization.machine_seed_file.clone(),
         mint_tasks.clone(),
+    );
+    let credential_grant = CredentialGrantOperation::new(
+        controllers.clone(),
+        authorization.handle(),
+        client.clone(),
+        credential_grant_tasks.clone(),
     );
     // Startup reconciliation (one bounded pass, owned by control start): a
     // control crash between machine-add acceptance and material-ready
@@ -333,6 +343,7 @@ pub async fn start_control_process_with_client_and_reload(
         OperationApiHandlers::execute_operations(
             controllers,
             OperationWorkers {
+                credential_grant,
                 deploy: deploy_driver,
                 service_restart,
                 namespace_remove,
@@ -363,6 +374,7 @@ pub async fn start_control_process_with_client_and_reload(
     Ok(RunningControlProcess {
         intent,
         operation_api,
+        credential_grant_tasks,
         deploy_tasks,
         service_restart_tasks,
         namespace_remove_tasks,
@@ -557,7 +569,7 @@ mod tests {
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),
-            authorized_users: Vec::new(),
+            nats_authorizations: Vec::new(),
             managed_lease: ployz_core::state::ManagedLeaseProjection::Unacquired,
             custom_certificates: Vec::new(),
             acme_http01_challenges: Vec::new(),

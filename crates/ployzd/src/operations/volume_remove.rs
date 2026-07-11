@@ -255,7 +255,7 @@ mod tests {
                 volume_name: volume_name.clone(),
                 machine_id: machine_id("machine_a"),
             }],
-            authorized_users: Vec::new(),
+            nats_authorizations: Vec::new(),
             managed_lease: ployz_core::state::ManagedLeaseProjection::Unacquired,
             custom_certificates: Vec::new(),
             acme_http01_challenges: Vec::new(),

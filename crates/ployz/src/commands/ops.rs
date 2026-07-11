@@ -2,7 +2,8 @@ use clap::Args;
 use ployz_core::ids::{OperationId, ServiceId};
 use ployz_core::ops::MachineAddOperationState;
 use ployz_core::ops::{
-    CertOperationState, CertRunningStage, DeployOperationFailure, DeployOperationState,
+    CertOperationState, CertRunningStage, CredentialGrantAction, CredentialGrantFailure,
+    CredentialGrantOperationState, DeployOperationFailure, DeployOperationState,
     DeployRunningStage, EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT,
     MachineUpdateOperationState, OperationEvent, OperationEventReplayLimit,
     OperationEventReplayRequest, OperationKind, OperationStatus, OperationStatusSnapshot,
@@ -248,6 +249,7 @@ const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::MachineUpdate => "machine-update",
         OperationKind::MachineLifecycle => "machine-lifecycle",
         OperationKind::CoreReplace => "core-replace",
+        OperationKind::CredentialGrant => "credential-grant",
         OperationKind::NetworkRepair => "network-repair",
         OperationKind::ServiceRestart => "service-restart",
         OperationKind::ManagedLease => "managed-lease",
@@ -300,6 +302,17 @@ fn operation_subject(status: &OperationStatus) -> String {
             machine_id.as_str(),
             successor_nats_url.as_str()
         ),
+        OperationStatus::CredentialGrant { action, .. } => match action {
+            CredentialGrantAction::Add { grant } => format!(
+                "credential {} name {} role {}",
+                grant.public_key.as_str(),
+                grant.name.as_str(),
+                credential_role_name(grant.role)
+            ),
+            CredentialGrantAction::Remove { public_key } => {
+                format!("credential {}", public_key.as_str())
+            }
+        },
         OperationStatus::NetworkRepair {
             target_machine_id, ..
         } => target_machine_id.as_ref().map_or_else(
@@ -391,6 +404,7 @@ fn operation_state(status: &OperationStatus) -> String {
             machine_lifecycle_state(state).to_owned()
         }
         OperationStatus::CoreReplace { state, .. } => core_replace_state(state).to_owned(),
+        OperationStatus::CredentialGrant { state, .. } => credential_grant_state(state).to_owned(),
         OperationStatus::NetworkRepair { state, .. } => network_repair_state(state).to_owned(),
         OperationStatus::ServiceRestart { state, .. } => service_restart_state(state).to_owned(),
         OperationStatus::ManagedLease { state, .. } => managed_lease_state(state).to_owned(),
@@ -498,6 +512,10 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
             state: ployz_sdk_types::ManagedLeaseOperationState::Failed { failure },
             ..
         } => Some(format!("failure {}", failure.message.as_str())),
+        OperationStatus::CredentialGrant {
+            state: CredentialGrantOperationState::Failed { failure },
+            ..
+        } => Some(format!("failure {}", credential_grant_failure(failure))),
         OperationStatus::Cert {
             state: CertOperationState::Failed { failure },
             ..
@@ -511,11 +529,60 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
         | OperationStatus::MachineUpdate { .. }
         | OperationStatus::MachineLifecycle { .. }
         | OperationStatus::CoreReplace { .. }
+        | OperationStatus::CredentialGrant { .. }
         | OperationStatus::NetworkRepair { .. }
         | OperationStatus::ServiceRestart { .. }
         | OperationStatus::ManagedLease { .. }
         | OperationStatus::NamespaceRemove { .. }
         | OperationStatus::VolumeRemove { .. } => None,
+    }
+}
+
+const fn credential_grant_state(state: &CredentialGrantOperationState) -> &'static str {
+    match state {
+        CredentialGrantOperationState::Accepted => "accepted",
+        CredentialGrantOperationState::Completed => "completed",
+        CredentialGrantOperationState::Failed { .. } => "failed",
+        CredentialGrantOperationState::Cancelled { .. } => "cancelled",
+    }
+}
+
+fn credential_grant_failure(failure: &CredentialGrantFailure) -> String {
+    match failure {
+        CredentialGrantFailure::LastOperator => {
+            "the final Operator credential cannot be removed".to_owned()
+        }
+        CredentialGrantFailure::RoleChangeRequiresExplicitOperation { current, requested } => {
+            format!(
+                "role change from {} to {} requires an explicit role-change operation",
+                credential_role_name(*current),
+                credential_role_name(*requested)
+            )
+        }
+        CredentialGrantFailure::IntentStoreFailed {
+            message,
+            intent_committed,
+        } => credential_mutation_failure("intent store", message.as_str(), *intent_committed),
+        CredentialGrantFailure::AuthorizationRenderFailed {
+            message,
+            intent_committed,
+        } => {
+            credential_mutation_failure("authorization render", message.as_str(), *intent_committed)
+        }
+        CredentialGrantFailure::NatsReloadFailed {
+            message,
+            intent_committed,
+        } => credential_mutation_failure("NATS reload", message.as_str(), *intent_committed),
+    }
+}
+
+fn credential_mutation_failure(stage: &str, message: &str, intent_committed: bool) -> String {
+    format!("{stage}: {message} (intent committed: {intent_committed})")
+}
+
+const fn credential_role_name(role: ployz_sdk_types::CredentialRole) -> &'static str {
+    match role {
+        ployz_sdk_types::CredentialRole::Operator => "operator",
     }
 }
 
@@ -655,6 +722,9 @@ impl DeployEventRenderContext {
             | OperationEvent::CoreReplaceSubmitted { .. }
             | OperationEvent::CoreReplaceCompleted { .. }
             | OperationEvent::CoreReplaceFailed { .. }
+            | OperationEvent::CredentialGrantSubmitted { .. }
+            | OperationEvent::CredentialGrantCompleted { .. }
+            | OperationEvent::CredentialGrantFailed { .. }
             | OperationEvent::NetworkRepairSubmitted { .. }
             | OperationEvent::NetworkRepairRunning { .. }
             | OperationEvent::NetworkRepairDataplanePrepared { .. }
@@ -714,6 +784,12 @@ fn render_replayed_event_text(
             label,
             render_network_repair_failure(failure)
         ),
+        OperationEvent::CredentialGrantFailed { failure, .. } => format!(
+            "{} {} {}",
+            event.sequence.get(),
+            label,
+            credential_grant_failure(failure)
+        ),
         OperationEvent::DeployImageResolved {
             service_id,
             machine_id,
@@ -765,6 +841,8 @@ fn render_replayed_event_text(
         | OperationEvent::CoreReplaceSubmitted { .. }
         | OperationEvent::CoreReplaceCompleted { .. }
         | OperationEvent::CoreReplaceFailed { .. }
+        | OperationEvent::CredentialGrantSubmitted { .. }
+        | OperationEvent::CredentialGrantCompleted { .. }
         | OperationEvent::NetworkRepairSubmitted { .. }
         | OperationEvent::NetworkRepairRunning { .. }
         | OperationEvent::NetworkRepairDataplanePrepared { .. }
@@ -854,6 +932,12 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::CoreReplaceSubmitted { .. } => "core.replace.submitted",
         OperationEvent::CoreReplaceCompleted { .. } => "core.replace.completed",
         OperationEvent::CoreReplaceFailed { .. } => "core.replace.failed",
+        OperationEvent::CredentialGrantSubmitted { action, .. } => match action {
+            CredentialGrantAction::Add { .. } => "credential.add.submitted",
+            CredentialGrantAction::Remove { .. } => "credential.remove.submitted",
+        },
+        OperationEvent::CredentialGrantCompleted { .. } => "credential.grant.completed",
+        OperationEvent::CredentialGrantFailed { .. } => "credential.grant.failed",
         OperationEvent::NetworkRepairSubmitted { .. } => "network.repair.submitted",
         OperationEvent::NetworkRepairRunning { .. } => "network.repair.running",
         OperationEvent::NetworkRepairDataplanePrepared { .. } => {

@@ -8,8 +8,10 @@ use ployz_core::ops::{OperationEventReplayPage, OperationStatusSnapshot};
 use ployz_core::subjects::OperationApiEndpoint;
 use ployz_sdk_types::{
     AcceptedOperation, CoreReplaceError, CoreReplaceReportError, CoreReplaceReportRequest,
-    CoreReplaceReported, CoreReplaceRequest, DeployReserveError, DeployReserveRequest,
-    DeployReserved, DeploySubmitError, DeploySubmitRequest, InitFirstMachineActivateError,
+    CoreReplaceReported, CoreReplaceRequest, CredentialAddError, CredentialAddRequest,
+    CredentialListError, CredentialListRequest, CredentialListResult, CredentialRemoveError,
+    CredentialRemoveRequest, DeployReserveError, DeployReserveRequest, DeployReserved,
+    DeploySubmitError, DeploySubmitRequest, InitFirstMachineActivateError,
     InitFirstMachineActivateRequest, InitFirstMachineActivated, LogsTailError, LogsTailRequest,
     LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest, MachineInspectError,
     MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
@@ -25,13 +27,13 @@ use ployz_sdk_types::{
     ServiceRestartRequest, ServiceSnapshot, VolumeListError, VolumeListRequest, VolumeListResult,
     VolumeRemoveError, VolumeRemoveRequest,
     operation_api::{
-        CoreReplaceApi, CoreReplaceReportApi, DeployReserveApi, DeploySubmitApi,
-        InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineDrainApi,
-        MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
-        MachineResumeApi, MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi,
-        NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi,
-        OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi,
-        VolumeListApi, VolumeRemoveApi,
+        CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi, CredentialListApi,
+        CredentialRemoveApi, DeployReserveApi, DeploySubmitApi, InitFirstMachineActivateApi,
+        LogsTailApi, MachineAddApi, MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi,
+        MachineJoinReportApi, MachineListApi, MachineResumeApi, MachineUpdateApi,
+        NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, NetworkStatusApi,
+        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
+        ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -46,6 +48,27 @@ pub struct OperationApiClient {
 }
 
 impl OperationApiClient {
+    pub async fn credential_add(
+        &self,
+        request: &CredentialAddRequest,
+    ) -> Result<AcceptedOperation, OperationApiClientError<CredentialAddError>> {
+        self.request_api::<CredentialAddApi>(request).await
+    }
+
+    pub async fn credential_list(
+        &self,
+        request: &CredentialListRequest,
+    ) -> Result<CredentialListResult, OperationApiClientError<CredentialListError>> {
+        self.request_api::<CredentialListApi>(request).await
+    }
+
+    pub async fn credential_remove(
+        &self,
+        request: &CredentialRemoveRequest,
+    ) -> Result<AcceptedOperation, OperationApiClientError<CredentialRemoveError>> {
+        self.request_api::<CredentialRemoveApi>(request).await
+    }
+
     pub async fn deploy_reserve(
         &self,
         request: &DeployReserveRequest,

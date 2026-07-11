@@ -2,8 +2,10 @@
 
 use crate::{
     AcceptedOperation, CoreReplaceError, CoreReplaceReportError, CoreReplaceReportRequest,
-    CoreReplaceReported, CoreReplaceRequest, DeployReserveError, DeployReserveRequest,
-    DeployReserved, DeploySubmitError, DeploySubmitRequest, InitFirstMachineActivateError,
+    CoreReplaceReported, CoreReplaceRequest, CredentialAddError, CredentialAddRequest,
+    CredentialListError, CredentialListRequest, CredentialListResult, CredentialRemoveError,
+    CredentialRemoveRequest, DeployReserveError, DeployReserveRequest, DeployReserved,
+    DeploySubmitError, DeploySubmitRequest, InitFirstMachineActivateError,
     InitFirstMachineActivateRequest, InitFirstMachineActivated, LogsTailError, LogsTailRequest,
     LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest, MachineInspectError,
     MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
@@ -48,6 +50,9 @@ macro_rules! operation_api_contracts {
             $crate::operation_api::VolumeRemoveApi,
             $crate::operation_api::CoreReplaceApi,
             $crate::operation_api::CoreReplaceReportApi,
+            $crate::operation_api::CredentialAddApi,
+            $crate::operation_api::CredentialListApi,
+            $crate::operation_api::CredentialRemoveApi,
             $crate::operation_api::MachineListApi,
             $crate::operation_api::MachineInspectApi,
             $crate::operation_api::NetworkStatusApi,
@@ -161,6 +166,42 @@ impl OperationApiContract for CoreReplaceApi {
 
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::CoreReplace;
     const RESPONSE_ALIAS: &'static str = "CoreReplaceResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CredentialAddApi;
+
+impl OperationApiContract for CredentialAddApi {
+    type Request = CredentialAddRequest;
+    type Success = AcceptedOperation;
+    type Error = CredentialAddError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::CredentialAdd;
+    const RESPONSE_ALIAS: &'static str = "CredentialAddResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CredentialListApi;
+
+impl OperationApiContract for CredentialListApi {
+    type Request = CredentialListRequest;
+    type Success = CredentialListResult;
+    type Error = CredentialListError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::CredentialList;
+    const RESPONSE_ALIAS: &'static str = "CredentialListResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CredentialRemoveApi;
+
+impl OperationApiContract for CredentialRemoveApi {
+    type Request = CredentialRemoveRequest;
+    type Success = AcceptedOperation;
+    type Error = CredentialRemoveError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::CredentialRemove;
+    const RESPONSE_ALIAS: &'static str = "CredentialRemoveResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -390,4 +431,26 @@ impl OperationApiContract for OpsWatchApi {
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::OpsWatch;
     const REQUEST_ALIAS: Option<&'static str> = Some("OpsWatchRequest");
     const RESPONSE_ALIAS: &'static str = "OpsWatchResponse";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ployz_core::subjects::OperationApiEndpointExecution;
+
+    #[test]
+    fn credential_contracts_bind_to_their_execution_classes() {
+        assert_eq!(
+            (
+                CredentialAddApi::ENDPOINT.execution(),
+                CredentialListApi::ENDPOINT.execution(),
+                CredentialRemoveApi::ENDPOINT.execution(),
+            ),
+            (
+                OperationApiEndpointExecution::AcceptsOperation,
+                OperationApiEndpointExecution::Query,
+                OperationApiEndpointExecution::AcceptsOperation,
+            )
+        );
+    }
 }

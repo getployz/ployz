@@ -100,7 +100,7 @@ pub async fn seed_core_from_snapshot(
     // the same operator, Cloud, and machine credentials, so nothing is locked out
     // (ADR 0031).
     let authorizations = NatsAuthorizationStore::new(core_store.clone());
-    for grant in &snapshot.authorized_users {
+    for grant in &snapshot.nats_authorizations {
         authorizations.upsert(grant).await?;
     }
 
@@ -124,8 +124,9 @@ mod tests {
     use ployz_test_support::ids::{machine_id, operation_id};
 
     fn snapshot_at_epoch(epoch: ControlPlaneEpoch) -> IntentSnapshot {
-        use ployz_core::nats_config::{MintedNatsUser, NatsAuthorizedUser};
-        use ployz_core::security::NatsPrincipal;
+        use ployz_core::nats_config::{
+            CredentialGrant, CredentialName, CredentialRole, MintedNatsUser, NatsAuthorizationGrant,
+        };
         IntentSnapshot {
             epoch,
             core_machine_id: machine_id("machine_a"),
@@ -145,10 +146,12 @@ mod tests {
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),
-            authorized_users: vec![NatsAuthorizedUser {
-                principal: NatsPrincipal::Operator,
-                nkey_public: MintedNatsUser::generate().expect("mint").public,
-            }],
+            nats_authorizations: vec![NatsAuthorizationGrant::Credential(CredentialGrant {
+                public_key: MintedNatsUser::generate().expect("mint").public,
+                name: CredentialName::try_new("Founder operator (machine_a)")
+                    .expect("credential name"),
+                role: CredentialRole::Operator,
+            })],
             managed_lease: ployz_core::state::ManagedLeaseProjection::Unacquired,
             custom_certificates: Vec::new(),
             acme_http01_challenges: Vec::new(),

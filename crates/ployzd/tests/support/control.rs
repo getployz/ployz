@@ -109,10 +109,30 @@ impl TestNats {
         ployzd::roles::control::start_control_process_with_client_and_reload(
             self.connected.controller.clone(),
             config,
-            reload,
+            StartupThenReload {
+                startup_pending: AtomicBool::new(true),
+                server_pid: self.server().server_pid(),
+                mutation: reload,
+            },
         )
         .await
         .expect("control runtime starts")
+    }
+}
+
+struct StartupThenReload {
+    startup_pending: AtomicBool,
+    server_pid: u32,
+    mutation: RecordingReload,
+}
+
+impl NatsReloadRunner for StartupThenReload {
+    fn reload(&self) -> NatsReloadOutcome {
+        if self.startup_pending.swap(false, Ordering::SeqCst) {
+            SignalNatsReloadRunner::new(self.server_pid).reload()
+        } else {
+            self.mutation.reload()
+        }
     }
 }
 

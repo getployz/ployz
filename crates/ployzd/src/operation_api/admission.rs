@@ -2,11 +2,12 @@
 
 use crate::operations::log::{
     AcceptedDeploySubmission, AcceptedMachineAddSubmission, CoreReplaceOperationSubmission,
-    DeployOperationSubmission, MachineAddOperationSubmission, MachineJoinIdentity,
-    MachineJoinRedemption, MachineLifecycleOperationSubmission, MachineUpdateOperationSubmission,
-    NamespaceRemoveOperationSubmission, NetworkRepairOperationSubmission, OperationRepository,
-    OperationStatusStoreError, RedeemMachineJoinTokenError, ServiceRestartOperationSubmission,
-    SubmitMachineAddError, SubmitOperationError, VolumeRemoveOperationSubmission,
+    CredentialGrantOperationSubmission, DeployOperationSubmission, MachineAddOperationSubmission,
+    MachineJoinIdentity, MachineJoinRedemption, MachineLifecycleOperationSubmission,
+    MachineUpdateOperationSubmission, NamespaceRemoveOperationSubmission,
+    NetworkRepairOperationSubmission, OperationRepository, OperationStatusStoreError,
+    RedeemMachineJoinTokenError, ServiceRestartOperationSubmission, SubmitMachineAddError,
+    SubmitOperationError, VolumeRemoveOperationSubmission,
 };
 use ployz_core::deploy::{
     DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS, DeployRequest, DeployReservationExpiresAt,
@@ -21,6 +22,7 @@ use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineName, RawJoinToken,
     redeem_pending_join_token,
 };
+use ployz_core::ops::CredentialGrantAction;
 use ployz_core::ops::{OperationStatus, OperationStatusSnapshot};
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::state::PendingMachineJoinRecovery;
@@ -114,6 +116,12 @@ pub struct VolumeRemoveSubmitCommand {
     pub operation_id: OperationId,
     pub namespace_id: NamespaceId,
     pub volume_name: VolumeName,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialGrantSubmitCommand {
+    pub operation_id: OperationId,
+    pub action: CredentialGrantAction,
 }
 
 /// Bootstrap material available at submit time.
@@ -293,6 +301,19 @@ impl OperationControllers {
                 Err(SubmitCommandError::Submit(error))
             }
         }
+    }
+
+    pub async fn submit_credential_grant(
+        &self,
+        command: CredentialGrantSubmitCommand,
+    ) -> Result<crate::operations::log::AcceptedCredentialGrantSubmission, SubmitCommandError> {
+        self.repository
+            .submit_credential_grant(CredentialGrantOperationSubmission {
+                operation_id: command.operation_id,
+                action: command.action,
+            })
+            .await
+            .map_err(SubmitCommandError::Submit)
     }
 
     pub async fn reserve_deploy(

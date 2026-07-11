@@ -1,14 +1,16 @@
 use super::{
     CertOperationPayload, CertOperationSubmission, CoreReplaceOperationSubmission,
-    CoreReplacePayload, DeployOperationPayload, DeployOperationSubmission,
-    MachineLifecycleOperationSubmission, MachineLifecyclePayload, MachineUpdateOperationSubmission,
-    MachineUpdatePayload, ManagedLeaseOperationSubmission, ManagedLeasePayload,
-    NamespaceRemoveOperationSubmission, NamespaceRemovePayload, NetworkRepairOperationSubmission,
-    NetworkRepairPayload, ServiceRestartOperationSubmission, ServiceRestartPayload,
-    VolumeRemoveOperationSubmission, VolumeRemovePayload,
+    CoreReplacePayload, CredentialGrantOperationSubmission, DeployOperationPayload,
+    DeployOperationSubmission, MachineLifecycleOperationSubmission, MachineLifecyclePayload,
+    MachineUpdateOperationSubmission, MachineUpdatePayload, ManagedLeaseOperationSubmission,
+    ManagedLeasePayload, NamespaceRemoveOperationSubmission, NamespaceRemovePayload,
+    NetworkRepairOperationSubmission, NetworkRepairPayload, ServiceRestartOperationSubmission,
+    ServiceRestartPayload, VolumeRemoveOperationSubmission, VolumeRemovePayload,
 };
 use ployz_core::ids::OperationId;
-use ployz_core::ops::{EventSequence, OperationEvent, OperationKind, OperationStatus};
+use ployz_core::ops::{
+    CredentialGrantAction, EventSequence, OperationEvent, OperationKind, OperationStatus,
+};
 
 pub(super) trait OperationAction: Sized {
     type Payload: Clone + Send + 'static;
@@ -64,6 +66,37 @@ impl OperationAction for DeployOperationSubmission {
             payload.target.origin.clone(),
             sequence,
         )
+    }
+}
+
+impl OperationAction for CredentialGrantOperationSubmission {
+    type Payload = CredentialGrantAction;
+    const KIND: OperationKind = OperationKind::CredentialGrant;
+
+    fn submitted_event(operation_id: OperationId, action: Self::Payload) -> OperationEvent {
+        OperationEvent::CredentialGrantSubmitted {
+            operation_id,
+            action,
+        }
+    }
+
+    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
+        let OperationEvent::CredentialGrantSubmitted {
+            operation_id,
+            action,
+        } = event
+        else {
+            return None;
+        };
+        Some((operation_id, action))
+    }
+
+    fn accepted_status(
+        operation_id: OperationId,
+        action: &Self::Payload,
+        sequence: EventSequence,
+    ) -> OperationStatus {
+        OperationStatus::credential_grant_accepted(operation_id, action.clone(), sequence)
     }
 }
 

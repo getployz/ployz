@@ -8,8 +8,10 @@ use ployz_sdk_types::{
     CloudBootstrapRedemptionId, CloudBootstrapSessionCreateRequest, CloudBootstrapSessionCreated,
     CloudBootstrapSessionPollRequest, CloudBootstrapToken, CloudBootstrapTokenRedeemRequest,
     CloudFounderBootstrapResult, CoreReplaceError, CoreReplaceReportError,
-    CoreReplaceReportRequest, CoreReplaceReported, CoreReplaceRequest, DeployOperationState,
-    DeployRequest, DeployReservationId, DeployReserveError, DeployReserveRequest, DeployReserved,
+    CoreReplaceReportRequest, CoreReplaceReported, CoreReplaceRequest, CredentialAddError,
+    CredentialAddRequest, CredentialListError, CredentialListRequest, CredentialListResult,
+    CredentialRemoveError, CredentialRemoveRequest, DeployOperationState, DeployRequest,
+    DeployReservationId, DeployReserveError, DeployReserveRequest, DeployReserved,
     DeployRunningStage, DeployServiceSpec, DeploySubmitError, DeploySubmitRequest,
     DeploySubmitResponse, EventSequence, EventSequenceError, ImageReference, ImageReferenceError,
     InitFirstMachineActivateError, InitFirstMachineActivateRequest, InitFirstMachineActivated,
@@ -38,12 +40,13 @@ use ployz_sdk_types::{
     ServiceRestartError, ServiceRestartRequest, ServiceSnapshot, SubjectTokenError,
     VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
     operation_api::{
-        CoreReplaceApi, CoreReplaceReportApi, DeployReserveApi, DeploySubmitApi,
-        InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineInspectApi,
-        MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi, MachineUpdateApi,
-        NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, NetworkStatusApi,
-        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
-        ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
+        CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi, CredentialListApi,
+        CredentialRemoveApi, DeployReserveApi, DeploySubmitApi, InitFirstMachineActivateApi,
+        LogsTailApi, MachineAddApi, MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi,
+        MachineListApi, MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi,
+        NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi,
+        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeListApi,
+        VolumeRemoveApi,
     },
 };
 use ts_rs::{Config, TS};
@@ -541,6 +544,20 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
         CoreReplaceReported,
         CoreReplaceReportError,
     >();
+    assert_contract::<CredentialAddApi, CredentialAddRequest, AcceptedOperation, CredentialAddError>(
+    );
+    assert_contract::<
+        CredentialListApi,
+        CredentialListRequest,
+        CredentialListResult,
+        CredentialListError,
+    >();
+    assert_contract::<
+        CredentialRemoveApi,
+        CredentialRemoveRequest,
+        AcceptedOperation,
+        CredentialRemoveError,
+    >();
     assert_contract::<OpsListApi, OpsListRequest, OpsListResult, OpsListError>();
     assert_contract::<OpsStatusApi, OpsStatusRequest, OperationStatusSnapshot, OpsStatusError>();
     assert_contract::<
@@ -564,6 +581,9 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             OperationApiEndpoint::VolumeRemove,
             OperationApiEndpoint::CoreReplace,
             OperationApiEndpoint::CoreReplaceReport,
+            OperationApiEndpoint::CredentialAdd,
+            OperationApiEndpoint::CredentialList,
+            OperationApiEndpoint::CredentialRemove,
             OperationApiEndpoint::MachineList,
             OperationApiEndpoint::MachineInspect,
             OperationApiEndpoint::NetworkStatus,
@@ -691,6 +711,33 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "CoreReplaceReported".to_owned(),
                 "CoreReplaceReportError".to_owned(),
                 "CoreReplaceReportResponse",
+            ),
+            (
+                "credential.add",
+                "plz.v1.rpc.operator.command.credential.add",
+                OperationApiEndpointExecution::AcceptsOperation,
+                "CredentialAddRequest".to_owned(),
+                "AcceptedOperation".to_owned(),
+                "CredentialAddError".to_owned(),
+                "CredentialAddResponse",
+            ),
+            (
+                "credential.list",
+                "plz.v1.rpc.operator.query.credential.list",
+                OperationApiEndpointExecution::Query,
+                "CredentialListRequest".to_owned(),
+                "CredentialListResult".to_owned(),
+                "CredentialListError".to_owned(),
+                "CredentialListResponse",
+            ),
+            (
+                "credential.remove",
+                "plz.v1.rpc.operator.command.credential.remove",
+                OperationApiEndpointExecution::AcceptsOperation,
+                "CredentialRemoveRequest".to_owned(),
+                "AcceptedOperation".to_owned(),
+                "CredentialRemoveError".to_owned(),
+                "CredentialRemoveResponse",
             ),
             (
                 "machine.list",

@@ -17,20 +17,43 @@ use ployz_core::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId,
 };
 use ployz_core::machine_runtime::{ManagedContainerKind, ManagedContainerObservation};
+use ployz_core::nats_config::NatsAuthorizationGrant;
 use ployz_core::ops::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationStatusSnapshot,
 };
 use ployz_core::state::{ActiveMachineState, RouteBindingState, ServingTargetEntry};
 use ployz_sdk_types::{
-    LogsTailError, LogsTailRequest, LogsTailResult, LogsTailResultTarget, LogsTailTarget,
-    MachineInspectError, MachineListError, MachineListResult, MachineSnapshot, MachineTestimony,
-    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsWatchError,
-    RuntimeDerivedCollectionSource, RuntimeDerivedCollectionStatus, RuntimeProjectionSource,
-    RuntimeProjectionSources, RuntimeServiceInstance, RuntimeServiceRelease,
-    RuntimeServiceRevision, RuntimeSnapshot, RuntimeSnapshotError, RuntimeSnapshotResult,
-    ServiceContainerMembership, ServiceContainerTestimony, ServiceInspectError, ServiceListError,
-    ServiceListResult, ServiceMachineTestimony, ServiceSnapshot, ServiceTestimony,
+    CredentialListError, CredentialListResult, LogsTailError, LogsTailRequest, LogsTailResult,
+    LogsTailResultTarget, LogsTailTarget, MachineInspectError, MachineListError, MachineListResult,
+    MachineSnapshot, MachineTestimony, OpsListError, OpsListRequest, OpsListResult, OpsStatusError,
+    OpsWatchError, RuntimeDerivedCollectionSource, RuntimeDerivedCollectionStatus,
+    RuntimeProjectionSource, RuntimeProjectionSources, RuntimeServiceInstance,
+    RuntimeServiceRelease, RuntimeServiceRevision, RuntimeSnapshot, RuntimeSnapshotError,
+    RuntimeSnapshotResult, ServiceContainerMembership, ServiceContainerTestimony,
+    ServiceInspectError, ServiceListError, ServiceListResult, ServiceMachineTestimony,
+    ServiceSnapshot, ServiceTestimony,
 };
+
+pub async fn credential_list(
+    intent_reader: &NatsIntentReader,
+) -> Result<CredentialListResult, CredentialListError> {
+    let intent =
+        intent_reader
+            .intent()
+            .await
+            .map_err(|error| CredentialListError::Unavailable {
+                message: error.to_string(),
+            })?;
+    let credentials = intent
+        .nats_authorizations
+        .into_iter()
+        .filter_map(|grant| match grant {
+            NatsAuthorizationGrant::Credential(credential) => Some(credential),
+            NatsAuthorizationGrant::Internal { .. } => None,
+        })
+        .collect();
+    Ok(CredentialListResult { credentials })
+}
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
