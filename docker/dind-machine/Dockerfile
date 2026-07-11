@@ -9,7 +9,8 @@
 # at test time so slow Rust rebuilds never go stale inside the image.
 #
 # Build context requirements (provided by scripts/build-dind-machine-image.sh):
-#   nginx.tar and registry.tar — `docker save` archives for the host arch.
+#   nginx.tar, registry.tar, umami.tar, and postgres.tar — `docker save`
+#   archives for the host arch.
 FROM debian:bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -67,6 +68,8 @@ RUN arch="$(dpkg --print-architecture)" \
 # Docker daemon after it starts, so inner daemons never pull from a registry.
 COPY nginx.tar /images/nginx.tar
 COPY registry.tar /images/registry.tar
+COPY umami.tar /images/umami.tar
+COPY postgres.tar /images/postgres.tar
 COPY ployz-dind-images.service /etc/systemd/system/ployz-dind-images.service
 RUN systemctl enable docker.service ployz-dind-images.service
 
