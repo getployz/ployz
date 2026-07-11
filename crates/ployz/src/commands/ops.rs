@@ -591,6 +591,7 @@ impl DeployEventRenderContext {
                 self.service_id = Some(target.status_service_id());
             }
             OperationEvent::DeployPlanningStarted { .. }
+            | OperationEvent::DeployWaitingForManagedCertificate { .. }
             | OperationEvent::DeployImageResolved { .. }
             | OperationEvent::DeployPlanCreated { .. }
             | OperationEvent::DeployRunning { .. }
@@ -702,6 +703,7 @@ fn render_replayed_event_text(
             }
         ),
         OperationEvent::DeployPlanningStarted { .. }
+        | OperationEvent::DeployWaitingForManagedCertificate { .. }
         | OperationEvent::DeployPlanCreated { .. }
         | OperationEvent::DeployRunning { .. }
         | OperationEvent::DeployContainerStarted { .. }
@@ -768,6 +770,9 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
     match event {
         OperationEvent::DeploySubmitted { .. } => "deploy.submitted",
         OperationEvent::DeployPlanningStarted { .. } => "deploy.planning",
+        OperationEvent::DeployWaitingForManagedCertificate { .. } => {
+            "deploy.managed_certificate.waiting"
+        }
         OperationEvent::DeployImageResolved { .. } => "deploy.image_resolved",
         OperationEvent::DeployPlanCreated { .. } => "deploy.plan_created",
         OperationEvent::DeployRunning { .. } => "deploy.running",

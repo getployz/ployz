@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::cert::ManagedCertificateIssuanceFailureKind;
 use crate::dataplane::{DataplaneProviderFailure, PloyzNativeMeshPrepareReport};
 use crate::deploy::VolumeName;
 use crate::deploy::{DeployCleanupContainer, DeployPlan, ImageReference};
@@ -162,6 +163,9 @@ pub enum DeployOperationFailure {
         namespace_revision_id: NamespaceRevisionId,
         message: FailureMessage,
     },
+    CertificatePending {
+        last_error: Option<ManagedCertificateIssuanceFailureKind>,
+    },
     ArtifactUnavailable {
         service_id: ServiceId,
         namespace_revision_entry_id: NamespaceRevisionEntryId,
@@ -297,6 +301,7 @@ impl DeployOperationFailure {
             Self::PlanningFailed { .. } | Self::AutoDnsWithoutLease { .. } => {
                 DeployFailureClass::PreconditionRejected
             }
+            Self::CertificatePending { .. } => DeployFailureClass::Timeout,
             Self::ArtifactUnavailable { .. }
             | Self::ImageResolutionFailed { .. }
             | Self::ImageMissingOnSeed { .. }
@@ -363,6 +368,7 @@ impl DeployOperationFailure {
             Self::NoUsableMachines { .. }
             | Self::PlanningFailed { .. }
             | Self::AutoDnsWithoutLease { .. }
+            | Self::CertificatePending { .. }
             | Self::ImageResolutionFailed { .. }
             | Self::ArtifactUnavailable { .. }
             | Self::ImageMissingOnSeed { .. }
@@ -531,6 +537,7 @@ impl DeployTransition {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployEvidence {
+    WaitingForManagedCertificate,
     ImageResolved {
         service_id: ServiceId,
         machine_id: MachineId,
@@ -564,6 +571,11 @@ impl DeployEvidence {
     #[must_use]
     pub fn event(&self, operation_id: &OperationId) -> OperationEvent {
         match self {
+            Self::WaitingForManagedCertificate => {
+                OperationEvent::DeployWaitingForManagedCertificate {
+                    operation_id: operation_id.clone(),
+                }
+            }
             Self::ImageResolved {
                 service_id,
                 machine_id,
@@ -635,9 +647,9 @@ enum EvidenceRequirement {
 
 const fn evidence_requirement(evidence: &DeployEvidence) -> EvidenceRequirement {
     match evidence {
-        DeployEvidence::ImageResolved { .. } | DeployEvidence::PlanCreated { .. } => {
-            EvidenceRequirement::Planning
-        }
+        DeployEvidence::WaitingForManagedCertificate
+        | DeployEvidence::ImageResolved { .. }
+        | DeployEvidence::PlanCreated { .. } => EvidenceRequirement::Planning,
         DeployEvidence::DataplanePrepared { .. } => {
             EvidenceRequirement::RunningStage(DeployRunningStage::PreparingDataplane)
         }

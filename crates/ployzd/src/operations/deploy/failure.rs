@@ -911,6 +911,7 @@ fn add_retained_artifacts(failure: &mut DeployOperationFailure, artifacts: Vec<R
         } => retained_artifacts,
         DeployOperationFailure::PlanningFailed { .. }
         | DeployOperationFailure::AutoDnsWithoutLease { .. }
+        | DeployOperationFailure::CertificatePending { .. }
         | DeployOperationFailure::ImageResolutionFailed { .. }
         | DeployOperationFailure::NoUsableMachines { .. }
         | DeployOperationFailure::ArtifactUnavailable { .. }

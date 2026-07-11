@@ -1,12 +1,16 @@
 //! Load deploy execution facts from core intent and fresh machine facts RPCs.
 
+use crate::intent::lease_intent::{LeaseIntentStore, StoreLeaseOutcome};
 use crate::intent::service::NatsIntentReader;
+use crate::lease::{BundleDownloadOutcome, LeaseClient};
+use crate::operations::log::OperationRepository;
 use crate::roles::machine::client::{NatsMachineFactsReader, read_machine_placement_facts};
+use ployz_core::cert::ManagedCertificateIssuanceFailureKind;
 use ployz_core::dataplane::DataplaneMember;
-use ployz_core::deploy::DeployRequest;
-use ployz_core::ids::MachineId;
+use ployz_core::deploy::{DeployRequest, DeployRouteTarget};
+use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
-use ployz_core::ops::UnusableMachine;
+use ployz_core::ops::{DeployEvidence, UnusableMachine};
 use ployz_core::state::{
     ActiveMachineState, IntentSnapshot, MachineLifecycle, MachineUsabilityReason,
     placement_rejection,
@@ -16,6 +20,34 @@ use std::time::Duration;
 
 use super::DeployExecutionFacts;
 use super::preparation::namespace_cleanup_candidates;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManagedCertificateWaitPolicy {
+    overall_timeout: Duration,
+    poll_interval: Duration,
+}
+
+impl ManagedCertificateWaitPolicy {
+    #[must_use]
+    pub const fn production() -> Self {
+        Self::new(Duration::from_secs(90), Duration::from_secs(5))
+    }
+
+    #[must_use]
+    pub const fn new(overall_timeout: Duration, poll_interval: Duration) -> Self {
+        Self {
+            overall_timeout,
+            poll_interval,
+        }
+    }
+}
+
+pub(super) struct ManagedCertificateWaitContext<'a> {
+    pub(super) lease_intent: &'a LeaseIntentStore,
+    pub(super) lease_client: &'a LeaseClient,
+    pub(super) repository: &'a OperationRepository,
+    pub(super) policy: ManagedCertificateWaitPolicy,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployMachineCandidates {
@@ -38,19 +70,65 @@ pub async fn load_deploy_execution_facts_from_nats(
     facts_reader: &NatsMachineFactsReader,
     step_timeout: Duration,
 ) -> Result<DeployExecutionFacts, DeployFactLoadError> {
-    let intent =
-        intent_reader
-            .intent()
-            .await
-            .map_err(|source| DeployFactLoadError::IntentRead {
-                message: source.to_string(),
-            })?;
-    let active_machines = intent.active_machines.clone();
+    let intent = read_intent(intent_reader).await?;
     let managed_lease = match &intent.managed_lease {
         ployz_core::state::ManagedLeaseProjection::Ready { lease, .. } => Some(lease.name.clone()),
         ployz_core::state::ManagedLeaseProjection::Unacquired
         | ployz_core::state::ManagedLeaseProjection::RecordOnly { .. } => None,
     };
+    deploy_execution_facts(
+        request,
+        fallback_candidates,
+        facts_reader,
+        intent,
+        managed_lease,
+        step_timeout,
+    )
+    .await
+}
+
+pub(super) async fn ensure_managed_certificate_for_deploy(
+    request: &DeployRequest,
+    operation_id: &OperationId,
+    intent_reader: &NatsIntentReader,
+    context: ManagedCertificateWaitContext<'_>,
+) -> Result<(), DeployFactLoadError> {
+    if !requests_auto_hostname(request) {
+        return Ok(());
+    }
+    let intent = read_intent(intent_reader).await?;
+    ensure_managed_certificate(operation_id, &intent.managed_lease, context).await
+}
+
+fn requests_auto_hostname(request: &DeployRequest) -> bool {
+    request.services.iter().any(|service| {
+        service
+            .routes
+            .iter()
+            .any(|route| matches!(route.target, DeployRouteTarget::AutoHostname { .. }))
+    })
+}
+
+async fn read_intent(
+    intent_reader: &NatsIntentReader,
+) -> Result<IntentSnapshot, DeployFactLoadError> {
+    intent_reader
+        .intent()
+        .await
+        .map_err(|source| DeployFactLoadError::IntentRead {
+            message: source.to_string(),
+        })
+}
+
+async fn deploy_execution_facts(
+    request: &DeployRequest,
+    fallback_candidates: DeployMachineCandidates,
+    facts_reader: &NatsMachineFactsReader,
+    intent: IntentSnapshot,
+    managed_lease: Option<ployz_core::cert::ManagedLeaseName>,
+    step_timeout: Duration,
+) -> Result<DeployExecutionFacts, DeployFactLoadError> {
+    let active_machines = intent.active_machines.clone();
     let machine_lifecycles = load_machine_lifecycles(&intent, fallback_candidates.clone());
     // Hostnames share one managed DNS lease across the cluster, so minting
     // must see bindings in every namespace. Namespace-scoped removal still
@@ -103,6 +181,92 @@ pub async fn load_deploy_execution_facts_from_nats(
         managed_lease,
         step_timeout,
     })
+}
+
+async fn ensure_managed_certificate(
+    operation_id: &OperationId,
+    projection: &ployz_core::state::ManagedLeaseProjection,
+    context: ManagedCertificateWaitContext<'_>,
+) -> Result<(), DeployFactLoadError> {
+    match projection {
+        ployz_core::state::ManagedLeaseProjection::Ready { .. }
+        | ployz_core::state::ManagedLeaseProjection::Unacquired => Ok(()),
+        ployz_core::state::ManagedLeaseProjection::RecordOnly { lease } => {
+            wait_for_managed_certificate(operation_id, lease, context).await
+        }
+    }
+}
+
+async fn wait_for_managed_certificate(
+    operation_id: &OperationId,
+    lease: &ployz_core::cert::ManagedLeaseRecord,
+    context: ManagedCertificateWaitContext<'_>,
+) -> Result<(), DeployFactLoadError> {
+    let deadline = tokio::time::Instant::now() + context.policy.overall_timeout;
+    let mut latest_last_error = None;
+    let mut waiting_recorded = false;
+
+    loop {
+        let download = tokio::time::timeout_at(
+            deadline,
+            context
+                .lease_client
+                .download_bundle(lease.name.clone(), lease.token.clone()),
+        )
+        .await;
+        match download {
+            Err(_) => {
+                return Err(certificate_pending(latest_last_error));
+            }
+            Ok(Err(source)) => {
+                return Err(DeployFactLoadError::ManagedCertificateWorker {
+                    message: source.to_string(),
+                });
+            }
+            Ok(Ok(BundleDownloadOutcome::Ready(bundle))) => {
+                return match context
+                    .lease_intent
+                    .store_lease(lease.clone(), Some(bundle))
+                    .await
+                    .map_err(|source| DeployFactLoadError::ManagedCertificateStore {
+                        message: source.to_string(),
+                    })? {
+                    StoreLeaseOutcome::Stored => Ok(()),
+                    StoreLeaseOutcome::Superseded => {
+                        Err(DeployFactLoadError::ManagedCertificateSuperseded)
+                    }
+                };
+            }
+            Ok(Ok(BundleDownloadOutcome::Pending { last_error })) => {
+                latest_last_error = last_error;
+                if !waiting_recorded {
+                    context
+                        .repository
+                        .record_deploy_evidence(
+                            operation_id,
+                            DeployEvidence::WaitingForManagedCertificate,
+                        )
+                        .await
+                        .map_err(|source| DeployFactLoadError::ManagedCertificateProgress {
+                            message: source.to_string(),
+                        })?;
+                    waiting_recorded = true;
+                }
+            }
+        }
+
+        let next_poll = (tokio::time::Instant::now() + context.policy.poll_interval).min(deadline);
+        tokio::time::sleep_until(next_poll).await;
+        if tokio::time::Instant::now() >= deadline {
+            return Err(certificate_pending(latest_last_error));
+        }
+    }
+}
+
+fn certificate_pending(
+    last_error: Option<ManagedCertificateIssuanceFailureKind>,
+) -> DeployFactLoadError {
+    DeployFactLoadError::CertificatePending { last_error }
 }
 
 fn operation_dataplane_members(
@@ -207,4 +371,16 @@ fn classify_machine_usability(
 pub enum DeployFactLoadError {
     #[error("intent could not be read: {message}")]
     IntentRead { message: String },
+    #[error("managed certificate is still pending")]
+    CertificatePending {
+        last_error: Option<ManagedCertificateIssuanceFailureKind>,
+    },
+    #[error("managed certificate worker failed: {message}")]
+    ManagedCertificateWorker { message: String },
+    #[error("managed certificate could not be stored: {message}")]
+    ManagedCertificateStore { message: String },
+    #[error("managed certificate result was superseded by a public URL mode change")]
+    ManagedCertificateSuperseded,
+    #[error("managed certificate wait progress could not be recorded: {message}")]
+    ManagedCertificateProgress { message: String },
 }

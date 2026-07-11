@@ -90,6 +90,12 @@ impl DeployTree {
                 ));
             }
             OperationEvent::DeployPlanningStarted { operation_id: _ } => {}
+            OperationEvent::DeployWaitingForManagedCertificate { operation_id } => {
+                self.plain_lines.push(format!(
+                    "deploy {}: waiting for managed certificate",
+                    operation_id.as_str()
+                ));
+            }
             OperationEvent::DeployImageResolved {
                 operation_id,
                 service_id,
@@ -781,6 +787,7 @@ fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine
                         DeployOperationFailure::NoUsableMachines { .. }
                         | DeployOperationFailure::PlanningFailed { .. }
                         | DeployOperationFailure::AutoDnsWithoutLease { .. }
+                        | DeployOperationFailure::CertificatePending { .. }
                         | DeployOperationFailure::DataplaneUnavailable { .. }
                         | DeployOperationFailure::DataplanePrepareTimedOut { .. }
                         | DeployOperationFailure::DataplanePrepareInvalidReport { .. }

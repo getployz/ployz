@@ -481,6 +481,38 @@ fn plan_created_event_records_without_changing_status() {
 }
 
 #[test]
+fn waiting_for_managed_certificate_records_without_changing_planning_status() {
+    let planning = OperationStatus::Deploy {
+        id: operation_id("op_123"),
+        namespace_id: namespace_id("default"),
+        service_id: service_id("svc_api"),
+        origin: None,
+        state: DeployOperationState::Planning,
+        last_event_sequence: event_sequence(2),
+    };
+
+    assert_eq!(
+        project_operation_event(
+            &planning,
+            OperationEvent::DeployWaitingForManagedCertificate {
+                operation_id: operation_id("op_123"),
+            },
+            event_sequence(3),
+        ),
+        Ok(OperationProjection::StatusChanged {
+            status: Box::new(OperationStatus::Deploy {
+                id: operation_id("op_123"),
+                namespace_id: namespace_id("default"),
+                service_id: service_id("svc_api"),
+                origin: None,
+                state: DeployOperationState::Planning,
+                last_event_sequence: event_sequence(3),
+            }),
+        })
+    );
+}
+
+#[test]
 fn plan_created_event_after_execution_starts_records_without_changing_status() {
     let executing = OperationStatus::Deploy {
         id: operation_id("op_123"),

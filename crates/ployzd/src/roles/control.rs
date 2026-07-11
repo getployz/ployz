@@ -17,8 +17,8 @@ use crate::lease::task::start_managed_lease_task;
 use crate::operation_api::admission::OperationControllers;
 use crate::operation_api::service::{ApiServiceError, start_operation_api_service_with_handlers};
 use crate::operation_api::{OperationApiHandlers, OperationWorkers};
-use crate::operations::deploy::DeployMachineCandidates;
-use crate::operations::deploy::driver::DeployOperationDriver;
+use crate::operations::deploy::driver::{DeployOperationDriver, DeployOperationStores};
+use crate::operations::deploy::{DeployMachineCandidates, ManagedCertificateWaitPolicy};
 use crate::operations::log::OperationRepository;
 use crate::operations::machine_lifecycle::MachineLifecycleOperation;
 use crate::operations::machine_update::MachineUpdateOperation;
@@ -184,6 +184,7 @@ pub async fn start_control_process_with_client_and_reload(
     let mint_tasks = TaskRegistry::default();
     let namespace_intent = NamespaceIntentStore::new(core_store.clone());
     let lease_intent = LeaseIntentStore::new(core_store.clone());
+    let lease_client = LeaseClient::new(config.lease_worker_url.clone());
     let managed_lease_tasks = TaskRegistry::default();
     let machine_roster = MachineRosterStore::new(core_store.clone());
     let reachability_tasks = TaskRegistry::default();
@@ -192,9 +193,14 @@ pub async fn start_control_process_with_client_and_reload(
         machine_roster.clone(),
     ));
     let deploy_driver = DeployOperationDriver::new(
-        client.clone(),
-        namespace_intent.clone(),
-        controllers.clone(),
+        DeployOperationStores {
+            intent_change_client: client.clone(),
+            namespace_intent: namespace_intent.clone(),
+            lease_intent: lease_intent.clone(),
+            lease_client: lease_client.clone(),
+            managed_certificate_wait: ManagedCertificateWaitPolicy::production(),
+            controllers: controllers.clone(),
+        },
         DeployMachineCandidates::same_machines(config.deploy_machines.clone()),
         config.deploy_step_timeout,
         deploy_tasks.clone(),
@@ -260,7 +266,7 @@ pub async fn start_control_process_with_client_and_reload(
         &managed_lease_tasks,
         lease_intent.clone(),
         controllers.repository().clone(),
-        LeaseClient::new(config.lease_worker_url.clone()),
+        lease_client,
         facts.clone(),
         machine_roster.clone(),
     );

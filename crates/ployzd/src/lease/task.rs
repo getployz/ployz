@@ -20,6 +20,8 @@ use crate::operations::log::{
 };
 use crate::tasks::TaskRegistry;
 
+use super::client::BundleDownloadOutcome;
+
 pub const MANAGED_LEASE_TICK_INTERVAL: Duration = Duration::from_secs(60);
 const MANAGED_LEASE_CONFIGURATION_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const MANAGED_LEASE_FAILURE_BACKOFF_CAP: Duration = Duration::from_secs(60 * 60);
@@ -240,41 +242,11 @@ async fn run_once_with_addresses(
             .await
         }
         AutoLeaseState::RecordOnly { lease } => {
-            let subject = ManagedLeaseSubject::DownloadBundle {
-                lease: lease.name.clone(),
-            };
-            run_step(
-                lease_intent,
-                repository,
-                subject,
-                || async {
-                    let bundle = client
-                        .download_bundle(lease.name.clone(), lease.token.clone())
-                        .await?;
-                    Ok((lease, bundle))
-                },
-                |operation_id| ManagedLeaseTaskOutcome::BundleDownloaded { operation_id },
-            )
-            .await
+            run_download_step(lease_intent, repository, client, lease).await
         }
         AutoLeaseState::Ready { lease, bundle: _ } => {
             if needs_certificate_refresh && !needs_lease_renewal {
-                let subject = ManagedLeaseSubject::DownloadBundle {
-                    lease: lease.name.clone(),
-                };
-                return run_step(
-                    lease_intent,
-                    repository,
-                    subject,
-                    || async {
-                        let bundle = client
-                            .download_bundle(lease.name.clone(), lease.token.clone())
-                            .await?;
-                        Ok((lease, bundle))
-                    },
-                    |operation_id| ManagedLeaseTaskOutcome::BundleDownloaded { operation_id },
-                )
-                .await;
+                return run_download_step(lease_intent, repository, client, lease).await;
             }
             if !needs_lease_renewal {
                 return Ok(ManagedLeaseTaskOutcome::NoAction);
@@ -297,6 +269,35 @@ async fn run_once_with_addresses(
             .await
         }
     }
+}
+
+async fn run_download_step(
+    lease_intent: &LeaseIntentStore,
+    repository: &OperationRepository,
+    client: &LeaseClient,
+    lease: ManagedLeaseRecord,
+) -> Result<ManagedLeaseTaskOutcome, ManagedLeaseTaskError> {
+    let subject = ManagedLeaseSubject::DownloadBundle {
+        lease: lease.name.clone(),
+    };
+    let result = match client
+        .download_bundle(lease.name.clone(), lease.token.clone())
+        .await
+    {
+        Ok(BundleDownloadOutcome::Pending { .. }) => {
+            return Ok(ManagedLeaseTaskOutcome::NoAction);
+        }
+        Ok(BundleDownloadOutcome::Ready(bundle)) => Ok((lease, Some(bundle))),
+        Err(error) => Err(error),
+    };
+    run_step(
+        lease_intent,
+        repository,
+        subject,
+        || async { result },
+        |operation_id| ManagedLeaseTaskOutcome::BundleDownloaded { operation_id },
+    )
+    .await
 }
 
 struct GatewayAddressCandidates {
@@ -346,7 +347,7 @@ async fn run_step<Worker, WorkerFuture, Success>(
 where
     Worker: FnOnce() -> WorkerFuture,
     WorkerFuture:
-        Future<Output = Result<(ManagedLeaseRecord, ManagedCertBundle), LeaseClientError>>,
+        Future<Output = Result<(ManagedLeaseRecord, Option<ManagedCertBundle>), LeaseClientError>>,
     Success: FnOnce(OperationId) -> ManagedLeaseTaskOutcome,
 {
     let operation_id = submit_operation(repository, subject.clone()).await?;

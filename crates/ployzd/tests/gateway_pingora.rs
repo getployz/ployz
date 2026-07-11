@@ -149,7 +149,23 @@ fn valid_bundle() -> ManagedCertBundle {
     else {
         panic!("acquire returns lease");
     };
-    acquired.bundle
+    let pending = worker
+        .handle(LeaseWorkerRequest::DownloadBundle {
+            lease: acquired.lease.name.clone(),
+            token: acquired.lease.token.clone(),
+        })
+        .expect("bundle pending");
+    assert!(matches!(pending, LeaseWorkerResponse::BundlePending));
+    let LeaseWorkerResponse::Bundle(bundle) = worker
+        .handle(LeaseWorkerRequest::DownloadBundle {
+            lease: acquired.lease.name,
+            token: acquired.lease.token,
+        })
+        .expect("bundle ready")
+    else {
+        panic!("bundle ready");
+    };
+    bundle
 }
 
 #[test]
