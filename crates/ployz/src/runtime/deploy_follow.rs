@@ -1,11 +1,13 @@
 use std::io::{self, IsTerminal, Write};
 
+use ployz_core::deploy::DeployOrigin;
 use ployz_core::ids::OperationId;
 use ployz_core::ops::ReplayedOperationEvent;
-use ployz_sdk_types::DeployReserveRequest;
+use ployz_sdk_types::{DeployReserveRequest, DeploySubmitRequest};
 
 use crate::api_client::OperationApiClient;
-use crate::commands::deploy::{DeployCommand, DeployOutput};
+use crate::client_ids::generate_client_deploy_rollback_id;
+use crate::commands::deploy::{DeployCommand, DeployOutput, DeployRollbackCommand};
 use crate::commands::deploy_render::{
     DeployTree, render_failure_block, render_frame, render_plain_lines, render_terminal,
 };
@@ -61,12 +63,64 @@ pub(super) async fn execute_deploy(
             stderr: String::new(),
         });
     }
-    let history = deploy_history::stream(&config, namespace_id);
-    let operation_id = accepted.operation_id;
-    let (mut output, events) = watch_deploy_operation(&api, operation_id.clone(), &config).await?;
+    follow_accepted_deploy(&api, accepted.operation_id, &config, namespace_id, receipt_output).await
+}
+
+pub(super) async fn execute_rollback(
+    command: DeployRollbackCommand,
+    config: &PloyzctlRuntimeConfig,
+) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
+    let config = config.clone().with_cluster_context_from_disk()?;
+    let namespace_id = command.namespace_id.clone();
+    let mut target = deploy_history::select_rollback_request(command, &config)?;
+    target.origin = Some(DeployOrigin::try_new("rollback").expect("rollback origin is valid"));
+    let connect = nats_connect_config(&config)?;
+    let api = operation_api_client_with_connect(&config, connect).await?;
+    let reservation = api
+        .deploy_reserve(&DeployReserveRequest {
+            namespace_id: namespace_id.clone(),
+        })
+        .await
+        .map_err(api_error)?;
+    let registry_credentials = crate::registry_auth::deploy_registry_credentials(&target.services)
+        .await
+        .map_err(|source| PloyzctlExecutionError::RegistryAuth { source })?;
+    let generated = generate_client_deploy_rollback_id().map_err(|error| {
+        PloyzctlExecutionError::GenerateClientOperationIds {
+            message: error.to_string(),
+        }
+    })?;
+    let accepted = api
+        .deploy_submit(&DeploySubmitRequest {
+            idempotency_key: generated.idempotency_key,
+            reservation_id: reservation.reservation_id,
+            target,
+            registry_credentials,
+        })
+        .await
+        .map_err(api_error)?;
+    follow_accepted_deploy(
+        &api,
+        accepted.operation_id,
+        &config,
+        namespace_id,
+        String::new(),
+    )
+    .await
+}
+
+async fn follow_accepted_deploy(
+    api: &OperationApiClient,
+    operation_id: OperationId,
+    config: &PloyzctlRuntimeConfig,
+    namespace_id: ployz_core::ids::NamespaceId,
+    output_prefix: String,
+) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
+    let history = deploy_history::stream(config, namespace_id);
+    let (mut output, events) = watch_deploy_operation(api, operation_id.clone(), config).await?;
     let history_result = deploy_history::record_terminal_success(history, operation_id, &events);
     append_history_warning(&mut output, history_result);
-    output.stdout.insert_str(0, &receipt_output);
+    output.stdout.insert_str(0, &output_prefix);
     Ok(output)
 }
 

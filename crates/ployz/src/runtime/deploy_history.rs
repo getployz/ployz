@@ -1,15 +1,129 @@
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 
+use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{NamespaceId, OperationId};
 use ployz_core::ops::{DeployCompletionOutcome, OperationEvent, ReplayedOperationEvent};
 
-use crate::commands::deploy::DeployHistoryCommand;
+use crate::commands::deploy::{
+    DeployHistoryCommand, DeployRollbackCommand, DeployRollbackSelection,
+};
 use crate::deploy_history::{
     ClusterFingerprint, DeployHistory, DeployHistoryEntry, DeployHistoryTimestamp,
     default_deploy_history_root, render_history,
 };
 
 use super::{PloyzctlExecutionError, PloyzctlExecutionOutput, PloyzctlRuntimeConfig};
+
+pub(super) fn select_rollback_request(
+    command: DeployRollbackCommand,
+    config: &PloyzctlRuntimeConfig,
+) -> Result<DeployRequest, PloyzctlExecutionError> {
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    select_rollback_request_with_io(
+        command,
+        config,
+        stdin.is_terminal(),
+        &mut stdin.lock(),
+        &mut stdout.lock(),
+    )
+}
+
+fn select_rollback_request_with_io<R: BufRead, W: Write>(
+    command: DeployRollbackCommand,
+    config: &PloyzctlRuntimeConfig,
+    stdin_is_terminal: bool,
+    input: &mut R,
+    output: &mut W,
+) -> Result<DeployRequest, PloyzctlExecutionError> {
+    let config = config.clone().with_cluster_context_from_disk()?;
+    let entries = stream(&config, command.namespace_id)
+        .map_err(execution_error)?
+        .load()
+        .map_err(DeployHistoryRuntimeError::from)
+        .map_err(execution_error)?;
+
+    match command.selection {
+        DeployRollbackSelection::Operation(operation_id) => entries
+            .iter()
+            .find(|entry| entry.operation_id == operation_id)
+            .map(|entry| entry.request.clone())
+            .ok_or_else(|| {
+                selection_error(format!(
+                    "deploy history has no successful operation {}",
+                    operation_id.as_str()
+                ))
+            }),
+        DeployRollbackSelection::LastGood => {
+            let [.., selected, _newest] = entries.as_slice() else {
+                return Err(selection_error(
+                    "rollback --last-good requires at least two successful deploys",
+                ));
+            };
+            Ok(selected.request.clone())
+        }
+        DeployRollbackSelection::Interactive => {
+            if !stdin_is_terminal {
+                return Err(selection_error(
+                    "interactive rollback requires a terminal; use --to or --last-good",
+                ));
+            }
+            let prior = entries
+                .split_last()
+                .map(|(_newest, prior)| prior)
+                .filter(|prior| !prior.is_empty())
+                .ok_or_else(|| {
+                    selection_error("interactive rollback requires at least two successful deploys")
+                })?;
+
+            writeln!(output, "Select a successful deploy to roll back to:")
+                .and_then(|()| {
+                    for (index, entry) in prior.iter().rev().enumerate() {
+                        write!(output, "  {}) {}", index + 1, entry.operation_id.as_str())?;
+                        for service in &entry.request.services {
+                            write!(
+                                output,
+                                "  {}={}",
+                                service.service_id.as_str(),
+                                service.image.as_str()
+                            )?;
+                        }
+                        writeln!(output)?;
+                    }
+                    write!(output, "Rollback [1]: ")?;
+                    output.flush()
+                })
+                .map_err(|error| {
+                    selection_error(format!("could not write rollback picker: {error}"))
+                })?;
+
+            let mut response = String::new();
+            let bytes_read = input.read_line(&mut response).map_err(|error| {
+                selection_error(format!("could not read rollback selection: {error}"))
+            })?;
+            if bytes_read == 0 {
+                return Err(selection_error("rollback selection was not provided"));
+            }
+            let selected_index = if response.trim().is_empty() {
+                0
+            } else {
+                response
+                    .trim()
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|number| number.checked_sub(1))
+                    .ok_or_else(|| selection_error("rollback selection must be a listed number"))?
+            };
+            prior
+                .iter()
+                .rev()
+                .nth(selected_index)
+                .map(|entry| entry.request.clone())
+                .ok_or_else(|| selection_error("rollback selection must be a listed number"))
+        }
+    }
+}
 
 pub(super) fn inspect(
     command: DeployHistoryCommand,
@@ -152,7 +266,6 @@ pub(super) fn record_terminal_success(
 
 impl PloyzctlRuntimeConfig {
     fn deploy_history_root(&self) -> Option<PathBuf> {
-        #[cfg(test)]
         if self.deploy_history_root.is_some() {
             return self.deploy_history_root.clone();
         }
@@ -176,6 +289,12 @@ fn execution_error(source: DeployHistoryRuntimeError) -> PloyzctlExecutionError 
     }
 }
 
+fn selection_error(message: impl Into<String>) -> PloyzctlExecutionError {
+    execution_error(DeployHistoryRuntimeError::Selection {
+        message: message.into(),
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(super) enum DeployHistoryRuntimeError {
     #[error("no cluster context supplies a NATS URL for deploy history")]
@@ -186,6 +305,8 @@ pub(super) enum DeployHistoryRuntimeError {
     MissingRoot,
     #[error("{message}")]
     Store { message: String },
+    #[error("{message}")]
+    Selection { message: String },
     #[error("completed deploy {} has unusable history evidence: {message}", operation_id.as_str())]
     Evidence {
         operation_id: OperationId,
@@ -212,6 +333,7 @@ mod tests {
     use ployz_test_support::ids::{
         cancellation_reason, event_sequence, machine_id, namespace_id, operation_id, service_id,
     };
+    use std::io::Cursor;
 
     fn request(image: &str) -> DeployRequest {
         DeployRequest {
@@ -282,6 +404,290 @@ mod tests {
                 .expect("cluster fingerprints"),
             namespace_id("default"),
         )
+    }
+
+    fn runtime_config(temporary: &tempfile::TempDir) -> PloyzctlRuntimeConfig {
+        let ca_file = temporary.path().join("ca.pem");
+        std::fs::write(&ca_file, "test ca").expect("CA writes");
+        PloyzctlRuntimeConfig {
+            nats_url: Some("tls://cluster.example:4222".to_owned()),
+            nats_ca_file: Some(ca_file),
+            nats_seed_file: Some(temporary.path().join("operator.seed")),
+            join_seed_file: Some(temporary.path().join("join.seed")),
+            deploy_history_root: Some(temporary.path().join("history")),
+            ..PloyzctlRuntimeConfig::default()
+        }
+    }
+
+    fn append_history_entry(history: &DeployHistory, operation: &str, image: &str) {
+        history
+            .append_success(DeployHistoryEntry {
+                recorded_at: DeployHistoryTimestamp::from_unix_seconds(1_750_000_000),
+                operation_id: operation_id(operation),
+                request: request(image),
+            })
+            .expect("history entry persists");
+    }
+
+    fn populated_rollback_history(
+        temporary: &tempfile::TempDir,
+    ) -> (PloyzctlRuntimeConfig, NamespaceId) {
+        let config = runtime_config(temporary);
+        let namespace_id = namespace_id("default");
+        let history = stream(&config, namespace_id.clone()).expect("history stream resolves");
+        append_history_entry(
+            &history,
+            "op_first",
+            "ghcr.io/acme/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        append_history_entry(
+            &history,
+            "op_last_good",
+            "ghcr.io/acme/web@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        );
+        append_history_entry(
+            &history,
+            "op_newest",
+            "ghcr.io/acme/web@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        );
+        (config, namespace_id)
+    }
+
+    #[test]
+    fn rollback_to_operation_selects_its_exact_request() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let config = runtime_config(&temporary);
+        let namespace_id = namespace_id("default");
+        let history = stream(&config, namespace_id.clone()).expect("history stream resolves");
+        append_history_entry(
+            &history,
+            "op_old",
+            "ghcr.io/acme/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        append_history_entry(
+            &history,
+            "op_new",
+            "ghcr.io/acme/web@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        );
+        let mut input = Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::new();
+
+        let selected = select_rollback_request_with_io(
+            DeployRollbackCommand {
+                namespace_id,
+                selection: DeployRollbackSelection::Operation(operation_id("op_old")),
+            },
+            &config,
+            false,
+            &mut input,
+            &mut output,
+        )
+        .expect("operation exists");
+
+        assert_eq!(
+            selected.services[0].image.as_str(),
+            "ghcr.io/acme/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+    }
+
+    #[test]
+    fn rollback_to_operation_errors_when_history_has_no_matching_operation() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let config = runtime_config(&temporary);
+        let namespace_id = namespace_id("default");
+        let mut input = Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::new();
+
+        let error = select_rollback_request_with_io(
+            DeployRollbackCommand {
+                namespace_id,
+                selection: DeployRollbackSelection::Operation(operation_id("op_missing")),
+            },
+            &config,
+            false,
+            &mut input,
+            &mut output,
+        )
+        .expect_err("missing operation cannot be replayed");
+
+        assert!(error.to_string().contains("op_missing"));
+    }
+
+    #[test]
+    fn last_good_selects_the_entry_immediately_before_the_newest() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let (config, namespace_id) = populated_rollback_history(&temporary);
+        let mut input = Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::new();
+
+        let selected = select_rollback_request_with_io(
+            DeployRollbackCommand {
+                namespace_id,
+                selection: DeployRollbackSelection::LastGood,
+            },
+            &config,
+            false,
+            &mut input,
+            &mut output,
+        )
+        .expect("last good exists");
+
+        assert_eq!(
+            selected.services[0].image.as_str(),
+            "ghcr.io/acme/web@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        );
+    }
+
+    #[test]
+    fn last_good_errors_when_history_has_fewer_than_two_deploys() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let config = runtime_config(&temporary);
+        let namespace_id = namespace_id("default");
+        let mut input = Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::new();
+
+        let error = select_rollback_request_with_io(
+            DeployRollbackCommand {
+                namespace_id,
+                selection: DeployRollbackSelection::LastGood,
+            },
+            &config,
+            false,
+            &mut input,
+            &mut output,
+        )
+        .expect_err("last good needs current and prior deploys");
+
+        assert!(error.to_string().contains("at least two"));
+    }
+
+    #[test]
+    fn interactive_rollback_requires_a_terminal() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let config = runtime_config(&temporary);
+        let namespace_id = namespace_id("default");
+        let mut input = Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::new();
+
+        let error = select_rollback_request_with_io(
+            DeployRollbackCommand {
+                namespace_id,
+                selection: DeployRollbackSelection::Interactive,
+            },
+            &config,
+            false,
+            &mut input,
+            &mut output,
+        )
+        .expect_err("non-terminal input is ambiguous");
+
+        assert!(error.to_string().contains("--to or --last-good"));
+    }
+
+    #[test]
+    fn interactive_rollback_defaults_to_last_good_and_renders_pinned_candidates() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let (config, namespace_id) = populated_rollback_history(&temporary);
+        let mut input = Cursor::new(b"\n".to_vec());
+        let mut output = Vec::new();
+
+        let selected = select_rollback_request_with_io(
+            DeployRollbackCommand {
+                namespace_id,
+                selection: DeployRollbackSelection::Interactive,
+            },
+            &config,
+            true,
+            &mut input,
+            &mut output,
+        )
+        .expect("default selection exists");
+
+        assert_eq!(
+            (
+                selected.services[0].image.as_str(),
+                String::from_utf8(output).expect("picker output is UTF-8")
+            ),
+            (
+                "ghcr.io/acme/web@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                concat!(
+                    "Select a successful deploy to roll back to:\n",
+                    "  1) op_last_good  web=ghcr.io/acme/web@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n",
+                    "  2) op_first  web=ghcr.io/acme/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+                    "Rollback [1]: "
+                )
+                .to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn interactive_rollback_accepts_a_numbered_older_candidate() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let (config, namespace_id) = populated_rollback_history(&temporary);
+        let mut input = Cursor::new(b"2\n".to_vec());
+        let mut output = Vec::new();
+
+        let selected = select_rollback_request_with_io(
+            DeployRollbackCommand {
+                namespace_id,
+                selection: DeployRollbackSelection::Interactive,
+            },
+            &config,
+            true,
+            &mut input,
+            &mut output,
+        )
+        .expect("second candidate exists");
+
+        assert_eq!(
+            selected.services[0].image.as_str(),
+            "ghcr.io/acme/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+    }
+
+    #[test]
+    fn interactive_rollback_rejects_an_unlisted_number() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let (config, namespace_id) = populated_rollback_history(&temporary);
+        let mut input = Cursor::new(b"3\n".to_vec());
+        let mut output = Vec::new();
+
+        let error = select_rollback_request_with_io(
+            DeployRollbackCommand {
+                namespace_id,
+                selection: DeployRollbackSelection::Interactive,
+            },
+            &config,
+            true,
+            &mut input,
+            &mut output,
+        )
+        .expect_err("third prior deploy is not listed");
+
+        assert!(error.to_string().contains("must be a listed number"));
+    }
+
+    #[test]
+    fn interactive_rollback_rejects_end_of_input() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let (config, namespace_id) = populated_rollback_history(&temporary);
+        let mut input = Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::new();
+
+        let error = select_rollback_request_with_io(
+            DeployRollbackCommand {
+                namespace_id,
+                selection: DeployRollbackSelection::Interactive,
+            },
+            &config,
+            true,
+            &mut input,
+            &mut output,
+        )
+        .expect_err("end of input is not an empty line");
+
+        assert!(error.to_string().contains("was not provided"));
     }
 
     #[test]

@@ -6,7 +6,7 @@ use ployz_core::deploy::{
     DeployOrigin, DeployRequest, DeployReservationId, DeployRoute, DeployRouteTarget,
     DeployServiceSpec, ImageReference, ReplicaCount,
 };
-use ployz_core::ids::{NamespaceId, ServiceId};
+use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
 use ployz_core::ops::{OperationIdempotencyKey, RouteHostname, RoutePort};
 use ployz_sdk_types::{AcceptedOperation, DeploySubmitRequest};
 
@@ -57,9 +57,23 @@ pub struct DeployHistoryCommand {
     pub namespace_id: NamespaceId,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployRollbackCommand {
+    pub namespace_id: NamespaceId,
+    pub selection: DeployRollbackSelection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeployRollbackSelection {
+    Interactive,
+    Operation(OperationId),
+    LastGood,
+}
+
 pub(crate) enum ParsedDeployCommand {
     Deploy(DeployCommand),
     History(DeployHistoryCommand),
+    Rollback(DeployRollbackCommand),
 }
 
 #[derive(Debug, Args)]
@@ -74,12 +88,26 @@ pub(crate) struct DeployRootCli {
 #[derive(Debug, Subcommand)]
 enum DeploySubcommand {
     History(DeployHistoryCli),
+    /// Replay a successful digest-pinned deploy from local history.
+    Rollback(DeployRollbackCli),
 }
 
 #[derive(Debug, Args)]
 struct DeployHistoryCli {
     #[arg(short = 'n', long = "namespace")]
     namespace: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct DeployRollbackCli {
+    #[arg(short = 'n', long = "namespace")]
+    namespace: Option<String>,
+    /// Replay the successful payload recorded for this operation.
+    #[arg(long = "to", value_name = "OPERATION_ID", conflicts_with = "last_good")]
+    to: Option<String>,
+    /// Replay the successful payload immediately before the newest one.
+    #[arg(long)]
+    last_good: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,10 +138,15 @@ impl DeployOutput {
 pub(crate) fn deploy_command(
     parsed: DeployRootCli,
 ) -> Result<ParsedDeployCommand, PloyzctlCliError> {
-    if let Some(DeploySubcommand::History(history)) = parsed.command {
-        return deploy_history_command(history).map(ParsedDeployCommand::History);
+    match parsed.command {
+        Some(DeploySubcommand::History(history)) => {
+            deploy_history_command(history).map(ParsedDeployCommand::History)
+        }
+        Some(DeploySubcommand::Rollback(rollback)) => {
+            deploy_rollback_command(rollback).map(ParsedDeployCommand::Rollback)
+        }
+        None => deploy_submit_command(parsed.deploy).map(ParsedDeployCommand::Deploy),
     }
-    deploy_submit_command(parsed.deploy).map(ParsedDeployCommand::Deploy)
 }
 
 fn deploy_history_command(
@@ -126,6 +159,34 @@ fn deploy_history_command(
         .map_err(|error| invalid_value("--namespace", error))?
         .unwrap_or_else(|| NamespaceId::try_new("default").expect("default namespace is valid"));
     Ok(DeployHistoryCommand { namespace_id })
+}
+
+fn deploy_rollback_command(
+    parsed: DeployRollbackCli,
+) -> Result<DeployRollbackCommand, PloyzctlCliError> {
+    let namespace_id = parsed
+        .namespace
+        .map(NamespaceId::try_new)
+        .transpose()
+        .map_err(|error| invalid_value("--namespace", error))?
+        .unwrap_or_else(|| NamespaceId::try_new("default").expect("default namespace is valid"));
+    let operation = parsed
+        .to
+        .map(OperationId::try_new)
+        .transpose()
+        .map_err(|error| invalid_value("--to", error))?;
+    let selection = if parsed.last_good {
+        DeployRollbackSelection::LastGood
+    } else {
+        operation.map_or(
+            DeployRollbackSelection::Interactive,
+            DeployRollbackSelection::Operation,
+        )
+    };
+    Ok(DeployRollbackCommand {
+        namespace_id,
+        selection,
+    })
 }
 
 fn deploy_submit_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCliError> {
