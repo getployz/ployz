@@ -348,7 +348,7 @@ fn cli_allows_unsupported_compose_when_flag_is_set() {
 }
 
 #[test]
-fn compose_check_and_deploy_render_identical_rejections() {
+fn compose_check_and_deploy_render_identical_diagnostics() {
     let dir = tempfile::tempdir().expect("tempdir");
     let compose_path = dir.path().join("compose.yaml");
     std::fs::write(
@@ -364,18 +364,6 @@ fn compose_check_and_deploy_render_identical_rejections() {
         .expect_err("compose check rejects unsupported compose");
 
     assert_eq!(check.to_string(), deploy.to_string());
-}
-
-#[test]
-fn compose_check_and_deploy_render_identical_warnings() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let compose_path = dir.path().join("compose.yaml");
-    std::fs::write(
-        &compose_path,
-        "name: parity\nservices:\n  web:\n    image: nginx\n    mystery: true\n",
-    )
-    .expect("write compose");
-    let path = compose_path.display().to_string();
 
     let PloyzctlCommand::Deploy(deploy) = parse_command(
         ["deploy", "-f", &path, "--allow-unsupported", "--detach"].map(str::to_owned),

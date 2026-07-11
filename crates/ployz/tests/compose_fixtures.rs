@@ -92,12 +92,13 @@ fn run_case(case_dir: &Path) -> Result<ActualOutput, String> {
     } else {
         UnsupportedFieldMode::Strict
     };
+    let namespace_override = read_namespace_override(case_dir)?;
 
     match parse_deploy_file(ComposeInput {
         source: &source,
         base_dir: tempdir.path(),
         interpolation_env,
-        namespace_override: None,
+        namespace_override,
         mode,
     }) {
         Ok((parsed, warnings)) => {
@@ -126,6 +127,19 @@ fn run_case(case_dir: &Path) -> Result<ActualOutput, String> {
     }
 }
 
+fn read_namespace_override(
+    case_dir: &Path,
+) -> Result<Option<ployz_core::ids::NamespaceId>, String> {
+    let path = case_dir.join("namespace");
+    match fs::read_to_string(&path) {
+        Ok(value) => ployz_core::ids::NamespaceId::try_new(value.trim().to_owned())
+            .map(Some)
+            .map_err(|error| format!("read namespace: {error}")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("read namespace: {error}")),
+    }
+}
+
 fn copy_case_files(case_dir: &Path, run_dir: &Path) -> Result<(), String> {
     for entry in fs::read_dir(case_dir).map_err(|error| format!("read case dir: {error}"))? {
         let entry = entry.map_err(|error| format!("read case entry: {error}"))?;
@@ -140,6 +154,7 @@ fn copy_case_files(case_dir: &Path, run_dir: &Path) -> Result<(), String> {
             | "case.env"
             | "dotenv"
             | "allow_unsupported"
+            | "namespace"
             | "expected.request.json"
             | "expected.diagnostics" => {}
             _ => {
