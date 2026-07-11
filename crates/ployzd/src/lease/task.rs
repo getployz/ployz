@@ -56,7 +56,7 @@ async fn run_loop(
     }
     let mut consecutive_failures = 0;
     let mut acquisition_attempted = false;
-    let mut gateway_testimony_dedupe = GatewayTestimonyDedupe::new();
+    let mut reported_missing_gateways: Option<Vec<MachineId>> = None;
     loop {
         let acquiring = matches!(
             lease_intent.load_if_configured().await,
@@ -70,28 +70,39 @@ async fn run_loop(
         if !acquiring {
             acquisition_attempted = false;
         }
-        let outcome =
+        let mut outcome =
             run_once_with_roster(&lease_intent, &repository, &client, &facts_reader, &roster).await;
+        let awaiting_gateway_testimony = matches!(
+            &outcome,
+            Ok(ManagedLeaseTaskOutcome::AwaitingGatewayTestimony { .. })
+        );
         match &outcome {
             Ok(ManagedLeaseTaskOutcome::AwaitingGatewayTestimony { missing })
-                if gateway_testimony_dedupe.record_needed(missing) =>
+                if reported_missing_gateways.as_deref() != Some(missing) =>
             {
-                match record_gateway_testimony_unavailable(&repository, missing).await {
-                    Ok(()) => gateway_testimony_dedupe.remember(missing),
-                    Err(error) => {
-                        eprintln!("ployzd managed lease warning: {error}");
+                let missing = missing.clone();
+                match submit_gateway_testimony_unavailable(&repository, &missing).await {
+                    Ok((operation_id, subject)) => {
+                        reported_missing_gateways = Some(missing.clone());
+                        outcome = record_failed(
+                            &repository,
+                            &operation_id,
+                            &subject,
+                            ManagedLeaseFailureClass::GatewayTestimonyUnavailable,
+                            &"gateway endpoint testimony unavailable",
+                        )
+                        .await
+                        .map(|()| ManagedLeaseTaskOutcome::AwaitingGatewayTestimony { missing });
                     }
+                    Err(error) => outcome = Err(error),
                 }
             }
             Ok(ManagedLeaseTaskOutcome::AwaitingGatewayTestimony { .. }) | Err(_) => {}
-            Ok(_) => gateway_testimony_dedupe.clear(),
+            Ok(_) => reported_missing_gateways = None,
         }
         let posted_acquisition = acquiring
-            && !matches!(
-                &outcome,
-                Ok(ManagedLeaseTaskOutcome::AwaitingGatewayTestimony { .. })
-                    | Err(ManagedLeaseTaskError::Roster(_))
-            );
+            && !awaiting_gateway_testimony
+            && !matches!(&outcome, Err(ManagedLeaseTaskError::Roster(_)));
         let delay = match outcome {
             Ok(ManagedLeaseTaskOutcome::AwaitingConfiguration) => {
                 consecutive_failures = 0;
@@ -335,30 +346,6 @@ struct GatewayAddressCandidates {
     missing: Vec<MachineId>,
 }
 
-struct GatewayTestimonyDedupe {
-    reported_missing: Option<Vec<MachineId>>,
-}
-
-impl GatewayTestimonyDedupe {
-    const fn new() -> Self {
-        Self {
-            reported_missing: None,
-        }
-    }
-
-    fn record_needed(&self, missing: &[MachineId]) -> bool {
-        self.reported_missing.as_deref() != Some(missing)
-    }
-
-    fn remember(&mut self, missing: &[MachineId]) {
-        self.reported_missing = Some(missing.to_vec());
-    }
-
-    fn clear(&mut self) {
-        self.reported_missing = None;
-    }
-}
-
 async fn gateway_addresses_from_facts(
     facts_reader: &NatsMachineFactsReader,
     gateways: &BTreeSet<ployz_core::ids::MachineId>,
@@ -516,22 +503,15 @@ async fn record_completed(
     Ok(())
 }
 
-async fn record_gateway_testimony_unavailable(
+async fn submit_gateway_testimony_unavailable(
     repository: &OperationRepository,
     missing: &[MachineId],
-) -> Result<(), ManagedLeaseTaskError> {
+) -> Result<(OperationId, ManagedLeaseSubject), ManagedLeaseTaskError> {
     let subject = ManagedLeaseSubject::GatewayTestimony {
         missing: missing.to_vec(),
     };
     let operation_id = submit_operation(repository, subject.clone()).await?;
-    record_failed(
-        repository,
-        &operation_id,
-        &subject,
-        ManagedLeaseFailureClass::GatewayTestimonyUnavailable,
-        &"gateway endpoint testimony unavailable",
-    )
-    .await
+    Ok((operation_id, subject))
 }
 
 async fn record_failed(
@@ -686,19 +666,5 @@ mod tests {
 
         assert!(ready.missing.is_empty());
         assert!(acquisition_allowed(attempted, true));
-    }
-
-    #[test]
-    fn gateway_testimony_dedupe_records_only_changed_missing_sets() {
-        let mut dedupe = GatewayTestimonyDedupe::new();
-        let first = vec![machine_id("gateway-one")];
-        let changed = vec![machine_id("gateway-two")];
-
-        assert!(dedupe.record_needed(&first));
-        dedupe.remember(&first);
-        assert!(!dedupe.record_needed(&first));
-        assert!(dedupe.record_needed(&changed));
-        dedupe.clear();
-        assert!(dedupe.record_needed(&first));
     }
 }
