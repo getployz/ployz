@@ -67,7 +67,7 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
 }
 
 #[tokio::test]
-async fn reuses_running_target_entry_and_marks_service_containers_for_cleanup() {
+async fn does_not_reuse_an_unpromoted_running_target_entry() {
     let request = deploy_request();
     let facts = DeployExecutionFacts {
         machine_platforms: std::collections::BTreeMap::new(),
@@ -97,10 +97,7 @@ async fn reuses_running_target_entry_and_marks_service_containers_for_cleanup() 
     let command = prepare_deploy_execution_command(operation_id("op_123"), request, facts);
 
     let service = single_service(&command);
-    assert_eq!(
-        service.existing_replicas(),
-        vec![existing_service_replica("machine_a", "ctr_target")]
-    );
+    assert!(service.existing_replicas().is_empty());
     assert_eq!(
         service.cleanup_candidates(),
         [cleanup_container_with_entry(
@@ -108,6 +105,44 @@ async fn reuses_running_target_entry_and_marks_service_containers_for_cleanup() 
             "ctr_target",
             target_namespace_revision_entry_id()
         )]
+    );
+}
+
+#[tokio::test]
+async fn reuses_a_matching_running_promoted_target_entry() {
+    let request = deploy_request();
+    let mut promoted = serving_target_entry("svc_api", "unused");
+    promoted.namespace_revision_entry_id = target_namespace_revision_entry_id();
+    let facts = DeployExecutionFacts {
+        machine_platforms: std::collections::BTreeMap::new(),
+        unusable_machines: Vec::new(),
+        namespace_route_bindings: Vec::new(),
+        namespace_serving_entries: vec![promoted],
+        namespace_volume_pins: Vec::new(),
+        eligible_machines: vec![machine_id("machine_a")],
+        dataplane_members: Vec::new(),
+        observed_machines: vec![
+            MachineContainerObservationSnapshot::try_new(
+                machine_id("machine_a"),
+                [observed_service_container_with_entry(
+                    "machine_a",
+                    "ctr_target",
+                    target_namespace_revision_entry_id(),
+                )],
+            )
+            .expect("valid machine observation snapshot"),
+        ],
+        namespace_cleanup_candidates: Vec::new(),
+        managed_lease: None,
+        gateway_certificate_targets: Vec::new(),
+        step_timeout: Duration::from_secs(5),
+    };
+
+    let command = prepare_deploy_execution_command(operation_id("op_123"), request, facts);
+
+    assert_eq!(
+        single_service(&command).existing_replicas(),
+        vec![existing_service_replica("machine_a", "ctr_target")]
     );
 }
 

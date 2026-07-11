@@ -1,0 +1,9 @@
+name: fixture_healthy_dependency_without_healthcheck
+services:
+  database:
+    image: postgres:17
+  api:
+    image: api:latest
+    depends_on:
+      database:
+        condition: service_healthy

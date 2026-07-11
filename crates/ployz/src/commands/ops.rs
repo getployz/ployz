@@ -697,6 +697,8 @@ impl DeployEventRenderContext {
             | OperationEvent::DeployRunning { .. }
             | OperationEvent::DeployContainerStarted { .. }
             | OperationEvent::DeployHealthCheckStarted { .. }
+            | OperationEvent::DeployPhaseStarted { .. }
+            | OperationEvent::DeployPhaseFinished { .. }
             | OperationEvent::DeployDataplanePrepared { .. }
             | OperationEvent::DeployImageAvailabilityVerified { .. }
             | OperationEvent::DeployCleanupFinished { .. }
@@ -817,6 +819,8 @@ fn render_replayed_event_text(
         | OperationEvent::DeployRunning { .. }
         | OperationEvent::DeployContainerStarted { .. }
         | OperationEvent::DeployHealthCheckStarted { .. }
+        | OperationEvent::DeployPhaseStarted { .. }
+        | OperationEvent::DeployPhaseFinished { .. }
         | OperationEvent::DeployDataplanePrepared { .. }
         | OperationEvent::DeployImageAvailabilityVerified { .. }
         | OperationEvent::DeployCleanupFinished { .. }
@@ -889,6 +893,8 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::DeployRunning { .. } => "deploy.running",
         OperationEvent::DeployContainerStarted { .. } => "deploy.container_started",
         OperationEvent::DeployHealthCheckStarted { .. } => "deploy.health_check_started",
+        OperationEvent::DeployPhaseStarted { .. } => "deploy.phase_started",
+        OperationEvent::DeployPhaseFinished { .. } => "deploy.phase_finished",
         OperationEvent::DeployDataplanePrepared { .. } => "deploy.dataplane_prepared",
         OperationEvent::DeployImageAvailabilityVerified { .. } => {
             "deploy.image_availability_verified"

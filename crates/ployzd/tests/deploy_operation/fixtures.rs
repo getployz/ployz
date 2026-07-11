@@ -9,9 +9,9 @@ use ployz_core::dataplane::{
 };
 use ployz_core::deploy::{
     ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerMountPath,
-    DeployCleanupContainer, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec,
-    HealthcheckShellCommand, ImageReference, PreStartHook, ReplicaCount, ServiceVolumeMount,
-    VolumeName,
+    DependencyCondition, DeployCleanupContainer, DeployRequest, DeployRoute, DeployRouteTarget,
+    DeployServiceSpec, HealthcheckShellCommand, ImageReference, PreStartHook, ReplicaCount,
+    ServiceDependency, ServiceVolumeMount, VolumeName,
 };
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId, ServiceId,
@@ -20,9 +20,9 @@ use ployz_core::machine_runtime::{
     MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
 use ployz_core::ops::{
-    CertificateProvisionFailure, DeployCleanupFailure, DeployEvidence, DeployRunningStage,
-    DeployTransition, FailureMessage, OperatorHint, RetainedArtifact, RouteHostname, RoutePort,
-    RouteTarget,
+    CertificateProvisionFailure, ControlPlaneCommitScope, DeployCleanupFailure, DeployEvidence,
+    DeployRunningStage, DeployTransition, FailureMessage, OperatorHint, RetainedArtifact,
+    RouteHostname, RoutePort, RouteTarget,
 };
 use ployz_core::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
 pub(crate) use ployz_test_support::containers;
@@ -55,6 +55,7 @@ use std::time::Duration;
 #[derive(Default)]
 pub(super) struct RecordingOperations {
     pub(super) records: Vec<RecordedOperation>,
+    pub(super) phase_records: Vec<DeployEvidence>,
     fail_completed_transition_remaining: usize,
     fail_cleanup_evidence_remaining: usize,
     pub(super) completed_transition_attempts: usize,
@@ -64,6 +65,7 @@ impl RecordingOperations {
     pub(super) const fn fail_completed_transition_times(times: usize) -> Self {
         Self {
             records: Vec::new(),
+            phase_records: Vec::new(),
             fail_completed_transition_remaining: times,
             fail_cleanup_evidence_remaining: 0,
             completed_transition_attempts: 0,
@@ -73,6 +75,7 @@ impl RecordingOperations {
     pub(super) const fn fail_cleanup_evidence_times(times: usize) -> Self {
         Self {
             records: Vec::new(),
+            phase_records: Vec::new(),
             fail_completed_transition_remaining: 0,
             fail_cleanup_evidence_remaining: times,
             completed_transition_attempts: 0,
@@ -133,8 +136,9 @@ impl DeployOperationRecorder for RecordingOperations {
             DeployEvidence::PlanCreated { plan } => {
                 self.records.push(RecordedOperation::PlanCreated {
                     replica_count: plan
-                        .services
+                        .phases
                         .iter()
+                        .flat_map(|phase| &phase.services)
                         .map(|service| service.steps.len())
                         .sum(),
                 });
@@ -159,6 +163,10 @@ impl DeployOperationRecorder for RecordingOperations {
             }
             DeployEvidence::HealthCheckStarted => {
                 self.records.push(RecordedOperation::HealthCheckStarted);
+            }
+            evidence @ (DeployEvidence::PhaseStarted { .. }
+            | DeployEvidence::PhaseFinished { .. }) => {
+                self.phase_records.push(evidence);
             }
             DeployEvidence::CleanupFinished { removed, failed } => {
                 if self.fail_cleanup_evidence_remaining > 0 {
@@ -280,6 +288,7 @@ pub(super) struct RecordingNamespaceState {
     pub(super) route_requests: Vec<RouteBindingState>,
     pub(super) route_removals: Vec<RouteTarget>,
     pub(super) serving_requests: Vec<ServingTargetEntry>,
+    pub(super) phase_requests: Vec<(Vec<RouteBindingState>, Vec<ServingTargetEntry>)>,
     pub(super) serving_removals: Vec<ServiceId>,
     pub(super) volume_pin_requests: Vec<VolumePinState>,
     certificate_ready: Option<Arc<AtomicBool>>,
@@ -310,6 +319,7 @@ impl RecordingNamespaceState {
             route_requests: Vec::new(),
             route_removals: Vec::new(),
             serving_requests: Vec::new(),
+            phase_requests: Vec::new(),
             serving_removals: Vec::new(),
             volume_pin_requests: Vec::new(),
             certificate_ready: None,
@@ -318,6 +328,42 @@ impl RecordingNamespaceState {
 }
 
 impl NamespaceStateCommitter for RecordingNamespaceState {
+    async fn commit_deploy_phase(
+        &mut self,
+        route_bindings: Vec<RouteBindingState>,
+        serving_target_entries: Vec<ServingTargetEntry>,
+    ) -> Result<(), NamespaceCommitError> {
+        if let Some(certificate_ready) = &self.certificate_ready {
+            assert!(
+                certificate_ready.load(Ordering::SeqCst),
+                "custom certificate must be ready before phase commit"
+            );
+        }
+        match self.serving_behavior {
+            ServingCommitBehavior::Commit => {}
+            ServingCommitBehavior::Hang => {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
+            ServingCommitBehavior::LoseLock => {
+                let Some(entry) = serving_target_entries.first() else {
+                    panic!("phase has a serving target");
+                };
+                return Err(NamespaceCommitError::ServingTargetLockLost {
+                    scope: ControlPlaneCommitScope::ServiceEntry {
+                        service_id: entry.service_id.clone(),
+                        namespace_revision_entry_id: entry.namespace_revision_entry_id.clone(),
+                    },
+                });
+            }
+        }
+        self.route_requests.extend(route_bindings.iter().cloned());
+        self.serving_requests
+            .extend(serving_target_entries.iter().cloned());
+        self.phase_requests
+            .push((route_bindings, serving_target_entries));
+        Ok(())
+    }
+
     async fn replace_route_binding(
         &mut self,
         state: RouteBindingState,
@@ -873,6 +919,121 @@ pub(super) fn deploy_command(replicas: u16) -> DeployExecutionInput {
     )
 }
 
+pub(super) fn phased_deploy_command(service_ids: &[&str]) -> DeployExecutionInput {
+    execution_input_for_request(phased_request(service_ids), Vec::new(), Vec::new())
+}
+
+fn phased_request(service_ids: &[&str]) -> DeployRequest {
+    let mut request = target_deploy_request(1);
+    let template = request.services.remove(0);
+    request.services = service_ids
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let mut service = template.clone();
+            service.service_id = service_id(name);
+            service.depends_on = index
+                .checked_sub(1)
+                .and_then(|dependency| service_ids.get(dependency))
+                .map(|dependency| {
+                    vec![ServiceDependency {
+                        service_id: service_id(dependency),
+                        condition: DependencyCondition::Started,
+                    }]
+                })
+                .unwrap_or_default();
+            service
+        })
+        .collect();
+    request
+}
+
+pub(super) fn same_phase_deploy_command(service_ids: &[&str]) -> DeployExecutionInput {
+    let mut request = phased_request(service_ids);
+    for service in &mut request.services {
+        service.depends_on.clear();
+    }
+    execution_input_for_request(request, Vec::new(), Vec::new())
+}
+
+pub(super) fn invalid_healthy_dependency_command() -> DeployExecutionInput {
+    let mut request = phased_request(&["svc_database", "svc_web"]);
+    let [_, web] = request.services.as_mut_slice() else {
+        panic!("fixture has two services");
+    };
+    let [dependency] = web.depends_on.as_mut_slice() else {
+        panic!("web has one dependency");
+    };
+    dependency.condition = DependencyCondition::Healthy;
+    execution_input_for_request(request, Vec::new(), Vec::new())
+}
+
+pub(super) fn phased_deploy_with_reused_dependency() -> DeployExecutionInput {
+    let mut request = target_deploy_request(1);
+    let mut database = request.services.remove(0);
+    database.service_id = service_id("svc_database");
+    database.image = resolved_registry_image(database.image.as_str());
+    database.runtime.healthcheck = Some(ContainerHealthcheck {
+        test: ContainerHealthcheckTest::Shell(
+            HealthcheckShellCommand::try_new("true").expect("valid healthcheck"),
+        ),
+        interval: None,
+        timeout: None,
+        retries: None,
+        start_period: None,
+    });
+    let mut web = database.clone();
+    web.service_id = service_id("svc_web");
+    web.runtime.healthcheck = None;
+    web.depends_on = vec![ServiceDependency {
+        service_id: database.service_id.clone(),
+        condition: DependencyCondition::Healthy,
+    }];
+    let database_entry = database.namespace_revision_entry_id(&request.namespace_id);
+    request.services = vec![database, web];
+    let observation = containers::observation("machine_a", "ctr_database")
+        .with(
+            containers::identity("svc_database")
+                .entry(database_entry.as_str())
+                .operation("op_existing")
+                .step("existing_ctr_database"),
+        )
+        .running_unroutable()
+        .build();
+    let snapshots = vec![
+        MachineContainerObservationSnapshot::try_new(machine_id("machine_a"), [observation])
+            .expect("valid observation"),
+    ];
+    let mut promoted = serving_target_entry("svc_database", "unused");
+    promoted.namespace_revision_entry_id = database_entry;
+    execution_input_for_request(request, snapshots, vec![promoted])
+}
+
+fn execution_input_for_request(
+    request: DeployRequest,
+    observed_machines: Vec<MachineContainerObservationSnapshot>,
+    namespace_serving_entries: Vec<ServingTargetEntry>,
+) -> DeployExecutionInput {
+    deploy_execution_input(
+        operation_id("op_123"),
+        request,
+        DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
+            unusable_machines: Vec::new(),
+            namespace_route_bindings: Vec::new(),
+            namespace_serving_entries,
+            namespace_volume_pins: Vec::new(),
+            dataplane_members: Vec::new(),
+            eligible_machines: vec![machine_id("machine_a")],
+            namespace_cleanup_candidates: namespace_cleanup_candidates(&observed_machines),
+            observed_machines,
+            managed_lease: None,
+            gateway_certificate_targets: Vec::new(),
+            step_timeout: Duration::from_secs(5),
+        },
+    )
+}
+
 pub(super) fn pinned_deploy_command() -> DeployExecutionInput {
     let mut request = target_deploy_request(1);
     let [service] = request.services.as_mut_slice() else {
@@ -1190,10 +1351,28 @@ pub(super) fn deploy_command_with_existing_container(
         )],
     )
     .expect("valid machine observation snapshot");
-    prepared_deploy_command(
-        replicas,
-        vec![self::machine_id("machine_a"), self::machine_id("machine_b")],
-        vec![snapshot],
+    let request = target_deploy_request(replicas);
+    let mut promoted = serving_target_entry("svc_api", "unused");
+    promoted.namespace_revision_entry_id = target_namespace_revision_entry_id();
+    deploy_execution_input(
+        operation_id("op_123"),
+        request,
+        DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
+            unusable_machines: Vec::new(),
+            namespace_route_bindings: Vec::new(),
+            namespace_serving_entries: vec![promoted],
+            namespace_volume_pins: Vec::new(),
+            dataplane_members: Vec::new(),
+            eligible_machines: vec![self::machine_id("machine_a"), self::machine_id("machine_b")],
+            namespace_cleanup_candidates: namespace_cleanup_candidates(std::slice::from_ref(
+                &snapshot,
+            )),
+            observed_machines: vec![snapshot],
+            managed_lease: None,
+            gateway_certificate_targets: Vec::new(),
+            step_timeout: Duration::from_secs(5),
+        },
     )
 }
 
@@ -1462,18 +1641,6 @@ pub(super) fn retained_created_container(machine_id: &str, container_id: &str) -
     RetainedArtifact::CreatedContainer {
         machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
-        inspect_hint: inspect_hint(container_id),
-    }
-}
-
-pub(super) fn retained_stop_failed_container(
-    machine_id: &str,
-    container_id: &str,
-) -> RetainedArtifact {
-    RetainedArtifact::ContainerStopFailed {
-        machine_id: self::machine_id(machine_id),
-        container_id: self::container_id(container_id),
-        message: runtime_failure_message("container stop failed: permission denied"),
         inspect_hint: inspect_hint(container_id),
     }
 }

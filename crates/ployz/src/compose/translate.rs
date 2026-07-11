@@ -3,10 +3,11 @@ use std::path::Path;
 
 use ployz_core::deploy::{
     ContainerCommand, ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest,
-    ContainerResourceLimits, ContainerRestartPolicy, ContainerRuntimeSpec, DeployRoute,
-    DeployRouteTarget, DeployServiceSpec, EnvName, EnvValue, HealthcheckDurationNanos,
+    ContainerResourceLimits, ContainerRestartPolicy, ContainerRuntimeSpec, DependencyCondition,
+    DeployRoute, DeployRouteTarget, DeployServiceSpec, EnvName, EnvValue, HealthcheckDurationNanos,
     HealthcheckRetries, HealthcheckShellCommand, ImageReference, LinuxCapability, MemoryBytes,
-    NanoCpus, PidsLimit, PreStartHook, ReplicaCount, ServiceEnvironment, StopGracePeriod,
+    NanoCpus, PidsLimit, PreStartHook, ReplicaCount, ServiceDependency, ServiceEnvironment,
+    StopGracePeriod,
 };
 use ployz_core::ids::ServiceId;
 use ployz_core::ops::{RouteHostname, RoutePort};
@@ -371,7 +372,10 @@ pub(crate) fn classify_service(
         }
     };
     let depends_on = match depends_on {
-        Ok(depends_on) => depends_on,
+        Ok((depends_on, mut dependency_findings)) => {
+            findings.append(&mut dependency_findings);
+            depends_on
+        }
         Err(mut dependency_findings) => {
             findings.append(&mut dependency_findings);
             service_valid = false;
@@ -418,22 +422,30 @@ pub(crate) fn classify_service(
 fn parse_depends_on(
     value: Option<Value>,
     path: &ComposePath,
-) -> Result<Vec<ServiceId>, Vec<ComposeFinding>> {
+) -> Result<(Vec<ServiceDependency>, Vec<ComposeFinding>), Vec<ComposeFinding>> {
     let Some(value) = value else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     };
     let mut findings = Vec::new();
-    let mut names = Vec::new();
+    let mut invalid = false;
+    let mut dependencies = Vec::new();
     match value {
         Value::Sequence(values) => {
             for (index, value) in values.into_iter().enumerate() {
                 let item_path = path.index(index);
                 match value.as_str() {
-                    Some(name) => names.push((item_path, name.to_owned())),
-                    None => findings.push(ComposeFinding::invalid(
+                    Some(name) => dependencies.push((
                         item_path,
-                        "dependency names must be strings",
+                        name.to_owned(),
+                        DependencyCondition::Started,
                     )),
+                    None => {
+                        invalid = true;
+                        findings.push(ComposeFinding::invalid(
+                            item_path,
+                            "dependency names must be strings",
+                        ));
+                    }
                 }
             }
         }
@@ -442,13 +454,22 @@ fn parse_depends_on(
                 match key.as_str() {
                     Some(name) => {
                         let dependency_path = path.field(name);
-                        validate_dependency_options(value, &dependency_path, &mut findings);
-                        names.push((dependency_path, name.to_owned()));
+                        if let Some(condition) = parse_dependency_options(
+                            value,
+                            &dependency_path,
+                            &mut findings,
+                            &mut invalid,
+                        ) {
+                            dependencies.push((dependency_path, name.to_owned(), condition));
+                        }
                     }
-                    None => findings.push(ComposeFinding::invalid(
-                        path.clone(),
-                        "dependency keys must be strings",
-                    )),
+                    None => {
+                        invalid = true;
+                        findings.push(ComposeFinding::invalid(
+                            path.clone(),
+                            "dependency keys must be strings",
+                        ));
+                    }
                 }
             }
         }
@@ -460,44 +481,56 @@ fn parse_depends_on(
         }
     }
 
-    let mut service_ids = Vec::with_capacity(names.len());
-    for (name_path, name) in names {
+    let mut parsed = Vec::with_capacity(dependencies.len());
+    for (name_path, name, condition) in dependencies {
         match ServiceId::try_new(name) {
-            Ok(service_id) => service_ids.push(service_id),
-            Err(error) => findings.push(ComposeFinding::invalid(
-                name_path,
-                format!("invalid service id: {error}"),
-            )),
+            Ok(service_id) => parsed.push(ServiceDependency {
+                service_id,
+                condition,
+            }),
+            Err(error) => {
+                invalid = true;
+                findings.push(ComposeFinding::invalid(
+                    name_path,
+                    format!("invalid service id: {error}"),
+                ));
+            }
         }
     }
 
-    if findings.is_empty() {
-        Ok(service_ids)
-    } else {
+    if invalid {
         Err(findings)
+    } else {
+        Ok((parsed, findings))
     }
 }
 
-fn validate_dependency_options(
+fn parse_dependency_options(
     value: Value,
     path: &ComposePath,
     findings: &mut Vec<ComposeFinding>,
-) {
+    invalid: &mut bool,
+) -> Option<DependencyCondition> {
+    if matches!(value, Value::Null) {
+        return Some(DependencyCondition::Started);
+    }
     let Value::Mapping(options) = value else {
-        if !matches!(value, Value::Null) {
-            findings.push(ComposeFinding::invalid(
-                path.clone(),
-                "dependency options must be a mapping",
-            ));
-        }
-        return;
+        *invalid = true;
+        findings.push(ComposeFinding::invalid(
+            path.clone(),
+            "dependency options must be a mapping",
+        ));
+        return None;
     };
+    let mut condition = Some(DependencyCondition::Started);
     for (key, value) in options {
         let Some(key) = key.as_str() else {
             findings.push(ComposeFinding::invalid(
                 path.clone(),
                 "dependency option names must be strings",
             ));
+            *invalid = true;
+            condition = None;
             continue;
         };
         let option_path = path.field(key);
@@ -505,13 +538,28 @@ fn validate_dependency_options(
             findings.push(ComposeFinding::unknown(option_path));
             continue;
         }
-        if value.as_str() != Some("service_started") {
-            findings.push(ComposeFinding::invalid(
-                option_path,
-                "only the service_started dependency condition is supported",
-            ));
-        }
+        condition = match value.as_str() {
+            Some("service_started") => Some(DependencyCondition::Started),
+            Some("service_healthy") => Some(DependencyCondition::Healthy),
+            Some("service_completed_successfully") => {
+                *invalid = true;
+                findings.push(ComposeFinding::invalid(
+                    option_path,
+                    "service_completed_successfully dependencies are not supported",
+                ));
+                None
+            }
+            _ => {
+                *invalid = true;
+                findings.push(ComposeFinding::invalid(
+                    option_path,
+                    "dependency condition must be service_started, service_healthy, or service_completed_successfully",
+                ));
+                None
+            }
+        };
     }
+    condition
 }
 
 fn parse_pre_start(
@@ -1756,7 +1804,10 @@ fn protocol_port(protocol: RouteProtocol) -> RoutePort {
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::deploy::{ContainerEntrypoint, StopGracePeriod};
+    use ployz_core::deploy::{
+        ContainerEntrypoint, DependencyCondition, ServiceDependency, StopGracePeriod,
+    };
+    use ployz_core::ids::ServiceId;
 
     use super::{parse_compose_duration, parse_depends_on, parse_pre_start};
     use crate::compose::diagnostics::{ComposePath, UnsupportedFieldMode};
@@ -1777,17 +1828,94 @@ mod tests {
     }
 
     #[test]
-    fn depends_on_rejects_non_ordering_options() {
-        let value = serde_yaml::from_str("database: { condition: service_healthy, restart: true }")
-            .expect("valid yaml");
+    fn depends_on_maps_started_and_healthy_conditions() {
+        let short = serde_yaml::from_str("[database]").expect("valid yaml");
+        let (short_dependencies, short_findings) =
+            parse_depends_on(Some(short), &ComposePath::root().field("depends_on"))
+                .expect("short dependency parses");
+        assert!(short_findings.is_empty());
+        assert_eq!(
+            short_dependencies,
+            vec![ServiceDependency {
+                service_id: ServiceId::try_new("database").expect("valid service id"),
+                condition: DependencyCondition::Started,
+            }]
+        );
+
+        let value = serde_yaml::from_str(
+            "database: { condition: service_healthy }\ncache: { condition: service_started }\nqueue:",
+        )
+        .expect("valid yaml");
+        let (dependencies, findings) =
+            parse_depends_on(Some(value), &ComposePath::root().field("depends_on"))
+                .expect("supported dependencies parse");
+
+        assert!(findings.is_empty());
+        assert_eq!(
+            dependencies,
+            vec![
+                ServiceDependency {
+                    service_id: ServiceId::try_new("database").expect("valid service id"),
+                    condition: DependencyCondition::Healthy,
+                },
+                ServiceDependency {
+                    service_id: ServiceId::try_new("cache").expect("valid service id"),
+                    condition: DependencyCondition::Started,
+                },
+                ServiceDependency {
+                    service_id: ServiceId::try_new("queue").expect("valid service id"),
+                    condition: DependencyCondition::Started,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn depends_on_rejects_completion_and_reports_non_condition_options() {
+        let value = serde_yaml::from_str(
+            "database: { condition: service_completed_successfully, restart: true }",
+        )
+        .expect("valid yaml");
         let findings = parse_depends_on(Some(value), &ComposePath::root().field("depends_on"))
-            .expect_err("non-ordering dependency options are rejected");
+            .expect_err("completion dependencies cannot be weakened to started");
 
         let [condition, restart] = findings.as_slice() else {
             panic!("expected condition and restart findings");
         };
         assert_eq!(condition.path.render(), "depends_on.database.condition");
         assert_eq!(restart.path.render(), "depends_on.database.restart");
+    }
+
+    #[test]
+    fn completed_dependencies_are_rejected_in_strict_and_allow_unsupported_modes() {
+        let source = r#"
+            name: default
+            services:
+              database:
+                image: postgres:17
+              api:
+                image: api:latest
+                depends_on:
+                  database:
+                    condition: service_completed_successfully
+        "#;
+
+        for mode in [
+            UnsupportedFieldMode::Strict,
+            UnsupportedFieldMode::AllowUnsupported,
+        ] {
+            assert!(
+                parse_deploy_file(ComposeInput {
+                    source,
+                    base_dir: std::path::Path::new("."),
+                    interpolation_env: std::collections::BTreeMap::new(),
+                    namespace_override: None,
+                    mode,
+                })
+                .is_err(),
+                "completion gating must never be weakened to started"
+            );
+        }
     }
 
     #[test]

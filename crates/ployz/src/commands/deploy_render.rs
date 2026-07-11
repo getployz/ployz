@@ -131,7 +131,7 @@ impl DeployTree {
                         ));
                     }
                 }
-                for service in &plan.services {
+                for service in plan.phases.iter().flat_map(|phase| &phase.services) {
                     for step in &service.steps {
                         if let DeployPlanStep::UseExistingContainer {
                             machine_id, slot, ..
@@ -230,6 +230,8 @@ impl DeployTree {
                 }
             }
             OperationEvent::DeployHealthCheckStarted { operation_id: _ } => {}
+            OperationEvent::DeployPhaseStarted { .. }
+            | OperationEvent::DeployPhaseFinished { .. } => {}
             OperationEvent::DeployCleanupFinished {
                 operation_id,
                 removed,
@@ -378,7 +380,7 @@ impl DeployTree {
     fn nth_run_step(&self, wanted: usize) -> Option<(&str, &str, u16)> {
         let plan = self.plan()?;
         let mut index = 0;
-        for service in &plan.services {
+        for service in plan.phases.iter().flat_map(|phase| &phase.services) {
             for step in &service.steps {
                 match step {
                     DeployPlanStep::RunContainer { machine_id, slot } if index == wanted => {
@@ -401,8 +403,9 @@ impl DeployTree {
             return;
         };
         let lines = plan
-            .services
+            .phases
             .iter()
+            .flat_map(|phase| &phase.services)
             .flat_map(|service| {
                 service.steps.iter().filter_map(|step| match step {
                     DeployPlanStep::RunContainer { machine_id, slot } => Some(format!(
@@ -549,7 +552,7 @@ pub(crate) fn render_frame(tree: &DeployTree) -> String {
     let mut groups = vec![("images".to_owned(), render_image_lines(tree, target))];
     if let Some(plan) = tree.plan() {
         let mut run_index = 0;
-        for service in &plan.services {
+        for service in plan.phases.iter().flat_map(|phase| &phase.services) {
             let mut lines = Vec::new();
             for step in &service.steps {
                 lines.push(render_service_step(

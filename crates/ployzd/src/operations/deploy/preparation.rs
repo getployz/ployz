@@ -139,12 +139,20 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         .collect::<Vec<_>>();
     let mut services = Vec::new();
     for service_request in service_requests {
-        let prepared = prepare_deploy(DeployPreparationInput {
+        let mut prepared = prepare_deploy(DeployPreparationInput {
             request: service_request,
             eligible_machines: facts.eligible_machines.clone(),
             draining_machines: draining_machines.clone(),
             observed_machines: facts.observed_machines.clone(),
         });
+        let is_promoted = facts.namespace_serving_entries.iter().any(|entry| {
+            entry.namespace_id == prepared.request.namespace_id
+                && entry.service_id == prepared.request.service_id
+                && entry.namespace_revision_entry_id == prepared.request.namespace_revision_entry_id
+        });
+        if !is_promoted {
+            prepared.existing_replicas.clear();
+        }
         let mut route_commits = prepared.route_commits;
         route_commits.extend(
             declared_auto_bindings

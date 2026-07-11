@@ -3,7 +3,7 @@ use ployz_core::ops::RouteTarget;
 use ployz_core::state::{
     GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation, RouteBindingState,
 };
-use ployz_core::subjects::{gateway_status, machine_facts};
+use ployz_core::subjects::{INTENT_CHANGED, gateway_status, machine_facts};
 use ployz_test_support::ids::{machine_id, namespace_id, route_hostname, route_port, service_id};
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
@@ -73,6 +73,49 @@ async fn dns_process_applies_route_changes_on_next_poll() {
     runtime.shutdown().await;
 }
 
+#[tokio::test]
+async fn intent_invalidation_wakes_dns_refresh_before_poll_interval() {
+    let nats = TestNats::start().await;
+    let _intent = nats
+        .start_intent_with_interval(Duration::from_secs(60))
+        .await;
+    let runtime = start_dns_process_with_client(
+        nats.dns_client.clone(),
+        machine_id("dns_machine"),
+        Duration::from_secs(60),
+        None,
+        None,
+    )
+    .await
+    .expect("dns runtime starts");
+    wait_until(Duration::from_secs(2), || {
+        runtime.health().last_attempt.is_some()
+    })
+    .await;
+
+    nats.commit_route("api.example.com").await;
+    nats.publish_serving_gateway("gateway_1", [203, 0, 113, 10])
+        .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    nats.connected
+        .controller
+        .publish(INTENT_CHANGED, Vec::new().into())
+        .await
+        .expect("intent invalidation publishes");
+    nats.connected
+        .controller
+        .flush()
+        .await
+        .expect("intent invalidation flushes");
+
+    wait_until(Duration::from_secs(2), || {
+        dns_serves_answer(&runtime, "api.example.com", "203.0.113.10")
+    })
+    .await;
+
+    runtime.shutdown().await;
+}
+
 fn dns_serves_answer(runtime: &RunningDnsProcess, hostname: &str, answer: &str) -> bool {
     runtime.served_projection().is_some_and(|projection| {
         matches!(
@@ -113,6 +156,11 @@ impl TestNats {
     }
 
     async fn start_intent(&self) -> RunningIntentService {
+        self.start_intent_with_interval(Duration::from_millis(10))
+            .await
+    }
+
+    async fn start_intent_with_interval(&self, publish_interval: Duration) -> RunningIntentService {
         start_intent_service(
             self.connected.controller.clone(),
             machine_id("machine_a"),
@@ -125,7 +173,7 @@ impl TestNats {
             ployzd::core_store::CoreStore::open_in_memory()
                 .await
                 .expect("core store opens"),
-            Duration::from_millis(10),
+            publish_interval,
         )
         .await
         .expect("intent runtime starts")

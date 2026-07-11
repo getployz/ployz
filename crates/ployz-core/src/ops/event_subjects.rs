@@ -37,6 +37,8 @@ impl OperationEvent {
                 container_id.as_str()
             ),
             Self::DeployHealthCheckStarted { .. } => "deploy.health_check.started".to_owned(),
+            Self::DeployPhaseStarted { phase, .. } => format!("deploy.phase.{phase}.started"),
+            Self::DeployPhaseFinished { phase, .. } => format!("deploy.phase.{phase}.finished"),
             Self::DeployCleanupFinished { .. } => "deploy.cleanup.finished".to_owned(),
             Self::DeployCompleted { .. } => "deploy.completed".to_owned(),
             Self::DeployFailed { .. } => "deploy.failed".to_owned(),

@@ -4,7 +4,9 @@ use ployz_core::dataplane::{
     PloyzNativeMeshComponent, PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport,
     PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
 };
-use ployz_core::deploy::{DeployOrigin, DeployOriginError, DeployRequest};
+use ployz_core::deploy::{
+    DependencyCondition, DeployOrigin, DeployOriginError, DeployRequest, ServiceDependency,
+};
 use ployz_core::ops::{
     ArtifactUnavailableReason, ControlPlaneCommitScope, DeployFailureClass, DeployOperationFailure,
     DeployOperationState, DeployRunningStage, EventSequence, HealthCheckFailure,
@@ -604,6 +606,27 @@ fn deploy_origin_round_trips_on_request_and_status() {
     assert_eq!(
         serde_json::from_str::<OperationStatus>(&status_json).expect("status deserializes"),
         status
+    );
+}
+
+#[test]
+fn service_dependency_conditions_have_explicit_wire_values() {
+    let started = ServiceDependency {
+        service_id: service_id("database"),
+        condition: DependencyCondition::Started,
+    };
+    let healthy = ServiceDependency {
+        service_id: service_id("cache"),
+        condition: DependencyCondition::Healthy,
+    };
+
+    assert_eq!(
+        serde_json::to_string(&[started, healthy]).expect("dependencies serialize"),
+        r#"[{"service_id":"database","condition":"started"},{"service_id":"cache","condition":"healthy"}]"#
+    );
+    assert!(
+        serde_json::from_str::<ServiceDependency>(r#"{"service_id":"database"}"#).is_err(),
+        "the core wire contract must not imply a dependency condition"
     );
 }
 

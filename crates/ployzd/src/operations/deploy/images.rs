@@ -60,8 +60,9 @@ where
             });
         };
         let Some(machine_id) = provisional_plan
-            .services
+            .phases
             .iter()
+            .flat_map(|phase| &phase.services)
             .find(|plan| plan.service_id == target.service_id)
             .and_then(|plan| plan.steps.first())
             .map(|step| match step {
@@ -162,6 +163,14 @@ where
     N: MachineContainerRuntime,
 {
     for service in command.services() {
+        let Some(service_plan) = plan
+            .phases
+            .iter()
+            .flat_map(|phase| &phase.services)
+            .find(|plan| plan.service_id == service.request.service_id)
+        else {
+            continue;
+        };
         let ImageSource::PushedToSeed {
             seed,
             manifest_digest,
@@ -191,13 +200,6 @@ where
             }),
         })?
         .map_err(|error| ensure_image_failure(service, seed, manifest_digest, error))?;
-        let Some(service_plan) = plan
-            .services
-            .iter()
-            .find(|plan| plan.service_id == service.request.service_id)
-        else {
-            continue;
-        };
         for step in &service_plan.steps {
             let machine_id = match step {
                 DeployPlanStep::UseExistingContainer { machine_id, .. }

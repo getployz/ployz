@@ -10,8 +10,8 @@ use ployz_sdk_types::{
     CloudFounderBootstrapResult, CoreReplaceError, CoreReplaceReportError,
     CoreReplaceReportRequest, CoreReplaceReported, CoreReplaceRequest, CredentialAddError,
     CredentialAddRequest, CredentialListError, CredentialListRequest, CredentialListResult,
-    CredentialRemoveError, CredentialRemoveRequest, DeployOperationState, DeployRequest,
-    DeployReservationId, DeployReserveError, DeployReserveRequest, DeployReserved,
+    CredentialRemoveError, CredentialRemoveRequest, DependencyCondition, DeployOperationState,
+    DeployRequest, DeployReservationId, DeployReserveError, DeployReserveRequest, DeployReserved,
     DeployRunningStage, DeployServiceSpec, DeploySubmitError, DeploySubmitRequest,
     DeploySubmitResponse, EventSequence, EventSequenceError, ImageReference, ImageReferenceError,
     InitFirstMachineActivateError, InitFirstMachineActivateRequest, InitFirstMachineActivated,
@@ -35,10 +35,11 @@ use ployz_sdk_types::{
     OperationSubject, OpsListError, OpsListRequest, OpsListResult, OpsStatusError,
     OpsStatusRequest, OpsStatusResponse, OpsWatchResponse, ReplicaCount, ReplicaCountError,
     RouteHostname, RouteHostnameError, RoutePort, RoutePortError, RuntimeSnapshotError,
-    RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceId, ServiceInspectError,
-    ServiceInspectRequest, ServiceListError, ServiceListRequest, ServiceListResult,
-    ServiceRestartError, ServiceRestartRequest, ServiceSnapshot, SubjectTokenError,
-    VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
+    RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceDependency, ServiceId,
+    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
+    ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
+    SubjectTokenError, VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError,
+    VolumeRemoveRequest,
     operation_api::{
         CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi, CredentialListApi,
         CredentialRemoveApi, DeployReserveApi, DeploySubmitApi, InitFirstMachineActivateApi,
@@ -86,6 +87,10 @@ fn sdk_exports_core_wire_types() {
         limit: OperationEventReplayLimit::try_new(100).expect("valid replay limit"),
     };
     let replay_page = OperationEventReplayPage::caught_up(Vec::new());
+    let dependency = ServiceDependency {
+        service_id: ServiceId::try_new("svc_database").expect("valid service id"),
+        condition: DependencyCondition::Healthy,
+    };
 
     assert_eq!(
         serde_json::to_string(&subject).expect("subject serializes"),
@@ -105,6 +110,10 @@ fn sdk_exports_core_wire_types() {
     );
     assert_eq!(replay_request.limit.get(), 100);
     assert_eq!(replay_page.cursor, OperationEventReplayCursor::CaughtUp);
+    assert_eq!(
+        serde_json::to_string(&dependency).expect("dependency serializes"),
+        r#"{"service_id":"svc_database","condition":"healthy"}"#
+    );
 }
 
 #[test]

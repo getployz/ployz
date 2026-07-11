@@ -27,11 +27,11 @@ use ployz::image_push::{prepare_deploy_images, push_local_image};
 use ployz_core::dataplane::{DEFAULT_WIREGUARD_LISTEN_PORT, DataplaneMember};
 use ployz_core::deploy::{
     ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerMountPath,
-    ContainerResourceLimits, ContainerRestartPolicy, ContainerRuntimeSpec, DeployRequest,
-    DeployRoute, DeployRouteTarget, DeployServiceSpec, EnvName, EnvValue, HealthcheckDurationNanos,
-    HealthcheckRetries, HealthcheckShellCommand, ImageReference, LinuxCapability, MemoryBytes,
-    NanoCpus, PidsLimit, PreStartHook, RegistryCredential, ReplicaCount, ServiceEnvironment,
-    ServiceVolumeMount, VolumeName,
+    ContainerResourceLimits, ContainerRestartPolicy, ContainerRuntimeSpec, DependencyCondition,
+    DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, EnvName, EnvValue,
+    HealthcheckDurationNanos, HealthcheckRetries, HealthcheckShellCommand, ImageReference,
+    LinuxCapability, MemoryBytes, NanoCpus, PidsLimit, PreStartHook, RegistryCredential,
+    ReplicaCount, ServiceDependency, ServiceEnvironment, ServiceVolumeMount, VolumeName,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::machine::{
@@ -738,11 +738,17 @@ async fn scenario_services_start_in_depends_on_order() {
             panic!("dependency deploy must record its plan: {events:?}");
         };
         assert_eq!(
-            plan.services
+            plan.phases
                 .iter()
-                .map(|service| service.service_id.clone())
+                .map(|phase| {
+                    phase
+                        .services
+                        .iter()
+                        .map(|service| service.service_id.clone())
+                        .collect::<Vec<_>>()
+                })
                 .collect::<Vec<_>>(),
-            vec![service_id("a"), service_id("b")]
+            vec![vec![service_id("a")], vec![service_id("b")]]
         );
     })
     .await;
@@ -2439,6 +2445,33 @@ fn depends_on_deploy_target() -> DeployRequest {
         );
         runtime
     };
+    let dependent = || {
+        let mut runtime = sleeper();
+        runtime.command = Some(
+            ContainerCommand::try_new(vec![
+                "sh".to_owned(),
+                "-c".to_owned(),
+                "until nslookup a.depends_on_order.internal; do sleep 0.1; done; touch /tmp/dependency-resolved; sleep 600".to_owned(),
+            ])
+            .expect("valid dependent command"),
+        );
+        runtime.healthcheck = Some(ContainerHealthcheck {
+            test: ContainerHealthcheckTest::Shell(
+                HealthcheckShellCommand::try_new("test -f /tmp/dependency-resolved")
+                    .expect("valid dependency healthcheck"),
+            ),
+            interval: Some(
+                HealthcheckDurationNanos::try_new(100_000_000).expect("valid healthcheck interval"),
+            ),
+            timeout: Some(
+                HealthcheckDurationNanos::try_new(1_000_000_000)
+                    .expect("valid healthcheck timeout"),
+            ),
+            retries: Some(HealthcheckRetries::try_new(50).expect("valid healthcheck retries")),
+            start_period: None,
+        });
+        runtime
+    };
     DeployRequest {
         namespace_id: namespace_id("depends_on_order"),
         origin: None,
@@ -2448,9 +2481,12 @@ fn depends_on_deploy_target() -> DeployRequest {
                 image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image"),
                 image_source: ployz_core::deploy::ImageSource::Registry,
                 replicas: ReplicaCount::try_new(1).expect("valid replica count"),
-                runtime: sleeper(),
+                runtime: dependent(),
                 pre_start: None,
-                depends_on: vec![service_id("a")],
+                depends_on: vec![ServiceDependency {
+                    service_id: service_id("a"),
+                    condition: DependencyCondition::Started,
+                }],
                 routes: Vec::new(),
             },
             DeployServiceSpec {

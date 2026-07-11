@@ -51,6 +51,36 @@ pub enum DeployCompletionOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "result", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeployServiceResult {
+    Completed {
+        service_id: ServiceId,
+    },
+    Failed {
+        service_id: ServiceId,
+        failure: DeployOperationFailure,
+    },
+    Skipped {
+        service_id: ServiceId,
+    },
+    Unchanged {
+        service_id: ServiceId,
+    },
+    Removed {
+        service_id: ServiceId,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum DeployPhaseOutcome {
+    Promoted,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployOperationState {
     Accepted,
@@ -587,6 +617,15 @@ pub enum DeployEvidence {
         container_id: ContainerId,
     },
     HealthCheckStarted,
+    PhaseStarted {
+        phase: u16,
+        service_ids: Vec<ServiceId>,
+    },
+    PhaseFinished {
+        phase: u16,
+        outcome: DeployPhaseOutcome,
+        services: Vec<DeployServiceResult>,
+    },
     CleanupFinished {
         removed: Vec<DeployCleanupContainer>,
         failed: Vec<DeployCleanupFailure>,
@@ -645,6 +684,21 @@ impl DeployEvidence {
             Self::HealthCheckStarted => OperationEvent::DeployHealthCheckStarted {
                 operation_id: operation_id.clone(),
             },
+            Self::PhaseStarted { phase, service_ids } => OperationEvent::DeployPhaseStarted {
+                operation_id: operation_id.clone(),
+                phase: *phase,
+                service_ids: service_ids.clone(),
+            },
+            Self::PhaseFinished {
+                phase,
+                outcome,
+                services,
+            } => OperationEvent::DeployPhaseFinished {
+                operation_id: operation_id.clone(),
+                phase: *phase,
+                outcome: *outcome,
+                services: services.clone(),
+            },
             Self::CleanupFinished { removed, failed } => OperationEvent::DeployCleanupFinished {
                 operation_id: operation_id.clone(),
                 removed: removed.clone(),
@@ -667,6 +721,7 @@ pub(super) enum DeployEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EvidenceRequirement {
     Planning,
+    Running,
     RunningStage(DeployRunningStage),
     Cleanup,
 }
@@ -688,6 +743,8 @@ const fn evidence_requirement(evidence: &DeployEvidence) -> EvidenceRequirement 
         DeployEvidence::HealthCheckStarted => {
             EvidenceRequirement::RunningStage(DeployRunningStage::WaitingForHealth)
         }
+        DeployEvidence::PhaseStarted { .. } => EvidenceRequirement::Running,
+        DeployEvidence::PhaseFinished { .. } => EvidenceRequirement::Running,
         DeployEvidence::CleanupFinished { .. } => EvidenceRequirement::Cleanup,
     }
 }
@@ -701,6 +758,7 @@ pub fn validate_fresh_deploy_evidence(
     };
     let valid = match evidence_requirement(evidence) {
         EvidenceRequirement::Planning => matches!(state, DeployOperationState::Planning),
+        EvidenceRequirement::Running => matches!(state, DeployOperationState::Running { .. }),
         EvidenceRequirement::RunningStage(stage) => {
             evidence_is_current_or_past_running_stage(state, stage)
         }
@@ -731,18 +789,15 @@ fn evidence_is_current_or_past_running_stage(
 }
 
 fn cleanup_evidence_is_valid(state: &DeployOperationState) -> bool {
-    matches!(
-        state,
-        DeployOperationState::Running {
-            stage: DeployRunningStage::ServingTargetCommit
-                | DeployRunningStage::RemovingSupersededContainers
-        }
-    )
+    matches!(state, DeployOperationState::Running { .. })
 }
 
 fn evidence_required_state(evidence: &DeployEvidence) -> DeployOperationState {
     match evidence_requirement(evidence) {
         EvidenceRequirement::Planning => DeployOperationState::Planning,
+        EvidenceRequirement::Running => DeployOperationState::Running {
+            stage: DeployRunningStage::StartingContainers,
+        },
         EvidenceRequirement::RunningStage(stage) => DeployOperationState::Running { stage },
         EvidenceRequirement::Cleanup => DeployOperationState::Running {
             stage: DeployRunningStage::RemovingSupersededContainers,
@@ -823,6 +878,10 @@ pub(super) fn project_event(
             // is already satisfied.
             let records = match evidence_requirement(&evidence) {
                 EvidenceRequirement::Planning => !matches!(state, DeployOperationState::Accepted),
+                EvidenceRequirement::Running => matches!(
+                    state,
+                    DeployOperationState::Running { .. } | DeployOperationState::Completed { .. }
+                ),
                 EvidenceRequirement::RunningStage(required) => {
                     evidence_is_current_or_past_running_stage(state, required)
                         || matches!(state, DeployOperationState::Completed { .. })

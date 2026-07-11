@@ -9,7 +9,12 @@
         "command": null,
         "entrypoint": null,
         "environment": {},
-        "stop_grace_period": 10
+        "stop_grace_period": 10,
+        "healthcheck": {
+          "test": {
+            "shell": "true"
+          }
+        }
       }
     },
     {
@@ -30,7 +35,10 @@
         ]
       },
       "depends_on": [
-        "first"
+        {
+          "service_id": "first",
+          "condition": "healthy"
+        }
       ]
     }
   ]

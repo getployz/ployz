@@ -124,6 +124,12 @@ pub trait CertificateProvisioner {
 /// and serving-target entries) goes through this seam, fenced by the
 /// Namespace Lock in the production adapter.
 pub trait NamespaceStateCommitter {
+    fn commit_deploy_phase(
+        &mut self,
+        route_bindings: Vec<RouteBindingState>,
+        serving_target_entries: Vec<ServingTargetEntry>,
+    ) -> impl Future<Output = Result<(), NamespaceCommitError>> + Send;
+
     fn replace_route_binding(
         &mut self,
         state: RouteBindingState,

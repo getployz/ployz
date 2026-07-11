@@ -259,6 +259,31 @@ impl NamespaceIntentCommitter {
 }
 
 impl NamespaceStateCommitter for NamespaceIntentCommitter {
+    async fn commit_deploy_phase(
+        &mut self,
+        route_bindings: Vec<ployz_core::state::RouteBindingState>,
+        serving_target_entries: Vec<ployz_core::state::ServingTargetEntry>,
+    ) -> Result<(), NamespaceCommitError> {
+        let scope = serving_target_entries
+            .first()
+            .map(
+                |entry| ployz_core::ops::ControlPlaneCommitScope::ServiceEntry {
+                    service_id: entry.service_id.clone(),
+                    namespace_revision_entry_id: entry.namespace_revision_entry_id.clone(),
+                },
+            )
+            .expect("a deploy phase always has at least one serving target entry");
+        self.namespace_intent
+            .commit_deploy_phase(route_bindings, serving_target_entries)
+            .await
+            .map_err(|error| NamespaceCommitError::ServingTargetStore {
+                scope,
+                message: error.to_string(),
+            })?;
+        self.publish_intent_changed().await;
+        Ok(())
+    }
+
     async fn replace_route_binding(
         &mut self,
         state: ployz_core::state::RouteBindingState,

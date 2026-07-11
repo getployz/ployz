@@ -37,8 +37,8 @@ A deploy unit derived from dependencies between services in a namespace revision
 _Avoid_: Manual phase, route promotion phase
 
 **Service Dependency**:
-A deploy-input relationship that requires one service to be planned before another service. Service dependencies help derive phases; they are not durable workflow state and do not carry Compose lifecycle conditions as core semantics.
-_Avoid_: Workflow dependency, runtime dependency, Compose condition
+A typed deploy-input relationship that requires one service to pass a named `started` or `healthy` creation condition before a dependent service's phase can run. Service dependencies derive phases and are not durable workflow state; `started` still waits for the dependency service's own creation gate, while `healthy` requires an executable healthcheck.
+_Avoid_: Workflow dependency, runtime dependency, untyped ordering edge, Compose completion condition
 
 **Pre-Start Hook**:
 A one-off command attached to a service that runs before starting new service containers for that service when the deploy plan includes run or replace work. It must complete successfully before the deploy phase can continue; on failure, the hook container is retained as failed deploy evidence.

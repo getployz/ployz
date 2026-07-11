@@ -6,9 +6,9 @@ use ployz_core::dataplane::DataplaneMember;
 use ployz_core::deploy::{ContainerCommand, ContainerRestartPolicy, ReplicaCount};
 use ployz_core::machine_runtime::ManagedContainerKind;
 use ployz_core::ops::{
-    CertificateProvisionFailure, DeployCompletionOutcome, DeployOperationFailure,
-    DeployRunningStage, DeployTransition, FailureMessage, PreStartHookFailure, RouteHostname,
-    RouteTarget,
+    CertificateProvisionFailure, DeployCompletionOutcome, DeployEvidence, DeployOperationFailure,
+    DeployPhaseOutcome, DeployRunningStage, DeployServiceResult, DeployTransition, FailureMessage,
+    PreStartHookFailure, RouteHostname, RouteTarget,
 };
 use ployz_core::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
 use ployz_test_support::ids::{failure_message, namespace_id};
@@ -191,6 +191,196 @@ async fn deploy_worker_runs_containers_then_completes() {
     assert_eq!(first_request.container.step_id.as_str(), "run_1");
     assert_eq!(*second_machine_id, machine_id("machine_b"));
     assert_eq!(second_request.container.step_id.as_str(), "run_2");
+}
+
+#[tokio::test]
+async fn deploy_promotes_each_dependency_phase_before_starting_the_next() {
+    let mut recorder = RecordingOperations::default();
+    let mut dataplane = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_database", "ctr_web"]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        phased_deploy_command(&["svc_database", "svc_web"]),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            dataplane: &mut dataplane,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("phased deploy succeeds");
+
+    assert_eq!(namespace_state.phase_requests.len(), 2);
+    assert!(matches!(
+        recorder.phase_records.as_slice(),
+        [
+            DeployEvidence::PhaseStarted { phase: 1, .. },
+            DeployEvidence::PhaseFinished {
+                phase: 1,
+                outcome: DeployPhaseOutcome::Promoted,
+                ..
+            },
+            DeployEvidence::PhaseStarted { phase: 2, .. },
+            DeployEvidence::PhaseFinished {
+                phase: 2,
+                outcome: DeployPhaseOutcome::Promoted,
+                ..
+            }
+        ]
+    ));
+}
+
+#[tokio::test]
+async fn reused_promoted_dependency_is_unchanged_and_not_regated() {
+    let mut recorder = RecordingOperations::default();
+    let mut dataplane = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_web"]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        phased_deploy_with_reused_dependency(),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            dataplane: &mut dataplane,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("reused dependency deploy succeeds");
+
+    assert_eq!(runtime.requests.len(), 1);
+    assert_eq!(health.checked.len(), 1);
+    let Some(dependency_result) = recorder.phase_records.get(1) else {
+        panic!("dependency phase result is recorded");
+    };
+    assert!(matches!(
+        dependency_result,
+        DeployEvidence::PhaseFinished {
+            services,
+            ..
+        } if services == &vec![DeployServiceResult::Unchanged {
+            service_id: service_id("svc_database")
+        }]
+    ));
+}
+
+#[tokio::test]
+async fn healthy_dependency_without_healthcheck_fails_before_runtime_mutation() {
+    let mut recorder = RecordingOperations::default();
+    let mut dataplane = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::with_containers([]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        invalid_healthy_dependency_command(),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            dataplane: &mut dataplane,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect_err("invalid healthy dependency is rejected");
+
+    assert!(dataplane.requests.is_empty());
+    assert!(runtime.requests.is_empty());
+    assert!(runtime.stops.is_empty());
+    assert!(namespace_state.phase_requests.is_empty());
+}
+
+#[tokio::test]
+async fn same_phase_failure_cleans_successes_and_promotes_nothing() {
+    let mut recorder = RecordingOperations::default();
+    let mut dataplane = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::failing_after_first_container();
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        same_phase_deploy_command(&["svc_a", "svc_b"]),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            dataplane: &mut dataplane,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect_err("second service fails");
+
+    assert!(namespace_state.phase_requests.is_empty());
+    assert_eq!(runtime.stops.len(), 1);
+    assert_eq!(runtime.removals.len(), 1);
+    assert!(matches!(
+        recorder.phase_records.last(),
+        Some(DeployEvidence::PhaseFinished {
+            outcome: DeployPhaseOutcome::Failed,
+            services,
+            ..
+        }) if matches!(services.as_slice(), [
+            DeployServiceResult::Skipped { .. },
+            DeployServiceResult::Failed { .. }
+        ])
+    ));
+}
+
+#[tokio::test]
+async fn later_phase_failure_records_partial_outcome_and_skips_remaining_services() {
+    let mut recorder = RecordingOperations::default();
+    let mut dataplane = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::failing_after_first_container();
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        phased_deploy_command(&["svc_database", "svc_web", "svc_worker"]),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            dataplane: &mut dataplane,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect_err("second phase fails");
+
+    assert_eq!(namespace_state.phase_requests.len(), 1);
+    assert!(runtime.stops.is_empty());
+    assert!(runtime.removals.is_empty());
+    assert!(matches!(
+        recorder.records.last(),
+        Some(RecordedOperation::Transition(DeployTransition::Completed {
+            outcome: DeployCompletionOutcome::PartiallyCompleted
+        }))
+    ));
+    assert!(matches!(
+        recorder.phase_records.last(),
+        Some(DeployEvidence::PhaseFinished {
+            phase: 2,
+            outcome: DeployPhaseOutcome::Failed,
+            services,
+        }) if matches!(services.as_slice(), [
+            DeployServiceResult::Failed { .. },
+            DeployServiceResult::Skipped { .. }
+        ])
+    ));
 }
 
 #[tokio::test]
@@ -905,34 +1095,22 @@ async fn deploy_worker_records_failure_when_container_run_fails() {
     ));
     assert_eq!(runtime.requests.len(), 2);
     assert!(namespace_state.serving_requests.is_empty());
-    assert_eq!(
-        recorder.records,
-        vec![
-            RecordedOperation::Transition(DeployTransition::Planning),
-            RecordedOperation::PlanCreated { replica_count: 2 },
-            RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::PreparingDataplane,
-            }),
-            RecordedOperation::DataplanePrepared { machine_count: 2 },
-            RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::StartingContainers,
-            }),
-            RecordedOperation::ContainerStarted {
-                machine_id: machine_id("machine_a"),
-                container_id: container_id("ctr_1"),
-            },
-            RecordedOperation::Transition(DeployTransition::Failed {
-                failure: DeployOperationFailure::RuntimeUnavailable {
-                    machine_id: machine_id("machine_b"),
-                    message: ployz_core::ops::FailureMessage::try_new(
-                        "machine runtime request failed: synthetic runtime failure",
-                    )
-                    .expect("valid failure message"),
-                    retained_artifacts: vec![retained_container("machine_a", "ctr_1")],
-                }
-            }),
-        ]
-    );
+    assert_eq!(runtime.stops.len(), 1);
+    assert_eq!(runtime.removals.len(), 1);
+    assert!(recorder.records.iter().any(|record| matches!(
+        record,
+        RecordedOperation::CleanupFinished { removed, failed }
+            if removed.len() == 1 && failed.is_empty()
+    )));
+    assert!(matches!(
+        recorder.records.last(),
+        Some(RecordedOperation::Transition(DeployTransition::Failed {
+            failure: DeployOperationFailure::RuntimeUnavailable {
+                retained_artifacts,
+                ..
+            }
+        })) if retained_artifacts.is_empty()
+    ));
 }
 
 #[tokio::test]
@@ -990,28 +1168,12 @@ async fn deploy_worker_retains_created_container_when_start_fails() {
         vec![retained_created_container("machine_a", "ctr_created")]
     );
     assert!(namespace_state.serving_requests.is_empty());
-    assert_eq!(
-        runtime.stops,
-        runtime
-            .requests
-            .iter()
-            .zip([container_id("ctr_created")])
-            .map(|((request_machine_id, request), container_id)| {
-                (
-                    request_machine_id.clone(),
-                    ployzd::roles::machine::protocol::MachineContainerStopRpcRequest {
-                        operation_id: operation_id("op_123"),
-                        container_id,
-                        expected_identity: request.container.clone(),
-                    },
-                )
-            })
-            .collect::<Vec<_>>()
-    );
+    assert!(runtime.stops.is_empty());
+    assert!(runtime.removals.is_empty());
 }
 
 #[tokio::test]
-async fn deploy_worker_reports_retained_stop_failure_in_terminal_failure() {
+async fn deploy_worker_does_not_stop_the_actual_failed_container() {
     let mut recorder = RecordingOperations::default();
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]).with_stop_failure();
@@ -1044,12 +1206,9 @@ async fn deploy_worker_reports_retained_stop_failure_in_terminal_failure() {
     };
     assert_eq!(
         retained_artifacts,
-        vec![
-            retained_container("machine_a", "ctr_1"),
-            retained_stop_failed_container("machine_a", "ctr_1"),
-        ]
+        vec![retained_container("machine_a", "ctr_1")]
     );
-    assert_eq!(runtime.stops.len(), 1);
+    assert!(runtime.stops.is_empty());
 }
 
 #[tokio::test]
@@ -1241,48 +1400,17 @@ async fn deploy_worker_waits_for_health_before_completing() {
             ..
         } if matches!(*source, DeployExecutionError::WaitHealthy(DeployHealthCheckError::Unhealthy { .. }))
     ));
-    assert_eq!(
-        recorder.records,
-        vec![
-            RecordedOperation::Transition(DeployTransition::Planning),
-            RecordedOperation::PlanCreated { replica_count: 2 },
-            RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::PreparingDataplane,
-            }),
-            RecordedOperation::DataplanePrepared { machine_count: 2 },
-            RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::StartingContainers,
-            }),
-            RecordedOperation::ContainerStarted {
-                machine_id: machine_id("machine_a"),
-                container_id: container_id("ctr_1"),
-            },
-            RecordedOperation::ContainerStarted {
-                machine_id: machine_id("machine_b"),
-                container_id: container_id("ctr_2"),
-            },
-            RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::WaitingForHealth,
-            }),
-            RecordedOperation::HealthCheckStarted,
-            RecordedOperation::Transition(DeployTransition::Failed {
-                failure: DeployOperationFailure::HealthCheckFailed {
-                    health_check: ployz_core::ops::HealthCheckFailure::ProbeFailed {
-                        machine_id: machine_id("machine_b"),
-                        container_id: container_id("ctr_2"),
-                        message: ployz_core::ops::FailureMessage::try_new("probe failed")
-                            .expect("valid failure message"),
-                        log_hint: ployz_core::ops::OperatorHint::try_new("ployz logs ctr_2")
-                            .expect("valid log hint"),
-                    },
-                    retained_artifacts: vec![
-                        retained_container("machine_a", "ctr_1"),
-                        retained_container("machine_b", "ctr_2"),
-                    ],
-                }
-            }),
-        ]
-    );
+    assert_eq!(runtime.stops.len(), 1);
+    assert_eq!(runtime.removals.len(), 1);
+    assert!(matches!(
+        recorder.records.last(),
+        Some(RecordedOperation::Transition(DeployTransition::Failed {
+            failure: DeployOperationFailure::HealthCheckFailed {
+                retained_artifacts,
+                ..
+            }
+        })) if retained_artifacts == &vec![retained_container("machine_b", "ctr_2")]
+    ));
     assert!(namespace_state.serving_requests.is_empty());
 }
 
@@ -1410,7 +1538,7 @@ async fn custom_https_certificate_failure_leaves_route_uncommitted() {
                     hostname: hostname.clone(),
                     namespace_revision_id: routed_namespace_revision_id(),
                     failure,
-                    retained_artifacts: vec![retained_container("machine_a", "ctr_1")],
+                    retained_artifacts: Vec::new(),
                 },
             }))
         );
@@ -1481,7 +1609,7 @@ async fn deploy_worker_times_out_hanging_steps() {
         Some(&RecordedOperation::Transition(DeployTransition::Failed {
             failure: DeployOperationFailure::HealthCheckFailed {
                 health_check: ployz_core::ops::HealthCheckFailure::TimedOut { timeout_seconds: 1 },
-                retained_artifacts: vec![retained_container("machine_a", "ctr_1")],
+                retained_artifacts: Vec::new(),
             }
         }))
     );
@@ -1585,41 +1713,17 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
             ..
         }
     ));
-    assert_eq!(
-        recorder.records,
-        vec![
-            RecordedOperation::Transition(DeployTransition::Planning),
-            RecordedOperation::PlanCreated { replica_count: 1 },
-            RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::PreparingDataplane,
-            }),
-            RecordedOperation::DataplanePrepared { machine_count: 1 },
-            RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::StartingContainers,
-            }),
-            RecordedOperation::ContainerStarted {
-                machine_id: machine_id("machine_a"),
-                container_id: container_id("ctr_1"),
-            },
-            RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::WaitingForHealth,
-            }),
-            RecordedOperation::HealthCheckStarted,
-            RecordedOperation::Transition(DeployTransition::Running {
-                stage: active_service_running(),
-            }),
-            RecordedOperation::Transition(DeployTransition::Failed {
-                failure: DeployOperationFailure::ControlPlaneCommitFailed {
-                    scope: ployz_core::ops::ControlPlaneCommitScope::ServiceEntry {
-                        service_id: service_id("svc_api"),
-                        namespace_revision_entry_id: target_namespace_revision_entry_id(),
-                    },
-                    message: failure_message("serving target commit timed out after 1ms"),
-                    retained_artifacts: vec![retained_container("machine_a", "ctr_1")],
-                }
-            }),
-        ]
-    );
+    assert_eq!(runtime.stops.len(), 1);
+    assert_eq!(runtime.removals.len(), 1);
+    assert!(matches!(
+        recorder.records.last(),
+        Some(RecordedOperation::Transition(DeployTransition::Failed {
+            failure: DeployOperationFailure::ControlPlaneCommitFailed {
+                retained_artifacts,
+                ..
+            }
+        })) if retained_artifacts.is_empty()
+    ));
 }
 
 #[tokio::test]
@@ -1669,7 +1773,7 @@ async fn deploy_worker_records_retained_artifacts_when_namespace_lock_is_lost_be
                     namespace_revision_entry_id: target_namespace_revision_entry_id(),
                 },
                 message: failure_message("namespace lock was lost before serving target commit"),
-                retained_artifacts: vec![retained_container("machine_a", "ctr_1")],
+                retained_artifacts: Vec::new(),
             }
         }))
     );

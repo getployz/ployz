@@ -45,7 +45,12 @@ fn failure_commit_scope(command: &DeployExecutionCommand) -> ControlPlaneCommitS
 pub(super) struct DeployExecutionFailure {
     source: DeployExecutionError,
     operation_failure: DeployOperationFailure,
-    retained_stop_targets: Vec<DeployContainer>,
+    failed_phase_cleanup_targets: Vec<DeployContainer>,
+    phase: u16,
+    phase_service_ids: Vec<ServiceId>,
+    skipped_service_ids: Vec<ServiceId>,
+    failed_service_id: ServiceId,
+    promoted_phases: u16,
 }
 
 impl DeployExecutionFailure {
@@ -68,12 +73,53 @@ impl DeployExecutionFailure {
         Self {
             source,
             operation_failure,
-            retained_stop_targets: retained_stop_targets.to_vec(),
+            failed_phase_cleanup_targets: retained_stop_targets.to_vec(),
+            phase: 0,
+            phase_service_ids: Vec::new(),
+            skipped_service_ids: Vec::new(),
+            failed_service_id: failure_service_id(command),
+            promoted_phases: 0,
         }
     }
 
-    pub(super) fn retained_stop_targets(&self) -> &[DeployContainer] {
-        &self.retained_stop_targets
+    pub(super) fn with_phase(
+        mut self,
+        phase: u16,
+        phase_service_ids: Vec<ServiceId>,
+        skipped_service_ids: Vec<ServiceId>,
+        failed_service_id: ServiceId,
+        promoted_phases: u16,
+    ) -> Self {
+        self.phase = phase;
+        self.phase_service_ids = phase_service_ids;
+        self.skipped_service_ids = skipped_service_ids;
+        self.failed_service_id = failed_service_id;
+        self.promoted_phases = promoted_phases;
+        self
+    }
+
+    pub(super) fn failed_phase_cleanup_targets(&self) -> &[DeployContainer] {
+        &self.failed_phase_cleanup_targets
+    }
+
+    pub(super) fn phase(&self) -> u16 {
+        self.phase
+    }
+
+    pub(super) fn phase_service_ids(&self) -> &[ServiceId] {
+        &self.phase_service_ids
+    }
+
+    pub(super) fn skipped_service_ids(&self) -> &[ServiceId] {
+        &self.skipped_service_ids
+    }
+
+    pub(super) fn failed_service_id(&self) -> &ServiceId {
+        &self.failed_service_id
+    }
+
+    pub(super) fn operation_failure(&self) -> &DeployOperationFailure {
+        &self.operation_failure
     }
 
     pub(super) fn add_retained_artifacts(&mut self, artifacts: Vec<RetainedArtifact>) {
@@ -92,13 +138,33 @@ pub(super) async fn fail_deploy<R>(
 where
     R: DeployOperationRecorder,
 {
-    let failure_record_error = record_failed_transition(
-        command.step_timeout(),
-        recorder,
-        &command,
-        &failure.operation_failure,
-    )
-    .await;
+    let failure_record_error = if failure.promoted_phases > 0 {
+        match tokio::time::timeout(
+            command.step_timeout(),
+            recorder.record_deploy_transition(
+                &command.operation_id,
+                ployz_core::ops::DeployTransition::Completed {
+                    outcome: ployz_core::ops::DeployCompletionOutcome::PartiallyCompleted,
+                },
+            ),
+        )
+        .await
+        {
+            Ok(Ok(())) => None,
+            Ok(Err(source)) => Some(DeployFailureRecordError::Record(source)),
+            Err(_) => Some(DeployFailureRecordError::TimedOut {
+                timeout: command.step_timeout(),
+            }),
+        }
+    } else {
+        record_failed_transition(
+            command.step_timeout(),
+            recorder,
+            &command,
+            &failure.operation_failure,
+        )
+        .await
+    };
 
     Err(DeployExecutionError::Failed {
         failure: Box::new(failure.operation_failure),
@@ -544,6 +610,17 @@ impl DeployExecutionError {
                     message: failure_message("service dependencies contain a cycle"),
                 }
             }
+            Self::Plan(DeployPlanError::HealthyDependencyWithoutHealthcheck {
+                service_id,
+                dependency,
+            }) => DeployOperationFailure::PlanningFailed {
+                service_id: service_id.clone(),
+                namespace_revision_id: failure_namespace_revision_id(command),
+                message: failure_message(format!(
+                    "healthy dependency {} requires an executable healthcheck",
+                    dependency.as_str()
+                )),
+            },
             Self::PlanInconsistent { service_id } => DeployOperationFailure::PlanningFailed {
                 service_id: service_id.clone(),
                 namespace_revision_id: failure_namespace_revision_id(command),
