@@ -3,8 +3,10 @@
 //! the e2e scenarios launch ployzd with.
 
 use ployz_core::ids::MachineId;
+use ployzd::adapters::nats_authorization::SignalNatsReloadRunner;
 use ployzd::adapters::nats_server::NatsServerLaunch;
 use ployzd::config::{ControlNatsAuthorizationConfig, ControlProcessConfig};
+use ployzd::roles::control::{ControlProcessError, RunningControlProcess};
 
 pub struct TestNats {
     connected: ployz_test_support::nats::TestNats,
@@ -56,5 +58,17 @@ impl TestNats {
             authorized_users_file: self.connected.server.authorized_users_path().to_path_buf(),
             machine_seed_file: self.work_dir.path().join("machine.seed"),
         })
+    }
+
+    pub async fn start_control(
+        &self,
+        config: &ControlProcessConfig,
+    ) -> Result<RunningControlProcess, ControlProcessError> {
+        ployzd::roles::control::start_control_process_with_client_and_reload(
+            self.controller_client(),
+            config,
+            SignalNatsReloadRunner::new(self.connected.server.server_pid()),
+        )
+        .await
     }
 }
