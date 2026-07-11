@@ -33,12 +33,16 @@ The current serveable service set for a namespace. It tells gateways which servi
 _Avoid_: Active service, active revision, completed phase pointer
 
 **Phase**:
-A deploy unit derived from dependencies between services in a namespace revision. A phase becomes part of the serving target only after the services in that phase pass their required gates.
+A topological layer of services whose dependencies are satisfied at the same point in a deploy. A phase becomes serveable through one atomic promotion only after every service in the phase passes its required creation gate.
 _Avoid_: Manual phase, route promotion phase
 
 **Service Dependency**:
-A typed deploy-input relationship that requires one service to pass a named `started` or `healthy` creation condition before a dependent service's phase can run. Service dependencies derive phases and are not durable workflow state; `started` still waits for the dependency service's own creation gate, while `healthy` requires an executable healthcheck.
-_Avoid_: Workflow dependency, runtime dependency, untyped ordering edge, Compose completion condition
+A typed deploy-input relationship requiring one service's phase to promote before another service can start. Service dependencies derive phases and carry a Dependency Condition; they are not durable workflow state.
+_Avoid_: Workflow dependency, runtime dependency, Compose condition
+
+**Dependency Condition**:
+The minimum gate a Service Dependency requires: started or healthy. A dependency's own creation gate still completes before its phase promotes, so started never bypasses a configured healthcheck; healthy requires an executable healthcheck.
+_Avoid_: Compose lifecycle condition, completion dependency, readiness policy
 
 **Pre-Start Hook**:
 A one-off command attached to a service that runs before starting new service containers for that service when the deploy plan includes run or replace work. It must complete successfully before the deploy phase can continue; on failure, the hook container is retained as failed deploy evidence.
