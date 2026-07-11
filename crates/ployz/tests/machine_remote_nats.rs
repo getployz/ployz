@@ -270,6 +270,7 @@ fn test_config(
         ssh_program: Some(ssh.program.clone()),
         ssh_install_timeout: None,
         cluster_context_path: Some(context.context_path.clone()),
+        deploy_history_root: None,
     }
 }
 

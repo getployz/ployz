@@ -1,11 +1,13 @@
 use std::process::{Command, Output};
 
-use ployz::commands::deploy::{DeployCommand, DeployOutput};
+use ployz::commands::deploy::{
+    DeployCommand, DeployOutput, DeployRollbackCommand, DeployRollbackSelection,
+};
 use ployz::commands::{PloyzctlCommand, parse_command};
 use ployz_core::deploy::{
     DeployOrigin, DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageReference, ReplicaCount,
 };
-use ployz_core::ids::{NamespaceId, ServiceId};
+use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
 use ployz_core::ops::{RouteHostname, RoutePort};
 use ployz_sdk_types::AcceptedOperation;
 use ployz_test_support::ids::{event_sequence, operation_id};
@@ -59,6 +61,83 @@ fn cli_deploy_history_accepts_namespace() {
         command.namespace_id,
         NamespaceId::try_new("production").expect("valid namespace")
     );
+}
+
+#[test]
+fn cli_deploy_rollback_defaults_to_interactive_default_namespace() {
+    let command =
+        parse_command(["deploy", "rollback"].map(str::to_owned)).expect("deploy rollback parses");
+
+    let PloyzctlCommand::DeployRollback(command) = command else {
+        panic!("expected deploy rollback command");
+    };
+    assert_eq!(
+        command,
+        DeployRollbackCommand {
+            namespace_id: NamespaceId::try_new("default").expect("valid namespace"),
+            selection: DeployRollbackSelection::Interactive,
+        }
+    );
+}
+
+#[test]
+fn cli_deploy_rollback_accepts_namespace() {
+    let command =
+        parse_command(["deploy", "rollback", "--namespace", "production"].map(str::to_owned))
+            .expect("deploy rollback parses");
+
+    let PloyzctlCommand::DeployRollback(command) = command else {
+        panic!("expected deploy rollback command");
+    };
+    assert_eq!(
+        command.namespace_id,
+        NamespaceId::try_new("production").expect("valid namespace")
+    );
+}
+
+#[test]
+fn cli_deploy_rollback_accepts_operation() {
+    let command = parse_command(["deploy", "rollback", "--to", "op_deploy_123"].map(str::to_owned))
+        .expect("deploy rollback parses");
+
+    let PloyzctlCommand::DeployRollback(command) = command else {
+        panic!("expected deploy rollback command");
+    };
+    assert_eq!(
+        command.selection,
+        DeployRollbackSelection::Operation(
+            OperationId::try_new("op_deploy_123").expect("valid operation id")
+        )
+    );
+}
+
+#[test]
+fn cli_deploy_rollback_accepts_last_good() {
+    let command = parse_command(["deploy", "rollback", "--last-good"].map(str::to_owned))
+        .expect("deploy rollback parses");
+
+    let PloyzctlCommand::DeployRollback(command) = command else {
+        panic!("expected deploy rollback command");
+    };
+    assert_eq!(command.selection, DeployRollbackSelection::LastGood);
+}
+
+#[test]
+fn cli_deploy_rollback_rejects_operation_with_last_good() {
+    let result = parse_command(
+        ["deploy", "rollback", "--to", "op_deploy_123", "--last-good"].map(str::to_owned),
+    );
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn cli_deploy_rollback_rejects_invalid_operation() {
+    let error =
+        parse_command(["deploy", "rollback", "--to", "not an operation"].map(str::to_owned))
+            .expect_err("invalid rollback operation is rejected");
+
+    assert!(error.to_string().contains("--to"));
 }
 
 #[test]

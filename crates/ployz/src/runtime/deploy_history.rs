@@ -152,7 +152,6 @@ pub(super) fn record_terminal_success(
 
 impl PloyzctlRuntimeConfig {
     fn deploy_history_root(&self) -> Option<PathBuf> {
-        #[cfg(test)]
         if self.deploy_history_root.is_some() {
             return self.deploy_history_root.clone();
         }

@@ -272,6 +272,7 @@ impl HostCliHarness {
             ssh_program: Some(self.ssh_program.clone()),
             ssh_install_timeout: None,
             cluster_context_path: Some(self.context_path.clone()),
+            deploy_history_root: Some(self._dir.path().join("deploy-history")),
         }
     }
 }

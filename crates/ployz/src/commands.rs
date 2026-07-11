@@ -32,6 +32,7 @@ pub enum PloyzctlCommand {
     CoreReplace(core::CoreReplaceCommand),
     Deploy(deploy::DeployCommand),
     DeployHistory(deploy::DeployHistoryCommand),
+    DeployRollback(deploy::DeployRollbackCommand),
     InternalInit(Box<init::FirstMachineInitCommand>),
     InitFirstMachineActivate(init::FirstMachineActivateCommand),
     InitJoinTemplate(init::join_template::MachineJoinTemplateCommand),
@@ -233,6 +234,9 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
                 deploy::ParsedDeployCommand::Deploy(command) => PloyzctlCommand::Deploy(command),
                 deploy::ParsedDeployCommand::History(command) => {
                     PloyzctlCommand::DeployHistory(command)
+                }
+                deploy::ParsedDeployCommand::Rollback(command) => {
+                    PloyzctlCommand::DeployRollback(command)
                 }
             })
         }
