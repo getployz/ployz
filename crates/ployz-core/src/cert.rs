@@ -7,6 +7,7 @@ use crate::install::{AbsoluteInstallPath, InstallSha256Digest};
 use crate::ops::RouteHostname;
 use crate::state_key::id_prefixed_state_key;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
@@ -121,56 +122,31 @@ pub struct ManagedLeaseAcquireRequest {
 }
 
 /// Canonical public gateway addresses applied to a managed lease.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(
-    from = "ManagedLeaseAddressSetWire",
-    into = "ManagedLeaseAddressSetWire"
-)]
-pub struct ManagedLeaseAddressSet {
-    ipv4: Vec<Ipv4Addr>,
-    ipv6: Vec<Ipv6Addr>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ManagedLeaseAddressSetWire {
-    ipv4: Vec<Ipv4Addr>,
-    ipv6: Vec<Ipv6Addr>,
+pub struct ManagedLeaseAddressSet {
+    ipv4: BTreeSet<Ipv4Addr>,
+    ipv6: BTreeSet<Ipv6Addr>,
 }
 
 impl ManagedLeaseAddressSet {
     #[must_use]
-    pub fn new(mut ipv4: Vec<Ipv4Addr>, mut ipv6: Vec<Ipv6Addr>) -> Self {
-        ipv4.sort_unstable();
-        ipv4.dedup();
-        ipv6.sort_unstable();
-        ipv6.dedup();
-        Self { ipv4, ipv6 }
+    pub fn new(ipv4: Vec<Ipv4Addr>, ipv6: Vec<Ipv6Addr>) -> Self {
+        Self {
+            ipv4: ipv4.into_iter().collect(),
+            ipv6: ipv6.into_iter().collect(),
+        }
     }
 
     #[must_use]
-    pub fn ipv4(&self) -> &[Ipv4Addr] {
+    pub const fn ipv4(&self) -> &BTreeSet<Ipv4Addr> {
         &self.ipv4
     }
 
     #[must_use]
-    pub fn ipv6(&self) -> &[Ipv6Addr] {
+    pub const fn ipv6(&self) -> &BTreeSet<Ipv6Addr> {
         &self.ipv6
-    }
-}
-
-impl From<ManagedLeaseAddressSetWire> for ManagedLeaseAddressSet {
-    fn from(value: ManagedLeaseAddressSetWire) -> Self {
-        let ManagedLeaseAddressSetWire { ipv4, ipv6 } = value;
-        Self::new(ipv4, ipv6)
-    }
-}
-
-impl From<ManagedLeaseAddressSet> for ManagedLeaseAddressSetWire {
-    fn from(value: ManagedLeaseAddressSet) -> Self {
-        let ManagedLeaseAddressSet { ipv4, ipv6 } = value;
-        Self { ipv4, ipv6 }
     }
 }
 
@@ -933,14 +909,14 @@ mod managed_lease_intent_tests {
         );
 
         assert_eq!(
-            addresses.ipv4(),
+            addresses.ipv4().iter().copied().collect::<Vec<_>>(),
             [
                 "198.51.100.2".parse::<Ipv4Addr>().expect("IPv4"),
                 "203.0.113.8".parse::<Ipv4Addr>().expect("IPv4"),
             ]
         );
         assert_eq!(
-            addresses.ipv6(),
+            addresses.ipv6().iter().copied().collect::<Vec<_>>(),
             [
                 "2001:db8::2".parse::<Ipv6Addr>().expect("IPv6"),
                 "2001:db8::8".parse::<Ipv6Addr>().expect("IPv6"),

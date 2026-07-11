@@ -342,6 +342,14 @@ fn operation_subject(status: &OperationStatus) -> String {
                     if ipv6.is_empty() { "none" } else { &ipv6 },
                 )
             }
+            ployz_sdk_types::ManagedLeaseSubject::GatewayTestimony { missing } => format!(
+                "gateway testimony unavailable from {}",
+                missing
+                    .iter()
+                    .map(ployz_sdk_types::MachineId::as_str)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
         },
     }
 }

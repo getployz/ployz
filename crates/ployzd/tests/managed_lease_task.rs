@@ -352,7 +352,7 @@ async fn changed_gateway_addresses_renew_record_only_lease_with_canonical_payloa
             },
             state: ManagedLeaseOperationState::Completed,
             ..
-        } if lease == acquired.lease.name && addresses == expected_addresses
+        } if lease == acquired.lease.name && *addresses == expected_addresses
     ));
     assert_eq!(
         worker.lock().await.renewal_request(&acquired.lease.name),
@@ -530,7 +530,7 @@ async fn accepted_operation_from_interrupted_tick_is_recovered_terminal() {
             operation_id: operation_id.clone(),
             subject: ManagedLeaseSubject::Renew {
                 lease: ManagedLeaseName::try_new("cluster-one").expect("lease name"),
-                addresses: empty_address_set(),
+                addresses: Box::new(empty_address_set()),
             },
         })
         .await

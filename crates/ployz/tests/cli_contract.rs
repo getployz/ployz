@@ -1242,7 +1242,7 @@ fn ops_status_renders_managed_lease_renewal_addresses() {
             id: operation_id("op_managed_lease"),
             subject: ManagedLeaseSubject::Renew {
                 lease: ManagedLeaseName::try_new("cluster-one").expect("valid lease name"),
-                addresses: ManagedLeaseAddressSet::new(
+                addresses: Box::new(ManagedLeaseAddressSet::new(
                     vec![
                         "203.0.113.9".parse().expect("IPv4"),
                         "203.0.113.8".parse().expect("IPv4"),
@@ -1251,7 +1251,7 @@ fn ops_status_renders_managed_lease_renewal_addresses() {
                         "2001:db8::9".parse().expect("IPv6"),
                         "2001:db8::8".parse().expect("IPv6"),
                     ],
-                ),
+                )),
             },
             state: ManagedLeaseOperationState::Completed,
             last_event_sequence: event_sequence(3),
@@ -1274,7 +1274,7 @@ fn ops_list_renders_empty_managed_lease_renewal_address_families_as_none() {
                 id: operation_id("op_managed_lease"),
                 subject: ManagedLeaseSubject::Renew {
                     lease: ManagedLeaseName::try_new("cluster-one").expect("valid lease name"),
-                    addresses: ManagedLeaseAddressSet::new(Vec::new(), Vec::new()),
+                    addresses: Box::new(ManagedLeaseAddressSet::new(Vec::new(), Vec::new())),
                 },
                 state: ManagedLeaseOperationState::Accepted,
                 last_event_sequence: event_sequence(1),
@@ -1286,6 +1286,38 @@ fn ops_list_renders_empty_managed_lease_renewal_address_families_as_none() {
     assert_eq!(
         output,
         "op_managed_lease managed-lease lease cluster-one renewal ipv4 none ipv6 none accepted\n"
+    );
+}
+
+#[test]
+fn ops_status_renders_missing_gateway_testimony() {
+    let output = StatusOutput::new(
+        OperationStatusSnapshot::new(OperationStatus::ManagedLease {
+            id: operation_id("op_managed_lease"),
+            subject: ManagedLeaseSubject::GatewayTestimony {
+                missing: vec![
+                    MachineId::try_new("gateway-one").expect("valid machine id"),
+                    MachineId::try_new("gateway-two").expect("valid machine id"),
+                ],
+            },
+            state: ManagedLeaseOperationState::Failed {
+                failure: ployz_core::ops::ManagedLeaseOperationFailure {
+                    class: ployz_core::ops::ManagedLeaseFailureClass::GatewayTestimonyUnavailable,
+                    message: ployz_core::ops::FailureMessage::try_new(
+                        "gateway endpoint testimony unavailable",
+                    )
+                    .expect("valid failure message"),
+                },
+            },
+            last_event_sequence: event_sequence(3),
+        }),
+        Vec::new(),
+    )
+    .render();
+
+    assert_eq!(
+        output,
+        "operation op_managed_lease\nkind managed-lease\ngateway testimony unavailable from gateway-one,gateway-two\nstate failed\nfailure gateway endpoint testimony unavailable\nlast-event 3\ntimeline\n"
     );
 }
 

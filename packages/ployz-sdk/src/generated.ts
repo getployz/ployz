@@ -252,9 +252,9 @@ export type ManagedLeaseOperationState = { "state": "accepted" } | { "state": "c
 
 export type ManagedLeaseOperationFailure = { class: ManagedLeaseFailureClass, message: FailureMessage, };
 
-export type ManagedLeaseFailureClass = "worker_unauthorized" | "lease_not_found" | "worker_http" | "transport" | "decode" | "superseded" | "storage" | "interrupted";
+export type ManagedLeaseFailureClass = "worker_unauthorized" | "lease_not_found" | "worker_http" | "transport" | "decode" | "superseded" | "storage" | "interrupted" | "gateway_testimony_unavailable";
 
-export type ManagedLeaseSubject = { "kind": "acquire" } | { "kind": "download_bundle", lease: ManagedLeaseName, } | { "kind": "renew", lease: ManagedLeaseName, addresses: ManagedLeaseAddressSet, };
+export type ManagedLeaseSubject = { "kind": "acquire" } | { "kind": "download_bundle", lease: ManagedLeaseName, } | { "kind": "renew", lease: ManagedLeaseName, addresses: ManagedLeaseAddressSet, } | { "kind": "gateway_testimony", missing: Array<MachineId>, };
 
 export type NamespaceRemoveOperationState = { "state": "accepted" } | { "state": "running", stage: NamespaceRemoveRunningStage, } | { "state": "completed" } | { "state": "failed", failure: NamespaceRemoveFailure, } | { "state": "cancelled", reason: CancellationReason, };
 
