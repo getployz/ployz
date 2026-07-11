@@ -202,7 +202,10 @@ async fn step_2_deploy_real_application(
         ployz_core::state::ManagedLeaseProjection::Ready { bundle, .. } => {
             bundle.certificate_chain_pem.clone()
         }
-        other => panic!("managed HTTPS lease must be ready: {other:?}"),
+        other @ (ployz_core::state::ManagedLeaseProjection::Unacquired
+        | ployz_core::state::ManagedLeaseProjection::RecordOnly { .. }) => {
+            panic!("managed HTTPS lease must be ready: {other:?}")
+        }
     };
     let response = gateway_https_get(
         core.cluster.core().published.gateway_tls,
@@ -445,7 +448,7 @@ fn compose_command(path: &Path, detach: bool) -> ployz::commands::PloyzctlComman
     if detach {
         args.push("--detach".to_owned());
     }
-    parse_command(args.into_iter()).expect("acceptance Compose command parses")
+    parse_command(args).expect("acceptance Compose command parses")
 }
 
 async fn terminal_deploy_failure(
