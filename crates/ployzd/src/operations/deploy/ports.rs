@@ -120,23 +120,27 @@ pub trait CertificateProvisioner {
     ) -> impl Future<Output = Result<ActiveCertState, CertificateProvisionFailure>> + Send;
 }
 
+#[derive(Debug)]
+pub struct DeployPhasePromotion {
+    pub scope: ControlPlaneCommitScope,
+    pub route_bindings: Vec<RouteBindingState>,
+    pub route_binding_removals: Vec<RouteTarget>,
+    pub first_serving_target_entry: ServingTargetEntry,
+    pub remaining_serving_target_entries: Vec<ServingTargetEntry>,
+}
+
 /// The one deploy commit port: every namespace-state write (route bindings
 /// and serving-target entries) goes through this seam, fenced by the
 /// Namespace Lock in the production adapter.
 pub trait NamespaceStateCommitter {
-    fn replace_route_binding(
+    fn commit_deploy_phase(
         &mut self,
-        state: RouteBindingState,
+        promotion: DeployPhasePromotion,
     ) -> impl Future<Output = Result<(), NamespaceCommitError>> + Send;
 
     fn remove_route_binding(
         &mut self,
         target: RouteTarget,
-    ) -> impl Future<Output = Result<(), NamespaceCommitError>> + Send;
-
-    fn replace_serving_target_entry(
-        &mut self,
-        state: ServingTargetEntry,
     ) -> impl Future<Output = Result<(), NamespaceCommitError>> + Send;
 
     fn remove_serving_target_entry(

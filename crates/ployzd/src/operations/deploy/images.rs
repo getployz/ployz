@@ -1,7 +1,9 @@
 //! Pushed-image availability and mesh redistribution for deploy execution.
 
 use ployz_core::dataplane::{DataplaneMember, DataplanePrepareRequest};
-use ployz_core::deploy::{DeployPlan, DeployPlanStep, DeployRequest, ImageSource};
+use ployz_core::deploy::{
+    DeployPlan, DeployPlanStep, DeployRequest, DeployServicePlan, ImageSource,
+};
 use ployz_core::image::{ImageEnsureRequest, ImageRepository, ImageRpcDomainError, OciDigest};
 use ployz_core::ops::{DeployEvidence, DeployOperationFailure, FailureMessage};
 
@@ -60,8 +62,9 @@ where
             });
         };
         let Some(machine_id) = provisional_plan
-            .services
+            .phases
             .iter()
+            .flat_map(|phase| &phase.services)
             .find(|plan| plan.service_id == target.service_id)
             .and_then(|plan| plan.steps.first())
             .map(|step| match step {
@@ -153,7 +156,7 @@ fn image_resolution_failure(
 
 pub(super) async fn ensure_images<R, N>(
     command: &DeployExecutionCommand,
-    plan: &DeployPlan,
+    service_plans: &[DeployServicePlan],
     recorder: &mut R,
     machine_runtime: &mut N,
 ) -> Result<(), DeployExecutionError>
@@ -162,6 +165,12 @@ where
     N: MachineContainerRuntime,
 {
     for service in command.services() {
+        let Some(service_plan) = service_plans
+            .iter()
+            .find(|plan| plan.service_id == service.request.service_id)
+        else {
+            continue;
+        };
         let ImageSource::PushedToSeed {
             seed,
             manifest_digest,
@@ -191,13 +200,6 @@ where
             }),
         })?
         .map_err(|error| ensure_image_failure(service, seed, manifest_digest, error))?;
-        let Some(service_plan) = plan
-            .services
-            .iter()
-            .find(|plan| plan.service_id == service.request.service_id)
-        else {
-            continue;
-        };
         for step in &service_plan.steps {
             let machine_id = match step {
                 DeployPlanStep::UseExistingContainer { machine_id, .. }

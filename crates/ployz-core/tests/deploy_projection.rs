@@ -2,7 +2,7 @@
 //! freshness, and terminal rules.
 
 use ployz_core::deploy::{
-    DeployOrigin, DeployPlan, DeployPlanStep, DeployServicePlan, ReplicaSlot,
+    DeployOrigin, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployServicePlan, ReplicaSlot,
 };
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, DeployRunningStage, DeployTransition,
@@ -615,13 +615,15 @@ fn plan_created_event() -> OperationEvent {
         plan: DeployPlan {
             namespace_id: namespace_id("default"),
             namespace_revision_id: namespace_revision_id("rev_2"),
-            services: vec![DeployServicePlan {
-                service_id: service_id("svc_api"),
-                steps: vec![DeployPlanStep::RunContainer {
-                    machine_id: machine_id("machine_a"),
-                    slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
+            phases: vec![DeployPhasePlan {
+                services: vec![DeployServicePlan {
+                    service_id: service_id("svc_api"),
+                    steps: vec![DeployPlanStep::RunContainer {
+                        machine_id: machine_id("machine_a"),
+                        slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
+                    }],
+                    pre_start: None,
                 }],
-                pre_start: None,
             }],
             volume_pin_commits: Vec::new(),
             cleanup_containers: Vec::new(),

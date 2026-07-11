@@ -1,7 +1,7 @@
 use super::*;
 use ployz_core::cert::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
 use ployz_core::deploy::{
-    ContainerRuntimeSpec, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute,
+    ContainerRuntimeSpec, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute,
     DeployRouteTarget, DeployServicePlan, DeployServiceSpec, ImageReference, ImageSource,
     ReplicaCount, ReplicaSlot,
 };
@@ -111,31 +111,33 @@ fn plan() -> DeployPlan {
         namespace_id: namespace_id(),
         namespace_revision_id: NamespaceRevisionId::try_new("revision_317")
             .expect("valid namespace revision id"),
-        services: vec![
-            DeployServicePlan {
-                service_id: service_id("web"),
-                pre_start: None,
-                steps: vec![
-                    DeployPlanStep::RunContainer {
-                        machine_id: machine_id("hetzner-1"),
-                        slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
-                    },
-                    DeployPlanStep::RunContainer {
+        phases: vec![DeployPhasePlan {
+            services: vec![
+                DeployServicePlan {
+                    service_id: service_id("web"),
+                    pre_start: None,
+                    steps: vec![
+                        DeployPlanStep::RunContainer {
+                            machine_id: machine_id("hetzner-1"),
+                            slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
+                        },
+                        DeployPlanStep::RunContainer {
+                            machine_id: machine_id("hetzner-2"),
+                            slot: ReplicaSlot::try_new(2).expect("valid replica slot"),
+                        },
+                    ],
+                },
+                DeployServicePlan {
+                    service_id: service_id("worker"),
+                    pre_start: None,
+                    steps: vec![DeployPlanStep::UseExistingContainer {
                         machine_id: machine_id("hetzner-2"),
-                        slot: ReplicaSlot::try_new(2).expect("valid replica slot"),
-                    },
-                ],
-            },
-            DeployServicePlan {
-                service_id: service_id("worker"),
-                pre_start: None,
-                steps: vec![DeployPlanStep::UseExistingContainer {
-                    machine_id: machine_id("hetzner-2"),
-                    container_id: container_id("worker-existing"),
-                    slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
-                }],
-            },
-        ],
+                        container_id: container_id("worker-existing"),
+                        slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
+                    }],
+                },
+            ],
+        }],
         volume_pin_commits: Vec::new(),
         cleanup_containers: Vec::new(),
     }
@@ -363,7 +365,10 @@ fn certificate_stage_marks_containers_healthy_and_routes_as_provisioning() {
 fn pushed_image_stays_pending_until_availability_is_verified() {
     let operation_id = operation_id();
     let mut direct_plan = plan();
-    direct_plan.services.truncate(1);
+    let [phase] = direct_plan.phases.as_mut_slice() else {
+        panic!("direct-image plan must contain one phase");
+    };
+    phase.services.truncate(1);
     let mut tree = DeployTree::new();
     tree.ingest_page(&[
         replay(

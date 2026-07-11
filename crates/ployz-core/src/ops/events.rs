@@ -35,10 +35,11 @@ use super::text::CancellationReason;
 use super::volume_remove::{VolumeRemoveEvent, VolumeRemoveTransition};
 use super::{
     CertOperationFailure, CertRunningStage, DeployCleanupFailure, DeployCompletionOutcome,
-    DeployOperationFailure, DeployRunningStage, MachineAddOperationState, MachineLifecycleFailure,
-    MachineSubstrateVersions, MachineUpdateFailure, NamespaceRemoveFailure,
-    NamespaceRemoveRunningStage, NetworkRepairFailure, NetworkRepairRunningStage, OperationKind,
-    RouteTarget, ServiceRestartFailure, ServiceRestartRunningStage, VolumeRemoveFailure,
+    DeployOperationFailure, DeployPhaseOutcome, DeployRunningStage, DeployServiceResult,
+    MachineAddOperationState, MachineLifecycleFailure, MachineSubstrateVersions,
+    MachineUpdateFailure, NamespaceRemoveFailure, NamespaceRemoveRunningStage,
+    NetworkRepairFailure, NetworkRepairRunningStage, OperationKind, RouteTarget,
+    ServiceRestartFailure, ServiceRestartRunningStage, VolumeRemoveFailure,
     VolumeRemoveRunningStage,
 };
 
@@ -131,6 +132,17 @@ pub enum OperationEvent {
     },
     DeployHealthCheckStarted {
         operation_id: OperationId,
+    },
+    DeployPhaseStarted {
+        operation_id: OperationId,
+        phase: super::DeployPhaseNumber,
+        service_ids: Vec<ServiceId>,
+    },
+    DeployPhaseFinished {
+        operation_id: OperationId,
+        phase: super::DeployPhaseNumber,
+        outcome: DeployPhaseOutcome,
+        services: Vec<DeployServiceResult>,
     },
     DeployCleanupFinished {
         operation_id: OperationId,
@@ -373,6 +385,8 @@ impl OperationEvent {
             | Self::DeployImageAvailabilityVerified { operation_id, .. }
             | Self::DeployContainerStarted { operation_id, .. }
             | Self::DeployHealthCheckStarted { operation_id }
+            | Self::DeployPhaseStarted { operation_id, .. }
+            | Self::DeployPhaseFinished { operation_id, .. }
             | Self::DeployCleanupFinished { operation_id, .. }
             | Self::DeployCompleted { operation_id, .. }
             | Self::DeployFailed { operation_id, .. }
@@ -456,6 +470,8 @@ impl OperationEvent {
             | Self::DeployImageResolved { .. }
             | Self::DeployImageAvailabilityVerified { .. }
             | Self::DeployContainerStarted { .. }
+            | Self::DeployPhaseStarted { .. }
+            | Self::DeployPhaseFinished { .. }
             | Self::DeployRunning { .. }
             | Self::DeployCompleted { .. }
             | Self::DeployFailed { .. }
@@ -557,6 +573,22 @@ impl OperationEvent {
                 container_id: container_id.clone(),
             }),
             Self::DeployHealthCheckStarted { .. } => Some(DeployEvidence::HealthCheckStarted),
+            Self::DeployPhaseStarted {
+                phase, service_ids, ..
+            } => Some(DeployEvidence::PhaseStarted {
+                phase: *phase,
+                service_ids: service_ids.clone(),
+            }),
+            Self::DeployPhaseFinished {
+                phase,
+                outcome,
+                services,
+                ..
+            } => Some(DeployEvidence::PhaseFinished {
+                phase: *phase,
+                outcome: *outcome,
+                services: services.clone(),
+            }),
             Self::DeployCleanupFinished {
                 removed, failed, ..
             } => Some(DeployEvidence::CleanupFinished {
@@ -784,6 +816,27 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
             OperationEvent::DeployHealthCheckStarted { operation_id } => Self::Deploy {
                 operation_id,
                 event: DeployEvent::Evidence(DeployEvidence::HealthCheckStarted),
+            },
+            OperationEvent::DeployPhaseStarted {
+                operation_id,
+                phase,
+                service_ids,
+            } => Self::Deploy {
+                operation_id,
+                event: DeployEvent::Evidence(DeployEvidence::PhaseStarted { phase, service_ids }),
+            },
+            OperationEvent::DeployPhaseFinished {
+                operation_id,
+                phase,
+                outcome,
+                services,
+            } => Self::Deploy {
+                operation_id,
+                event: DeployEvent::Evidence(DeployEvidence::PhaseFinished {
+                    phase,
+                    outcome,
+                    services,
+                }),
             },
             OperationEvent::DeployCleanupFinished {
                 operation_id,

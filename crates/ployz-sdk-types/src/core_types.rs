@@ -19,15 +19,16 @@ pub use ployz_core::dataplane::{
 pub use ployz_core::deploy::{
     ContainerCommand, ContainerCommandError, ContainerEntrypoint, ContainerHealthcheck,
     ContainerHealthcheckTest, ContainerMountPath, ContainerMountPathError, ContainerResourceLimits,
-    ContainerRestartPolicy, ContainerRuntimeSpec, DeployCleanupContainer, DeployOrigin, DeployPlan,
-    DeployPlanStep, DeployRequest, DeployReservationExpiresAt, DeployReservationId,
-    DeployReservationNumberError, DeployRoute, DeployRouteTarget, DeployServicePlan,
-    DeployServiceSpec, EnvName, EnvNameError, EnvValue, EnvValueError, HealthcheckDurationNanos,
-    HealthcheckRetries, HealthcheckShellCommand, ImageReference, ImageReferenceError, ImageSource,
-    LinuxCapability, MemoryBytes, NanoCpus, PidsLimit, PreStartHook, PreStartHookStep,
-    RegistryCredential, RegistryCredentialError, RegistryCredentialSecret,
-    RegistryCredentialUsername, ReplicaCount, ReplicaCountError, ReplicaSlot, ServiceEnvironment,
-    ServiceVolumeMount, StopGracePeriod, VolumeName, VolumeNameError,
+    ContainerRestartPolicy, ContainerRuntimeSpec, DependencyCondition, DeployCleanupContainer,
+    DeployOrigin, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployRequest,
+    DeployReservationExpiresAt, DeployReservationId, DeployReservationNumberError, DeployRoute,
+    DeployRouteTarget, DeployServicePlan, DeployServiceSpec, EnvName, EnvNameError, EnvValue,
+    EnvValueError, HealthcheckDurationNanos, HealthcheckRetries, HealthcheckShellCommand,
+    ImageReference, ImageReferenceError, ImageSource, LinuxCapability, MemoryBytes, NanoCpus,
+    PidsLimit, PreStartHook, PreStartHookStep, RegistryCredential, RegistryCredentialError,
+    RegistryCredentialSecret, RegistryCredentialUsername, ReplicaCount, ReplicaCountError,
+    ReplicaSlot, ServiceDependency, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod,
+    VolumeName, VolumeNameError,
 };
 pub use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
@@ -82,7 +83,8 @@ pub use ployz_core::ops::{
 pub use ployz_core::ops::{
     CertOperationFailure, CertOperationFailureError, CertOperationState, CertRunningStage,
     ControlPlaneCommitScope, CoreReplaceFailure, CoreReplaceOperationState, DeployCleanupFailure,
-    DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, DeployRunningStage,
+    DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, DeployPhaseNumber,
+    DeployPhaseNumberError, DeployPhaseOutcome, DeployRunningStage, DeployServiceResult,
     PreStartHookFailure,
 };
 pub use ployz_core::roles::{GatewayRole, InstallRolePolicy};

@@ -1,0 +1,1 @@
+services.api.depends_on.database.condition  invalid value  service_healthy dependency "database" requires that service to define an executable CMD or CMD-SHELL healthcheck

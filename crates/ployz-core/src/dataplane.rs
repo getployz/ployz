@@ -759,19 +759,22 @@ mod tests {
             namespace_id: crate::ids::NamespaceId::try_new("default").expect("valid namespace id"),
             namespace_revision_id: crate::ids::NamespaceRevisionId::try_new("rev_1")
                 .expect("valid revision id"),
-            services: vec![crate::deploy::DeployServicePlan {
-                service_id: crate::ids::ServiceId::try_new("svc_api").expect("valid service id"),
-                steps: vec![
-                    crate::deploy::DeployPlanStep::RunContainer {
-                        machine_id: machine_id("edge_2"),
-                        slot: crate::deploy::ReplicaSlot::try_new(1).expect("valid slot"),
-                    },
-                    crate::deploy::DeployPlanStep::RunContainer {
-                        machine_id: machine_id("core_1"),
-                        slot: crate::deploy::ReplicaSlot::try_new(2).expect("valid slot"),
-                    },
-                ],
-                pre_start: None,
+            phases: vec![crate::deploy::DeployPhasePlan {
+                services: vec![crate::deploy::DeployServicePlan {
+                    service_id: crate::ids::ServiceId::try_new("svc_api")
+                        .expect("valid service id"),
+                    steps: vec![
+                        crate::deploy::DeployPlanStep::RunContainer {
+                            machine_id: machine_id("edge_2"),
+                            slot: crate::deploy::ReplicaSlot::try_new(1).expect("valid slot"),
+                        },
+                        crate::deploy::DeployPlanStep::RunContainer {
+                            machine_id: machine_id("core_1"),
+                            slot: crate::deploy::ReplicaSlot::try_new(2).expect("valid slot"),
+                        },
+                    ],
+                    pre_start: None,
+                }],
             }],
             volume_pin_commits: Vec::new(),
             cleanup_containers: Vec::new(),
@@ -802,13 +805,16 @@ mod tests {
             namespace_id: crate::ids::NamespaceId::try_new("default").expect("valid namespace id"),
             namespace_revision_id: crate::ids::NamespaceRevisionId::try_new("rev_1")
                 .expect("valid revision id"),
-            services: vec![crate::deploy::DeployServicePlan {
-                service_id: crate::ids::ServiceId::try_new("svc_api").expect("valid service id"),
-                steps: vec![crate::deploy::DeployPlanStep::RunContainer {
-                    machine_id: machine_id("edge_2"),
-                    slot: crate::deploy::ReplicaSlot::try_new(1).expect("valid slot"),
+            phases: vec![crate::deploy::DeployPhasePlan {
+                services: vec![crate::deploy::DeployServicePlan {
+                    service_id: crate::ids::ServiceId::try_new("svc_api")
+                        .expect("valid service id"),
+                    steps: vec![crate::deploy::DeployPlanStep::RunContainer {
+                        machine_id: machine_id("edge_2"),
+                        slot: crate::deploy::ReplicaSlot::try_new(1).expect("valid slot"),
+                    }],
+                    pre_start: None,
                 }],
-                pre_start: None,
             }],
             cleanup_containers: Vec::new(),
             volume_pin_commits: Vec::new(),

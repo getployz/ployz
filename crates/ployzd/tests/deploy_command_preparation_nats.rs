@@ -40,7 +40,7 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
     let intent_reader = nats.intent_reader();
 
     nats.namespace_intent
-        .replace_serving_target_entry(serving_target_entry("svc_api", "entry_old"))
+        .replace_serving_target_entry(promoted_target_entry())
         .await
         .expect("serving target entry stores");
     let _machine_a = nats
@@ -128,6 +128,10 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
         .replace_active_machine(&active_machine("edge_2"))
         .await
         .expect("active edge stores");
+    nats.namespace_intent
+        .replace_serving_target_entry(promoted_target_entry())
+        .await
+        .expect("serving target entry stores");
     let _edge_2 = nats
         .serve_machine_facts(machine_snapshot(
             "edge_2",
@@ -691,6 +695,12 @@ fn target_namespace_revision_entry_id() -> NamespaceRevisionEntryId {
         panic!("deploy request fixture has one service");
     };
     service.namespace_revision_entry_id(&namespace_id("default"))
+}
+
+fn promoted_target_entry() -> ployz_core::state::ServingTargetEntry {
+    let mut entry = serving_target_entry("svc_api", "unused");
+    entry.namespace_revision_entry_id = target_namespace_revision_entry_id();
+    entry
 }
 
 fn machine_snapshot(

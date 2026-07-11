@@ -165,9 +165,25 @@ pub struct DeployServiceSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pre_start: Option<PreStartHook>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub depends_on: Vec<ServiceId>,
+    pub depends_on: Vec<ServiceDependency>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<DeployRoute>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum DependencyCondition {
+    Started,
+    Healthy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct ServiceDependency {
+    pub service_id: ServiceId,
+    pub condition: DependencyCondition,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,7 +196,7 @@ pub struct PreStartHook {
 impl DeployServiceSpec {
     const NAMESPACE_REVISION_ENTRY_ENCODING_VERSION: &'static str =
         "ployz.namespace_revision_entry.v8";
-    const NAMESPACE_REVISION_ENCODING_VERSION: &'static str = "ployz.namespace_revision.v5";
+    const NAMESPACE_REVISION_ENCODING_VERSION: &'static str = "ployz.namespace_revision.v6";
 
     #[must_use]
     pub fn namespace_revision_entry_id(
@@ -244,7 +260,19 @@ pub fn namespace_revision_id_for(
         dependencies.sort();
         dependencies.dedup();
         for dependency in dependencies {
-            hash_frame(&mut hasher, "depends_on", dependency.as_str().as_bytes());
+            hash_frame(
+                &mut hasher,
+                "depends_on_service_id",
+                dependency.service_id.as_str().as_bytes(),
+            );
+            hash_frame(
+                &mut hasher,
+                "depends_on_condition",
+                match dependency.condition {
+                    DependencyCondition::Started => b"started",
+                    DependencyCondition::Healthy => b"healthy",
+                },
+            );
         }
 
         let mut routes = service.routes.iter().collect::<Vec<_>>();
@@ -508,7 +536,7 @@ pub struct DeployServiceRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pre_start: Option<PreStartHook>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub depends_on: Vec<ServiceId>,
+    pub depends_on: Vec<ServiceDependency>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<DeployRoute>,
 }
@@ -1342,7 +1370,7 @@ pub struct PreparedDeploy {
 pub struct DeployPlan {
     pub namespace_id: NamespaceId,
     pub namespace_revision_id: NamespaceRevisionId,
-    pub services: Vec<DeployServicePlan>,
+    pub phases: Vec<DeployPhasePlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volume_pin_commits: Vec<VolumePinState>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1353,9 +1381,10 @@ impl DeployPlan {
     #[must_use]
     pub fn target_machines(&self) -> Vec<MachineId> {
         let mut machines = self
-            .services
+            .phases
             .iter()
-            .flat_map(|service| service.steps.iter())
+            .flat_map(|phase| &phase.services)
+            .flat_map(|service| &service.steps)
             .map(|step| match step {
                 DeployPlanStep::UseExistingContainer { machine_id, .. }
                 | DeployPlanStep::RunContainer { machine_id, .. } => machine_id.clone(),
@@ -1365,6 +1394,13 @@ impl DeployPlan {
         machines.dedup();
         machines
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct DeployPhasePlan {
+    pub services: Vec<DeployServicePlan>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1449,6 +1485,10 @@ pub enum DeployPlanError {
     },
     ServiceDependencyCycle {
         service_ids: Vec<ServiceId>,
+    },
+    HealthyDependencyWithoutHealthcheck {
+        service_id: ServiceId,
+        dependency: ServiceId,
     },
     ConflictingVolumePins {
         service_id: ServiceId,
@@ -1659,107 +1699,134 @@ pub fn plan_namespace_deploy(
     services: Vec<DeployPlanningInput>,
     cleanup_containers: Vec<DeployCleanupContainer>,
 ) -> Result<DeployPlan, DeployPlanError> {
-    let services = dependency_ordered_services(services)?;
-    let mut service_plans = Vec::new();
+    let phases = dependency_ordered_phases(services)?;
+    let mut phase_plans = Vec::new();
     let mut cleanup_containers = cleanup_containers;
     let mut volume_pin_commits = Vec::new();
-    let mut working_volume_pins = services
+    let mut working_volume_pins = phases
         .iter()
-        .flat_map(|input| input.volume_pins.iter().cloned())
+        .flatten()
+        .flat_map(|input| &input.volume_pins)
+        .cloned()
         .collect::<Vec<_>>();
-    for mut input in services {
-        input.volume_pins = working_volume_pins.clone();
-        let plan = plan_deploy_service(input)?;
-        working_volume_pins.extend(plan.volume_pin_commits.clone());
-        volume_pin_commits.extend(plan.volume_pin_commits);
-        service_plans.push(DeployServicePlan {
-            service_id: plan.service_id,
-            steps: plan.steps,
-            pre_start: plan.pre_start,
-        });
-        cleanup_containers.extend(plan.cleanup_containers);
+    for phase in phases {
+        let mut services = Vec::new();
+        for mut input in phase {
+            input.volume_pins = working_volume_pins.clone();
+            let plan = plan_deploy_service(input)?;
+            working_volume_pins.extend(plan.volume_pin_commits.clone());
+            volume_pin_commits.extend(plan.volume_pin_commits);
+            services.push(DeployServicePlan {
+                service_id: plan.service_id,
+                steps: plan.steps,
+                pre_start: plan.pre_start,
+            });
+            cleanup_containers.extend(plan.cleanup_containers);
+        }
+        phase_plans.push(DeployPhasePlan { services });
     }
 
     Ok(DeployPlan {
         namespace_id,
         namespace_revision_id,
-        services: service_plans,
+        phases: phase_plans,
         volume_pin_commits,
         cleanup_containers,
     })
 }
 
-fn dependency_ordered_services(
+fn dependency_ordered_phases(
     services: Vec<DeployPlanningInput>,
-) -> Result<Vec<DeployPlanningInput>, DeployPlanError> {
-    let service_indexes = services
+) -> Result<Vec<Vec<DeployPlanningInput>>, DeployPlanError> {
+    let service_healthchecks = services
         .iter()
-        .enumerate()
-        .map(|(index, input)| (input.request.service_id.clone(), index))
+        .map(|input| {
+            (
+                input.request.service_id.clone(),
+                input
+                    .request
+                    .runtime
+                    .healthcheck
+                    .as_ref()
+                    .is_some_and(ContainerHealthcheck::reports_docker_health),
+            )
+        })
         .collect::<BTreeMap<_, _>>();
-    let mut dependents = vec![Vec::new(); services.len()];
-    let mut dependency_counts = vec![0_usize; services.len()];
+    let mut dependents = BTreeMap::<ServiceId, Vec<ServiceId>>::new();
+    let mut dependency_counts = BTreeMap::<ServiceId, usize>::new();
 
-    for (service_index, input) in services.iter().enumerate() {
+    for input in &services {
         let mut dependencies = BTreeSet::new();
         for dependency in &input.request.depends_on {
-            let Some(dependency_index) = service_indexes.get(dependency).copied() else {
+            let Some(has_healthcheck) = service_healthchecks.get(&dependency.service_id) else {
                 return Err(DeployPlanError::UnknownServiceDependency {
                     service_id: input.request.service_id.clone(),
-                    dependency: dependency.clone(),
+                    dependency: dependency.service_id.clone(),
                 });
             };
-            dependencies.insert(dependency_index);
+            if dependency.condition == DependencyCondition::Healthy && !has_healthcheck {
+                return Err(DeployPlanError::HealthyDependencyWithoutHealthcheck {
+                    service_id: input.request.service_id.clone(),
+                    dependency: dependency.service_id.clone(),
+                });
+            }
+            dependencies.insert(dependency.service_id.clone());
         }
-        let Some(dependency_count) = dependency_counts.get_mut(service_index) else {
-            continue;
-        };
-        *dependency_count = dependencies.len();
-        for dependency_index in dependencies {
-            let Some(dependency_dependents) = dependents.get_mut(dependency_index) else {
-                continue;
-            };
-            dependency_dependents.push(service_index);
+        dependency_counts.insert(input.request.service_id.clone(), dependencies.len());
+        for dependency in dependencies {
+            dependents
+                .entry(dependency)
+                .or_default()
+                .push(input.request.service_id.clone());
         }
     }
 
     let mut ready = dependency_counts
         .iter()
-        .enumerate()
-        .filter_map(|(index, count)| (*count == 0).then_some(index))
+        .filter_map(|(service_id, count)| (*count == 0).then_some(service_id.clone()))
         .collect::<BTreeSet<_>>();
-    let mut ordered_indexes = Vec::with_capacity(services.len());
-    while let Some(index) = ready.pop_first() {
-        ordered_indexes.push(index);
-        let Some(service_dependents) = dependents.get(index) else {
-            continue;
-        };
-        for dependent in service_dependents {
-            let Some(dependency_count) = dependency_counts.get_mut(*dependent) else {
-                continue;
-            };
-            *dependency_count -= 1;
-            if *dependency_count == 0 {
-                ready.insert(*dependent);
+    let mut phase_ids = Vec::new();
+    let mut placed = 0;
+    while !ready.is_empty() {
+        let current = std::mem::take(&mut ready);
+        placed += current.len();
+        for service_id in &current {
+            if let Some(service_dependents) = dependents.get(service_id) {
+                for dependent in service_dependents {
+                    let Some(dependency_count) = dependency_counts.get_mut(dependent) else {
+                        continue;
+                    };
+                    *dependency_count -= 1;
+                    if *dependency_count == 0 {
+                        ready.insert(dependent.clone());
+                    }
+                }
             }
         }
+        phase_ids.push(current);
     }
 
-    if ordered_indexes.len() != services.len() {
+    if placed != services.len() {
         let mut service_ids = dependency_counts
             .iter()
-            .zip(&services)
-            .filter(|(count, _)| **count > 0)
-            .map(|(_, input)| input.request.service_id.clone())
+            .filter(|(_, count)| **count > 0)
+            .map(|(service_id, _)| service_id.clone())
             .collect::<Vec<_>>();
         service_ids.sort();
         return Err(DeployPlanError::ServiceDependencyCycle { service_ids });
     }
 
-    let mut services = services.into_iter().map(Some).collect::<Vec<_>>();
-    Ok(ordered_indexes
+    let mut services = services
         .into_iter()
-        .filter_map(|index| services.get_mut(index).and_then(Option::take))
+        .map(|input| (input.request.service_id.clone(), input))
+        .collect::<BTreeMap<_, _>>();
+    Ok(phase_ids
+        .into_iter()
+        .map(|ids| {
+            ids.into_iter()
+                .filter_map(|service_id| services.remove(&service_id))
+                .collect()
+        })
         .collect())
 }
 
