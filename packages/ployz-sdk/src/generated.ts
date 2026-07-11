@@ -44,6 +44,8 @@ export type MachineBootstrapUrl = Brand<string, "MachineBootstrapUrl">;
 
 export type MachineJoinToken = Brand<string, "MachineJoinToken">;
 
+export type CloudBootstrapToken = Brand<string, "CloudBootstrapToken">;
+
 export type CloudBootstrapSessionSecret = Brand<string, "CloudBootstrapSessionSecret">;
 
 export type CloudBootstrapCallbackToken = Brand<string, "CloudBootstrapCallbackToken">;
@@ -57,6 +59,8 @@ export type CloudBootstrapClientInfo = { protocol_version: number, host_runner_v
 export type CloudBootstrapMachineFacts = { hostname: string | null, os: string, arch: string, candidate_runtime_nats_url: MachineJoinRuntimeNatsUrl | null, };
 
 export type CloudBootstrapSessionCreateRequest = { attempt_id: CloudBootstrapAttemptId, client: CloudBootstrapClientInfo, machine: CloudBootstrapMachineFacts, };
+
+export type CloudBootstrapTokenRedeemRequest = { attempt_id: CloudBootstrapAttemptId, client: CloudBootstrapClientInfo, machine: CloudBootstrapMachineFacts, };
 
 export type CloudBootstrapSessionCreated = { browser_url: string, user_code: string, session_secret: CloudBootstrapSessionSecret, poll_after_seconds: number, expires_at_unix_seconds: number, };
 
