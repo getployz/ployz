@@ -3,8 +3,9 @@ use super::{
     CoreReplacePayload, DeployOperationPayload, DeployOperationSubmission,
     MachineLifecycleOperationSubmission, MachineLifecyclePayload, MachineUpdateOperationSubmission,
     MachineUpdatePayload, ManagedLeaseOperationSubmission, ManagedLeasePayload,
-    NetworkRepairOperationSubmission, NetworkRepairPayload, ServiceRestartOperationSubmission,
-    ServiceRestartPayload, VolumeRemoveOperationSubmission, VolumeRemovePayload,
+    NamespaceRemoveOperationSubmission, NamespaceRemovePayload, NetworkRepairOperationSubmission,
+    NetworkRepairPayload, ServiceRestartOperationSubmission, ServiceRestartPayload,
+    VolumeRemoveOperationSubmission, VolumeRemovePayload,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{EventSequence, OperationEvent, OperationKind, OperationStatus};

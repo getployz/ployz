@@ -86,7 +86,10 @@ fn operation_failure_serde_rejects_mismatched_attempted_commit_evidence() {
     )
     .expect("matching certificate identities");
     let mut encoded = serde_json::to_value(failure).expect("serialize failure");
-    encoded["failure"]["attempted_active_cert"]["cert_id"] = serde_json::json!("cert_other");
+    let Some(cert_id) = encoded.pointer_mut("/failure/attempted_active_cert/cert_id") else {
+        panic!("attempted certificate id is present");
+    };
+    *cert_id = serde_json::json!("cert_other");
 
     assert!(serde_json::from_value::<CertOperationFailure>(encoded).is_err());
 }
