@@ -1,9 +1,10 @@
 use ployz_core::dataplane::{DataplaneProviderFailure, PloyzNativeMeshComponent};
 use ployz_core::deploy::DeployRequest;
-use ployz_core::ids::{ContainerId, MachineId, ServiceId};
+use ployz_core::ids::{ContainerId, MachineId, NamespaceRevisionId, ServiceId};
 use ployz_core::ops::{
-    ArtifactUnavailableReason, ControlPlaneCommitScope, DeployOperationFailure, HealthCheckFailure,
-    PreStartHookFailure, RetainedArtifact, RouteCutoverFailureReason, RouteTarget,
+    ArtifactUnavailableReason, CertificateProvisionFailure, ControlPlaneCommitScope,
+    DeployOperationFailure, HealthCheckFailure, PreStartHookFailure, RetainedArtifact,
+    RouteCutoverFailureReason, RouteHostname, RouteTarget,
 };
 use ployz_core::state::MachineUsabilityReason;
 
@@ -75,6 +76,23 @@ impl<'a> DeployFailureView<'a> {
                 }
                 HealthCheckFailure::TimedOut { .. } => {}
             },
+            DeployOperationFailure::CertificateProvisionFailed { failure, .. } => match failure {
+                CertificateProvisionFailure::ChallengeReadiness {
+                    missing_machine_ids,
+                } => {
+                    for machine_id in missing_machine_ids {
+                        push_unique(&mut machines, machine_id);
+                    }
+                }
+                CertificateProvisionFailure::GatewayArtifactPush { machine_id, .. } => {
+                    push_unique(&mut machines, machine_id);
+                }
+                CertificateProvisionFailure::OperationEvidenceWrite { .. }
+                | CertificateProvisionFailure::DnsPreflight { .. }
+                | CertificateProvisionFailure::ChallengePublish { .. }
+                | CertificateProvisionFailure::AcmeValidation { .. }
+                | CertificateProvisionFailure::ActiveCertCommit { .. } => {}
+            },
             DeployOperationFailure::RouteCutoverFailed { reason, .. } => match reason {
                 RouteCutoverFailureReason::GatewayUnavailable { machine_id } => {
                     push_unique(&mut machines, machine_id);
@@ -93,6 +111,7 @@ impl<'a> DeployFailureView<'a> {
                 ..
             }
             | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
+            | DeployOperationFailure::CertificateProvisionTimedOut { .. }
             | DeployOperationFailure::ControlPlaneCommitFailed { .. } => {}
         }
 
@@ -212,7 +231,11 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::RuntimeUnavailable { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
-            | DeployOperationFailure::HealthCheckFailed { .. } => FailureSafety::ServingUnchanged,
+            | DeployOperationFailure::HealthCheckFailed { .. }
+            | DeployOperationFailure::CertificateProvisionFailed { .. }
+            | DeployOperationFailure::CertificateProvisionTimedOut { .. } => {
+                FailureSafety::ServingUnchanged
+            }
             DeployOperationFailure::ControlPlaneCommitFailed { .. }
             | DeployOperationFailure::RouteCutoverFailed { .. } => FailureSafety::NoClaim,
         }
@@ -239,6 +262,8 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. }
+            | DeployOperationFailure::CertificateProvisionFailed { .. }
+            | DeployOperationFailure::CertificateProvisionTimedOut { .. }
             | DeployOperationFailure::ControlPlaneCommitFailed { .. }
             | DeployOperationFailure::RouteCutoverFailed { .. } => None,
         }
@@ -264,13 +289,37 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. }
+            | DeployOperationFailure::CertificateProvisionFailed { .. }
+            | DeployOperationFailure::CertificateProvisionTimedOut { .. }
             | DeployOperationFailure::ControlPlaneCommitFailed { .. } => None,
         }
     }
 
-    pub(crate) fn guidance(&self) -> Option<&'a str> {
+    pub(crate) fn guidance(&self) -> Option<String> {
         match self.failure {
-            DeployOperationFailure::AutoDnsWithoutLease { message, .. } => Some(message.as_str()),
+            DeployOperationFailure::AutoDnsWithoutLease { message, .. } => {
+                Some(message.as_str().to_owned())
+            }
+            DeployOperationFailure::CertificateProvisionFailed {
+                hostname,
+                namespace_revision_id,
+                failure,
+                ..
+            } => Some(certificate_provision_failure_cause(
+                hostname,
+                namespace_revision_id,
+                failure,
+            )),
+            DeployOperationFailure::CertificateProvisionTimedOut {
+                hostname,
+                namespace_revision_id,
+                timeout_seconds,
+                ..
+            } => Some(certificate_provision_timeout_cause(
+                hostname,
+                namespace_revision_id,
+                *timeout_seconds,
+            )),
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
             | DeployOperationFailure::CertificatePending { .. }
@@ -318,6 +367,8 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. }
+            | DeployOperationFailure::CertificateProvisionFailed { .. }
+            | DeployOperationFailure::CertificateProvisionTimedOut { .. }
             | DeployOperationFailure::RouteCutoverFailed { .. } => None,
         }
     }
@@ -483,6 +534,18 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
                 format!("health check timed out after {timeout_seconds}s")
             }
         },
+        DeployOperationFailure::CertificateProvisionFailed {
+            hostname,
+            namespace_revision_id,
+            failure,
+            ..
+        } => certificate_provision_failure_cause(hostname, namespace_revision_id, failure),
+        DeployOperationFailure::CertificateProvisionTimedOut {
+            hostname,
+            namespace_revision_id,
+            timeout_seconds,
+            ..
+        } => certificate_provision_timeout_cause(hostname, namespace_revision_id, *timeout_seconds),
         DeployOperationFailure::ControlPlaneCommitFailed { scope, message, .. } => {
             let scope = match scope {
                 ControlPlaneCommitScope::ServiceEntry { service_id, .. } => {
@@ -521,6 +584,92 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
             }
         }
     }
+}
+
+fn certificate_provision_failure_cause(
+    hostname: &RouteHostname,
+    namespace_revision_id: &NamespaceRevisionId,
+    failure: &CertificateProvisionFailure,
+) -> String {
+    certificate_provision_failure_detail(
+        failure,
+        Some(&format!(
+            "for {} (namespace revision {})",
+            hostname.as_str(),
+            namespace_revision_id.as_str(),
+        )),
+    )
+}
+
+pub(crate) fn certificate_provision_failure_detail(
+    failure: &CertificateProvisionFailure,
+    scope: Option<&str>,
+) -> String {
+    let scope = scope.map_or_else(String::new, |scope| format!(" {scope}"));
+    match failure {
+        CertificateProvisionFailure::OperationEvidenceWrite { message } => format!(
+            "certificate operation evidence write failed{scope}: {}",
+            message.as_str()
+        ),
+        CertificateProvisionFailure::DnsPreflight { message } => {
+            format!(
+                "certificate DNS preflight failed{scope}: {}",
+                message.as_str()
+            )
+        }
+        CertificateProvisionFailure::ChallengePublish { message } => {
+            format!(
+                "certificate HTTP-01 challenge publish failed{scope}: {}",
+                message.as_str()
+            )
+        }
+        CertificateProvisionFailure::ChallengeReadiness {
+            missing_machine_ids,
+        } => {
+            let machines = missing_machine_ids
+                .iter()
+                .map(|machine_id| machine_id.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "certificate HTTP-01 challenge readiness failed{scope}: missing gateway acknowledgements from {machines}"
+            )
+        }
+        CertificateProvisionFailure::AcmeValidation { message } => {
+            format!(
+                "certificate ACME validation failed{scope}: {}",
+                message.as_str()
+            )
+        }
+        CertificateProvisionFailure::GatewayArtifactPush {
+            machine_id,
+            message,
+        } => format!(
+            "certificate gateway artifact push failed on {}{scope}: {}",
+            machine_id.as_str(),
+            message.as_str()
+        ),
+        CertificateProvisionFailure::ActiveCertCommit {
+            attempted_active_cert,
+            message,
+        } => format!(
+            "active certificate commit failed for {}{scope}: {}",
+            attempted_active_cert.cert_id.as_str(),
+            message.as_str()
+        ),
+    }
+}
+
+fn certificate_provision_timeout_cause(
+    hostname: &RouteHostname,
+    namespace_revision_id: &NamespaceRevisionId,
+    timeout_seconds: u32,
+) -> String {
+    format!(
+        "certificate provisioning timed out after {timeout_seconds}s for {} (namespace revision {})",
+        hostname.as_str(),
+        namespace_revision_id.as_str()
+    )
 }
 
 fn pre_start_hook_failure_cause(failure: &PreStartHookFailure) -> String {

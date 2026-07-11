@@ -160,6 +160,10 @@ fn stub_worker_renewal_returns_fresh_bundle_for_existing_lease() {
         .handle(LeaseWorkerRequest::Renew {
             lease: acquired.lease.name.clone(),
             token: acquired.lease.token.clone(),
+            request: ManagedLeaseAcquireRequest {
+                ipv4: Vec::new(),
+                ipv6: Vec::new(),
+            },
         })
         .expect("lease renewed");
 

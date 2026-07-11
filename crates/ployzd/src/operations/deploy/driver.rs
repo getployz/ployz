@@ -1,14 +1,15 @@
 //! Owned deploy execution started by the control service.
 
+use crate::certificate::{CertificateManager, GatewayCertificateTarget};
 use crate::intent::lease_intent::LeaseIntentStore;
 use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::intent::service::NatsIntentReader;
 use crate::lease::LeaseClient;
 use crate::operation_api::admission::{AcceptedDeployExecution, OperationControllers};
 use crate::operations::deploy::{
-    DataplanePreparer, DeployContainer, DeployExecutionError, DeployExecutionInput,
-    DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError, DeployHealthCheckError,
-    DeployHealthChecker, DeployMachineCandidates, MachineContainerRuntime,
+    CertificateProvisioner, DataplanePreparer, DeployContainer, DeployExecutionError,
+    DeployExecutionInput, DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError,
+    DeployHealthCheckError, DeployHealthChecker, DeployMachineCandidates, MachineContainerRuntime,
     ManagedCertificateWaitPolicy, NamespaceCommitError, NamespaceStateCommitter,
     execute_deploy_operation, load_deploy_execution_facts_from_nats,
 };
@@ -24,10 +25,12 @@ use crate::roles::machine::protocol::{
     MachineContainerInspectRpcOk, MachineContainerInspectRpcRequest,
 };
 use crate::tasks::TaskRegistry;
+use ployz_core::cert::ActiveCertState;
 use ployz_core::deploy::DeployRouteTarget;
 use ployz_core::machine_runtime::{ContainerHealth, ContainerRuntimeState};
 use ployz_core::ops::{
-    DeployOperationFailure, DeployTransition, FailureMessage, OperatorHint, StatusProjectionError,
+    CertificateProvisionFailure, DeployOperationFailure, DeployTransition, FailureMessage,
+    OperatorHint, RouteHostname, StatusProjectionError,
 };
 use ployz_core::subjects::INTENT_CHANGED;
 use std::time::Duration;
@@ -40,17 +43,29 @@ const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// sampled alive once, and one running observation is not survival.
 const DEPLOY_RUNNING_CONFIRMATION_WINDOW: Duration = Duration::from_millis(1_500);
 
-pub async fn run_deploy_operation<D, N, H>(
+impl CertificateProvisioner for CertificateManager {
+    async fn ensure(
+        &mut self,
+        owner_operation_id: &ployz_core::ids::OperationId,
+        hostname: &RouteHostname,
+        targets: &[GatewayCertificateTarget],
+    ) -> Result<ActiveCertState, CertificateProvisionFailure> {
+        CertificateManager::ensure(self, owner_operation_id, hostname, targets).await
+    }
+}
+
+pub async fn run_deploy_operation<D, N, H, C>(
     accepted_execution: AcceptedDeployExecution,
     machine_candidates: DeployMachineCandidates,
     stores: DeployOperationStores,
-    ports: DeployOperationPorts<'_, D, N, H>,
+    ports: DeployOperationPorts<'_, D, N, H, C>,
     step_timeout: Duration,
 ) -> Result<DeployExecutionOutcome, DeployOperationRunError>
 where
     D: DataplanePreparer,
     N: MachineContainerRuntime,
     H: DeployHealthChecker,
+    C: CertificateProvisioner,
 {
     let AcceptedDeployExecution {
         submission: accepted,
@@ -65,6 +80,7 @@ where
         dataplane,
         machine_runtime,
         health_checker,
+        certificate_provisioner,
     } = ports;
     let request = accepted.target.clone();
 
@@ -154,6 +170,7 @@ where
             dataplane,
             machine_runtime,
             health_checker,
+            certificate_provisioner,
             namespace_state: &mut namespace_state,
         },
     )
@@ -208,12 +225,13 @@ pub struct DeployOperationStores {
     pub controllers: OperationControllers,
 }
 
-pub struct DeployOperationPorts<'a, D, N, H> {
+pub struct DeployOperationPorts<'a, D, N, H, C> {
     pub facts_reader: &'a NatsMachineFactsReader,
     pub intent_reader: &'a NatsIntentReader,
     pub dataplane: &'a mut D,
     pub machine_runtime: &'a mut N,
     pub health_checker: &'a mut H,
+    pub certificate_provisioner: &'a mut C,
 }
 
 struct NamespaceIntentCommitter {
@@ -344,6 +362,7 @@ pub enum DeployOperationRunError {
 pub struct DeployOperationDriver {
     stores: DeployOperationStores,
     machine_candidates: DeployMachineCandidates,
+    certificate_manager: CertificateManager,
     step_timeout: Duration,
     task_registry: TaskRegistry,
 }
@@ -353,12 +372,14 @@ impl DeployOperationDriver {
     pub fn new(
         stores: DeployOperationStores,
         machine_candidates: DeployMachineCandidates,
+        certificate_manager: CertificateManager,
         step_timeout: Duration,
         task_registry: TaskRegistry,
     ) -> Self {
         Self {
             stores,
             machine_candidates,
+            certificate_manager,
             step_timeout,
             task_registry,
         }
@@ -392,6 +413,7 @@ impl DeployOperationDriver {
         let mut health_checker =
             LiveContainerHealthChecker::new(health_runtime, DEPLOY_HEALTH_POLL_INTERVAL);
         let intent_reader = NatsIntentReader::new(client).with_request_timeout(self.step_timeout);
+        let mut certificate_manager = self.certificate_manager.clone();
 
         let namespace_id = accepted.submission.target.namespace_id.clone();
         let operation_id = accepted.submission.operation_id.clone();
@@ -406,6 +428,7 @@ impl DeployOperationDriver {
                 dataplane: &mut dataplane,
                 machine_runtime: &mut machine_runtime,
                 health_checker: &mut health_checker,
+                certificate_provisioner: &mut certificate_manager,
             },
             self.step_timeout,
         )

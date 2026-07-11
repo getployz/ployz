@@ -289,6 +289,7 @@ impl DeployRunningStage {
             Self::EnsuringImages => "ensuring_images",
             Self::StartingContainers => "starting_containers",
             Self::WaitingForHealth => "waiting_for_health",
+            Self::EnsuringCertificates => "ensuring_certificates",
             Self::RouteCutover => "route_cutover",
             Self::ServingTargetCommit => "serving_target_commit",
             Self::RemovingSupersededContainers => "removing_superseded_containers",
@@ -363,6 +364,8 @@ pub enum MachineServiceEndpoint {
     ImageBlobPush,
     ImageManifestPush,
     ImageEnsure,
+    CertificateArtifactPush,
+    CertificateChallengeStatus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -403,6 +406,8 @@ impl MachineServiceEndpoint {
             // under the controller-only container command namespace while the
             // three staging endpoints above stay operator-reachable.
             Self::ImageEnsure => "container.ensure_image",
+            Self::CertificateArtifactPush => "certificate.artifact.push",
+            Self::CertificateChallengeStatus => "certificate.challenge.status",
         }
     }
 
@@ -419,7 +424,8 @@ impl MachineServiceEndpoint {
             | Self::SubstrateReport
             | Self::DataplaneStatus
             | Self::LogsTail
-            | Self::ImageBlobCheck => MachineServiceEndpointExecution::Query,
+            | Self::ImageBlobCheck
+            | Self::CertificateChallengeStatus => MachineServiceEndpointExecution::Query,
             Self::ContainerEnsureEndpointNetwork
             | Self::FactsRefresh
             | Self::ContainerRun
@@ -432,7 +438,30 @@ impl MachineServiceEndpoint {
             | Self::SubstrateUpdate
             | Self::ImageBlobPush
             | Self::ImageManifestPush
-            | Self::ImageEnsure => MachineServiceEndpointExecution::Command,
+            | Self::ImageEnsure
+            | Self::CertificateArtifactPush => MachineServiceEndpointExecution::Command,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn certificate_gateway_endpoints_are_machine_scoped_by_execution_class() {
+        let machine_id = MachineId::try_new("machine_7").expect("machine id");
+
+        assert_eq!(
+            machine_service(&machine_id, MachineServiceEndpoint::CertificateArtifactPush),
+            "plz.v1.rpc.machine.command.machine_7.certificate.artifact.push"
+        );
+        assert_eq!(
+            machine_service(
+                &machine_id,
+                MachineServiceEndpoint::CertificateChallengeStatus,
+            ),
+            "plz.v1.rpc.machine.query.machine_7.certificate.challenge.status"
+        );
     }
 }

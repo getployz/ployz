@@ -236,6 +236,10 @@ async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
         [machine_id("edge_2")]
     );
     assert_eq!(command.dataplane_machines(), [machine_id("edge_2")]);
+    let [gateway] = command.gateway_certificate_targets() else {
+        panic!("intent-known gateway remains the only certificate target");
+    };
+    assert_eq!(gateway.machine_id, machine_id("edge_2"));
 }
 
 #[tokio::test]

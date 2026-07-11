@@ -1,8 +1,8 @@
 use std::fs;
 
 use ployz::bootstrap_command::{
-    BootstrapInstaller, BootstrapRelease, CloudBootstrapCommand, DEFAULT_BOOTSTRAP_URL,
-    DEFAULT_RELEASE_CHANNEL, FounderBootstrapCommand,
+    BootstrapInstaller, BootstrapRelease, CloudBootstrapCommand, CloudBootstrapMode,
+    DEFAULT_BOOTSTRAP_URL, DEFAULT_RELEASE_CHANNEL, FounderBootstrapCommand,
 };
 use ployz::commands::machine::{
     MachineAddInstaller, MachineAddOutput, MachineBootstrapUrl, MachineIdentity,
@@ -23,7 +23,7 @@ use ployz_core::state::MachineLifecycle;
 use ployz_core::state::{
     ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation,
 };
-use ployz_sdk_types::{AcceptedOperation, MachineSnapshot};
+use ployz_sdk_types::{AcceptedOperation, CloudBootstrapToken, MachineSnapshot};
 use ployz_test_support::fs::make_executable;
 use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
 
@@ -871,6 +871,7 @@ fn cloud_bootstrap_command_renders_tokenless_interactive_command() {
             MachineBootstrapUrl::try_new("https://ployz.sh").expect("valid bootstrap url"),
         ),
         cloud_host: None,
+        mode: CloudBootstrapMode::Interactive,
     };
 
     assert_eq!(
@@ -886,6 +887,7 @@ fn cloud_bootstrap_command_renders_custom_cloud_host_after_installer_pipe() {
             MachineBootstrapUrl::try_new("https://ployz.sh").expect("valid bootstrap url"),
         ),
         cloud_host: Some("cloud.example.com".to_owned()),
+        mode: CloudBootstrapMode::Interactive,
     };
 
     let rendered = command.render();
@@ -901,12 +903,35 @@ fn cloud_bootstrap_command_shell_quotes_remote_script_and_host() {
     let command = CloudBootstrapCommand {
         installer: BootstrapInstaller::RemoteScript("/tmp/ployz install.sh".to_owned()),
         cloud_host: Some("cloud.example.com/path?x='quoted'".to_owned()),
+        mode: CloudBootstrapMode::Interactive,
     };
 
     let rendered = command.render();
 
     assert!(rendered.starts_with("sh '/tmp/ployz install.sh' && sudo ployz host bootstrap"));
     assert!(rendered.contains("--cloud-host 'cloud.example.com/path?x='\\''quoted'\\'''"));
+}
+
+#[test]
+fn cloud_bootstrap_command_renders_and_redacts_cloud_token() {
+    let command = CloudBootstrapCommand {
+        installer: BootstrapInstaller::BootstrapUrl(
+            MachineBootstrapUrl::try_new("https://ployz.sh").expect("valid bootstrap url"),
+        ),
+        cloud_host: None,
+        mode: CloudBootstrapMode::Token(
+            CloudBootstrapToken::try_new("token'for-many-machines")
+                .expect("valid cloud bootstrap token"),
+        ),
+    };
+
+    assert_eq!(
+        command.render(),
+        "curl -fsSL -- 'https://ployz.sh' | sh && sudo ployz host bootstrap cloud --cloud-token 'token'\\''for-many-machines'"
+    );
+    let debug = format!("{command:?}");
+    assert!(debug.contains("[redacted]"));
+    assert!(!debug.contains("token'for-many-machines"));
 }
 
 #[test]

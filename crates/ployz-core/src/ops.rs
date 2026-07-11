@@ -35,7 +35,10 @@ mod text;
 mod volume_remove;
 
 pub use accessors::NextEventSequenceError;
-pub use cert::{CertOperationFailure, CertOperationState, CertRunningStage, CertTransition};
+pub use cert::{
+    CertOperationFailure, CertOperationFailureError, CertOperationState, CertRunningStage,
+    CertTransition, CertificateProvisionFailure,
+};
 pub use core_replace::{CoreReplaceFailure, CoreReplaceOperationState, CoreReplaceTransition};
 pub use deploy::{
     ArtifactUnavailableReason, ControlPlaneCommitScope, DeployCleanupFailure,

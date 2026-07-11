@@ -50,6 +50,7 @@ async fn auto_hostname_deploy_waits_for_managed_certificate_and_stores_ready_bun
     let mut dataplane = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
+    let mut certificates = RecordingCertificates::successful();
 
     run_deploy_operation(
         accepted,
@@ -71,6 +72,7 @@ async fn auto_hostname_deploy_waits_for_managed_certificate_and_stores_ready_bun
             dataplane: &mut dataplane,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut certificates,
         },
         Duration::from_secs(5),
     )
@@ -109,6 +111,7 @@ async fn auto_hostname_deploy_fails_typed_when_certificate_stays_pending() {
     let mut dataplane = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_should_not_start"]);
     let mut health = RecordingHealth::healthy();
+    let mut certificates = RecordingCertificates::successful();
 
     let error = run_deploy_operation(
         accepted,
@@ -130,6 +133,7 @@ async fn auto_hostname_deploy_fails_typed_when_certificate_stays_pending() {
             dataplane: &mut dataplane,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut certificates,
         },
         Duration::from_secs(5),
     )
@@ -180,6 +184,7 @@ async fn deploy_without_auto_hostname_does_not_poll_record_only_lease() {
     let mut dataplane = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
+    let mut certificates = RecordingCertificates::successful();
 
     run_deploy_operation(
         accepted,
@@ -201,6 +206,7 @@ async fn deploy_without_auto_hostname_does_not_poll_record_only_lease() {
             dataplane: &mut dataplane,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut certificates,
         },
         Duration::from_secs(5),
     )

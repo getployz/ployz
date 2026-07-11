@@ -1,8 +1,11 @@
 use crate::core_store::{CoreStore, CoreStoreError, query_json, to_json};
 use ployz_core::cert::{
-    AutoLeaseState, ManagedCertBundle, ManagedLeaseIntent, ManagedLeaseRecord, PublicUrlMode,
+    AutoLeaseState, ManagedCertBundle, ManagedLeaseAddressSet, ManagedLeaseIntent,
+    ManagedLeaseRecord, PublicUrlMode,
 };
 use rusqlite::{Connection, params};
+
+const LEASE_INTENT_ID: &str = "1";
 
 #[derive(Debug, Clone)]
 pub struct LeaseIntentStore {
@@ -17,7 +20,10 @@ impl LeaseIntentStore {
 
     pub async fn set_mode(&self, mode: PublicUrlMode) -> Result<(), LeaseIntentStoreError> {
         self.store
-            .call(move |conn| replace(conn, &ManagedLeaseIntent::empty(mode)))
+            .call(move |conn| {
+                replace_intent(conn, &ManagedLeaseIntent::empty(mode))?;
+                clear_applied_addresses(conn)
+            })
             .await
             .map_err(store_error)
     }
@@ -28,13 +34,9 @@ impl LeaseIntentStore {
     ) -> Result<(), LeaseIntentStoreError> {
         self.store
             .call(move |conn| {
-                let configured: Option<ManagedLeaseIntent> = query_json(
-                    conn,
-                    "SELECT json FROM managed_lease_intent WHERE id = ?1",
-                    "1",
-                )?;
+                let configured = load_intent_if_configured(conn)?;
                 if configured.is_none() {
-                    replace(conn, &ManagedLeaseIntent::empty(mode))?;
+                    replace_intent(conn, &ManagedLeaseIntent::empty(mode))?;
                 }
                 Ok(())
             })
@@ -47,58 +49,57 @@ impl LeaseIntentStore {
         record: ManagedLeaseRecord,
         bundle: Option<ManagedCertBundle>,
     ) -> Result<StoreLeaseOutcome, LeaseIntentStoreError> {
-        if let Some(bundle) = &bundle
-            && bundle.lease != record.name
-        {
-            return Err(LeaseIntentStoreError {
-                message: format!(
-                    "certificate bundle lease {} does not match record lease {}",
-                    bundle.lease.as_str(),
-                    record.name.as_str()
-                ),
-            });
-        }
+        validate_bundle(&record, bundle.as_ref())?;
         self.store
             .call(move |conn| {
                 let intent = load_intent(conn)?;
-                let ManagedLeaseIntent::Auto { state } = intent else {
-                    return Ok(StoreLeaseOutcome::Superseded);
-                };
-                let state = match (bundle, *state) {
-                    (
-                        Some(bundle),
-                        AutoLeaseState::Unacquired
-                        | AutoLeaseState::RecordOnly { .. }
-                        | AutoLeaseState::Ready { .. },
-                    ) => AutoLeaseState::Ready {
-                        lease: record,
-                        bundle,
-                    },
-                    (None, AutoLeaseState::Ready { lease, bundle })
-                        if lease.name == record.name
-                            && bundle.lease == record.name
-                            && bundle.issued_at.unix_seconds()
-                                <= record.issued_at.unix_seconds()
-                            && record.issued_at.unix_seconds()
-                                < bundle.expires_at.unix_seconds() =>
-                    {
-                        AutoLeaseState::Ready {
-                            lease: record,
-                            bundle,
-                        }
-                    }
-                    (
-                        None,
-                        AutoLeaseState::Unacquired
-                        | AutoLeaseState::RecordOnly { .. }
-                        | AutoLeaseState::Ready { .. },
-                    ) => AutoLeaseState::RecordOnly { lease: record },
-                };
-                let intent = ManagedLeaseIntent::Auto {
-                    state: Box::new(state),
-                };
-                replace(conn, &intent)?;
-                Ok(StoreLeaseOutcome::Stored)
+                let (intent, outcome) = updated_intent(intent, record, bundle);
+                if outcome == StoreLeaseOutcome::Stored {
+                    replace_intent(conn, &intent)?;
+                }
+                Ok(outcome)
+            })
+            .await
+            .map_err(store_error)
+    }
+
+    pub async fn applied_address_set_differs(
+        &self,
+        addresses: &ManagedLeaseAddressSet,
+    ) -> Result<bool, LeaseIntentStoreError> {
+        let addresses = addresses.clone();
+        self.store
+            .call(move |conn| Ok(load_applied_addresses(conn)?.as_ref() != Some(&addresses)))
+            .await
+            .map_err(store_error)
+    }
+
+    pub async fn store_successful_lease_application(
+        &self,
+        record: ManagedLeaseRecord,
+        bundle: Option<ManagedCertBundle>,
+        addresses: ManagedLeaseAddressSet,
+    ) -> Result<StoreLeaseOutcome, LeaseIntentStoreError> {
+        validate_bundle(&record, bundle.as_ref())?;
+        self.store
+            .call(move |conn| {
+                let intent = load_intent(conn)?;
+                let (intent, outcome) = updated_intent(intent, record, bundle);
+                if outcome == StoreLeaseOutcome::Stored {
+                    let transaction = conn.transaction()?;
+                    transaction.execute(
+                        "INSERT INTO managed_lease_intent (id, json) VALUES (?1, ?2)
+                         ON CONFLICT(id) DO UPDATE SET json = excluded.json",
+                        params![LEASE_INTENT_ID, to_json(&intent)?],
+                    )?;
+                    transaction.execute(
+                        "INSERT INTO managed_lease_applied_addresses (id, json) VALUES (1, ?1)
+                         ON CONFLICT(id) DO UPDATE SET json = excluded.json",
+                        params![to_json(&addresses)?],
+                    )?;
+                    transaction.commit()?;
+                }
+                Ok(outcome)
             })
             .await
             .map_err(store_error)
@@ -110,10 +111,13 @@ impl LeaseIntentStore {
     ) -> Result<(), LeaseIntentStoreError> {
         self.store
             .call(move |conn| {
-                let intent = ManagedLeaseIntent::Auto {
-                    state: Box::new(AutoLeaseState::RecordOnly { lease: record }),
-                };
-                replace(conn, &intent)
+                replace_intent(
+                    conn,
+                    &ManagedLeaseIntent::Auto {
+                        state: Box::new(AutoLeaseState::RecordOnly { lease: record }),
+                    },
+                )?;
+                clear_applied_addresses(conn)
             })
             .await
             .map_err(store_error)
@@ -127,13 +131,7 @@ impl LeaseIntentStore {
         &self,
     ) -> Result<Option<ManagedLeaseIntent>, LeaseIntentStoreError> {
         self.store
-            .call(|conn| {
-                query_json(
-                    conn,
-                    "SELECT json FROM managed_lease_intent WHERE id = ?1",
-                    "1",
-                )
-            })
+            .call(load_intent_if_configured)
             .await
             .map_err(store_error)
     }
@@ -145,22 +143,108 @@ pub enum StoreLeaseOutcome {
     Superseded,
 }
 
-fn load_intent(conn: &mut Connection) -> Result<ManagedLeaseIntent, rusqlite::Error> {
-    Ok(query_json(
+fn load_intent_if_configured(
+    conn: &mut Connection,
+) -> Result<Option<ManagedLeaseIntent>, rusqlite::Error> {
+    query_json(
         conn,
         "SELECT json FROM managed_lease_intent WHERE id = ?1",
-        "1",
-    )?
-    .unwrap_or_else(|| ManagedLeaseIntent::empty(PublicUrlMode::Auto)))
+        LEASE_INTENT_ID,
+    )
 }
 
-fn replace(conn: &Connection, intent: &ManagedLeaseIntent) -> Result<(), rusqlite::Error> {
+fn load_intent(conn: &mut Connection) -> Result<ManagedLeaseIntent, rusqlite::Error> {
+    Ok(load_intent_if_configured(conn)?
+        .unwrap_or_else(|| ManagedLeaseIntent::empty(PublicUrlMode::Auto)))
+}
+
+fn load_applied_addresses(
+    conn: &mut Connection,
+) -> Result<Option<ManagedLeaseAddressSet>, rusqlite::Error> {
+    query_json(
+        conn,
+        "SELECT json FROM managed_lease_applied_addresses WHERE id = ?1",
+        LEASE_INTENT_ID,
+    )
+}
+
+fn replace_intent(conn: &Connection, intent: &ManagedLeaseIntent) -> Result<(), rusqlite::Error> {
     conn.execute(
         "INSERT INTO managed_lease_intent (id, json) VALUES (1, ?1)
          ON CONFLICT(id) DO UPDATE SET json = excluded.json",
         params![to_json(intent)?],
     )?;
     Ok(())
+}
+
+fn clear_applied_addresses(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "DELETE FROM managed_lease_applied_addresses WHERE id = 1",
+        [],
+    )?;
+    Ok(())
+}
+
+fn validate_bundle(
+    record: &ManagedLeaseRecord,
+    bundle: Option<&ManagedCertBundle>,
+) -> Result<(), LeaseIntentStoreError> {
+    if let Some(bundle) = bundle
+        && bundle.lease != record.name
+    {
+        return Err(LeaseIntentStoreError {
+            message: format!(
+                "certificate bundle lease {} does not match record lease {}",
+                bundle.lease.as_str(),
+                record.name.as_str()
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn updated_intent(
+    intent: ManagedLeaseIntent,
+    record: ManagedLeaseRecord,
+    bundle: Option<ManagedCertBundle>,
+) -> (ManagedLeaseIntent, StoreLeaseOutcome) {
+    let ManagedLeaseIntent::Auto { state } = intent else {
+        return (intent, StoreLeaseOutcome::Superseded);
+    };
+    let state = match (bundle, *state) {
+        (
+            Some(bundle),
+            AutoLeaseState::Unacquired
+            | AutoLeaseState::RecordOnly { .. }
+            | AutoLeaseState::Ready { .. },
+        ) => AutoLeaseState::Ready {
+            lease: record,
+            bundle,
+        },
+        (None, AutoLeaseState::Ready { lease, bundle })
+            if lease.name == record.name
+                && bundle.lease == record.name
+                && bundle.issued_at.unix_seconds() <= record.issued_at.unix_seconds()
+                && record.issued_at.unix_seconds() < bundle.expires_at.unix_seconds() =>
+        {
+            AutoLeaseState::Ready {
+                lease: record,
+                bundle,
+            }
+        }
+        (
+            None,
+            AutoLeaseState::Unacquired
+            | AutoLeaseState::RecordOnly { .. }
+            | AutoLeaseState::Ready { .. },
+        ) => AutoLeaseState::RecordOnly { lease: record },
+    };
+    (
+        ManagedLeaseIntent::Auto {
+            state: Box::new(state),
+        },
+        StoreLeaseOutcome::Stored,
+    )
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -179,6 +263,73 @@ fn store_error(error: CoreStoreError) -> LeaseIntentStoreError {
 mod tests {
     use super::*;
     use ployz_core::cert::{LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, ManagedLeaseName};
+
+    fn addresses() -> ManagedLeaseAddressSet {
+        ManagedLeaseAddressSet::new(
+            vec!["203.0.113.8".parse().expect("IPv4")],
+            vec!["2001:db8::8".parse().expect("IPv6")],
+        )
+    }
+
+    fn record() -> ManagedLeaseRecord {
+        ManagedLeaseRecord::try_new(
+            ManagedLeaseName::try_new("cluster-one").expect("lease name"),
+            LeaseBearerToken::try_new("lease-token").expect("token"),
+            LeaseIssuedAt::try_new(1_700_000_000).expect("issued at"),
+            LeaseExpiresAt::try_new(1_700_000_060).expect("expires at"),
+        )
+        .expect("record")
+    }
+
+    #[tokio::test]
+    async fn successful_lease_application_records_addresses_but_generic_lease_store_does_not() {
+        let store = LeaseIntentStore::new(CoreStore::open_in_memory().await.expect("core store"));
+        let addresses = addresses();
+
+        store
+            .store_lease(record(), None)
+            .await
+            .expect("store lease");
+        assert!(
+            store
+                .applied_address_set_differs(&addresses)
+                .await
+                .expect("compare addresses")
+        );
+
+        store
+            .store_successful_lease_application(record(), None, addresses.clone())
+            .await
+            .expect("store successful renewal");
+        assert!(
+            !store
+                .applied_address_set_differs(&addresses)
+                .await
+                .expect("compare addresses")
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_lease_application_addresses_survive_core_restart() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("ployz-core.db");
+        let addresses = addresses();
+        let store = LeaseIntentStore::new(CoreStore::open(path.clone()).await.expect("core store"));
+        store
+            .store_successful_lease_application(record(), None, addresses.clone())
+            .await
+            .expect("store successful renewal");
+        drop(store);
+
+        let reopened = LeaseIntentStore::new(CoreStore::open(path).await.expect("reopen store"));
+
+        assert!(
+            !reopened
+                .applied_address_set_differs(&addresses)
+                .await
+                .expect("compare addresses")
+        );
+    }
 
     #[tokio::test]
     async fn absent_row_loads_auto_without_lease() {

@@ -41,6 +41,7 @@ use ployz_sdk_types::{
     ServiceListRequest, VolumeListRequest, VolumeStatus,
 };
 use ployz_test_support::ops::wait_for_terminal_status;
+use ployzd::certificate::task::{CertificateRenewalAttempt, CertificateRenewalOutcome};
 use ployzd::intent::lease_intent::LeaseIntentStore;
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
@@ -75,6 +76,15 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
     let config = nats.control_config();
     let runtime = nats.start_control(&config).await;
     let api = nats.api();
+
+    let renewal_health = runtime.certificate_renewal_health();
+    assert_eq!(renewal_health.consecutive_failures, 0);
+    assert!(matches!(
+        renewal_health.last_attempt,
+        None | Some(CertificateRenewalAttempt::Completed {
+            outcome: CertificateRenewalOutcome::NoAction,
+        })
+    ));
 
     let request =
         reserved_deploy_request(&api, "idem_control_runtime", deploy_target("svc_api")).await;
