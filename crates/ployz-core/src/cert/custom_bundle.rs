@@ -85,18 +85,22 @@ impl CustomCertBundle {
         active_cert: ActiveCertState,
         material: &[u8],
     ) -> Result<Self, CustomCertBundleError> {
-        let Some(separator) = material.iter().position(|byte| *byte == 0) else {
+        let mut parts = material.splitn(2, |byte| *byte == 0);
+        let Some(certificate_chain) = parts.next() else {
             return Err(CustomCertBundleError::InvalidMaterialFraming);
         };
-        if material[separator + 1..].contains(&0) {
+        let Some(private_key) = parts.next() else {
+            return Err(CustomCertBundleError::InvalidMaterialFraming);
+        };
+        if private_key.contains(&0) {
             return Err(CustomCertBundleError::InvalidMaterialFraming);
         }
-        let certificate_chain_pem = std::str::from_utf8(&material[..separator])
+        let certificate_chain_pem = std::str::from_utf8(certificate_chain)
             .map_err(|error| CustomCertBundleError::InvalidMaterialUtf8 {
                 message: error.to_string(),
             })?
             .to_owned();
-        let private_key_pem = std::str::from_utf8(&material[separator + 1..])
+        let private_key_pem = std::str::from_utf8(private_key)
             .map_err(|error| CustomCertBundleError::InvalidMaterialUtf8 {
                 message: error.to_string(),
             })?

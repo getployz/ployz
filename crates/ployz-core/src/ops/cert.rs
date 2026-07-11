@@ -226,7 +226,7 @@ pub(super) enum CertEvent {
     },
     Transition {
         cert_id: CertId,
-        transition: CertTransition,
+        transition: Box<CertTransition>,
     },
     Cancelled(CancellationReason),
 }

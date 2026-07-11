@@ -792,9 +792,9 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 event: CertEvent::Transition {
                     cert_id,
-                    transition: CertTransition::Running {
+                    transition: Box::new(CertTransition::Running {
                         stage: CertRunningStage::ChallengePublished,
-                    },
+                    }),
                 },
             },
             OperationEvent::CertValidationStarted {
@@ -804,9 +804,9 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 event: CertEvent::Transition {
                     cert_id,
-                    transition: CertTransition::Running {
+                    transition: Box::new(CertTransition::Running {
                         stage: CertRunningStage::ValidationStarted,
-                    },
+                    }),
                 },
             },
             OperationEvent::CertCompleted {
@@ -816,7 +816,7 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 event: CertEvent::Transition {
                     cert_id: active_cert.cert_id.clone(),
-                    transition: CertTransition::Completed,
+                    transition: Box::new(CertTransition::Completed),
                 },
             },
             OperationEvent::CertFailed {
@@ -826,7 +826,7 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 event: CertEvent::Transition {
                     cert_id: failure.cert_id().clone(),
-                    transition: CertTransition::Failed { failure },
+                    transition: Box::new(CertTransition::Failed { failure }),
                 },
             },
             OperationEvent::MachineAddSubmitted {
