@@ -10,10 +10,13 @@ use ployz_core::deploy::{
 use ployz_core::ids::{MachineId, OperationId, ServiceId};
 use ployz_core::image::OciPlatform;
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
+use ployz_core::ops::RouteHostname;
 use ployz_core::state::VolumePinState;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
+
+use crate::certificate::GatewayCertificateTarget;
 
 use super::{DeployExecutionCommand, DeployServiceExecutionCommand};
 
@@ -29,6 +32,7 @@ pub struct DeployExecutionFacts {
     pub machine_platforms: BTreeMap<MachineId, OciPlatform>,
     pub namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
     pub managed_lease: Option<ManagedLeaseName>,
+    pub gateway_certificate_targets: Vec<GatewayCertificateTarget>,
     pub step_timeout: Duration,
 }
 
@@ -160,6 +164,8 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
             cleanup_candidates: prepared.cleanup_candidates,
         });
     }
+    let custom_certificate_hostnames =
+        custom_certificate_hostnames(&services, facts.managed_lease.as_ref());
 
     // Manifest omission removes a service: its containers are cleanup
     // candidates on every deploy, not only when the manifest is empty.
@@ -179,9 +185,38 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         namespace_cleanup_candidates,
         machine_platforms: facts.machine_platforms,
         dataplane_members: facts.dataplane_members,
+        custom_certificate_hostnames,
+        gateway_certificate_targets: facts.gateway_certificate_targets,
         unusable_machines: facts.unusable_machines,
         step_timeout: facts.step_timeout,
     }
+}
+
+fn custom_certificate_hostnames(
+    services: &[DeployServiceExecutionCommand],
+    managed_lease: Option<&ManagedLeaseName>,
+) -> Vec<RouteHostname> {
+    services
+        .iter()
+        .flat_map(DeployServiceExecutionCommand::route_binding_states)
+        .filter(|binding| binding.target.port.get() == 443)
+        .map(|binding| &binding.target.hostname)
+        .filter(|hostname| {
+            !managed_lease.is_some_and(|lease| managed_bundle_covers(lease, hostname))
+        })
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn managed_bundle_covers(lease: &ManagedLeaseName, hostname: &RouteHostname) -> bool {
+    let suffix = lease.hostname_suffix();
+    hostname.as_str() == suffix
+        || hostname
+            .as_str()
+            .strip_suffix(&format!(".{suffix}"))
+            .is_some_and(|label| !label.is_empty() && !label.contains('.'))
 }
 
 pub fn namespace_cleanup_candidates(

@@ -119,6 +119,8 @@ mod tests {
             "route_bindings": [],
             "serving_target_entries": [],
             "authorized_users": [],
+            "custom_certificates": [],
+            "acme_http01_challenges": [],
         }))
         .expect("snapshot deserializes")
     }

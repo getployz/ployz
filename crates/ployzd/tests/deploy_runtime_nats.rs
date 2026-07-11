@@ -16,7 +16,9 @@ use ployz_core::ops::{
 };
 use ployz_core::subjects::{INTENT_CHANGED, MachineServiceEndpoint, machine_service};
 use ployz_test_support::ids::idempotency_key;
+use ployzd::certificate::{CertificateManager, CertificateManagerConfig};
 use ployzd::config::DEFAULT_MACHINE_BOOTSTRAP_URL;
+use ployzd::core_store::CoreStore;
 use ployzd::intent::lease_intent::LeaseIntentStore;
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
@@ -37,6 +39,7 @@ use ployzd::roles::machine::protocol::{
     MachineFactsGetRpcOk, MachineFactsGetRpcResponse,
 };
 use ployzd::tasks::TaskRegistry;
+use std::path::Path;
 use std::time::Duration;
 
 #[tokio::test]
@@ -54,6 +57,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
+    let mut certificates = RecordingCertificates::successful();
     let mut intent_changed = nats
         .machine_a
         .subscribe(INTENT_CHANGED)
@@ -84,6 +88,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut certificates,
         },
         Duration::from_secs(5),
     )
@@ -147,6 +152,7 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
+    let mut certificates = RecordingCertificates::successful();
 
     run_deploy_operation(
         accepted,
@@ -165,6 +171,7 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut certificates,
         },
         Duration::from_secs(5),
     )
@@ -211,6 +218,7 @@ async fn health_failure_records_failed_operation_without_committing_active_state
     let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::unhealthy("machine_a", "ctr_1");
+    let mut certificates = RecordingCertificates::successful();
 
     let error = run_deploy_operation(
         accepted,
@@ -229,6 +237,7 @@ async fn health_failure_records_failed_operation_without_committing_active_state
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut certificates,
         },
         Duration::from_secs(5),
     )
@@ -288,6 +297,7 @@ async fn auto_dns_without_lease_fails_before_runtime_work_with_guidance() {
     let mut dataplane = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_should_not_start"]);
     let mut health = RecordingHealth::healthy();
+    let mut certificates = RecordingCertificates::successful();
 
     let error = run_deploy_operation(
         accepted,
@@ -306,6 +316,7 @@ async fn auto_dns_without_lease_fails_before_runtime_work_with_guidance() {
             dataplane: &mut dataplane,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut certificates,
         },
         Duration::from_secs(5),
     )
@@ -361,6 +372,13 @@ async fn duplicate_driver_execution_does_not_release_the_original_namespace_lock
             controllers: controllers.clone(),
         },
         DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
+        CertificateManager::new(
+            CoreStore::open_in_memory()
+                .await
+                .expect("open certificate core store"),
+            nats.client.clone(),
+            CertificateManagerConfig::for_core_db(Path::new("ployz-core.db")),
+        ),
         Duration::from_secs(5),
         TaskRegistry::default(),
     );
@@ -402,6 +420,7 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
     let mut runtime = NatsMachineContainerRuntime::new(nats.client.clone())
         .with_request_timeout(Duration::from_millis(200));
     let mut health = RecordingHealth::healthy();
+    let mut certificates = RecordingCertificates::successful();
 
     let error = run_deploy_operation(
         accepted,
@@ -420,6 +439,7 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut certificates,
         },
         Duration::from_secs(5),
     )
@@ -479,6 +499,7 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
     let mut runtime = NatsMachineContainerRuntime::new(nats.client.clone())
         .with_request_timeout(Duration::from_millis(50));
     let mut health = RecordingHealth::healthy();
+    let mut certificates = RecordingCertificates::successful();
 
     let error = run_deploy_operation(
         accepted,
@@ -497,6 +518,7 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
             dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
+            certificate_provisioner: &mut certificates,
         },
         Duration::from_secs(5),
     )

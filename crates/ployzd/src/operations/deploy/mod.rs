@@ -33,8 +33,8 @@ use images::{
     dataplane_prepare_request, ensure_images, machine_image_pull, resolve_registry_images,
 };
 pub use ports::{
-    DataplanePreparer, DeployHealthChecker, DeployOperationRecorder, MachineContainerRuntime,
-    NamespaceCommitError, NamespaceStateCommitter,
+    CertificateProvisioner, DataplanePreparer, DeployHealthChecker, DeployOperationRecorder,
+    MachineContainerRuntime, NamespaceCommitError, NamespaceStateCommitter,
 };
 pub use preparation::{
     DeployExecutionFacts, DeployExecutionInput, namespace_cleanup_candidates,
@@ -53,15 +53,16 @@ pub use types::{
     RunContainerDisposition,
 };
 
-pub async fn execute_deploy_operation<R, D, N, H, S>(
+pub async fn execute_deploy_operation<R, D, N, H, C, S>(
     input: DeployExecutionInput,
-    ports: DeployExecutionPorts<'_, R, D, N, H, S>,
+    ports: DeployExecutionPorts<'_, R, D, N, H, C, S>,
 ) -> Result<DeployExecutionOutcome, DeployExecutionError>
 where
     R: DeployOperationRecorder,
     D: DataplanePreparer,
     N: MachineContainerRuntime,
     H: DeployHealthChecker,
+    C: CertificateProvisioner,
     S: NamespaceStateCommitter,
 {
     let DeployExecutionInput {
@@ -179,15 +180,16 @@ impl<'a> DeployRun<'a> {
     }
 }
 
-async fn execute_deploy_after_planning<R, D, N, H, S>(
+async fn execute_deploy_after_planning<R, D, N, H, C, S>(
     command: &DeployExecutionCommand,
-    ports: &mut DeployExecutionPorts<'_, R, D, N, H, S>,
+    ports: &mut DeployExecutionPorts<'_, R, D, N, H, C, S>,
 ) -> Result<DeployExecutionOutcome, DeployExecutionFailure>
 where
     R: DeployOperationRecorder,
     D: DataplanePreparer,
     N: MachineContainerRuntime,
     H: DeployHealthChecker,
+    C: CertificateProvisioner,
     S: NamespaceStateCommitter,
 {
     let mut containers = Vec::new();
@@ -360,6 +362,41 @@ where
         .await;
         if let Err(source) = health_result {
             return Err(run.fail(source));
+        }
+    }
+
+    if !command.custom_certificate_hostnames().is_empty() {
+        record_running_stage(
+            command,
+            &mut *ports.recorder,
+            DeployRunningStage::EnsuringCertificates,
+        )
+        .await
+        .map_err(|source| run.fail(source))?;
+
+        for hostname in command.custom_certificate_hostnames() {
+            with_step_timeout(
+                command,
+                DeployExecutionStep::EnsureCertificate {
+                    hostname: hostname.clone(),
+                },
+                async {
+                    (*ports.certificate_provisioner)
+                        .ensure(
+                            command.operation_id(),
+                            hostname,
+                            command.gateway_certificate_targets(),
+                        )
+                        .await
+                        .map(|_| ())
+                        .map_err(|failure| DeployExecutionError::ProvisionCertificate {
+                            hostname: hostname.clone(),
+                            failure: Box::new(failure),
+                        })
+                },
+            )
+            .await
+            .map_err(|source| run.fail(source))?;
         }
     }
 

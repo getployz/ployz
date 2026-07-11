@@ -1,5 +1,6 @@
 //! Load deploy execution facts from core intent and fresh machine facts RPCs.
 
+use crate::certificate::gateway_certificate_targets;
 use crate::intent::lease_intent::{LeaseIntentStore, StoreLeaseOutcome};
 use crate::intent::service::NatsIntentReader;
 use crate::lease::{BundleDownloadOutcome, LeaseClient};
@@ -166,6 +167,8 @@ async fn deploy_execution_facts(
         .collect();
     let dataplane_members =
         operation_dataplane_members(request, &active_machines, answering_machines);
+    let gateway_certificate_targets =
+        gateway_certificate_targets(&active_machines, &placement_facts);
     let namespace_cleanup_candidates =
         namespace_cleanup_candidates(&request.namespace_id, &observed_machines);
     Ok(DeployExecutionFacts {
@@ -179,6 +182,7 @@ async fn deploy_execution_facts(
         machine_platforms,
         namespace_cleanup_candidates,
         managed_lease,
+        gateway_certificate_targets,
         step_timeout,
     })
 }

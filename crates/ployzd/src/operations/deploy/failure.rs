@@ -7,8 +7,9 @@ use ployz_core::ids::{
     ContainerId, MachineId, NamespaceRevisionId, OperationId, ServiceId, StepId, SubjectTokenError,
 };
 use ployz_core::ops::{
-    ControlPlaneCommitScope, DeployOperationFailure, FailureMessage, HealthCheckFailure,
-    OperatorHint, PreStartHookFailure, RetainedArtifact, RouteCutoverFailureReason,
+    CertificateProvisionFailure, ControlPlaneCommitScope, DeployOperationFailure, FailureMessage,
+    HealthCheckFailure, OperatorHint, PreStartHookFailure, RetainedArtifact,
+    RouteCutoverFailureReason, RouteHostname,
 };
 use std::future::Future;
 use std::time::Duration;
@@ -177,6 +178,10 @@ pub enum DeployExecutionError {
         message: FailureMessage,
     },
     WaitHealthy(DeployHealthCheckError),
+    ProvisionCertificate {
+        hostname: RouteHostname,
+        failure: Box<CertificateProvisionFailure>,
+    },
     CommitNamespaceState(NamespaceCommitError),
     Failed {
         failure: Box<DeployOperationFailure>,
@@ -361,6 +366,7 @@ pub enum DeployExecutionStep {
     RunContainer { machine_id: MachineId },
     RunPreStartHook { machine_id: MachineId },
     WaitHealthy,
+    EnsureCertificate { hostname: RouteHostname },
     CommitVolumePins,
     CommitRoute { route: ployz_core::ops::RouteTarget },
     RemoveRoute { route: ployz_core::ops::RouteTarget },
@@ -384,6 +390,7 @@ impl DeployExecutionStep {
             Self::RunContainer { .. } => "run_container",
             Self::RunPreStartHook { .. } => "run_pre_start_hook",
             Self::WaitHealthy => "wait_healthy",
+            Self::EnsureCertificate { .. } => "ensure_certificate",
             Self::CommitVolumePins => "commit_volume_pins",
             Self::CommitRoute { .. } => "commit_route",
             Self::RemoveRoute { .. } => "remove_route",
@@ -431,6 +438,14 @@ impl DeployExecutionStep {
                 },
                 retained_artifacts,
             },
+            Self::EnsureCertificate { hostname } => {
+                DeployOperationFailure::CertificateProvisionTimedOut {
+                    hostname: hostname.clone(),
+                    namespace_revision_id: failure_namespace_revision_id(command),
+                    timeout_seconds: timeout_seconds(timeout),
+                    retained_artifacts,
+                }
+            }
             Self::CommitVolumePins => DeployOperationFailure::ControlPlaneCommitFailed {
                 scope: failure_commit_scope(command),
                 message: timeout_failure_message("volume pin commit", timeout),
@@ -581,6 +596,14 @@ impl DeployExecutionError {
                 }
             }
             Self::WaitHealthy(error) => error.deploy_failure(retained_artifacts),
+            Self::ProvisionCertificate { hostname, failure } => {
+                DeployOperationFailure::CertificateProvisionFailed {
+                    hostname: hostname.clone(),
+                    namespace_revision_id: failure_namespace_revision_id(command),
+                    failure: (**failure).clone(),
+                    retained_artifacts,
+                }
+            }
             Self::CommitNamespaceState(error) => error.deploy_failure(retained_artifacts),
             Self::Failed { failure, .. } => (**failure).clone(),
         }
@@ -901,6 +924,12 @@ fn add_retained_artifacts(failure: &mut DeployOperationFailure, artifacts: Vec<R
             retained_artifacts, ..
         }
         | DeployOperationFailure::HealthCheckFailed {
+            retained_artifacts, ..
+        }
+        | DeployOperationFailure::CertificateProvisionFailed {
+            retained_artifacts, ..
+        }
+        | DeployOperationFailure::CertificateProvisionTimedOut {
             retained_artifacts, ..
         }
         | DeployOperationFailure::ControlPlaneCommitFailed {

@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::cert::CertificateProvisionFailure;
 use crate::cert::ManagedCertificateIssuanceFailureKind;
 use crate::dataplane::{DataplaneProviderFailure, PloyzNativeMeshPrepareReport};
 use crate::deploy::VolumeName;
@@ -20,7 +21,7 @@ use super::events::OperationEvent;
 use super::projection::{
     OperationProjection, ProjectionOperationState, StatusProjectionError, kind_mismatch,
 };
-use super::routes::RouteTarget;
+use super::routes::{RouteHostname, RouteTarget};
 use super::text::{CancellationReason, FailureMessage, OperatorHint};
 use super::{EventSequence, OperationKind, OperationStatus};
 
@@ -32,6 +33,7 @@ pub enum DeployRunningStage {
     EnsuringImages,
     StartingContainers,
     WaitingForHealth,
+    EnsuringCertificates,
     RouteCutover,
     ServingTargetCommit,
     RemovingSupersededContainers,
@@ -112,6 +114,7 @@ pub enum DeployFailureClass {
     PreStartHookFailed,
     ContainerStartFailed,
     HealthGateFailed,
+    CertificateProvisionFailed,
     MachineNoAnswer,
     Timeout,
     DataplanePrepareFailed,
@@ -129,6 +132,7 @@ impl DeployFailureClass {
             Self::PreStartHookFailed => "pre-start-hook-failed",
             Self::ContainerStartFailed => "container-start-failed",
             Self::HealthGateFailed => "health-gate-failed",
+            Self::CertificateProvisionFailed => "certificate-provision-failed",
             Self::MachineNoAnswer => "machine-no-answer",
             Self::Timeout => "timeout",
             Self::DataplanePrepareFailed => "dataplane-prepare-failed",
@@ -228,6 +232,18 @@ pub enum DeployOperationFailure {
         health_check: HealthCheckFailure,
         retained_artifacts: Vec<RetainedArtifact>,
     },
+    CertificateProvisionFailed {
+        hostname: RouteHostname,
+        namespace_revision_id: NamespaceRevisionId,
+        failure: CertificateProvisionFailure,
+        retained_artifacts: Vec<RetainedArtifact>,
+    },
+    CertificateProvisionTimedOut {
+        hostname: RouteHostname,
+        namespace_revision_id: NamespaceRevisionId,
+        timeout_seconds: u32,
+        retained_artifacts: Vec<RetainedArtifact>,
+    },
     ControlPlaneCommitFailed {
         scope: ControlPlaneCommitScope,
         message: FailureMessage,
@@ -319,6 +335,10 @@ impl DeployOperationFailure {
                 HealthCheckFailure::ProbeFailed { .. } => DeployFailureClass::HealthGateFailed,
                 HealthCheckFailure::TimedOut { .. } => DeployFailureClass::Timeout,
             },
+            Self::CertificateProvisionFailed { .. } => {
+                DeployFailureClass::CertificateProvisionFailed
+            }
+            Self::CertificateProvisionTimedOut { .. } => DeployFailureClass::Timeout,
             Self::ControlPlaneCommitFailed { .. } => DeployFailureClass::ControlPlaneCommitFailed,
             Self::RouteCutoverFailed { reason, .. } => match reason {
                 RouteCutoverFailureReason::GatewayUnavailable { .. } => {
@@ -357,6 +377,12 @@ impl DeployOperationFailure {
                 retained_artifacts, ..
             }
             | Self::HealthCheckFailed {
+                retained_artifacts, ..
+            }
+            | Self::CertificateProvisionFailed {
+                retained_artifacts, ..
+            }
+            | Self::CertificateProvisionTimedOut {
                 retained_artifacts, ..
             }
             | Self::ControlPlaneCommitFailed {
@@ -951,9 +977,10 @@ fn stage_rank(stage: DeployRunningStage) -> u8 {
         DeployRunningStage::EnsuringImages => 1,
         DeployRunningStage::StartingContainers => 2,
         DeployRunningStage::WaitingForHealth => 3,
-        DeployRunningStage::RouteCutover => 4,
-        DeployRunningStage::ServingTargetCommit => 5,
-        DeployRunningStage::RemovingSupersededContainers => 6,
+        DeployRunningStage::EnsuringCertificates => 4,
+        DeployRunningStage::RouteCutover => 5,
+        DeployRunningStage::ServingTargetCommit => 6,
+        DeployRunningStage::RemovingSupersededContainers => 7,
     }
 }
 
@@ -974,6 +1001,9 @@ fn stage_is_next(current: DeployRunningStage, attempted: DeployRunningStage) -> 
             DeployRunningStage::WaitingForHealth
         ) | (
             DeployRunningStage::WaitingForHealth,
+            DeployRunningStage::EnsuringCertificates
+        ) | (
+            DeployRunningStage::EnsuringCertificates,
             DeployRunningStage::RouteCutover
         ) | (
             DeployRunningStage::RouteCutover,
@@ -981,6 +1011,9 @@ fn stage_is_next(current: DeployRunningStage, attempted: DeployRunningStage) -> 
         ) | (
             DeployRunningStage::ServingTargetCommit,
             DeployRunningStage::RemovingSupersededContainers
+        ) | (
+            DeployRunningStage::WaitingForHealth,
+            DeployRunningStage::RouteCutover
         ) | (
             DeployRunningStage::WaitingForHealth,
             DeployRunningStage::ServingTargetCommit

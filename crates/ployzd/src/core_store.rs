@@ -133,6 +133,22 @@ const MIGRATIONS: &[&str] = &[
         )
     );
     ",
+    "
+    CREATE TABLE custom_certificate_intent (
+        hostname TEXT PRIMARY KEY,
+        json     TEXT NOT NULL
+    );
+    CREATE TABLE acme_http01_challenges (
+        hostname TEXT NOT NULL,
+        token    TEXT NOT NULL,
+        json     TEXT NOT NULL,
+        PRIMARY KEY (hostname, token)
+    );
+    CREATE TABLE acme_accounts (
+        directory_url    TEXT PRIMARY KEY,
+        credentials_json TEXT NOT NULL
+    );
+    ",
 ];
 
 /// A cloneable handle to the core database. Clones share one connection and one
@@ -154,6 +170,7 @@ impl CoreStore {
     pub async fn open(path: PathBuf) -> Result<Self, CoreStoreError> {
         Self::open_blocking(move || {
             let conn = Connection::open(&path).map_err(CoreStoreError::Open)?;
+            restrict_core_store_permissions(&path)?;
             // WAL + NORMAL: crash-atomic commits without an fsync per statement,
             // the durability the tmpfile+rename file stores gave. journal_mode
             // must be set outside a transaction, so this runs before migrate.
@@ -280,6 +297,23 @@ impl CoreStore {
     }
 }
 
+#[cfg(unix)]
+fn restrict_core_store_permissions(path: &std::path::Path) -> Result<(), CoreStoreError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|source| {
+        CoreStoreError::FilePermissions {
+            path: path.to_path_buf(),
+            source,
+        }
+    })
+}
+
+#[cfg(not(unix))]
+fn restrict_core_store_permissions(_path: &std::path::Path) -> Result<(), CoreStoreError> {
+    Ok(())
+}
+
 fn migrate(conn: &mut Connection) -> Result<(), rusqlite::Error> {
     let applied: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     let applied = usize::try_from(applied).unwrap_or(0);
@@ -302,6 +336,11 @@ pub enum CoreStoreError {
     Sqlite(rusqlite::Error),
     #[error("core database task: {0}")]
     Join(tokio::task::JoinError),
+    #[error("restrict core database permissions at {}: {source}", path.display())]
+    FilePermissions {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 /// Serialize a value for a JSON text column. A failure here is a programming
@@ -375,6 +414,9 @@ mod tests {
 
         for expected in [
             "control_plane",
+            "custom_certificate_intent",
+            "acme_accounts",
+            "acme_http01_challenges",
             "machines",
             "managed_lease_intent",
             "operation_events",

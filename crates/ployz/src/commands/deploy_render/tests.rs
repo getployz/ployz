@@ -1,18 +1,20 @@
 use super::*;
+use ployz_core::cert::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
 use ployz_core::deploy::{
     ContainerRuntimeSpec, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute,
     DeployRouteTarget, DeployServicePlan, DeployServiceSpec, ImageReference, ImageSource,
     ReplicaCount, ReplicaSlot,
 };
 use ployz_core::ids::{
-    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
+    CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
     OperationId, ServiceId,
 };
 use ployz_core::image::OciDigest;
 use ployz_core::ops::{
-    ArtifactUnavailableReason, DeployCompletionOutcome, DeployOperationFailure, DeployRunningStage,
-    EventSequence, FailureMessage, HealthCheckFailure, OperationEvent, OperatorHint,
-    PreStartHookFailure, RetainedArtifact, RouteCutoverFailureReason, RouteHostname, RoutePort,
+    ArtifactUnavailableReason, CertificateProvisionFailure, DeployCompletionOutcome,
+    DeployOperationFailure, DeployRunningStage, EventSequence, FailureMessage, HealthCheckFailure,
+    OperationEvent, OperatorHint, PreStartHookFailure, RetainedArtifact, RouteCutoverFailureReason,
+    RouteHostname, RoutePort,
 };
 
 fn operation_id() -> OperationId {
@@ -336,6 +338,28 @@ fn starting_container_count_advances_plan_lines_without_attribution() {
 }
 
 #[test]
+fn certificate_stage_marks_containers_healthy_and_routes_as_provisioning() {
+    let events = happy_events();
+    let before_route_cutover = events
+        .get(..9)
+        .expect("happy path reaches health before route cutover");
+    let mut tree = DeployTree::new();
+    tree.ingest_page(before_route_cutover);
+    tree.ingest_page(&[replay(
+        10,
+        OperationEvent::DeployRunning {
+            operation_id: operation_id(),
+            stage: DeployRunningStage::EnsuringCertificates,
+        },
+    )]);
+
+    let frame = render_frame(&tree);
+
+    assert!(frame.contains("✓ web.1 on hetzner-1 — healthy"));
+    assert!(frame.contains("app.example.com → web:8080 — ensuring certificate"));
+}
+
+#[test]
 fn pushed_image_stays_pending_until_availability_is_verified() {
     let operation_id = operation_id();
     let mut direct_plan = plan();
@@ -551,6 +575,176 @@ fn deep_health_failure_keeps_container_evidence_and_hints() {
     assert!(output.contains("logs:      ployz logs web -n prod --failed"));
     assert!(output.contains("timeline:  ployz ops status op_317"));
     assert!(output.contains("rollback:  ployz deploy rollback -n prod"));
+}
+
+#[test]
+fn certificate_dns_preflight_failure_names_scope_and_keeps_container_evidence() {
+    let operation_id = operation_id();
+    let failure = DeployOperationFailure::CertificateProvisionFailed {
+        hostname: RouteHostname::try_new("app.example.com").expect("valid hostname"),
+        namespace_revision_id: NamespaceRevisionId::try_new("revision_317")
+            .expect("valid namespace revision id"),
+        failure: CertificateProvisionFailure::DnsPreflight {
+            message: FailureMessage::try_new("A record does not resolve to this cluster")
+                .expect("valid failure message"),
+        },
+        retained_artifacts: vec![RetainedArtifact::StartedContainer {
+            machine_id: machine_id("hetzner-1"),
+            container_id: container_id("web-1"),
+            log_hint: OperatorHint::try_new("ployz logs web --failed")
+                .expect("valid operator hint"),
+        }],
+    };
+    let failure_view = DeployFailureView::new(&failure, None);
+
+    assert!(matches!(
+        failure_view.safety(),
+        FailureSafety::ServingUnchanged
+    ));
+    assert!(failure_view.image_failure_service().is_none());
+    assert!(failure_view.failed_route().is_none());
+    assert_eq!(
+        failure_view.guidance().as_deref(),
+        Some(
+            "certificate DNS preflight failed for app.example.com (namespace revision revision_317): A record does not resolve to this cluster"
+        )
+    );
+
+    let mut tree = DeployTree::new();
+    tree.ingest_page(&[
+        replay(
+            1,
+            OperationEvent::DeploySubmitted {
+                operation_id: operation_id.clone(),
+                reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
+                target: single_service_target(),
+            },
+        ),
+        replay(
+            2,
+            OperationEvent::DeployFailed {
+                operation_id,
+                failure,
+            },
+        ),
+    ]);
+
+    let output = render_failure_block(&tree);
+    assert!(
+        output.starts_with(
+            "Deploy failed — certificate-provision-failed, service web on hetzner-1.\n"
+        )
+    );
+    assert!(output.contains(
+        "  ✗ certificate DNS preflight failed for app.example.com (namespace revision revision_317): A record does not resolve to this cluster\n"
+    ));
+    assert!(output.contains("    failed container web-1 retained on hetzner-1\n"));
+    assert!(output.contains("Serving is unchanged."));
+    assert!(!output.contains("route committed"));
+}
+
+#[test]
+fn every_certificate_failure_renders_typed_deploy_evidence() {
+    let message = || FailureMessage::try_new("failed evidence").expect("valid failure message");
+    let cases = [
+        (
+            CertificateProvisionFailure::OperationEvidenceWrite { message: message() },
+            "certificate operation evidence write failed",
+        ),
+        (
+            CertificateProvisionFailure::DnsPreflight { message: message() },
+            "certificate DNS preflight failed",
+        ),
+        (
+            CertificateProvisionFailure::ChallengePublish { message: message() },
+            "certificate HTTP-01 challenge publish failed",
+        ),
+        (
+            CertificateProvisionFailure::ChallengeReadiness {
+                missing_machine_ids: vec![machine_id("gateway-1")],
+            },
+            "missing gateway acknowledgements from gateway-1",
+        ),
+        (
+            CertificateProvisionFailure::AcmeValidation { message: message() },
+            "certificate ACME validation failed",
+        ),
+        (
+            CertificateProvisionFailure::GatewayArtifactPush {
+                machine_id: machine_id("gateway-1"),
+                message: message(),
+            },
+            "certificate gateway artifact push failed",
+        ),
+        (
+            CertificateProvisionFailure::ActiveCertCommit {
+                attempted_active_cert: attempted_active_certificate(),
+                message: message(),
+            },
+            "active certificate commit failed",
+        ),
+    ];
+
+    for (certificate_failure, expected) in cases {
+        let failure = DeployOperationFailure::CertificateProvisionFailed {
+            hostname: RouteHostname::try_new("app.example.com").expect("valid hostname"),
+            namespace_revision_id: NamespaceRevisionId::try_new("revision_318")
+                .expect("valid namespace revision id"),
+            failure: certificate_failure,
+            retained_artifacts: Vec::new(),
+        };
+
+        assert!(
+            failure_cause(&single_service_target(), &failure).contains(expected),
+            "missing typed failure detail: {expected}"
+        );
+    }
+}
+
+fn attempted_active_certificate() -> ActiveCertState {
+    ActiveCertState {
+        cert_id: CertId::try_new("cert_app").expect("valid cert id"),
+        hostname: RouteHostname::try_new("app.example.com").expect("valid hostname"),
+        bundle_ref: CertBundleRef::try_new(format!(
+            "sha256:{}:/var/lib/ployz/certificates/cert_app.bundle",
+            "a".repeat(64)
+        ))
+        .expect("valid bundle ref"),
+        validity: CertValidityWindow::try_new(
+            CertValidAt::try_new(1).expect("valid not-before"),
+            CertValidAt::try_new(2).expect("valid not-after"),
+        )
+        .expect("valid validity"),
+    }
+}
+
+#[test]
+fn certificate_provision_timeout_renders_hostname_scope_and_seconds() {
+    let failure = DeployOperationFailure::CertificateProvisionTimedOut {
+        hostname: RouteHostname::try_new("api.example.com").expect("valid hostname"),
+        namespace_revision_id: NamespaceRevisionId::try_new("revision_318")
+            .expect("valid namespace revision id"),
+        timeout_seconds: 90,
+        retained_artifacts: Vec::new(),
+    };
+    let failure_view = DeployFailureView::new(&failure, None);
+
+    assert!(matches!(
+        failure_view.safety(),
+        FailureSafety::ServingUnchanged
+    ));
+    assert!(failure_view.image_failure_service().is_none());
+    assert!(failure_view.failed_route().is_none());
+    assert_eq!(
+        failure_view.guidance().as_deref(),
+        Some(
+            "certificate provisioning timed out after 90s for api.example.com (namespace revision revision_318)"
+        )
+    );
+    assert_eq!(
+        failure_cause(&single_service_target(), &failure),
+        "certificate provisioning timed out after 90s for api.example.com (namespace revision revision_318)"
+    );
 }
 
 #[test]

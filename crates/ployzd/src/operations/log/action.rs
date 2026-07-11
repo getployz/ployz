@@ -1,10 +1,11 @@
 use super::{
-    CoreReplaceOperationSubmission, CoreReplacePayload, DeployOperationPayload,
-    DeployOperationSubmission, MachineLifecycleOperationSubmission, MachineLifecyclePayload,
-    MachineUpdateOperationSubmission, MachineUpdatePayload, ManagedLeaseOperationSubmission,
-    ManagedLeasePayload, NamespaceRemoveOperationSubmission, NamespaceRemovePayload,
-    NetworkRepairOperationSubmission, NetworkRepairPayload, ServiceRestartOperationSubmission,
-    ServiceRestartPayload, VolumeRemoveOperationSubmission, VolumeRemovePayload,
+    CertOperationPayload, CertOperationSubmission, CoreReplaceOperationSubmission,
+    CoreReplacePayload, DeployOperationPayload, DeployOperationSubmission,
+    MachineLifecycleOperationSubmission, MachineLifecyclePayload, MachineUpdateOperationSubmission,
+    MachineUpdatePayload, ManagedLeaseOperationSubmission, ManagedLeasePayload,
+    NamespaceRemoveOperationSubmission, NamespaceRemovePayload, NetworkRepairOperationSubmission,
+    NetworkRepairPayload, ServiceRestartOperationSubmission, ServiceRestartPayload,
+    VolumeRemoveOperationSubmission, VolumeRemovePayload,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{EventSequence, OperationEvent, OperationKind, OperationStatus};
@@ -63,6 +64,37 @@ impl OperationAction for DeployOperationSubmission {
             payload.target.origin.clone(),
             sequence,
         )
+    }
+}
+
+impl OperationAction for CertOperationSubmission {
+    type Payload = CertOperationPayload;
+    const KIND: OperationKind = OperationKind::Cert;
+
+    fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEvent {
+        OperationEvent::CertProvisionSubmitted {
+            operation_id,
+            cert_id: payload.cert_id,
+        }
+    }
+
+    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
+        let OperationEvent::CertProvisionSubmitted {
+            operation_id,
+            cert_id,
+        } = event
+        else {
+            return None;
+        };
+        Some((operation_id, CertOperationPayload { cert_id }))
+    }
+
+    fn accepted_status(
+        operation_id: OperationId,
+        payload: &Self::Payload,
+        sequence: EventSequence,
+    ) -> OperationStatus {
+        OperationStatus::cert_accepted(operation_id, payload.cert_id.clone(), sequence)
     }
 }
 
