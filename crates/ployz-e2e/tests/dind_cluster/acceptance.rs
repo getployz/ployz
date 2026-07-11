@@ -56,11 +56,10 @@ async fn step_1_form_fresh_cluster(
     config: &PloyzctlRuntimeConfig,
     started_at: Instant,
 ) {
-    for edge in core.cluster.edges() {
+    wait_for_machine_observations(core, &machine_id("core_1")).await;
+    for (index, edge) in core.cluster.edges().iter().enumerate() {
         add_and_join_edge(core, edge).await;
-    }
-    for id in ["core_1", "edge_2", "edge_3"] {
-        wait_for_machine_observations(core, &machine_id(id)).await;
+        wait_for_machine_observations(core, &machine_id(&format!("edge_{}", index + 2))).await;
     }
     let machines = core
         .api
