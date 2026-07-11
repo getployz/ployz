@@ -22,7 +22,8 @@ use crate::remote_machine_runtime::{
 use ployz_core::ids::OperationId;
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::ops::{
-    EventSequence, OperationEventReplayCursor, OperationEventReplayRequest, ReplayedOperationEvent,
+    EventSequence, OperationEventReplayCursor, OperationEventReplayRequest, OperationOutcome,
+    ReplayedOperationEvent,
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{
@@ -39,7 +40,7 @@ mod deploy_rollback;
 mod execution_output;
 mod network;
 
-pub use execution_output::PloyzctlExecutionOutput;
+pub use execution_output::{CommandExit, PloyzctlExecutionOutput};
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 pub const PLOYZ_NATS_CA_FILE_ENV: &str = "PLOYZ_NATS_CA_FILE";
@@ -246,6 +247,7 @@ pub async fn execute_command(
                 Ok(PloyzctlExecutionOutput {
                     stdout: output.stdout,
                     stderr: output.stderr,
+                    exit: CommandExit::Success,
                 })
             }
             FirstMachineInitMode::Summary { .. }
@@ -448,7 +450,7 @@ pub async fn execute_command(
             let api = operation_api_client(config).await?;
             let output = command.output;
             let request = command.into_request();
-            let events = watch_operation_until_terminal(
+            let (events, outcome) = watch_operation_until_terminal(
                 &api,
                 request,
                 config.ops_watch_timeout(),
@@ -458,7 +460,8 @@ pub async fn execute_command(
 
             Ok(PloyzctlExecutionOutput::stdout(
                 crate::commands::ops::WatchOutput { events, output }.render(),
-            ))
+            )
+            .with_operation_outcome(outcome))
         }
     }
 }
@@ -488,7 +491,7 @@ async fn watch_accepted_operation(
     operation_id: OperationId,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
-    let events = watch_operation_until_terminal(
+    let (events, outcome) = watch_operation_until_terminal(
         api,
         operation_replay_request(operation_id),
         config.ops_watch_timeout(),
@@ -501,7 +504,8 @@ async fn watch_accepted_operation(
             output: crate::commands::ops::OpsWatchOutput::Text,
         }
         .render(),
-    ))
+    )
+    .with_operation_outcome(outcome))
 }
 
 /// Connects, issues one operation API request, and renders the success value
@@ -535,7 +539,7 @@ pub(crate) async fn watch_operation_until_terminal(
     request: OperationEventReplayRequest,
     timeout: Duration,
     poll_interval: Duration,
-) -> Result<Vec<ReplayedOperationEvent>, PloyzctlExecutionError> {
+) -> Result<(Vec<ReplayedOperationEvent>, Option<OperationOutcome>), PloyzctlExecutionError> {
     watch_operation_until_terminal_with(api, request, timeout, poll_interval, |_| Ok(())).await
 }
 
@@ -564,7 +568,7 @@ async fn watch_operation_until_terminal_with(
     timeout: Duration,
     poll_interval: Duration,
     mut observe_page: impl FnMut(&[ReplayedOperationEvent]) -> Result<(), PloyzctlExecutionError>,
-) -> Result<Vec<ReplayedOperationEvent>, PloyzctlExecutionError> {
+) -> Result<(Vec<ReplayedOperationEvent>, Option<OperationOutcome>), PloyzctlExecutionError> {
     let operation_id = request.operation_id.clone();
     let started_at = Instant::now();
     let mut events = Vec::new();
@@ -588,7 +592,10 @@ async fn watch_operation_until_terminal_with(
                 request.start_sequence = next_start_sequence;
                 continue;
             }
-            OperationEventReplayCursor::Terminal => return Ok(events),
+            OperationEventReplayCursor::Terminal => {
+                let outcome = operation_terminal_outcome(api, &operation_id).await?;
+                return Ok((events, outcome));
+            }
             OperationEventReplayCursor::CaughtUp => {}
         }
 
@@ -599,8 +606,8 @@ async fn watch_operation_until_terminal_with(
             .await
             .map_err(api_error)?;
 
-        if snapshot.status.is_terminal() {
-            return Ok(events);
+        if let Some(outcome) = snapshot.status.terminal_outcome() {
+            return Ok((events, Some(outcome)));
         }
 
         if started_at.elapsed() >= timeout {
@@ -612,6 +619,21 @@ async fn watch_operation_until_terminal_with(
 
         async_sleep(poll_interval).await;
     }
+}
+
+/// The terminal outcome recorded for an operation the event stream reports as
+/// terminal, or `None` if its status snapshot has not caught up yet.
+async fn operation_terminal_outcome(
+    api: &OperationApiClient,
+    operation_id: &OperationId,
+) -> Result<Option<OperationOutcome>, PloyzctlExecutionError> {
+    let snapshot = api
+        .ops_status(&OpsStatusRequest {
+            operation_id: operation_id.clone(),
+        })
+        .await
+        .map_err(api_error)?;
+    Ok(snapshot.status.terminal_outcome())
 }
 
 fn operation_replay_request(operation_id: OperationId) -> OperationEventReplayRequest {

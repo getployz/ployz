@@ -1,7 +1,7 @@
 use std::process::ExitCode;
 
 use ployz::commands::parse_invocation;
-use ployz::runtime::{PloyzctlRuntimeConfig, execute_command};
+use ployz::runtime::{CommandExit, PloyzctlRuntimeConfig, execute_command};
 
 /// `ployz host ...` dispatches before the async runtime exists: Host Runner
 /// commands are synchronous and drive their own bounded runtimes internally,
@@ -48,7 +48,10 @@ async fn product_main() -> ExitCode {
         Ok(output) => {
             print!("{}", output.stdout);
             eprint!("{}", output.stderr);
-            ExitCode::SUCCESS
+            match output.exit {
+                CommandExit::Success => ExitCode::SUCCESS,
+                CommandExit::Failure => ExitCode::FAILURE,
+            }
         }
         Err(error) => {
             eprintln!("{error}");

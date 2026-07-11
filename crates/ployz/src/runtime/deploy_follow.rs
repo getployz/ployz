@@ -12,7 +12,7 @@ use crate::commands::deploy_render::{
 };
 
 use super::{
-    PloyzctlExecutionError, PloyzctlExecutionOutput, PloyzctlRuntimeConfig, api_error,
+    CommandExit, PloyzctlExecutionError, PloyzctlExecutionOutput, PloyzctlRuntimeConfig, api_error,
     deploy_history, nats_connect_config, operation_api_client_with_connect,
     operation_replay_request, watch_operation_until_terminal_with,
 };
@@ -51,6 +51,7 @@ pub(super) async fn execute_deploy(
                 DeployOutput::from_accepted(accepted).render()
             ),
             stderr: String::new(),
+            exit: CommandExit::Success,
         });
     }
     follow_accepted_deploy(
@@ -125,7 +126,7 @@ pub(super) async fn watch_deploy_operation(
     let mut stdout = stdout.lock();
     let mut output = DeployProgressOutput::new(&mut stdout, mode);
 
-    let events = watch_operation_until_terminal_with(
+    let (events, outcome) = watch_operation_until_terminal_with(
         api,
         operation_replay_request(operation_id),
         config.ops_watch_timeout(),
@@ -141,7 +142,10 @@ pub(super) async fn watch_deploy_operation(
     .await?;
     output.finish(&tree)?;
 
-    Ok((PloyzctlExecutionOutput::stdout(String::new()), events))
+    Ok((
+        PloyzctlExecutionOutput::stdout(String::new()).with_operation_outcome(outcome),
+        events,
+    ))
 }
 
 #[derive(Clone, Copy)]
