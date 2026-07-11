@@ -8,7 +8,6 @@ pub use volume::VolumeQueryService;
 use crate::fact_cache::FactCache;
 use crate::intent::service::NatsIntentReader;
 use crate::operation_api::admission::OperationControllers;
-use crate::operations::credential_grant::CredentialGrantOperation;
 use crate::roles::machine::client::{
     MachineLogsTailError, NatsMachineFactsReader, NatsMachineLogsTailer,
     read_available_machine_facts, read_available_machine_facts_by_id,
@@ -18,6 +17,7 @@ use ployz_core::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId,
 };
 use ployz_core::machine_runtime::{ManagedContainerKind, ManagedContainerObservation};
+use ployz_core::nats_config::NatsAuthorizationGrant;
 use ployz_core::ops::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationStatusSnapshot,
 };
@@ -35,15 +35,24 @@ use ployz_sdk_types::{
 };
 
 pub async fn credential_list(
-    operation: &CredentialGrantOperation,
+    intent_reader: &NatsIntentReader,
 ) -> Result<CredentialListResult, CredentialListError> {
-    operation
-        .list_credentials()
-        .await
-        .map(|credentials| CredentialListResult { credentials })
-        .map_err(|error| CredentialListError::Unavailable {
-            message: error.to_string(),
+    let intent =
+        intent_reader
+            .intent()
+            .await
+            .map_err(|error| CredentialListError::Unavailable {
+                message: error.to_string(),
+            })?;
+    let credentials = intent
+        .nats_authorizations
+        .into_iter()
+        .filter_map(|grant| match grant {
+            NatsAuthorizationGrant::Credential(credential) => Some(credential),
+            NatsAuthorizationGrant::Internal { .. } => None,
         })
+        .collect();
+    Ok(CredentialListResult { credentials })
 }
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};

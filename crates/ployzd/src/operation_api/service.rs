@@ -77,9 +77,7 @@ async fn bind_operation_endpoint(
             bind_operation_contract::<CredentialListApi, _, _>(
                 runtime,
                 handlers,
-                |handlers, _request| async move {
-                    credential_list(handlers.credential_grant()).await
-                },
+                |handlers, _request| async move { credential_list(handlers.intent_reader()).await },
             )
             .await
         }

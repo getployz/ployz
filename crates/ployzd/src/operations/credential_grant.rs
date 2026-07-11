@@ -44,12 +44,6 @@ impl CredentialGrantOperation {
         });
     }
 
-    pub async fn list_credentials(
-        &self,
-    ) -> Result<Vec<ployz_core::nats_config::CredentialGrant>, RenderFailure> {
-        self.authorization.list_credentials().await
-    }
-
     async fn run(self, accepted: AcceptedCredentialGrantSubmission) {
         let operation_id = accepted.operation_id;
         let result = match accepted.action {

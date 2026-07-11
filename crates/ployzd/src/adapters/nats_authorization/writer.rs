@@ -119,9 +119,6 @@ enum AuthorizationRequest {
         verify: Option<NatsConnectConfig>,
         reply: oneshot::Sender<Result<RenderedAuthorization, RenderFailure>>,
     },
-    ListCredentials {
-        reply: oneshot::Sender<Result<Vec<CredentialGrant>, RenderFailure>>,
-    },
     AddCredential {
         grant: CredentialGrant,
         reply: oneshot::Sender<Result<CredentialMutationResult, CredentialMutationFailure>>,
@@ -163,15 +160,6 @@ impl NatsAuthorizationHandle {
                 verify,
                 reply,
             })
-            .await
-            .map_err(|_| writer_closed())?;
-        response.await.map_err(|_| writer_closed())?
-    }
-
-    pub async fn list_credentials(&self) -> Result<Vec<CredentialGrant>, RenderFailure> {
-        let (reply, response) = oneshot::channel();
-        self.sender
-            .send(AuthorizationRequest::ListCredentials { reply })
             .await
             .map_err(|_| writer_closed())?;
         response.await.map_err(|_| writer_closed())?
@@ -220,6 +208,12 @@ fn writer_closed() -> RenderFailure {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthorizationProjectionState {
+    ReloadRequired,
+    Current,
+}
+
 /// The running single-writer that owns `authorized-users.conf`.
 pub struct NatsAuthorizationWriter {
     handle: NatsAuthorizationHandle,
@@ -240,7 +234,7 @@ impl NatsAuthorizationWriter {
             let reload = Arc::new(reload);
             // A restarted control process cannot know whether the independently
             // supervised nats-server applied the current file before the restart.
-            let mut projection_dirty = true;
+            let mut projection = AuthorizationProjectionState::ReloadRequired;
             while let Some(request) = receiver.recv().await {
                 match request {
                     AuthorizationRequest::Render { verify, reply } => {
@@ -250,12 +244,14 @@ impl NatsAuthorizationWriter {
                             Arc::clone(&reload),
                             None,
                             verify,
-                            projection_dirty,
+                            projection,
                         )
                         .await;
                         match &result {
-                            Ok(_) => projection_dirty = false,
-                            Err(RenderFailure::Reload { .. }) => projection_dirty = true,
+                            Ok(_) => projection = AuthorizationProjectionState::Current,
+                            Err(RenderFailure::Reload { .. }) => {
+                                projection = AuthorizationProjectionState::ReloadRequired;
+                            }
                             Err(RenderFailure::Prepare { .. } | RenderFailure::Verify { .. }) => {}
                         }
                         let _ = reply.send(result);
@@ -271,14 +267,14 @@ impl NatsAuthorizationWriter {
                             Arc::clone(&reload),
                             Some(grant),
                             verify,
-                            projection_dirty,
+                            projection,
                         )
                         .await;
-                        projection_dirty = result.is_err();
-                        let _ = reply.send(result);
-                    }
-                    AuthorizationRequest::ListCredentials { reply } => {
-                        let result = store.list_credentials().await.map_err(store_failure);
+                        projection = if result.is_ok() {
+                            AuthorizationProjectionState::Current
+                        } else {
+                            AuthorizationProjectionState::ReloadRequired
+                        };
                         let _ = reply.send(result);
                     }
                     AuthorizationRequest::AddCredential { grant, reply } => {
@@ -287,37 +283,17 @@ impl NatsAuthorizationWriter {
                             &store,
                             Arc::clone(&reload),
                             grant,
-                            projection_dirty,
+                            projection,
                         )
                         .await;
                         match &result {
-                            Ok(_) => projection_dirty = false,
-                            Err(CredentialMutationFailure::NotCommitted { failure }) => {
-                                projection_dirty = match failure {
-                                    RenderFailure::Reload { .. } | RenderFailure::Verify { .. } => {
-                                        true
-                                    }
-                                    RenderFailure::Prepare {
-                                        failure: RenderPrepareFailure::Store { .. },
-                                    } => {
-                                        projection_dirty
-                                            || projection_differs_from_store(
-                                                &authorized_users_file,
-                                                &store,
-                                            )
-                                            .await
-                                    }
-                                    RenderFailure::Prepare {
-                                        failure:
-                                            RenderPrepareFailure::WriterClosed
-                                            | RenderPrepareFailure::File { .. }
-                                            | RenderPrepareFailure::WriteFile { .. },
-                                    } => projection_dirty,
-                                };
+                            Ok(_) => projection = AuthorizationProjectionState::Current,
+                            Err(CredentialMutationFailure::Committed { .. }) => {
+                                projection = AuthorizationProjectionState::ReloadRequired;
                             }
                             Err(
                                 CredentialMutationFailure::Rejected { .. }
-                                | CredentialMutationFailure::Committed { .. },
+                                | CredentialMutationFailure::NotCommitted { .. },
                             ) => {}
                         }
                         let _ = reply.send(result);
@@ -328,13 +304,13 @@ impl NatsAuthorizationWriter {
                             &store,
                             Arc::clone(&reload),
                             &public_key,
-                            projection_dirty,
+                            projection,
                         )
                         .await;
                         match &result {
-                            Ok(_) => projection_dirty = false,
+                            Ok(_) => projection = AuthorizationProjectionState::Current,
                             Err(CredentialMutationFailure::Committed { .. }) => {
-                                projection_dirty = true;
+                                projection = AuthorizationProjectionState::ReloadRequired;
                             }
                             Err(
                                 CredentialMutationFailure::Rejected { .. }
@@ -375,23 +351,13 @@ fn read_authorized_users_contents(path: &Path) -> Result<Option<String>, Authori
     }
 }
 
-async fn projection_differs_from_store(path: &Path, store: &NatsAuthorizationStore) -> bool {
-    let Ok(grants) = store.list().await else {
-        return false;
-    };
-    let Ok(contents) = read_authorized_users_contents(path) else {
-        return false;
-    };
-    contents.as_deref() != Some(render_authorized_users(&grants).as_str())
-}
-
 async fn handle_render_request(
     path: &Path,
     store: &NatsAuthorizationStore,
     reload: Arc<impl NatsReloadRunner>,
     authorize: Option<NatsAuthorizationGrant>,
     verify: Option<NatsConnectConfig>,
-    force_reload: bool,
+    projection: AuthorizationProjectionState,
 ) -> Result<RenderedAuthorization, RenderFailure> {
     let prepare = |failure: RenderPrepareFailure| RenderFailure::Prepare { failure };
     let store_prepare = store_failure;
@@ -408,7 +374,7 @@ async fn handle_render_request(
 
     let rendered = render_authorized_users(&desired);
     let file_is_current = current_contents.as_deref() == Some(rendered.as_str());
-    if !force_reload && file_is_current {
+    if matches!(projection, AuthorizationProjectionState::Current) && file_is_current {
         // The conf already reflects the desired set, so no reload — but the grant
         // must still be persisted: this is the path a resumed mint takes when a crash
         // landed between a prior render's reload and its store write, and skipping it
@@ -481,7 +447,7 @@ async fn handle_add_credential(
     store: &NatsAuthorizationStore,
     reload: Arc<impl NatsReloadRunner>,
     grant: CredentialGrant,
-    force_reload: bool,
+    projection: AuthorizationProjectionState,
 ) -> Result<CredentialMutationResult, CredentialMutationFailure> {
     let existing = store
         .list_credentials()
@@ -506,32 +472,28 @@ async fn handle_add_credential(
     };
 
     let authorization = match change {
-        CredentialMutationChange::Unchanged if !force_reload => RenderedAuthorization {
-            user_count: store
-                .list()
+        CredentialMutationChange::Unchanged => {
+            handle_render_request(path, store, reload, None, None, projection)
+                .await
+                .map_err(|failure| CredentialMutationFailure::Committed { failure })?
+        }
+        CredentialMutationChange::Added | CredentialMutationChange::Updated => {
+            store
+                .upsert(&NatsAuthorizationGrant::Credential(grant))
                 .await
                 .map_err(|error| CredentialMutationFailure::NotCommitted {
                     failure: store_failure(error),
-                })?
-                .len(),
-            reload: None,
-        },
-        CredentialMutationChange::Unchanged => {
-            handle_render_request(path, store, reload, None, None, true)
-                .await
-                .map_err(|failure| CredentialMutationFailure::NotCommitted { failure })?
-        }
-        CredentialMutationChange::Added | CredentialMutationChange::Updated => {
+                })?;
             handle_render_request(
                 path,
                 store,
                 reload,
-                Some(NatsAuthorizationGrant::Credential(grant)),
                 None,
-                force_reload,
+                None,
+                AuthorizationProjectionState::ReloadRequired,
             )
             .await
-            .map_err(|failure| CredentialMutationFailure::NotCommitted { failure })?
+            .map_err(|failure| CredentialMutationFailure::Committed { failure })?
         }
         CredentialMutationChange::Removed => unreachable!("add cannot remove a credential"),
     };
@@ -546,38 +508,28 @@ async fn handle_remove_credential(
     store: &NatsAuthorizationStore,
     reload: Arc<impl NatsReloadRunner>,
     public_key: &NatsUserPublicKey,
-    force_reload: bool,
+    projection: AuthorizationProjectionState,
 ) -> Result<CredentialMutationResult, CredentialMutationFailure> {
     let outcome = store.remove_credential(public_key).await.map_err(|error| {
         CredentialMutationFailure::NotCommitted {
             failure: store_failure(error),
         }
     })?;
-    let (change, must_render) = match outcome {
-        CredentialRemoveStoreOutcome::Removed => (CredentialMutationChange::Removed, true),
-        CredentialRemoveStoreOutcome::Absent => (CredentialMutationChange::Unchanged, force_reload),
+    let (change, render_projection) = match outcome {
+        CredentialRemoveStoreOutcome::Removed => (
+            CredentialMutationChange::Removed,
+            AuthorizationProjectionState::ReloadRequired,
+        ),
+        CredentialRemoveStoreOutcome::Absent => (CredentialMutationChange::Unchanged, projection),
         CredentialRemoveStoreOutcome::RejectedLastOperator => {
             return Err(CredentialMutationFailure::Rejected {
                 reason: CredentialMutationRejection::LastOperator,
             });
         }
     };
-    let authorization = if must_render {
-        handle_render_request(path, store, reload, None, None, true)
-            .await
-            .map_err(|failure| CredentialMutationFailure::Committed { failure })?
-    } else {
-        RenderedAuthorization {
-            user_count: store
-                .list()
-                .await
-                .map_err(|error| CredentialMutationFailure::NotCommitted {
-                    failure: store_failure(error),
-                })?
-                .len(),
-            reload: None,
-        }
-    };
+    let authorization = handle_render_request(path, store, reload, None, None, render_projection)
+        .await
+        .map_err(|failure| CredentialMutationFailure::Committed { failure })?;
     Ok(CredentialMutationResult {
         change,
         authorization,
@@ -787,6 +739,54 @@ mod tests {
             (CredentialMutationChange::Unchanged, None, 1)
         );
         writer.shutdown();
+    }
+
+    #[tokio::test]
+    async fn failed_add_reload_keeps_grant_durable_across_writer_restart() {
+        let first = credential("First");
+        let second = credential("Second");
+        let store = store_with(std::slice::from_ref(&first)).await;
+        let directory = tempfile::tempdir().expect("temp directory");
+        let path = directory.path().join("authorized-users.conf");
+        write_current(&path, &store).await;
+        let reload = ScriptedReload::new([reloaded(), failed_reload()]);
+        let writer = NatsAuthorizationWriter::start(path, store.clone(), reload.clone());
+        let handle = writer.handle();
+        handle.render(None).await.expect("startup render");
+
+        let failure = handle
+            .add_credential(second.clone())
+            .await
+            .expect_err("reload fails");
+        writer.shutdown();
+        let restart_reload = ScriptedReload::new([reloaded()]);
+        let restarted = NatsAuthorizationWriter::start(
+            directory.path().join("authorized-users.conf"),
+            store.clone(),
+            restart_reload.clone(),
+        );
+        let restart_render = restarted
+            .handle()
+            .render(None)
+            .await
+            .expect("restart projection");
+
+        assert!(matches!(
+            failure,
+            CredentialMutationFailure::Committed {
+                failure: RenderFailure::Reload { .. }
+            }
+        ));
+        assert_eq!(
+            (
+                store.list_credentials().await.expect("credentials"),
+                restart_render.reload.is_some(),
+                reload.calls(),
+                restart_reload.calls(),
+            ),
+            (vec![first, second], true, 2, 1)
+        );
+        restarted.shutdown();
     }
 
     #[tokio::test]
