@@ -7,7 +7,7 @@ use crate::ids::CertId;
 use crate::install::{InstallContractError, InstallSha256Digest};
 use crate::ops::RouteHostname;
 
-use super::{CertBundleRef, CertValidityWindow, refresh_due};
+use super::{CertBundleRef, CertValidityWindow, two_thirds_due};
 
 /// Active certificate intent/evidence value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,7 +33,7 @@ impl ActiveCertState {
     /// Custom certificates renew once two thirds of their validity has elapsed.
     #[must_use]
     pub fn needs_renewal(&self, now_seconds: u64) -> bool {
-        refresh_due(
+        two_thirds_due(
             self.validity.not_before.unix_seconds(),
             self.validity.not_after.unix_seconds(),
             now_seconds,
