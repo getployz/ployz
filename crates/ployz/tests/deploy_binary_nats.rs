@@ -10,7 +10,8 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::{NamespaceId, ServiceId};
 use ployz_core::ops::{
-    DeployCompletionOutcome, OperationEvent, OperationEventReplayPage, ReplayedOperationEvent,
+    DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, OperationEvent,
+    OperationEventReplayPage, OperationStatus, OperationStatusSnapshot, ReplayedOperationEvent,
 };
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
@@ -20,8 +21,10 @@ use ployz_nats::services::{
 use ployz_sdk_types::{
     AcceptedOperation, DeployReservationExpiresAt, DeployReservationId, DeployReserveResponse,
     DeployReserved, DeploySubmitRequest, DeploySubmitResponse, OperationApiResponse,
-    OpsWatchResponse,
-    operation_api::{DeployReserveApi, DeploySubmitApi, OperationApiContract, OpsWatchApi},
+    OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
+    operation_api::{
+        DeployReserveApi, DeploySubmitApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
+    },
 };
 use ployz_test_support::ids::{event_sequence, operation_id, service_id};
 use ployz_test_support::nats::{SecuredTestNats, TestNats};
@@ -153,10 +156,12 @@ async fn binary_rollback_replays_the_selected_pinned_payload_as_a_new_deploy() {
         DeployReserveApi::ENDPOINT,
         DeploySubmitApi::ENDPOINT,
         OpsWatchApi::ENDPOINT,
+        OpsStatusApi::ENDPOINT,
     ]);
     let reserve_endpoint = endpoint(&spec, DeployReserveApi::ENDPOINT);
     let submit_endpoint = endpoint(&spec, DeploySubmitApi::ENDPOINT);
     let watch_endpoint = endpoint(&spec, OpsWatchApi::ENDPOINT);
+    let status_endpoint = endpoint(&spec, OpsStatusApi::ENDPOINT);
     let mut runtime = start_nats_service(client, &spec)
         .await
         .expect("service starts");
@@ -230,6 +235,23 @@ async fn binary_rollback_replays_the_selected_pinned_payload_as_a_new_deploy() {
         })
         .await
         .expect("watch endpoint binds");
+    runtime
+        .bind_endpoint(&status_endpoint, |request| async move {
+            let request: OpsStatusRequest =
+                serde_json::from_slice(&request.payload).expect("status request decodes");
+            assert_eq!(request.operation_id, operation_id("op_rollback"));
+            let response: OpsStatusResponse = OperationApiResponse::Ok {
+                value: OperationStatusSnapshot::new(deploy_status(
+                    "op_rollback",
+                    DeployOperationState::Completed {
+                        outcome: DeployCompletionOutcome::Completed,
+                    },
+                )),
+            };
+            NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+        })
+        .await
+        .expect("status endpoint binds");
     service_client.flush().await.expect("service flushes");
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
@@ -260,6 +282,132 @@ async fn binary_rollback_replays_the_selected_pinned_payload_as_a_new_deploy() {
     assert_eq!(
         rollback.request.origin,
         Some(DeployOrigin::try_new("rollback").expect("valid rollback origin"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn binary_foreground_deploy_exits_non_zero_when_operation_fails() {
+    let server = TestNats::start().await;
+    let client = server.controller.clone();
+    let env = CliNatsEnv::new(&server.server);
+    let service_client = client.clone();
+    let spec = test_api_service(&[
+        DeployReserveApi::ENDPOINT,
+        DeploySubmitApi::ENDPOINT,
+        OpsWatchApi::ENDPOINT,
+        OpsStatusApi::ENDPOINT,
+    ]);
+    let reserve_endpoint = endpoint(&spec, DeployReserveApi::ENDPOINT);
+    let submit_endpoint = endpoint(&spec, DeploySubmitApi::ENDPOINT);
+    let watch_endpoint = endpoint(&spec, OpsWatchApi::ENDPOINT);
+    let status_endpoint = endpoint(&spec, OpsStatusApi::ENDPOINT);
+    let mut runtime = start_nats_service(client, &spec)
+        .await
+        .expect("service starts");
+
+    runtime
+        .bind_endpoint(&reserve_endpoint, |_request| async move {
+            let response: DeployReserveResponse = OperationApiResponse::Ok {
+                value: DeployReserved {
+                    reservation_id: DeployReservationId::first(),
+                    expires_at: DeployReservationExpiresAt::try_new(4_102_444_800)
+                        .expect("valid expiration"),
+                },
+            };
+            NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+        })
+        .await
+        .expect("reserve endpoint binds");
+    runtime
+        .bind_endpoint(&submit_endpoint, |_request| async move {
+            let response: DeploySubmitResponse = OperationApiResponse::Ok {
+                value: accepted_operation("op_deploy_failed"),
+            };
+            NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+        })
+        .await
+        .expect("submit endpoint binds");
+    runtime
+        .bind_endpoint(&watch_endpoint, |request| async move {
+            let request: ployz_core::ops::OperationEventReplayRequest =
+                serde_json::from_slice(&request.payload).expect("watch request decodes");
+            assert_eq!(request.operation_id, operation_id("op_deploy_failed"));
+            let response: OpsWatchResponse = OperationApiResponse::Ok {
+                value: OperationEventReplayPage::terminal(vec![
+                    replayed(
+                        1,
+                        OperationEvent::DeploySubmitted {
+                            operation_id: operation_id("op_deploy_failed"),
+                            reservation_id: Some(DeployReservationId::first()),
+                            target: forward_request(),
+                        },
+                    ),
+                    replayed(
+                        2,
+                        OperationEvent::DeployFailed {
+                            operation_id: operation_id("op_deploy_failed"),
+                            failure: DeployOperationFailure::NoUsableMachines {
+                                reasons: Vec::new(),
+                            },
+                        },
+                    ),
+                ]),
+            };
+            NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+        })
+        .await
+        .expect("watch endpoint binds");
+    runtime
+        .bind_endpoint(&status_endpoint, |request| async move {
+            let request: OpsStatusRequest =
+                serde_json::from_slice(&request.payload).expect("status request decodes");
+            assert_eq!(request.operation_id, operation_id("op_deploy_failed"));
+            let response: OpsStatusResponse = OperationApiResponse::Ok {
+                value: OperationStatusSnapshot::new(deploy_status(
+                    "op_deploy_failed",
+                    DeployOperationState::Failed {
+                        failure: DeployOperationFailure::NoUsableMachines {
+                            reasons: Vec::new(),
+                        },
+                    },
+                )),
+            };
+            NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+        })
+        .await
+        .expect("status endpoint binds");
+    service_client.flush().await.expect("service flushes");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--nats")
+        .arg(server.server.client_url().as_str())
+        .env_remove("HOME")
+        .env_remove("XDG_CONFIG_HOME")
+        .env("XDG_STATE_HOME", env.state_home())
+        .env(PLOYZ_NATS_CA_FILE_ENV, server.server.ca_path())
+        .env(PLOYZ_NATS_NKEY_SEED_FILE_ENV, env.user_seed_path())
+        .args([
+            "deploy",
+            "--service",
+            "svc_api",
+            "--image",
+            "ghcr.io/acme/api:rev-2",
+            "--replicas",
+            "1",
+        ])
+        .output()
+        .expect("ployz binary runs");
+
+    assert!(
+        !output.status.success(),
+        "a followed deploy that failed must exit non-zero; stdout:\n{}\nstderr:\n{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert!(
+        stdout(&output).contains("Deploy failed"),
+        "the failure must still be printed; stdout:\n{}",
+        stdout(&output)
     );
 }
 
@@ -322,6 +470,34 @@ const fn endpoint_execution(execution: OperationApiEndpointExecution) -> Endpoin
         OperationApiEndpointExecution::AcceptsOperation => EndpointExecution::AcceptsOperation,
         OperationApiEndpointExecution::MutatesOperation => EndpointExecution::MutatesOperation,
         OperationApiEndpointExecution::Query => EndpointExecution::Query,
+    }
+}
+
+fn deploy_status(operation: &str, state: DeployOperationState) -> OperationStatus {
+    OperationStatus::Deploy {
+        id: operation_id(operation),
+        namespace_id: NamespaceId::try_new("default").expect("valid namespace"),
+        service_id: service_id("svc_api"),
+        origin: None,
+        state,
+        last_event_sequence: event_sequence(2),
+    }
+}
+
+fn forward_request() -> DeployRequest {
+    DeployRequest {
+        namespace_id: NamespaceId::try_new("default").expect("valid namespace"),
+        origin: None,
+        services: vec![DeployServiceSpec {
+            service_id: service_id("svc_api"),
+            image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
+            image_source: ImageSource::Registry,
+            replicas: ReplicaCount::try_new(1).expect("valid replicas"),
+            runtime: ContainerRuntimeSpec::image_defaults(),
+            pre_start: None,
+            depends_on: Vec::new(),
+            routes: Vec::new(),
+        }],
     }
 }
 

@@ -22,8 +22,9 @@ use crate::config::{
     save_cluster_context_machine_ssh,
 };
 use crate::runtime::{
-    PloyzctlExecutionError, PloyzctlExecutionOutput, PloyzctlRuntimeConfig, activate_first_machine,
-    api_error, operation_api_client, read_join_seed, watch_operation_until_terminal,
+    CommandExit, PloyzctlExecutionError, PloyzctlExecutionOutput, PloyzctlRuntimeConfig,
+    activate_first_machine, api_error, operation_api_client, read_join_seed,
+    watch_operation_until_terminal,
 };
 use crate::shell::shell_quote;
 use crate::ssh::{DEFAULT_SSH_COMMAND_TIMEOUT, SshClient, SshCommandError, SshPhase, SshTarget};
@@ -146,6 +147,7 @@ pub(crate) async fn execute_core_promote_remote(
     Ok(PloyzctlExecutionOutput {
         stdout: promoted.render(&command.target),
         stderr,
+        exit: CommandExit::Success,
     })
 }
 
@@ -207,7 +209,7 @@ pub(crate) async fn execute_core_replace_remote(
         return Err(ssh_error(source));
     }
 
-    watch_operation_until_terminal(
+    let (_events, outcome) = watch_operation_until_terminal(
         &api,
         OperationEventReplayRequest {
             operation_id: accepted.operation_id,
@@ -223,7 +225,8 @@ pub(crate) async fn execute_core_replace_remote(
     Ok(PloyzctlExecutionOutput::stdout(format!(
         "core demoted on {}\n",
         command.target.destination()
-    )))
+    ))
+    .with_operation_outcome(outcome))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

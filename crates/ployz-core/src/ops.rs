@@ -422,6 +422,94 @@ impl OperationStatus {
             Self::VolumeRemove { state, .. } => state.is_terminal(),
         }
     }
+
+    /// The terminal outcome of this operation, or `None` while it is still
+    /// running. Failure and cancellation are distinct terminal outcomes; both
+    /// are unsuccessful, so callers deciding a process exit code treat them
+    /// the same via [`OperationOutcome::is_success`].
+    #[must_use]
+    pub fn terminal_outcome(&self) -> Option<OperationOutcome> {
+        if !self.is_terminal() {
+            return None;
+        }
+        // Reaching here means the state is terminal, so anything that is
+        // neither completed nor cancelled is a failure.
+        let outcome = match self {
+            Self::Deploy { state, .. } => OperationOutcome::from_terminal(
+                matches!(state, DeployOperationState::Completed { .. }),
+                matches!(state, DeployOperationState::Cancelled { .. }),
+            ),
+            Self::Cert { state, .. } => OperationOutcome::from_terminal(
+                matches!(state, CertOperationState::Completed),
+                matches!(state, CertOperationState::Cancelled { .. }),
+            ),
+            Self::MachineAdd { state, .. } => OperationOutcome::from_terminal(
+                matches!(state, MachineAddOperationState::Completed),
+                matches!(state, MachineAddOperationState::Cancelled { .. }),
+            ),
+            Self::MachineUpdate { state, .. } => OperationOutcome::from_terminal(
+                matches!(state, MachineUpdateOperationState::Completed { .. }),
+                matches!(state, MachineUpdateOperationState::Cancelled { .. }),
+            ),
+            Self::MachineLifecycle { state, .. } => OperationOutcome::from_terminal(
+                matches!(state, MachineLifecycleOperationState::Completed),
+                matches!(state, MachineLifecycleOperationState::Cancelled { .. }),
+            ),
+            Self::CoreReplace { state, .. } => OperationOutcome::from_terminal(
+                matches!(state, CoreReplaceOperationState::Completed),
+                matches!(state, CoreReplaceOperationState::Cancelled { .. }),
+            ),
+            Self::CredentialGrant { state, .. } => OperationOutcome::from_terminal(
+                matches!(state, CredentialGrantOperationState::Completed),
+                matches!(state, CredentialGrantOperationState::Cancelled { .. }),
+            ),
+            Self::NetworkRepair { state, .. } => OperationOutcome::from_terminal(
+                matches!(state, NetworkRepairOperationState::Completed),
+                matches!(state, NetworkRepairOperationState::Cancelled { .. }),
+            ),
+            Self::ServiceRestart { state, .. } => OperationOutcome::from_terminal(
+                matches!(state, ServiceRestartOperationState::Completed),
+                matches!(state, ServiceRestartOperationState::Cancelled { .. }),
+            ),
+            Self::ManagedLease { state, .. } => OperationOutcome::from_terminal(
+                matches!(state, ManagedLeaseOperationState::Completed),
+                false,
+            ),
+            Self::NamespaceRemove { state, .. } => OperationOutcome::from_terminal(
+                matches!(state, NamespaceRemoveOperationState::Completed),
+                matches!(state, NamespaceRemoveOperationState::Cancelled { .. }),
+            ),
+            Self::VolumeRemove { state, .. } => OperationOutcome::from_terminal(
+                matches!(state, VolumeRemoveOperationState::Completed),
+                false,
+            ),
+        };
+        Some(outcome)
+    }
+}
+
+/// The three ways an operation can end. Only [`Self::Succeeded`] is a success;
+/// failure and cancellation both mean the operation did not complete its work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationOutcome {
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+impl OperationOutcome {
+    fn from_terminal(completed: bool, cancelled: bool) -> Self {
+        match (completed, cancelled) {
+            (true, _) => Self::Succeeded,
+            (false, true) => Self::Cancelled,
+            (false, false) => Self::Failed,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_success(self) -> bool {
+        matches!(self, Self::Succeeded)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
