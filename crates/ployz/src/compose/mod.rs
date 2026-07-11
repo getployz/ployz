@@ -6,6 +6,7 @@ mod translate;
 mod volumes;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::path::Path;
 
 use ployz_core::deploy::DeployServiceSpec;
@@ -27,6 +28,23 @@ pub struct ComposeInput<'a> {
     pub interpolation_env: BTreeMap<String, String>,
     pub namespace_override: Option<NamespaceId>,
     pub mode: UnsupportedFieldMode,
+}
+
+pub fn parse_compose_file(
+    file: &Path,
+    namespace_override: Option<NamespaceId>,
+    mode: UnsupportedFieldMode,
+) -> Result<(ParsedComposeDeploy, Vec<RenderedWarning>), PloyzctlCliError> {
+    let source = fs::read_to_string(file)
+        .map_err(|error| cli_error(format!("could not read {}: {error}", file.display())))?;
+    let base_dir = file.parent().unwrap_or_else(|| Path::new("."));
+    parse_deploy_file(ComposeInput {
+        source: &source,
+        base_dir,
+        interpolation_env: interpolation_env(base_dir)?,
+        namespace_override,
+        mode,
+    })
 }
 
 pub fn parse_deploy_file(

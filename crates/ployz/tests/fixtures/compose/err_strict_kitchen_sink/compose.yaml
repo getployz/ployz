@@ -1,18 +1,50 @@
 name: fixture_kitchen_sink
+version: "3.9"
+networks:
+  custom: {}
+secrets:
+  token: {}
+configs:
+  settings: {}
 services:
   web:
     image: nginx:latest
+    build: .
+    cgroup_parent: parent
+    configs: [settings]
     deploy:
       replicas: 2
       mode: global
+      placement: {}
+      resources:
+        reservations: {memory: 1M}
+      restart_policy:
+        delay: 1s
       update_config:
         order: start-first
+    devices: [/dev/null]
+    dns: 1.1.1.1
+    dns_search: example.com
+    expose: [80]
+    extra_hosts: [host:127.0.0.1]
     healthcheck:
       test: ["CMD", "true"]
+    init: true
+    labels: {example: value}
+    logging: {driver: json-file}
+    networks: [custom]
+    platform: linux/amd64
     volumes:
       - data:/data
     ports:
       - "8080:80"
+    privileged: true
     profiles:
       - prod
+    pull_policy: always
+    secrets: [token]
+    security_opt: [no-new-privileges]
+    ulimits: {nofile: 1024}
+    user: nginx
+    working_dir: /app
     mystery_option: true

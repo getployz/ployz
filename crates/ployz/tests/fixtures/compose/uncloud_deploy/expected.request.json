@@ -1,0 +1,46 @@
+{
+  "namespace_id": "uncloud_deploy",
+  "services": [
+    {
+      "service_id": "both",
+      "image": "nginx:latest",
+      "replicas": 3,
+      "runtime": {
+        "command": null,
+        "entrypoint": null,
+        "environment": {},
+        "stop_grace_period": 10,
+        "resources": {
+          "nano_cpus": 2000000000,
+          "memory_bytes": 104857600
+        }
+      }
+    },
+    {
+      "service_id": "deploy",
+      "image": "nginx:latest",
+      "replicas": 3,
+      "runtime": {
+        "command": null,
+        "entrypoint": null,
+        "environment": {},
+        "stop_grace_period": 10,
+        "resources": {
+          "nano_cpus": 1500000000,
+          "memory_bytes": 104857600
+        }
+      }
+    },
+    {
+      "service_id": "no-deploy",
+      "image": "nginx:latest",
+      "replicas": 1,
+      "runtime": {
+        "command": null,
+        "entrypoint": null,
+        "environment": {},
+        "stop_grace_period": 10
+      }
+    }
+  ]
+}

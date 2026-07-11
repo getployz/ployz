@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
@@ -12,7 +11,7 @@ use ployz_sdk_types::{AcceptedOperation, DeploySubmitRequest};
 
 use crate::client_ids::generate_client_deploy_id;
 use crate::commands::{PloyzctlCliError, cli_error, invalid_value};
-use crate::compose::{ComposeInput, UnsupportedFieldMode};
+use crate::compose::UnsupportedFieldMode;
 
 /// Public port the `--route HOST:PORT` shorthand listens on: alpha route
 /// shorthand is plain HTTP (KTD8).
@@ -213,24 +212,19 @@ fn deploy_submit_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCli
                 "deploy -f conflicts with --image, --service, --replicas, and route flags",
             ));
         }
-        let source = fs::read_to_string(&file)
-            .map_err(|error| cli_error(format!("could not read {}: {error}", file.display())))?;
-        let base_dir = file.parent().unwrap_or_else(|| std::path::Path::new("."));
         let namespace_override = namespace
             .map(NamespaceId::try_new)
             .transpose()
             .map_err(|error| invalid_value("--namespace", error))?;
-        let (parsed, warnings) = crate::compose::parse_deploy_file(ComposeInput {
-            source: &source,
-            base_dir,
-            interpolation_env: crate::compose::interpolation_env(base_dir)?,
+        let (parsed, warnings) = crate::compose::parse_compose_file(
+            &file,
             namespace_override,
-            mode: if allow_unsupported {
+            if allow_unsupported {
                 UnsupportedFieldMode::AllowUnsupported
             } else {
                 UnsupportedFieldMode::Strict
             },
-        })?;
+        )?;
         let service_id = parsed
             .services
             .first()

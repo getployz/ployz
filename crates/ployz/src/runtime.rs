@@ -32,10 +32,14 @@ use ployz_nats::connect::{
 use ployz_sdk_types::{InitFirstMachineActivateError, OpsStatusRequest};
 use tokio::time::sleep as async_sleep;
 
+mod compose;
 mod deploy_follow;
 mod deploy_history;
 mod deploy_rollback;
+mod execution_output;
 mod network;
+
+pub use execution_output::PloyzctlExecutionOutput;
 
 pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 pub const PLOYZ_NATS_CA_FILE_ENV: &str = "PLOYZ_NATS_CA_FILE";
@@ -222,6 +226,7 @@ pub async fn execute_command(
         }
         PloyzctlCommand::CorePromote(command) => execute_core_promote_remote(command, config).await,
         PloyzctlCommand::CoreReplace(command) => execute_core_replace_remote(command, config).await,
+        PloyzctlCommand::ComposeCheck(command) => Ok(compose::check(command)),
         PloyzctlCommand::Deploy(command) => deploy_follow::execute_deploy(command, config).await,
         PloyzctlCommand::DeployHistory(command) => deploy_history::inspect(command, config),
         PloyzctlCommand::DeployRollback(command) => deploy_rollback::execute(command, config).await,
@@ -630,22 +635,6 @@ fn current_unix_seconds() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PloyzctlExecutionOutput {
-    pub stdout: String,
-    pub stderr: String,
-}
-
-impl PloyzctlExecutionOutput {
-    #[must_use]
-    pub fn stdout(stdout: String) -> Self {
-        Self {
-            stdout,
-            stderr: String::new(),
-        }
-    }
 }
 
 pub(crate) async fn activate_first_machine(

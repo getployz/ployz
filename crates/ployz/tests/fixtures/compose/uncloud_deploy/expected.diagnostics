@@ -1,0 +1,10 @@
+services.both.cpus  warning  unknown field  remove it or pass --allow-unsupported
+services.both.deploy.resources.reservations  warning  unsupported (planned)  resource reservations are not deployed yet; remove it or pass --allow-unsupported
+services.both.mem_limit  warning  unknown field  remove it or pass --allow-unsupported
+services.both.mem_reservation  warning  unknown field  remove it or pass --allow-unsupported
+services.both.scale  warning  unknown field  remove it or pass --allow-unsupported
+services.deploy.deploy.resources.reservations  warning  unsupported (planned)  resource reservations are not deployed yet; remove it or pass --allow-unsupported
+services.no-deploy.cpus  warning  unknown field  remove it or pass --allow-unsupported
+services.no-deploy.mem_limit  warning  unknown field  remove it or pass --allow-unsupported
+services.no-deploy.mem_reservation  warning  unknown field  remove it or pass --allow-unsupported
+services.no-deploy.scale  warning  unknown field  remove it or pass --allow-unsupported
