@@ -473,7 +473,7 @@ The act of running a founder or joiner bootstrap command on a target machine, ei
 _Avoid_: SSH control plane, daemon transport, provisioning authority
 
 **Cloud Bootstrap Invite**:
-A time-limited Cloud permission that can issue one or more single-redemption Cloud Bootstrap Tokens for pre-rendered Bootstrap Delivery. The invite carries Cloud-side org, cluster, actor, and bootstrap intent; a valid token redeem request is the approval boundary for each tokenized machine use.
+A time-limited Cloud permission represented by one reusable Cloud Bootstrap Token for pre-rendered Bootstrap Delivery. The invite carries Cloud-side org, cluster, actor, and bootstrap intent; each valid token redeem request is the approval boundary for one machine use.
 _Avoid_: One-time bootstrap token, machine join token, org flag
 
 **Cloud Bootstrap Session**:
@@ -481,7 +481,7 @@ A short-lived Cloud session created by `ployz-keeper bootstrap` for interactive 
 _Avoid_: Localhost callback, pasted cloud token, browser-owned machine session
 
 **Cloud Bootstrap Token**:
-The single-redemption bearer secret string embedded in noninteractive Bootstrap Delivery material for a Cloud Bootstrap Invite. The token is not the org, cluster, machine identity, join token, or callback credential.
+The bearer secret string embedded in noninteractive Bootstrap Delivery material for a Cloud Bootstrap Invite. Cloud accepts any number of machine redemptions with the token during its 24-hour lifetime. The token is not the org, cluster, machine identity, join token, or callback credential.
 _Avoid_: Org id, cluster id, join token, callback token
 
 **Cloud Bootstrap Redemption**:

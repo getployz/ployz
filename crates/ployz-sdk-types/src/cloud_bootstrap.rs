@@ -9,6 +9,30 @@ use crate::machine::{MachineJoinRedeemResult, MachineJoinToken};
 pub const CLOUD_BOOTSTRAP_PROTOCOL_VERSION: u16 = 1;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(type = "Brand<string, \"CloudBootstrapToken\">")]
+#[serde(transparent)]
+pub struct CloudBootstrapToken(String);
+
+impl CloudBootstrapToken {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, CloudBootstrapSecretError> {
+        let value = value.into();
+        validate_cloud_bootstrap_secret(&value)?;
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn secret(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for CloudBootstrapToken {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CloudBootstrapToken([redacted])")
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(type = "Brand<string, \"CloudBootstrapSessionSecret\">")]
 #[serde(transparent)]
 pub struct CloudBootstrapSessionSecret(String);
@@ -158,6 +182,14 @@ pub struct CloudBootstrapMachineFacts {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct CloudBootstrapSessionCreateRequest {
+    pub attempt_id: CloudBootstrapAttemptId,
+    pub client: CloudBootstrapClientInfo,
+    pub machine: CloudBootstrapMachineFacts,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct CloudBootstrapTokenRedeemRequest {
     pub attempt_id: CloudBootstrapAttemptId,
     pub client: CloudBootstrapClientInfo,
     pub machine: CloudBootstrapMachineFacts,

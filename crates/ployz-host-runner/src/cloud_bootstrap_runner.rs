@@ -34,8 +34,8 @@ use ployz_sdk_types::{
     CloudBootstrapCallbackAccepted, CloudBootstrapCallbackRequest, CloudBootstrapClientInfo,
     CloudBootstrapDecision, CloudBootstrapEnvelope, CloudBootstrapFailure, CloudBootstrapIntent,
     CloudBootstrapMachineFacts, CloudBootstrapOutcome, CloudBootstrapSessionCreateRequest,
-    CloudBootstrapSessionPollRequest, CloudFounderBootstrap, CloudJoinerBootstrap,
-    InitFirstMachineActivateRequest, MachineId,
+    CloudBootstrapSessionPollRequest, CloudBootstrapToken, CloudBootstrapTokenRedeemRequest,
+    CloudFounderBootstrap, CloudJoinerBootstrap, InitFirstMachineActivateRequest, MachineId,
 };
 
 use crate::first_machine::{read_cloud_founder_bootstrap_result, run_first_machine_install};
@@ -49,57 +49,12 @@ const CLOUD_FOUNDER_ACTIVATION_ATTEMPTS: u32 = 60;
 const CLOUD_FOUNDER_ACTIVATION_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 pub(super) fn run_interactive_cloud_bootstrap(cloud_host: &str) -> ExitCode {
-    let state_dir = std::path::Path::new(HOST_RUNNER_STATE_DIR);
-    let systemd_dir = std::path::Path::new("/etc/systemd/system");
-    let local_state = match inspect_cloud_bootstrap_local_state(state_dir, systemd_dir) {
-        Ok(state) => state,
-        Err(error) => {
-            eprintln!("{error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let attempt = match local_state {
-        CloudBootstrapLocalState::AlreadyBootstrapped { evidence } => {
-            match load_existing_cloud_attempt(state_dir) {
-                Ok(Some(attempt)) if attempt.terminal.is_some() => {
-                    println!("Resuming Cloud bootstrap callback for this machine...");
-                    attempt
-                }
-                Ok(_) => {
-                    eprintln!(
-                        "this machine already has Ployz bootstrap evidence at {}; refusing before Cloud contact",
-                        evidence.display()
-                    );
-                    return ExitCode::FAILURE;
-                }
-                Err(error) => {
-                    eprintln!("{error}");
-                    return ExitCode::FAILURE;
-                }
-            }
-        }
-        CloudBootstrapLocalState::Fresh | CloudBootstrapLocalState::PartialSameAttempt => {
-            match load_or_create_cloud_attempt(state_dir) {
-                Ok(attempt) => attempt,
-                Err(error) => {
-                    eprintln!("{error}");
-                    return ExitCode::FAILURE;
-                }
-            }
-        }
+    let Some(attempt) = prepare_cloud_bootstrap_attempt() else {
+        return ExitCode::FAILURE;
     };
     let client = CloudClient::new(cloud_host);
-    if let Some(terminal) = &attempt.terminal {
-        return match post_cloud_callback(&client, &terminal.target, &terminal.callback) {
-            Ok(()) => {
-                println!("Cloud bootstrap callback accepted.");
-                ExitCode::SUCCESS
-            }
-            Err(message) => {
-                eprintln!("{message}");
-                ExitCode::FAILURE
-            }
-        };
+    if let Some(exit_code) = resume_terminal_callback(&attempt, &client) {
+        return exit_code;
     }
 
     let machine = cloud_machine_facts();
@@ -178,6 +133,130 @@ pub(super) fn run_interactive_cloud_bootstrap(cloud_host: &str) -> ExitCode {
 
     eprintln!("Cloud bootstrap approval timed out; rerun sudo ployz host bootstrap");
     ExitCode::FAILURE
+}
+
+pub(super) fn run_token_cloud_bootstrap(
+    cloud_host: &str,
+    cloud_token: CloudBootstrapToken,
+) -> ExitCode {
+    let Some(attempt) = prepare_cloud_bootstrap_attempt() else {
+        return ExitCode::FAILURE;
+    };
+    let client = CloudClient::new(cloud_host);
+    if let Some(exit_code) = resume_terminal_callback(&attempt, &client) {
+        return exit_code;
+    }
+
+    let request = CloudBootstrapTokenRedeemRequest {
+        attempt_id: attempt.attempt_id.clone(),
+        client: CloudBootstrapClientInfo::current(env!("CARGO_PKG_VERSION")),
+        machine: cloud_machine_facts(),
+    };
+    for _ in 0..CLOUD_BOOTSTRAP_MAX_POLLS {
+        let decision = match client.post_json::<_, CloudBootstrapDecision>(
+            "/api/bootstrap/tokens/redeem",
+            Some(cloud_token.secret()),
+            &request,
+        ) {
+            Ok(decision) => decision,
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::FAILURE;
+            }
+        };
+
+        match decision {
+            CloudBootstrapDecision::Pending {
+                retry_after_seconds,
+            } => std::thread::sleep(Duration::from_secs(retry_after_seconds.into())),
+            CloudBootstrapDecision::Expired => {
+                eprintln!("Cloud Bootstrap Token expired");
+                return ExitCode::FAILURE;
+            }
+            CloudBootstrapDecision::Failed { failure } => {
+                eprintln!("Cloud bootstrap failed: {failure:?}");
+                return ExitCode::FAILURE;
+            }
+            CloudBootstrapDecision::Ready { envelope } => match &envelope.intent {
+                CloudBootstrapIntent::WaitForFounder {
+                    retry_after_seconds,
+                } => {
+                    println!("Waiting for the first machine to finish...");
+                    std::thread::sleep(Duration::from_secs((*retry_after_seconds).into()));
+                }
+                CloudBootstrapIntent::Founder { .. } | CloudBootstrapIntent::Joiner { .. } => {
+                    return run_cloud_bootstrap_envelope(*envelope, &attempt, &client);
+                }
+            },
+        }
+    }
+
+    eprintln!("Cloud bootstrap timed out; rerun with a valid Cloud Bootstrap Token");
+    ExitCode::FAILURE
+}
+
+fn prepare_cloud_bootstrap_attempt() -> Option<CloudBootstrapAttemptState> {
+    let state_dir = std::path::Path::new(HOST_RUNNER_STATE_DIR);
+    let systemd_dir = std::path::Path::new("/etc/systemd/system");
+    let local_state = match inspect_cloud_bootstrap_local_state(state_dir, systemd_dir) {
+        Ok(state) => state,
+        Err(error) => {
+            eprintln!("{error}");
+            return None;
+        }
+    };
+    let attempt = match local_state {
+        CloudBootstrapLocalState::AlreadyBootstrapped { evidence } => {
+            match load_existing_cloud_attempt(state_dir) {
+                Ok(Some(attempt)) if attempt.terminal.is_some() => {
+                    println!("Resuming Cloud bootstrap callback for this machine...");
+                    attempt
+                }
+                Ok(_) => {
+                    eprintln!(
+                        "this machine already has Ployz bootstrap evidence at {}; refusing before Cloud contact",
+                        evidence.display()
+                    );
+                    return None;
+                }
+                Err(error) => {
+                    eprintln!("{error}");
+                    return None;
+                }
+            }
+        }
+        CloudBootstrapLocalState::Fresh | CloudBootstrapLocalState::PartialSameAttempt => {
+            match load_or_create_cloud_attempt(state_dir) {
+                Ok(attempt) => attempt,
+                Err(error) => {
+                    eprintln!("{error}");
+                    return None;
+                }
+            }
+        }
+    };
+    Some(attempt)
+}
+
+fn resume_terminal_callback(
+    attempt: &CloudBootstrapAttemptState,
+    client: &CloudClient,
+) -> Option<ExitCode> {
+    if let Some(terminal) = &attempt.terminal {
+        return Some(
+            match post_cloud_callback(client, &terminal.target, &terminal.callback) {
+                Ok(()) => {
+                    println!("Cloud bootstrap callback accepted.");
+                    ExitCode::SUCCESS
+                }
+                Err(message) => {
+                    eprintln!("{message}");
+                    ExitCode::FAILURE
+                }
+            },
+        );
+    }
+    None
 }
 
 fn update_poll_delay_from_pending(

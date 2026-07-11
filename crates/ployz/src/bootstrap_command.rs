@@ -8,7 +8,7 @@ use ployz_core::ids::MachineId;
 use ployz_core::install::{MachineBootstrapUrl, MachineJoinClusterName, MachineJoinRuntimeNatsUrl};
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::roles::{GatewayRole, InstallRolePolicy};
-use ployz_sdk_types::MachineJoinToken;
+use ployz_sdk_types::{CloudBootstrapToken, MachineJoinToken};
 use std::net::IpAddr;
 
 use crate::shell::shell_quote;
@@ -39,6 +39,7 @@ pub enum BootstrapRelease {
 pub struct CloudBootstrapCommand {
     pub installer: BootstrapInstaller,
     pub cloud_host: Option<String>,
+    pub cloud_token: Option<CloudBootstrapToken>,
 }
 
 impl CloudBootstrapCommand {
@@ -47,6 +48,9 @@ impl CloudBootstrapCommand {
         let mut bootstrap = String::from("sudo ployz host bootstrap cloud");
         if let Some(host) = &self.cloud_host {
             bootstrap.push_str(&format!(" --cloud-host {}", shell_quote(host)));
+        }
+        if let Some(token) = &self.cloud_token {
+            bootstrap.push_str(&format!(" --cloud-token {}", shell_quote(token.secret())));
         }
 
         match &self.installer {
@@ -69,6 +73,7 @@ impl std::fmt::Debug for CloudBootstrapCommand {
             .debug_struct("CloudBootstrapCommand")
             .field("installer", &self.installer)
             .field("cloud_host", &self.cloud_host)
+            .field("cloud_token", &self.cloud_token)
             .finish()
     }
 }
