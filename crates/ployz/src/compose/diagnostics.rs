@@ -34,6 +34,11 @@ pub(crate) struct ComposeFinding {
 
 impl ComposeFinding {
     #[must_use]
+    pub(crate) fn is_invalid_value(&self) -> bool {
+        matches!(self.kind, ComposeFindingKind::InvalidValue { .. })
+    }
+
+    #[must_use]
     pub(crate) fn invalid(path: ComposePath, message: impl std::fmt::Display) -> Self {
         Self {
             path,

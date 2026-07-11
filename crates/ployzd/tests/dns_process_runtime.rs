@@ -9,7 +9,7 @@ use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use ployzd::intent::service::{RunningIntentService, start_intent_service};
 use ployzd::roles::dns::process::{
-    DnsProcessAttempt, RunningDnsProcess, start_dns_process_with_client,
+    DnsIntentWatchHealth, DnsProcessAttempt, RunningDnsProcess, start_dns_process_with_client,
 };
 use ployzd::roles::dns::projection::DnsAnswer;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -54,6 +54,7 @@ async fn dns_process_applies_route_changes_on_next_poll() {
     .expect("dns runtime starts");
     wait_until(Duration::from_secs(2), || {
         runtime.health().last_attempt.is_some()
+            && runtime.health().intent_watch == DnsIntentWatchHealth::Watching
     })
     .await;
 

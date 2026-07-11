@@ -131,6 +131,7 @@ pub async fn start_dns_process_with_client(
     let health = Arc::new(Mutex::new(DnsProcessHealth {
         last_attempt: None,
         consecutive_failures: 0,
+        intent_watch: DnsIntentWatchHealth::Starting,
     }));
     let facts_cache = start_fact_cache(client.clone())
         .await
@@ -203,9 +204,11 @@ pub async fn start_dns_process_with_client(
             }
         }
     });
+    let watch_health = Arc::clone(&health);
     let mut watch_shutdown = shutdown.subscribe();
     let watch_task = tokio::spawn(async move {
-        wake_dns_refresh_on_intent_changed(client, refresh_wake, &mut watch_shutdown).await;
+        wake_dns_refresh_on_intent_changed(client, refresh_wake, watch_health, &mut watch_shutdown)
+            .await;
     });
 
     tasks.push(refresh_task);
@@ -225,6 +228,7 @@ pub async fn start_dns_process_with_client(
 async fn wake_dns_refresh_on_intent_changed(
     client: NatsClient,
     refresh_wake: mpsc::Sender<()>,
+    health: Arc<Mutex<DnsProcessHealth>>,
     shutdown: &mut broadcast::Receiver<()>,
 ) {
     loop {
@@ -232,11 +236,23 @@ async fn wake_dns_refresh_on_intent_changed(
             opened = client.subscribe(INTENT_CHANGED) => opened,
             _ = shutdown.recv() => break,
         };
-        let Ok(mut changed) = opened else {
-            if sleep_or_shutdown(DNS_WATCH_RESTART_DELAY, shutdown).await {
-                break;
+        let mut changed = match opened {
+            Ok(changed) => {
+                record_dns_intent_watch(&health, DnsIntentWatchHealth::Watching);
+                changed
             }
-            continue;
+            Err(error) => {
+                record_dns_intent_watch(
+                    &health,
+                    DnsIntentWatchHealth::Retrying {
+                        message: error.to_string(),
+                    },
+                );
+                if sleep_or_shutdown(DNS_WATCH_RESTART_DELAY, shutdown).await {
+                    break;
+                }
+                continue;
+            }
         };
         let _ = refresh_wake.try_send(());
 
@@ -244,6 +260,12 @@ async fn wake_dns_refresh_on_intent_changed(
             tokio::select! {
                 change = changed.next() => {
                     if change.is_none() {
+                        record_dns_intent_watch(
+                            &health,
+                            DnsIntentWatchHealth::Retrying {
+                                message: "intent.changed subscription closed".to_owned(),
+                            },
+                        );
                         break;
                     }
                     let _ = refresh_wake.try_send(());
@@ -258,6 +280,21 @@ async fn wake_dns_refresh_on_intent_changed(
 pub struct DnsProcessHealth {
     pub last_attempt: Option<DnsProcessAttempt>,
     pub consecutive_failures: u64,
+    pub intent_watch: DnsIntentWatchHealth,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DnsIntentWatchHealth {
+    Starting,
+    Watching,
+    Retrying { message: String },
+}
+
+fn record_dns_intent_watch(health: &Mutex<DnsProcessHealth>, state: DnsIntentWatchHealth) {
+    health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .intent_watch = state;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -420,6 +457,7 @@ mod tests {
         let health = Mutex::new(DnsProcessHealth {
             last_attempt: None,
             consecutive_failures: 0,
+            intent_watch: DnsIntentWatchHealth::Starting,
         });
         let interval = Duration::from_secs(1);
 
@@ -457,6 +495,7 @@ mod tests {
         let health = Mutex::new(DnsProcessHealth {
             last_attempt: None,
             consecutive_failures: 0,
+            intent_watch: DnsIntentWatchHealth::Starting,
         });
 
         let next = record_dns_attempt(

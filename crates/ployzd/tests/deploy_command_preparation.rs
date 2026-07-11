@@ -195,7 +195,14 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
 
     let command = prepare_deploy_execution_command(operation_id("op_123"), request, facts);
 
-    assert_eq!(command.route_binding_removals(), [omitted_target]);
+    assert_eq!(
+        command
+            .route_binding_removals()
+            .iter()
+            .map(|binding| binding.target.clone())
+            .collect::<Vec<_>>(),
+        [omitted_target]
+    );
     assert_eq!(
         command.serving_target_removals(),
         [serving_target_entry("svc_worker", "entry_worker")]

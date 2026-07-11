@@ -219,19 +219,28 @@ async fn deploy_promotes_each_dependency_phase_before_starting_the_next() {
     assert!(matches!(
         recorder.phase_records.as_slice(),
         [
-            DeployEvidence::PhaseStarted { phase: 1, .. },
+            DeployEvidence::PhaseStarted {
+                phase: first_started,
+                ..
+            },
             DeployEvidence::PhaseFinished {
-                phase: 1,
+                phase: first_finished,
                 outcome: DeployPhaseOutcome::Promoted,
                 ..
             },
-            DeployEvidence::PhaseStarted { phase: 2, .. },
+            DeployEvidence::PhaseStarted {
+                phase: second_started,
+                ..
+            },
             DeployEvidence::PhaseFinished {
-                phase: 2,
+                phase: second_finished,
                 outcome: DeployPhaseOutcome::Promoted,
                 ..
             }
-        ]
+        ] if *first_started == phase_number(1)
+            && *first_finished == phase_number(1)
+            && *second_started == phase_number(2)
+            && *second_finished == phase_number(2)
     ));
 }
 
@@ -333,9 +342,54 @@ async fn same_phase_failure_cleans_successes_and_promotes_nothing() {
             services,
             ..
         }) if matches!(services.as_slice(), [
-            DeployServiceResult::Skipped { .. },
+            DeployServiceResult::Completed { .. },
             DeployServiceResult::Failed { .. }
         ])
+    ));
+}
+
+#[tokio::test]
+async fn committed_phase_is_not_cleaned_up_when_phase_evidence_write_fails() {
+    let mut recorder = RecordingOperations::fail_phase_finished_evidence_times(1);
+    let mut dataplane = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    let error = execute_deploy(
+        deploy_command(1),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            dataplane: &mut dataplane,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect_err("phase evidence failure is visible");
+
+    assert!(matches!(
+        error,
+        DeployExecutionError::Failed {
+            source,
+            ..
+        } if matches!(*source, DeployExecutionError::RecordEvidence(_))
+    ));
+
+    assert_eq!(namespace_state.phase_requests.len(), 1);
+    assert!(runtime.stops.is_empty());
+    assert!(runtime.removals.is_empty());
+    assert!(matches!(
+        recorder.records.last(),
+        Some(RecordedOperation::Transition(DeployTransition::Completed {
+            outcome: DeployCompletionOutcome::PartiallyCompleted
+        }))
+    ));
+    assert!(matches!(
+        recorder.phase_records.as_slice(),
+        [DeployEvidence::PhaseStarted { .. }]
     ));
 }
 
@@ -373,10 +427,10 @@ async fn later_phase_failure_records_partial_outcome_and_skips_remaining_service
     assert!(matches!(
         recorder.phase_records.last(),
         Some(DeployEvidence::PhaseFinished {
-            phase: 2,
+            phase,
             outcome: DeployPhaseOutcome::Failed,
             services,
-        }) if matches!(services.as_slice(), [
+        }) if *phase == phase_number(2) && matches!(services.as_slice(), [
             DeployServiceResult::Failed { .. },
             DeployServiceResult::Skipped { .. }
         ])
@@ -1488,6 +1542,41 @@ async fn custom_https_deploy_ensures_certificate_before_route_commit() {
 }
 
 #[tokio::test]
+async fn replaced_service_routes_are_removed_inside_the_phase_commit() {
+    let mut recorder = RecordingOperations::default();
+    let mut dataplane = RecordingWireGuardEbpf::ready();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        routed_deploy_replacing_route_command(1),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            dataplane: &mut dataplane,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("routed deploy succeeds");
+
+    let [(_, phase_route_removals, _)] = namespace_state.phase_requests.as_slice() else {
+        panic!("expected one phase commit");
+    };
+    assert_eq!(
+        phase_route_removals,
+        &vec![route_target("old.example.com", 443)]
+    );
+    assert_eq!(
+        namespace_state.route_removals,
+        vec![route_target("old.example.com", 443)]
+    );
+}
+
+#[tokio::test]
 async fn custom_https_certificate_failure_leaves_route_uncommitted() {
     let hostname = RouteHostname::try_new("api.example.com").expect("valid route hostname");
     let message = || FailureMessage::try_new("certificate failed").expect("valid failure message");
@@ -1709,7 +1798,7 @@ async fn deploy_worker_marks_failed_when_active_commit_times_out() {
     assert!(matches!(
         *source,
         DeployExecutionError::StepTimedOut {
-            step: DeployExecutionStep::CommitServingTarget,
+            step: DeployExecutionStep::CommitServingTarget { .. },
             ..
         }
     ));
@@ -1768,9 +1857,9 @@ async fn deploy_worker_records_retained_artifacts_when_namespace_lock_is_lost_be
         recorder.records.last(),
         Some(&RecordedOperation::Transition(DeployTransition::Failed {
             failure: DeployOperationFailure::ControlPlaneCommitFailed {
-                scope: ployz_core::ops::ControlPlaneCommitScope::ServiceEntry {
-                    service_id: service_id("svc_api"),
-                    namespace_revision_entry_id: target_namespace_revision_entry_id(),
+                scope: ployz_core::ops::ControlPlaneCommitScope::DeployPhase {
+                    namespace_revision_id: target_namespace_revision_id(1),
+                    phase: phase_number(1),
                 },
                 message: failure_message("namespace lock was lost before serving target commit"),
                 retained_artifacts: Vec::new(),

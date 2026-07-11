@@ -118,11 +118,17 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         .iter()
         .map(|service| service.service_id.clone())
         .collect::<Vec<_>>();
-    let route_binding_removals = namespace_route_binding_removals(
+    let route_binding_removal_targets = namespace_route_binding_removals(
         &request.namespace_id,
         &namespace_declared_targets,
         &facts.namespace_route_bindings,
     );
+    let route_binding_removals = facts
+        .namespace_route_bindings
+        .iter()
+        .filter(|binding| route_binding_removal_targets.contains(&binding.target))
+        .cloned()
+        .collect();
     let serving_target_removals = namespace_serving_target_removals(
         &request.namespace_id,
         &declared_services,

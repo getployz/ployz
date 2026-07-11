@@ -427,7 +427,6 @@ fn parse_depends_on(
         return Ok((Vec::new(), Vec::new()));
     };
     let mut findings = Vec::new();
-    let mut invalid = false;
     let mut dependencies = Vec::new();
     match value {
         Value::Sequence(values) => {
@@ -440,7 +439,6 @@ fn parse_depends_on(
                         DependencyCondition::Started,
                     )),
                     None => {
-                        invalid = true;
                         findings.push(ComposeFinding::invalid(
                             item_path,
                             "dependency names must be strings",
@@ -454,17 +452,13 @@ fn parse_depends_on(
                 match key.as_str() {
                     Some(name) => {
                         let dependency_path = path.field(name);
-                        if let Some(condition) = parse_dependency_options(
-                            value,
-                            &dependency_path,
-                            &mut findings,
-                            &mut invalid,
-                        ) {
+                        if let Some(condition) =
+                            parse_dependency_options(value, &dependency_path, &mut findings)
+                        {
                             dependencies.push((dependency_path, name.to_owned(), condition));
                         }
                     }
                     None => {
-                        invalid = true;
                         findings.push(ComposeFinding::invalid(
                             path.clone(),
                             "dependency keys must be strings",
@@ -489,7 +483,6 @@ fn parse_depends_on(
                 condition,
             }),
             Err(error) => {
-                invalid = true;
                 findings.push(ComposeFinding::invalid(
                     name_path,
                     format!("invalid service id: {error}"),
@@ -498,7 +491,7 @@ fn parse_depends_on(
         }
     }
 
-    if invalid {
+    if findings.iter().any(ComposeFinding::is_invalid_value) {
         Err(findings)
     } else {
         Ok((parsed, findings))
@@ -509,13 +502,11 @@ fn parse_dependency_options(
     value: Value,
     path: &ComposePath,
     findings: &mut Vec<ComposeFinding>,
-    invalid: &mut bool,
 ) -> Option<DependencyCondition> {
     if matches!(value, Value::Null) {
         return Some(DependencyCondition::Started);
     }
     let Value::Mapping(options) = value else {
-        *invalid = true;
         findings.push(ComposeFinding::invalid(
             path.clone(),
             "dependency options must be a mapping",
@@ -529,7 +520,6 @@ fn parse_dependency_options(
                 path.clone(),
                 "dependency option names must be strings",
             ));
-            *invalid = true;
             condition = None;
             continue;
         };
@@ -542,7 +532,6 @@ fn parse_dependency_options(
             Some("service_started") => Some(DependencyCondition::Started),
             Some("service_healthy") => Some(DependencyCondition::Healthy),
             Some("service_completed_successfully") => {
-                *invalid = true;
                 findings.push(ComposeFinding::invalid(
                     option_path,
                     "service_completed_successfully dependencies are not supported",
@@ -550,7 +539,6 @@ fn parse_dependency_options(
                 None
             }
             _ => {
-                *invalid = true;
                 findings.push(ComposeFinding::invalid(
                     option_path,
                     "dependency condition must be service_started, service_healthy, or service_completed_successfully",

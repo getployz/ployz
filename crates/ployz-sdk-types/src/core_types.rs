@@ -83,8 +83,9 @@ pub use ployz_core::ops::{
 pub use ployz_core::ops::{
     CertOperationFailure, CertOperationFailureError, CertOperationState, CertRunningStage,
     ControlPlaneCommitScope, CoreReplaceFailure, CoreReplaceOperationState, DeployCleanupFailure,
-    DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, DeployPhaseOutcome,
-    DeployRunningStage, DeployServiceResult, PreStartHookFailure,
+    DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, DeployPhaseNumber,
+    DeployPhaseNumberError, DeployPhaseOutcome, DeployRunningStage, DeployServiceResult,
+    PreStartHookFailure,
 };
 pub use ployz_core::roles::{GatewayRole, InstallRolePolicy};
 pub use ployz_core::security::NatsPrincipal;

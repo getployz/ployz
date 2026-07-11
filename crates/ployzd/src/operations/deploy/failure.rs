@@ -1,5 +1,4 @@
 use crate::machine_runtime::MachineRuntimeUnavailableReason;
-use crate::operations::log::{RecordDeployEvidenceError, RecordDeployTransitionError};
 use crate::roles::machine::response::log_hint;
 use ployz_core::dataplane::DataplanePrepareError;
 use ployz_core::deploy::DeployPlanError;
@@ -11,11 +10,12 @@ use ployz_core::ops::{
     HealthCheckFailure, OperatorHint, PreStartHookFailure, RetainedArtifact,
     RouteCutoverFailureReason, RouteHostname,
 };
-use std::future::Future;
 use std::time::Duration;
 
+use super::phase::{DeployFailedPhase, DeployFailurePhase};
 use super::{
-    DeployContainer, DeployExecutionCommand, DeployOperationRecorder, NamespaceCommitError,
+    DeployContainer, DeployExecutionCommand, DeployExecutionStep, DeployFailureRecordError,
+    DeployOperationRecordError, DeployOperationRecorder, NamespaceCommitError,
 };
 
 fn failure_service_id(command: &DeployExecutionCommand) -> ServiceId {
@@ -46,11 +46,9 @@ pub(super) struct DeployExecutionFailure {
     source: DeployExecutionError,
     operation_failure: DeployOperationFailure,
     failed_phase_cleanup_targets: Vec<DeployContainer>,
-    phase: u16,
-    phase_service_ids: Vec<ServiceId>,
-    skipped_service_ids: Vec<ServiceId>,
-    failed_service_id: ServiceId,
+    phase: DeployFailurePhase,
     promoted_phases: u16,
+    evidence_record_error: Option<DeployFailureRecordError>,
 }
 
 impl DeployExecutionFailure {
@@ -74,26 +72,21 @@ impl DeployExecutionFailure {
             source,
             operation_failure,
             failed_phase_cleanup_targets: retained_stop_targets.to_vec(),
-            phase: 0,
-            phase_service_ids: Vec::new(),
-            skipped_service_ids: Vec::new(),
-            failed_service_id: failure_service_id(command),
+            phase: DeployFailurePhase::OutsidePhase,
             promoted_phases: 0,
+            evidence_record_error: None,
         }
     }
 
-    pub(super) fn with_phase(
-        mut self,
-        phase: u16,
-        phase_service_ids: Vec<ServiceId>,
-        skipped_service_ids: Vec<ServiceId>,
-        failed_service_id: ServiceId,
-        promoted_phases: u16,
-    ) -> Self {
-        self.phase = phase;
-        self.phase_service_ids = phase_service_ids;
-        self.skipped_service_ids = skipped_service_ids;
-        self.failed_service_id = failed_service_id;
+    #[must_use]
+    pub(super) fn with_phase(mut self, phase: DeployFailedPhase, promoted_phases: u16) -> Self {
+        self.phase = DeployFailurePhase::During(phase);
+        self.promoted_phases = promoted_phases;
+        self
+    }
+
+    #[must_use]
+    pub(super) fn with_promoted_phases(mut self, promoted_phases: u16) -> Self {
         self.promoted_phases = promoted_phases;
         self
     }
@@ -102,20 +95,8 @@ impl DeployExecutionFailure {
         &self.failed_phase_cleanup_targets
     }
 
-    pub(super) fn phase(&self) -> u16 {
-        self.phase
-    }
-
-    pub(super) fn phase_service_ids(&self) -> &[ServiceId] {
-        &self.phase_service_ids
-    }
-
-    pub(super) fn skipped_service_ids(&self) -> &[ServiceId] {
-        &self.skipped_service_ids
-    }
-
-    pub(super) fn failed_service_id(&self) -> &ServiceId {
-        &self.failed_service_id
+    pub(super) fn phase(&self) -> &DeployFailurePhase {
+        &self.phase
     }
 
     pub(super) fn operation_failure(&self) -> &DeployOperationFailure {
@@ -128,6 +109,12 @@ impl DeployExecutionFailure {
         }
         add_retained_artifacts(&mut self.operation_failure, artifacts);
     }
+
+    pub(super) fn add_evidence_record_error(&mut self, error: DeployFailureRecordError) {
+        if self.evidence_record_error.is_none() {
+            self.evidence_record_error = Some(error);
+        }
+    }
 }
 
 pub(super) async fn fail_deploy<R>(
@@ -138,7 +125,7 @@ pub(super) async fn fail_deploy<R>(
 where
     R: DeployOperationRecorder,
 {
-    let failure_record_error = if failure.promoted_phases > 0 {
+    let transition_record_error = if failure.promoted_phases > 0 {
         match tokio::time::timeout(
             command.step_timeout(),
             recorder.record_deploy_transition(
@@ -166,6 +153,7 @@ where
         .await
     };
 
+    let failure_record_error = transition_record_error.or(failure.evidence_record_error);
     Err(DeployExecutionError::Failed {
         failure: Box::new(failure.operation_failure),
         source: Box::new(failure.source),
@@ -197,22 +185,6 @@ where
         Ok(Err(source)) => Some(DeployFailureRecordError::Record(source)),
         Err(_) => Some(DeployFailureRecordError::TimedOut { timeout }),
     }
-}
-
-pub(super) async fn with_step_timeout<T, E, F>(
-    command: &DeployExecutionCommand,
-    step: DeployExecutionStep,
-    future: F,
-) -> Result<T, DeployExecutionError>
-where
-    F: Future<Output = Result<T, E>>,
-    E: Into<DeployExecutionError>,
-{
-    let timeout = command.step_timeout();
-    tokio::time::timeout(timeout, future)
-        .await
-        .map_err(|_| DeployExecutionError::StepTimedOut { step, timeout })?
-        .map_err(Into::into)
 }
 
 #[derive(Debug)]
@@ -424,22 +396,6 @@ impl PreStartHookRuntimeError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DeployExecutionStep {
-    RecordOperationEvent,
-    EnsureEndpointNetwork { machine_id: MachineId },
-    PrepareDataplane { machines: Vec<MachineId> },
-    RunContainer { machine_id: MachineId },
-    RunPreStartHook { machine_id: MachineId },
-    WaitHealthy,
-    EnsureCertificate { hostname: RouteHostname },
-    CommitVolumePins,
-    CommitRoute { route: ployz_core::ops::RouteTarget },
-    RemoveRoute { route: ployz_core::ops::RouteTarget },
-    CommitServingTarget,
-    RemoveServingTarget { scope: ControlPlaneCommitScope },
-}
-
 impl From<DeployPlanError> for DeployExecutionError {
     fn from(value: DeployPlanError) -> Self {
         Self::Plan(value)
@@ -458,10 +414,9 @@ impl DeployExecutionStep {
             Self::WaitHealthy => "wait_healthy",
             Self::EnsureCertificate { .. } => "ensure_certificate",
             Self::CommitVolumePins => "commit_volume_pins",
-            Self::CommitRoute { .. } => "commit_route",
             Self::RemoveRoute { .. } => "remove_route",
             Self::RemoveServingTarget { .. } => "remove_serving_target",
-            Self::CommitServingTarget => "commit_serving_target_entry",
+            Self::CommitServingTarget { .. } => "commit_serving_target_entry",
         }
     }
 
@@ -517,20 +472,20 @@ impl DeployExecutionStep {
                 message: timeout_failure_message("volume pin commit", timeout),
                 retained_artifacts,
             },
-            Self::CommitRoute { route } | Self::RemoveRoute { route } => {
-                DeployOperationFailure::RouteCutoverFailed {
-                    route: route.clone(),
-                    reason: RouteCutoverFailureReason::TimedOut {
-                        timeout_seconds: timeout_seconds(timeout),
-                    },
+            Self::RemoveRoute { route } => DeployOperationFailure::RouteCutoverFailed {
+                route: route.clone(),
+                reason: RouteCutoverFailureReason::TimedOut {
+                    timeout_seconds: timeout_seconds(timeout),
+                },
+                retained_artifacts,
+            },
+            Self::CommitServingTarget { scope } => {
+                DeployOperationFailure::ControlPlaneCommitFailed {
+                    scope: scope.clone(),
+                    message: timeout_failure_message("serving target commit", timeout),
                     retained_artifacts,
                 }
             }
-            Self::CommitServingTarget => DeployOperationFailure::ControlPlaneCommitFailed {
-                scope: failure_commit_scope(command),
-                message: timeout_failure_message("serving target commit", timeout),
-                retained_artifacts,
-            },
             Self::RemoveServingTarget { scope } => {
                 DeployOperationFailure::ControlPlaneCommitFailed {
                     scope: scope.clone(),
@@ -768,19 +723,6 @@ impl NamespaceCommitError {
             }
         }
     }
-}
-
-#[derive(Debug)]
-pub enum DeployOperationRecordError {
-    RecordTransition(RecordDeployTransitionError),
-    RecordEvidence(RecordDeployEvidenceError),
-    Synthetic { message: &'static str },
-}
-
-#[derive(Debug)]
-pub enum DeployFailureRecordError {
-    TimedOut { timeout: Duration },
-    Record(DeployOperationRecordError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

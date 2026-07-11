@@ -15,9 +15,9 @@ use ployz_core::ids::OperationId;
 use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::{
-    DeployCompletionOutcome, DeployOperationState, DeployPhaseOutcome, DeployRunningStage,
-    DeployServiceResult, EventSequence, OperationEvent, OperationEventReplayCursor,
-    OperationEventReplayRequest, OperationStatus,
+    DeployCompletionOutcome, DeployOperationState, DeployPhaseNumber, DeployPhaseOutcome,
+    DeployRunningStage, DeployServiceResult, EventSequence, OperationEvent,
+    OperationEventReplayCursor, OperationEventReplayRequest, OperationStatus,
 };
 use ployz_core::state::MachineEndpointObservation;
 use ployz_core::subjects::machine_facts;
@@ -312,7 +312,7 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
             },
             OperationEvent::DeployPhaseStarted {
                 operation_id: deploy_operation.clone(),
-                phase: 1,
+                phase: DeployPhaseNumber::try_new(1).expect("positive phase number"),
                 service_ids: vec![service_id("svc_api")],
             },
             OperationEvent::DeployContainerStarted {
@@ -334,7 +334,7 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
             },
             OperationEvent::DeployPhaseFinished {
                 operation_id: deploy_operation.clone(),
-                phase: 1,
+                phase: DeployPhaseNumber::try_new(1).expect("positive phase number"),
                 outcome: DeployPhaseOutcome::Promoted,
                 services: vec![DeployServiceResult::Completed {
                     service_id: service_id("svc_api"),

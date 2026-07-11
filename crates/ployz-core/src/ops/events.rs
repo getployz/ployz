@@ -135,12 +135,12 @@ pub enum OperationEvent {
     },
     DeployPhaseStarted {
         operation_id: OperationId,
-        phase: u16,
+        phase: super::DeployPhaseNumber,
         service_ids: Vec<ServiceId>,
     },
     DeployPhaseFinished {
         operation_id: OperationId,
-        phase: u16,
+        phase: super::DeployPhaseNumber,
         outcome: DeployPhaseOutcome,
         services: Vec<DeployServiceResult>,
     },

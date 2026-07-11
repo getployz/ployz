@@ -1,7 +1,9 @@
 //! Pushed-image availability and mesh redistribution for deploy execution.
 
 use ployz_core::dataplane::{DataplaneMember, DataplanePrepareRequest};
-use ployz_core::deploy::{DeployPlan, DeployPlanStep, DeployRequest, ImageSource};
+use ployz_core::deploy::{
+    DeployPlan, DeployPlanStep, DeployRequest, DeployServicePlan, ImageSource,
+};
 use ployz_core::image::{ImageEnsureRequest, ImageRepository, ImageRpcDomainError, OciDigest};
 use ployz_core::ops::{DeployEvidence, DeployOperationFailure, FailureMessage};
 
@@ -154,7 +156,7 @@ fn image_resolution_failure(
 
 pub(super) async fn ensure_images<R, N>(
     command: &DeployExecutionCommand,
-    plan: &DeployPlan,
+    service_plans: &[DeployServicePlan],
     recorder: &mut R,
     machine_runtime: &mut N,
 ) -> Result<(), DeployExecutionError>
@@ -163,10 +165,8 @@ where
     N: MachineContainerRuntime,
 {
     for service in command.services() {
-        let Some(service_plan) = plan
-            .phases
+        let Some(service_plan) = service_plans
             .iter()
-            .flat_map(|phase| &phase.services)
             .find(|plan| plan.service_id == service.request.service_id)
         else {
             continue;

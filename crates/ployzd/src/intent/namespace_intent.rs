@@ -45,6 +45,7 @@ impl NamespaceIntentStore {
     pub async fn commit_deploy_phase(
         &self,
         route_bindings: Vec<RouteBindingState>,
+        route_binding_removals: Vec<RouteTarget>,
         serving_target_entries: Vec<ServingTargetEntry>,
     ) -> Result<(), NamespaceIntentStoreError> {
         self.store
@@ -59,6 +60,12 @@ impl NamespaceIntentStore {
                             state.target.port.get(),
                             to_json(&state)?
                         ],
+                    )?;
+                }
+                for target in route_binding_removals {
+                    transaction.execute(
+                        "DELETE FROM route_bindings WHERE hostname = ?1 AND port = ?2",
+                        params![target.hostname.as_str(), target.port.get()],
                     )?;
                 }
                 for state in serving_target_entries {

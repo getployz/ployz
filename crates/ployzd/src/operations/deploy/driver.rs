@@ -9,9 +9,9 @@ use crate::operation_api::admission::{AcceptedDeployExecution, OperationControll
 use crate::operations::deploy::{
     CertificateProvisioner, DataplanePreparer, DeployContainer, DeployExecutionError,
     DeployExecutionInput, DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError,
-    DeployHealthCheckError, DeployHealthChecker, DeployMachineCandidates, MachineContainerRuntime,
-    ManagedCertificateWaitPolicy, NamespaceCommitError, NamespaceStateCommitter,
-    execute_deploy_operation, load_deploy_execution_facts_from_nats,
+    DeployHealthCheckError, DeployHealthChecker, DeployMachineCandidates, DeployPhasePromotion,
+    MachineContainerRuntime, ManagedCertificateWaitPolicy, NamespaceCommitError,
+    NamespaceStateCommitter, execute_deploy_operation, load_deploy_execution_facts_from_nats,
 };
 use crate::operations::log::{
     AcceptedDeploySubmission, OperationStatusWrite, RecordDeployTransitionError,
@@ -261,39 +261,27 @@ impl NamespaceIntentCommitter {
 impl NamespaceStateCommitter for NamespaceIntentCommitter {
     async fn commit_deploy_phase(
         &mut self,
-        route_bindings: Vec<ployz_core::state::RouteBindingState>,
-        serving_target_entries: Vec<ployz_core::state::ServingTargetEntry>,
+        promotion: DeployPhasePromotion,
     ) -> Result<(), NamespaceCommitError> {
-        let scope = serving_target_entries
-            .first()
-            .map(
-                |entry| ployz_core::ops::ControlPlaneCommitScope::ServiceEntry {
-                    service_id: entry.service_id.clone(),
-                    namespace_revision_entry_id: entry.namespace_revision_entry_id.clone(),
-                },
-            )
-            .expect("a deploy phase always has at least one serving target entry");
+        let DeployPhasePromotion {
+            scope,
+            route_bindings,
+            route_binding_removals,
+            first_serving_target_entry,
+            remaining_serving_target_entries,
+        } = promotion;
+        let serving_target_entries = std::iter::once(first_serving_target_entry)
+            .chain(remaining_serving_target_entries)
+            .collect();
         self.namespace_intent
-            .commit_deploy_phase(route_bindings, serving_target_entries)
+            .commit_deploy_phase(
+                route_bindings,
+                route_binding_removals,
+                serving_target_entries,
+            )
             .await
             .map_err(|error| NamespaceCommitError::ServingTargetStore {
                 scope,
-                message: error.to_string(),
-            })?;
-        self.publish_intent_changed().await;
-        Ok(())
-    }
-
-    async fn replace_route_binding(
-        &mut self,
-        state: ployz_core::state::RouteBindingState,
-    ) -> Result<(), NamespaceCommitError> {
-        let target = state.target.clone();
-        self.namespace_intent
-            .replace_route_binding(state)
-            .await
-            .map_err(|error| NamespaceCommitError::RouteStore {
-                target,
                 message: error.to_string(),
             })?;
         self.publish_intent_changed().await;
@@ -309,25 +297,6 @@ impl NamespaceStateCommitter for NamespaceIntentCommitter {
             .await
             .map_err(|error| NamespaceCommitError::RouteStore {
                 target,
-                message: error.to_string(),
-            })?;
-        self.publish_intent_changed().await;
-        Ok(())
-    }
-
-    async fn replace_serving_target_entry(
-        &mut self,
-        state: ployz_core::state::ServingTargetEntry,
-    ) -> Result<(), NamespaceCommitError> {
-        let scope = ployz_core::ops::ControlPlaneCommitScope::ServiceEntry {
-            service_id: state.service_id.clone(),
-            namespace_revision_entry_id: state.namespace_revision_entry_id.clone(),
-        };
-        self.namespace_intent
-            .replace_serving_target_entry(state)
-            .await
-            .map_err(|error| NamespaceCommitError::ServingTargetStore {
-                scope,
                 message: error.to_string(),
             })?;
         self.publish_intent_changed().await;

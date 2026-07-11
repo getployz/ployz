@@ -20,9 +20,9 @@ use ployz_core::machine_runtime::{
     MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
 use ployz_core::ops::{
-    CertificateProvisionFailure, ControlPlaneCommitScope, DeployCleanupFailure, DeployEvidence,
-    DeployRunningStage, DeployTransition, FailureMessage, OperatorHint, RetainedArtifact,
-    RouteHostname, RoutePort, RouteTarget,
+    CertificateProvisionFailure, DeployCleanupFailure, DeployEvidence, DeployRunningStage,
+    DeployTransition, FailureMessage, OperatorHint, RetainedArtifact, RouteHostname, RoutePort,
+    RouteTarget,
 };
 use ployz_core::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
 pub(crate) use ployz_test_support::containers;
@@ -31,13 +31,17 @@ pub(crate) use ployz_test_support::ids::{
     cert_id, container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id,
     service_id,
 };
+
+pub(super) fn phase_number(value: u16) -> ployz_core::ops::DeployPhaseNumber {
+    ployz_core::ops::DeployPhaseNumber::try_new(value).expect("positive phase number")
+}
 use ployzd::certificate::GatewayCertificateTarget;
 use ployzd::operations::deploy::{
     CertificateProvisioner, DataplanePreparer, DeployExecutionFacts, DeployExecutionInput,
     DeployHealthCheckError, DeployHealthChecker, DeployOperationRecordError,
-    DeployOperationRecorder, MachineContainerRuntime, MachineContainerRuntimeError,
-    MachineRuntimeUnavailableReason, NamespaceCommitError, NamespaceStateCommitter,
-    PreStartHookRuntimeError,
+    DeployOperationRecorder, DeployPhasePromotion, MachineContainerRuntime,
+    MachineContainerRuntimeError, MachineRuntimeUnavailableReason, NamespaceCommitError,
+    NamespaceStateCommitter, PreStartHookRuntimeError,
 };
 use ployzd::roles::machine::client::MachineImageResolveError;
 use ployzd::roles::machine::protocol::{
@@ -58,6 +62,7 @@ pub(super) struct RecordingOperations {
     pub(super) phase_records: Vec<DeployEvidence>,
     fail_completed_transition_remaining: usize,
     fail_cleanup_evidence_remaining: usize,
+    fail_phase_finished_evidence_remaining: usize,
     pub(super) completed_transition_attempts: usize,
 }
 
@@ -68,6 +73,7 @@ impl RecordingOperations {
             phase_records: Vec::new(),
             fail_completed_transition_remaining: times,
             fail_cleanup_evidence_remaining: 0,
+            fail_phase_finished_evidence_remaining: 0,
             completed_transition_attempts: 0,
         }
     }
@@ -78,6 +84,18 @@ impl RecordingOperations {
             phase_records: Vec::new(),
             fail_completed_transition_remaining: 0,
             fail_cleanup_evidence_remaining: times,
+            fail_phase_finished_evidence_remaining: 0,
+            completed_transition_attempts: 0,
+        }
+    }
+
+    pub(super) const fn fail_phase_finished_evidence_times(times: usize) -> Self {
+        Self {
+            records: Vec::new(),
+            phase_records: Vec::new(),
+            fail_completed_transition_remaining: 0,
+            fail_cleanup_evidence_remaining: 0,
+            fail_phase_finished_evidence_remaining: times,
             completed_transition_attempts: 0,
         }
     }
@@ -166,6 +184,14 @@ impl DeployOperationRecorder for RecordingOperations {
             }
             evidence @ (DeployEvidence::PhaseStarted { .. }
             | DeployEvidence::PhaseFinished { .. }) => {
+                if self.fail_phase_finished_evidence_remaining > 0
+                    && matches!(evidence, DeployEvidence::PhaseFinished { .. })
+                {
+                    self.fail_phase_finished_evidence_remaining -= 1;
+                    return Err(DeployOperationRecordError::Synthetic {
+                        message: "phase evidence record failed",
+                    });
+                }
                 self.phase_records.push(evidence);
             }
             DeployEvidence::CleanupFinished { removed, failed } => {
@@ -288,7 +314,11 @@ pub(super) struct RecordingNamespaceState {
     pub(super) route_requests: Vec<RouteBindingState>,
     pub(super) route_removals: Vec<RouteTarget>,
     pub(super) serving_requests: Vec<ServingTargetEntry>,
-    pub(super) phase_requests: Vec<(Vec<RouteBindingState>, Vec<ServingTargetEntry>)>,
+    pub(super) phase_requests: Vec<(
+        Vec<RouteBindingState>,
+        Vec<RouteTarget>,
+        Vec<ServingTargetEntry>,
+    )>,
     pub(super) serving_removals: Vec<ServiceId>,
     pub(super) volume_pin_requests: Vec<VolumePinState>,
     certificate_ready: Option<Arc<AtomicBool>>,
@@ -330,9 +360,18 @@ impl RecordingNamespaceState {
 impl NamespaceStateCommitter for RecordingNamespaceState {
     async fn commit_deploy_phase(
         &mut self,
-        route_bindings: Vec<RouteBindingState>,
-        serving_target_entries: Vec<ServingTargetEntry>,
+        promotion: DeployPhasePromotion,
     ) -> Result<(), NamespaceCommitError> {
+        let DeployPhasePromotion {
+            scope,
+            route_bindings,
+            route_binding_removals,
+            first_serving_target_entry,
+            remaining_serving_target_entries,
+        } = promotion;
+        let serving_target_entries = std::iter::once(first_serving_target_entry)
+            .chain(remaining_serving_target_entries)
+            .collect::<Vec<_>>();
         if let Some(certificate_ready) = &self.certificate_ready {
             assert!(
                 certificate_ready.load(Ordering::SeqCst),
@@ -345,36 +384,19 @@ impl NamespaceStateCommitter for RecordingNamespaceState {
                 tokio::time::sleep(Duration::from_secs(60)).await;
             }
             ServingCommitBehavior::LoseLock => {
-                let Some(entry) = serving_target_entries.first() else {
-                    panic!("phase has a serving target");
-                };
-                return Err(NamespaceCommitError::ServingTargetLockLost {
-                    scope: ControlPlaneCommitScope::ServiceEntry {
-                        service_id: entry.service_id.clone(),
-                        namespace_revision_entry_id: entry.namespace_revision_entry_id.clone(),
-                    },
-                });
+                return Err(NamespaceCommitError::ServingTargetLockLost { scope });
             }
         }
         self.route_requests.extend(route_bindings.iter().cloned());
+        self.route_removals
+            .extend(route_binding_removals.iter().cloned());
         self.serving_requests
             .extend(serving_target_entries.iter().cloned());
-        self.phase_requests
-            .push((route_bindings, serving_target_entries));
-        Ok(())
-    }
-
-    async fn replace_route_binding(
-        &mut self,
-        state: RouteBindingState,
-    ) -> Result<(), NamespaceCommitError> {
-        if let Some(certificate_ready) = &self.certificate_ready {
-            assert!(
-                certificate_ready.load(Ordering::SeqCst),
-                "custom certificate must be ready before route commit"
-            );
-        }
-        self.route_requests.push(state);
+        self.phase_requests.push((
+            route_bindings,
+            route_binding_removals,
+            serving_target_entries,
+        ));
         Ok(())
     }
 
@@ -384,28 +406,6 @@ impl NamespaceStateCommitter for RecordingNamespaceState {
     ) -> Result<(), NamespaceCommitError> {
         self.route_removals.push(target);
         Ok(())
-    }
-
-    async fn replace_serving_target_entry(
-        &mut self,
-        state: ServingTargetEntry,
-    ) -> Result<(), NamespaceCommitError> {
-        match self.serving_behavior {
-            ServingCommitBehavior::Commit => {
-                self.serving_requests.push(state);
-                Ok(())
-            }
-            ServingCommitBehavior::Hang => {
-                tokio::time::sleep(Duration::from_secs(60)).await;
-                Ok(())
-            }
-            ServingCommitBehavior::LoseLock => Err(NamespaceCommitError::ServingTargetLockLost {
-                scope: ployz_core::ops::ControlPlaneCommitScope::ServiceEntry {
-                    service_id: state.service_id,
-                    namespace_revision_entry_id: state.namespace_revision_entry_id,
-                },
-            }),
-        }
     }
 
     async fn replace_volume_pin(
@@ -1141,13 +1141,35 @@ pub(super) fn deploy_command_with_pre_start() -> DeployExecutionInput {
 }
 
 pub(super) fn routed_deploy_command(replicas: u16) -> DeployExecutionInput {
+    routed_deploy_command_with_stored_routes(replicas, Vec::new())
+}
+
+pub(super) fn routed_deploy_replacing_route_command(replicas: u16) -> DeployExecutionInput {
+    routed_deploy_command_with_stored_routes(
+        replicas,
+        vec![RouteBindingState {
+            namespace_id: namespace_id("default"),
+            target: RouteTarget::new(
+                RouteHostname::try_new("old.example.com").expect("valid route hostname"),
+                route_port(443),
+            ),
+            endpoint_port: route_port(8080),
+            service_id: service_id("svc_api"),
+        }],
+    )
+}
+
+fn routed_deploy_command_with_stored_routes(
+    replicas: u16,
+    namespace_route_bindings: Vec<RouteBindingState>,
+) -> DeployExecutionInput {
     deploy_execution_input(
         operation_id("op_123"),
         routed_deploy_request(replicas),
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
-            namespace_route_bindings: Vec::new(),
+            namespace_route_bindings,
             namespace_serving_entries: Vec::new(),
             namespace_volume_pins: Vec::new(),
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],

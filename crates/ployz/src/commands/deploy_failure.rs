@@ -355,7 +355,8 @@ impl<'a> DeployFailureView<'a> {
             }
             DeployOperationFailure::ControlPlaneCommitFailed { scope, .. } => match scope {
                 ControlPlaneCommitScope::ServiceEntry { service_id, .. } => Some(service_id),
-                ControlPlaneCommitScope::Namespace { .. }
+                ControlPlaneCommitScope::DeployPhase { .. }
+                | ControlPlaneCommitScope::Namespace { .. }
                 | ControlPlaneCommitScope::VolumePin { .. } => None,
             },
             DeployOperationFailure::NoUsableMachines { .. }
@@ -548,6 +549,13 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
         } => certificate_provision_timeout_cause(hostname, namespace_revision_id, *timeout_seconds),
         DeployOperationFailure::ControlPlaneCommitFailed { scope, message, .. } => {
             let scope = match scope {
+                ControlPlaneCommitScope::DeployPhase {
+                    namespace_revision_id,
+                    phase,
+                } => format!(
+                    "phase {phase} of namespace revision {}",
+                    namespace_revision_id.as_str()
+                ),
                 ControlPlaneCommitScope::ServiceEntry { service_id, .. } => {
                     format!("service {}", service_id.as_str())
                 }

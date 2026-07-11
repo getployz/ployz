@@ -4,6 +4,7 @@
 //! here.
 
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroU16;
 
 use crate::cert::CertificateProvisionFailure;
 use crate::cert::ManagedCertificateIssuanceFailureKind;
@@ -71,6 +72,19 @@ pub enum DeployServiceResult {
     },
 }
 
+impl DeployServiceResult {
+    #[must_use]
+    pub fn service_id(&self) -> &ServiceId {
+        match self {
+            Self::Completed { service_id }
+            | Self::Failed { service_id, .. }
+            | Self::Skipped { service_id }
+            | Self::Unchanged { service_id }
+            | Self::Removed { service_id } => service_id,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
@@ -117,6 +131,55 @@ pub struct UnusableMachine {
     pub reason: crate::state::MachineUsabilityReason,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(type = "SafeInteger<\"DeployPhaseNumber\">")
+)]
+#[serde(try_from = "u16", into = "u16")]
+pub struct DeployPhaseNumber(NonZeroU16);
+
+impl DeployPhaseNumber {
+    pub fn try_new(value: u16) -> Result<Self, DeployPhaseNumberError> {
+        let Some(value) = NonZeroU16::new(value) else {
+            return Err(DeployPhaseNumberError::Zero);
+        };
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0.get()
+    }
+}
+
+impl TryFrom<u16> for DeployPhaseNumber {
+    type Error = DeployPhaseNumberError;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<DeployPhaseNumber> for u16 {
+    fn from(value: DeployPhaseNumber) -> Self {
+        value.get()
+    }
+}
+
+impl std::fmt::Display for DeployPhaseNumber {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.get().fmt(formatter)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum DeployPhaseNumberError {
+    #[error("deploy phase number must be greater than zero")]
+    Zero,
+}
+
 /// What a failed control-plane commit was writing. Empty-manifest deploys
 /// commit no service entry, so namespace-level record failures carry the
 /// namespace revision id instead of a counterfeit entry digest.
@@ -124,6 +187,10 @@ pub struct UnusableMachine {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "scope", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlPlaneCommitScope {
+    DeployPhase {
+        namespace_revision_id: NamespaceRevisionId,
+        phase: DeployPhaseNumber,
+    },
     ServiceEntry {
         service_id: ServiceId,
         namespace_revision_entry_id: NamespaceRevisionEntryId,
@@ -618,11 +685,11 @@ pub enum DeployEvidence {
     },
     HealthCheckStarted,
     PhaseStarted {
-        phase: u16,
+        phase: DeployPhaseNumber,
         service_ids: Vec<ServiceId>,
     },
     PhaseFinished {
-        phase: u16,
+        phase: DeployPhaseNumber,
         outcome: DeployPhaseOutcome,
         services: Vec<DeployServiceResult>,
     },

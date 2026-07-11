@@ -10,7 +10,6 @@ use ployz_core::ids::{
 use ployz_core::image::OciPlatform;
 use ployz_core::ops::{
     DeployCompletionOutcome, FailureMessage, OperatorHint, RetainedArtifact, RouteHostname,
-    RouteTarget,
 };
 use ployz_core::state::VolumePinState;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
@@ -26,7 +25,7 @@ pub struct DeployExecutionCommand {
     pub(super) operation_id: OperationId,
     pub(super) request: DeployRequest,
     pub(super) services: Vec<DeployServiceExecutionCommand>,
-    pub(super) route_binding_removals: Vec<RouteTarget>,
+    pub(super) route_binding_removals: Vec<RouteBindingState>,
     pub(super) serving_target_removals: Vec<ServingTargetEntry>,
     pub(super) namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
     pub(super) machine_platforms: BTreeMap<MachineId, OciPlatform>,
@@ -65,7 +64,7 @@ impl DeployExecutionCommand {
     }
 
     #[must_use]
-    pub fn route_binding_removals(&self) -> &[RouteTarget] {
+    pub fn route_binding_removals(&self) -> &[RouteBindingState] {
         &self.route_binding_removals
     }
 
