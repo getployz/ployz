@@ -57,6 +57,7 @@ async fn run_loop(
     let mut consecutive_failures = 0;
     let mut acquisition_attempted = false;
     let mut reported_missing_gateways: Option<Vec<MachineId>> = None;
+    let mut pending_gateway_testimony: Option<PendingGatewayTestimony> = None;
     loop {
         let acquiring = matches!(
             lease_intent.load_if_configured().await,
@@ -70,26 +71,37 @@ async fn run_loop(
         if !acquiring {
             acquisition_attempted = false;
         }
-        let mut outcome =
-            run_once_with_roster(&lease_intent, &repository, &client, &facts_reader, &roster).await;
-        let awaiting_gateway_testimony = matches!(
-            &outcome,
-            Ok(ManagedLeaseTaskOutcome::AwaitingGatewayTestimony { .. })
-        );
+        let had_pending_gateway_testimony = pending_gateway_testimony.is_some();
+        let mut outcome = match record_pending_gateway_testimony(
+            &repository,
+            &mut pending_gateway_testimony,
+            &mut reported_missing_gateways,
+        )
+        .await
+        {
+            Ok(()) => {
+                run_once_with_roster(&lease_intent, &repository, &client, &facts_reader, &roster)
+                    .await
+            }
+            Err(error) => Err(error),
+        };
+        let awaiting_gateway_testimony = had_pending_gateway_testimony
+            || matches!(
+                &outcome,
+                Ok(ManagedLeaseTaskOutcome::AwaitingGatewayTestimony { .. })
+            );
         match &outcome {
             Ok(ManagedLeaseTaskOutcome::AwaitingGatewayTestimony { missing })
                 if reported_missing_gateways.as_deref() != Some(missing) =>
             {
                 let missing = missing.clone();
                 match submit_gateway_testimony_unavailable(&repository, &missing).await {
-                    Ok((operation_id, subject)) => {
-                        reported_missing_gateways = Some(missing.clone());
-                        outcome = record_failed(
+                    Ok(pending) => {
+                        pending_gateway_testimony = Some(pending);
+                        outcome = record_pending_gateway_testimony(
                             &repository,
-                            &operation_id,
-                            &subject,
-                            ManagedLeaseFailureClass::GatewayTestimonyUnavailable,
-                            &"gateway endpoint testimony unavailable",
+                            &mut pending_gateway_testimony,
+                            &mut reported_missing_gateways,
                         )
                         .await
                         .map(|()| ManagedLeaseTaskOutcome::AwaitingGatewayTestimony { missing });
@@ -139,7 +151,9 @@ async fn run_loop(
             }
             Err(error) => {
                 eprintln!("ployzd managed lease warning: {error}");
-                if let Err(recovery_error) = recover_accepted_operations(&repository).await {
+                if pending_gateway_testimony.is_none()
+                    && let Err(recovery_error) = recover_accepted_operations(&repository).await
+                {
                     eprintln!("ployzd managed lease recovery warning: {recovery_error}");
                 }
                 consecutive_failures += 1;
@@ -506,12 +520,54 @@ async fn record_completed(
 async fn submit_gateway_testimony_unavailable(
     repository: &OperationRepository,
     missing: &[MachineId],
-) -> Result<(OperationId, ManagedLeaseSubject), ManagedLeaseTaskError> {
+) -> Result<PendingGatewayTestimony, ManagedLeaseTaskError> {
     let subject = ManagedLeaseSubject::GatewayTestimony {
         missing: missing.to_vec(),
     };
-    let operation_id = submit_operation(repository, subject.clone()).await?;
-    Ok((operation_id, subject))
+    Ok(PendingGatewayTestimony {
+        operation_id: submit_operation(repository, subject).await?,
+        missing: missing.to_vec(),
+    })
+}
+
+struct PendingGatewayTestimony {
+    operation_id: OperationId,
+    missing: Vec<MachineId>,
+}
+
+async fn record_pending_gateway_testimony(
+    repository: &OperationRepository,
+    pending: &mut Option<PendingGatewayTestimony>,
+    reported: &mut Option<Vec<MachineId>>,
+) -> Result<(), ManagedLeaseTaskError> {
+    let Some(testimony) = pending.as_ref() else {
+        return Ok(());
+    };
+    let subject = ManagedLeaseSubject::GatewayTestimony {
+        missing: testimony.missing.clone(),
+    };
+    let result = record_failed(
+        repository,
+        &testimony.operation_id,
+        &subject,
+        ManagedLeaseFailureClass::GatewayTestimonyUnavailable,
+        &"gateway endpoint testimony unavailable",
+    )
+    .await;
+    finish_gateway_testimony_transition(pending, reported, result)
+}
+
+fn finish_gateway_testimony_transition(
+    pending: &mut Option<PendingGatewayTestimony>,
+    reported: &mut Option<Vec<MachineId>>,
+    result: Result<(), ManagedLeaseTaskError>,
+) -> Result<(), ManagedLeaseTaskError> {
+    result?;
+    let Some(testimony) = pending.take() else {
+        return Ok(());
+    };
+    *reported = Some(testimony.missing);
+    Ok(())
 }
 
 async fn record_failed(
@@ -666,5 +722,30 @@ mod tests {
 
         assert!(ready.missing.is_empty());
         assert!(acquisition_allowed(attempted, true));
+    }
+
+    #[test]
+    fn failed_gateway_testimony_transition_stays_pending_for_retry() {
+        let missing = vec![machine_id("gateway")];
+        let mut pending = Some(PendingGatewayTestimony {
+            operation_id: OperationId::try_new("op_testimony").expect("operation id"),
+            missing: missing.clone(),
+        });
+        let mut reported = None;
+
+        let failure = finish_gateway_testimony_transition(
+            &mut pending,
+            &mut reported,
+            Err(ManagedLeaseTaskError::ClockBeforeUnixEpoch),
+        );
+
+        assert!(failure.is_err());
+        assert_eq!(reported, None);
+        assert!(pending.is_some(), "generic recovery must stay bypassed");
+
+        finish_gateway_testimony_transition(&mut pending, &mut reported, Ok(()))
+            .expect("retry succeeds");
+        assert!(pending.is_none());
+        assert_eq!(reported, Some(missing));
     }
 }
