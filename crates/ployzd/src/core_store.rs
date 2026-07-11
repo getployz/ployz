@@ -149,6 +149,8 @@ const MIGRATIONS: &[&str] = &[
         credentials_json TEXT NOT NULL
     );
     ",
+    // Version 8 existed with either the certificate tables or the managed-lease
+    // address table, so this entry reconciles both lineages before advancing.
     "
     CREATE TABLE IF NOT EXISTS custom_certificate_intent (
         hostname TEXT PRIMARY KEY,
@@ -458,6 +460,49 @@ mod tests {
             .await
             .expect("read user_version");
         assert_eq!(version, MIGRATIONS.len() as i64);
+    }
+
+    #[test]
+    fn version_eight_lineages_reconcile_to_the_current_schema() {
+        let Some(certificate_schema) = MIGRATIONS.get(7) else {
+            panic!("missing version eight certificate migration");
+        };
+        for schema in [
+            "
+            CREATE TABLE managed_lease_applied_addresses (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                json TEXT NOT NULL
+            );
+            ",
+            *certificate_schema,
+        ] {
+            let mut conn = Connection::open_in_memory().expect("open version eight database");
+            for migration in MIGRATIONS.iter().take(7) {
+                conn.execute_batch(migration).expect("seed shared schema");
+            }
+            conn.execute_batch(schema)
+                .expect("seed version eight schema");
+            conn.pragma_update(None, "user_version", 8)
+                .expect("stamp version eight schema");
+            migrate(&mut conn).expect("migrate lineage");
+
+            let table_count: usize = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN (
+                        'custom_certificate_intent',
+                        'acme_http01_challenges',
+                        'acme_accounts',
+                        'managed_lease_applied_addresses',
+                        'operations',
+                        'machines',
+                        'managed_lease_intent'
+                    )",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("read reconciled schema");
+            assert_eq!(table_count, 7);
+        }
     }
 
     #[tokio::test]
