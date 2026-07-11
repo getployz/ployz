@@ -17,6 +17,7 @@
 
 #[path = "dind_cluster/network.rs"]
 mod network;
+#[path = "dind_cluster/rollback.rs"]
 mod rollback;
 mod support;
 
