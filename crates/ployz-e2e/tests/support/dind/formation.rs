@@ -345,6 +345,7 @@ async fn product_init_core(
         // joins can reach it.
         public_ip: Some(core.bridge_ip),
         public_url_mode: ployz_core::cert::PublicUrlMode::Auto,
+        host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
     };
     let output = execute_command(PloyzctlCommand::MachineInit(command), &config)
         .await
@@ -488,6 +489,7 @@ pub async fn submit_machine_add(core: &CoreContext) -> MachineAddAccepted {
             machine_id: machine_id("edge_2"),
             name: machine_name("edge-2"),
             roles: InstallRolePolicy::install_all(),
+            host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
         })
         .await
         .expect("machine add submits")
@@ -518,6 +520,7 @@ pub async fn add_and_join_edge(core: &CoreContext, edge: &DindMachine) {
         roles: InstallRolePolicy::install_all(),
         installer_script: Some(INSTALLER_WRAPPER_PATH.to_owned()),
         detach: false,
+        host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
     };
     let output = execute_command(PloyzctlCommand::MachineAddRemote(command), &config)
         .await

@@ -181,6 +181,7 @@ impl OperationRepository {
                 machine_id: identity.machine_id,
                 name: identity.name,
                 roles: identity.roles,
+                host_port_assurance: identity.host_port_assurance,
                 join_token: identity.join_token,
             });
         }
@@ -254,6 +255,7 @@ impl OperationRepository {
             machine_id,
             name,
             roles,
+            host_port_assurance,
             state,
             last_event_sequence,
         }) = self
@@ -309,6 +311,7 @@ impl OperationRepository {
                             machine_id,
                             name,
                             roles,
+                            host_port_assurance,
                             join_bundle: submission.identity.join_bundle,
                             secret_delivery,
                             joined_at: *joined_at,
@@ -345,6 +348,7 @@ impl OperationRepository {
                     machine_id,
                     name,
                     roles,
+                    host_port_assurance,
                     join_bundle: submission.identity.join_bundle,
                     secret_delivery,
                     joined_at,
@@ -522,6 +526,7 @@ fn submit_machine_add_txn(
         machine_id: claim.identity.machine_id.clone(),
         name: claim.identity.name.clone(),
         roles: claim.identity.roles,
+        host_port_assurance: claim.identity.host_port_assurance,
         join_token: claim.identity.join_token.clone(),
     };
     let submitted = StoredMachineAddSubmission {
@@ -540,6 +545,7 @@ fn submit_machine_add_txn(
         submitted.identity.machine_id.clone(),
         submitted.identity.name.clone(),
         submitted.identity.roles,
+        submitted.identity.host_port_assurance,
         submitted.identity.join_token.clone(),
         sequence,
     );

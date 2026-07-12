@@ -3,6 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use ployz_core::install::HostPortAssurance;
 use ployz_core::ops::FailureMessage;
 use tempfile::{Builder, TempDir};
 
@@ -10,8 +11,12 @@ use crate::artifacts::{
     ArtifactInstallDurability, ArtifactKind, ArtifactSourceView, ArtifactTarget,
     install_verified_artifact, install_verified_nats_server_archive, verify_artifact_file,
 };
+use crate::assigned_substrate::{
+    AssignedHostPort, AssignedSubstrateState, write_assigned_substrate_state,
+};
 use crate::command::HostRunnerCommandRunner;
 use crate::executor::HostRunnerStepEffects;
+use crate::firewall::{FirewallBackend, detect_firewall_backend};
 use crate::fsx::{FileMode, StagedDirectory, ensure_directory, write_durable_file};
 use crate::join::{
     JOIN_CORE_SEEDS_FILE, JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_NATS_CREDENTIALS_FILE,
@@ -57,6 +62,9 @@ impl<R: HostRunnerCommandRunner> HostRunnerStepEffects for HostRunnerLocalEffect
             HostRunnerStep::VerifyHost(prerequisite) => {
                 self.verify_host(*prerequisite).map_err(Into::into)
             }
+            HostRunnerStep::PreflightHostPorts(state) => self.preflight_host_ports(state),
+            HostRunnerStep::AssureHostPorts(state) => self.assure_host_ports(state),
+            HostRunnerStep::StoreAssignedSubstrate(state) => self.store_assigned_substrate(state),
             HostRunnerStep::PrepareDataplaneHost => self.prepare_dataplane_host(),
             HostRunnerStep::PrepareContainerRuntime(runtime, endpoint_supernet) => {
                 self.prepare_container_runtime(*runtime, endpoint_supernet)
@@ -98,6 +106,65 @@ impl<R: HostRunnerCommandRunner> HostRunnerStepEffects for HostRunnerLocalEffect
 }
 
 impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
+    fn preflight_host_ports(
+        &mut self,
+        state: &AssignedSubstrateState,
+    ) -> Result<(), HostRunnerStepEffectError> {
+        if state.host_ports == HostPortAssurance::External {
+            return Ok(());
+        }
+        let backend = detect_firewall_backend(&mut self.runner);
+        if backend == FirewallBackend::RawRules {
+            return Err(HostRunnerStepEffectError::new(
+                HostRunnerStepFailureReason::HostPortsPreflightFailed,
+                failure_message(format!(
+                    "host firewall backend raw nftables/iptables is unmanaged; open exactly: {}",
+                    render_assigned_host_ports(&state.required_host_ports)
+                )),
+            ));
+        }
+        Ok(())
+    }
+
+    fn assure_host_ports(
+        &mut self,
+        state: &AssignedSubstrateState,
+    ) -> Result<(), HostRunnerStepEffectError> {
+        if state.host_ports == HostPortAssurance::External {
+            return Ok(());
+        }
+        let backend = detect_firewall_backend(&mut self.runner);
+        for port in &state.required_host_ports {
+            if !backend
+                .query_with(*port, &mut self.runner)
+                .map_err(host_ports_assurance_error)?
+            {
+                backend
+                    .open_with(*port, &mut self.runner)
+                    .map_err(host_ports_assurance_error)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn store_assigned_substrate(
+        &mut self,
+        state: &AssignedSubstrateState,
+    ) -> Result<(), HostRunnerStepEffectError> {
+        ensure_directory(&self.config.state_dir).map_err(|message| {
+            HostRunnerStepEffectError::new(
+                HostRunnerStepFailureReason::AssignedSubstrateStoreFailed,
+                failure_message(message.to_string()),
+            )
+        })?;
+        write_assigned_substrate_state(&self.config.state_dir, state).map_err(|error| {
+            HostRunnerStepEffectError::new(
+                HostRunnerStepFailureReason::AssignedSubstrateStoreFailed,
+                failure_message(error.to_string()),
+            )
+        })
+    }
+
     fn verify_host(&mut self, prerequisite: HostPrerequisite) -> Result<(), FailureMessage> {
         match prerequisite {
             HostPrerequisite::LinuxRootSystemd => {
@@ -484,6 +551,27 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
         })?;
         commit_join_material_directory(&self.config.state_dir, material)
     }
+}
+
+fn render_assigned_host_ports(ports: &[AssignedHostPort]) -> String {
+    ports
+        .iter()
+        .map(|port| {
+            let protocol = match port.protocol {
+                crate::assigned_substrate::HostPortProtocol::Tcp => "tcp",
+                crate::assigned_substrate::HostPortProtocol::Udp => "udp",
+            };
+            format!("{}/{protocol}", port.port)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn host_ports_assurance_error(message: FailureMessage) -> HostRunnerStepEffectError {
+    HostRunnerStepEffectError::new(
+        HostRunnerStepFailureReason::HostPortsAssuranceFailed,
+        message,
+    )
 }
 
 #[derive(Debug)]

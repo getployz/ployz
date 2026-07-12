@@ -390,6 +390,7 @@ fn machine_join_redeemed(redemption: MachineJoinRedemption) -> MachineJoinRedeem
         machine_id: joined.machine_id,
         name: joined.name,
         roles: joined.roles,
+        host_port_assurance: joined.host_port_assurance,
         join_bundle: joined.join_bundle,
         secret_delivery: joined.secret_delivery,
         joined_at: joined.joined_at,

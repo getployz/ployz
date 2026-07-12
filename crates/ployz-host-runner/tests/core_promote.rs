@@ -26,6 +26,7 @@ fn promote_target() -> CorePromoteTarget {
         dataplane_artifacts(),
         nats_server_artifact(),
         InstallRolePolicy::install_all().without_gateway(),
+        ployz_core::install::HostPortAssurance::Keeper,
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
         WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
@@ -109,6 +110,9 @@ fn core_promote_authorized_users_carries_only_the_reused_core_principals() {
         .find_map(|step| match step {
             HostRunnerStep::WriteNatsAuthorizedUsers(target) => Some(target.render()),
             HostRunnerStep::VerifyHost(_)
+            | HostRunnerStep::PreflightHostPorts(_)
+            | HostRunnerStep::AssureHostPorts(_)
+            | HostRunnerStep::StoreAssignedSubstrate(_)
             | HostRunnerStep::PrepareDataplaneHost
             | HostRunnerStep::PrepareContainerRuntime(_, _)
             | HostRunnerStep::VerifyContainerRuntime(_)

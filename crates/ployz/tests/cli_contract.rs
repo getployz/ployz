@@ -1352,6 +1352,7 @@ fn ops_status_renders_unclaimed_machine_add() {
             machine_id: machine_id("machine_2"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
+            host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
             state: ployz_core::ops::MachineAddOperationState::Completed,
             last_event_sequence: event_sequence(9),
         }),

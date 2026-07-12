@@ -14,6 +14,8 @@ pub struct MachineAddRequest {
     pub machine_id: MachineId,
     pub name: MachineName,
     pub roles: InstallRolePolicy,
+    #[serde(default = "HostPortAssurance::keeper")]
+    pub host_port_assurance: HostPortAssurance,
 }
 
 pub type MachineAddResponse = OperationApiResponse<MachineAddAccepted, MachineAddError>;
@@ -218,6 +220,8 @@ pub struct MachineJoinRedeemed {
     pub machine_id: MachineId,
     pub name: MachineName,
     pub roles: InstallRolePolicy,
+    #[serde(default = "HostPortAssurance::keeper")]
+    pub host_port_assurance: HostPortAssurance,
     pub join_bundle: MachineJoinBundle,
     pub secret_delivery: MachineJoinSecretDelivery,
     pub joined_at: JoinTokenRedeemedAt,

@@ -229,6 +229,7 @@ fn machine_init_command(target: &str) -> MachineInitCommand {
         installer_script: None,
         public_ip: None,
         public_url_mode: ployz_core::cert::PublicUrlMode::Auto,
+        host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
     }
 }
 
@@ -887,6 +888,7 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
                         machine_id: machine_id("sg-edge-1"),
                         name: MachineName::try_new("sg-edge-1").expect("valid machine name"),
                         roles: InstallRolePolicy::install_all(),
+                        host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
                         state: MachineAddOperationState::Completed,
                         last_event_sequence: event_sequence(5),
                     }),
@@ -924,6 +926,7 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
             roles: InstallRolePolicy::install_all(),
             detach: false,
             installer_script: None,
+            host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
         }),
         &config,
     )
@@ -1028,6 +1031,7 @@ async fn machine_add_remote_installer_failure_carries_operation_and_phase() {
             roles: InstallRolePolicy::install_all(),
             detach: false,
             installer_script: None,
+            host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
         }),
         &config,
     )
@@ -1117,6 +1121,7 @@ async fn machine_add_remote_terminal_failure_does_not_record_machine_ssh() {
                         machine_id: machine_id("sg-edge-1"),
                         name: MachineName::try_new("sg-edge-1").expect("valid machine name"),
                         roles: InstallRolePolicy::install_all(),
+                        host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
                         state: MachineAddOperationState::Failed {
                             failure: MachineAddFailure::BootstrapFailed {
                                 message: FailureMessage::try_new("join failed")
@@ -1159,6 +1164,7 @@ async fn machine_add_remote_terminal_failure_does_not_record_machine_ssh() {
             roles: InstallRolePolicy::install_all(),
             detach: false,
             installer_script: None,
+            host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
         }),
         &config,
     )

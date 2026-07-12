@@ -311,6 +311,7 @@ fn host_runner_join_target(
     redeemed: MachineJoinRedeemed,
 ) -> Result<RedeemedHostRunnerJoin, FailureMessage> {
     let callback_result = redeemed.clone();
+    let host_port_assurance = redeemed.host_port_assurance;
     let machine_id = redeemed.machine_id.clone();
     let material = HostRunnerJoinMaterial::from_join_payload(
         machine_id.clone(),
@@ -356,6 +357,7 @@ fn host_runner_join_target(
             DataplaneArtifactTargets::new(ebpf_bytecode_artifact, ebpf_ctl_artifact),
             roles,
             role_environment,
+            host_port_assurance,
         ),
     )
     .with_callback_result(callback_result))
@@ -394,6 +396,7 @@ mod tests {
             machine_id: MachineId::try_new("machine_2").expect("valid machine id"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
+            host_port_assurance: ployz_core::install::HostPortAssurance::External,
             join_bundle: machine_join_bundle(),
             secret_delivery: machine_join_secret_delivery(),
             joined_at: JoinTokenRedeemedAt::try_new(60).expect("valid redeemed at"),
@@ -405,6 +408,11 @@ mod tests {
         let target = host_runner_join_target(redeemed)
             .expect("redeemed bundle converts")
             .target;
+
+        assert_eq!(
+            target.host_port_assurance,
+            ployz_core::install::HostPortAssurance::External
+        );
 
         assert_eq!(
             target.role_environment.render_for_role(
@@ -423,6 +431,7 @@ mod tests {
             machine_id: MachineId::try_new("machine_2").expect("valid machine id"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
+            host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
             join_bundle: machine_join_bundle(),
             secret_delivery: machine_join_secret_delivery(),
             joined_at: JoinTokenRedeemedAt::try_new(60).expect("valid redeemed at"),

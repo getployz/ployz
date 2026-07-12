@@ -1,7 +1,9 @@
 use ployz_core::deploy::{DeployReservationId, VolumeName};
 use ployz_core::ids::{CertId, MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::install::MachineJoinRuntimeNatsUrl;
-use ployz_core::install::{InstallArtifactVersion, MachineJoinBundle, MachineJoinSecretDelivery};
+use ployz_core::install::{
+    HostPortAssurance, InstallArtifactVersion, MachineJoinBundle, MachineJoinSecretDelivery,
+};
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineName, RawJoinToken,
 };
@@ -29,6 +31,8 @@ pub struct MachineJoinIdentity {
     pub machine_id: MachineId,
     pub name: MachineName,
     pub roles: InstallRolePolicy,
+    #[serde(default = "HostPortAssurance::keeper")]
+    pub host_port_assurance: HostPortAssurance,
     pub join_bundle: MachineJoinBundle,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,
@@ -441,6 +445,7 @@ pub struct RedeemedMachineJoin {
     pub machine_id: MachineId,
     pub name: MachineName,
     pub roles: InstallRolePolicy,
+    pub host_port_assurance: HostPortAssurance,
     pub join_bundle: MachineJoinBundle,
     pub secret_delivery: MachineJoinSecretDelivery,
     pub joined_at: JoinTokenRedeemedAt,

@@ -1,7 +1,6 @@
 mod support;
 
 use ployz_core::install::{WrappedCaKey, WrappedCoreSeeds};
-use std::path::PathBuf;
 
 use ployz_core::roles::InstallRolePolicy;
 use ployz_host_runner::executor::{
@@ -10,9 +9,8 @@ use ployz_host_runner::executor::{
 };
 use ployz_host_runner::report::render_step_event;
 use ployz_host_runner::steps::{
-    ContainerRuntime, FirstMachineInstallTarget, HostPrerequisite, HostRunnerStep,
-    HostRunnerStepFailure, HostRunnerStepFailureReason, HostRunnerStepLabel,
-    first_machine_install_plan,
+    ContainerRuntime, FirstMachineInstallTarget, HostRunnerStep, HostRunnerStepFailure,
+    HostRunnerStepFailureReason, HostRunnerStepLabel, first_machine_install_plan,
 };
 use ployz_host_runner::systemd::SupervisorUnitTarget;
 use ployz_test_support::host_runner::{nats_server_artifact, ployzd_artifact};
@@ -43,6 +41,7 @@ fn host_runner_plan_executor_runs_steps_in_order_and_records_progress() {
         dataplane_artifacts(),
         nats_server_artifact(),
         InstallRolePolicy::install_all().without_gateway(),
+        ployz_core::install::HostPortAssurance::Keeper,
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
         WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
@@ -58,79 +57,12 @@ fn host_runner_plan_executor_runs_steps_in_order_and_records_progress() {
     assert!(rendered.contains(PLOYZD_DIGEST));
     assert_eq!(effects.calls.len(), plan.steps().len());
     assert_eq!(recorder.events, execution.events);
-    let [first, second, third, fourth, fifth, ..] = effects.calls.as_slice() else {
-        panic!("plan records at least four calls");
-    };
     assert_eq!(
-        *first,
-        HostRunnerStepLabel::VerifyHost(HostPrerequisite::LinuxRootSystemd)
-    );
-    assert_eq!(*second, HostRunnerStepLabel::PrepareDataplaneHost);
-    assert_eq!(
-        *third,
-        HostRunnerStepLabel::PrepareContainerRuntime(ContainerRuntime::Docker)
-    );
-    assert_eq!(
-        *fourth,
-        HostRunnerStepLabel::VerifyContainerRuntime(ContainerRuntime::Docker)
-    );
-    assert_eq!(
-        *fifth,
-        HostRunnerStepLabel::InstallArtifact(ployzd_artifact())
-    );
-    let [
-        _,
-        _,
-        _,
-        _,
-        _,
-        sixth,
-        seventh,
-        eighth,
-        ninth,
-        tenth,
-        eleventh,
-        twelfth,
-        ..,
-    ] = effects.calls.as_slice()
-    else {
-        panic!("first-machine plan records nats setup calls");
-    };
-    assert_eq!(
-        *sixth,
-        HostRunnerStepLabel::InstallArtifact(ebpf_bytecode_artifact())
-    );
-    assert_eq!(
-        *seventh,
-        HostRunnerStepLabel::InstallArtifact(ebpf_ctl_artifact())
-    );
-    assert_eq!(
-        *eighth,
-        HostRunnerStepLabel::InstallArtifact(nats_server_artifact())
-    );
-    assert_eq!(
-        *ninth,
-        HostRunnerStepLabel::WriteNatsTlsMaterial {
-            state_dir: PathBuf::from("/var/lib/ployz/nats"),
-        }
-    );
-    assert_eq!(
-        *tenth,
-        HostRunnerStepLabel::WriteNatsAuthorizedUsers {
-            path: PathBuf::from("/etc/nats/authorized-users.conf"),
-        }
-    );
-    assert_eq!(
-        *eleventh,
-        HostRunnerStepLabel::WriteNatsClientCredentials {
-            state_dir: PathBuf::from("/var/lib/ployz/nats"),
-        }
-    );
-    assert_eq!(
-        *twelfth,
-        HostRunnerStepLabel::WriteNatsServerConfig(first_machine_nats_target(machine_id(
-            "machine_1"
-        )))
+        effects.calls,
+        plan.steps()
+            .iter()
+            .map(HostRunnerStepLabel::from_step)
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         execution.events,
@@ -173,13 +105,11 @@ fn host_runner_plan_executor_stops_on_first_failed_step() {
     );
     assert_eq!(
         effects.calls,
-        vec![
-            HostRunnerStepLabel::VerifyHost(HostPrerequisite::LinuxRootSystemd),
-            HostRunnerStepLabel::PrepareDataplaneHost,
-            HostRunnerStepLabel::PrepareContainerRuntime(ContainerRuntime::Docker),
-            HostRunnerStepLabel::VerifyContainerRuntime(ContainerRuntime::Docker),
-            HostRunnerStepLabel::InstallArtifact(ployzd_target),
-        ]
+        plan.steps()
+            .iter()
+            .take(effects.calls.len())
+            .map(HostRunnerStepLabel::from_step)
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         execution.events.last(),
@@ -232,12 +162,11 @@ fn host_runner_plan_executor_records_started_before_applying_step() {
     );
     assert_eq!(
         effects.calls,
-        vec![
-            HostRunnerStepLabel::VerifyHost(HostPrerequisite::LinuxRootSystemd),
-            HostRunnerStepLabel::PrepareDataplaneHost,
-            HostRunnerStepLabel::PrepareContainerRuntime(ContainerRuntime::Docker),
-            HostRunnerStepLabel::VerifyContainerRuntime(ContainerRuntime::Docker),
-        ]
+        plan.steps()
+            .iter()
+            .take(effects.calls.len())
+            .map(HostRunnerStepLabel::from_step)
+            .collect::<Vec<_>>()
     );
     assert_eq!(execution.events, recorder.events);
 }

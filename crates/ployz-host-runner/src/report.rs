@@ -48,6 +48,15 @@ fn render_step_label(step: &HostRunnerStepLabel) -> String {
         HostRunnerStepLabel::VerifyHost(HostPrerequisite::LinuxRootSystemd) => {
             "verify-host linux-root-systemd".to_owned()
         }
+        HostRunnerStepLabel::PreflightHostPorts(ports) => {
+            format!("preflight-host-ports {}", render_host_ports(ports))
+        }
+        HostRunnerStepLabel::AssureHostPorts(ports) => {
+            format!("assure-host-ports {}", render_host_ports(ports))
+        }
+        HostRunnerStepLabel::StoreAssignedSubstrate(ports) => {
+            format!("store-assigned-substrate {}", render_host_ports(ports))
+        }
         HostRunnerStepLabel::PrepareDataplaneHost => "prepare-dataplane-host".to_owned(),
         HostRunnerStepLabel::PrepareContainerRuntime(ContainerRuntime::Docker) => {
             "prepare-container-runtime docker".to_owned()
@@ -94,6 +103,20 @@ fn render_step_label(step: &HostRunnerStepLabel) -> String {
     }
 }
 
+fn render_host_ports(ports: &[crate::assigned_substrate::AssignedHostPort]) -> String {
+    ports
+        .iter()
+        .map(|port| {
+            let protocol = match port.protocol {
+                crate::assigned_substrate::HostPortProtocol::Tcp => "tcp",
+                crate::assigned_substrate::HostPortProtocol::Udp => "udp",
+            };
+            format!("{}/{protocol}", port.port)
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 fn render_artifact_target(target: &ArtifactTarget) -> String {
     let kind = match target.kind {
         ArtifactKind::EbpfBytecode => "ebpf-bytecode",
@@ -107,6 +130,11 @@ fn render_artifact_target(target: &ArtifactTarget) -> String {
 fn render_failure_reason(reason: HostRunnerStepFailureReason) -> &'static str {
     match reason {
         HostRunnerStepFailureReason::HostPrerequisiteFailed => "host-prerequisite-failed",
+        HostRunnerStepFailureReason::HostPortsPreflightFailed => "host-ports-preflight-failed",
+        HostRunnerStepFailureReason::HostPortsAssuranceFailed => "host-ports-assurance-failed",
+        HostRunnerStepFailureReason::AssignedSubstrateStoreFailed => {
+            "assigned-substrate-store-failed"
+        }
         HostRunnerStepFailureReason::ArtifactDownloadFailed => "artifact-download-failed",
         HostRunnerStepFailureReason::ArtifactVerificationFailed => "artifact-verification-failed",
         HostRunnerStepFailureReason::ArtifactInstallFailed => "artifact-install-failed",
@@ -144,4 +172,34 @@ fn render_failure_reason(reason: HostRunnerStepFailureReason) -> &'static str {
 
 fn failure_message(message: impl Into<String>) -> FailureMessage {
     FailureMessage::try_new(message).expect("Host Runner generated a non-empty failure message")
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::assigned_substrate::{AssignedHostPort, HostPortProtocol};
+    use crate::executor::HostRunnerStepEvent;
+    use crate::steps::HostRunnerStepLabel;
+
+    use super::render_step_event;
+
+    #[test]
+    fn host_port_progress_names_exact_ports() {
+        let event = HostRunnerStepEvent::Started {
+            step: HostRunnerStepLabel::PreflightHostPorts(vec![
+                AssignedHostPort {
+                    port: 80,
+                    protocol: HostPortProtocol::Tcp,
+                },
+                AssignedHostPort {
+                    port: 51820,
+                    protocol: HostPortProtocol::Udp,
+                },
+            ]),
+        };
+
+        assert_eq!(
+            render_step_event(&event),
+            "started preflight-host-ports 80/tcp,51820/udp"
+        );
+    }
 }

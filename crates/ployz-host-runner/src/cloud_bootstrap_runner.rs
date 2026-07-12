@@ -509,6 +509,7 @@ fn build_cloud_founder_install_spec(
             .map_err(|error| error.to_string())?,
         dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
         gateway: GatewayRole::Install,
+        host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
         machine_public_ip: Some(public_ip_from_runtime_nats_url(&founder.runtime_nats_url)?),
         machine_bootstrap_url: Some(
             MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)

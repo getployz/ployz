@@ -2,6 +2,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use crate::artifacts::{ArtifactKind, artifact_target};
+use crate::assigned_substrate::load_assigned_substrate_state;
 use crate::cli::{HostRunnerSubstrateUpdate, HostRunnerSubstrateUpdateSource};
 use crate::command::{HostRunnerCommandRunner, SystemHostRunnerCommandRunner};
 use crate::executor::{HostRunnerPlanTerminal, execute_host_runner_plan};
@@ -19,6 +20,13 @@ use crate::env_config::load_versioned_release_manifest;
 use crate::runtime::{HOST_RUNNER_STATE_DIR, SUBSTRATE_VERSION_FILE, failure_summary};
 
 pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) -> ExitCode {
+    let assigned_substrate = match load_assigned_substrate_state(Path::new(HOST_RUNNER_STATE_DIR)) {
+        Ok(state) => state,
+        Err(error) => {
+            eprintln!("failed to load assigned substrate state: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     let units = match installed_update_units(Path::new("/etc/systemd/system")) {
         Ok(units) if !units.is_empty() => units,
         Ok(_) => {
@@ -88,6 +96,8 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
     };
     let mut steps = vec![
         HostRunnerStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
+        HostRunnerStep::PreflightHostPorts(assigned_substrate.clone()),
+        HostRunnerStep::AssureHostPorts(assigned_substrate),
         HostRunnerStep::PrepareDataplaneHost,
         HostRunnerStep::InstallArtifact(ployzd),
         HostRunnerStep::InstallArtifact(ebpf_bytecode),

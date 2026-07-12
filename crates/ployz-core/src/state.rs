@@ -89,6 +89,8 @@ pub struct PendingMachineJoinRecovery {
     pub machine_id: MachineId,
     pub name: MachineName,
     pub roles: InstallRolePolicy,
+    #[serde(default = "crate::install::HostPortAssurance::keeper")]
+    pub host_port_assurance: crate::install::HostPortAssurance,
     pub join_token: IssuedJoinToken,
 }
 

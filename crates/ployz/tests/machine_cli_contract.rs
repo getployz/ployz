@@ -13,9 +13,9 @@ use ployz::commands::{PloyzctlCommand, parse_command};
 use ployz::ssh::{SshClient, SshCommandError, SshPhase, SshTarget, SshTargetParseError};
 use ployz_core::ids::MachineId;
 use ployz_core::install::{
-    AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
-    InstallSha256Digest, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
-    MachineJoinTrustedNats,
+    AbsoluteInstallPath, HostPortAssurance, InstallArtifactSource, InstallArtifactSpec,
+    InstallArtifactVersion, InstallSha256Digest, MachineJoinBundle, MachineJoinClusterName,
+    MachineJoinMaterial, MachineJoinTrustedNats,
 };
 use ployz_core::nats_config::NatsCaCertificatePem;
 use ployz_core::roles::{GatewayRole, InstallRolePolicy};
@@ -961,6 +961,7 @@ fn founder_bootstrap_command_carries_minimal_first_machine_inputs() {
         runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222")
             .expect("valid runtime nats URL"),
         machine_public_ip: None,
+        host_port_assurance: HostPortAssurance::Keeper,
     };
 
     let rendered = command.render();
@@ -1002,12 +1003,14 @@ fn founder_bootstrap_command_can_carry_channel_instead_of_version() {
         runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222")
             .expect("valid runtime nats URL"),
         machine_public_ip: None,
+        host_port_assurance: HostPortAssurance::External,
     };
 
     let rendered = command.render();
 
     assert!(rendered.contains("PLOYZ_CHANNEL='alpha'"));
     assert!(!rendered.contains("PLOYZ_VERSION="));
+    assert!(rendered.contains("PLOYZ_HOST_PORTS_ASSURED_EXTERNALLY=1"));
     assert!(rendered.contains("ployz host bootstrap core"));
 }
 

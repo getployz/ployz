@@ -139,6 +139,7 @@
     }
   },
   "machine_add_request": {
+    "host_port_assurance": "keeper",
     "idempotency_key": "idem_machine",
     "machine_id": "machine_2",
     "name": "edge_2",
@@ -207,6 +208,7 @@
   "machine_join_redeem_response": {
     "status": "ok",
     "value": {
+      "host_port_assurance": "external",
       "join_bundle": {
         "material": {
           "cluster_name": "prod",

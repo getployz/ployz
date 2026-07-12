@@ -108,6 +108,7 @@ async fn machine_add_accepts_before_reload_then_mints_material() {
             machine_id: machine_id("machine_2"),
             name: ployz_sdk_types::MachineName::try_new("machine_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
+            host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
         })
         .await
         .expect_err("duplicate machine add idempotency key is rejected");
@@ -470,7 +471,14 @@ async fn promoted_core_recovers_pending_join_without_old_operation_log() {
     let runtime = nats.start_control(&config).await;
     let api = nats.api();
 
-    let accepted = machine_add(&api, "op_recover_join", "idem_recover_join", "machine_rj").await;
+    let accepted = machine_add_with_assurance(
+        &api,
+        "op_recover_join",
+        "idem_recover_join",
+        "machine_rj",
+        ployz_core::install::HostPortAssurance::External,
+    )
+    .await;
     runtime
         .shutdown()
         .await
@@ -520,6 +528,10 @@ async fn promoted_core_recovers_pending_join_without_old_operation_log() {
     let redeemed = redeem_when_ready(&join_api, &accepted.join_token).await;
     assert_eq!(redeemed.result, MachineJoinRedeemResult::Joined);
     assert_eq!(redeemed.machine_id, machine_id("machine_rj"));
+    assert_eq!(
+        redeemed.host_port_assurance,
+        ployz_core::install::HostPortAssurance::External
+    );
     assert!(
         redeemed
             .secret_delivery
@@ -607,6 +619,7 @@ async fn rejected_duplicate_machine_add_operation_id_does_not_poison_recovery() 
             name: ployz_sdk_types::MachineName::try_new("machine_dup_b")
                 .expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
+            host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
         })
         .await
         .expect_err("duplicate operation id with new idempotency is rejected");
@@ -670,6 +683,7 @@ async fn terminal_machine_add_scrubs_working_secrets_and_status_corruption_is_un
             name: ployz_sdk_types::MachineName::try_new("machine_scrub_retry")
                 .expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
+            host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
         })
         .await
         .expect_err("terminal scrub keeps the non-secret idempotency tombstone");
@@ -829,6 +843,7 @@ async fn machine_add_reusing_another_operations_idempotency_key_is_rejected() {
             machine_id: machine_id("machine_b"),
             name: ployz_sdk_types::MachineName::try_new("machine_b").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
+            host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
         })
         .await
         .expect_err("reusing another operation's idempotency key is rejected");
@@ -874,12 +889,30 @@ async fn machine_add(
     idempotency: &str,
     machine: &str,
 ) -> MachineAddAccepted {
+    machine_add_with_assurance(
+        api,
+        operation,
+        idempotency,
+        machine,
+        ployz_core::install::HostPortAssurance::Keeper,
+    )
+    .await
+}
+
+async fn machine_add_with_assurance(
+    api: &OperationApiClient,
+    operation: &str,
+    idempotency: &str,
+    machine: &str,
+    host_port_assurance: ployz_core::install::HostPortAssurance,
+) -> MachineAddAccepted {
     api.machine_add(&MachineAddRequest {
         operation_id: operation_id(operation),
         idempotency_key: idempotency_key(idempotency),
         machine_id: machine_id(machine),
         name: ployz_sdk_types::MachineName::try_new(machine).expect("valid machine name"),
         roles: InstallRolePolicy::install_all().without_gateway(),
+        host_port_assurance,
     })
     .await
     .expect("machine add accepts")

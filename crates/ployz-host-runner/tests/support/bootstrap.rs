@@ -111,6 +111,7 @@ impl HostRunnerJoinRedeemer for RecordingJoinRedeemer {
                 NonEmptyRoleSet::try_new(vec![DaemonProcessRole::Machine(machine_id("machine_7"))])
                     .expect("non-empty role set"),
                 role_environment(),
+                ployz_core::install::HostPortAssurance::Keeper,
             ),
         ))
     }
@@ -253,6 +254,7 @@ pub fn first_machine_plan() -> ployz_host_runner::steps::HostRunnerStepPlan {
         dataplane_artifacts(),
         nats_server_artifact(),
         InstallRolePolicy::install_all().without_gateway(),
+        ployz_core::install::HostPortAssurance::Keeper,
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
         WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),

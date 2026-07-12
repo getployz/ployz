@@ -15,8 +15,8 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
 use ployz_core::install::{
-    InstallArtifactVersion, MachineBootstrapUrl, MachineJoinBundle, MachineJoinRuntimeNatsUrl,
-    MachineJoinSecretDelivery, MachineJoinTemplate,
+    HostPortAssurance, InstallArtifactVersion, MachineBootstrapUrl, MachineJoinBundle,
+    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
 };
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineName, RawJoinToken,
@@ -66,6 +66,7 @@ pub struct MachineAddSubmitCommand {
     pub machine_id: ployz_core::ids::MachineId,
     pub name: MachineName,
     pub roles: InstallRolePolicy,
+    pub host_port_assurance: HostPortAssurance,
     pub join_bundle: MachineJoinBundle,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,
@@ -363,6 +364,7 @@ impl OperationControllers {
                     machine_id: command.machine_id,
                     name: command.name,
                     roles: command.roles,
+                    host_port_assurance: command.host_port_assurance,
                     join_bundle: command.join_bundle,
                     join_token: command.join_token,
                     raw_join_token: command.raw_join_token,
@@ -589,6 +591,7 @@ impl OperationControllers {
                     machine_id: recovery.machine_id.clone(),
                     name: recovery.name.clone(),
                     roles: recovery.roles,
+                    host_port_assurance: recovery.host_port_assurance,
                     join_bundle: join_material.join_template.join_bundle.clone(),
                     join_token: recovery.join_token.clone(),
                     raw_join_token: token.clone(),

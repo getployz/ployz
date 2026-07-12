@@ -34,7 +34,7 @@ use crate::{
     EbpfForwardingReady, EbpfForwardingReadyEvidence, EnvName, EnvValue, EventSequence,
     FailureMessage, FirstMachineInstallArtifacts, FirstMachineInstallSpec, GatewayRole,
     GatewayServingStatus, GatewayStatusObservation, HealthCheckFailure, HealthcheckDurationNanos,
-    HealthcheckRetries, HealthcheckShellCommand, ImageReference, ImageSource,
+    HealthcheckRetries, HealthcheckShellCommand, HostPortAssurance, ImageReference, ImageSource,
     InitFirstMachineActivateError, InitFirstMachineActivateRequest,
     InitFirstMachineActivateResponse, InitFirstMachineActivated, InstallArtifactSource,
     InstallArtifactSpec, InstallArtifactVersion, InstallRolePolicy, InstallSha256Digest,
@@ -264,6 +264,7 @@ macro_rules! exported_types {
             MachineReadinessEvidence,
             MachineReadinessCheck,
             GatewayRole,
+            HostPortAssurance,
             InstallRolePolicy,
             DeployOperationState,
             DeployRunningStage,
@@ -729,6 +730,7 @@ pub fn operation_contract_fixture() -> Value {
             machine_id: machine_id("machine_2"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
+            host_port_assurance: HostPortAssurance::Keeper,
         }),
         "machine_add_response": value(MachineAddResponse::Ok {
             value: MachineAddAccepted {
@@ -758,6 +760,7 @@ pub fn operation_contract_fixture() -> Value {
                 machine_id: machine_id("machine_2"),
                 name: MachineName::try_new("edge_2").expect("valid machine name"),
                 roles: InstallRolePolicy::install_all().without_gateway(),
+                host_port_assurance: HostPortAssurance::External,
                 join_bundle: machine_join_bundle(),
                 secret_delivery: machine_join_secret_delivery(),
                 joined_at: JoinTokenRedeemedAt::try_new(60).expect("valid redeemed timestamp"),

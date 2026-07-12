@@ -5,6 +5,7 @@
 //! the same shell shape.
 
 use ployz_core::ids::MachineId;
+use ployz_core::install::HostPortAssurance;
 use ployz_core::install::{MachineBootstrapUrl, MachineJoinClusterName, MachineJoinRuntimeNatsUrl};
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::roles::{GatewayRole, InstallRolePolicy};
@@ -136,6 +137,7 @@ pub struct FounderBootstrapCommand {
     /// The operator's `--public-ip` override. When absent, the first machine
     /// self-discovers its public address at install (the common cloud-VM case).
     pub machine_public_ip: Option<IpAddr>,
+    pub host_port_assurance: HostPortAssurance,
 }
 
 impl FounderBootstrapCommand {
@@ -159,6 +161,9 @@ impl FounderBootstrapCommand {
                 " PLOYZ_MACHINE_PUBLIC_IP={}",
                 shell_quote(&public_ip.to_string()),
             ));
+        }
+        if matches!(self.host_port_assurance, HostPortAssurance::External) {
+            env.push_str(" PLOYZ_HOST_PORTS_ASSURED_EXTERNALLY=1");
         }
 
         match &self.installer {

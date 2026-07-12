@@ -1,4 +1,5 @@
 use ployz_core::ids::MachineId;
+use ployz_core::install::HostPortAssurance;
 use ployz_core::install::{
     AbsoluteInstallPath, FirstMachineInstallArtifacts, FirstMachineInstallSpec,
     InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion, InstallSha256Digest,
@@ -8,6 +9,18 @@ use ployz_core::install::{
 };
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 use ployz_core::roles::{GatewayRole, InstallRolePolicy};
+
+#[test]
+fn host_port_assurance_has_explicit_wire_values() {
+    assert_eq!(
+        serde_json::to_value(HostPortAssurance::Keeper).expect("serializes"),
+        serde_json::json!("keeper")
+    );
+    assert_eq!(
+        serde_json::to_value(HostPortAssurance::External).expect("serializes"),
+        serde_json::json!("external")
+    );
+}
 
 #[test]
 fn first_machine_install_spec_wire_shape_is_grouped_json() {
@@ -29,6 +42,7 @@ fn first_machine_install_spec_wire_shape_is_grouped_json() {
             "machine_id": "machine_1",
             "dataplane_endpoint_supernet": "10.198.0.0/16",
             "gateway": "install",
+            "host_port_assurance": "keeper",
             "machine_public_ip": "203.0.113.10",
             "machine_bootstrap_url": "https://example.test/ployz.sh",
             "machine_join_template_file": "/etc/ployz/machine-join-template.json",
@@ -258,6 +272,7 @@ fn first_machine_install_spec(gateway: GatewayRole) -> FirstMachineInstallSpec {
         machine_id: MachineId::try_new("machine_1").expect("valid machine id"),
         dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
         gateway,
+        host_port_assurance: HostPortAssurance::Keeper,
         machine_public_ip: None,
         machine_bootstrap_url: None,
         machine_join_template_file: None,

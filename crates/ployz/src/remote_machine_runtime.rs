@@ -633,6 +633,7 @@ pub(crate) async fn execute_machine_init(
         cluster_name: command.cluster_name.clone(),
         runtime_nats_url: runtime_nats_url_for_target(&target)?,
         machine_public_ip: command.public_ip,
+        host_port_assurance: command.host_port_assurance,
     }
     .render();
     let install_output = installer
@@ -727,6 +728,7 @@ pub(crate) async fn execute_machine_add_remote(
             machine_id: identity.machine_id.clone(),
             name: identity.name.clone(),
             roles: command.roles,
+            host_port_assurance: command.host_port_assurance,
         })
         .await
         .map_err(api_error)?;

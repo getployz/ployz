@@ -9,9 +9,10 @@ use std::path::PathBuf;
 use ployz_core::dataplane::MachineEndpointSupernet;
 use ployz_core::ids::MachineId;
 use ployz_core::install::{
-    AbsoluteInstallPath, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
-    MachineJoinMaterial, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
-    MachineJoinTrustedNats, NatsMachineMaterialPaths, WrappedCaKey, WrappedCoreSeeds,
+    AbsoluteInstallPath, HostPortAssurance, MachineBootstrapUrl, MachineJoinBundle,
+    MachineJoinClusterName, MachineJoinMaterial, MachineJoinRuntimeNatsUrl,
+    MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinTrustedNats,
+    NatsMachineMaterialPaths, WrappedCaKey, WrappedCoreSeeds,
 };
 use ployz_core::nats_config::{
     CredentialGrant, CredentialName, NatsCaCertificatePem, NatsUserSeed,
@@ -22,6 +23,7 @@ use ployz_nats::connect::NatsClientUrl;
 use sha2::{Digest, Sha256};
 
 use crate::artifacts::{ArtifactTarget, DataplaneArtifactTargets};
+use crate::assigned_substrate::{AssignedHostPort, AssignedSubstrateState, HostPortProtocol};
 use crate::nats_identity::ClusterNatsIdentity;
 use crate::systemd::{
     NatsServerUnitTarget, PloyzdRoleEnvironmentFile, SupervisorUnitSpec, SupervisorUnitTarget,
@@ -65,6 +67,9 @@ impl HostRunnerStepPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostRunnerStep {
     VerifyHost(HostPrerequisite),
+    PreflightHostPorts(AssignedSubstrateState),
+    AssureHostPorts(AssignedSubstrateState),
+    StoreAssignedSubstrate(AssignedSubstrateState),
     PrepareDataplaneHost,
     PrepareContainerRuntime(ContainerRuntime, MachineEndpointSupernet),
     VerifyContainerRuntime(ContainerRuntime),
@@ -84,6 +89,9 @@ pub enum HostRunnerStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostRunnerStepLabel {
     VerifyHost(HostPrerequisite),
+    PreflightHostPorts(Vec<AssignedHostPort>),
+    AssureHostPorts(Vec<AssignedHostPort>),
+    StoreAssignedSubstrate(Vec<AssignedHostPort>),
     PrepareDataplaneHost,
     PrepareContainerRuntime(ContainerRuntime),
     VerifyContainerRuntime(ContainerRuntime),
@@ -108,6 +116,15 @@ impl HostRunnerStepLabel {
     pub fn from_step(step: &HostRunnerStep) -> Self {
         match step {
             HostRunnerStep::VerifyHost(prerequisite) => Self::VerifyHost(*prerequisite),
+            HostRunnerStep::PreflightHostPorts(state) => {
+                Self::PreflightHostPorts(state.required_host_ports.clone())
+            }
+            HostRunnerStep::AssureHostPorts(state) => {
+                Self::AssureHostPorts(state.required_host_ports.clone())
+            }
+            HostRunnerStep::StoreAssignedSubstrate(state) => {
+                Self::StoreAssignedSubstrate(state.required_host_ports.clone())
+            }
             HostRunnerStep::PrepareDataplaneHost => Self::PrepareDataplaneHost,
             HostRunnerStep::PrepareContainerRuntime(runtime, _) => {
                 Self::PrepareContainerRuntime(*runtime)
@@ -404,6 +421,7 @@ pub struct HostRunnerJoinTarget {
     pub dataplane_artifacts: DataplaneArtifactTargets,
     pub roles: NonEmptyRoleSet,
     pub role_environment: PloyzdRoleEnvironmentTarget,
+    pub host_port_assurance: HostPortAssurance,
 }
 
 impl HostRunnerJoinTarget {
@@ -414,6 +432,7 @@ impl HostRunnerJoinTarget {
         dataplane_artifacts: DataplaneArtifactTargets,
         roles: NonEmptyRoleSet,
         role_environment: PloyzdRoleEnvironmentTarget,
+        host_port_assurance: HostPortAssurance,
     ) -> Self {
         let role_environment = role_environment
             .with_ebpf_bytecode_path(
@@ -429,6 +448,7 @@ impl HostRunnerJoinTarget {
             dataplane_artifacts,
             roles,
             role_environment,
+            host_port_assurance,
         }
     }
 }
@@ -441,6 +461,7 @@ pub struct FirstMachineInstallTarget {
     pub dataplane_artifacts: DataplaneArtifactTargets,
     pub nats_server_artifact: ArtifactTarget,
     pub roles: InstallRolePolicy,
+    pub host_port_assurance: HostPortAssurance,
     pub nats_identity: ClusterNatsIdentity,
     /// The CA signing key wrapped with the recovery secret (ADR 0031), persisted
     /// beside the TLS material so a promotion can decrypt and self-issue.
@@ -470,6 +491,7 @@ impl FirstMachineInstallTarget {
         dataplane_artifacts: DataplaneArtifactTargets,
         nats_server_artifact: ArtifactTarget,
         roles: InstallRolePolicy,
+        host_port_assurance: HostPortAssurance,
         nats_identity: ClusterNatsIdentity,
         recovery_key_wrapped: WrappedCaKey,
         core_seeds_wrapped: WrappedCoreSeeds,
@@ -507,6 +529,7 @@ impl FirstMachineInstallTarget {
             dataplane_artifacts,
             nats_server_artifact,
             roles,
+            host_port_assurance,
             nats_identity,
             recovery_key_wrapped,
             core_seeds_wrapped,
@@ -917,11 +940,19 @@ pub(crate) fn host_runner_join_install_plan(target: HostRunnerJoinTarget) -> Hos
 }
 
 fn host_runner_join_material_steps(target: &HostRunnerJoinTarget) -> Vec<HostRunnerStep> {
-    vec![HostRunnerStep::StoreJoinMaterial(target.material.clone())]
+    let assigned = join_assigned_substrate(&target.roles, target.host_port_assurance);
+    vec![
+        HostRunnerStep::PreflightHostPorts(assigned.clone()),
+        HostRunnerStep::StoreAssignedSubstrate(assigned),
+        HostRunnerStep::StoreJoinMaterial(target.material.clone()),
+    ]
 }
 
 fn host_runner_join_install_steps(target: HostRunnerJoinTarget) -> Vec<HostRunnerStep> {
+    let assigned = join_assigned_substrate(&target.roles, target.host_port_assurance);
     let mut steps = vec![
+        HostRunnerStep::PreflightHostPorts(assigned.clone()),
+        HostRunnerStep::AssureHostPorts(assigned),
         HostRunnerStep::PrepareDataplaneHost,
         HostRunnerStep::PrepareContainerRuntime(
             ContainerRuntime::Docker,
@@ -956,6 +987,62 @@ fn host_runner_join_install_steps(target: HostRunnerJoinTarget) -> Vec<HostRunne
     }
 
     steps
+}
+
+fn founder_assigned_substrate(
+    roles: InstallRolePolicy,
+    assurance: HostPortAssurance,
+) -> AssignedSubstrateState {
+    assigned_substrate(
+        true,
+        matches!(roles.gateway, ployz_core::roles::GatewayRole::Install),
+        assurance,
+    )
+}
+
+fn join_assigned_substrate(
+    roles: &NonEmptyRoleSet,
+    assurance: HostPortAssurance,
+) -> AssignedSubstrateState {
+    assigned_substrate(
+        false,
+        roles.roles().contains(&DaemonProcessRole::Gateway),
+        assurance,
+    )
+}
+
+fn assigned_substrate(
+    nats_server: bool,
+    gateway: bool,
+    assurance: HostPortAssurance,
+) -> AssignedSubstrateState {
+    let mut required_host_ports = vec![AssignedHostPort {
+        port: 51820,
+        protocol: HostPortProtocol::Udp,
+    }];
+    if nats_server {
+        required_host_ports.push(AssignedHostPort {
+            port: 4222,
+            protocol: HostPortProtocol::Tcp,
+        });
+    }
+    if gateway {
+        required_host_ports.extend([
+            AssignedHostPort {
+                port: 80,
+                protocol: HostPortProtocol::Tcp,
+            },
+            AssignedHostPort {
+                port: 443,
+                protocol: HostPortProtocol::Tcp,
+            },
+        ]);
+    }
+    required_host_ports.sort_by_key(|port| port.port);
+    AssignedSubstrateState {
+        required_host_ports,
+        host_ports: assurance,
+    }
 }
 
 /// Everything `core-promote` needs to render + start a replacement core on an
@@ -1133,8 +1220,12 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> HostRunn
         &target.nats_material,
         first_machine_listener(target.machine_public_ip),
     );
+    let assigned = founder_assigned_substrate(target.roles, target.host_port_assurance);
     let mut steps = vec![
         HostRunnerStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
+        HostRunnerStep::PreflightHostPorts(assigned.clone()),
+        HostRunnerStep::AssureHostPorts(assigned.clone()),
+        HostRunnerStep::StoreAssignedSubstrate(assigned),
         HostRunnerStep::PrepareDataplaneHost,
         HostRunnerStep::PrepareContainerRuntime(
             ContainerRuntime::Docker,
@@ -1283,6 +1374,9 @@ impl HostRunnerStepFailure {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostRunnerStepFailureReason {
     HostPrerequisiteFailed,
+    HostPortsPreflightFailed,
+    HostPortsAssuranceFailed,
+    AssignedSubstrateStoreFailed,
     ArtifactDownloadFailed,
     ArtifactVerificationFailed,
     ArtifactInstallFailed,
@@ -1310,6 +1404,9 @@ impl HostRunnerStepFailureReason {
     pub const fn from_step(step: &HostRunnerStep) -> Self {
         match step {
             HostRunnerStep::VerifyHost(_) => Self::HostPrerequisiteFailed,
+            HostRunnerStep::PreflightHostPorts(_) => Self::HostPortsPreflightFailed,
+            HostRunnerStep::AssureHostPorts(_) => Self::HostPortsAssuranceFailed,
+            HostRunnerStep::StoreAssignedSubstrate(_) => Self::AssignedSubstrateStoreFailed,
             HostRunnerStep::PrepareDataplaneHost => Self::DataplaneHostPrepareFailed,
             HostRunnerStep::PrepareContainerRuntime(_, _) => Self::ContainerRuntimePrepareFailed,
             HostRunnerStep::VerifyContainerRuntime(_) => Self::ContainerRuntimeVerifyFailed,
@@ -1325,5 +1422,58 @@ impl HostRunnerStepFailureReason {
             HostRunnerStep::RestartSupervisorUnit(_) => Self::SupervisorRestartFailed,
             HostRunnerStep::StoreJoinMaterial(_) => Self::JoinMaterialStoreFailed,
         }
+    }
+}
+
+#[cfg(test)]
+mod host_port_tests {
+    use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
+
+    use super::{
+        HostPortProtocol, NonEmptyRoleSet, assigned_substrate, founder_assigned_substrate,
+        join_assigned_substrate,
+    };
+
+    #[test]
+    fn founder_ports_are_exact_and_sorted() {
+        let state = founder_assigned_substrate(
+            InstallRolePolicy::install_all(),
+            ployz_core::install::HostPortAssurance::Keeper,
+        );
+
+        assert_eq!(
+            state
+                .required_host_ports
+                .iter()
+                .map(|port| (port.port, port.protocol))
+                .collect::<Vec<_>>(),
+            vec![
+                (80, HostPortProtocol::Tcp),
+                (443, HostPortProtocol::Tcp),
+                (4222, HostPortProtocol::Tcp),
+                (51820, HostPortProtocol::Udp),
+            ]
+        );
+    }
+
+    #[test]
+    fn joiner_ports_include_gateway_only_when_assigned() {
+        let gateway = NonEmptyRoleSet::try_new(vec![DaemonProcessRole::Gateway])
+            .expect("gateway role set is non-empty");
+        let machine = NonEmptyRoleSet::try_new(vec![DaemonProcessRole::Dns])
+            .expect("dns role set is non-empty");
+
+        assert_eq!(
+            join_assigned_substrate(&gateway, ployz_core::install::HostPortAssurance::Keeper)
+                .required_host_ports,
+            assigned_substrate(false, true, ployz_core::install::HostPortAssurance::Keeper)
+                .required_host_ports
+        );
+        assert_eq!(
+            join_assigned_substrate(&machine, ployz_core::install::HostPortAssurance::Keeper)
+                .required_host_ports,
+            assigned_substrate(false, false, ployz_core::install::HostPortAssurance::Keeper)
+                .required_host_ports
+        );
     }
 }

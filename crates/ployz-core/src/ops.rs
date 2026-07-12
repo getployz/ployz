@@ -142,6 +142,8 @@ pub enum OperationStatus {
         machine_id: MachineId,
         name: MachineName,
         roles: InstallRolePolicy,
+        #[serde(default = "crate::install::HostPortAssurance::keeper")]
+        host_port_assurance: crate::install::HostPortAssurance,
         state: MachineAddOperationState,
         last_event_sequence: EventSequence,
     },
@@ -256,6 +258,7 @@ impl OperationStatus {
         machine_id: MachineId,
         name: MachineName,
         roles: InstallRolePolicy,
+        host_port_assurance: crate::install::HostPortAssurance,
         join_token: IssuedJoinToken,
         event_sequence: EventSequence,
     ) -> Self {
@@ -264,6 +267,7 @@ impl OperationStatus {
             machine_id,
             name,
             roles,
+            host_port_assurance,
             state: MachineAddOperationState::Pending { join_token },
             last_event_sequence: event_sequence,
         }

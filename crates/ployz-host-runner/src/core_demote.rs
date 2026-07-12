@@ -202,6 +202,14 @@ mod tests {
     }
 
     impl HostRunnerCommandRunner for RecordingRunner {
+        fn command(
+            &mut self,
+            _program: &str,
+            _args: &[&str],
+        ) -> Result<crate::command::HostRunnerCommandOutput, FailureMessage> {
+            unreachable!("core demotion does not run generic host commands")
+        }
+
         fn is_linux(&mut self) -> bool {
             true
         }
