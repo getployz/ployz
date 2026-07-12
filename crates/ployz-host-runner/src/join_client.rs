@@ -461,6 +461,7 @@ mod tests {
             machine_id: MachineId::try_new("machine_255").expect("valid machine id"),
             name: MachineName::try_new("edge_255").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
+            host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
             endpoint_subnet: endpoint_subnet("10.198.0.0/24"),
             join_bundle: machine_join_bundle(),
             secret_delivery: machine_join_secret_delivery(),
