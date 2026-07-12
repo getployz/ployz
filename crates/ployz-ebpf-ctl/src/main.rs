@@ -272,6 +272,7 @@ fn subnet_to_key(subnet: ipnet::Ipv4Net) -> ployz_ebpf_common::RouteKey {
 mod linux {
     use super::{EbpfCtlOutcome, subnet_to_key, tc_filter_has_program, validate_bytecode};
     use aya::Ebpf;
+    use aya::programs::links::{FdLink, LinkOrder, PinnedLink};
     use aya::programs::tc::{NlOptions, TcAttachOptions};
     use aya::programs::{SchedClassifier, TcAttachType};
     use ployz_ebpf_common::{RouteEntry, RouteKey};
@@ -301,6 +302,8 @@ mod linux {
             .map_err(|error| format!("read eBPF bytecode {}: {error}", bytecode.display()))?;
         let mut bpf = Ebpf::load(&bytes).map_err(|error| format!("load eBPF bytecode: {error}"))?;
 
+        std::fs::create_dir_all(pin_path).map_err(|error| format!("create {pin_path}: {error}"))?;
+        // clsact backs the classic-netlink fallback; harmless (and ignored) under tcx.
         let _ = aya::programs::tc::qdisc_add_clsact(bridge);
 
         let egress: &mut SchedClassifier = bpf
@@ -311,13 +314,13 @@ mod linux {
         egress
             .load()
             .map_err(|error| format!("load ployz_egress: {error}"))?;
-        egress
-            .attach_with_options(
-                bridge,
-                TcAttachType::Egress,
-                TcAttachOptions::Netlink(NlOptions::default()),
-            )
-            .map_err(|error| format!("attach ployz_egress to {bridge}: {error}"))?;
+        attach_and_persist(
+            egress,
+            bridge,
+            TcAttachType::Egress,
+            &format!("{pin_path}/egress-link"),
+            "ployz_egress",
+        )?;
 
         let ingress: &mut SchedClassifier = bpf
             .program_mut("ployz_ingress")
@@ -327,13 +330,13 @@ mod linux {
         ingress
             .load()
             .map_err(|error| format!("load ployz_ingress: {error}"))?;
-        ingress
-            .attach_with_options(
-                bridge,
-                TcAttachType::Ingress,
-                TcAttachOptions::Netlink(NlOptions::default()),
-            )
-            .map_err(|error| format!("attach ployz_ingress to {bridge}: {error}"))?;
+        attach_and_persist(
+            ingress,
+            bridge,
+            TcAttachType::Ingress,
+            &format!("{pin_path}/ingress-link"),
+            "ployz_ingress",
+        )?;
 
         let wg_map = bpf
             .map_mut("WG_IFINDEX")
@@ -344,7 +347,6 @@ mod linux {
             .set(0, wg_ifindex, 0)
             .map_err(|error| format!("set WG_IFINDEX: {error}"))?;
 
-        std::fs::create_dir_all(pin_path).map_err(|error| format!("create {pin_path}: {error}"))?;
         bpf.map_mut("ROUTES")
             .ok_or("ROUTES map not found")?
             .pin(format!("{pin_path}/routes"))
@@ -361,6 +363,52 @@ mod linux {
         Ok(())
     }
 
+    /// Attaches one classifier and makes the attachment outlive this process.
+    /// Prefers tcx (kernel 6.6+): the returned link is pinned into bpffs, so the
+    /// program stays attached after this short-lived CLI exits. Where tcx is
+    /// unavailable (older kernels, some container netns) it falls back to a
+    /// classic netlink filter, which the clsact qdisc keeps after the process
+    /// exits — the pre-tcx behavior the DinD harness exercises.
+    fn attach_and_persist(
+        program: &mut SchedClassifier,
+        bridge: &str,
+        attach_type: TcAttachType,
+        link_pin: &str,
+        program_name: &str,
+    ) -> Result<(), String> {
+        match program.attach_with_options(
+            bridge,
+            attach_type,
+            TcAttachOptions::TcxOrder(LinkOrder::default()),
+        ) {
+            Ok(link_id) => {
+                let link = program
+                    .take_link(link_id)
+                    .map_err(|error| format!("take {program_name} tcx link: {error}"))?;
+                let fd_link = FdLink::try_from(link)
+                    .map_err(|error| format!("{program_name} tcx link is not fd-backed: {error}"))?;
+                // Replace any stale pin so a retry after a failed prepare is idempotent.
+                remove_pin_file(link_pin)?;
+                fd_link
+                    .pin(link_pin)
+                    .map_err(|error| format!("pin {program_name} tcx link at {link_pin}: {error}"))?;
+                Ok(())
+            }
+            Err(tcx_error) => program
+                .attach_with_options(
+                    bridge,
+                    attach_type,
+                    TcAttachOptions::Netlink(NlOptions::default()),
+                )
+                .map(|_link_id| ())
+                .map_err(|netlink_error| {
+                    format!(
+                        "attach {program_name} to {bridge} (tcx: {tcx_error}; netlink: {netlink_error})"
+                    )
+                }),
+        }
+    }
+
     pub fn ensure_attached(
         bytecode: &Path,
         bridge: &str,
@@ -368,18 +416,36 @@ mod linux {
         pin_path: &str,
     ) -> Result<(), String> {
         validate_bytecode(bytecode)?;
+        if let EbpfCtlOutcome::Completed = attachment_status(bridge, pin_path)? {
+            return Ok(());
+        }
+        // Clear any partial state from a previous failed prepare, attach fresh,
+        // then re-verify so that a success here means the classifier is really
+        // attached (not merely that `attach` returned).
+        let _ = detach(bridge, pin_path);
+        attach(bytecode, bridge, wg_ifname, pin_path)?;
         match attachment_status(bridge, pin_path)? {
             EbpfCtlOutcome::Completed => Ok(()),
-            EbpfCtlOutcome::Detached { .. } => {
-                detach_program_if_present(bridge, TcAttachType::Egress, "ployz_egress")?;
-                detach_program_if_present(bridge, TcAttachType::Ingress, "ployz_ingress")?;
-                remove_ployz_tc_pins(pin_path)?;
-                attach(bytecode, bridge, wg_ifname, pin_path)
+            EbpfCtlOutcome::Detached { message } => {
+                Err(format!("eBPF attach did not persist: {message}"))
             }
         }
     }
 
     pub fn attachment_status(bridge: &str, pin_path: &str) -> Result<EbpfCtlOutcome, String> {
+        // tcx path: a pinned, loadable link IS the attachment. This is the
+        // source of truth on kernel 6.6+; classic `tc filter show` never lists
+        // tcx programs, so it must not decide "attached" there.
+        match tcx_links_present(pin_path)? {
+            Some(true) => return Ok(EbpfCtlOutcome::Completed),
+            Some(false) => {
+                return Ok(EbpfCtlOutcome::Detached {
+                    message: format!("pinned eBPF link under {pin_path} is stale"),
+                });
+            }
+            None => {}
+        }
+        // Classic-netlink fallback: filters kept alive by the clsact qdisc.
         if !ployz_tc_pins_exist(pin_path) {
             return Ok(EbpfCtlOutcome::Detached {
                 message: format!("required eBPF pins are missing under {pin_path}"),
@@ -407,11 +473,34 @@ mod linux {
         Ok(EbpfCtlOutcome::Completed)
     }
 
+    /// tcx attachment detection. `Some(true)`: both links pinned and loadable.
+    /// `Some(false)`: a pin is present but stale/unloadable. `None`: no link
+    /// pins at all (a classic-netlink attachment, or nothing attached).
+    fn tcx_links_present(pin_path: &str) -> Result<Option<bool>, String> {
+        let links = [
+            format!("{pin_path}/ingress-link"),
+            format!("{pin_path}/egress-link"),
+        ];
+        if links.iter().all(|path| !Path::new(path).exists()) {
+            return Ok(None);
+        }
+        for path in &links {
+            // `from_pin` opens the pinned link; dropping it keeps the pin (and
+            // so the attachment) and only closes our extra fd.
+            if !Path::new(path).exists() || PinnedLink::from_pin(path).is_err() {
+                return Ok(Some(false));
+            }
+        }
+        Ok(Some(true))
+    }
+
     pub fn detach(bridge: &str, pin_path: &str) -> Result<(), String> {
-        aya::programs::tc::qdisc_detach_program(bridge, TcAttachType::Egress, "ployz_egress")
-            .map_err(|error| format!("detach ployz_egress from {bridge}: {error}"))?;
-        aya::programs::tc::qdisc_detach_program(bridge, TcAttachType::Ingress, "ployz_ingress")
-            .map_err(|error| format!("detach ployz_ingress from {bridge}: {error}"))?;
+        // tcx: removing the pin drops the last reference and detaches.
+        remove_pin_file(format!("{pin_path}/ingress-link"))?;
+        remove_pin_file(format!("{pin_path}/egress-link"))?;
+        // Classic-netlink fallback: remove the filters if they are present.
+        detach_program_if_present(bridge, TcAttachType::Egress, "ployz_egress")?;
+        detach_program_if_present(bridge, TcAttachType::Ingress, "ployz_ingress")?;
         remove_pin_file(format!("{pin_path}/routes"))?;
         remove_pin_file(format!("{pin_path}/egress"))?;
         remove_pin_file(format!("{pin_path}/ingress"))?;
@@ -439,13 +528,6 @@ mod linux {
         ]
         .iter()
         .all(|path| Path::new(path).exists())
-    }
-
-    fn remove_ployz_tc_pins(pin_path: &str) -> Result<(), String> {
-        remove_pin_file(format!("{pin_path}/routes"))?;
-        remove_pin_file(format!("{pin_path}/egress"))?;
-        remove_pin_file(format!("{pin_path}/ingress"))?;
-        remove_pin_dir(pin_path)
     }
 
     pub fn route_add(subnet: ipnet::Ipv4Net, ifindex: u32, pin_path: &str) -> Result<(), String> {
