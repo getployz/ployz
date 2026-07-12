@@ -1074,6 +1074,7 @@ function defaultFixture(): OperationFixture {
         name: machineName("edge_2"),
         roles: gatewaySkippedRoles(),
         host_port_assurance: "external",
+        endpoint_subnet: "10.198.2.0/24",
         join_bundle: machineJoinBundle(),
         secret_delivery: machineJoinSecretDelivery(),
         joined_at: "60" as MachineJoinRedeemed["joined_at"],

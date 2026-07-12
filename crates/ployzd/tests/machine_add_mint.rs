@@ -237,6 +237,37 @@ async fn concurrent_machine_adds_both_render_their_keys() {
         .expect("control runtime shuts down");
 }
 
+#[tokio::test]
+async fn concurrent_colliding_machine_adds_reserve_distinct_endpoint_subnets() {
+    let _guard = lock_machine_add_mint_test().await;
+    let nats = TestNats::start().await;
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
+    let api = nats.api();
+    let join_api = nats.join_api();
+
+    let (first, colliding) = tokio::join!(
+        machine_add(&api, "op_subnet_1", "idem_subnet_1", "machine_1"),
+        machine_add(&api, "op_subnet_255", "idem_subnet_255", "machine_255"),
+    );
+    let first = redeem_when_ready(&join_api, &first.join_token).await;
+    let colliding = redeem_when_ready(&join_api, &colliding.join_token).await;
+
+    assert_ne!(first.endpoint_subnet, colliding.endpoint_subnet);
+    assert!(
+        [
+            first.endpoint_subnet.as_string(),
+            colliding.endpoint_subnet.as_string()
+        ]
+        .contains(&"10.198.0.0/24".to_owned())
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
 /// File authority durability: with a pre-existing file containing an
 /// unknown user, startup and a subsequent render preserve the entry.
 #[tokio::test]
@@ -471,11 +502,18 @@ async fn promoted_core_recovers_pending_join_without_old_operation_log() {
     let runtime = nats.start_control(&config).await;
     let api = nats.api();
 
+    machine_add(
+        &api,
+        "op_recover_join_1",
+        "idem_recover_join_1",
+        "machine_1",
+    )
+    .await;
     let accepted = machine_add_with_assurance(
         &api,
-        "op_recover_join",
-        "idem_recover_join",
-        "machine_rj",
+        "op_recover_join_255",
+        "idem_recover_join_255",
+        "machine_255",
         ployz_core::install::HostPortAssurance::External,
     )
     .await;
@@ -527,11 +565,12 @@ async fn promoted_core_recovers_pending_join_without_old_operation_log() {
 
     let redeemed = redeem_when_ready(&join_api, &accepted.join_token).await;
     assert_eq!(redeemed.result, MachineJoinRedeemResult::Joined);
-    assert_eq!(redeemed.machine_id, machine_id("machine_rj"));
+    assert_eq!(redeemed.machine_id, machine_id("machine_255"));
     assert_eq!(
         redeemed.host_port_assurance,
         ployz_core::install::HostPortAssurance::External
     );
+    assert_eq!(redeemed.endpoint_subnet.as_string(), "10.198.0.0/24");
     assert!(
         redeemed
             .secret_delivery
@@ -551,7 +590,7 @@ async fn promoted_core_recovers_pending_join_without_old_operation_log() {
         machines
             .machines
             .iter()
-            .any(|machine| { machine.active.machine_id == machine_id("machine_rj") })
+            .any(|machine| { machine.active.machine_id == machine_id("machine_255") })
     );
 
     promoted_runtime

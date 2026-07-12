@@ -706,7 +706,7 @@ export type MachineJoinBundle = { material: MachineJoinMaterial, };
 
 export type MachineJoinRedeemRequest = { join_token: MachineJoinToken, };
 
-export type MachineJoinRedeemed = { operation_id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, host_port_assurance: HostPortAssurance, join_bundle: MachineJoinBundle, secret_delivery: MachineJoinSecretDelivery, joined_at: JoinTokenRedeemedAt, last_event_sequence: EventSequence, result: MachineJoinRedeemResult, };
+export type MachineJoinRedeemed = { operation_id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, host_port_assurance: HostPortAssurance, endpoint_subnet: MachineEndpointSubnet, join_bundle: MachineJoinBundle, secret_delivery: MachineJoinSecretDelivery, joined_at: JoinTokenRedeemedAt, last_event_sequence: EventSequence, result: MachineJoinRedeemResult, };
 
 export type MachineJoinRedeemResult = "joined" | "already_joined";
 

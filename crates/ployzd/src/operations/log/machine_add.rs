@@ -163,6 +163,35 @@ impl OperationRepository {
             .map_err(|error| index_error(&error))
     }
 
+    pub async fn machine_add_submission(
+        &self,
+        idempotency_key: &ployz_core::ops::OperationIdempotencyKey,
+    ) -> Result<Option<StoredMachineAddSubmission>, OperationStatusStoreError> {
+        let idempotency_key = idempotency_key.clone();
+        self.store
+            .call(move |conn| select_machine_add_submission(conn, &idempotency_key))
+            .await
+            .map_err(|error| index_error(&error))
+    }
+
+    pub async fn live_machine_add_endpoint_subnets(
+        &self,
+    ) -> Result<Vec<ployz_core::dataplane::MachineEndpointSubnet>, OperationStatusStoreError> {
+        let mut assigned = Vec::new();
+        for submission in self.machine_add_submissions().await? {
+            let Some(OperationStatus::MachineAdd {
+                state:
+                    MachineAddOperationState::Pending { .. } | MachineAddOperationState::Joining { .. },
+                ..
+            }) = self.get(&submission.operation_id).await?
+            else {
+                continue;
+            };
+            assigned.push(submission.identity.endpoint_subnet);
+        }
+        Ok(assigned)
+    }
+
     pub async fn pending_machine_adds_for_mirror(
         &self,
     ) -> Result<Vec<PendingMachineJoinRecovery>, OperationStatusStoreError> {
@@ -182,6 +211,7 @@ impl OperationRepository {
                 name: identity.name,
                 roles: identity.roles,
                 host_port_assurance: identity.host_port_assurance,
+                endpoint_subnet: identity.endpoint_subnet,
                 join_token: identity.join_token,
             });
         }
@@ -312,6 +342,7 @@ impl OperationRepository {
                             name,
                             roles,
                             host_port_assurance,
+                            endpoint_subnet: submission.identity.endpoint_subnet,
                             join_bundle: submission.identity.join_bundle,
                             secret_delivery,
                             joined_at: *joined_at,
@@ -349,6 +380,7 @@ impl OperationRepository {
                     name,
                     roles,
                     host_port_assurance,
+                    endpoint_subnet: submission.identity.endpoint_subnet,
                     join_bundle: submission.identity.join_bundle,
                     secret_delivery,
                     joined_at,
@@ -422,6 +454,7 @@ impl OperationRepository {
         Ok(MachineJoinReportTarget {
             operation_id: submission.operation_id,
             machine_id: submission.identity.machine_id,
+            endpoint_subnet: submission.identity.endpoint_subnet,
         })
     }
 

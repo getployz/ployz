@@ -1,3 +1,4 @@
+use ployz_core::dataplane::MachineEndpointSubnet;
 use ployz_core::deploy::{DeployReservationId, VolumeName};
 use ployz_core::ids::{CertId, MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::install::MachineJoinRuntimeNatsUrl;
@@ -33,6 +34,7 @@ pub struct MachineJoinIdentity {
     pub roles: InstallRolePolicy,
     #[serde(default = "HostPortAssurance::keeper")]
     pub host_port_assurance: HostPortAssurance,
+    pub endpoint_subnet: MachineEndpointSubnet,
     pub join_bundle: MachineJoinBundle,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,
@@ -446,6 +448,7 @@ pub struct RedeemedMachineJoin {
     pub name: MachineName,
     pub roles: InstallRolePolicy,
     pub host_port_assurance: HostPortAssurance,
+    pub endpoint_subnet: MachineEndpointSubnet,
     pub join_bundle: MachineJoinBundle,
     pub secret_delivery: MachineJoinSecretDelivery,
     pub joined_at: JoinTokenRedeemedAt,
@@ -462,6 +465,7 @@ pub struct RecordedMachineJoinReport {
 pub(crate) struct MachineJoinReportTarget {
     pub(crate) operation_id: OperationId,
     pub(crate) machine_id: MachineId,
+    pub(crate) endpoint_subnet: MachineEndpointSubnet,
 }
 
 #[derive(Debug)]

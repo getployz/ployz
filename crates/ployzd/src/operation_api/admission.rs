@@ -67,9 +67,16 @@ pub struct MachineAddSubmitCommand {
     pub name: MachineName,
     pub roles: InstallRolePolicy,
     pub host_port_assurance: HostPortAssurance,
+    pub endpoint_subnet: MachineAddEndpointSubnet,
     pub join_bundle: MachineJoinBundle,
     pub join_token: IssuedJoinToken,
     pub raw_join_token: RawJoinToken,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineAddEndpointSubnet {
+    Allocate,
+    Preserve(ployz_core::dataplane::MachineEndpointSubnet),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -355,7 +362,69 @@ impl OperationControllers {
     pub async fn submit_machine_add(
         &self,
         command: MachineAddSubmitCommand,
+        endpoint_supernet: &ployz_core::dataplane::MachineEndpointSupernet,
+        machine_roster: &crate::intent::machine_roster::MachineRosterStore,
     ) -> Result<AcceptedMachineAddSubmission, MachineAddSubmitCommandError> {
+        let _mesh = self.mesh_lock.lock().await;
+        if let Some(existing) = self
+            .repository
+            .machine_add_submission(&command.idempotency_key)
+            .await
+            .map_err(MachineAddSubmitCommandError::Store)?
+        {
+            return Ok(self
+                .repository
+                .submit_machine_add(MachineAddOperationSubmission {
+                    operation_id: command.operation_id,
+                    identity: MachineJoinIdentity {
+                        machine_id: command.machine_id,
+                        name: command.name,
+                        roles: command.roles,
+                        host_port_assurance: existing.identity.host_port_assurance,
+                        endpoint_subnet: existing.identity.endpoint_subnet,
+                        join_bundle: command.join_bundle,
+                        join_token: command.join_token,
+                        raw_join_token: command.raw_join_token,
+                    },
+                    idempotency_key: command.idempotency_key,
+                })
+                .await?);
+        }
+        let endpoint_subnet = match command.endpoint_subnet {
+            MachineAddEndpointSubnet::Preserve(subnet) => subnet,
+            MachineAddEndpointSubnet::Allocate => {
+                let active = machine_roster.active_machines().await.map_err(|error| {
+                    MachineAddSubmitCommandError::Admission {
+                        message: error.to_string(),
+                    }
+                })?;
+                let mut assigned = active
+                    .into_iter()
+                    .map(|machine| machine.endpoint_subnet)
+                    .collect::<Vec<_>>();
+                assigned.extend(
+                    self.repository
+                        .live_machine_add_endpoint_subnets()
+                        .await
+                        .map_err(MachineAddSubmitCommandError::Store)?,
+                );
+                let derived = ployz_core::dataplane::MachineEndpointSubnet::try_new(
+                    ployz_core::dataplane::default_endpoint_subnet(&command.machine_id),
+                )
+                .map_err(|error| MachineAddSubmitCommandError::Admission {
+                    message: error.to_string(),
+                })?;
+                if assigned.contains(&derived) {
+                    endpoint_supernet.allocate_next(assigned).map_err(|error| {
+                        MachineAddSubmitCommandError::Admission {
+                            message: error.to_string(),
+                        }
+                    })?
+                } else {
+                    derived
+                }
+            }
+        };
         Ok(self
             .repository
             .submit_machine_add(MachineAddOperationSubmission {
@@ -365,6 +434,7 @@ impl OperationControllers {
                     name: command.name,
                     roles: command.roles,
                     host_port_assurance: command.host_port_assurance,
+                    endpoint_subnet,
                     join_bundle: command.join_bundle,
                     join_token: command.join_token,
                     raw_join_token: command.raw_join_token,
@@ -592,6 +662,9 @@ impl OperationControllers {
                     name: recovery.name.clone(),
                     roles: recovery.roles,
                     host_port_assurance: recovery.host_port_assurance,
+                    endpoint_subnet: MachineAddEndpointSubnet::Preserve(
+                        recovery.endpoint_subnet.clone(),
+                    ),
                     join_bundle: join_material.join_template.join_bundle.clone(),
                     join_token: recovery.join_token.clone(),
                     raw_join_token: token.clone(),
@@ -737,6 +810,8 @@ pub enum MachineAddSubmitCommandError {
     Submit(SubmitCommandError),
     JoinTokenMismatch,
     DuplicateIdempotencyKey,
+    Store(OperationStatusStoreError),
+    Admission { message: String },
 }
 
 impl From<SubmitMachineAddError> for MachineAddSubmitCommandError {

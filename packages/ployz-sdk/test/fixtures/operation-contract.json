@@ -208,6 +208,7 @@
   "machine_join_redeem_response": {
     "status": "ok",
     "value": {
+      "endpoint_subnet": "10.198.2.0/24",
       "host_port_assurance": "external",
       "join_bundle": {
         "material": {
