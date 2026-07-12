@@ -158,18 +158,17 @@ fn change_firewalld(
         FirewallChange::Open => format!("--add-port={port}"),
         FirewallChange::Close => format!("--remove-port={port}"),
     };
-    if command_probe(runner, "firewall-cmd", &["--quiet", &query], &[1])?
-        == matches!(change, FirewallChange::Close)
-    {
-        require_success(runner, "firewall-cmd", &[&action])?;
-    }
-    if command_probe(
+    let runtime_has_port = command_probe(runner, "firewall-cmd", &["--quiet", &query], &[1])?;
+    let permanent_has_port = command_probe(
         runner,
         "firewall-cmd",
         &["--permanent", "--quiet", &query],
         &[1],
-    )? == matches!(change, FirewallChange::Close)
-    {
+    )?;
+    if runtime_has_port == matches!(change, FirewallChange::Close) {
+        require_success(runner, "firewall-cmd", &[&action])?;
+    }
+    if permanent_has_port == matches!(change, FirewallChange::Close) {
         require_success(runner, "firewall-cmd", &["--permanent", &action])?;
     }
     Ok(())
@@ -505,7 +504,28 @@ mod tests {
             runner.calls,
             vec![
                 "firewall-cmd --quiet --query-port=4222/tcp",
-                "firewall-cmd --add-port=4222/tcp",
+                "firewall-cmd --permanent --quiet --query-port=4222/tcp",
+                "firewall-cmd --add-port=4222/tcp"
+            ]
+        );
+    }
+
+    #[test]
+    fn firewalld_queries_both_scopes_before_mutating() {
+        let mut runner = RecordingRunner::with_outputs([
+            Ok(absent()),
+            command_failure("permanent query failed"),
+        ]);
+
+        let error = FirewallBackend::Firewalld
+            .open_with(TCP_4222, &mut runner)
+            .expect_err("permanent query failure");
+
+        assert_eq!(error.as_str(), "permanent query failed");
+        assert_eq!(
+            runner.calls,
+            vec![
+                "firewall-cmd --quiet --query-port=4222/tcp",
                 "firewall-cmd --permanent --quiet --query-port=4222/tcp"
             ]
         );
