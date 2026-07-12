@@ -214,6 +214,18 @@ pub(super) fn machine_add_error_from_submit_error(
         MachineAddSubmitCommandError::DuplicateIdempotencyKey => {
             return MachineAddError::DuplicateIdempotencyKey { operation_id };
         }
+        MachineAddSubmitCommandError::Store(error) => {
+            return MachineAddError::Unavailable {
+                operation_id,
+                message: error.to_string(),
+            };
+        }
+        MachineAddSubmitCommandError::Admission { message } => {
+            return MachineAddError::Unavailable {
+                operation_id,
+                message,
+            };
+        }
         MachineAddSubmitCommandError::Submit(error) => error,
     };
     match unfenced_submit_failure("machine-add", submit) {

@@ -521,6 +521,8 @@ mod tests {
             machine_id: MachineId::try_new("machine_2").expect("valid machine id"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
+            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.2.0/24")
+                .expect("valid subnet"),
             join_bundle: machine_join_bundle(),
             secret_delivery: machine_join_secret_delivery(),
             joined_at: JoinTokenRedeemedAt::try_new(60).expect("valid redeemed at"),

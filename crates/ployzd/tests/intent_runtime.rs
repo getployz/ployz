@@ -125,6 +125,10 @@ async fn intent_runtime_publishes_redeemable_pending_machine_joins() {
                 machine_id: machine_id("machine_a"),
                 name: machine_name("machine-a"),
                 roles: InstallRolePolicy::install_all(),
+                endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(
+                    "10.198.2.0/24",
+                )
+                .expect("valid subnet"),
                 join_bundle: machine_join_bundle(),
                 join_token,
                 raw_join_token,

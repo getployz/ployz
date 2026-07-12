@@ -218,6 +218,7 @@ pub struct MachineJoinRedeemed {
     pub machine_id: MachineId,
     pub name: MachineName,
     pub roles: InstallRolePolicy,
+    pub endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet,
     pub join_bundle: MachineJoinBundle,
     pub secret_delivery: MachineJoinSecretDelivery,
     pub joined_at: JoinTokenRedeemedAt,

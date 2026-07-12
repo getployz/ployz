@@ -38,6 +38,7 @@ const PLOYZ_GATEWAY_LISTEN_ADDR_ENV: &str = "PLOYZ_GATEWAY_LISTEN_ADDR";
 const PLOYZ_JOIN_NKEY_SEED_FILE_ENV: &str = "PLOYZ_JOIN_NKEY_SEED_FILE";
 const PLOYZ_SEED_FROM_MIRROR_ENV: &str = "PLOYZ_SEED_FROM_MIRROR";
 const PLOYZ_DATAPLANE_ENDPOINT_SUPERNET_ENV: &str = "PLOYZ_DATAPLANE_ENDPOINT_SUPERNET";
+const PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV: &str = "PLOYZ_DATAPLANE_ENDPOINT_SUBNET";
 const DEFAULT_GATEWAY_LISTEN_ADDR: &str = "0.0.0.0:80";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -681,6 +682,7 @@ pub struct PloyzdRoleEnvironmentTarget {
     ebpf_ctl_path: Option<PathBuf>,
     seed_from_mirror: Option<PathBuf>,
     dataplane_endpoint_supernet: Option<MachineEndpointSupernet>,
+    dataplane_endpoint_subnet: Option<ployz_core::dataplane::MachineEndpointSubnet>,
 }
 
 impl PloyzdRoleEnvironmentTarget {
@@ -702,6 +704,7 @@ impl PloyzdRoleEnvironmentTarget {
             ebpf_ctl_path: None,
             seed_from_mirror: None,
             dataplane_endpoint_supernet: None,
+            dataplane_endpoint_subnet: None,
         }
     }
 
@@ -793,6 +796,15 @@ impl PloyzdRoleEnvironmentTarget {
     }
 
     #[must_use]
+    pub fn with_dataplane_endpoint_subnet(
+        mut self,
+        subnet: ployz_core::dataplane::MachineEndpointSubnet,
+    ) -> Self {
+        self.dataplane_endpoint_subnet = Some(subnet);
+        self
+    }
+
+    #[must_use]
     pub fn render_for_role(&self, role: &DaemonProcessRole) -> String {
         let mut output = format!("PLOYZ_NATS_URL={}\n", self.nats_url.as_str());
         output.push_str("PLOYZ_NATS_CA_FILE=");
@@ -811,6 +823,12 @@ impl PloyzdRoleEnvironmentTarget {
         output.push('=');
         output.push_str(self.machine_id.as_str());
         output.push('\n');
+        if let Some(subnet) = &self.dataplane_endpoint_subnet {
+            output.push_str(PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV);
+            output.push('=');
+            output.push_str(&subnet.as_string());
+            output.push('\n');
+        }
         if matches!(role, DaemonProcessRole::Control)
             && let Some(path) = self.nats_credentials.join_seed_file()
         {

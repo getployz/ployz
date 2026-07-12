@@ -89,6 +89,7 @@ pub struct PendingMachineJoinRecovery {
     pub machine_id: MachineId,
     pub name: MachineName,
     pub roles: InstallRolePolicy,
+    pub endpoint_subnet: crate::dataplane::MachineEndpointSubnet,
     pub join_token: IssuedJoinToken,
 }
 

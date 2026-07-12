@@ -627,13 +627,18 @@ pub async fn machine_add(
         machine_id: request.machine_id,
         name: request.name,
         roles: request.roles,
+        endpoint_subnet: super::admission::MachineAddEndpointSubnet::Allocate,
         join_bundle: material.join_bundle,
         join_token: material.join_token,
         raw_join_token: material.raw_join_token,
     };
 
     let accepted = controllers
-        .submit_machine_add(command)
+        .submit_machine_add(
+            command,
+            handlers.dataplane_endpoint_supernet(),
+            &handlers.machine_roster,
+        )
         .await
         .map_err(|error| machine_add_error_from_submit_error(operation_id.clone(), error))?;
     let raw_token =

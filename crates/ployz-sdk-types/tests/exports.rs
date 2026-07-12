@@ -309,6 +309,8 @@ fn sdk_exports_operation_api_wire_types() {
             machine_id: ployz_sdk_types::MachineId::try_new("machine_2").expect("valid machine id"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
+            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.2.0/24")
+                .expect("valid subnet"),
             join_bundle: machine_join_bundle(),
             secret_delivery: machine_join_secret_delivery(),
             joined_at: ployz_sdk_types::JoinTokenRedeemedAt::try_new(60)
@@ -325,9 +327,24 @@ fn sdk_exports_operation_api_wire_types() {
         serde_json::to_string(&redeem_request).expect("request serializes"),
         r#"{"join_token":"join_once_123"}"#
     );
+    let mut redeem_response_without_endpoint =
+        serde_json::to_value(&redeem_response).expect("response serializes");
+    let Some(redeemed) = redeem_response_without_endpoint
+        .get_mut("value")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        panic!("redeem response value is an object");
+    };
+    let Some(endpoint_subnet) = redeemed.remove("endpoint_subnet") else {
+        panic!("redeem response carries endpoint subnet");
+    };
+    assert_eq!(endpoint_subnet, "10.198.2.0/24");
     assert_eq!(
-        serde_json::to_string(&redeem_response).expect("response serializes"),
+        redeem_response_without_endpoint,
+        serde_json::from_str::<serde_json::Value>(
         r#"{"status":"ok","value":{"operation_id":"op_machine","machine_id":"machine_2","name":"edge_2","roles":{"gateway":"skip"},"join_bundle":{"material":{"cluster_name":"prod","dataplane_endpoint_supernet":"10.198.0.0/16","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"recovery_key_wrapped":[1,2,3],"core_seeds_wrapped":[4,5,6],"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"}}},"secret_delivery":{"nats_credentials":"SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ"},"joined_at":"60","last_event_sequence":"8","result":"joined"}}"#
+        )
+        .expect("legacy response contract parses")
     );
     assert_eq!(
         serde_json::to_string(&join_template).expect("join template serializes"),
