@@ -247,6 +247,7 @@ fn command_success(program: &str, args: &[&str], timeout: Duration) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostRunnerCommandOutput {
     pub success: bool,
+    pub exit_code: Option<i32>,
     pub stdout: String,
     pub failure: String,
 }
@@ -264,6 +265,7 @@ fn host_runner_command(
     };
     Ok(HostRunnerCommandOutput {
         success: output.status.success(),
+        exit_code: output.status.code(),
         stdout: output.stdout,
         failure,
     })

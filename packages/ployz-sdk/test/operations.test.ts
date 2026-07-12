@@ -427,6 +427,7 @@ test("sdk maps raw machine add input to the wire request", () => {
     machine_id: "machine_2",
     name: "edge_2",
     roles: gatewaySkippedRoles(),
+    host_port_assurance: "keeper",
   });
   assert.throws(
     () => machineAddRequest({ ...machineAddInput(), name: "edge.2" }),
@@ -1072,6 +1073,7 @@ function defaultFixture(): OperationFixture {
         machine_id: machineId("machine_2"),
         name: machineName("edge_2"),
         roles: gatewaySkippedRoles(),
+        host_port_assurance: "external",
         join_bundle: machineJoinBundle(),
         secret_delivery: machineJoinSecretDelivery(),
         joined_at: "60" as MachineJoinRedeemed["joined_at"],

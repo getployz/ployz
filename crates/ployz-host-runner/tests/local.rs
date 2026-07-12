@@ -115,6 +115,7 @@ fn managed_host_ports_query_before_open() {
 fn succeeded_command(stdout: &str) -> HostRunnerCommandOutput {
     HostRunnerCommandOutput {
         success: true,
+        exit_code: Some(0),
         stdout: stdout.to_owned(),
         failure: String::new(),
     }
@@ -123,8 +124,18 @@ fn succeeded_command(stdout: &str) -> HostRunnerCommandOutput {
 fn failed_command() -> HostRunnerCommandOutput {
     HostRunnerCommandOutput {
         success: false,
+        exit_code: Some(3),
         stdout: String::new(),
         failure: "simulated command failure".to_owned(),
+    }
+}
+
+fn absent_command() -> HostRunnerCommandOutput {
+    HostRunnerCommandOutput {
+        success: false,
+        exit_code: Some(1),
+        stdout: String::new(),
+        failure: "not found".to_owned(),
     }
 }
 
@@ -1310,6 +1321,8 @@ impl HostRunnerCommandRunner for RecordingRunner {
         Ok(self.command_outputs.pop_front().unwrap_or_else(|| {
             if program == "systemctl" && args.first() == Some(&"list-units") {
                 succeeded_command("")
+            } else if program == "sh" && args.first() == Some(&"-c") {
+                absent_command()
             } else {
                 failed_command()
             }

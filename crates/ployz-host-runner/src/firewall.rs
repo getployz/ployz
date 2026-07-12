@@ -16,34 +16,44 @@ pub enum FirewallBackend {
 pub(crate) fn detect_firewall_backend(
     runner: &mut impl HostRunnerCommandRunner,
 ) -> Result<FirewallBackend, FailureMessage> {
-    if command_succeeds(
+    if command_probe(
         runner,
         "systemctl",
         &["is-active", "--quiet", "firewalld.service"],
+        &[3, 4],
     )? {
         return Ok(FirewallBackend::Firewalld);
     }
-    if command_succeeds(
+    if command_probe(
         runner,
         "systemctl",
         &["is-active", "--quiet", "ufw.service"],
+        &[3, 4],
     )? {
         let output = runner.command("ufw", &["status"])?;
-        if output.success
-            && output
-                .stdout
-                .lines()
-                .any(|line| line.trim().eq_ignore_ascii_case("status: active"))
+        if !output.success {
+            return Err(failure_message(output.failure));
+        }
+        if output
+            .stdout
+            .lines()
+            .any(|line| line.trim().eq_ignore_ascii_case("status: active"))
         {
             return Ok(FirewallBackend::Ufw);
         }
     }
-    let nft_service_active = command_succeeds(
+    let nft_service_active = command_probe(
         runner,
         "systemctl",
         &["is-active", "--quiet", "nftables.service"],
+        &[3, 4],
     )?;
-    let nft_installed = command_succeeds(runner, "sh", &["-c", "command -v nft >/dev/null 2>&1"])?;
+    let nft_installed = command_probe(
+        runner,
+        "sh",
+        &["-c", "command -v nft >/dev/null 2>&1"],
+        &[1],
+    )?;
     if nft_service_active || nft_installed {
         let output = runner.command("nft", &["list", "ruleset"])?;
         if !output.success {
@@ -55,12 +65,21 @@ pub(crate) fn detect_firewall_backend(
     }
     let mut iptables_service = None;
     for service in ["iptables.service", "netfilter-persistent.service"] {
-        if command_succeeds(runner, "systemctl", &["is-active", "--quiet", service])? {
+        if command_probe(
+            runner,
+            "systemctl",
+            &["is-active", "--quiet", service],
+            &[3, 4],
+        )? {
             iptables_service = Some(service.trim_end_matches(".service"));
         }
     }
-    let iptables_installed =
-        command_succeeds(runner, "sh", &["-c", "command -v iptables >/dev/null 2>&1"])?;
+    let iptables_installed = command_probe(
+        runner,
+        "sh",
+        &["-c", "command -v iptables >/dev/null 2>&1"],
+        &[1],
+    )?;
     if iptables_service.is_some() || iptables_installed {
         let output = runner.command("iptables", &["-S", "INPUT"])?;
         if !output.success {
@@ -139,13 +158,17 @@ fn change_firewalld(
         FirewallChange::Open => format!("--add-port={port}"),
         FirewallChange::Close => format!("--remove-port={port}"),
     };
-    if command_succeeds(runner, "firewall-cmd", &["--quiet", &query])?
+    if command_probe(runner, "firewall-cmd", &["--quiet", &query], &[1])?
         == matches!(change, FirewallChange::Close)
     {
         require_success(runner, "firewall-cmd", &[&action])?;
     }
-    if command_succeeds(runner, "firewall-cmd", &["--permanent", "--quiet", &query])?
-        == matches!(change, FirewallChange::Close)
+    if command_probe(
+        runner,
+        "firewall-cmd",
+        &["--permanent", "--quiet", &query],
+        &[1],
+    )? == matches!(change, FirewallChange::Close)
     {
         require_success(runner, "firewall-cmd", &["--permanent", &action])?;
     }
@@ -167,12 +190,23 @@ fn query_ufw(
         .any(|line| line.split_whitespace().next() == Some(port.as_str())))
 }
 
-fn command_succeeds(
+fn command_probe(
     runner: &mut impl HostRunnerCommandRunner,
     program: &str,
     args: &[&str],
+    absent_exit_codes: &[i32],
 ) -> Result<bool, FailureMessage> {
-    Ok(runner.command(program, args)?.success)
+    let output = runner.command(program, args)?;
+    if output.success {
+        return Ok(true);
+    }
+    if output
+        .exit_code
+        .is_some_and(|code| absent_exit_codes.contains(&code))
+    {
+        return Ok(false);
+    }
+    Err(failure_message(output.failure))
 }
 
 fn require_success(
@@ -316,6 +350,7 @@ mod tests {
     fn active(stdout: &str) -> Result<HostRunnerCommandOutput, FailureMessage> {
         Ok(HostRunnerCommandOutput {
             success: true,
+            exit_code: Some(0),
             stdout: stdout.to_owned(),
             failure: String::new(),
         })
@@ -324,9 +359,28 @@ mod tests {
     fn inactive() -> HostRunnerCommandOutput {
         HostRunnerCommandOutput {
             success: false,
+            exit_code: Some(3),
             stdout: String::new(),
             failure: "inactive".to_owned(),
         }
+    }
+
+    fn absent() -> HostRunnerCommandOutput {
+        HostRunnerCommandOutput {
+            success: false,
+            exit_code: Some(1),
+            stdout: String::new(),
+            failure: "absent".to_owned(),
+        }
+    }
+
+    fn command_failure(message: &str) -> Result<HostRunnerCommandOutput, FailureMessage> {
+        Ok(HostRunnerCommandOutput {
+            success: false,
+            exit_code: Some(2),
+            stdout: String::new(),
+            failure: message.to_owned(),
+        })
     }
 
     fn probe_error(message: &str) -> Result<HostRunnerCommandOutput, FailureMessage> {
@@ -390,7 +444,7 @@ mod tests {
                 Ok(inactive()),
                 Ok(inactive()),
                 Ok(inactive()),
-                Ok(inactive()),
+                Ok(absent()),
                 Ok(inactive()),
                 Ok(inactive()),
                 active(""),
@@ -409,10 +463,10 @@ mod tests {
             Ok(inactive()),
             Ok(inactive()),
             Ok(inactive()),
+            Ok(absent()),
             Ok(inactive()),
             Ok(inactive()),
-            Ok(inactive()),
-            Ok(inactive()),
+            Ok(absent()),
             active("custom-firewall.service loaded active running Custom Firewall\n"),
         ]);
 
@@ -428,10 +482,10 @@ mod tests {
             Ok(inactive()),
             Ok(inactive()),
             Ok(inactive()),
+            Ok(absent()),
             Ok(inactive()),
             Ok(inactive()),
-            Ok(inactive()),
-            Ok(inactive()),
+            Ok(absent()),
             active(""),
         ]);
 
@@ -443,7 +497,7 @@ mod tests {
 
     #[test]
     fn firewalld_open_queries_then_adds_only_missing_runtime_rule() {
-        let mut runner = RecordingRunner::with_outputs([Ok(inactive()), active(""), active("")]);
+        let mut runner = RecordingRunner::with_outputs([Ok(absent()), active(""), active("")]);
         FirewallBackend::Firewalld
             .open_with(TCP_4222, &mut runner)
             .expect("open port");
@@ -459,11 +513,11 @@ mod tests {
 
     #[test]
     fn firewalld_query_error_does_not_mutate() {
-        let mut runner = RecordingRunner::with_outputs([probe_error("query timed out")]);
+        let mut runner = RecordingRunner::with_outputs([command_failure("query failed")]);
         let error = FirewallBackend::Firewalld
             .open_with(TCP_4222, &mut runner)
             .expect_err("query failure");
-        assert_eq!(error.as_str(), "query timed out");
+        assert_eq!(error.as_str(), "query failed");
         assert_eq!(
             runner.calls,
             vec!["firewall-cmd --quiet --query-port=4222/tcp"]
