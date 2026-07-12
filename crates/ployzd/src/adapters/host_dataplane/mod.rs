@@ -310,6 +310,9 @@ impl MachinePloyzNativeMeshPreparer for PloyzNativeMeshPreparer {
                     }
                 }
             }
+            route_programming
+                .verify_attachment(&self.machine_id, self.command_timeout)
+                .await?;
         }
         if ebpf_forwarding.is_empty() {
             return Err(unavailable(

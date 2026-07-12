@@ -55,6 +55,14 @@ impl HostDataplaneRouteProgramming {
         }
     }
 
+    pub(super) async fn verify_attachment(
+        &self,
+        machine_id: &MachineId,
+        timeout: Duration,
+    ) -> Result<(), WireGuardEbpfPrepareError> {
+        verified_attachment(machine_id, self.attachment_status(timeout).await)
+    }
+
     pub(super) fn wireguard_plans_for(
         &self,
         machine_id: &MachineId,
@@ -176,6 +184,22 @@ impl HostDataplaneRouteProgramming {
                 )
             })
             .collect()
+    }
+}
+
+fn verified_attachment(
+    machine_id: &MachineId,
+    status: EbpfAttachmentStatus,
+) -> Result<(), WireGuardEbpfPrepareError> {
+    match status {
+        EbpfAttachmentStatus::Attached => Ok(()),
+        EbpfAttachmentStatus::Detached { message } | EbpfAttachmentStatus::Unknown { message } => {
+            Err(unavailable(
+                machine_id,
+                PloyzNativeMeshComponent::EbpfForwarding,
+                format!("eBPF attachment verification failed: {message}"),
+            ))
+        }
     }
 }
 
@@ -304,6 +328,27 @@ mod tests {
                 component: PloyzNativeMeshComponent::WireGuard,
                 ..
             } if machine_id == self::machine_id("machine_a")
+        ));
+    }
+
+    #[test]
+    fn detached_ebpf_cannot_satisfy_dataplane_prepare() {
+        let error = verified_attachment(
+            &machine_id("machine_a"),
+            EbpfAttachmentStatus::Detached {
+                message: "Ployz eBPF programs are detached".to_owned(),
+            },
+        )
+        .expect_err("detached eBPF fails prepare");
+
+        assert!(matches!(
+            error,
+            WireGuardEbpfPrepareError::Unavailable {
+                machine_id,
+                component: PloyzNativeMeshComponent::EbpfForwarding,
+                message,
+            } if machine_id == self::machine_id("machine_a")
+                && message.as_str().contains("detached")
         ));
     }
 
