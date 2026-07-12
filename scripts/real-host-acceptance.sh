@@ -86,7 +86,14 @@ for host in "$CORE" "$EDGE"; do
 done
 
 log "restart invisibility: restart ployzd-control on the core, re-check route"
-core 'systemctl restart ployzd-control 2>/dev/null; sleep 3'
+if core 'systemctl restart ployzd-control'; then
+  core 'sleep 3'
+  active=$(core 'systemctl is-active ployzd-control 2>/dev/null')
+  log "  ployzd-control after restart: ${active}"
+  [ "$active" = "active" ] || { log "  ployzd-control did not come back active"; pass=0; }
+else
+  log "  ployzd-control restart FAILED"; pass=0
+fi
 code=$(core "curl -s -o /dev/null -w '%{http_code}' -H 'Host: demo.local' http://127.0.0.1/ 2>/dev/null")
 log "  post-restart route -> HTTP ${code}"
 [ "$code" = "200" ] || pass=0

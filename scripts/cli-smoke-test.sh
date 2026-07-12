@@ -20,16 +20,31 @@ SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o GSSAPIAuthentication=no \
           -o ConnectTimeout=20 -o ServerAliveInterval=15)
 core() { ssh "${SSH_OPTS[@]}" "root@${CORE}" "$@"; }
 
-# R <ployz args...> : run an operator command on the core and log it verbatim.
+# Count of commands whose exit code did not match expectations, so the run can
+# fail loudly instead of always reaching DONE with exit 0.
+UNEXPECTED=0
+
+# R [--expect-fail] <ployz args...> : run an operator command on the core and
+# log it verbatim. Happy-path commands are expected to exit 0; mark commands
+# that should fail (bad ids, missing args, confirm-guarded destructive verbs)
+# with --expect-fail. stdin is closed so confirmation prompts get EOF and
+# reject instead of blocking on operator input.
 R() {
+  local expect_fail=0
+  if [ "${1:-}" = "--expect-fail" ]; then expect_fail=1; shift; fi
   echo
   echo "═══════════════════════════════════════════════════════════════════"
   echo "\$ ployz $*"
   echo "───────────────────────────────────────────────────────────────────"
   local out rc
-  out=$(core "ployz $* 2>&1"); rc=$?
+  out=$(core "ployz $* 2>&1" </dev/null); rc=$?
   echo "$out"
   echo "[exit $rc]"
+  if [ "$expect_fail" = 1 ] && [ "$rc" -eq 0 ]; then
+    echo "!! UNEXPECTED SUCCESS (expected a non-zero exit)"; UNEXPECTED=$((UNEXPECTED + 1))
+  elif [ "$expect_fail" = 0 ] && [ "$rc" -ne 0 ]; then
+    echo "!! UNEXPECTED FAILURE (expected exit 0)"; UNEXPECTED=$((UNEXPECTED + 1))
+  fi
 }
 
 # --- form the cluster only if it is not already up -------------------------
@@ -55,12 +70,12 @@ echo "### version: $(core 'grep -h PLOYZ_VERSION /etc/ployz/release.env')"
 
 echo; echo "##################### TOP-LEVEL #####################"
 R --help
-R --version   # unhappy: no version flag today
+R --expect-fail --version   # no version flag today
 
 echo; echo "##################### MACHINES #####################"
 R machine list
 R machine inspect ployz-core
-R machine inspect does-not-exist   # unhappy
+R --expect-fail machine inspect does-not-exist
 
 echo; echo "##################### DEPLOY #####################"
 R deploy --image nginx:alpine --route demo.local:80 --replicas 2
@@ -69,8 +84,8 @@ R inspect nginx
 R service list
 R service inspect nginx
 R deploy history
-R inspect no-such-service          # unhappy
-R deploy                           # unhappy: missing --image
+R --expect-fail inspect no-such-service
+R --expect-fail deploy   # missing --image
 
 echo; echo "##################### OBSERVE #####################"
 R ops list
@@ -84,13 +99,13 @@ R network resolve demo.local
 R logs nginx --tail 10
 CID=$(core 'ployz inspect nginx 2>&1' | grep -oE 'container [0-9a-f]{64}' | head -1 | awk '{print $2}')
 [ -n "$CID" ] && R logs tail "$CID" --machine ployz-core --tail 5
-R ops status op_bogus_000          # unhappy
-R network resolve no.such.host     # unhappy
+R --expect-fail ops status op_bogus_000
+R --expect-fail network resolve no.such.host
 
 echo; echo "##################### COMPOSE #####################"
 core 'printf "name: demo\nservices:\n  web:\n    image: nginx:alpine\n" > /tmp/valid-compose.yml'
 R compose check /tmp/valid-compose.yml
-R compose check /tmp/does-not-exist.yml   # unhappy
+R --expect-fail compose check /tmp/does-not-exist.yml
 
 echo; echo "##################### LIFECYCLE #####################"
 R service restart nginx
@@ -101,12 +116,18 @@ R machine resume ployz-edge
 
 echo; echo "##################### STORAGE / CLEANUP (confirm-guarded) #####################"
 R volume list
-R volume rm default no-such-volume     # unhappy: prints data-loss confirmation prompt
-R namespace rm no-such-namespace       # unhappy: prints confirmation prompt
+R --expect-fail volume rm default no-such-volume   # data-loss confirmation prompt
+R --expect-fail namespace rm no-such-namespace   # confirmation prompt
 
 echo; echo "##################### HOST-SIDE / AUTH (non-destructive) #####################"
 R host --help
-R host core-promote --check
-R login
+R --expect-fail host core-promote --check   # no promotion material on a plain edge-less core
+R --expect-fail login   # errors unless Ployz Cloud is configured
 
-echo; echo "### CLI SMOKE TEST DONE"
+echo
+if [ "$UNEXPECTED" -eq 0 ]; then
+  echo "### CLI SMOKE TEST DONE — all commands exited as expected"
+else
+  echo "### CLI SMOKE TEST DONE — ${UNEXPECTED} command(s) exited unexpectedly (see !! lines above)"
+  exit 1
+fi
