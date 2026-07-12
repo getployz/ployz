@@ -201,6 +201,23 @@ Live` section above. These rules are about truth semantics, not storage:
   why an edit was made. That narration belongs in commit messages and PR
   descriptions; in the file it is stale the moment it lands.
 
+## Codex Task Supervision
+
+- A Codex ticket task is its own supervisor. It owns orientation, the spec and
+  acceptance checklist, packet boundaries, integration, finding dispositions,
+  verification, current-main revalidation, the PR, landing, issue closure, and
+  cleanup.
+- Delegate substantive implementation to native subagents in bounded,
+  non-overlapping packets with explicit files or seams, tests, expected output,
+  and do-not-touch scope. Inspect every subagent diff before accepting it.
+- Keep immediate glue work in the parent only when delegation would cost more
+  than the change. Do not turn a one-line integration fix into a work packet.
+- Implementation subagents run focused tests for their packet. They do not run
+  workspace-wide gates, SDK generation, DinD, GitHub publication, or cleanup;
+  the parent task serializes and owns those shared operations.
+- Codex-native tasks and subagents never invoke Codex through the CLI or
+  app-server. Use native tools and native subagents only.
+
 ## Code Reviews
 
 - When asked for a thermo-nuclear (or "thermodynamic") review, dispatch it as
@@ -210,13 +227,40 @@ Live` section above. These rules are about truth semantics, not storage:
   paste the skill's rules into the prompt, add steering, pre-seed suspected
   findings, or explain the design decisions behind the diff. The reviewer's
   value is its cold read.
-- Implementation work is reviewed across four lanes, always: standards and
-  spec are `/code-review`'s two axes; thermo-nuclear is the skill above,
-  dispatched as above; ponytail is the `ponytail-review` skill. Each lane
-  runs twice — once as a Claude subagent, once as a Codex run — so every
-  lane gets a second opinion. All eight are cold reads: the diff range, the
-  lane's skill, "report back your findings", nothing else. A finding both
-  engines raise is real; judge unseconded findings on merit.
+- Implementation receives one four-lane Codex cold-read wave: Standards and
+  Spec are `/code-review`'s two axes; thermo-nuclear is the skill above; and
+  ponytail is the `ponytail-review` skill. Every reviewer uses `gpt-5.6-sol`
+  with high reasoning effort. If the tool cannot verify model or effort,
+  record that limitation; do not claim the routing succeeded.
+- Freeze one review SHA. Apply accepted findings in one batch.
+- Re-review only the accepted-finding delta, and only in the lane that raised
+  it. Do not rerun unaffected lanes or reread the full branch for a narrow fix.
+- A second full four-lane wave requires dispatcher approval and is reserved for
+  fixes that materially change the public contract, authority boundary, state
+  model, or more than roughly 20% of the reviewed diff.
+- Correctness, security, data-loss, and unmet-spec findings block. Broader
+  maintainability or simplification ideas become follow-up tickets unless the
+  diff introduced the regression directly.
+- Merging current main does not invalidate the ticket review. Review semantic
+  conflict resolutions and run the verification gates on the merged candidate.
+
+## Verification Scheduling
+
+- During implementation, run focused tests for changed seams. After review
+  findings are dispositioned, a ticket may run full workspace gates immediately;
+  it does not wait for the landing queue.
+- Cargo gates may run concurrently in separate worktrees with separate target
+  directories. Only DinD and landing are globally serialized.
+- Within one worktree, run workspace Clippy, workspace tests, and SDK generation
+  sequentially. Never generate SDK files concurrently with a command that reads
+  them.
+- Keep a dedicated clean cargo-cache worktree on `origin/main`. When main
+  advances, fast-forward it and run `cargo test --workspace --no-run` before
+  seeding new worktrees. Never update or clean a dirty user checkout to refresh
+  the cache.
+- Keep `pnpm check:generated` on every final candidate. Run SDK typecheck/tests
+  when SDK source or generated output changed; otherwise record them as not
+  applicable.
 
 ## Verification Gates
 
@@ -230,21 +274,34 @@ workflow is added here in the same change:
 - `cargo test --workspace` passes. Grep the output for `test result: FAILED`
   and `error[`; an exit code that passed through a pipe lies (zsh:
   `${pipestatus[1]}`).
-- From `packages/ployz-sdk`: `pnpm check:generated` (regenerates and diffs
-  `generated.ts` + the operation-contract fixture — commit real drift),
-  `pnpm typecheck`, and `pnpm test`. Always — the generated surface moves
-  whenever exported Rust types move, not only when `ployz-sdk-types` is the
-  crate being edited.
+- From `packages/ployz-sdk`: always run `pnpm check:generated` (regenerates and
+  diffs `generated.ts` + the operation-contract fixture — commit real drift).
+  When SDK source or generated output changed, also run `pnpm typecheck` and
+  `pnpm test`; otherwise record both as not applicable.
 - When `.github/workflows/` changes: `actionlint`.
-- When product behavior changes: the full gated DinD suite
-  (`scripts/dind-e2e.sh`), every scenario. One cluster fits the host —
-  serialize runs with `until mkdir /tmp/ployz-dind-e2e.lock 2>/dev/null; do
-  sleep 30; done` and always `rmdir` the lock afterwards, including on
-  failure. A run after a code change rebuilds product binaries (no
-  `PLOYZ_DIND_SKIP_BUILD`). Parallel agents each set their own
-  `PLOYZ_DIND_TARGET_DIR` — every worktree mounts as `/work`, so the shared
-  default target dir serves another branch's binaries as fresh. On failure,
-  read the evidence directory the harness prints before retrying.
+- Run the full gated DinD suite (`scripts/dind-e2e.sh`) only when the changed
+  behavior cannot be exercised reliably by deterministic unit or in-process
+  integration tests. DinD is for real cross-process or cross-machine seams
+  such as Docker/containerd execution, process supervision, install/bootstrap,
+  network namespaces, gateway/TLS/DNS traffic, or credential enforcement. If
+  local tests can cover the regression, they replace DinD even when product
+  behavior changes. Record `DinD: not applicable` with the covering tests, or
+  name the untestable seam that requires DinD.
+- When DinD applies, run the full suite once on the sealed landing candidate:
+  after accepted review fixes, after merging current main, and after local
+  gates. During diagnosis, use the affected scenario or a deterministic focused
+  test; do not repeatedly run the complete suite while the candidate changes.
+  Report `DIND_READY`; the dispatcher grants the single cluster slot. Do not
+  launch lock-waiting wrappers. Once final DinD begins, the dispatcher holds the
+  landing lane so another local PR cannot move main before merge.
+- When the dispatcher grants DinD, acquire the cluster with
+  `mkdir /tmp/ployz-dind-e2e.lock`; if it is unavailable, return to
+  `DIND_READY`. Always `rmdir` the lock afterwards, including on failure. Run
+  every scenario and rebuild product binaries (no `PLOYZ_DIND_SKIP_BUILD`).
+  Each worktree sets its own `PLOYZ_DIND_TARGET_DIR` — every worktree mounts as
+  `/work`, so the shared default target dir serves another branch's binaries as
+  fresh. On failure, read the evidence directory the harness prints before
+  retrying.
 - For real-host validation (tcx eBPF, real WireGuard, the public install path)
   the DinD harness cannot cover, provision two cheap Ubuntu hosts and run
   `scripts/real-host-acceptance.sh <core-ip> <edge-ip>` and
@@ -252,7 +309,8 @@ workflow is added here in the same change:
   `docs/operations/real-host-acceptance.md`. It installs the public alpha
   channel, so promote the build under test first.
 - Cold target dirs — a fresh worktree's `target/` or a per-agent
-  `PLOYZ_DIND_TARGET_DIR` — are seeded from an existing sibling with
+  `PLOYZ_DIND_TARGET_DIR` — are seeded from the clean `origin/main` cargo-cache
+  worktree with
   `scripts/cargo-hardlink-deps.py <src-target-dir> <dst-target-dir>`: it
   hardlinks third-party dependency artifacts only, so dependencies skip
   recompilation while workspace crates still rebuild from the branch's own
