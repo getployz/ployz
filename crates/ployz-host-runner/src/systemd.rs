@@ -199,17 +199,22 @@ impl PloyzdRoleUnit {
 
     #[must_use]
     pub fn render(&self) -> String {
-        let dependencies = match &self.role {
-            DaemonProcessRole::Machine(_) => "network-online.target docker.service",
+        let (after, wants, mount_requirements) = match &self.role {
+            DaemonProcessRole::Machine(_) => (
+                "network-online.target docker.service sys-fs-bpf.mount",
+                "network-online.target docker.service",
+                "RequiresMountsFor=/sys/fs/bpf\n",
+            ),
             DaemonProcessRole::Control | DaemonProcessRole::Gateway | DaemonProcessRole::Dns => {
-                "network-online.target"
+                ("network-online.target", "network-online.target", "")
             }
         };
         format!(
-            "[Unit]\nDescription=Ployz {}\nAfter={}\nWants={}\n\n[Service]\nType=exec\nEnvironmentFile={}\nExecStart={}\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
+            "[Unit]\nDescription=Ployz {}\nAfter={}\nWants={}\n{}\n[Service]\nType=exec\nEnvironmentFile={}\nExecStart={}\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
             self.role.process_name(),
-            dependencies,
-            dependencies,
+            after,
+            wants,
+            mount_requirements,
             self.environment_file.path().display(),
             self.exec_start,
         )

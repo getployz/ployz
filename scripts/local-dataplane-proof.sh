@@ -132,7 +132,8 @@ set -euo pipefail
 export PATH="/usr/local/cargo/bin:${PATH}"
 docker info >/dev/null
 
-mountpoint -q /sys/fs/bpf || mount -t bpf bpf /sys/fs/bpf
+# bpffs is intentionally NOT mounted here: ployzd establishes and verifies it
+# itself during dataplane preparation, so this proof exercises that path.
 
 export CARGO_TARGET_DIR='"${TARGET_DIR}"'
 
