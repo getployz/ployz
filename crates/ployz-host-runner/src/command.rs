@@ -262,6 +262,29 @@ fn install_dataplane_packages(package_manager: HostPackageManager) -> Result<(),
         }
     }
 
+    // wireguard-tools ships in EPEL on RHEL-family hosts, so enable it before the
+    // install. Best-effort: on Rocky/Alma `epel-release` is in the default extras
+    // repo and this succeeds; on Fedora the package is absent and unneeded. A
+    // failure here is not fatal — the package install below is the real gate and
+    // yields typed evidence if wireguard-tools still cannot be resolved.
+    // ponytail: ignore epel-release outcome; the wireguard-tools install verifies it transitively.
+    if matches!(
+        package_manager,
+        HostPackageManager::Dnf | HostPackageManager::Yum
+    ) {
+        let program = package_manager.program();
+        let _ = run_os_command_with_display(
+            program,
+            &[
+                OsString::from("install"),
+                OsString::from("-y"),
+                OsString::from("epel-release"),
+            ],
+            format!("{program} install -y epel-release"),
+            DATAPLANE_HOST_INSTALL_TIMEOUT,
+        );
+    }
+
     let (program, mut args) = match package_manager {
         // The env wrapper keeps apt fully non-interactive.
         HostPackageManager::Apt => (
