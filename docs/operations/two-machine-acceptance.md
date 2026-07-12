@@ -11,5 +11,6 @@ exist.
   gateway routing) plus restart invisibility and auth rejection — see
   [`dind-e2e.md`](dind-e2e.md) and `scripts/dind-e2e.sh`.
 
-A future real-host proof should be written fresh against the current install
-contract rather than reviving the retired scripts.
+The fresh real-host proof against the current install contract lives in
+[`real-host-acceptance.md`](real-host-acceptance.md) (`scripts/real-host-acceptance.sh`
+and `scripts/cli-smoke-test.sh`).
