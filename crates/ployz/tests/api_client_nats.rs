@@ -175,6 +175,10 @@ async fn operation_api_client_routes_machine_join_redeem_success() {
                     machine_id: machine_id("machine_2"),
                     name: MachineName::try_new("edge_2").expect("valid machine name"),
                     roles: InstallRolePolicy::install_all().without_gateway(),
+                    endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(
+                        "10.198.2.0/24",
+                    )
+                    .expect("valid subnet"),
                     join_bundle: machine_join_bundle(),
                     secret_delivery: machine_join_secret_delivery(),
                     joined_at: JoinTokenRedeemedAt::try_new(60).expect("valid redeemed timestamp"),

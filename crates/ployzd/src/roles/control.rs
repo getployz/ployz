@@ -583,6 +583,10 @@ mod tests {
             machine_id: machine_id(machine_id_value),
             name: MachineName::try_new(machine_id_value).expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
+            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(
+                ployz_core::dataplane::default_endpoint_subnet(&machine_id(machine_id_value)),
+            )
+            .expect("valid endpoint subnet"),
             join_token: IssuedJoinToken::new(
                 raw_join_token.fingerprint().expect("fingerprint"),
                 JoinTokenExpiresAt::try_new(4_102_444_800).expect("valid expiry"),

@@ -181,6 +181,7 @@ impl OperationRepository {
                 machine_id: identity.machine_id,
                 name: identity.name,
                 roles: identity.roles,
+                endpoint_subnet: identity.endpoint_subnet,
                 join_token: identity.join_token,
             });
         }
@@ -309,6 +310,7 @@ impl OperationRepository {
                             machine_id,
                             name,
                             roles,
+                            endpoint_subnet: submission.identity.endpoint_subnet,
                             join_bundle: submission.identity.join_bundle,
                             secret_delivery,
                             joined_at: *joined_at,
@@ -345,6 +347,7 @@ impl OperationRepository {
                     machine_id,
                     name,
                     roles,
+                    endpoint_subnet: submission.identity.endpoint_subnet,
                     join_bundle: submission.identity.join_bundle,
                     secret_delivery,
                     joined_at,
@@ -418,6 +421,7 @@ impl OperationRepository {
         Ok(MachineJoinReportTarget {
             operation_id: submission.operation_id,
             machine_id: submission.identity.machine_id,
+            endpoint_subnet: submission.identity.endpoint_subnet,
         })
     }
 

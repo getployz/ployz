@@ -12,7 +12,6 @@ use ployz_core::machine::{
     MachineAddFailure, MachineName, RawJoinToken, active_machine_from_completed_add,
 };
 use ployz_core::ops::OperationStatus;
-use ployz_core::state::ActiveMachineState;
 use ployz_core::subjects::INTENT_CHANGED;
 use ployz_sdk_types::{
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinRedeemed,
@@ -51,6 +50,7 @@ pub async fn machine_join_redeem(
             };
             let operation_id = command.operation_id.clone();
             let idempotency_key = command.idempotency_key.clone();
+            let _mesh = handlers.controllers.mesh_lock().lock_owned().await;
             let accepted = handlers
                 .controllers
                 .submit_machine_add(command)
@@ -81,6 +81,12 @@ pub async fn machine_join_report(
 ) -> Result<MachineJoinReported, MachineJoinReportError> {
     let raw_token = RawJoinToken::try_new(request.join_token.as_str())
         .map_err(|_| MachineJoinReportError::InvalidJoinToken)?;
+    let report_target = handlers
+        .controllers
+        .repository()
+        .machine_join_report_target(&raw_token)
+        .await
+        .map_err(machine_join_report_error)?;
     let (result, outcome) = match request.outcome {
         MachineJoinReportOutcome::Completed => {
             match connectivity_proof::prove_completed_join(handlers, &raw_token).await {
@@ -158,7 +164,13 @@ pub async fn machine_join_report(
     let reported = match result {
         Ok(reported) => reported,
         Err(error) if matches!(outcome, MachineJoinReportedOutcome::Completed) => {
-            if let Some(reported) = repair_completed_machine_join_report(handlers, &error).await? {
+            if let Some(reported) = repair_completed_machine_join_report(
+                handlers,
+                &error,
+                report_target.endpoint_subnet.clone(),
+            )
+            .await?
+            {
                 return Ok(reported);
             }
             return Err(machine_join_report_error(error));
@@ -190,7 +202,14 @@ pub async fn machine_join_report(
         });
     };
     if let MachineJoinReportedOutcome::Completed = outcome {
-        activate_reported_machine(handlers, &reported.operation_id, &machine_id, &name).await?;
+        activate_reported_machine(
+            handlers,
+            &reported.operation_id,
+            &machine_id,
+            &name,
+            report_target.endpoint_subnet,
+        )
+        .await?;
         scrub_completed_machine_add_secrets(handlers, &reported.operation_id).await?;
     }
 
@@ -215,6 +234,7 @@ fn connectivity_proof_unavailable_message(message: String) -> ployz_core::ops::F
 async fn repair_completed_machine_join_report(
     handlers: &OperationApiHandlers,
     error: &RecordMachineJoinReportError,
+    endpoint_subnet: MachineEndpointSubnet,
 ) -> Result<Option<MachineJoinReported>, MachineJoinReportError> {
     let Some(operation_id) = completed_machine_add_operation_id(error) else {
         return Ok(None);
@@ -244,7 +264,7 @@ async fn repair_completed_machine_join_report(
         return Ok(None);
     };
 
-    activate_reported_machine(handlers, &id, &machine_id, &name).await?;
+    activate_reported_machine(handlers, &id, &machine_id, &name, endpoint_subnet).await?;
     scrub_completed_machine_add_secrets(handlers, &id).await?;
     Ok(Some(MachineJoinReported {
         operation_id: id,
@@ -276,6 +296,7 @@ async fn activate_reported_machine(
     operation_id: &OperationId,
     machine_id: &MachineId,
     name: &MachineName,
+    endpoint_subnet: MachineEndpointSubnet,
 ) -> Result<(), MachineJoinReportError> {
     let status = handlers
         .controllers
@@ -293,7 +314,6 @@ async fn activate_reported_machine(
             message: corrupt("activation operation is not machine-add"),
         });
     };
-    let endpoint_subnet = allocate_endpoint_subnet(handlers, machine_id).await?;
     let active_machine = active_machine_from_completed_add(
         operation_id.clone(),
         machine_id.clone(),
@@ -319,14 +339,10 @@ async fn activate_reported_machine(
     Ok(())
 }
 
-/// Records the machine's endpoint subnet in roster intent. The machine
-/// daemon derives its own bridge subnet from its machine id unless
-/// `PLOYZ_DATAPLANE_ENDPOINT_SUBNET` overrides it, so the roster prefers
-/// that same derivation: intent and the machine's dataplane then agree
-/// without a delivery channel. A machine whose derived subnet is already
-/// assigned falls back to the next free subnet in the configured supernet
-/// and must be configured with a matching subnet override.
-async fn allocate_endpoint_subnet(
+/// Allocates the subnet persisted with a machine-add submission. Admission
+/// holds the mesh sequencer lock across this read and the submission write,
+/// so active and pending machines reserve one shared address space.
+pub(super) async fn allocate_endpoint_subnet(
     handlers: &OperationApiHandlers,
     machine_id: &MachineId,
 ) -> Result<ployz_core::dataplane::MachineEndpointSubnet, MachineJoinReportError> {
@@ -337,39 +353,42 @@ async fn allocate_endpoint_subnet(
         .map_err(|error| MachineJoinReportError::Unavailable {
             message: error.to_string(),
         })?;
-    endpoint_subnet_for_roster(
+    let pending = handlers
+        .controllers
+        .repository()
+        .machine_add_submissions()
+        .await
+        .map_err(|error| MachineJoinReportError::Unavailable {
+            message: error.to_string(),
+        })?;
+    endpoint_subnet_for_assignments(
         handlers.dataplane_endpoint_supernet(),
-        &machines,
+        machines
+            .iter()
+            .map(|machine| machine.endpoint_subnet.clone())
+            .chain(
+                pending
+                    .into_iter()
+                    .map(|submission| submission.identity.endpoint_subnet),
+            ),
         machine_id,
     )
 }
 
-pub(super) fn endpoint_subnet_for_roster(
+fn endpoint_subnet_for_assignments(
     endpoint_supernet: &MachineEndpointSupernet,
-    machines: &[ActiveMachineState],
+    assigned: impl IntoIterator<Item = MachineEndpointSubnet>,
     machine_id: &MachineId,
 ) -> Result<MachineEndpointSubnet, MachineJoinReportError> {
-    if let Some(machine) = machines
-        .iter()
-        .find(|machine| machine.machine_id == *machine_id)
-    {
-        return Ok(machine.endpoint_subnet.clone());
-    }
-    let derived = ployz_core::dataplane::MachineEndpointSubnet::try_new(
-        ployz_core::dataplane::default_endpoint_subnet(machine_id),
-    )
-    .map_err(|error| MachineJoinReportError::Unavailable {
-        message: error.to_string(),
-    })?;
-    if machines
-        .iter()
-        .all(|machine| machine.endpoint_subnet != derived)
-    {
+    let assigned = assigned.into_iter().collect::<Vec<_>>();
+    let derived =
+        MachineEndpointSubnet::try_new(ployz_core::dataplane::default_endpoint_subnet(machine_id))
+            .map_err(|error| MachineJoinReportError::Unavailable {
+                message: error.to_string(),
+            })?;
+    if !assigned.contains(&derived) {
         return Ok(derived);
     }
-    let assigned = machines
-        .iter()
-        .map(|machine| machine.endpoint_subnet.clone());
     endpoint_supernet
         .allocate_next(assigned)
         .map_err(|error| MachineJoinReportError::Unavailable {
@@ -390,6 +409,7 @@ fn machine_join_redeemed(redemption: MachineJoinRedemption) -> MachineJoinRedeem
         machine_id: joined.machine_id,
         name: joined.name,
         roles: joined.roles,
+        endpoint_subnet: joined.endpoint_subnet,
         join_bundle: joined.join_bundle,
         secret_delivery: joined.secret_delivery,
         joined_at: joined.joined_at,

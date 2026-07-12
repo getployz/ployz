@@ -613,6 +613,7 @@ pub async fn machine_add(
     request: MachineAddRequest,
 ) -> Result<MachineAddAccepted, MachineAddError> {
     let controllers = handlers.controllers();
+    let _mesh = controllers.mesh_lock().lock_owned().await;
     let operation_id = request.operation_id.clone();
     let idempotency_key = request.idempotency_key.clone();
     let material = machine_add_bootstrap_material(controllers, &request)
@@ -621,12 +622,20 @@ pub async fn machine_add(
             operation_id: operation_id.clone(),
             message: error.to_string(),
         })?;
+    let endpoint_subnet =
+        super::machine_join::allocate_endpoint_subnet(handlers, &request.machine_id)
+            .await
+            .map_err(|error| MachineAddError::Unavailable {
+                operation_id: operation_id.clone(),
+                message: format!("{error:?}"),
+            })?;
     let command = MachineAddSubmitCommand {
         operation_id: request.operation_id,
         idempotency_key: request.idempotency_key,
         machine_id: request.machine_id,
         name: request.name,
         roles: request.roles,
+        endpoint_subnet,
         join_bundle: material.join_bundle,
         join_token: material.join_token,
         raw_join_token: material.raw_join_token,

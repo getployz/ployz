@@ -345,7 +345,8 @@ fn host_runner_join_target(
         machine_id.clone(),
         runtime_nats_client_url,
         RoleNatsCredentials::joined(&join_material_dir),
-    );
+    )
+    .with_dataplane_endpoint_subnet(redeemed.endpoint_subnet.clone());
 
     Ok(RedeemedHostRunnerJoin::new(
         redeemed.operation_id,
@@ -394,6 +395,8 @@ mod tests {
             machine_id: MachineId::try_new("machine_2").expect("valid machine id"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
+            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.2.0/24")
+                .expect("valid endpoint subnet"),
             join_bundle: machine_join_bundle(),
             secret_delivery: machine_join_secret_delivery(),
             joined_at: JoinTokenRedeemedAt::try_new(60).expect("valid redeemed at"),
@@ -423,6 +426,7 @@ mod tests {
             machine_id: MachineId::try_new("machine_2").expect("valid machine id"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
+            endpoint_subnet: endpoint_subnet("10.198.1.0/24"),
             join_bundle: machine_join_bundle(),
             secret_delivery: machine_join_secret_delivery(),
             joined_at: JoinTokenRedeemedAt::try_new(60).expect("valid redeemed at"),
@@ -439,6 +443,34 @@ mod tests {
             .role_environment
             .render_for_role(&ployz_core::roles::DaemonProcessRole::Gateway);
         assert!(!rendered.contains("PLOYZ_MACHINE_PUBLIC_IP="));
+    }
+
+    #[test]
+    fn fallback_endpoint_subnet_reaches_joined_machine_daemon() {
+        let redeemed = MachineJoinRedeemed {
+            operation_id: OperationId::try_new("op_machine_255").expect("valid operation id"),
+            machine_id: MachineId::try_new("machine_255").expect("valid machine id"),
+            name: MachineName::try_new("edge_255").expect("valid machine name"),
+            roles: InstallRolePolicy::install_all().without_gateway(),
+            endpoint_subnet: endpoint_subnet("10.198.0.0/24"),
+            join_bundle: machine_join_bundle(),
+            secret_delivery: machine_join_secret_delivery(),
+            joined_at: JoinTokenRedeemedAt::try_new(60).expect("valid redeemed at"),
+            last_event_sequence: ployz_core::ops::EventSequence::try_new(8)
+                .expect("valid sequence"),
+            result: MachineJoinRedeemResult::Joined,
+        };
+
+        let target = host_runner_join_target(redeemed)
+            .expect("redeemed bundle converts")
+            .target;
+        let rendered = target.role_environment.render_for_role(
+            &ployz_core::roles::DaemonProcessRole::Machine(
+                MachineId::try_new("machine_255").expect("valid machine id"),
+            ),
+        );
+
+        assert!(rendered.contains("PLOYZ_DATAPLANE_ENDPOINT_SUBNET=10.198.0.0/24\n"));
     }
 
     fn machine_join_bundle() -> MachineJoinBundle {
@@ -465,6 +497,10 @@ mod tests {
                 ebpf_ctl: join_artifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
             },
         }
+    }
+
+    fn endpoint_subnet(value: &str) -> ployz_core::dataplane::MachineEndpointSubnet {
+        ployz_core::dataplane::MachineEndpointSubnet::try_new(value).expect("valid endpoint subnet")
     }
 
     fn join_artifact(source: &str, install_path: &str) -> InstallArtifactSpec {

@@ -15,7 +15,6 @@ use crate::roles::machine::client::NatsMachineDataplanePreparer;
 
 use super::OperationApiHandlers;
 use super::error_map::{corrupt, machine_join_report_error};
-use super::machine_join::endpoint_subnet_for_roster;
 
 const CONNECTIVITY_PROOF_PREPARE_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -54,7 +53,8 @@ pub(super) async fn prove_completed_join(
     };
     match state {
         MachineAddOperationState::Joining { .. } => {
-            prove_overlay_connectivity(handlers, operation_id, machine_id).await
+            prove_overlay_connectivity(handlers, operation_id, machine_id, target.endpoint_subnet)
+                .await
         }
         MachineAddOperationState::Pending { .. }
         | MachineAddOperationState::Completed
@@ -67,6 +67,7 @@ async fn prove_overlay_connectivity(
     handlers: &OperationApiHandlers,
     operation_id: OperationId,
     joining_machine_id: MachineId,
+    joining_subnet: ployz_core::dataplane::MachineEndpointSubnet,
 ) -> Result<Option<ConnectivityProofEvidence>, MachineJoinReportError> {
     let mesh_lock = handlers.controllers.mesh_lock();
     let _mesh_guard = mesh_lock.lock().await;
@@ -81,11 +82,6 @@ async fn prove_overlay_connectivity(
         return Ok(None);
     }
 
-    let joining_subnet = endpoint_subnet_for_roster(
-        handlers.dataplane_endpoint_supernet(),
-        &existing_machines,
-        &joining_machine_id,
-    )?;
     let active_members = existing_machines
         .iter()
         .map(|machine| DataplaneMember {
