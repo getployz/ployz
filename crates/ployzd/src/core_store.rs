@@ -489,7 +489,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("ployz-core.db");
         let conn = Connection::open(&path).expect("open legacy db");
-        for migration in &MIGRATIONS[..MIGRATIONS.len() - 1] {
+        let Some(legacy_migrations) = MIGRATIONS.get(..MIGRATIONS.len() - 1) else {
+            panic!("endpoint-subnet migration must follow an existing schema");
+        };
+        for migration in legacy_migrations {
             conn.execute_batch(migration)
                 .expect("apply legacy migration");
         }
