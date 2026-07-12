@@ -341,12 +341,18 @@ fn run_os_command_with_display(
     })
 }
 
-fn read_limited_pipe(pipe: impl Read) -> Result<String, String> {
-    let mut output = String::new();
-    pipe.take(4096)
-        .read_to_string(&mut output)
+fn read_limited_pipe(mut pipe: impl Read) -> Result<String, String> {
+    let mut buffer = Vec::new();
+    (&mut pipe)
+        .take(4096)
+        .read_to_end(&mut buffer)
         .map_err(|error| error.to_string())?;
-    Ok(output)
+    // Drain any output past the cap into a sink. Otherwise a child that writes
+    // more than 4 KB keeps writing to a pipe we have already stopped reading,
+    // takes SIGPIPE, and is misreported as a failed command (e.g. `systemctl
+    // list-units` on a host with more than 4 KB of active services).
+    io::copy(&mut pipe, &mut io::sink()).map_err(|error| error.to_string())?;
+    Ok(String::from_utf8_lossy(&buffer).into_owned())
 }
 
 fn render_command(program: &str, args: &[OsString]) -> String {
@@ -412,5 +418,27 @@ mod tests {
     #[test]
     fn docker_install_timeout_allows_first_bootstrap_package_install() {
         assert_eq!(DOCKER_INSTALL_TIMEOUT, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn large_command_output_does_not_sigpipe_the_child() {
+        // A child that writes well past the 4 KB read cap must still succeed:
+        // the reader drains the remainder instead of closing the pipe and
+        // killing the child with SIGPIPE. Regression for the machine-join
+        // firewall preflight, which reads `systemctl list-units` output.
+        let output = super::run_os_command_with_display(
+            "sh",
+            &[OsString::from("-c"), OsString::from("seq 1 20000")],
+            "sh -c seq".to_owned(),
+            Duration::from_secs(10),
+        )
+        .expect("sh command runs");
+
+        assert!(
+            output.status.success(),
+            "a command that writes past the read cap must not be reported as failed: {}",
+            output.failure_summary()
+        );
+        assert!(!output.stdout.is_empty());
     }
 }
