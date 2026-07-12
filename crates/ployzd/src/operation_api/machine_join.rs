@@ -6,7 +6,7 @@ use crate::adapters::nats_authorization::MintRequest;
 use crate::operations::log::{
     MachineJoinRedemption, RecordMachineJoinReportError, RedeemMachineJoinTokenError,
 };
-use ployz_core::dataplane::{MachineEndpointSubnet, MachineEndpointSupernet};
+use ployz_core::dataplane::MachineEndpointSubnet;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::{
     MachineAddFailure, MachineName, RawJoinToken, active_machine_from_completed_add,
@@ -50,10 +50,13 @@ pub async fn machine_join_redeem(
             };
             let operation_id = command.operation_id.clone();
             let idempotency_key = command.idempotency_key.clone();
-            let _mesh = handlers.controllers.mesh_lock().lock_owned().await;
             let accepted = handlers
                 .controllers
-                .submit_machine_add(command)
+                .submit_machine_add(
+                    command,
+                    handlers.dataplane_endpoint_supernet(),
+                    &handlers.machine_roster,
+                )
                 .await
                 .map_err(|error| MachineJoinRedeemError::Unavailable {
                     message: format!("{error:?}"),
@@ -337,63 +340,6 @@ async fn activate_reported_machine(
         .publish(INTENT_CHANGED, Vec::new().into())
         .await;
     Ok(())
-}
-
-/// Allocates the subnet persisted with a machine-add submission. Admission
-/// holds the mesh sequencer lock across this read and the submission write,
-/// so active and pending machines reserve one shared address space.
-pub(super) async fn allocate_endpoint_subnet(
-    handlers: &OperationApiHandlers,
-    machine_id: &MachineId,
-) -> Result<ployz_core::dataplane::MachineEndpointSubnet, MachineJoinReportError> {
-    let machines = handlers
-        .machine_roster
-        .active_machines()
-        .await
-        .map_err(|error| MachineJoinReportError::Unavailable {
-            message: error.to_string(),
-        })?;
-    let pending = handlers
-        .controllers
-        .repository()
-        .machine_add_submissions()
-        .await
-        .map_err(|error| MachineJoinReportError::Unavailable {
-            message: error.to_string(),
-        })?;
-    endpoint_subnet_for_assignments(
-        handlers.dataplane_endpoint_supernet(),
-        machines
-            .iter()
-            .map(|machine| machine.endpoint_subnet.clone())
-            .chain(
-                pending
-                    .into_iter()
-                    .map(|submission| submission.identity.endpoint_subnet),
-            ),
-        machine_id,
-    )
-}
-
-fn endpoint_subnet_for_assignments(
-    endpoint_supernet: &MachineEndpointSupernet,
-    assigned: impl IntoIterator<Item = MachineEndpointSubnet>,
-    machine_id: &MachineId,
-) -> Result<MachineEndpointSubnet, MachineJoinReportError> {
-    let assigned = assigned.into_iter().collect::<Vec<_>>();
-    let derived =
-        MachineEndpointSubnet::try_new(ployz_core::dataplane::default_endpoint_subnet(machine_id))
-            .map_err(|error| MachineJoinReportError::Unavailable {
-                message: error.to_string(),
-            })?;
-    if !assigned.contains(&derived) {
-        return Ok(derived);
-    }
-    endpoint_supernet
-        .allocate_next(assigned)
-        .map_err(|error| MachineJoinReportError::Unavailable {
-            message: error.to_string(),
-        })
 }
 
 fn machine_join_redeemed(redemption: MachineJoinRedemption) -> MachineJoinRedeemed {

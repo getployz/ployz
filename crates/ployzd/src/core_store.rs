@@ -171,6 +171,28 @@ const MIGRATIONS: &[&str] = &[
         json TEXT NOT NULL
     );
     ",
+    // Machine-add submissions written before endpoint-subnet admission cannot
+    // recover the authoritative fallback assignment. Reset their bootstrap
+    // working records so the operator can submit a fresh machine-add.
+    "
+    CREATE TEMP TABLE legacy_machine_adds AS
+        SELECT idempotency_key, operation_id
+        FROM machine_add_submissions
+        WHERE json_type(submission_json, '$.identity.endpoint_subnet') IS NULL;
+    DELETE FROM machine_add_secret_deliveries
+        WHERE idempotency_key IN (SELECT idempotency_key FROM legacy_machine_adds);
+    DELETE FROM machine_add_mint_claims
+        WHERE idempotency_key IN (SELECT idempotency_key FROM legacy_machine_adds);
+    DELETE FROM machine_add_join_tokens
+        WHERE idempotency_key IN (SELECT idempotency_key FROM legacy_machine_adds);
+    DELETE FROM machine_add_claims
+        WHERE idempotency_key IN (SELECT idempotency_key FROM legacy_machine_adds);
+    DELETE FROM machine_add_idempotency
+        WHERE idempotency_key IN (SELECT idempotency_key FROM legacy_machine_adds);
+    DELETE FROM machine_add_submissions
+        WHERE idempotency_key IN (SELECT idempotency_key FROM legacy_machine_adds);
+    DROP TABLE legacy_machine_adds;
+    ",
 ];
 
 /// A cloneable handle to the core database. Clones share one connection and one
@@ -460,6 +482,45 @@ mod tests {
             .await
             .expect("read user_version");
         assert_eq!(version, MIGRATIONS.len() as i64);
+    }
+
+    #[tokio::test]
+    async fn legacy_machine_add_without_endpoint_subnet_is_reset_for_rebootstrap() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("ployz-core.db");
+        let conn = Connection::open(&path).expect("open legacy db");
+        for migration in &MIGRATIONS[..MIGRATIONS.len() - 1] {
+            conn.execute_batch(migration)
+                .expect("apply legacy migration");
+        }
+        conn.execute(
+            "INSERT INTO machine_add_submissions
+             (idempotency_key, operation_id, machine_id, raw_join_token, submission_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            (
+                "idem_legacy",
+                "op_legacy",
+                "machine_255",
+                "join_legacy",
+                r#"{"operation_id":"op_legacy","identity":{"machine_id":"machine_255"}}"#,
+            ),
+        )
+        .expect("insert legacy submission");
+        conn.execute_batch(&format!("PRAGMA user_version = {}", MIGRATIONS.len() - 1))
+            .expect("set legacy version");
+        drop(conn);
+
+        let store = CoreStore::open(path).await.expect("migrate legacy db");
+        let remaining: u64 = store
+            .call(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM machine_add_submissions", [], |row| {
+                    row.get(0)
+                })
+            })
+            .await
+            .expect("count submissions");
+
+        assert_eq!(remaining, 0);
     }
 
     #[test]
