@@ -329,14 +329,16 @@ fn sdk_exports_operation_api_wire_types() {
     );
     let mut redeem_response_without_endpoint =
         serde_json::to_value(&redeem_response).expect("response serializes");
-    assert_eq!(
-        redeem_response_without_endpoint["value"]["endpoint_subnet"],
-        "10.198.2.0/24"
-    );
-    let serde_json::Value::Object(redeemed) = &mut redeem_response_without_endpoint["value"] else {
+    let Some(redeemed) = redeem_response_without_endpoint
+        .get_mut("value")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
         panic!("redeem response value is an object");
     };
-    redeemed.remove("endpoint_subnet");
+    let Some(endpoint_subnet) = redeemed.remove("endpoint_subnet") else {
+        panic!("redeem response carries endpoint subnet");
+    };
+    assert_eq!(endpoint_subnet, "10.198.2.0/24");
     assert_eq!(
         redeem_response_without_endpoint,
         serde_json::from_str::<serde_json::Value>(
