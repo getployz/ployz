@@ -310,6 +310,9 @@ impl MachinePloyzNativeMeshPreparer for PloyzNativeMeshPreparer {
                     }
                 }
             }
+            route_programming
+                .verify_attachment(&self.machine_id, self.command_timeout)
+                .await?;
         }
         if ebpf_forwarding.is_empty() {
             return Err(unavailable(
@@ -730,6 +733,26 @@ mod tests {
                         "docker0",
                         "ployz-wg0"
                     ]
+            )
+        }));
+    }
+
+    #[test]
+    fn default_command_plans_ensure_bpffs_is_mounted() {
+        let plans = default_command_plans(
+            "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".into(),
+            "/usr/local/bin/ployz-ebpf-ctl".into(),
+            "docker0".to_owned(),
+            "ployz-wg0".to_owned(),
+            "/etc/ployz/wireguard.key".into(),
+            51820,
+            None,
+        );
+
+        assert!(plans.iter().any(|plan| {
+            matches!(
+                &plan.action,
+                HostCommandAction::EnsureBpfFs { path } if path == std::path::Path::new("/sys/fs/bpf")
             )
         }));
     }

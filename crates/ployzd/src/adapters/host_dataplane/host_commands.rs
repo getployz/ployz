@@ -4,7 +4,7 @@ use ployz_core::dataplane::{
 };
 use ployz_core::ids::MachineId;
 use ployz_core::ops::FailureMessage;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::process::Command;
 
@@ -39,6 +39,12 @@ pub(super) enum HostCommandAction {
     PloyzTcBytecode {
         path: PathBuf,
     },
+    /// Ensure `path` is a live bpffs mount, mounting it if absent, so eBPF pins
+    /// can be created. A bare directory that is not bpffs fails loudly here
+    /// instead of silently reporting detached after pinning fails.
+    EnsureBpfFs {
+        path: PathBuf,
+    },
 }
 
 impl HostCommandPlan {
@@ -48,7 +54,9 @@ impl HostCommandPlan {
             HostCommandAction::ExistingPath { component, .. }
             | HostCommandAction::CommandSucceeds { component, .. }
             | HostCommandAction::SysctlSet { component, .. } => *component,
-            HostCommandAction::PloyzTcBytecode { .. } => PloyzNativeMeshComponent::EbpfForwarding,
+            HostCommandAction::PloyzTcBytecode { .. } | HostCommandAction::EnsureBpfFs { .. } => {
+                PloyzNativeMeshComponent::EbpfForwarding
+            }
         }
     }
 
@@ -106,6 +114,13 @@ impl HostCommandPlan {
     pub(super) fn readiness_ployz_tc_bytecode(path: impl Into<PathBuf>) -> Self {
         Self {
             action: HostCommandAction::PloyzTcBytecode { path: path.into() },
+        }
+    }
+
+    #[must_use]
+    pub(super) fn ensure_bpffs(path: impl Into<PathBuf>) -> Self {
+        Self {
+            action: HostCommandAction::EnsureBpfFs { path: path.into() },
         }
     }
 
@@ -205,7 +220,110 @@ impl HostCommandPlan {
                     },
                 ))
             }
+            HostCommandAction::EnsureBpfFs { path } => {
+                ensure_bpffs_mounted(machine_id, path, command_timeout).await
+            }
         }
+    }
+}
+
+/// `BPF_FS_MAGIC` from `linux/magic.h` — the `statfs.f_type` of a bpffs mount.
+const BPF_FS_MAGIC: u32 = 0xcafe_4a11;
+
+fn is_bpffs(path: &Path) -> std::io::Result<bool> {
+    let stat = rustix::fs::statfs(path)?;
+    Ok(stat.f_type as u32 == BPF_FS_MAGIC)
+}
+
+/// Make `path` a live bpffs mount so eBPF pins can be created, mounting it if
+/// absent (ployzd runs as root). Distinguishes "bpffs not mounted" from a
+/// failed mount so the failure states WHY instead of a later silent detach.
+async fn ensure_bpffs_mounted(
+    machine_id: &MachineId,
+    path: &Path,
+    command_timeout: Duration,
+) -> Result<HostDataplaneEvidence, WireGuardEbpfPrepareError> {
+    let component = PloyzNativeMeshComponent::EbpfForwarding;
+    match is_bpffs(path) {
+        Ok(true) => return Ok(component_ready_path(component, path.display().to_string())),
+        Ok(false) => {}
+        Err(source) => {
+            return Err(unavailable(
+                machine_id,
+                component,
+                format!(
+                    "bpffs mount at {} could not be inspected: {source}",
+                    path.display()
+                ),
+            ));
+        }
+    }
+
+    let mount_args = vec![
+        "-t".to_owned(),
+        "bpf".to_owned(),
+        "bpf".to_owned(),
+        path.display().to_string(),
+    ];
+    match run_host_command("mount", &mount_args, command_timeout).await {
+        HostCommandOutcome::Success => {}
+        HostCommandOutcome::TimedOut => {
+            return Err(unavailable(
+                machine_id,
+                component,
+                format!(
+                    "bpffs is not mounted at {} and mounting it timed out after {}s",
+                    path.display(),
+                    command_timeout.as_secs()
+                ),
+            ));
+        }
+        HostCommandOutcome::Failed(output) => {
+            return Err(unavailable(
+                machine_id,
+                component,
+                format!(
+                    "bpffs is not mounted at {} and mounting it failed: mount {}: {}",
+                    path.display(),
+                    mount_args.join(" "),
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+            ));
+        }
+        HostCommandOutcome::CouldNotStart(source) => {
+            return Err(unavailable(
+                machine_id,
+                component,
+                format!(
+                    "bpffs is not mounted at {} and the mount command could not start: {source}",
+                    path.display()
+                ),
+            ));
+        }
+    }
+
+    match is_bpffs(path) {
+        Ok(true) => Ok(component_ready_command(
+            component,
+            "mount".to_owned(),
+            mount_args,
+        )),
+        Ok(false) => Err(unavailable(
+            machine_id,
+            component,
+            format!(
+                "bpffs still not present at {} after mounting; eBPF pins cannot be created",
+                path.display()
+            ),
+        )),
+        Err(source) => Err(unavailable(
+            machine_id,
+            component,
+            format!(
+                "bpffs mount at {} could not be verified after mounting: {source}",
+                path.display()
+            ),
+        )),
     }
 }
 
@@ -264,7 +382,7 @@ pub(super) fn default_command_plans(
         ],
     );
     vec![
-        HostCommandPlan::readiness_path(PloyzNativeMeshComponent::EbpfForwarding, "/sys/fs/bpf"),
+        HostCommandPlan::ensure_bpffs("/sys/fs/bpf"),
         HostCommandPlan::readiness_command(PloyzNativeMeshComponent::EbpfForwarding, "tc", ["-V"]),
         HostCommandPlan::readiness_path(PloyzNativeMeshComponent::EbpfForwarding, ebpf_ctl_path),
         HostCommandPlan::readiness_command(

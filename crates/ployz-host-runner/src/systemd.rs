@@ -199,17 +199,25 @@ impl PloyzdRoleUnit {
 
     #[must_use]
     pub fn render(&self) -> String {
-        let dependencies = match &self.role {
-            DaemonProcessRole::Machine(_) => "network-online.target docker.service",
+        // The machine unit only orders after sys-fs-bpf.mount; it does not
+        // require it. bpffs is a dataplane substrate the machine agent
+        // establishes and verifies itself at runtime (EnsureBpfFs), so a
+        // failed mount must surface as typed dataplane evidence, not block the
+        // agent from activating and taking its control-plane RPC down with it.
+        let (after, wants) = match &self.role {
+            DaemonProcessRole::Machine(_) => (
+                "network-online.target docker.service sys-fs-bpf.mount",
+                "network-online.target docker.service",
+            ),
             DaemonProcessRole::Control | DaemonProcessRole::Gateway | DaemonProcessRole::Dns => {
-                "network-online.target"
+                ("network-online.target", "network-online.target")
             }
         };
         format!(
             "[Unit]\nDescription=Ployz {}\nAfter={}\nWants={}\n\n[Service]\nType=exec\nEnvironmentFile={}\nExecStart={}\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
             self.role.process_name(),
-            dependencies,
-            dependencies,
+            after,
+            wants,
             self.environment_file.path().display(),
             self.exec_start,
         )
