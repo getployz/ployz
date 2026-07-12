@@ -13,7 +13,7 @@ use ployz_host_runner::artifacts::{
     ArtifactKind, ArtifactSource, ArtifactTarget, DataplaneArtifactTargets,
 };
 use ployz_host_runner::assigned_substrate::{
-    AssignedHostPort, AssignedSubstrateState, HostPortProtocol, load_assigned_substrate_state,
+    AssignedSubstrateState, SubstrateAssignment, load_assigned_substrate_state,
 };
 use ployz_host_runner::command::{HostRunnerCommandOutput, HostRunnerCommandRunner};
 use ployz_host_runner::executor::{
@@ -53,10 +53,7 @@ fn externally_assured_host_ports_skip_firewall_and_store_assignment() {
     let systemd_dir = root.join("systemd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
     let state = AssignedSubstrateState {
-        required_host_ports: vec![AssignedHostPort {
-            port: 51820,
-            protocol: HostPortProtocol::Udp,
-        }],
+        assignments: [SubstrateAssignment::Dataplane].into(),
         host_ports: HostPortAssurance::External,
     };
     let mut effects = HostRunnerLocalEffects::new(
@@ -88,7 +85,7 @@ fn managed_host_ports_query_before_open() {
     let mut runner = RecordingRunner::root_linux();
     runner.command_outputs = [
         failed_command(),
-        succeeded_command("Status: active\n"),
+        succeeded_command(""),
         succeeded_command("Status: active\n"),
         succeeded_command("Status: active\n"),
         succeeded_command(""),
@@ -98,10 +95,7 @@ fn managed_host_ports_query_before_open() {
 
     effects
         .apply_step(&HostRunnerStep::AssureHostPorts(AssignedSubstrateState {
-            required_host_ports: vec![AssignedHostPort {
-                port: 51820,
-                protocol: HostPortProtocol::Udp,
-            }],
+            assignments: [SubstrateAssignment::Dataplane].into(),
             host_ports: HostPortAssurance::Keeper,
         }))
         .expect("managed port opens");
@@ -109,8 +103,8 @@ fn managed_host_ports_query_before_open() {
     assert_eq!(
         effects.runner().command_calls,
         vec![
-            "systemctl is-active --quiet firewalld",
-            "ufw status",
+            "systemctl is-active --quiet firewalld.service",
+            "systemctl is-active --quiet ufw.service",
             "ufw status",
             "ufw status",
             "ufw allow 51820/udp",
@@ -169,19 +163,13 @@ fn local_effects_install_first_machine_process_units() {
     );
     let mut recorder = RecordingRecorder::default();
 
-    assert!(matches!(plan.steps()[0], HostRunnerStep::VerifyHost(_)));
-    assert!(matches!(
-        plan.steps()[1],
-        HostRunnerStep::PreflightHostPorts(_)
-    ));
-    assert!(matches!(
-        plan.steps()[2],
-        HostRunnerStep::AssureHostPorts(_)
-    ));
-    assert!(matches!(
-        plan.steps()[3],
-        HostRunnerStep::StoreAssignedSubstrate(_)
-    ));
+    let [verify, preflight, assure, store, ..] = plan.steps() else {
+        panic!("first-machine install has firewall steps before mutation");
+    };
+    assert!(matches!(verify, HostRunnerStep::VerifyHost(_)));
+    assert!(matches!(preflight, HostRunnerStep::PreflightHostPorts(_)));
+    assert!(matches!(assure, HostRunnerStep::AssureHostPorts(_)));
+    assert!(matches!(store, HostRunnerStep::StoreAssignedSubstrate(_)));
 
     let execution = execute_host_runner_plan(&plan, &mut effects, &mut recorder);
 
@@ -1319,14 +1307,13 @@ impl HostRunnerCommandRunner for RecordingRunner {
     ) -> Result<HostRunnerCommandOutput, FailureMessage> {
         self.command_calls
             .push(format!("{program} {}", args.join(" ")));
-        Ok(self
-            .command_outputs
-            .pop_front()
-            .unwrap_or(HostRunnerCommandOutput {
-                success: false,
-                stdout: String::new(),
-                failure: "simulated command failure".to_owned(),
-            }))
+        Ok(self.command_outputs.pop_front().unwrap_or_else(|| {
+            if program == "systemctl" && args.first() == Some(&"list-units") {
+                succeeded_command("")
+            } else {
+                failed_command()
+            }
+        }))
     }
 
     fn is_linux(&mut self) -> bool {

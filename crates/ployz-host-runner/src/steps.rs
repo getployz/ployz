@@ -23,7 +23,7 @@ use ployz_nats::connect::NatsClientUrl;
 use sha2::{Digest, Sha256};
 
 use crate::artifacts::{ArtifactTarget, DataplaneArtifactTargets};
-use crate::assigned_substrate::{AssignedHostPort, AssignedSubstrateState, HostPortProtocol};
+use crate::assigned_substrate::{AssignedHostPort, AssignedSubstrateState, SubstrateAssignment};
 use crate::nats_identity::ClusterNatsIdentity;
 use crate::systemd::{
     NatsServerUnitTarget, PloyzdRoleEnvironmentFile, SupervisorUnitSpec, SupervisorUnitTarget,
@@ -117,13 +117,13 @@ impl HostRunnerStepLabel {
         match step {
             HostRunnerStep::VerifyHost(prerequisite) => Self::VerifyHost(*prerequisite),
             HostRunnerStep::PreflightHostPorts(state) => {
-                Self::PreflightHostPorts(state.required_host_ports.clone())
+                Self::PreflightHostPorts(state.required_host_ports())
             }
             HostRunnerStep::AssureHostPorts(state) => {
-                Self::AssureHostPorts(state.required_host_ports.clone())
+                Self::AssureHostPorts(state.required_host_ports())
             }
             HostRunnerStep::StoreAssignedSubstrate(state) => {
-                Self::StoreAssignedSubstrate(state.required_host_ports.clone())
+                Self::StoreAssignedSubstrate(state.required_host_ports())
             }
             HostRunnerStep::PrepareDataplaneHost => Self::PrepareDataplaneHost,
             HostRunnerStep::PrepareContainerRuntime(runtime, _) => {
@@ -993,54 +993,33 @@ fn founder_assigned_substrate(
     roles: InstallRolePolicy,
     assurance: HostPortAssurance,
 ) -> AssignedSubstrateState {
-    assigned_substrate(
-        true,
-        matches!(roles.gateway, ployz_core::roles::GatewayRole::Install),
-        assurance,
-    )
+    let mut assignments = [
+        SubstrateAssignment::NatsServer,
+        SubstrateAssignment::Dataplane,
+    ]
+    .into_iter()
+    .collect::<std::collections::BTreeSet<_>>();
+    if matches!(roles.gateway, ployz_core::roles::GatewayRole::Install) {
+        assignments.insert(SubstrateAssignment::Gateway);
+    }
+    AssignedSubstrateState {
+        assignments,
+        host_ports: assurance,
+    }
 }
 
 fn join_assigned_substrate(
     roles: &NonEmptyRoleSet,
     assurance: HostPortAssurance,
 ) -> AssignedSubstrateState {
-    assigned_substrate(
-        false,
-        roles.roles().contains(&DaemonProcessRole::Gateway),
-        assurance,
-    )
-}
-
-fn assigned_substrate(
-    nats_server: bool,
-    gateway: bool,
-    assurance: HostPortAssurance,
-) -> AssignedSubstrateState {
-    let mut required_host_ports = vec![AssignedHostPort {
-        port: 51820,
-        protocol: HostPortProtocol::Udp,
-    }];
-    if nats_server {
-        required_host_ports.push(AssignedHostPort {
-            port: 4222,
-            protocol: HostPortProtocol::Tcp,
-        });
+    let mut assignments = [SubstrateAssignment::Dataplane]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    if roles.roles().contains(&DaemonProcessRole::Gateway) {
+        assignments.insert(SubstrateAssignment::Gateway);
     }
-    if gateway {
-        required_host_ports.extend([
-            AssignedHostPort {
-                port: 80,
-                protocol: HostPortProtocol::Tcp,
-            },
-            AssignedHostPort {
-                port: 443,
-                protocol: HostPortProtocol::Tcp,
-            },
-        ]);
-    }
-    required_host_ports.sort_by_key(|port| port.port);
     AssignedSubstrateState {
-        required_host_ports,
+        assignments,
         host_ports: assurance,
     }
 }
@@ -1053,6 +1032,7 @@ fn assigned_substrate(
 pub struct CorePromoteTarget {
     pub machine_id: MachineId,
     pub dataplane_endpoint_supernet: MachineEndpointSupernet,
+    pub assigned_substrate: AssignedSubstrateState,
     pub nats_server_artifact: ArtifactTarget,
     pub ployzd_artifact: ArtifactTarget,
     pub dataplane_artifacts: DataplaneArtifactTargets,
@@ -1085,6 +1065,7 @@ impl CorePromoteTarget {
         recovery_key_wrapped: WrappedCaKey,
         core_seeds_wrapped: WrappedCoreSeeds,
         dataplane_endpoint_supernet: MachineEndpointSupernet,
+        assigned_substrate: AssignedSubstrateState,
         machine_public_ip: Option<IpAddr>,
         seed_from_mirror: PathBuf,
         machine_join_template_file: AbsoluteInstallPath,
@@ -1110,6 +1091,7 @@ impl CorePromoteTarget {
         Self {
             machine_id,
             dataplane_endpoint_supernet,
+            assigned_substrate,
             nats_server_artifact,
             ployzd_artifact,
             dataplane_artifacts,
@@ -1146,6 +1128,9 @@ pub fn core_promote_plan(target: CorePromoteTarget) -> HostRunnerStepPlan {
     let control = DaemonProcessRole::Control;
     HostRunnerStepPlan::new(vec![
         HostRunnerStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
+        HostRunnerStep::PreflightHostPorts(target.assigned_substrate.clone()),
+        HostRunnerStep::AssureHostPorts(target.assigned_substrate.clone()),
+        HostRunnerStep::StoreAssignedSubstrate(target.assigned_substrate),
         HostRunnerStep::InstallArtifact(target.nats_server_artifact.clone()),
         HostRunnerStep::WriteNatsTlsMaterial(NatsTlsMaterialTarget::new(
             target.nats_material.clone(),
@@ -1430,8 +1415,7 @@ mod host_port_tests {
     use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 
     use super::{
-        HostPortProtocol, NonEmptyRoleSet, assigned_substrate, founder_assigned_substrate,
-        join_assigned_substrate,
+        NonEmptyRoleSet, SubstrateAssignment, founder_assigned_substrate, join_assigned_substrate,
     };
 
     #[test]
@@ -1442,17 +1426,13 @@ mod host_port_tests {
         );
 
         assert_eq!(
-            state
-                .required_host_ports
-                .iter()
-                .map(|port| (port.port, port.protocol))
-                .collect::<Vec<_>>(),
-            vec![
-                (80, HostPortProtocol::Tcp),
-                (443, HostPortProtocol::Tcp),
-                (4222, HostPortProtocol::Tcp),
-                (51820, HostPortProtocol::Udp),
+            state.assignments,
+            [
+                SubstrateAssignment::NatsServer,
+                SubstrateAssignment::Dataplane,
+                SubstrateAssignment::Gateway,
             ]
+            .into()
         );
     }
 
@@ -1465,15 +1445,13 @@ mod host_port_tests {
 
         assert_eq!(
             join_assigned_substrate(&gateway, ployz_core::install::HostPortAssurance::Keeper)
-                .required_host_ports,
-            assigned_substrate(false, true, ployz_core::install::HostPortAssurance::Keeper)
-                .required_host_ports
+                .assignments,
+            [SubstrateAssignment::Dataplane, SubstrateAssignment::Gateway,].into()
         );
         assert_eq!(
             join_assigned_substrate(&machine, ployz_core::install::HostPortAssurance::Keeper)
-                .required_host_ports,
-            assigned_substrate(false, false, ployz_core::install::HostPortAssurance::Keeper)
-                .required_host_ports
+                .assignments,
+            [SubstrateAssignment::Dataplane].into()
         );
     }
 }

@@ -113,13 +113,18 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
         if state.host_ports == HostPortAssurance::External {
             return Ok(());
         }
-        let backend = detect_firewall_backend(&mut self.runner);
-        if backend == FirewallBackend::RawRules {
+        let backend = detect_firewall_backend(&mut self.runner).map_err(|message| {
+            HostRunnerStepEffectError::new(
+                HostRunnerStepFailureReason::HostPortsPreflightFailed,
+                message,
+            )
+        })?;
+        if let FirewallBackend::Unmanaged(backend) = backend {
             return Err(HostRunnerStepEffectError::new(
                 HostRunnerStepFailureReason::HostPortsPreflightFailed,
                 failure_message(format!(
-                    "host firewall backend raw nftables/iptables is unmanaged; open exactly: {}",
-                    render_assigned_host_ports(&state.required_host_ports)
+                    "host firewall backend {backend} is unmanaged; open exactly: {}",
+                    render_assigned_host_ports(&state.required_host_ports())
                 )),
             ));
         }
@@ -133,16 +138,12 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
         if state.host_ports == HostPortAssurance::External {
             return Ok(());
         }
-        let backend = detect_firewall_backend(&mut self.runner);
-        for port in &state.required_host_ports {
-            if !backend
-                .query_with(*port, &mut self.runner)
-                .map_err(host_ports_assurance_error)?
-            {
-                backend
-                    .open_with(*port, &mut self.runner)
-                    .map_err(host_ports_assurance_error)?;
-            }
+        let backend =
+            detect_firewall_backend(&mut self.runner).map_err(host_ports_assurance_error)?;
+        for port in state.required_host_ports() {
+            backend
+                .open_with(port, &mut self.runner)
+                .map_err(host_ports_assurance_error)?;
         }
         Ok(())
     }

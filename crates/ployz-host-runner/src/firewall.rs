@@ -5,80 +5,119 @@ use ployz_core::ops::FailureMessage;
 use crate::assigned_substrate::{AssignedHostPort, HostPortProtocol};
 use crate::command::HostRunnerCommandRunner;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FirewallBackend {
     Firewalld,
     Ufw,
-    RawRules,
+    Unmanaged(String),
     None,
 }
 
 pub(crate) fn detect_firewall_backend(
     runner: &mut impl HostRunnerCommandRunner,
-) -> FirewallBackend {
-    detect(runner)
-}
-
-impl FirewallBackend {
-    pub(crate) fn query_with(
-        self,
-        port: AssignedHostPort,
-        runner: &mut impl HostRunnerCommandRunner,
-    ) -> Result<bool, FailureMessage> {
-        match self {
-            Self::Firewalld => {
-                let port = render_port(port);
-                Ok(success(
-                    runner,
-                    "firewall-cmd",
-                    &["--quiet", &format!("--query-port={port}")],
-                ) && success(
-                    runner,
-                    "firewall-cmd",
-                    &["--permanent", "--quiet", &format!("--query-port={port}")],
-                ))
-            }
-            Self::Ufw => {
-                let output = runner.command("ufw", &["status"])?;
-                if !output.success {
-                    return Err(failure_message(output.failure));
-                }
-                let port = render_port(port);
-                Ok(output
-                    .stdout
-                    .lines()
-                    .any(|line| line.split_whitespace().next() == Some(port.as_str())))
-            }
-            Self::None => Ok(true),
-            Self::RawRules => Err(unmanaged_raw_rules()),
+) -> Result<FirewallBackend, FailureMessage> {
+    if command_succeeds(
+        runner,
+        "systemctl",
+        &["is-active", "--quiet", "firewalld.service"],
+    )? {
+        return Ok(FirewallBackend::Firewalld);
+    }
+    if command_succeeds(
+        runner,
+        "systemctl",
+        &["is-active", "--quiet", "ufw.service"],
+    )? {
+        let output = runner.command("ufw", &["status"])?;
+        if output.success
+            && output
+                .stdout
+                .lines()
+                .any(|line| line.trim().eq_ignore_ascii_case("status: active"))
+        {
+            return Ok(FirewallBackend::Ufw);
+        }
+    }
+    let nft_service_active = command_succeeds(
+        runner,
+        "systemctl",
+        &["is-active", "--quiet", "nftables.service"],
+    )?;
+    let nft_installed = command_succeeds(runner, "sh", &["-c", "command -v nft >/dev/null 2>&1"])?;
+    if nft_service_active || nft_installed {
+        let output = runner.command("nft", &["list", "ruleset"])?;
+        if !output.success {
+            return Err(failure_message(output.failure));
+        }
+        if nft_manages_input(&output.stdout) {
+            return Ok(FirewallBackend::Unmanaged("nftables".to_owned()));
+        }
+    }
+    let mut iptables_service = None;
+    for service in ["iptables.service", "netfilter-persistent.service"] {
+        if command_succeeds(runner, "systemctl", &["is-active", "--quiet", service])? {
+            iptables_service = Some(service.trim_end_matches(".service"));
+        }
+    }
+    let iptables_installed =
+        command_succeeds(runner, "sh", &["-c", "command -v iptables >/dev/null 2>&1"])?;
+    if iptables_service.is_some() || iptables_installed {
+        let output = runner.command("iptables", &["-S", "INPUT"])?;
+        if !output.success {
+            return Err(failure_message(output.failure));
+        }
+        if iptables_manages_input(&output.stdout) {
+            return Ok(FirewallBackend::Unmanaged(
+                iptables_service.unwrap_or("iptables").to_owned(),
+            ));
         }
     }
 
+    let output = runner.command(
+        "systemctl",
+        &[
+            "list-units",
+            "--type=service",
+            "--state=active",
+            "--no-legend",
+            "--plain",
+        ],
+    )?;
+    if !output.success {
+        return Err(failure_message(output.failure));
+    }
+    if let Some(service) = unknown_firewall_service(&output.stdout) {
+        return Ok(FirewallBackend::Unmanaged(service.to_owned()));
+    }
+    Ok(FirewallBackend::None)
+}
+
+impl FirewallBackend {
     pub(crate) fn open_with(
-        self,
+        &self,
         port: AssignedHostPort,
         runner: &mut impl HostRunnerCommandRunner,
     ) -> Result<(), FailureMessage> {
         match self {
             Self::Firewalld => change_firewalld(port, runner, FirewallChange::Open),
-            Self::Ufw if self.query_with(port, runner)? => Ok(()),
+            Self::Ufw if query_ufw(port, runner)? => Ok(()),
             Self::Ufw => require_success(runner, "ufw", &["allow", &render_port(port)]),
             Self::None => Ok(()),
-            Self::RawRules => Err(unmanaged_raw_rules()),
+            Self::Unmanaged(name) => Err(unmanaged_firewall(name)),
         }
     }
 
     pub fn close_with(
-        self,
+        &self,
         port: AssignedHostPort,
         runner: &mut impl HostRunnerCommandRunner,
     ) -> Result<(), FailureMessage> {
         match self {
             Self::Firewalld => change_firewalld(port, runner, FirewallChange::Close),
-            Self::Ufw if !self.query_with(port, runner)? => Ok(()),
+            Self::Ufw if !query_ufw(port, runner)? => Ok(()),
             Self::Ufw => require_success(runner, "ufw", &["delete", "allow", &render_port(port)]),
             Self::None => Ok(()),
-            Self::RawRules => Err(unmanaged_raw_rules()),
+            Self::Unmanaged(name) => Err(unmanaged_firewall(name)),
         }
     }
 }
@@ -87,31 +126,6 @@ impl FirewallBackend {
 enum FirewallChange {
     Open,
     Close,
-}
-
-fn detect(runner: &mut impl HostRunnerCommandRunner) -> FirewallBackend {
-    if success(runner, "systemctl", &["is-active", "--quiet", "firewalld"]) {
-        return FirewallBackend::Firewalld;
-    }
-    if runner.command("ufw", &["status"]).is_ok_and(|output| {
-        output.success
-            && output
-                .stdout
-                .lines()
-                .any(|line| line.trim().eq_ignore_ascii_case("status: active"))
-    }) {
-        return FirewallBackend::Ufw;
-    }
-    if runner
-        .command("nft", &["list", "ruleset"])
-        .is_ok_and(|output| output.success && !output.stdout.trim().is_empty())
-        || runner.command("iptables", &["-S"]).is_ok_and(|output| {
-            output.success && output.stdout.lines().any(|line| line.starts_with("-A "))
-        })
-    {
-        return FirewallBackend::RawRules;
-    }
-    FirewallBackend::None
 }
 
 fn change_firewalld(
@@ -125,12 +139,12 @@ fn change_firewalld(
         FirewallChange::Open => format!("--add-port={port}"),
         FirewallChange::Close => format!("--remove-port={port}"),
     };
-    if success(runner, "firewall-cmd", &["--quiet", &query])
+    if command_succeeds(runner, "firewall-cmd", &["--quiet", &query])?
         == matches!(change, FirewallChange::Close)
     {
         require_success(runner, "firewall-cmd", &[&action])?;
     }
-    if success(runner, "firewall-cmd", &["--permanent", "--quiet", &query])
+    if command_succeeds(runner, "firewall-cmd", &["--permanent", "--quiet", &query])?
         == matches!(change, FirewallChange::Close)
     {
         require_success(runner, "firewall-cmd", &["--permanent", &action])?;
@@ -138,10 +152,27 @@ fn change_firewalld(
     Ok(())
 }
 
-fn success(runner: &mut impl HostRunnerCommandRunner, program: &str, args: &[&str]) -> bool {
-    runner
-        .command(program, args)
-        .is_ok_and(|output| output.success)
+fn query_ufw(
+    port: AssignedHostPort,
+    runner: &mut impl HostRunnerCommandRunner,
+) -> Result<bool, FailureMessage> {
+    let output = runner.command("ufw", &["status"])?;
+    if !output.success {
+        return Err(failure_message(output.failure));
+    }
+    let port = render_port(port);
+    Ok(output
+        .stdout
+        .lines()
+        .any(|line| line.split_whitespace().next() == Some(port.as_str())))
+}
+
+fn command_succeeds(
+    runner: &mut impl HostRunnerCommandRunner,
+    program: &str,
+    args: &[&str],
+) -> Result<bool, FailureMessage> {
+    Ok(runner.command(program, args)?.success)
 }
 
 fn require_success(
@@ -157,6 +188,38 @@ fn require_success(
     }
 }
 
+fn nft_manages_input(ruleset: &str) -> bool {
+    ruleset.lines().any(|line| line.contains("hook input"))
+}
+
+fn iptables_manages_input(rules: &str) -> bool {
+    rules.lines().any(|line| {
+        line.starts_with("-A INPUT ")
+            || line
+                .strip_prefix("-P INPUT ")
+                .is_some_and(|policy| !policy.eq_ignore_ascii_case("ACCEPT"))
+    })
+}
+
+fn unknown_firewall_service(active_units: &str) -> Option<&str> {
+    active_units.lines().find_map(|line| {
+        let service = line.split_whitespace().next()?;
+        let normalized = service.to_ascii_lowercase();
+        let known = [
+            "firewalld.service",
+            "ufw.service",
+            "nftables.service",
+            "iptables.service",
+            "netfilter-persistent.service",
+        ];
+        (!known.contains(&normalized.as_str())
+            && ["firewall", "shorewall", "firehol", "ferm", "netfilter"]
+                .iter()
+                .any(|marker| normalized.contains(marker)))
+        .then_some(service)
+    })
+}
+
 fn render_port(port: AssignedHostPort) -> String {
     let protocol = match port.protocol {
         HostPortProtocol::Tcp => "tcp",
@@ -165,8 +228,10 @@ fn render_port(port: AssignedHostPort) -> String {
     format!("{}/{protocol}", port.port)
 }
 
-fn unmanaged_raw_rules() -> FailureMessage {
-    failure_message("active raw nftables/iptables rules are not managed by Ployz")
+fn unmanaged_firewall(name: &str) -> FailureMessage {
+    failure_message(format!(
+        "active host firewall {name} is not managed by Ployz"
+    ))
 }
 
 fn failure_message(message: impl Into<String>) -> FailureMessage {
@@ -190,11 +255,13 @@ mod tests {
     #[derive(Default)]
     struct RecordingRunner {
         calls: Vec<String>,
-        outputs: VecDeque<HostRunnerCommandOutput>,
+        outputs: VecDeque<Result<HostRunnerCommandOutput, FailureMessage>>,
     }
 
     impl RecordingRunner {
-        fn with_outputs(outputs: impl IntoIterator<Item = HostRunnerCommandOutput>) -> Self {
+        fn with_outputs(
+            outputs: impl IntoIterator<Item = Result<HostRunnerCommandOutput, FailureMessage>>,
+        ) -> Self {
             Self {
                 calls: Vec::new(),
                 outputs: outputs.into_iter().collect(),
@@ -209,7 +276,7 @@ mod tests {
             args: &[&str],
         ) -> Result<HostRunnerCommandOutput, FailureMessage> {
             self.calls.push(format!("{program} {}", args.join(" ")));
-            Ok(self.outputs.pop_front().unwrap_or_else(failed))
+            self.outputs.pop_front().unwrap_or_else(|| Ok(inactive()))
         }
         fn is_linux(&mut self) -> bool {
             unreachable!()
@@ -246,60 +313,137 @@ mod tests {
         }
     }
 
-    fn succeeded(stdout: &str) -> HostRunnerCommandOutput {
-        HostRunnerCommandOutput {
+    fn active(stdout: &str) -> Result<HostRunnerCommandOutput, FailureMessage> {
+        Ok(HostRunnerCommandOutput {
             success: true,
             stdout: stdout.to_owned(),
             failure: String::new(),
-        }
+        })
     }
 
-    fn failed() -> HostRunnerCommandOutput {
+    fn inactive() -> HostRunnerCommandOutput {
         HostRunnerCommandOutput {
             success: false,
             stdout: String::new(),
-            failure: "command failed".to_owned(),
+            failure: "inactive".to_owned(),
         }
     }
 
+    fn probe_error(message: &str) -> Result<HostRunnerCommandOutput, FailureMessage> {
+        Err(failure_message(message))
+    }
+
     #[test]
-    fn detection_prefers_active_firewalld() {
+    fn detection_propagates_probe_errors() {
+        let error = detect_firewall_backend(&mut RecordingRunner::with_outputs([probe_error(
+            "systemctl timed out",
+        )]))
+        .expect_err("probe failure is not inactivity");
+
+        assert_eq!(error.as_str(), "systemctl timed out");
+    }
+
+    #[test]
+    fn docker_only_rules_are_not_an_active_host_firewall() {
+        let mut runner = RecordingRunner::with_outputs([
+            Ok(inactive()),
+            Ok(inactive()),
+            Ok(inactive()),
+            active(""),
+            active("table ip nat { chain DOCKER { hook prerouting priority dstnat; } }"),
+            Ok(inactive()),
+            Ok(inactive()),
+            active(""),
+            active("-P INPUT ACCEPT\n-A FORWARD -j DOCKER-USER\n"),
+            active("docker.service loaded active running Docker\n"),
+        ]);
+
         assert_eq!(
-            detect(&mut RecordingRunner::with_outputs([succeeded("")])),
-            FirewallBackend::Firewalld
+            detect_firewall_backend(&mut runner).expect("detection"),
+            FirewallBackend::None
         );
     }
 
     #[test]
-    fn detection_uses_active_ufw_when_firewalld_is_inactive() {
-        let mut runner = RecordingRunner::with_outputs([failed(), succeeded("Status: active\n")]);
-        assert_eq!(detect(&mut runner), FirewallBackend::Ufw);
+    fn no_service_nft_input_hook_is_unmanaged() {
+        let mut runner = RecordingRunner::with_outputs([
+            Ok(inactive()),
+            Ok(inactive()),
+            Ok(inactive()),
+            active(""),
+            active("chain input { type filter hook input priority filter; policy drop; }"),
+        ]);
+
+        assert_eq!(
+            detect_firewall_backend(&mut runner).expect("detection"),
+            FirewallBackend::Unmanaged("nftables".to_owned())
+        );
     }
 
     #[test]
-    fn detection_reports_active_raw_rules() {
-        let mut runner = RecordingRunner::with_outputs([
-            failed(),
-            succeeded("Status: inactive\n"),
-            succeeded("table inet filter {}\n"),
-        ]);
-        assert_eq!(detect(&mut runner), FirewallBackend::RawRules);
+    fn iptables_input_policy_or_rule_is_unmanaged() {
+        for rules in [
+            "-P INPUT DROP\n",
+            "-P INPUT ACCEPT\n-A INPUT -p tcp --dport 22 -j ACCEPT\n",
+        ] {
+            let mut runner = RecordingRunner::with_outputs([
+                Ok(inactive()),
+                Ok(inactive()),
+                Ok(inactive()),
+                Ok(inactive()),
+                Ok(inactive()),
+                Ok(inactive()),
+                active(""),
+                active(rules),
+            ]);
+            assert!(matches!(
+                detect_firewall_backend(&mut runner).expect("detection"),
+                FirewallBackend::Unmanaged(_)
+            ));
+        }
     }
 
     #[test]
-    fn detection_reports_none_when_managers_and_raw_rules_are_inactive() {
+    fn unknown_active_firewall_service_is_unmanaged() {
         let mut runner = RecordingRunner::with_outputs([
-            failed(),
-            succeeded("Status: inactive\n"),
-            succeeded(""),
-            succeeded("-P INPUT ACCEPT\n"),
+            Ok(inactive()),
+            Ok(inactive()),
+            Ok(inactive()),
+            Ok(inactive()),
+            Ok(inactive()),
+            Ok(inactive()),
+            Ok(inactive()),
+            active("custom-firewall.service loaded active running Custom Firewall\n"),
         ]);
-        assert_eq!(detect(&mut runner), FirewallBackend::None);
+
+        assert_eq!(
+            detect_firewall_backend(&mut runner).expect("detection"),
+            FirewallBackend::Unmanaged("custom-firewall.service".to_owned())
+        );
+    }
+
+    #[test]
+    fn no_raw_tools_and_no_active_manager_is_none() {
+        let mut runner = RecordingRunner::with_outputs([
+            Ok(inactive()),
+            Ok(inactive()),
+            Ok(inactive()),
+            Ok(inactive()),
+            Ok(inactive()),
+            Ok(inactive()),
+            Ok(inactive()),
+            active(""),
+        ]);
+
+        assert_eq!(
+            detect_firewall_backend(&mut runner).expect("detection"),
+            FirewallBackend::None
+        );
     }
 
     #[test]
     fn firewalld_open_queries_then_adds_only_missing_runtime_rule() {
-        let mut runner = RecordingRunner::with_outputs([failed(), succeeded(""), succeeded("")]);
+        let mut runner = RecordingRunner::with_outputs([Ok(inactive()), active(""), active("")]);
         FirewallBackend::Firewalld
             .open_with(TCP_4222, &mut runner)
             .expect("open port");
@@ -314,40 +458,21 @@ mod tests {
     }
 
     #[test]
-    fn firewalld_query_requires_runtime_and_permanent_rules() {
-        let mut runner = RecordingRunner::with_outputs([succeeded(""), failed()]);
-        assert!(
-            !FirewallBackend::Firewalld
-                .query_with(TCP_4222, &mut runner)
-                .expect("query port")
-        );
-    }
-
-    #[test]
-    fn firewalld_close_removes_present_runtime_and_permanent_rules() {
-        let mut runner = RecordingRunner::with_outputs([
-            succeeded(""),
-            succeeded(""),
-            succeeded(""),
-            succeeded(""),
-        ]);
-        FirewallBackend::Firewalld
-            .close_with(TCP_4222, &mut runner)
-            .expect("close port");
+    fn firewalld_query_error_does_not_mutate() {
+        let mut runner = RecordingRunner::with_outputs([probe_error("query timed out")]);
+        let error = FirewallBackend::Firewalld
+            .open_with(TCP_4222, &mut runner)
+            .expect_err("query failure");
+        assert_eq!(error.as_str(), "query timed out");
         assert_eq!(
             runner.calls,
-            vec![
-                "firewall-cmd --quiet --query-port=4222/tcp",
-                "firewall-cmd --remove-port=4222/tcp",
-                "firewall-cmd --permanent --quiet --query-port=4222/tcp",
-                "firewall-cmd --permanent --remove-port=4222/tcp"
-            ]
+            vec!["firewall-cmd --quiet --query-port=4222/tcp"]
         );
     }
 
     #[test]
     fn ufw_open_is_idempotent() {
-        let mut runner = RecordingRunner::with_outputs([succeeded("4222/tcp ALLOW Anywhere\n")]);
+        let mut runner = RecordingRunner::with_outputs([active("4222/tcp ALLOW Anywhere\n")]);
         FirewallBackend::Ufw
             .open_with(TCP_4222, &mut runner)
             .expect("open port");
@@ -355,9 +480,9 @@ mod tests {
     }
 
     #[test]
-    fn ufw_close_queries_then_deletes_present_rule() {
+    fn close_remains_query_before_remove() {
         let mut runner =
-            RecordingRunner::with_outputs([succeeded("4222/tcp ALLOW Anywhere\n"), succeeded("")]);
+            RecordingRunner::with_outputs([active("4222/tcp ALLOW Anywhere\n"), active("")]);
         FirewallBackend::Ufw
             .close_with(TCP_4222, &mut runner)
             .expect("close port");
@@ -365,13 +490,5 @@ mod tests {
             runner.calls,
             vec!["ufw status", "ufw delete allow 4222/tcp"]
         );
-    }
-
-    #[test]
-    fn raw_rules_refuse_port_changes() {
-        let error = FirewallBackend::RawRules
-            .open_with(TCP_4222, &mut RecordingRunner::default())
-            .expect_err("raw rules are unmanaged");
-        assert!(error.as_str().contains("not managed"));
     }
 }

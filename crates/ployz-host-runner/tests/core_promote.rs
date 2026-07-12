@@ -6,6 +6,7 @@ use ployz_core::install::{
 };
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_host_runner::artifacts::ArtifactKind;
+use ployz_host_runner::assigned_substrate::{AssignedSubstrateState, SubstrateAssignment};
 use ployz_host_runner::steps::{
     CorePromoteTarget, FirstMachineInstallTarget, HostRunnerStep, core_promote_plan,
 };
@@ -34,6 +35,14 @@ fn promote_target() -> CorePromoteTarget {
     CorePromoteTarget {
         machine_id: first_machine.machine_id.clone(),
         dataplane_endpoint_supernet: first_machine.dataplane_endpoint_supernet.clone(),
+        assigned_substrate: AssignedSubstrateState {
+            assignments: [
+                SubstrateAssignment::Dataplane,
+                SubstrateAssignment::NatsServer,
+            ]
+            .into(),
+            host_ports: ployz_core::install::HostPortAssurance::Keeper,
+        },
         nats_server_artifact: first_machine.nats_server_artifact.clone(),
         ployzd_artifact: first_machine.ployzd_artifact.clone(),
         dataplane_artifacts: first_machine.dataplane_artifacts.clone(),
@@ -66,6 +75,15 @@ fn promote_target() -> CorePromoteTarget {
 #[test]
 fn core_promote_plan_adds_the_core_without_reinstalling_machine_units() {
     let plan = core_promote_plan(promote_target());
+
+    let [verify, preflight, assure, store, mutate, ..] = plan.steps() else {
+        panic!("core promotion has firewall steps before mutation");
+    };
+    assert!(matches!(verify, HostRunnerStep::VerifyHost(_)));
+    assert!(matches!(preflight, HostRunnerStep::PreflightHostPorts(_)));
+    assert!(matches!(assure, HostRunnerStep::AssureHostPorts(_)));
+    assert!(matches!(store, HostRunnerStep::StoreAssignedSubstrate(_)));
+    assert!(matches!(mutate, HostRunnerStep::InstallArtifact(_)));
 
     // Installs nats-server (the machine had none as a Machine), but not ployzd/ebpf.
     assert!(installs_artifact_kind(&plan, ArtifactKind::NatsServer));

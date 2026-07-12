@@ -1,5 +1,6 @@
 //! Durable machine-local substrate requirements.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -13,8 +14,34 @@ pub const ASSIGNED_SUBSTRATE_FILE: &str = "assigned-substrate.json";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssignedSubstrateState {
-    pub required_host_ports: Vec<AssignedHostPort>,
+    pub assignments: BTreeSet<SubstrateAssignment>,
     pub host_ports: HostPortAssurance,
+}
+
+impl AssignedSubstrateState {
+    #[must_use]
+    pub fn required_host_ports(&self) -> Vec<AssignedHostPort> {
+        let mut ports = Vec::new();
+        if self.assignments.contains(&SubstrateAssignment::NatsServer) {
+            ports.push(AssignedHostPort::tcp(4222));
+        }
+        if self.assignments.contains(&SubstrateAssignment::Dataplane) {
+            ports.push(AssignedHostPort::udp(51820));
+        }
+        if self.assignments.contains(&SubstrateAssignment::Gateway) {
+            ports.extend([AssignedHostPort::tcp(80), AssignedHostPort::tcp(443)]);
+        }
+        ports.sort_by_key(|port| (port.port, port.protocol));
+        ports
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubstrateAssignment {
+    NatsServer,
+    Dataplane,
+    Gateway,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,7 +51,23 @@ pub struct AssignedHostPort {
     pub protocol: HostPortProtocol,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+impl AssignedHostPort {
+    const fn tcp(port: u16) -> Self {
+        Self {
+            port,
+            protocol: HostPortProtocol::Tcp,
+        }
+    }
+
+    const fn udp(port: u16) -> Self {
+        Self {
+            port,
+            protocol: HostPortProtocol::Udp,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HostPortProtocol {
     Tcp,
@@ -93,22 +136,17 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        AssignedHostPort, AssignedSubstrateState, HostPortProtocol, load_assigned_substrate_state,
-        write_assigned_substrate_state,
+        AssignedHostPort, AssignedSubstrateState, HostPortProtocol, SubstrateAssignment,
+        load_assigned_substrate_state, write_assigned_substrate_state,
     };
 
     fn assigned_state() -> AssignedSubstrateState {
         AssignedSubstrateState {
-            required_host_ports: vec![
-                AssignedHostPort {
-                    port: 4222,
-                    protocol: HostPortProtocol::Tcp,
-                },
-                AssignedHostPort {
-                    port: 51820,
-                    protocol: HostPortProtocol::Udp,
-                },
-            ],
+            assignments: [
+                SubstrateAssignment::NatsServer,
+                SubstrateAssignment::Dataplane,
+            ]
+            .into(),
             host_ports: ployz_core::install::HostPortAssurance::External,
         }
     }
@@ -133,10 +171,7 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({
-                "required_host_ports": [
-                    { "port": 4222, "protocol": "tcp" },
-                    { "port": 51820, "protocol": "udp" }
-                ],
+                "assignments": ["nats_server", "dataplane"],
                 "host_ports": "external"
             })
         );
@@ -159,7 +194,7 @@ mod tests {
         let state_dir = tempdir().expect("state dir creates");
         fs::write(
             state_dir.path().join("assigned-substrate.json"),
-            br#"{"required_host_ports":[],"host_ports":"somehow"}"#,
+            br#"{"assignments":[],"host_ports":"somehow"}"#,
         )
         .expect("corrupt state writes");
 
@@ -185,5 +220,40 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn assignments_project_exact_sorted_host_ports() {
+        let state = AssignedSubstrateState {
+            assignments: [
+                SubstrateAssignment::Gateway,
+                SubstrateAssignment::Dataplane,
+                SubstrateAssignment::NatsServer,
+            ]
+            .into(),
+            host_ports: ployz_core::install::HostPortAssurance::Keeper,
+        };
+
+        assert_eq!(
+            state.required_host_ports(),
+            vec![
+                AssignedHostPort {
+                    port: 80,
+                    protocol: HostPortProtocol::Tcp
+                },
+                AssignedHostPort {
+                    port: 443,
+                    protocol: HostPortProtocol::Tcp
+                },
+                AssignedHostPort {
+                    port: 4222,
+                    protocol: HostPortProtocol::Tcp
+                },
+                AssignedHostPort {
+                    port: 51820,
+                    protocol: HostPortProtocol::Udp
+                },
+            ]
+        );
     }
 }
