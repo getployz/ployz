@@ -627,6 +627,7 @@ pub async fn machine_add(
         machine_id: request.machine_id,
         name: request.name,
         roles: request.roles,
+        host_port_assurance: request.host_port_assurance,
         endpoint_subnet: super::admission::MachineAddEndpointSubnet::Allocate,
         join_bundle: material.join_bundle,
         join_token: material.join_token,

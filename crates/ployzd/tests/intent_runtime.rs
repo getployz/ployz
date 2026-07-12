@@ -125,6 +125,7 @@ async fn intent_runtime_publishes_redeemable_pending_machine_joins() {
                 machine_id: machine_id("machine_a"),
                 name: machine_name("machine-a"),
                 roles: InstallRolePolicy::install_all(),
+                host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
                 endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(
                     "10.198.2.0/24",
                 )

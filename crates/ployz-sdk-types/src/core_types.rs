@@ -36,7 +36,7 @@ pub use ployz_core::ids::{
 };
 pub use ployz_core::image::{OciDigest, OciPlatform};
 pub use ployz_core::install::{
-    AbsoluteInstallPath, FirstMachineInstallArtifacts, FirstMachineInstallSpec,
+    AbsoluteInstallPath, FirstMachineInstallArtifacts, FirstMachineInstallSpec, HostPortAssurance,
     InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion, InstallContractError,
     InstallSha256Digest, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,
     MachineJoinMaterial, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,

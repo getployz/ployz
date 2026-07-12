@@ -72,6 +72,7 @@ import type {
   DeploySubmitError,
   DeploySubmitRequest,
   EventSequence,
+  HostPortAssurance,
   InitFirstMachineActivateError,
   InitFirstMachineActivateRequest,
   InitFirstMachineActivated,
@@ -156,6 +157,7 @@ export interface PloyzMachineAddInput {
   machineId: string;
   name: string;
   roles: InstallRolePolicy;
+  hostPortAssurance?: HostPortAssurance;
 }
 
 export interface PloyzMachineUpdateInput {
@@ -385,6 +387,7 @@ export function machineAddRequest(input: PloyzMachineAddInput): MachineAddReques
     machine_id: machineId(input.machineId),
     name: machineName(input.name),
     roles: { gateway: input.roles.gateway },
+    host_port_assurance: input.hostPortAssurance ?? "keeper",
   };
 }
 

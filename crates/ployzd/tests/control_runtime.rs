@@ -221,6 +221,7 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
             machine_id: machine_id("machine_2"),
             name: ployz_sdk_types::MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
+            host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
         })
         .await
         .expect("machine add succeeds");
@@ -236,6 +237,7 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
             machine_id: machine_id("machine_2"),
             name: ployz_sdk_types::MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
+            host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
         })
         .await
         .expect_err("duplicate machine add idempotency key is rejected");

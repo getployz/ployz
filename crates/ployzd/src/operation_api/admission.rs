@@ -15,8 +15,8 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
 use ployz_core::install::{
-    InstallArtifactVersion, MachineBootstrapUrl, MachineJoinBundle, MachineJoinRuntimeNatsUrl,
-    MachineJoinSecretDelivery, MachineJoinTemplate,
+    HostPortAssurance, InstallArtifactVersion, MachineBootstrapUrl, MachineJoinBundle,
+    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
 };
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineName, RawJoinToken,
@@ -66,6 +66,7 @@ pub struct MachineAddSubmitCommand {
     pub machine_id: ployz_core::ids::MachineId,
     pub name: MachineName,
     pub roles: InstallRolePolicy,
+    pub host_port_assurance: HostPortAssurance,
     pub endpoint_subnet: MachineAddEndpointSubnet,
     pub join_bundle: MachineJoinBundle,
     pub join_token: IssuedJoinToken,
@@ -379,6 +380,7 @@ impl OperationControllers {
                         machine_id: command.machine_id,
                         name: command.name,
                         roles: command.roles,
+                        host_port_assurance: existing.identity.host_port_assurance,
                         endpoint_subnet: existing.identity.endpoint_subnet,
                         join_bundle: command.join_bundle,
                         join_token: command.join_token,
@@ -431,6 +433,7 @@ impl OperationControllers {
                     machine_id: command.machine_id,
                     name: command.name,
                     roles: command.roles,
+                    host_port_assurance: command.host_port_assurance,
                     endpoint_subnet,
                     join_bundle: command.join_bundle,
                     join_token: command.join_token,
@@ -658,6 +661,7 @@ impl OperationControllers {
                     machine_id: recovery.machine_id.clone(),
                     name: recovery.name.clone(),
                     roles: recovery.roles,
+                    host_port_assurance: recovery.host_port_assurance,
                     endpoint_subnet: MachineAddEndpointSubnet::Preserve(
                         recovery.endpoint_subnet.clone(),
                     ),

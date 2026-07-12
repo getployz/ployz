@@ -7,14 +7,14 @@ use crate::release_manifest::{
 use crate::steps::FirstMachineInstallTarget;
 use ployz_core::ids::MachineId;
 use ployz_core::install::{
-    AbsoluteInstallPath, DEFAULT_MACHINE_BOOTSTRAP_URL, FirstMachineInstallSpec,
+    AbsoluteInstallPath, DEFAULT_MACHINE_BOOTSTRAP_URL, FirstMachineInstallSpec, HostPortAssurance,
     MachineBootstrapUrl, MachineJoinClusterName, MachineJoinRuntimeNatsUrl,
 };
 use ployz_core::roles::GatewayRole;
 
 use crate::runtime::{
-    PLOYZ_GATEWAY_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV, PLOYZ_MACHINE_ID_ENV,
-    PLOYZ_MACHINE_JOIN_CLUSTER_NAME_ENV, PLOYZ_MACHINE_JOIN_NATS_URL_ENV,
+    PLOYZ_GATEWAY_ENV, PLOYZ_HOST_PORTS_ASSURED_EXTERNALLY_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV,
+    PLOYZ_MACHINE_ID_ENV, PLOYZ_MACHINE_JOIN_CLUSTER_NAME_ENV, PLOYZ_MACHINE_JOIN_NATS_URL_ENV,
     PLOYZ_MACHINE_PUBLIC_IP_ENV, PLOYZ_RELEASE_MANIFEST_URL_ENV,
 };
 
@@ -38,6 +38,7 @@ pub(crate) fn local_core_target_from_env() -> Result<FirstMachineInstallTarget, 
         machine_id,
         dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
         gateway: env_gateway_role(PLOYZ_GATEWAY_ENV)?,
+        host_port_assurance: env_host_port_assurance()?,
         machine_public_ip: local_core_machine_public_ip_from_env()?,
         machine_bootstrap_url: bootstrap_url,
         machine_join_template_file: Some(default_machine_join_template_file()?),
@@ -103,6 +104,16 @@ fn env_gateway_role(name: &str) -> Result<GatewayRole, String> {
         None | Some("install") => Ok(GatewayRole::Install),
         Some("skip") => Ok(GatewayRole::Skip),
         Some(value) => Err(format!("{name}={value:?} must be install or skip")),
+    }
+}
+
+fn env_host_port_assurance() -> Result<HostPortAssurance, String> {
+    match optional_env(PLOYZ_HOST_PORTS_ASSURED_EXTERNALLY_ENV).as_deref() {
+        None => Ok(HostPortAssurance::Keeper),
+        Some("1") => Ok(HostPortAssurance::External),
+        Some(value) => Err(format!(
+            "{PLOYZ_HOST_PORTS_ASSURED_EXTERNALLY_ENV}={value:?} must be 1 when set"
+        )),
     }
 }
 

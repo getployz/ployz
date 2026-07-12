@@ -1,6 +1,7 @@
 //! Machine Add operation status projection: join lifecycle, subject
 //! checks, failure-phase rules, and cancellation.
 
+use ployz_core::install::HostPortAssurance;
 use ployz_core::machine::{
     ConnectivityProofEvidence, ConnectivityProofUnreachablePeer, IssuedJoinToken,
     JoinTokenExpiresAt, JoinTokenFingerprint, MachineAddFailure, MachineReadinessCheck,
@@ -20,6 +21,7 @@ fn machine_add_submitted_event_is_satisfied_by_accepted_status() {
         machine_id("machine_2"),
         machine_name("edge_2"),
         InstallRolePolicy::install_all().without_gateway(),
+        HostPortAssurance::Keeper,
         issued_join_token(),
         event_sequence(7),
     );
@@ -41,6 +43,7 @@ fn machine_add_rejects_submitted_event_for_another_machine() {
         machine_id("machine_2"),
         machine_name("edge_2"),
         InstallRolePolicy::install_all().without_gateway(),
+        HostPortAssurance::Keeper,
         issued_join_token(),
         event_sequence(7),
     );
@@ -66,6 +69,7 @@ fn machine_add_cancel_records_terminal_status() {
         machine_id("machine_2"),
         machine_name("edge_2"),
         InstallRolePolicy::install_all().without_gateway(),
+        HostPortAssurance::Keeper,
         issued_join_token(),
         event_sequence(7),
     );
@@ -88,6 +92,7 @@ fn machine_add_cancel_records_terminal_status() {
                 machine_id: machine_id("machine_2"),
                 name: machine_name("edge_2"),
                 roles: InstallRolePolicy::install_all().without_gateway(),
+                host_port_assurance: HostPortAssurance::Keeper,
                 state: MachineAddOperationState::Cancelled { reason },
                 last_event_sequence: event_sequence(8),
             }),
@@ -149,6 +154,7 @@ fn machine_add_join_and_complete_record_lifecycle_status() {
             machine_id: machine_id("machine_2"),
             name: machine_name("edge_2"),
             roles: InstallRolePolicy::install_all().without_gateway(),
+            host_port_assurance: HostPortAssurance::Keeper,
             state: MachineAddOperationState::Joining { joined_at },
             last_event_sequence: event_sequence(8),
         }
@@ -169,6 +175,7 @@ fn machine_add_join_and_complete_record_lifecycle_status() {
                 machine_id: machine_id("machine_2"),
                 name: machine_name("edge_2"),
                 roles: InstallRolePolicy::install_all().without_gateway(),
+                host_port_assurance: HostPortAssurance::Keeper,
                 state: MachineAddOperationState::Completed,
                 last_event_sequence: event_sequence(9),
             }),
@@ -256,6 +263,7 @@ fn machine_add_readiness_failure_after_join_is_allowed() {
                 machine_id: machine_id("machine_2"),
                 name: machine_name("edge_2"),
                 roles: InstallRolePolicy::install_all().without_gateway(),
+                host_port_assurance: HostPortAssurance::Keeper,
                 state: MachineAddOperationState::Failed { failure },
                 last_event_sequence: event_sequence(9),
             }),
@@ -292,6 +300,7 @@ fn machine_add_connectivity_proof_failure_after_join_is_allowed() {
                 machine_id: machine_id("machine_2"),
                 name: machine_name("edge_2"),
                 roles: InstallRolePolicy::install_all().without_gateway(),
+                host_port_assurance: HostPortAssurance::Keeper,
                 state: MachineAddOperationState::Failed { failure },
                 last_event_sequence: event_sequence(9),
             }),
@@ -333,6 +342,7 @@ fn machine_add_bootstrap_failure_after_join_is_allowed() {
                 machine_id: machine_id("machine_2"),
                 name: machine_name("edge_2"),
                 roles: InstallRolePolicy::install_all().without_gateway(),
+                host_port_assurance: HostPortAssurance::Keeper,
                 state: MachineAddOperationState::Failed { failure },
                 last_event_sequence: event_sequence(9),
             }),
@@ -392,6 +402,7 @@ fn machine_add_joining_status(
         machine_id: machine_id("machine_2"),
         name: machine_name("edge_2"),
         roles: InstallRolePolicy::install_all().without_gateway(),
+        host_port_assurance: HostPortAssurance::Keeper,
         state: MachineAddOperationState::Joining { joined_at },
         last_event_sequence: event_sequence(8),
     }
@@ -403,6 +414,7 @@ fn machine_add_pending_status() -> OperationStatus {
         machine_id("machine_2"),
         machine_name("edge_2"),
         InstallRolePolicy::install_all().without_gateway(),
+        HostPortAssurance::Keeper,
         issued_join_token(),
         event_sequence(7),
     )
@@ -414,6 +426,7 @@ fn machine_add_submitted_event(machine_id: &str) -> OperationEvent {
         machine_id: self::machine_id(machine_id),
         name: machine_name("edge_2"),
         roles: InstallRolePolicy::install_all().without_gateway(),
+        host_port_assurance: HostPortAssurance::Keeper,
         join_token: issued_join_token(),
     }
 }

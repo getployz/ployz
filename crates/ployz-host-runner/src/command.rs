@@ -16,6 +16,11 @@ const DOCKER_INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 const DATAPLANE_HOST_INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub trait HostRunnerCommandRunner {
+    fn command(
+        &mut self,
+        program: &str,
+        args: &[&str],
+    ) -> Result<HostRunnerCommandOutput, FailureMessage>;
     fn is_linux(&mut self) -> bool;
     fn current_uid(&mut self) -> Result<u32, FailureMessage>;
     fn systemctl(&mut self, args: &[&str]) -> Result<(), FailureMessage>;
@@ -53,6 +58,13 @@ impl Default for SystemHostRunnerCommandRunner {
 }
 
 impl HostRunnerCommandRunner for SystemHostRunnerCommandRunner {
+    fn command(
+        &mut self,
+        program: &str,
+        args: &[&str],
+    ) -> Result<HostRunnerCommandOutput, FailureMessage> {
+        host_runner_command(program, args, self.timeout)
+    }
     fn is_linux(&mut self) -> bool {
         std::env::consts::OS == "linux"
     }
@@ -230,6 +242,33 @@ fn dataplane_host_ready(timeout: Duration) -> bool {
 
 fn command_success(program: &str, args: &[&str], timeout: Duration) -> bool {
     run_command(program, args, timeout).is_ok_and(|output| output.status.success())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostRunnerCommandOutput {
+    pub success: bool,
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub failure: String,
+}
+
+fn host_runner_command(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<HostRunnerCommandOutput, FailureMessage> {
+    let output = run_command(program, args, timeout)?;
+    let failure = if output.status.success() {
+        String::new()
+    } else {
+        output.failure_summary()
+    };
+    Ok(HostRunnerCommandOutput {
+        success: output.status.success(),
+        exit_code: output.status.code(),
+        stdout: output.stdout,
+        failure,
+    })
 }
 
 struct CapturedCommandOutput {

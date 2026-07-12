@@ -44,6 +44,7 @@ pub async fn init_first_machine_activate(
             machine_id: request.machine_id,
             name: plan.name,
             roles: request.roles,
+            host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
         },
     )
     .await

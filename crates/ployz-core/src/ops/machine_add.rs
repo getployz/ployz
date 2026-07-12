@@ -98,6 +98,7 @@ pub(super) struct MachineAddFields<'status> {
     pub(super) machine_id: &'status MachineId,
     pub(super) name: &'status MachineName,
     pub(super) roles: InstallRolePolicy,
+    pub(super) host_port_assurance: crate::install::HostPortAssurance,
     pub(super) state: &'status MachineAddOperationState,
 }
 
@@ -112,6 +113,7 @@ impl MachineAddFields<'_> {
             machine_id: self.machine_id.clone(),
             name: self.name.clone(),
             roles: self.roles,
+            host_port_assurance: self.host_port_assurance,
             state,
             last_event_sequence: event_sequence,
         }

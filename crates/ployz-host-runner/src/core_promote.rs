@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use crate::artifacts::{ArtifactKind, ArtifactTarget, DataplaneArtifactTargets, artifact_target};
+use crate::assigned_substrate::{
+    AssignedSubstrateState, SubstrateAssignment, load_assigned_substrate_state,
+};
 use crate::cli::HostRunnerCorePromote;
 use crate::command::SystemHostRunnerCommandRunner;
 use crate::core_demote::repoint_non_core_roles;
@@ -162,6 +165,7 @@ pub(crate) fn run_core_promote_command(promote: HostRunnerCorePromote) -> ExitCo
 }
 
 fn check_core_promote_preflight() -> Result<(), String> {
+    promoted_assigned_substrate(Path::new(HOST_RUNNER_STATE_DIR))?;
     let join_dir = PathBuf::from(HOST_RUNNER_STATE_DIR).join(JOIN_MATERIAL_DIR);
     require_promote_file(&join_dir.join(JOIN_CORE_SEEDS_FILE), JOIN_CORE_SEEDS_FILE)?;
     require_promote_file(
@@ -205,6 +209,7 @@ fn resolve_core_promote_target(
     ployzd_artifact: ArtifactTarget,
     dataplane_artifacts: DataplaneArtifactTargets,
 ) -> Result<(CorePromoteTarget, PromotedCoreAccess), String> {
+    let assigned_substrate = promoted_assigned_substrate(Path::new(HOST_RUNNER_STATE_DIR))?;
     let join_dir = PathBuf::from(HOST_RUNNER_STATE_DIR).join(JOIN_MATERIAL_DIR);
     let join_material = read_promote_file(&join_dir.join(JOIN_MATERIAL_FILE))?;
     let machine_id = parse_machine_id_from_join_material(&join_material)
@@ -300,6 +305,7 @@ fn resolve_core_promote_target(
         ployz_core::install::WrappedCaKey::new(wrapped),
         wrapped_seeds,
         dataplane_endpoint_supernet,
+        assigned_substrate,
         Some(machine_public_ip),
         mirror_path,
         default_machine_join_template_file()?,
@@ -307,6 +313,17 @@ fn resolve_core_promote_target(
         machine_join_runtime_nats_url,
     );
     Ok((target, access))
+}
+
+fn promoted_assigned_substrate(state_dir: &Path) -> Result<AssignedSubstrateState, String> {
+    let mut assigned = load_assigned_substrate_state(state_dir).map_err(|error| {
+        format!(
+            "cannot load assigned substrate state for core promotion: {error}; restore {} before retrying",
+            state_dir.join(crate::assigned_substrate::ASSIGNED_SUBSTRATE_FILE).display()
+        )
+    })?;
+    assigned.assignments.insert(SubstrateAssignment::NatsServer);
+    Ok(assigned)
 }
 
 fn parse_cluster_name_from_join_material(contents: &str) -> Option<String> {
@@ -358,5 +375,71 @@ fn read_recovery_secret() -> Result<String, String> {
             .map_err(|error| format!("failed to read recovery secret: {error}"))
     } else {
         Err("set PLOYZ_RECOVERY_SECRET, or run interactively to be prompted for it".to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use ployz_core::install::HostPortAssurance;
+
+    use crate::assigned_substrate::{
+        AssignedSubstrateState, SubstrateAssignment, write_assigned_substrate_state,
+    };
+
+    use super::promoted_assigned_substrate;
+
+    #[test]
+    fn promotion_adds_nats_without_losing_assignments_or_assurance() {
+        let state_dir = tempfile::tempdir().expect("state dir");
+        write_assigned_substrate_state(
+            state_dir.path(),
+            &AssignedSubstrateState {
+                assignments: BTreeSet::from([
+                    SubstrateAssignment::Dataplane,
+                    SubstrateAssignment::Gateway,
+                ]),
+                host_ports: HostPortAssurance::External,
+            },
+        )
+        .expect("assigned state writes");
+
+        let promoted = promoted_assigned_substrate(state_dir.path()).expect("state loads");
+
+        assert_eq!(promoted.host_ports, HostPortAssurance::External);
+        assert_eq!(
+            promoted.assignments,
+            BTreeSet::from([
+                SubstrateAssignment::NatsServer,
+                SubstrateAssignment::Dataplane,
+                SubstrateAssignment::Gateway,
+            ])
+        );
+    }
+
+    #[test]
+    fn promotion_refuses_missing_assigned_substrate_state() {
+        let state_dir = tempfile::tempdir().expect("state dir");
+
+        let error = promoted_assigned_substrate(state_dir.path()).expect_err("state is required");
+
+        assert!(error.contains("cannot load assigned substrate state for core promotion"));
+        assert!(error.contains("assigned-substrate.json"));
+    }
+
+    #[test]
+    fn promotion_refuses_corrupt_assigned_substrate_state() {
+        let state_dir = tempfile::tempdir().expect("state dir");
+        std::fs::write(
+            state_dir.path().join("assigned-substrate.json"),
+            b"not json",
+        )
+        .expect("corrupt state writes");
+
+        let error = promoted_assigned_substrate(state_dir.path()).expect_err("state is required");
+
+        assert!(error.contains("failed to parse assigned substrate state"));
+        assert!(error.contains("restore"));
     }
 }

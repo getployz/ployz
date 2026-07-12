@@ -183,6 +183,8 @@ pub enum OperationEvent {
         machine_id: MachineId,
         name: MachineName,
         roles: InstallRolePolicy,
+        #[serde(default = "crate::install::HostPortAssurance::keeper")]
+        host_port_assurance: crate::install::HostPortAssurance,
         join_token: IssuedJoinToken,
     },
     MachineAddJoined {

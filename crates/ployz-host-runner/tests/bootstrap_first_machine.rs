@@ -23,6 +23,7 @@ fn first_machine_install_starts_nats_and_core_roles_without_join_token() {
         dataplane_artifacts(),
         nats_server_artifact(),
         InstallRolePolicy::install_all().without_gateway(),
+        ployz_core::install::HostPortAssurance::Keeper,
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
         WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
@@ -104,6 +105,7 @@ fn first_machine_names_founder_and_cloud_credentials() {
         dataplane_artifacts(),
         nats_server_artifact(),
         InstallRolePolicy::install_all().without_gateway(),
+        ployz_core::install::HostPortAssurance::Keeper,
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
         WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
@@ -122,6 +124,9 @@ fn first_machine_names_founder_and_cloud_credentials() {
         .find_map(|step| match step {
             HostRunnerStep::WriteNatsAuthorizedUsers(users) => Some(users.render()),
             HostRunnerStep::VerifyHost(_)
+            | HostRunnerStep::PreflightHostPorts(_)
+            | HostRunnerStep::AssureHostPorts(_)
+            | HostRunnerStep::StoreAssignedSubstrate(_)
             | HostRunnerStep::PrepareDataplaneHost
             | HostRunnerStep::PrepareContainerRuntime(_, _)
             | HostRunnerStep::VerifyContainerRuntime(_)
@@ -154,6 +159,7 @@ fn first_machine_role_envs_carry_tls_url_and_role_scoped_seed_paths() {
         dataplane_artifacts(),
         nats_server_artifact(),
         InstallRolePolicy::install_all(),
+        ployz_core::install::HostPortAssurance::Keeper,
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
         WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
@@ -209,6 +215,7 @@ fn first_machine_public_ip_flips_the_listener_external_in_the_secured_config() {
         dataplane_artifacts(),
         nats_server_artifact(),
         InstallRolePolicy::install_all().without_gateway(),
+        ployz_core::install::HostPortAssurance::Keeper,
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
         WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
@@ -222,6 +229,9 @@ fn first_machine_public_ip_flips_the_listener_external_in_the_secured_config() {
         .find_map(|step| match step {
             HostRunnerStep::WriteNatsServerConfig(config) => Some(config.render_config()),
             HostRunnerStep::VerifyHost(_)
+            | HostRunnerStep::PreflightHostPorts(_)
+            | HostRunnerStep::AssureHostPorts(_)
+            | HostRunnerStep::StoreAssignedSubstrate(_)
             | HostRunnerStep::PrepareDataplaneHost
             | HostRunnerStep::PrepareContainerRuntime(_, _)
             | HostRunnerStep::VerifyContainerRuntime(_)
@@ -254,6 +264,7 @@ fn first_machine_default_install_includes_gateway_and_dns_roles() {
         dataplane_artifacts(),
         nats_server_artifact(),
         InstallRolePolicy::install_all(),
+        ployz_core::install::HostPortAssurance::Keeper,
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
         WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
@@ -279,6 +290,7 @@ fn first_machine_plan_derives_role_supernet_after_environment_overrides() {
             dataplane_artifacts(),
             nats_server_artifact(),
             InstallRolePolicy::install_all(),
+            ployz_core::install::HostPortAssurance::Keeper,
             test_identity().clone(),
             WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
             WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
@@ -297,6 +309,9 @@ fn first_machine_plan_derives_role_supernet_after_environment_overrides() {
                 Some(environment.render())
             }
             HostRunnerStep::VerifyHost(_)
+            | HostRunnerStep::PreflightHostPorts(_)
+            | HostRunnerStep::AssureHostPorts(_)
+            | HostRunnerStep::StoreAssignedSubstrate(_)
             | HostRunnerStep::PrepareDataplaneHost
             | HostRunnerStep::PrepareContainerRuntime(_, _)
             | HostRunnerStep::VerifyContainerRuntime(_)
@@ -325,6 +340,7 @@ fn first_machine_gateway_opt_out_skips_only_the_gateway_role() {
         dataplane_artifacts(),
         nats_server_artifact(),
         InstallRolePolicy::install_all().without_gateway(),
+        ployz_core::install::HostPortAssurance::Keeper,
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
         WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),

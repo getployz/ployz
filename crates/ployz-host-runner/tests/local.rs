@@ -1,4 +1,5 @@
-use ployz_core::install::{WrappedCaKey, WrappedCoreSeeds};
+use ployz_core::install::{HostPortAssurance, WrappedCaKey, WrappedCoreSeeds};
+use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -11,7 +12,10 @@ use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_host_runner::artifacts::{
     ArtifactKind, ArtifactSource, ArtifactTarget, DataplaneArtifactTargets,
 };
-use ployz_host_runner::command::HostRunnerCommandRunner;
+use ployz_host_runner::assigned_substrate::{
+    AssignedSubstrateState, SubstrateAssignment, load_assigned_substrate_state,
+};
+use ployz_host_runner::command::{HostRunnerCommandOutput, HostRunnerCommandRunner};
 use ployz_host_runner::executor::{
     HostRunnerPlanFailure, HostRunnerPlanTerminal, HostRunnerStepEffects, HostRunnerStepEvent,
     HostRunnerStepRecorder, execute_host_runner_plan,
@@ -44,6 +48,98 @@ use ployz_test_support::ids::{failure_message, machine_id, operation_id};
 use std::sync::OnceLock;
 
 #[test]
+fn externally_assured_host_ports_skip_firewall_and_store_assignment() {
+    let root = temp_dir("ployz-host-runner-external-host-ports");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let state = AssignedSubstrateState {
+        assignments: [SubstrateAssignment::Dataplane].into(),
+        host_ports: HostPortAssurance::External,
+    };
+    let mut effects = HostRunnerLocalEffects::new(
+        local_config(&root, &systemd_dir),
+        RecordingRunner::root_linux(),
+    );
+
+    effects
+        .apply_step(&HostRunnerStep::PreflightHostPorts(state.clone()))
+        .expect("external assurance passes preflight");
+    effects
+        .apply_step(&HostRunnerStep::AssureHostPorts(state.clone()))
+        .expect("external assurance skips apply");
+    effects
+        .apply_step(&HostRunnerStep::StoreAssignedSubstrate(state.clone()))
+        .expect("assignment stores");
+
+    assert_eq!(
+        load_assigned_substrate_state(&root.join("state")).expect("assignment loads"),
+        state
+    );
+}
+
+#[test]
+fn managed_host_ports_query_before_open() {
+    let root = temp_dir("ployz-host-runner-managed-host-ports");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let mut runner = RecordingRunner::root_linux();
+    runner.command_outputs = [
+        failed_command(),
+        succeeded_command(""),
+        succeeded_command("Status: active\n"),
+        succeeded_command("Status: active\n"),
+        succeeded_command(""),
+    ]
+    .into();
+    let mut effects = HostRunnerLocalEffects::new(local_config(&root, &systemd_dir), runner);
+
+    effects
+        .apply_step(&HostRunnerStep::AssureHostPorts(AssignedSubstrateState {
+            assignments: [SubstrateAssignment::Dataplane].into(),
+            host_ports: HostPortAssurance::Keeper,
+        }))
+        .expect("managed port opens");
+
+    assert_eq!(
+        effects.runner().command_calls,
+        vec![
+            "systemctl is-active --quiet firewalld.service",
+            "systemctl is-active --quiet ufw.service",
+            "ufw status",
+            "ufw status",
+            "ufw allow 51820/udp",
+        ]
+    );
+}
+
+fn succeeded_command(stdout: &str) -> HostRunnerCommandOutput {
+    HostRunnerCommandOutput {
+        success: true,
+        exit_code: Some(0),
+        stdout: stdout.to_owned(),
+        failure: String::new(),
+    }
+}
+
+fn failed_command() -> HostRunnerCommandOutput {
+    HostRunnerCommandOutput {
+        success: false,
+        exit_code: Some(3),
+        stdout: String::new(),
+        failure: "simulated command failure".to_owned(),
+    }
+}
+
+fn absent_command() -> HostRunnerCommandOutput {
+    HostRunnerCommandOutput {
+        success: false,
+        exit_code: Some(1),
+        stdout: String::new(),
+        failure: "not found".to_owned(),
+    }
+}
+
+#[test]
 fn local_effects_install_first_machine_process_units() {
     let root = temp_dir("ployz-host-runner-local-first-machine");
     let source = root.join("ployzd-source");
@@ -63,6 +159,7 @@ fn local_effects_install_first_machine_process_units() {
             dataplane_artifacts(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
             InstallRolePolicy::install_all().without_gateway(),
+            HostPortAssurance::Keeper,
             test_identity().clone(),
             WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
             WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
@@ -76,6 +173,14 @@ fn local_effects_install_first_machine_process_units() {
         RecordingRunner::root_linux(),
     );
     let mut recorder = RecordingRecorder::default();
+
+    let [verify, preflight, assure, store, ..] = plan.steps() else {
+        panic!("first-machine install has firewall steps before mutation");
+    };
+    assert!(matches!(verify, HostRunnerStep::VerifyHost(_)));
+    assert!(matches!(preflight, HostRunnerStep::PreflightHostPorts(_)));
+    assert!(matches!(assure, HostRunnerStep::AssureHostPorts(_)));
+    assert!(matches!(store, HostRunnerStep::StoreAssignedSubstrate(_)));
 
     let execution = execute_host_runner_plan(&plan, &mut effects, &mut recorder);
 
@@ -176,6 +281,7 @@ fn first_machine_install_writes_machine_bootstrap_url_when_configured() {
         dataplane_artifacts(&root),
         nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
         InstallRolePolicy::install_all().without_gateway(),
+        HostPortAssurance::Keeper,
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
         WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
@@ -225,6 +331,7 @@ fn first_machine_install_writes_machine_join_template_file_when_configured() {
         dataplane_artifacts(&root),
         nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
         InstallRolePolicy::install_all().without_gateway(),
+        HostPortAssurance::Keeper,
         test_identity().clone(),
         WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
         WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
@@ -796,6 +903,7 @@ fn local_effects_write_nats_config_before_nats_unit() {
             dataplane_artifacts(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
             InstallRolePolicy::install_all().without_gateway(),
+            HostPortAssurance::Keeper,
             test_identity().clone(),
             WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
             WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
@@ -867,6 +975,7 @@ fn local_effects_render_role_units_from_the_artifact_installed_by_the_plan() {
             dataplane_artifacts(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
             InstallRolePolicy::install_all().without_gateway(),
+            HostPortAssurance::Keeper,
             test_identity().clone(),
             WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
             WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),
@@ -915,6 +1024,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
         ])
         .expect("non-empty role set"),
         edge_runtime_role_env(&root),
+        HostPortAssurance::Keeper,
     );
     let mut redeemer = StaticJoinRedeemer {
         expected_token: JoinToken::try_new("join_once").expect("valid join token"),
@@ -1157,6 +1267,8 @@ impl HostRunnerJoinReporter for RecordingJoinReporter {
 
 #[derive(Debug)]
 struct RecordingRunner {
+    command_calls: Vec<String>,
+    command_outputs: VecDeque<HostRunnerCommandOutput>,
     linux: bool,
     uid: u32,
     docker_installed: bool,
@@ -1177,6 +1289,8 @@ struct RecordingRunner {
 impl RecordingRunner {
     fn root_linux() -> Self {
         Self {
+            command_calls: Vec::new(),
+            command_outputs: VecDeque::new(),
             linux: true,
             uid: 0,
             docker_installed: true,
@@ -1197,6 +1311,24 @@ impl RecordingRunner {
 }
 
 impl HostRunnerCommandRunner for RecordingRunner {
+    fn command(
+        &mut self,
+        program: &str,
+        args: &[&str],
+    ) -> Result<HostRunnerCommandOutput, FailureMessage> {
+        self.command_calls
+            .push(format!("{program} {}", args.join(" ")));
+        Ok(self.command_outputs.pop_front().unwrap_or_else(|| {
+            if program == "systemctl" && args.first() == Some(&"list-units") {
+                succeeded_command("")
+            } else if program == "sh" && args.first() == Some(&"-c") {
+                absent_command()
+            } else {
+                failed_command()
+            }
+        }))
+    }
+
     fn is_linux(&mut self) -> bool {
         self.linux
     }
@@ -1397,6 +1529,7 @@ fn first_machine_plan_with_ployzd(
             dataplane_artifacts(root),
             nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
             InstallRolePolicy::install_all().without_gateway(),
+            HostPortAssurance::Keeper,
             test_identity().clone(),
             WrappedCaKey::new(b"wrapped-ca-key".to_vec()),
             WrappedCoreSeeds::new(b"wrapped-core-seeds".to_vec()),

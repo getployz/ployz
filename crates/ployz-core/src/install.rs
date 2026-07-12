@@ -17,6 +17,21 @@ pub const DEFAULT_MACHINE_BOOTSTRAP_URL: &str = "https://ployz.sh";
 /// always derive the same path.
 pub const INTENT_MIRROR_FILE_NAME: &str = "intent-mirror.json";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum HostPortAssurance {
+    Keeper,
+    External,
+}
+
+impl HostPortAssurance {
+    #[must_use]
+    pub const fn keeper() -> Self {
+        Self::Keeper
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
@@ -25,6 +40,8 @@ pub struct FirstMachineInstallSpec {
     #[serde(default = "MachineEndpointSupernet::default_v1")]
     pub dataplane_endpoint_supernet: MachineEndpointSupernet,
     pub gateway: GatewayRole,
+    #[serde(default = "HostPortAssurance::keeper")]
+    pub host_port_assurance: HostPortAssurance,
     pub machine_public_ip: Option<IpAddr>,
     pub machine_bootstrap_url: Option<MachineBootstrapUrl>,
     pub machine_join_template_file: Option<AbsoluteInstallPath>,

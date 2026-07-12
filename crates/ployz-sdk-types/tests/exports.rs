@@ -14,32 +14,33 @@ use ployz_sdk_types::{
     DeployPhaseNumber, DeployPhaseNumberError, DeployRequest, DeployReservationId,
     DeployReserveError, DeployReserveRequest, DeployReserved, DeployRunningStage,
     DeployServiceSpec, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse, EventSequence,
-    EventSequenceError, ImageReference, ImageReferenceError, InitFirstMachineActivateError,
-    InitFirstMachineActivateRequest, InitFirstMachineActivated, InstallContractError,
-    InstallRolePolicy, LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, LogsTailError,
-    LogsTailRequest, LogsTailResult, MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted,
-    MachineAddError, MachineAddRequest, MachineAddResponse, MachineBootstrapUrl,
-    MachineInspectError, MachineInspectRequest, MachineJoinBundle, MachineJoinMaterial,
-    MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResponse,
-    MachineJoinRedeemResult, MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportRequest,
-    MachineJoinReported, MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
-    MachineJoinToken, MachineJoinTrustedNats, MachineListError, MachineListRequest,
-    MachineListResult, MachineName, MachineSnapshot, MachineUpdateError, MachineUpdateRequest,
-    MachineUpdateResponse, ManagedCertBundle, ManagedLeaseAcquired, ManagedLeaseName,
-    ManagedLeaseRecord, NamespaceId, NamespaceRemoveError, NamespaceRemoveRequest,
-    NatsCaCertificatePem, NatsUserSeed, NetworkRepairError, NetworkRepairRequest,
-    NetworkResolveError, NetworkResolveRequest, NetworkResolveResult, NetworkStatusError,
-    NetworkStatusRequest, NetworkStatusResult, NonEmptyTextError, OperationApiResponse,
-    OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
-    OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
-    OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot, OperationSubject,
-    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest,
-    OpsStatusResponse, OpsWatchResponse, ReplicaCount, ReplicaCountError, RouteHostname,
-    RouteHostnameError, RoutePort, RoutePortError, RuntimeSnapshotError, RuntimeSnapshotRequest,
-    RuntimeSnapshotResult, ServiceDependency, ServiceId, ServiceInspectError,
-    ServiceInspectRequest, ServiceListError, ServiceListRequest, ServiceListResult,
-    ServiceRestartError, ServiceRestartRequest, ServiceSnapshot, SubjectTokenError,
-    VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
+    EventSequenceError, HostPortAssurance, ImageReference, ImageReferenceError,
+    InitFirstMachineActivateError, InitFirstMachineActivateRequest, InitFirstMachineActivated,
+    InstallContractError, InstallRolePolicy, LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt,
+    LogsTailError, LogsTailRequest, LogsTailResult, MAX_OPERATION_EVENT_REPLAY_LIMIT,
+    MachineAddAccepted, MachineAddError, MachineAddRequest, MachineAddResponse,
+    MachineBootstrapUrl, MachineInspectError, MachineInspectRequest, MachineJoinBundle,
+    MachineJoinMaterial, MachineJoinRedeemError, MachineJoinRedeemRequest,
+    MachineJoinRedeemResponse, MachineJoinRedeemResult, MachineJoinRedeemed,
+    MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
+    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinToken,
+    MachineJoinTrustedNats, MachineListError, MachineListRequest, MachineListResult, MachineName,
+    MachineSnapshot, MachineUpdateError, MachineUpdateRequest, MachineUpdateResponse,
+    ManagedCertBundle, ManagedLeaseAcquired, ManagedLeaseName, ManagedLeaseRecord, NamespaceId,
+    NamespaceRemoveError, NamespaceRemoveRequest, NatsCaCertificatePem, NatsUserSeed,
+    NetworkRepairError, NetworkRepairRequest, NetworkResolveError, NetworkResolveRequest,
+    NetworkResolveResult, NetworkStatusError, NetworkStatusRequest, NetworkStatusResult,
+    NonEmptyTextError, OperationApiResponse, OperationEvent, OperationEventReplayCursor,
+    OperationEventReplayLimit, OperationEventReplayLimitError, OperationEventReplayPage,
+    OperationEventReplayRequest, OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot,
+    OperationSubject, OpsListError, OpsListRequest, OpsListResult, OpsStatusError,
+    OpsStatusRequest, OpsStatusResponse, OpsWatchResponse, ReplicaCount, ReplicaCountError,
+    RouteHostname, RouteHostnameError, RoutePort, RoutePortError, RuntimeSnapshotError,
+    RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceDependency, ServiceId,
+    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
+    ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
+    SubjectTokenError, VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError,
+    VolumeRemoveRequest,
     operation_api::{
         CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi, CredentialListApi,
         CredentialRemoveApi, DeployReserveApi, DeploySubmitApi, InitFirstMachineActivateApi,
@@ -271,6 +272,7 @@ fn sdk_exports_operation_api_wire_types() {
         machine_id: ployz_sdk_types::MachineId::try_new("machine_2").expect("valid machine id"),
         name: MachineName::try_new("edge_2").expect("valid machine name"),
         roles: InstallRolePolicy::install_all().without_gateway(),
+        host_port_assurance: HostPortAssurance::External,
     };
     let machine_response: MachineAddResponse = OperationApiResponse::Ok {
         value: MachineAddAccepted {
@@ -292,7 +294,7 @@ fn sdk_exports_operation_api_wire_types() {
 
     assert_eq!(
         serde_json::to_string(&machine_add).expect("request serializes"),
-        r#"{"operation_id":"op_machine","idempotency_key":"idem_machine","machine_id":"machine_2","name":"edge_2","roles":{"gateway":"skip"}}"#
+        r#"{"operation_id":"op_machine","idempotency_key":"idem_machine","machine_id":"machine_2","name":"edge_2","roles":{"gateway":"skip"},"host_port_assurance":"external"}"#
     );
     assert_eq!(
         serde_json::to_string(&machine_response).expect("response serializes"),
@@ -309,6 +311,7 @@ fn sdk_exports_operation_api_wire_types() {
             machine_id: ployz_sdk_types::MachineId::try_new("machine_2").expect("valid machine id"),
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
+            host_port_assurance: HostPortAssurance::External,
             endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.2.0/24")
                 .expect("valid subnet"),
             join_bundle: machine_join_bundle(),
@@ -342,7 +345,7 @@ fn sdk_exports_operation_api_wire_types() {
     assert_eq!(
         redeem_response_without_endpoint,
         serde_json::from_str::<serde_json::Value>(
-        r#"{"status":"ok","value":{"operation_id":"op_machine","machine_id":"machine_2","name":"edge_2","roles":{"gateway":"skip"},"join_bundle":{"material":{"cluster_name":"prod","dataplane_endpoint_supernet":"10.198.0.0/16","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"recovery_key_wrapped":[1,2,3],"core_seeds_wrapped":[4,5,6],"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"}}},"secret_delivery":{"nats_credentials":"SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ"},"joined_at":"60","last_event_sequence":"8","result":"joined"}}"#
+        r#"{"status":"ok","value":{"operation_id":"op_machine","machine_id":"machine_2","name":"edge_2","roles":{"gateway":"skip"},"host_port_assurance":"external","join_bundle":{"material":{"cluster_name":"prod","dataplane_endpoint_supernet":"10.198.0.0/16","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"recovery_key_wrapped":[1,2,3],"core_seeds_wrapped":[4,5,6],"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"}}},"secret_delivery":{"nats_credentials":"SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ"},"joined_at":"60","last_event_sequence":"8","result":"joined"}}"#
         )
         .expect("legacy response contract parses")
     );

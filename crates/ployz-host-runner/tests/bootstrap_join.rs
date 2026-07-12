@@ -29,6 +29,7 @@ fn host_runner_join_installs_ployzd_and_only_assigned_role_units() {
         dataplane_artifacts(),
         NonEmptyRoleSet::try_new(roles.clone()).expect("non-empty unique roles"),
         edge_role_environment(),
+        ployz_core::install::HostPortAssurance::Keeper,
     ));
 
     assert!(installs_artifact_kind(&plan, ArtifactKind::Ployzd));
@@ -40,7 +41,11 @@ fn host_runner_join_installs_ployzd_and_only_assigned_role_units() {
             .contains(&HostRunnerStep::StoreJoinMaterial(material))
     );
     let [
+        preflight_material,
+        store_assigned,
         store_material,
+        preflight_install,
+        assure_ports,
         prepare_dataplane_host,
         prepare_runtime,
         verify_runtime,
@@ -51,9 +56,22 @@ fn host_runner_join_installs_ployzd_and_only_assigned_role_units() {
         panic!("join install plan records material and Docker prep before artifacts");
     };
     assert!(matches!(
+        preflight_material,
+        HostRunnerStep::PreflightHostPorts(_)
+    ));
+    assert!(matches!(
+        store_assigned,
+        HostRunnerStep::StoreAssignedSubstrate(_)
+    ));
+    assert!(matches!(
         store_material,
         HostRunnerStep::StoreJoinMaterial(_)
     ));
+    assert!(matches!(
+        preflight_install,
+        HostRunnerStep::PreflightHostPorts(_)
+    ));
+    assert!(matches!(assure_ports, HostRunnerStep::AssureHostPorts(_)));
     assert_eq!(
         *prepare_dataplane_host,
         HostRunnerStep::PrepareDataplaneHost

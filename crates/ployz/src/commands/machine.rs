@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use clap::Args;
 use ployz_core::cert::PublicUrlMode;
 use ployz_core::ids::{MachineId, OperationId, SubjectTokenError};
-use ployz_core::install::{InstallArtifactVersion, MachineJoinBundle, MachineJoinClusterName};
+use ployz_core::install::{
+    HostPortAssurance, InstallArtifactVersion, MachineJoinBundle, MachineJoinClusterName,
+};
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::ops::OperationIdempotencyKey;
 use ployz_core::roles::InstallRolePolicy;
@@ -123,6 +125,7 @@ pub struct MachineInitCommand {
     /// lets the machine self-discover it at install (the common cloud-VM case).
     pub public_ip: Option<IpAddr>,
     pub public_url_mode: PublicUrlMode,
+    pub host_port_assurance: HostPortAssurance,
 }
 
 impl MachineInitCommand {
@@ -175,6 +178,7 @@ pub struct MachineAddRemoteCommand {
     /// `--installer-script`: run an installer already on the remote machine
     /// instead of the accepted bootstrap URL (test seam).
     pub installer_script: Option<String>,
+    pub host_port_assurance: HostPortAssurance,
 }
 
 impl MachineAddRemoteCommand {
@@ -239,6 +243,7 @@ pub struct MachineAddCommand {
     pub machine_id: MachineId,
     pub name: MachineName,
     pub roles: InstallRolePolicy,
+    pub host_port_assurance: HostPortAssurance,
 }
 
 impl MachineAddCommand {
@@ -250,6 +255,7 @@ impl MachineAddCommand {
             machine_id: self.machine_id,
             name: self.name,
             roles: self.roles,
+            host_port_assurance: self.host_port_assurance,
         }
     }
 }
@@ -385,6 +391,7 @@ pub(crate) fn machine_add_command(
             roles,
             detach,
             installer_script,
+            host_ports_assured_externally,
         } => {
             let target =
                 SshTarget::parse(&target).map_err(|error| invalid_value("<target>", error))?;
@@ -399,6 +406,7 @@ pub(crate) fn machine_add_command(
                 roles,
                 detach,
                 installer_script: validate_installer_script(installer_script)?,
+                host_port_assurance: host_port_assurance(host_ports_assured_externally),
             }))
         }
         MachineAddCliMode::Explicit {
@@ -407,6 +415,7 @@ pub(crate) fn machine_add_command(
             machine,
             name,
             roles,
+            host_ports_assured_externally,
         } => Ok(ParsedMachineAdd::Explicit(MachineAddCommand {
             operation_id: OperationId::try_new(operation)
                 .map_err(|error| invalid_value("--operation", error))?,
@@ -416,6 +425,7 @@ pub(crate) fn machine_add_command(
                 .map_err(|error| invalid_value("--machine", error))?,
             name: MachineName::try_new(name).map_err(|error| invalid_value("--name", error))?,
             roles,
+            host_port_assurance: host_port_assurance(host_ports_assured_externally),
         })),
     }
 }
@@ -429,6 +439,7 @@ pub(crate) fn machine_add_remote_command(
         roles,
         detach,
         installer_script,
+        host_ports_assured_externally,
     } = parsed;
     let target = SshTarget::parse(&target).map_err(|error| invalid_value("<target>", error))?;
     let identity_override = name
@@ -442,6 +453,7 @@ pub(crate) fn machine_add_remote_command(
         roles: roles.into_policy(),
         detach,
         installer_script: validate_installer_script(installer_script)?,
+        host_port_assurance: host_port_assurance(host_ports_assured_externally),
     })
 }
 
@@ -453,6 +465,7 @@ enum MachineAddCliMode {
         roles: InstallRolePolicy,
         detach: bool,
         installer_script: Option<String>,
+        host_ports_assured_externally: bool,
     },
     Explicit {
         operation: String,
@@ -460,6 +473,7 @@ enum MachineAddCliMode {
         machine: String,
         name: String,
         roles: InstallRolePolicy,
+        host_ports_assured_externally: bool,
     },
 }
 
@@ -481,6 +495,8 @@ pub(crate) struct MachineAddCli {
     detach: bool,
     #[arg(long, requires = "target")]
     installer_script: Option<String>,
+    #[arg(long)]
+    host_ports_assured_externally: bool,
 }
 
 #[derive(Debug, Args)]
@@ -495,6 +511,8 @@ pub(crate) struct MachineAddRemoteCli {
     pub detach: bool,
     #[arg(long)]
     installer_script: Option<String>,
+    #[arg(long)]
+    host_ports_assured_externally: bool,
 }
 
 impl MachineAddCli {
@@ -508,6 +526,7 @@ impl MachineAddCli {
             roles,
             detach,
             installer_script,
+            host_ports_assured_externally,
         } = self;
         let roles = roles.into_policy();
 
@@ -518,6 +537,7 @@ impl MachineAddCli {
                 roles,
                 detach,
                 installer_script,
+                host_ports_assured_externally,
             });
         }
 
@@ -530,6 +550,7 @@ impl MachineAddCli {
             machine: require_explicit_machine_add_value(machine, "--machine")?,
             name: require_explicit_machine_add_value(name, "--name")?,
             roles,
+            host_ports_assured_externally,
         })
     }
 }
@@ -561,6 +582,7 @@ pub(crate) fn machine_init_command(
         installer_script,
         public_ip,
         public_url,
+        host_ports_assured_externally,
     } = parsed;
 
     let target = SshTarget::parse(&target).map_err(|error| invalid_value("<target>", error))?;
@@ -624,6 +646,7 @@ pub(crate) fn machine_init_command(
         installer_script: validate_installer_script(installer_script)?,
         public_ip,
         public_url_mode: parse_public_url_mode(&public_url)?,
+        host_port_assurance: host_port_assurance(host_ports_assured_externally),
     })
 }
 
@@ -668,6 +691,16 @@ pub(crate) struct MachineInitCli {
     /// Choose managed public URLs, bring your own URLs, or no public URLs.
     #[arg(long, default_value = "auto")]
     public_url: String,
+    #[arg(long)]
+    host_ports_assured_externally: bool,
+}
+
+const fn host_port_assurance(external: bool) -> HostPortAssurance {
+    if external {
+        HostPortAssurance::External
+    } else {
+        HostPortAssurance::Keeper
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

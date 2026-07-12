@@ -6,6 +6,7 @@
 //! and join material storage. It does not own product truth.
 
 pub mod artifacts;
+pub mod assigned_substrate;
 mod bootstrap;
 pub mod cli;
 pub mod cloud_bootstrap;
@@ -17,6 +18,7 @@ mod core_demote_command;
 mod core_promote;
 mod env_config;
 pub mod executor;
+pub mod firewall;
 mod first_machine;
 pub mod fsx;
 pub mod join;

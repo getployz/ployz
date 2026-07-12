@@ -286,6 +286,7 @@ pub fn project_operation_event(
                 machine_id,
                 name,
                 roles,
+                host_port_assurance,
                 state,
                 ..
             } = current
@@ -297,6 +298,7 @@ pub fn project_operation_event(
                 machine_id,
                 name,
                 roles: *roles,
+                host_port_assurance: *host_port_assurance,
                 state,
             };
             machine_add::project_event(fields, event, event_sequence)
