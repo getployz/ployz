@@ -245,6 +245,12 @@ workflow is added here in the same change:
   `PLOYZ_DIND_TARGET_DIR` — every worktree mounts as `/work`, so the shared
   default target dir serves another branch's binaries as fresh. On failure,
   read the evidence directory the harness prints before retrying.
+- For real-host validation (tcx eBPF, real WireGuard, the public install path)
+  the DinD harness cannot cover, provision two cheap Ubuntu hosts and run
+  `scripts/real-host-acceptance.sh <core-ip> <edge-ip>` and
+  `scripts/cli-smoke-test.sh <core-ip> <edge-ip>` — see
+  `docs/operations/real-host-acceptance.md`. It installs the public alpha
+  channel, so promote the build under test first.
 - Cold target dirs — a fresh worktree's `target/` or a per-agent
   `PLOYZ_DIND_TARGET_DIR` — are seeded from an existing sibling with
   `scripts/cargo-hardlink-deps.py <src-target-dir> <dst-target-dir>`: it
