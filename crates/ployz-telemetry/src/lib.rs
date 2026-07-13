@@ -4,7 +4,7 @@
 
 use std::env;
 use std::error::Error;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -18,6 +18,17 @@ use thiserror::Error;
 use uuid::Uuid;
 
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+pub const TELEMETRY_NOTICE: &str = "Ployz collects anonymous usage and error telemetry. Disable it with `ployz telemetry disable`.";
+pub const SENTRY_DSN: &str = match option_env!("PLOYZ_SENTRY_DSN") {
+    Some(value) => value,
+    None => {
+        "https://ab8efec2ceb16736f2d2b03ae47ab599@o4511725846528000.ingest.de.sentry.io/4511725850329168"
+    }
+};
+pub const POSTHOG_API_KEY: &str = match option_env!("PLOYZ_POSTHOG_API_KEY") {
+    Some(value) => value,
+    None => "phc_BcfPwHPxQ6CuGEpGjTbMXV3N5jxKLPVMi5pZfLrDYq4L",
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Surface {
@@ -142,6 +153,11 @@ impl ConfigFile {
 
     pub fn load_or_create(path: impl Into<PathBuf>) -> Result<Self, ConfigError> {
         let path = path.into();
+        let _lock = lock_config(&path)?;
+        Self::load_or_create_unlocked(path)
+    }
+
+    fn load_or_create_unlocked(path: PathBuf) -> Result<Self, ConfigError> {
         match fs::read(&path) {
             Ok(bytes) => match serde_json::from_slice(&bytes) {
                 Ok(stored) => Ok(Self {
@@ -167,7 +183,7 @@ impl ConfigFile {
                     corrupt: false,
                     diagnostic: None,
                 };
-                config.save()?;
+                config.save_unlocked()?;
                 Ok(config)
             }
             Err(source) => Err(ConfigError::Read { path, source }),
@@ -205,23 +221,33 @@ impl ConfigFile {
     }
 
     pub fn mark_notice_seen(&mut self, surface: Surface) -> Result<(), ConfigError> {
-        match surface {
-            Surface::Cli => self.stored.cli_notice_seen = true,
-            Surface::Daemon => self.stored.daemon_notice_seen = true,
-        }
-        self.corrupt = false;
-        self.diagnostic = None;
-        self.save()
+        self.update(|stored| match surface {
+            Surface::Cli => stored.cli_notice_seen = true,
+            Surface::Daemon => stored.daemon_notice_seen = true,
+        })
     }
 
     pub fn set_telemetry(&mut self, enabled: bool) -> Result<(), ConfigError> {
-        self.stored.telemetry = Some(enabled);
-        self.corrupt = false;
-        self.diagnostic = None;
-        self.save()
+        self.update(|stored| stored.telemetry = Some(enabled))
     }
 
-    fn save(&self) -> Result<(), ConfigError> {
+    fn update(&mut self, change: impl FnOnce(&mut StoredConfig)) -> Result<(), ConfigError> {
+        let _lock = lock_config(&self.path)?;
+        let mut latest = Self::load_or_create_unlocked(self.path.clone())?;
+        if latest.corrupt {
+            latest.stored = self.stored.clone();
+        }
+        change(&mut latest.stored);
+        latest.corrupt = false;
+        latest.diagnostic = None;
+        latest.save_unlocked()?;
+        self.stored = latest.stored;
+        self.corrupt = false;
+        self.diagnostic = None;
+        Ok(())
+    }
+
+    fn save_unlocked(&self) -> Result<(), ConfigError> {
         let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent).map_err(|source| ConfigError::CreateDirectory {
             path: parent.to_path_buf(),
@@ -244,6 +270,30 @@ impl ConfigFile {
             source,
         })
     }
+}
+
+fn lock_config(path: &Path) -> Result<File, ConfigError> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|source| ConfigError::CreateDirectory {
+        path: parent.to_path_buf(),
+        source,
+    })?;
+    let lock_path = path.with_extension("lock");
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|source| ConfigError::Write {
+            path: lock_path.clone(),
+            source,
+        })?;
+    file.lock().map_err(|source| ConfigError::Write {
+        path: lock_path,
+        source,
+    })?;
+    Ok(file)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,23 +320,57 @@ pub enum TelemetryError {
 }
 
 pub struct Telemetry {
-    enabled: bool,
+    consent: Consent,
     surface: Surface,
     version: &'static str,
     sentry: Option<ClientInitGuard>,
-    posthog: Option<PosthogClient>,
-    distinct_id: Option<String>,
+    posthog: Option<(PosthogClient, String)>,
 }
 
 impl Telemetry {
-    pub fn start(
+    #[must_use]
+    pub fn bootstrap(surface: Surface, version: &'static str) -> Self {
+        let config = match ConfigFile::load_or_create_default() {
+            Ok(config) => Some(config),
+            Err(ConfigError::HomeUnavailable) => None,
+            Err(error) => {
+                eprintln!("could not initialize telemetry config: {error}");
+                None
+            }
+        };
+        if let Some(diagnostic) = config.as_ref().and_then(ConfigFile::diagnostic) {
+            eprintln!("{diagnostic}");
+        }
+        let persisted = config
+            .as_ref()
+            .map_or(PersistedTelemetry::Corrupt, ConfigFile::persisted_telemetry);
+        let consent = Consent::from_environment(persisted);
+        let mut telemetry =
+            Self::start(surface, version, consent, SENTRY_DSN).unwrap_or_else(|error| {
+                eprintln!("could not initialize error telemetry: {error}");
+                Self::disabled(surface, version)
+            });
+        if let Some(mut config) = config {
+            if consent.is_enabled() && config.notice_needed(surface) {
+                eprintln!("{TELEMETRY_NOTICE}");
+                if let Err(error) = config.mark_notice_seen(surface) {
+                    eprintln!("could not record telemetry notice: {error}");
+                }
+            }
+            if let Err(error) = telemetry.attach_posthog(POSTHOG_API_KEY, config.install_id()) {
+                eprintln!("could not initialize usage telemetry: {error}");
+            }
+        }
+        telemetry
+    }
+
+    fn start(
         surface: Surface,
         version: &'static str,
         consent: Consent,
         sentry_dsn: &str,
     ) -> Result<Self, TelemetryError> {
-        let enabled = consent.is_enabled();
-        let sentry = if enabled && !sentry_dsn.trim().is_empty() {
+        let sentry = if consent.is_enabled() && !sentry_dsn.trim().is_empty() {
             let dsn = sentry_dsn
                 .trim()
                 .parse::<Dsn>()
@@ -300,27 +384,37 @@ impl Telemetry {
             sentry::configure_scope(|scope| {
                 scope.set_tag("surface", surface.as_str());
                 scope.set_tag("version", version);
+                scope.set_tag("failure", "panic");
             });
             Some(guard)
         } else {
             None
         };
         Ok(Self {
-            enabled,
+            consent,
             surface,
             version,
             sentry,
             posthog: None,
-            distinct_id: None,
         })
     }
 
-    pub fn attach_posthog(
+    fn disabled(surface: Surface, version: &'static str) -> Self {
+        Self {
+            consent: Consent::Disabled,
+            surface,
+            version,
+            sentry: None,
+            posthog: None,
+        }
+    }
+
+    fn attach_posthog(
         &mut self,
         api_key: &str,
         distinct_id: impl Into<String>,
     ) -> Result<(), TelemetryError> {
-        if !self.enabled || api_key.trim().is_empty() {
+        if !self.consent.is_enabled() || api_key.trim().is_empty() {
             return Ok(());
         }
         let mut builder = ClientOptionsBuilder::default();
@@ -332,8 +426,7 @@ impl Telemetry {
         let options = builder
             .build()
             .map_err(|error| TelemetryError::Posthog(error.to_string()))?;
-        self.posthog = Some(posthog_rs::client(options));
-        self.distinct_id = Some(distinct_id.into());
+        self.posthog = Some((posthog_rs::client(options), distinct_id.into()));
         Ok(())
     }
 
@@ -368,13 +461,15 @@ impl Telemetry {
     }
 
     pub fn shutdown(self) {
-        if let Some(client) = &self.posthog {
+        if let Some((client, _)) = &self.posthog {
             client.shutdown();
         }
     }
 
     fn posthog_with_id(&self) -> Option<(&PosthogClient, &str)> {
-        Some((self.posthog.as_ref()?, self.distinct_id.as_deref()?))
+        self.posthog
+            .as_ref()
+            .map(|(client, distinct_id)| (client, distinct_id.as_str()))
     }
 
     fn event(&self, name: &str, distinct_id: &str) -> Event {
@@ -389,6 +484,7 @@ impl Telemetry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
 
     #[test]
     fn consent_uses_documented_precedence() {
@@ -436,6 +532,36 @@ mod tests {
         assert_eq!(config.persisted_telemetry(), PersistedTelemetry::Corrupt);
         assert!(config.diagnostic().is_some());
         assert_eq!(fs::read(&path).unwrap(), b"not json");
+    }
+
+    #[test]
+    fn concurrent_updates_preserve_independent_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config");
+        ConfigFile::load_or_create(&path).unwrap();
+        let barrier = Arc::new(Barrier::new(3));
+
+        let telemetry_path = path.clone();
+        let telemetry_barrier = Arc::clone(&barrier);
+        let telemetry = std::thread::spawn(move || {
+            let mut config = ConfigFile::load_or_create(telemetry_path).unwrap();
+            telemetry_barrier.wait();
+            config.set_telemetry(false).unwrap();
+        });
+        let notice_path = path.clone();
+        let notice_barrier = Arc::clone(&barrier);
+        let notice = std::thread::spawn(move || {
+            let mut config = ConfigFile::load_or_create(notice_path).unwrap();
+            notice_barrier.wait();
+            config.mark_notice_seen(Surface::Cli).unwrap();
+        });
+        barrier.wait();
+        telemetry.join().unwrap();
+        notice.join().unwrap();
+
+        let config = ConfigFile::load_or_create(path).unwrap();
+        assert_eq!(config.persisted_telemetry(), PersistedTelemetry::Disabled);
+        assert!(!config.notice_needed(Surface::Cli));
     }
 
     #[test]
