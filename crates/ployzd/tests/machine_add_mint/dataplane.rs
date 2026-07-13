@@ -55,6 +55,57 @@ pub(super) async fn report_join_completed_with_retry(
 }
 
 #[tokio::test]
+async fn join_report_waits_for_machine_responders_before_dataplane_admission() {
+    let _guard = lock_machine_add_mint_test().await;
+    let nats = TestNats::start().await;
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
+    let api = nats.api();
+    let join_api = nats.join_api();
+
+    let accepted = machine_add(
+        &api,
+        "op_delayed_responder",
+        "idem_delayed_responder",
+        "machine_delayed",
+    )
+    .await;
+    let redeemed = redeem_when_ready(&join_api, &accepted.join_token).await;
+    let machine = machine_id("machine_delayed");
+    let machine_config = nats.server().config_with_seed(
+        NatsPrincipal::Machine {
+            machine_id: machine.clone(),
+        },
+        redeemed.secret_delivery.nats_credentials,
+    );
+    let machine_client = connect_authenticated(&machine_config, Duration::from_secs(5))
+        .await
+        .expect("joined machine connects");
+
+    let report_request = MachineJoinReportRequest {
+        join_token: accepted.join_token,
+        outcome: MachineJoinReportOutcome::Completed,
+    };
+    let report = join_api.machine_join_report(&report_request);
+    let start_responders = async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        start_join_dataplane_responder(machine_client, machine).await;
+    };
+    let (reported, ()) = tokio::join!(report, start_responders);
+    let reported = reported.expect("join report succeeds after responders start");
+
+    assert_eq!(
+        reported.outcome,
+        ployz_sdk_types::MachineJoinReportedOutcome::Completed
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
 async fn completed_report_can_repair_activation_before_secret_scrub() {
     let _guard = lock_machine_add_mint_test().await;
     let nats = TestNats::start().await;
