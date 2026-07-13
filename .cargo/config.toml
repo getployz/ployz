@@ -1,2 +1,0 @@
-# Use Cargo's per-worktree target directory by default. Agent worktrees can
-# warm it with `scripts/cargo-hardlink-deps.py` without sharing one live target.

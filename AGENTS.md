@@ -83,7 +83,7 @@ Expected crate shape:
   permissions, and plain-subject transport helpers.
 - `ployzd`: process wiring, service handlers, controllers, machine agent, Docker,
   gateway, DNS, certs.
-- `ployzctl`: CLI client.
+- `ployz`: CLI client.
 - `ployz-sdk-types`: public schema/type export surface.
 
 Keep dependencies flowing inward. Business logic must not import process wiring.
