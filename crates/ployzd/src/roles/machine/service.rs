@@ -18,7 +18,9 @@ use super::images::{
 use super::logs::handle_logs_tail;
 use super::substrate::{handle_substrate_report, handle_substrate_update};
 use crate::adapters::host_dataplane::dataplane_status_budget;
-use crate::roles::machine::projection::MachineProjectionState;
+use crate::roles::machine::projection::{
+    MachineProjectionState, RunningProjectionTask, start_projection_task,
+};
 use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
 use crate::service_catalog::{machine_endpoint_spec, machine_role_service_base};
 use ployz_core::dataplane::{
@@ -29,7 +31,7 @@ use ployz_core::ids::MachineId;
 use ployz_core::subjects::MachineServiceEndpoint;
 use ployz_nats::service_runtime::{
     EndpointExecutionPolicy, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
-    RunningNatsService, start_nats_service,
+    NatsServiceShutdownError, RunningNatsService, start_nats_service,
 };
 use std::future::Future;
 use std::num::NonZeroUsize;
@@ -44,6 +46,51 @@ pub use super::facts::MachineFactsReadError;
 const DATAPLANE_STATUS_ENDPOINT_TIMEOUT: Duration =
     dataplane_status_budget(ployz_core::dataplane::NetworkStatusMode::ProbePathMtu)
         .saturating_add(Duration::from_secs(10));
+
+pub struct RunningMachineRoleRuntime {
+    service: RunningNatsService,
+    projection: RunningProjectionTask,
+}
+
+impl RunningMachineRoleRuntime {
+    pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
+        self.projection.shutdown().await;
+        self.service.shutdown().await
+    }
+}
+
+pub async fn start_machine_role_runtime<R, P, L>(
+    client: ployz_nats::service_runtime::NatsClient,
+    machine_id: MachineId,
+    runner: R,
+    preparer: P,
+    log_reader: L,
+) -> Result<RunningMachineRoleRuntime, MachineServiceError>
+where
+    R: Clone + MachineContainerRunner + Send + Sync + 'static,
+    P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
+    L: Clone + MachineLogReader + Send + Sync + 'static,
+{
+    let projection_state = MachineProjectionState::new();
+    let service = start_machine_role_service_with_endpoint_cache_and_image(
+        client.clone(),
+        machine_id.clone(),
+        runner.clone(),
+        preparer.clone(),
+        log_reader,
+        MachineEndpointCache::default(),
+        MachineRoleProjectionServices {
+            image_state: None,
+            projection_state: projection_state.clone(),
+        },
+    )
+    .await?;
+    let projection = start_projection_task(client, machine_id, runner, preparer, projection_state);
+    Ok(RunningMachineRoleRuntime {
+        service,
+        projection,
+    })
+}
 
 pub async fn start_machine_role_service<R, P, L>(
     client: ployz_nats::service_runtime::NatsClient,

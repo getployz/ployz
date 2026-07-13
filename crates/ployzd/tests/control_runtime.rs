@@ -519,7 +519,7 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
-        ReadyWireGuardEbpf,
+        ReadyWireGuardEbpf::for_machine(&machine_id("machine_a")),
         runner.clone(),
     )
     .await
@@ -672,7 +672,7 @@ async fn control_runtime_records_typed_planning_failure_when_tag_cannot_resolve(
         machine_client,
         machine_id("machine_a"),
         runner.clone(),
-        ReadyWireGuardEbpf,
+        ReadyWireGuardEbpf::for_machine(&machine_id("machine_a")),
         runner.clone(),
     )
     .await
@@ -832,7 +832,7 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
-        ReadyWireGuardEbpf,
+        ReadyWireGuardEbpf::for_machine(&machine_id("machine_a")),
         runner.clone(),
     )
     .await

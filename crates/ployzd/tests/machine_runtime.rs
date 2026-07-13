@@ -25,7 +25,7 @@ async fn machine_runtime_serves_container_run_and_observes_created_container() {
         nats.machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
-        ReadyWireGuardEbpf,
+        ReadyWireGuardEbpf::for_machine(&machine_id("machine_a")),
         runner.clone(),
     )
     .await
@@ -65,7 +65,7 @@ async fn machine_runtime_serves_container_remove_and_updates_observations() {
         nats.machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
-        ReadyWireGuardEbpf,
+        ReadyWireGuardEbpf::for_machine(&machine_id("machine_a")),
         runner.clone(),
     )
     .await
