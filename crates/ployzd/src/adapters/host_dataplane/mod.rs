@@ -2,12 +2,13 @@
 
 use ployz_core::dataplane::{
     DEFAULT_WIREGUARD_LISTEN_PORT, EbpfAttachmentStatus, EbpfForwardingReady,
-    MachineDataplaneStatus, NetworkStatusMode, OVERLAY_CONNECTIVITY_PROOF_BUDGET,
-    PloyzNativeMeshComponent, PloyzNativeMeshReady, WireGuardEbpfEndpointRoute,
-    WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey, WireGuardReady,
-    WireGuardReadyEvidence,
+    MachineDataplaneStatus, NativeDataplaneProjectionStatus, NetworkStatusMode,
+    OVERLAY_CONNECTIVITY_PROOF_BUDGET, PloyzNativeMeshComponent, PloyzNativeMeshReady,
+    WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey,
+    WireGuardReady, WireGuardReadyEvidence,
 };
 use ployz_core::ids::MachineId;
+use ployz_core::ops::FailureMessage;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -179,6 +180,10 @@ impl MachinePloyzNativeMeshPreparer for PloyzNativeMeshPreparer {
             },
         };
         Ok(MachineDataplaneStatus {
+            projection: NativeDataplaneProjectionStatus::unavailable(
+                FailureMessage::try_new("dataplane projection has not been observed")
+                    .expect("static failure message"),
+            ),
             wireguard,
             ebpf_attachment,
         })

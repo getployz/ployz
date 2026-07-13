@@ -4,7 +4,8 @@ use ployz_core::machine::{IssuedJoinToken, JoinTokenExpiresAt, RawJoinToken};
 use ployz_core::roles::InstallRolePolicy;
 use ployz_core::state::{
     ActiveMachineState, ControlPlaneEpoch, IntentSnapshot, MachineLifecycle,
-    PendingMachineJoinRecoverySnapshot, RouteBindingState, VolumePinState,
+    PendingMachineJoinRecoverySnapshot, RouteBindingState, StagedMachineDataplaneState,
+    VolumePinState,
 };
 use ployz_core::subjects::{INTENT_CHANGED, PENDING_MACHINE_JOINS_CHANGED};
 use ployz_test_support::fixtures::{machine_join_bundle, serving_target_entry};
@@ -37,6 +38,7 @@ async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
             lifecycle: MachineLifecycle::Active,
             endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
                 .expect("valid endpoint subnet"),
+            wireguard_public_key: wireguard_public_key("public-machine-a"),
         })
         .await
         .expect("active machine stores");
@@ -102,6 +104,96 @@ async fn intent_reader_gets_current_intent() {
     assert!(intent.active_machines.is_empty());
     assert!(intent.route_bindings.is_empty());
     assert!(intent.serving_target_entries.is_empty());
+}
+
+#[tokio::test]
+async fn machine_reads_core_stamped_projection_with_one_staged_joiner() {
+    let machine = machine_id("machine_a");
+    let nats = ployz_test_support::nats::TestNats::start_with_machines(&[machine.clone()]).await;
+    let core_store = CoreStore::open_in_memory().await.expect("core store");
+    let repository = OperationRepository::open(core_store.clone(), nats.controller.clone());
+    let raw_join_token = RawJoinToken::try_new("join_machine_a").expect("join token");
+    let operation = operation_id("op_add_machine_a");
+    repository
+        .submit_machine_add(MachineAddOperationSubmission {
+            operation_id: operation.clone(),
+            idempotency_key: idempotency_key("idem_add_machine_a"),
+            identity: MachineJoinIdentity {
+                machine_id: machine.clone(),
+                name: machine_name("machine-a"),
+                roles: InstallRolePolicy::install_all(),
+                host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
+                endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(
+                    "10.198.1.0/24",
+                )
+                .expect("subnet"),
+                join_bundle: machine_join_bundle(),
+                join_token: IssuedJoinToken::new(
+                    raw_join_token.fingerprint().expect("fingerprint"),
+                    JoinTokenExpiresAt::try_new(4_102_444_800).expect("expiry"),
+                ),
+                raw_join_token,
+            },
+        })
+        .await
+        .expect("submit");
+    repository
+        .record_machine_add_joined(
+            &operation,
+            &machine,
+            ployz_core::machine::JoinTokenRedeemedAt::try_new(1).expect("joined at"),
+        )
+        .await
+        .expect("joining");
+    repository
+        .stage_machine_dataplane(StagedMachineDataplaneState {
+            operation_id: operation,
+            machine_id: machine.clone(),
+            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.1.0/24")
+                .expect("subnet"),
+            mesh_endpoints: vec!["192.0.2.1:51820".parse().expect("endpoint")],
+            wireguard_public_key: wireguard_public_key("public-machine-a"),
+        })
+        .await
+        .expect("stage");
+    let _runtime = start_intent_service(
+        nats.controller.clone(),
+        machine.clone(),
+        MachineRosterStore::new(core_store.clone()),
+        NamespaceIntentStore::new(core_store.clone()),
+        core_store,
+        Duration::from_secs(30),
+    )
+    .await
+    .expect("intent service");
+
+    let projection = NatsIntentReader::new(nats.machine_client(&machine).await)
+        .with_request_timeout(Duration::from_secs(1))
+        .dataplane_projection()
+        .await
+        .expect("projection");
+
+    assert!(projection.declared_members.is_empty());
+    assert_eq!(projection.target_members.len(), 1);
+    assert_ne!(projection.declared_revision, projection.target_revision);
+
+    repository
+        .record_machine_add_failed(
+            &operation_id("op_add_machine_a"),
+            &machine,
+            ployz_core::machine::MachineAddFailure::BootstrapFailed {
+                message: ployz_core::ops::FailureMessage::try_new("failed")
+                    .expect("failure message"),
+            },
+        )
+        .await
+        .expect("fail operation");
+    let projection = NatsIntentReader::new(nats.machine_client(&machine).await)
+        .with_request_timeout(Duration::from_secs(1))
+        .dataplane_projection()
+        .await
+        .expect("projection after failure");
+    assert!(projection.target_members.is_empty());
 }
 
 #[tokio::test]
@@ -189,6 +281,7 @@ async fn intent_reader_overlays_machine_lifecycle_evidence() {
             lifecycle: MachineLifecycle::Draining,
             endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
                 .expect("valid endpoint subnet"),
+            wireguard_public_key: wireguard_public_key("public-machine-a"),
         })
         .await
         .expect("active machine stores");
@@ -354,6 +447,10 @@ async fn temp_machine_roster() -> MachineRosterStore {
             .await
             .expect("open core store"),
     )
+}
+
+fn wireguard_public_key(value: &str) -> ployz_core::dataplane::WireGuardPublicKey {
+    ployz_core::dataplane::WireGuardPublicKey::try_new(value).expect("wireguard public key")
 }
 
 fn route_target(hostname: &str, port: u16) -> ployz_core::ops::RouteTarget {

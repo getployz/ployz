@@ -957,6 +957,10 @@ fn active_machine(value: &str) -> ActiveMachineState {
         roles: ployz_core::roles::InstallRolePolicy::install_all(),
         endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
             .expect("valid endpoint subnet"),
+        wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+            "public-{value}"
+        ))
+        .expect("public key"),
     }
 }
 

@@ -141,6 +141,8 @@ async fn seed_active_machine(machine_roster: &MachineRosterStore, machine: &str)
         ployz_core::roles::InstallRolePolicy::install_all(),
         ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
             .expect("valid endpoint subnet"),
+        ployz_core::dataplane::WireGuardPublicKey::try_new(format!("public-{machine}"))
+            .expect("public key"),
         ployz_core::ops::MachineAddOperationState::Completed,
     )
     .expect("completed add activates");

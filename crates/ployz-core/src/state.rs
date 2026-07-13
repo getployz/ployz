@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cert::{AcmeHttp01Challenge, ActiveCertState, ManagedCertBundle, ManagedLeaseRecord};
-use crate::dataplane::MachineEndpointSubnet;
+use crate::dataplane::{MachineEndpointSubnet, WireGuardPublicKey};
 use crate::deploy::{ImageReference, ReplicaCount, VolumeName};
 use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
 use crate::machine::{IssuedJoinToken, MachineName};
@@ -71,6 +71,18 @@ pub struct ActiveMachineState {
     pub mesh_endpoints: Vec<SocketAddr>,
     /// Core-owned overlay endpoint subnet allocated from cluster intent.
     pub endpoint_subnet: MachineEndpointSubnet,
+    pub wireguard_public_key: WireGuardPublicKey,
+}
+
+/// Operation-owned machine identity admitted into the target dataplane projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StagedMachineDataplaneState {
+    pub operation_id: OperationId,
+    pub machine_id: MachineId,
+    pub endpoint_subnet: MachineEndpointSubnet,
+    pub mesh_endpoints: Vec<SocketAddr>,
+    pub wireguard_public_key: WireGuardPublicKey,
 }
 
 /// Epoch-stamped non-secret pending machine-add recovery hints mirrored for

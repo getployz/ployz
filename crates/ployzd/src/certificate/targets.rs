@@ -99,6 +99,10 @@ mod tests {
             mesh_endpoints: Vec::new(),
             endpoint_subnet: MachineEndpointSubnet::try_new("10.198.1.0/24")
                 .expect("valid endpoint subnet"),
+            wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+                "public-{machine_id}"
+            ))
+            .expect("public key"),
         }
     }
 }

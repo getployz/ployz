@@ -301,6 +301,29 @@ async fn activate_reported_machine(
     name: &MachineName,
     endpoint_subnet: MachineEndpointSubnet,
 ) -> Result<(), MachineJoinReportError> {
+    if let Some(active) = handlers
+        .machine_roster
+        .active_machine(machine_id)
+        .await
+        .map_err(|error| MachineJoinReportError::Unavailable {
+            message: error.to_string(),
+        })?
+    {
+        if active.activated_by != *operation_id {
+            return Err(MachineJoinReportError::Unavailable {
+                message: corrupt("active machine belongs to another operation"),
+            });
+        }
+        handlers
+            .controllers
+            .repository()
+            .clear_staged_machine_dataplane(operation_id)
+            .await
+            .map_err(|error| MachineJoinReportError::Unavailable {
+                message: error.to_string(),
+            })?;
+        return Ok(());
+    }
     let status = handlers
         .controllers
         .repository()
@@ -317,12 +340,25 @@ async fn activate_reported_machine(
             message: corrupt("activation operation is not machine-add"),
         });
     };
+    let staged = handlers
+        .controllers
+        .repository()
+        .machine_dataplane_staging(operation_id)
+        .await
+        .map_err(|error| MachineJoinReportError::Unavailable {
+            message: error.to_string(),
+        })?
+        .filter(|staged| &staged.operation_id == operation_id && &staged.machine_id == machine_id)
+        .ok_or_else(|| MachineJoinReportError::Unavailable {
+            message: corrupt("completed machine-add has no staged dataplane identity"),
+        })?;
     let active_machine = active_machine_from_completed_add(
         operation_id.clone(),
         machine_id.clone(),
         name.clone(),
         roles,
         endpoint_subnet,
+        staged.wireguard_public_key,
         ployz_core::ops::MachineAddOperationState::Completed,
     )
     .map_err(|_| MachineJoinReportError::Unavailable {
@@ -331,6 +367,14 @@ async fn activate_reported_machine(
     handlers
         .machine_roster
         .replace_active_machine(&active_machine)
+        .await
+        .map_err(|error| MachineJoinReportError::Unavailable {
+            message: error.to_string(),
+        })?;
+    handlers
+        .controllers
+        .repository()
+        .clear_staged_machine_dataplane(operation_id)
         .await
         .map_err(|error| MachineJoinReportError::Unavailable {
             message: error.to_string(),

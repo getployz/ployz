@@ -1,7 +1,8 @@
 use ployz_core::subjects::{
-    INTENT_GET, JOIN_MACHINE_REPORT, OPERATOR_DEPLOY_RESERVE, OPERATOR_DEPLOY_SUBMIT,
-    OPERATOR_MACHINE_ADD, OPERATOR_MACHINE_INSPECT, OPERATOR_MACHINE_LIST, OPERATOR_OPS_STATUS,
-    OPERATOR_OPS_WATCH, OPERATOR_SERVICE_INSPECT, OPERATOR_SERVICE_LIST, OperationProgressScope,
+    DATAPLANE_PROJECTION_GET, INTENT_GET, JOIN_MACHINE_REPORT, OPERATOR_DEPLOY_RESERVE,
+    OPERATOR_DEPLOY_SUBMIT, OPERATOR_MACHINE_ADD, OPERATOR_MACHINE_INSPECT, OPERATOR_MACHINE_LIST,
+    OPERATOR_OPS_STATUS, OPERATOR_OPS_WATCH, OPERATOR_SERVICE_INSPECT, OPERATOR_SERVICE_LIST,
+    OperationProgressScope,
 };
 use ployz_nats::services::{EndpointExecution, ServiceDiscoveryQuery};
 use ployz_sdk_types::OpsStatusError;
@@ -38,6 +39,7 @@ fn control_catalog_supports_srv_ping_discovery() {
     assert!(catalog.has_endpoint_subject(OPERATOR_SERVICE_LIST));
     assert!(catalog.has_endpoint_subject(OPERATOR_SERVICE_INSPECT));
     assert!(catalog.has_endpoint_subject(INTENT_GET));
+    assert!(catalog.has_endpoint_subject(DATAPLANE_PROJECTION_GET));
     assert!(!catalog.has_endpoint_subject("plz.v1.rpc.machine.query.machine_7.inspect"));
 
     let machine_catalog = DaemonServiceCatalog::for_machine(&machine_id);

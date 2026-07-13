@@ -8,13 +8,16 @@ pub use ployz_core::cert::{
     ManagedLeaseName, ManagedLeaseRecord, ManagedLeaseRenewed, PublicUrlMode,
 };
 pub use ployz_core::dataplane::{
-    DataplaneMember, DataplaneProviderFailure, EbpfAttachmentStatus, EbpfForwardingReady,
-    EbpfForwardingReadyEvidence, MachineDataplaneStatus, MachineEndpointSubnet,
-    MachineEndpointSupernet, NetworkStatusMode, PloyzNativeMeshComponent,
-    PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport, PloyzNativeMeshReady,
-    WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardHandshakeStatus, WireGuardInterfaceMtu,
-    WireGuardMtuProbe, WireGuardPeerEndpointSubnet, WireGuardPeerStatus, WireGuardPublicKey,
-    WireGuardReady, WireGuardReadyEvidence, WireGuardRttStatus, WireGuardStatus,
+    DataplaneMember, DataplaneProjection, DataplaneProjectionComponent, DataplaneProjectionFailure,
+    DataplaneProjectionMember, DataplaneProjectionRevision, DataplaneProjectionRevisions,
+    DataplaneProjectionTestimony, DataplaneProviderFailure, EbpfAttachmentStatus,
+    EbpfForwardingReady, EbpfForwardingReadyEvidence, EndpointBridgeStatus, MachineDataplaneStatus,
+    MachineEndpointSubnet, MachineEndpointSupernet, NativeDataplaneProjectionStatus,
+    NetworkStatusMode, PloyzNativeMeshComponent, PloyzNativeMeshMachineReady,
+    PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, WireGuardConfiguredMtu,
+    WireGuardDetectedMtu, WireGuardHandshakeStatus, WireGuardInterfaceMtu, WireGuardMtuProbe,
+    WireGuardPeerEndpointSubnet, WireGuardPeerStatus, WireGuardPublicKey, WireGuardReady,
+    WireGuardReadyEvidence, WireGuardRttStatus, WireGuardStatus,
 };
 pub use ployz_core::deploy::{
     ContainerCommand, ContainerCommandError, ContainerEntrypoint, ContainerHealthcheck,

@@ -2,6 +2,7 @@
 
 use ipnet::{IpNet, Ipv4Net};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fmt;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -21,6 +22,125 @@ pub const INTERNAL_DNS_SUFFIX: &str = "internal";
 
 mod status;
 pub use status::*;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(type = "Brand<string, \"DataplaneProjectionRevision\">")
+)]
+#[serde(transparent)]
+pub struct DataplaneProjectionRevision(String);
+
+impl DataplaneProjectionRevision {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn for_members(members: &[DataplaneProjectionMember]) -> Self {
+        let mut digest = Sha256::new();
+        hash_field(&mut digest, b"ployz-dataplane-projection-v1");
+        digest.update((members.len() as u64).to_be_bytes());
+        for member in members {
+            hash_field(&mut digest, member.machine_id.as_str().as_bytes());
+            hash_field(&mut digest, member.endpoint_subnet.as_string().as_bytes());
+            hash_field(&mut digest, member.wireguard_public_key.as_str().as_bytes());
+            digest.update((member.mesh_endpoints.len() as u64).to_be_bytes());
+            for endpoint in &member.mesh_endpoints {
+                hash_field(&mut digest, endpoint.to_string().as_bytes());
+            }
+        }
+        Self(format!("{:x}", digest.finalize()))
+    }
+}
+
+fn hash_field(digest: &mut Sha256, value: &[u8]) {
+    digest.update((value.len() as u64).to_be_bytes());
+    digest.update(value);
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct DataplaneProjectionMember {
+    pub machine_id: MachineId,
+    pub endpoint_subnet: MachineEndpointSubnet,
+    pub mesh_endpoints: Vec<SocketAddr>,
+    pub wireguard_public_key: WireGuardPublicKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct DataplaneProjection {
+    pub declared_revision: DataplaneProjectionRevision,
+    pub target_revision: DataplaneProjectionRevision,
+    pub declared_members: Vec<DataplaneProjectionMember>,
+    pub target_members: Vec<DataplaneProjectionMember>,
+}
+
+impl DataplaneProjection {
+    pub fn try_new(
+        mut declared_members: Vec<DataplaneProjectionMember>,
+        mut staged_member: Option<DataplaneProjectionMember>,
+    ) -> Result<Self, DataplaneProjectionError> {
+        for member in &mut declared_members {
+            member.mesh_endpoints.sort();
+            member.mesh_endpoints.dedup();
+        }
+        if let Some(member) = &mut staged_member {
+            member.mesh_endpoints.sort();
+            member.mesh_endpoints.dedup();
+        }
+        declared_members.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
+        if declared_members
+            .windows(2)
+            .any(|pair| pair[0].machine_id == pair[1].machine_id)
+        {
+            return Err(DataplaneProjectionError::DuplicateMachine);
+        }
+        let mut target_members = declared_members.clone();
+        if let Some(staged_member) = staged_member {
+            if declared_members
+                .iter()
+                .any(|member| member.machine_id == staged_member.machine_id)
+            {
+                return Err(DataplaneProjectionError::DuplicateMachine);
+            }
+            target_members.push(staged_member);
+        }
+        target_members.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
+        let mut subnets = BTreeSet::new();
+        let mut public_keys = BTreeSet::new();
+        for member in &target_members {
+            if !subnets.insert(member.endpoint_subnet.clone()) {
+                return Err(DataplaneProjectionError::DuplicateEndpointSubnet);
+            }
+            if !public_keys.insert(member.wireguard_public_key.clone()) {
+                return Err(DataplaneProjectionError::DuplicateWireGuardPublicKey);
+            }
+        }
+        let declared_revision = DataplaneProjectionRevision::for_members(&declared_members);
+        let target_revision = DataplaneProjectionRevision::for_members(&target_members);
+        Ok(Self {
+            declared_revision,
+            target_revision,
+            declared_members,
+            target_members,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum DataplaneProjectionError {
+    #[error("dataplane projection contains a duplicate machine")]
+    DuplicateMachine,
+    #[error("dataplane projection contains a duplicate endpoint subnet")]
+    DuplicateEndpointSubnet,
+    #[error("dataplane projection contains a duplicate WireGuard public key")]
+    DuplicateWireGuardPublicKey,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataplanePrepareRequest {
@@ -436,7 +556,7 @@ impl WireGuardPeer {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[cfg_attr(feature = "typescript", ts(type = "string"))]
 #[serde(try_from = "String", into = "String")]
@@ -856,6 +976,57 @@ mod tests {
 
     fn machine_id(value: &str) -> MachineId {
         MachineId::try_new(value).expect("valid machine id")
+    }
+
+    fn projection_member(machine: &str, subnet: &str) -> DataplaneProjectionMember {
+        DataplaneProjectionMember {
+            machine_id: machine_id(machine),
+            endpoint_subnet: MachineEndpointSubnet::try_new(subnet).expect("valid subnet"),
+            mesh_endpoints: vec![
+                "192.0.2.2:51820".parse().expect("endpoint"),
+                "192.0.2.1:51820".parse().expect("endpoint"),
+                "192.0.2.2:51820".parse().expect("endpoint"),
+            ],
+            wireguard_public_key: WireGuardPublicKey::try_new(format!("public-{machine}"))
+                .expect("public key"),
+        }
+    }
+
+    #[test]
+    fn projection_revision_is_canonical_and_promotion_stable() {
+        let first = projection_member("machine_a", "10.198.1.0/24");
+        let second = projection_member("machine_b", "10.198.2.0/24");
+        let staged = DataplaneProjection::try_new(vec![first.clone()], Some(second.clone()))
+            .expect("projection");
+        let promoted =
+            DataplaneProjection::try_new(vec![second, first], None).expect("promoted projection");
+
+        assert_eq!(staged.target_revision, promoted.declared_revision);
+        assert_eq!(promoted.declared_revision, promoted.target_revision);
+        assert_eq!(promoted.declared_members[0].mesh_endpoints.len(), 2);
+    }
+
+    #[test]
+    fn projection_rejects_duplicate_machine_subnet_and_public_key() {
+        let first = projection_member("machine_a", "10.198.1.0/24");
+        let mut duplicate_subnet = projection_member("machine_b", "10.198.1.0/24");
+        let mut duplicate_key = projection_member("machine_c", "10.198.3.0/24");
+        duplicate_key.wireguard_public_key = first.wireguard_public_key.clone();
+
+        assert_eq!(
+            DataplaneProjection::try_new(vec![first.clone()], Some(first.clone())),
+            Err(DataplaneProjectionError::DuplicateMachine)
+        );
+        assert_eq!(
+            DataplaneProjection::try_new(vec![first.clone()], Some(duplicate_subnet.clone())),
+            Err(DataplaneProjectionError::DuplicateEndpointSubnet)
+        );
+        duplicate_subnet.endpoint_subnet =
+            MachineEndpointSubnet::try_new("10.198.2.0/24").expect("subnet");
+        assert_eq!(
+            DataplaneProjection::try_new(vec![first], Some(duplicate_key)),
+            Err(DataplaneProjectionError::DuplicateWireGuardPublicKey)
+        );
     }
 
     fn ready_machine(machine: &str) -> PloyzNativeMeshMachineReady {

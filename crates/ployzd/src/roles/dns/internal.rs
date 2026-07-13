@@ -790,6 +790,10 @@ mod tests {
                 mesh_endpoints: Vec::new(),
                 endpoint_subnet: MachineEndpointSubnet::try_new("10.198.0.0/24")
                     .expect("endpoint subnet"),
+                wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+                    "public-{machine}"
+                ))
+                .expect("public key"),
             }],
             route_bindings: Vec::new(),
             serving_target_entries: vec![serving_target_entry("db", entry)],

@@ -81,6 +81,10 @@ fn network_status_keeps_no_answer_machine_row() {
                 mesh_endpoints: vec!["203.0.113.10:51820".parse().expect("valid socket address")],
                 endpoint_subnet: MachineEndpointSubnet::try_new("10.198.1.0/24")
                     .expect("valid endpoint subnet"),
+                wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(
+                    "public-machine-a",
+                )
+                .expect("public key"),
             },
             dataplane: NetworkDataplaneTestimony::NoAnswer,
             internal_dns: NetworkInternalDnsTestimony::NoAnswer,
@@ -290,6 +294,10 @@ fn status_machine(dataplane: NetworkDataplaneTestimony) -> NetworkStatusMachine 
             mesh_endpoints: Vec::new(),
             endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.1.0/24")
                 .expect("valid endpoint subnet"),
+            wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(
+                "public-machine-a",
+            )
+            .expect("public key"),
         },
         dataplane,
         internal_dns: NetworkInternalDnsTestimony::NoAnswer,

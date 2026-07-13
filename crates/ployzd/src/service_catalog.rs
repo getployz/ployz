@@ -2,8 +2,8 @@
 
 use ployz_core::ids::MachineId;
 use ployz_core::subjects::{
-    INTENT_GET, MachineServiceEndpoint, OperationApiEndpoint, OperationApiEndpointExecution,
-    machine_service,
+    DATAPLANE_PROJECTION_GET, INTENT_GET, MachineServiceEndpoint, OperationApiEndpoint,
+    OperationApiEndpointExecution, machine_service,
 };
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceDiscoveryQuery,
@@ -131,13 +131,25 @@ pub fn intent_service() -> NatsServiceSpec {
         SERVICE_VERSION,
         INTENT_SERVICE_DESCRIPTION,
         ServiceMetadata::empty(),
-        vec![intent_get_endpoint_spec()],
+        vec![
+            intent_get_endpoint_spec(),
+            dataplane_projection_get_endpoint_spec(),
+        ],
     )
 }
 
 #[must_use]
 pub fn intent_get_endpoint_spec() -> NatsServiceEndpointSpec {
     NatsServiceEndpointSpec::new("intent.get", INTENT_GET, EndpointExecution::Query)
+}
+
+#[must_use]
+pub fn dataplane_projection_get_endpoint_spec() -> NatsServiceEndpointSpec {
+    NatsServiceEndpointSpec::new(
+        "dataplane.projection.get",
+        DATAPLANE_PROJECTION_GET,
+        EndpointExecution::Query,
+    )
 }
 
 #[must_use]

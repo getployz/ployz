@@ -7,13 +7,18 @@ use crate::intent::machine_roster::MachineRosterStore;
 use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::intent::nats_authorizations::NatsAuthorizationStore;
 use crate::operations::log::OperationRepository;
-use crate::service_catalog::{intent_get_endpoint_spec, intent_service};
+use crate::service_catalog::{
+    dataplane_projection_get_endpoint_spec, intent_get_endpoint_spec, intent_service,
+};
 use ployz_core::cert::{AutoLeaseState, ManagedLeaseIntent};
+use ployz_core::dataplane::{DataplaneProjection, DataplaneProjectionMember};
 use ployz_core::ids::MachineId;
 use ployz_core::state::{
     IntentSnapshot, ManagedLeaseProjection, PendingMachineJoinRecoverySnapshot,
 };
-use ployz_core::subjects::{INTENT_CHANGED, INTENT_GET, PENDING_MACHINE_JOINS_CHANGED};
+use ployz_core::subjects::{
+    DATAPLANE_PROJECTION_GET, INTENT_CHANGED, INTENT_GET, PENDING_MACHINE_JOINS_CHANGED,
+};
 use ployz_nats::service_protocol::NatsServiceError;
 use ployz_nats::service_runtime::{
     NatsJsonServiceRequestError, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
@@ -27,6 +32,10 @@ use tokio::task::JoinHandle;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IntentGetRequest {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataplaneProjectionGetRequest {}
 
 #[derive(Debug)]
 pub struct RunningIntentService {
@@ -76,6 +85,17 @@ impl NatsIntentReader {
             &self.client,
             INTENT_GET.to_owned(),
             &IntentGetRequest {},
+            self.request_timeout,
+        )
+        .await
+        .map_err(IntentReadError::from)
+    }
+
+    pub async fn dataplane_projection(&self) -> Result<DataplaneProjection, IntentReadError> {
+        request_json(
+            &self.client,
+            DATAPLANE_PROJECTION_GET.to_owned(),
+            &DataplaneProjectionGetRequest {},
             self.request_timeout,
         )
         .await
@@ -142,6 +162,18 @@ pub async fn start_intent_service(
             }
         })
         .await?;
+    let projection_machine_roster = machine_roster.clone();
+    let projection_repository = operation_repository.clone();
+    service
+        .bind_endpoint(&dataplane_projection_get_endpoint_spec(), move |request| {
+            let machine_roster = projection_machine_roster.clone();
+            let operation_repository = projection_repository.clone();
+            async move {
+                dataplane_projection_get_response(request, &machine_roster, &operation_repository)
+                    .await
+            }
+        })
+        .await?;
 
     let publisher = tokio::spawn(async move {
         let sources = IntentSnapshotSources {
@@ -185,6 +217,49 @@ pub async fn start_intent_service(
     });
 
     Ok(RunningIntentService { service, publisher })
+}
+
+async fn dataplane_projection_get_response(
+    request: NatsServiceRequest,
+    machine_roster: &MachineRosterStore,
+    operation_repository: &OperationRepository,
+) -> NatsServiceResponse {
+    if let Err(response) = decode_json_request::<DataplaneProjectionGetRequest>(&request) {
+        return response;
+    }
+    match load_dataplane_projection(machine_roster, operation_repository).await {
+        Ok(projection) => NatsServiceResponse::json_ok(&projection),
+        Err(message) => NatsServiceResponse::transport_error(NatsServiceError::internal(message)),
+    }
+}
+
+async fn load_dataplane_projection(
+    machine_roster: &MachineRosterStore,
+    operation_repository: &OperationRepository,
+) -> Result<DataplaneProjection, String> {
+    let declared = machine_roster
+        .active_machines()
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|machine| DataplaneProjectionMember {
+            machine_id: machine.machine_id,
+            endpoint_subnet: machine.endpoint_subnet,
+            mesh_endpoints: machine.mesh_endpoints,
+            wireguard_public_key: machine.wireguard_public_key,
+        })
+        .collect();
+    let staged = operation_repository
+        .staged_machine_dataplane()
+        .await
+        .map_err(|error| error.to_string())?
+        .map(|machine| DataplaneProjectionMember {
+            machine_id: machine.machine_id,
+            endpoint_subnet: machine.endpoint_subnet,
+            mesh_endpoints: machine.mesh_endpoints,
+            wireguard_public_key: machine.wireguard_public_key,
+        });
+    DataplaneProjection::try_new(declared, staged).map_err(|error| error.to_string())
 }
 
 async fn intent_get_response(

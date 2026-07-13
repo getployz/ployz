@@ -1819,6 +1819,10 @@ impl LocalWireGuardEbpfPreparer for RecordingWireGuardEbpf {
 
 fn machine_dataplane_status() -> MachineDataplaneStatus {
     MachineDataplaneStatus {
+        projection: ployz_core::dataplane::NativeDataplaneProjectionStatus::unavailable(
+            ployz_core::ops::FailureMessage::try_new("projection unavailable")
+                .expect("failure message"),
+        ),
         wireguard: WireGuardStatus {
             interface: "ployz-wg0".to_owned(),
             configured_mtu: WireGuardConfiguredMtu::Auto,

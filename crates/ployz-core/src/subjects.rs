@@ -17,6 +17,7 @@ pub const MACHINE_RPC_COMMAND_SCOPE: &str = "plz.v1.rpc.machine.command.>";
 pub const OPERATOR_MACHINE_IMAGE_QUERY_SCOPE: &str = "plz.v1.rpc.machine.query.*.image.>";
 pub const OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE: &str = "plz.v1.rpc.machine.command.*.image.>";
 pub const INTENT_GET: &str = "plz.v1.rpc.core.query.intent.get";
+pub const DATAPLANE_PROJECTION_GET: &str = "plz.v1.rpc.core.query.dataplane.projection.get";
 pub const INTENT_CHANGED: &str = "plz.v1.signal.intent.changed";
 pub const PENDING_MACHINE_JOINS_CHANGED: &str = "plz.v1.signal.machine.join.pending";
 

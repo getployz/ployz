@@ -415,6 +415,20 @@ pub enum OperationStatusStoreError {
 }
 
 #[derive(Debug, thiserror::Error)]
+pub enum StageMachineDataplaneError {
+    #[error("machine-add operation {} is not joining", .operation_id.as_str())]
+    OperationNotJoining { operation_id: OperationId },
+    #[error("machine-add operation {} belongs to a different machine", .operation_id.as_str())]
+    MachineMismatch { operation_id: OperationId },
+    #[error("machine {} is already active", .machine_id.as_str())]
+    MachineAlreadyActive { machine_id: MachineId },
+    #[error("another machine-add operation owns dataplane staging")]
+    StagingOccupied,
+    #[error("machine dataplane staging: {0}")]
+    Store(OperationStatusStoreError),
+}
+
+#[derive(Debug, thiserror::Error)]
 pub enum OperationEventLogError {
     #[error("decode operation event: {0}")]
     DecodeEvent(serde_json::Error),
