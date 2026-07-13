@@ -78,7 +78,8 @@ every finding.
 ## Build packets
 
 The plan packet includes the ticket intent, acceptance criteria, relevant
-repository facts and constraints, Codex's plan, risks, and verification.
+repository facts and constraints, Codex's plan, risks, and verification. The
+packet remains self-contained even though Opus can verify it against the repo.
 
 Freeze one review SHA. Each review packet includes that SHA, base, commit list,
 ticket or spec, applicable standards or lane instructions, and the frozen diff.
