@@ -7,6 +7,7 @@ fn main() {
     let telemetry = Telemetry::bootstrap(Surface::Daemon, env!("CARGO_PKG_VERSION"));
     let runtime = tokio::runtime::Runtime::new().expect("could not start Tokio runtime");
     let result = runtime.block_on(run(&telemetry));
+    // Telemetry sinks flush with blocking calls and must outlive the async runtime.
     drop(runtime);
     if let Err(error) = &result {
         telemetry.capture_error(error, error.failure_tag());

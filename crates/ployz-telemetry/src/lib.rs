@@ -364,7 +364,7 @@ impl Telemetry {
         telemetry
     }
 
-    pub fn start(
+    fn start(
         surface: Surface,
         version: &'static str,
         consent: Consent,
@@ -409,7 +409,7 @@ impl Telemetry {
         }
     }
 
-    pub fn attach_posthog(
+    fn attach_posthog(
         &mut self,
         api_key: &str,
         distinct_id: impl Into<String>,

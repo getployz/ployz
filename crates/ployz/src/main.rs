@@ -89,6 +89,7 @@ fn product_main() -> ExitCode {
         invocation.command,
         &PloyzctlRuntimeConfig::from_env().with_nats_url(invocation.nats_url),
     ));
+    // Telemetry sinks flush with blocking calls and must outlive the async runtime.
     drop(runtime);
     let (exit, outcome) = match result {
         Ok(output) => {
