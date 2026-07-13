@@ -1,8 +1,35 @@
 //! Shared scaffolding for the role processes: shutdown signal,
 //! failure backoff, attempt recording, and lazily opened handles.
 
+use std::future::Future;
 use std::time::Duration;
+
+use ployz_nats::service_runtime::NatsServiceShutdownError;
 use tokio::sync::{broadcast, mpsc};
+use tokio::task::AbortHandle;
+
+/// Runs one role's cleanup within a total deadline and force-cancels its
+/// remaining tasks if the deadline expires.
+pub async fn bounded_role_shutdown(
+    role: &str,
+    deadline: Duration,
+    abort_handles: &[AbortHandle],
+    cleanup: impl Future<Output = Result<(), NatsServiceShutdownError>>,
+) -> Result<(), NatsServiceShutdownError> {
+    match tokio::time::timeout(deadline, cleanup).await {
+        Ok(result) => result,
+        Err(_) => {
+            for handle in abort_handles {
+                handle.abort();
+            }
+            eprintln!(
+                "ployzd {role} shutdown warning: cleanup exceeded {}s; forcing remaining tasks",
+                deadline.as_secs()
+            );
+            Ok(())
+        }
+    }
+}
 
 /// Resolves when the process receives a shutdown signal.
 pub async fn shutdown_signal() -> Result<(), std::io::Error> {
@@ -211,6 +238,27 @@ mod tests {
         shutdown_tx.send(()).expect("shutdown sends");
 
         assert!(sleep_or_shutdown(Duration::from_secs(30), &mut shutdown_rx).await);
+    }
+
+    #[tokio::test]
+    async fn bounded_role_shutdown_aborts_tasks_after_deadline() {
+        let task = tokio::spawn(std::future::pending::<()>());
+        let abort_handles = [task.abort_handle()];
+
+        bounded_role_shutdown(
+            "test",
+            Duration::ZERO,
+            &abort_handles,
+            std::future::pending(),
+        )
+        .await
+        .expect("forced shutdown succeeds");
+
+        assert!(
+            task.await
+                .expect_err("task is aborted after the deadline")
+                .is_cancelled()
+        );
     }
 
     #[tokio::test]

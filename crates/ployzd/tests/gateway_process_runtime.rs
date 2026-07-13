@@ -14,7 +14,7 @@ use ployz_core::state::{
     RouteBindingState,
 };
 use ployz_core::subjects::{
-    MachineServiceEndpoint, gateway_status, machine_facts, machine_service,
+    INTENT_GET, MachineServiceEndpoint, gateway_status, machine_facts, machine_service,
 };
 use ployz_nats::service_runtime::{
     NatsJsonServiceRequestError, NatsServiceRequestFailure, NatsServiceResponse,
@@ -126,7 +126,7 @@ async fn gateway_process_serves_http_from_nats_projection() {
     assert!(upstream_request.contains("\r\nConnection: close\r\n"));
     drop(client);
 
-    runtime.shutdown().await;
+    runtime.shutdown().await.expect("gateway shuts down");
 }
 
 #[tokio::test]
@@ -171,7 +171,7 @@ async fn gateway_process_serves_http01_challenge_before_route_attachment() {
     assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
     assert!(response.ends_with("\r\n\r\nchallenge-token.account-thumbprint"));
 
-    runtime.shutdown().await;
+    runtime.shutdown().await.expect("gateway shuts down");
 }
 
 #[tokio::test]
@@ -214,7 +214,7 @@ async fn gateway_process_owns_certificate_service_lifecycle() {
                 && ok.application == CertificateChallengeApplicationStatus::NotApplied
     ));
 
-    runtime.shutdown().await;
+    runtime.shutdown().await.expect("gateway shuts down");
 
     assert!(matches!(
         request_json::<_, CertificateChallengeStatusResponse>(
@@ -228,6 +228,42 @@ async fn gateway_process_owns_certificate_service_lifecycle() {
             failure: NatsServiceRequestFailure::NoResponders,
         })
     ));
+}
+
+#[tokio::test]
+async fn gateway_shutdown_cancels_blocked_projection_refresh_and_releases_listener() {
+    let nats = TestNats::start().await;
+    let mut blocked_intent = nats
+        .client
+        .subscribe(INTENT_GET)
+        .await
+        .expect("subscribe without replying to intent requests");
+    nats.client
+        .flush()
+        .await
+        .expect("blocked responder is ready");
+    let runtime = start_gateway_process_with_client(
+        nats.machine_client.clone(),
+        Duration::from_secs(60),
+        socket_addr("127.0.0.1:0"),
+        machine_id("machine_7"),
+        None,
+    )
+    .await
+    .expect("gateway runtime starts");
+    let listen_addr = runtime.listen_addr();
+    tokio::time::timeout(Duration::from_secs(1), blocked_intent.next())
+        .await
+        .expect("projection refresh requests intent")
+        .expect("blocked intent responder stays open");
+
+    tokio::time::timeout(Duration::from_secs(3), runtime.shutdown())
+        .await
+        .expect("gateway shutdown cancels the blocked refresh")
+        .expect("gateway shuts down");
+    TcpListener::bind(listen_addr)
+        .await
+        .expect("gateway listener is released after shutdown");
 }
 
 #[tokio::test]
@@ -278,7 +314,7 @@ async fn gateway_process_applies_route_changes_on_next_poll() {
     );
     wait_until_gateway_status_current(&mut status_sub).await;
 
-    runtime.shutdown().await;
+    runtime.shutdown().await.expect("gateway shuts down");
 }
 
 #[tokio::test]
@@ -324,7 +360,7 @@ async fn gateway_process_records_http_proxy_failures() {
     assert_eq!(runtime.health().consecutive_http_failures, 1);
     assert!(response.starts_with("HTTP/1.1 404 Not Found\r\n"));
 
-    runtime.shutdown().await;
+    runtime.shutdown().await.expect("gateway shuts down");
 }
 
 async fn wait_until_gateway_status_current(status_sub: &mut async_nats::Subscriber) {

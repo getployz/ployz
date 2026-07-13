@@ -7,8 +7,9 @@ use crate::config::GatewayProcessConfig;
 use crate::fact_cache::{FactCache, FactCacheError, RunningFactCache, start_fact_cache};
 use crate::intent::service::NatsIntentReader;
 use crate::process_support::{
-    BackoffSchedule, LazyHandle, RecordedAttempt, RefreshDelay, drain_refresh_wakes,
-    record_attempt, shutdown_signal, sleep_or_shutdown, wait_for_refresh_delay,
+    BackoffSchedule, LazyHandle, RecordedAttempt, RefreshDelay, bounded_role_shutdown,
+    drain_refresh_wakes, record_attempt, shutdown_signal, sleep_or_shutdown,
+    wait_for_refresh_delay,
 };
 use crate::roles::gateway::pingora::{
     GatewayPingoraFailureRecorder, GatewayTlsAccept, PingoraRouteRegistry,
@@ -33,7 +34,9 @@ use ployz_core::ops::RoutePort;
 use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation};
 use ployz_core::subjects::{INTENT_CHANGED, gateway_status, machine_facts_scope};
 use ployz_nats::connect::{NatsConnectError, connect_authenticated_pool};
-use ployz_nats::service_runtime::{NatsClient, NatsServiceRuntimeError, RunningNatsService};
+use ployz_nats::service_runtime::{
+    NatsClient, NatsServiceRuntimeError, NatsServiceShutdownError, RunningNatsService,
+};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -49,6 +52,7 @@ const GATEWAY_WATCH_RESTART_DELAY: Duration = Duration::from_secs(1);
 const GATEWAY_HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 const GATEWAY_LISTENER_READY_TIMEOUT: Duration = Duration::from_secs(2);
 const GATEWAY_LISTENER_READY_POLL: Duration = Duration::from_millis(10);
+const GATEWAY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(9);
 
 mod service;
 
@@ -67,14 +71,31 @@ pub struct RunningGatewayProcess {
 }
 
 impl RunningGatewayProcess {
-    pub async fn shutdown(self) {
-        let _ = self.shutdown.send(());
-        let _ = self.pingora_shutdown.send(true);
-        let _ = self.certificate_service.shutdown().await;
-        for task in self.tasks {
-            let _ = task.await;
-        }
-        self.facts_cache.shutdown().await;
+    pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
+        let Self {
+            shutdown,
+            pingora_shutdown,
+            facts_cache,
+            certificate_service,
+            _certificate_state_guard,
+            mut tasks,
+            ..
+        } = self;
+        let _ = shutdown.send(());
+        let _ = pingora_shutdown.send(true);
+        let abort_handles = tasks
+            .iter()
+            .map(JoinHandle::abort_handle)
+            .collect::<Vec<_>>();
+        let cleanup = async {
+            facts_cache.shutdown().await;
+            let service_shutdown = certificate_service.shutdown().await;
+            for task in &mut tasks {
+                let _ = task.await;
+            }
+            service_shutdown
+        };
+        bounded_role_shutdown("gateway", GATEWAY_SHUTDOWN_TIMEOUT, &abort_handles, cleanup).await
     }
 
     #[must_use]
@@ -271,15 +292,17 @@ async fn start_gateway_process_inner(
 
         loop {
             drain_refresh_wakes(&mut refresh_wake_rx);
-            let attempt = source
-                .refresh_with_timeout(&task_runtime, &task_registry)
-                .await;
+            let attempt = tokio::select! {
+                attempt = source.refresh_with_timeout(&task_runtime, &task_registry) => attempt,
+                _ = refresh_shutdown.recv() => break,
+            };
             let observed = gateway_observation_from_attempt(&machine_id, listen_addr, &attempt);
             backoff = record_gateway_attempt(&task_health, attempt, refresh_interval, backoff);
-            record_gateway_status_publish_result(
-                &task_health,
-                source.replace_gateway_status(&observed).await,
-            );
+            let status_publish = tokio::select! {
+                result = source.replace_gateway_status(&observed) => result,
+                _ = refresh_shutdown.recv() => break,
+            };
+            record_gateway_status_publish_result(&task_health, status_publish);
 
             match wait_for_refresh_delay(backoff, &mut refresh_wake_rx, &mut refresh_shutdown).await
             {
@@ -864,8 +887,10 @@ pub async fn run_gateway_until_shutdown(
     shutdown_signal()
         .await
         .map_err(GatewayProcessError::ShutdownSignal)?;
-    runtime.shutdown().await;
-    Ok(())
+    runtime
+        .shutdown()
+        .await
+        .map_err(GatewayProcessError::ShutdownGatewayService)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -903,96 +928,9 @@ pub enum GatewayProcessError {
     RefreshTimedOut { timeout: Duration },
     #[error("failed to wait for shutdown: {0}")]
     ShutdownSignal(std::io::Error),
+    #[error("failed to stop gateway service: {0:?}")]
+    ShutdownGatewayService(NatsServiceShutdownError),
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::roles::gateway::projection::GatewayProjectionError;
-    use crate::roles::gateway::route_table::GatewayServingState;
-
-    #[test]
-    fn retained_last_good_attempt_keeps_steady_refresh_interval() {
-        let health = Mutex::new(GatewayProcessHealth {
-            last_attempt: None,
-            consecutive_failures: 0,
-            last_http_failure: None,
-            consecutive_http_failures: 0,
-            last_watch_failure: None,
-            consecutive_watch_failures: 0,
-            last_status_publish_failure: None,
-            consecutive_status_publish_failures: 0,
-        });
-        let interval = Duration::from_secs(1);
-
-        let next = record_gateway_attempt(
-            &health,
-            Ok(GatewayProjectorTick {
-                state: crate::roles::gateway::projection::GatewayProjectionState {
-                    last_good: None,
-                    last_error: Some(GatewayProjectionError::SourceUnavailable {
-                        message: "not used".to_owned(),
-                    }),
-                },
-                served: None,
-                serving: GatewayServingState::LastKnownGood {
-                    route_count: 1,
-                    error: GatewayProjectionError::SourceUnavailable {
-                        message: "nats unavailable".to_owned(),
-                    },
-                },
-            }),
-            interval,
-            Duration::from_secs(30),
-        );
-
-        assert_eq!(next, interval);
-        assert_eq!(
-            health
-                .lock()
-                .expect("gateway health lock is not poisoned")
-                .last_attempt,
-            Some(GatewayProcessAttempt::ServingLastKnownGood {
-                route_count: 1,
-                message: "SourceUnavailable { message: \"nats unavailable\" }".to_owned(),
-            })
-        );
-    }
-
-    #[test]
-    fn refresh_runtime_error_uses_exponential_backoff() {
-        let health = Mutex::new(GatewayProcessHealth {
-            last_attempt: None,
-            consecutive_failures: 0,
-            last_http_failure: None,
-            consecutive_http_failures: 0,
-            last_watch_failure: None,
-            consecutive_watch_failures: 0,
-            last_status_publish_failure: None,
-            consecutive_status_publish_failures: 0,
-        });
-
-        let next = record_gateway_attempt(
-            &health,
-            Err(GatewayProcessError::RefreshTimedOut {
-                timeout: Duration::from_secs(5),
-            }),
-            Duration::from_secs(1),
-            Duration::from_secs(2),
-        );
-
-        assert_eq!(next, Duration::from_secs(4));
-    }
-
-    #[tokio::test]
-    async fn pingora_shutdown_observes_signal_sent_before_recv() {
-        let (shutdown, receiver) = watch::channel(false);
-        shutdown.send(true).expect("shutdown signal sends");
-        let shutdown = GatewayPingoraShutdown { shutdown: receiver };
-
-        assert!(matches!(
-            shutdown.recv().await,
-            ShutdownSignal::GracefulTerminate
-        ));
-    }
-}
+mod tests;

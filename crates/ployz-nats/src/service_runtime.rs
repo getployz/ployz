@@ -27,6 +27,7 @@ pub type NatsClient = async_nats::Client;
 const NO_RESPONDERS_RETRIES: usize = 4;
 const NO_RESPONDERS_RETRY_DELAY: Duration = Duration::from_millis(100);
 const SERVICE_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(2);
+const SERVICE_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
 pub async fn request_json<Request, Response>(
     client: &async_nats::Client,
@@ -124,6 +125,7 @@ fn request_failure(error: async_nats::RequestError) -> NatsServiceRequestFailure
 
 #[derive(Debug)]
 pub struct RunningNatsService {
+    name: &'static str,
     client: async_nats::Client,
     service: Option<async_nats::service::Service>,
     endpoint_tasks: Vec<JoinHandle<()>>,
@@ -242,13 +244,59 @@ impl RunningNatsService {
                 })?;
         }
 
-        for task in self.endpoint_tasks.drain(..) {
+        let connection_state = self.client.connection_state();
+        if connection_state != async_nats::connection::State::Connected {
+            eprintln!(
+                "warning: forcing NATS service {} shutdown while client is {}",
+                self.name, connection_state,
+            );
+            self.abort_endpoint_tasks();
+            return self.await_aborted_endpoint_tasks().await;
+        }
+
+        match timeout(SERVICE_SHUTDOWN_GRACE, self.await_endpoint_tasks()).await {
+            Ok(result) => result,
+            Err(_) => {
+                eprintln!(
+                    "warning: forcing NATS service {} shutdown after {}ms grace",
+                    self.name,
+                    SERVICE_SHUTDOWN_GRACE.as_millis(),
+                );
+                self.abort_endpoint_tasks();
+                self.await_aborted_endpoint_tasks().await
+            }
+        }
+    }
+
+    async fn await_endpoint_tasks(&mut self) -> Result<(), NatsServiceShutdownError> {
+        while let Some(task) = self.endpoint_tasks.first_mut() {
             task.await
                 .map_err(|error| NatsServiceShutdownError::EndpointTaskJoin {
                     message: error.to_string(),
                 })?;
+            self.endpoint_tasks.remove(0);
         }
+        Ok(())
+    }
 
+    fn abort_endpoint_tasks(&self) {
+        for task in &self.endpoint_tasks {
+            task.abort();
+        }
+    }
+
+    async fn await_aborted_endpoint_tasks(&mut self) -> Result<(), NatsServiceShutdownError> {
+        for task in self.endpoint_tasks.drain(..) {
+            match task.await {
+                Ok(()) => {}
+                Err(error) if error.is_cancelled() => {}
+                Err(error) => {
+                    return Err(NatsServiceShutdownError::EndpointTaskJoin {
+                        message: error.to_string(),
+                    });
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -431,6 +479,7 @@ pub async fn start_nats_service(
         })?;
 
     Ok(RunningNatsService {
+        name: spec.name,
         client,
         service: Some(service),
         endpoint_tasks: Vec::new(),
