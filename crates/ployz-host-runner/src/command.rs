@@ -88,13 +88,14 @@ fn download_with_retry(
     source: &str,
     destination: &Path,
     deadline: Duration,
+    initial_backoff: Duration,
     mut attempt_download: impl FnMut(&mut File, Duration) -> Result<(), DownloadAttemptError>,
 ) -> Result<(), FailureMessage> {
     const MAX_ATTEMPTS: usize = 11;
     const MAX_BACKOFF: Duration = Duration::from_secs(1);
 
     let deadline = Instant::now() + deadline;
-    let mut backoff = Duration::from_millis(10);
+    let mut backoff = initial_backoff;
     let mut last_error = "overall deadline elapsed".to_owned();
 
     for attempts in 1..=MAX_ATTEMPTS {
@@ -126,6 +127,14 @@ fn download_with_retry(
             ));
         }
         match attempt_download(&mut file, remaining) {
+            Ok(()) if deadline.saturating_duration_since(Instant::now()).is_zero() => {
+                return Err(download_failure(
+                    source,
+                    attempts,
+                    "attempt completed after the overall deadline",
+                    DownloadFailureEnd::OverallDeadline,
+                ));
+            }
             Ok(()) => return Ok(()),
             Err(DownloadAttemptError::Permanent(error)) => {
                 return Err(download_failure(
@@ -219,6 +228,7 @@ impl HostRunnerCommandRunner for SystemHostRunnerCommandRunner {
             url,
             destination,
             Duration::from_secs(10 * 60),
+            Duration::from_millis(10),
             |file, remaining| download_attempt(url, file, remaining),
         )
     }
@@ -548,6 +558,7 @@ mod tests {
             "https://example.invalid/artifact",
             destination.path(),
             Duration::from_secs(1),
+            Duration::ZERO,
             |_file, _remaining| {
                 attempts += 1;
                 Ok(())
@@ -586,6 +597,7 @@ mod tests {
             "https://example.invalid/artifact",
             destination.path(),
             Duration::from_secs(1),
+            Duration::ZERO,
             |file, _remaining| {
                 attempts += 1;
                 if attempts == 1 {
@@ -618,6 +630,7 @@ mod tests {
             source,
             destination.path(),
             Duration::from_secs(5),
+            Duration::ZERO,
             |_file, _remaining| {
                 attempts += 1;
                 Err(DownloadAttemptError::Transient(
@@ -644,6 +657,7 @@ mod tests {
             source,
             destination.path(),
             Duration::from_millis(50),
+            Duration::ZERO,
             |_file, _remaining| {
                 attempts += 1;
                 std::thread::sleep(Duration::from_millis(100));
@@ -660,6 +674,27 @@ mod tests {
     }
 
     #[test]
+    fn download_retry_rejects_success_after_deadline() {
+        let destination = tempfile::NamedTempFile::new().expect("temporary destination");
+
+        let error = download_with_retry(
+            "https://example.invalid/slow-artifact",
+            destination.path(),
+            Duration::from_millis(50),
+            Duration::ZERO,
+            |_file, _remaining| {
+                std::thread::sleep(Duration::from_millis(100));
+                Ok(())
+            },
+        )
+        .expect_err("success after the deadline is terminal")
+        .to_string();
+
+        assert!(error.contains("1 attempt"), "{error}");
+        assert!(error.contains("ended by overall deadline"), "{error}");
+    }
+
+    #[test]
     fn download_retry_replaces_partial_bytes_before_retry() {
         let destination = tempfile::NamedTempFile::new().expect("temporary destination");
         let mut attempts = 0;
@@ -668,6 +703,7 @@ mod tests {
             "https://example.invalid/artifact",
             destination.path(),
             Duration::from_secs(1),
+            Duration::ZERO,
             |file, _remaining| {
                 attempts += 1;
                 if attempts == 1 {
@@ -698,6 +734,7 @@ mod tests {
             source,
             destination.path(),
             Duration::from_secs(1),
+            Duration::ZERO,
             |_file, _remaining| {
                 attempts += 1;
                 Err(DownloadAttemptError::Permanent(
