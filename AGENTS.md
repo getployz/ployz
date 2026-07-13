@@ -217,6 +217,11 @@ Live` section above. These rules are about truth semantics, not storage:
   the parent task serializes and owns those shared operations.
 - Codex-native tasks and subagents never invoke Codex through the CLI or
   app-server. Use native tools and native subagents only.
+- Before implementation, the supervisor drafts the plan and runs the
+  `opus-advisor` plan gate. Opus reviews only; Codex owns the plan and every
+  implementation decision. `PLAN_REVISE` returns the plan to Codex. An
+  unavailable or unverified advisor stops implementation unless the dispatcher
+  explicitly made the gate best-effort.
 
 ## Code Reviews
 
@@ -232,15 +237,25 @@ Live` section above. These rules are about truth semantics, not storage:
   ponytail is the `ponytail-review` skill. Every reviewer uses `gpt-5.6-sol`
   with high reasoning effort. If the tool cannot verify model or effort,
   record that limitation; do not claim the routing succeeded.
+- Mirror that wave through the `opus-advisor` skill. A small change gets one
+  consolidated Opus cold read with four separate verdicts. A large or risky
+  change gets four independent Opus cold reads, one per lane, producing an
+  eight-review matrix with the four Codex reviews. Treat security, authority,
+  money, privacy, destructive behavior, persistence, migrations, concurrency,
+  distributed state, public contracts, architecture boundaries, or a broad
+  multi-module diff as large or risky. The supervisor records the classification.
 - Freeze one review SHA. Apply accepted findings in one batch.
 - Re-review only the accepted-finding delta, and only in the lane that raised
-  it. Do not rerun unaffected lanes or reread the full branch for a narrow fix.
-- A second full four-lane wave requires dispatcher approval and is reserved for
-  fixes that materially change the public contract, authority boundary, state
-  model, or more than roughly 20% of the reviewed diff.
+  it, with both Codex and Opus when both reviewed that lane. Do not rerun
+  unaffected lanes or reread the full branch for a narrow fix.
+- A second full Codex/Opus wave requires dispatcher approval and is reserved
+  for fixes that materially change the public contract, authority boundary,
+  state model, or more than roughly 20% of the reviewed diff.
 - Correctness, security, data-loss, and unmet-spec findings block. Broader
   maintainability or simplification ideas become follow-up tickets unless the
   diff introduced the regression directly.
+- Do not open the PR until every required Opus response is valid and
+  model-confirmed, every review finding is dispositioned, and no blocker remains.
 - Merging current main does not invalidate the ticket review. Review semantic
   conflict resolutions and run the verification gates on the merged candidate.
 

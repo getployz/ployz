@@ -1,0 +1,4 @@
+interface:
+  display_name: "Opus Advisor"
+  short_description: "Run read-only Opus planning and review gates"
+  default_prompt: "Use $opus-advisor to review this implementation plan or frozen diff."
