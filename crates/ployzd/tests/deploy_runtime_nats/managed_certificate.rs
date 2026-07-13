@@ -58,7 +58,6 @@ async fn auto_hostname_deploy_waits_for_managed_certificate_and_stores_ready_bun
 
     run_deploy_operation(
         accepted,
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
@@ -122,7 +121,6 @@ async fn auto_hostname_deploy_fails_typed_when_certificate_stays_pending() {
 
     let error = run_deploy_operation(
         accepted,
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
@@ -198,7 +196,6 @@ async fn deploy_without_auto_hostname_does_not_poll_record_only_lease() {
 
     run_deploy_operation(
         accepted,
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),

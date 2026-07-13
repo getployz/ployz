@@ -1593,11 +1593,13 @@ impl LocalWireGuardEbpfPreparer for RecordingWireGuardEbpf {
 }
 
 fn machine_dataplane_status() -> MachineDataplaneStatus {
+    let mut projection = ployz_core::dataplane::NativeDataplaneProjectionStatus::unavailable(
+        ployz_core::ops::FailureMessage::try_new("dataplane projection has not been fetched")
+            .expect("failure message"),
+    );
+    projection.endpoint_bridge = ployz_core::dataplane::EndpointBridgeStatus::Missing;
     MachineDataplaneStatus {
-        projection: ployz_core::dataplane::NativeDataplaneProjectionStatus::unavailable(
-            ployz_core::ops::FailureMessage::try_new("dataplane projection has not been fetched")
-                .expect("failure message"),
-        ),
+        projection,
         wireguard: WireGuardStatus {
             interface: "ployz-wg0".to_owned(),
             configured_mtu: WireGuardConfiguredMtu::Auto,

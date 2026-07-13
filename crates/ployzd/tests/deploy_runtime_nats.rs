@@ -30,11 +30,11 @@ use ployzd::lease::{LeaseClient, LeaseWorkerUrl};
 use ployzd::operation_api::admission::{
     DeploySubmitCommand, MachineAddBootstrapConfig, OperationControllers, SubmitCommandError,
 };
+use ployzd::operations::deploy::ManagedCertificateWaitPolicy;
 use ployzd::operations::deploy::driver::{
     DeployOperationDriver, DeployOperationPorts, DeployOperationRunError, DeployOperationStores,
     run_deploy_operation,
 };
-use ployzd::operations::deploy::{DeployMachineCandidates, ManagedCertificateWaitPolicy};
 use ployzd::operations::log::{OperationRepository, SubmitOperationError};
 use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineFactsReader};
 use ployzd::roles::machine::protocol::{MachineFactsGetRpcOk, MachineFactsGetRpcResponse};
@@ -77,7 +77,6 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
 
     let outcome = run_deploy_operation(
         accepted,
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
@@ -167,7 +166,6 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
 
     run_deploy_operation(
         accepted,
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
@@ -236,7 +234,6 @@ async fn health_failure_records_failed_operation_without_committing_active_state
 
     let error = run_deploy_operation(
         accepted,
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
@@ -319,7 +316,6 @@ async fn auto_dns_without_lease_fails_before_runtime_work_with_guidance() {
 
     let error = run_deploy_operation(
         accepted,
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
@@ -388,7 +384,6 @@ async fn duplicate_driver_execution_does_not_release_the_original_namespace_lock
             managed_certificate_wait: ManagedCertificateWaitPolicy::production(),
             controllers: controllers.clone(),
         },
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
         CertificateManager::new(
             CoreStore::open_in_memory()
                 .await
@@ -440,7 +435,6 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
 
     let error = run_deploy_operation(
         accepted,
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_missing")]),
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
@@ -528,7 +522,6 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
 
     let error = run_deploy_operation(
         accepted,
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_slow")]),
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),

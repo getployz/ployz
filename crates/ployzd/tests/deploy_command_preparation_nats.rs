@@ -21,8 +21,8 @@ use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
 use ployzd::operations::deploy::{
-    DeployExecutionCommand, DeployMachineCandidates, DeployServiceExecutionCommand,
-    load_deploy_execution_facts_from_nats, prepare_deploy_execution_command,
+    DeployExecutionCommand, DeployServiceExecutionCommand, load_deploy_execution_facts_from_nats,
+    prepare_deploy_execution_command,
 };
 use ployzd::roles::machine::client::NatsMachineFactsReader;
 use ployzd::roles::machine::protocol::{
@@ -89,11 +89,6 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         deploy_request(),
-        DeployMachineCandidates::same_machines(vec![
-            machine_id("machine_a"),
-            machine_id("machine_b"),
-            machine_id("machine_missing"),
-        ]),
         &intent_reader,
         &facts_reader,
         Duration::from_secs(7),
@@ -157,7 +152,6 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         deploy_request(),
-        DeployMachineCandidates::same_machines(vec![machine_id("core_1")]),
         &intent_reader,
         &facts_reader,
         Duration::from_secs(7),
@@ -202,7 +196,6 @@ async fn nats_preparation_excludes_draining_machines_from_placement() {
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         deploy_request(),
-        DeployMachineCandidates::same_machines(vec![machine_id("core_1")]),
         &intent_reader,
         &facts_reader,
         Duration::from_secs(7),
@@ -238,7 +231,6 @@ async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         routed_deploy_request(),
-        DeployMachineCandidates::same_machines(vec![machine_id("core_1")]),
         &intent_reader,
         &facts_reader,
         Duration::from_secs(7),
@@ -257,7 +249,7 @@ async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
 }
 
 #[tokio::test]
-async fn routed_nats_preparation_rejects_configured_machine_outside_durable_roster() {
+async fn routed_nats_preparation_ignores_configured_machine_outside_durable_roster() {
     let nats = test_nats().await;
     let facts_reader = nats.facts_reader();
     let intent_reader = nats.intent_reader();
@@ -267,7 +259,6 @@ async fn routed_nats_preparation_rejects_configured_machine_outside_durable_rost
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         routed_deploy_request(),
-        DeployMachineCandidates::same_machines(vec![machine_id("core_1")]),
         &intent_reader,
         &facts_reader,
         Duration::from_secs(7),
@@ -275,16 +266,8 @@ async fn routed_nats_preparation_rejects_configured_machine_outside_durable_rost
     .await;
 
     assert!(single_service(&command).eligible_machines().is_empty());
-    assert_eq!(command.dataplane_machines(), [machine_id("core_1")]);
-    assert!(matches!(
-        command.unusable_machines(),
-        [ployz_core::ops::UnusableMachine {
-            reason: ployz_core::state::MachineUsabilityReason::DataplaneUnavailable {
-                reason: ployz_core::state::DataplaneUnavailableReason::NotDeclared,
-            },
-            ..
-        }]
-    ));
+    assert!(command.dataplane_machines().is_empty());
+    assert!(command.unusable_machines().is_empty());
 }
 
 #[tokio::test]
@@ -304,7 +287,6 @@ async fn routed_nats_preparation_does_not_require_dataplane_public_ip() {
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         routed_deploy_request(),
-        DeployMachineCandidates::same_machines(vec![machine_id("core_1")]),
         &intent_reader,
         &facts_reader,
         Duration::from_secs(7),
@@ -326,7 +308,6 @@ async fn nats_preparation_uses_absent_active_state_when_service_is_new() {
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         deploy_request(),
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
         &intent_reader,
         &facts_reader,
         Duration::from_secs(7),
@@ -346,20 +327,14 @@ fn single_service(command: &DeployExecutionCommand) -> &DeployServiceExecutionCo
 async fn prepare_command_from_nats(
     operation_id: OperationId,
     request: DeployRequest,
-    machine_scope: DeployMachineCandidates,
     intent_reader: &NatsIntentReader,
     facts_reader: &NatsMachineFactsReader,
     step_timeout: Duration,
 ) -> ployzd::operations::deploy::DeployExecutionCommand {
-    let facts = load_deploy_execution_facts_from_nats(
-        &request,
-        machine_scope,
-        intent_reader,
-        facts_reader,
-        step_timeout,
-    )
-    .await
-    .expect("deploy facts load from nats");
+    let facts =
+        load_deploy_execution_facts_from_nats(&request, intent_reader, facts_reader, step_timeout)
+            .await
+            .expect("deploy facts load from nats");
     prepare_deploy_execution_command(operation_id, request, facts)
 }
 

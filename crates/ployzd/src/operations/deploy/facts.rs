@@ -11,7 +11,6 @@ use ployz_core::cert::ManagedCertificateIssuanceFailureKind;
 use ployz_core::dataplane::{DataplaneMember, DataplaneProjection};
 use ployz_core::deploy::{DeployRequest, DeployRouteTarget};
 use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
 use ployz_core::ops::DeployEvidence;
 use ployz_core::state::{ActiveMachineState, IntentSnapshot, MachineLifecycle};
 use std::time::Duration;
@@ -48,23 +47,8 @@ pub(super) struct ManagedCertificateWaitContext<'a> {
     pub(super) policy: ManagedCertificateWaitPolicy,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeployMachineCandidates {
-    machine_ids: Vec<MachineId>,
-}
-
-impl DeployMachineCandidates {
-    #[must_use]
-    pub fn same_machines(machines: Vec<MachineId>) -> Self {
-        Self {
-            machine_ids: sorted_unique_machines(machines.iter()),
-        }
-    }
-}
-
 pub async fn load_deploy_execution_facts_from_nats(
     request: &DeployRequest,
-    fallback_candidates: DeployMachineCandidates,
     intent_reader: &NatsIntentReader,
     facts_reader: &NatsMachineFactsReader,
     step_timeout: Duration,
@@ -78,7 +62,6 @@ pub async fn load_deploy_execution_facts_from_nats(
     let projection = intent.dataplane_projection.clone();
     deploy_execution_facts(
         request,
-        fallback_candidates,
         facts_reader,
         intent,
         projection,
@@ -123,7 +106,6 @@ async fn read_intent(
 
 async fn deploy_execution_facts(
     request: &DeployRequest,
-    fallback_candidates: DeployMachineCandidates,
     facts_reader: &NatsMachineFactsReader,
     intent: IntentSnapshot,
     projection: DataplaneProjection,
@@ -131,7 +113,7 @@ async fn deploy_execution_facts(
     step_timeout: Duration,
 ) -> Result<DeployExecutionFacts, DeployFactLoadError> {
     let active_machines = intent.active_machines.clone();
-    let machine_lifecycles = load_machine_lifecycles(&intent, fallback_candidates.clone());
+    let machine_lifecycles = load_machine_lifecycles(&intent);
     // Hostnames share one managed DNS lease across the cluster, so minting
     // must see bindings in every namespace. Namespace-scoped removal still
     // filters inside the planner.
@@ -159,11 +141,6 @@ async fn deploy_execution_facts(
         .iter()
         .filter_map(|facts| facts.containers.clone())
         .collect::<Vec<_>>();
-    let answering_machines = sorted_unique_machines(
-        observed_machines
-            .iter()
-            .map(MachineContainerObservationSnapshot::machine_id),
-    );
     let (eligible_machines, unusable_machines) =
         classify_machine_usability(&placement_facts, &projection, &dataplane_statuses);
     let machine_platforms = placement_facts
@@ -175,8 +152,7 @@ async fn deploy_execution_facts(
                 .map(|platform| (facts.machine_id.clone(), platform))
         })
         .collect();
-    let dataplane_members =
-        operation_dataplane_members(request, &active_machines, answering_machines);
+    let dataplane_members = operation_dataplane_members(request, &active_machines);
     let gateway_certificate_targets =
         gateway_certificate_targets(&active_machines, &placement_facts);
     let namespace_cleanup_candidates =
@@ -286,7 +262,6 @@ fn certificate_pending(
 fn operation_dataplane_members(
     request: &DeployRequest,
     active_machines: &[ActiveMachineState],
-    fallback_machines: Vec<MachineId>,
 ) -> Vec<DataplaneMember> {
     let needs_membership = request.services.iter().any(|service| {
         !service.routes.is_empty()
@@ -299,47 +274,20 @@ fn operation_dataplane_members(
         return Vec::new();
     }
 
-    if !active_machines.is_empty() {
-        return active_machines
-            .iter()
-            .map(|machine| DataplaneMember {
-                machine_id: machine.machine_id.clone(),
-                endpoint_subnet: machine.endpoint_subnet.clone(),
-            })
-            .collect();
-    }
-
-    sorted_unique_machines(fallback_machines.iter())
-        .into_iter()
-        .map(DataplaneMember::default_for_machine)
+    active_machines
+        .iter()
+        .map(|machine| DataplaneMember {
+            machine_id: machine.machine_id.clone(),
+            endpoint_subnet: machine.endpoint_subnet.clone(),
+        })
         .collect()
 }
 
-fn load_machine_lifecycles(
-    intent: &IntentSnapshot,
-    fallback: DeployMachineCandidates,
-) -> Vec<(MachineId, MachineLifecycle)> {
-    if intent.active_machines.is_empty() {
-        return fallback
-            .machine_ids
-            .into_iter()
-            .map(|machine_id| (machine_id, MachineLifecycle::Active))
-            .collect();
-    }
-
+fn load_machine_lifecycles(intent: &IntentSnapshot) -> Vec<(MachineId, MachineLifecycle)> {
     intent
         .active_machines
         .iter()
         .map(|machine| (machine.machine_id.clone(), machine.lifecycle))
-        .collect()
-}
-
-fn sorted_unique_machines<'a>(machines: impl IntoIterator<Item = &'a MachineId>) -> Vec<MachineId> {
-    machines
-        .into_iter()
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
         .collect()
 }
 

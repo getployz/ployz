@@ -22,8 +22,8 @@ use crate::operation_api::admission::OperationControllers;
 use crate::operation_api::service::{ApiServiceError, start_operation_api_service_with_handlers};
 use crate::operation_api::{OperationApiHandlers, OperationWorkers};
 use crate::operations::credential_grant::CredentialGrantOperation;
+use crate::operations::deploy::ManagedCertificateWaitPolicy;
 use crate::operations::deploy::driver::{DeployOperationDriver, DeployOperationStores};
-use crate::operations::deploy::{DeployMachineCandidates, ManagedCertificateWaitPolicy};
 use crate::operations::log::OperationRepository;
 use crate::operations::machine_lifecycle::MachineLifecycleOperation;
 use crate::operations::machine_update::MachineUpdateOperation;
@@ -233,7 +233,6 @@ pub async fn start_control_process_with_client_and_reload(
             managed_certificate_wait: ManagedCertificateWaitPolicy::production(),
             controllers: controllers.clone(),
         },
-        DeployMachineCandidates::same_machines(config.deploy_machines.clone()),
         certificate_manager.clone(),
         config.deploy_step_timeout,
         deploy_tasks.clone(),

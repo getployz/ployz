@@ -9,7 +9,7 @@ use crate::operation_api::admission::{AcceptedDeployExecution, OperationControll
 use crate::operations::deploy::{
     CertificateProvisioner, DeployContainer, DeployExecutionError, DeployExecutionInput,
     DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError, DeployHealthCheckError,
-    DeployHealthChecker, DeployMachineCandidates, DeployPhasePromotion, MachineContainerRuntime,
+    DeployHealthChecker, DeployPhasePromotion, MachineContainerRuntime,
     ManagedCertificateWaitPolicy, NamespaceCommitError, NamespaceStateCommitter,
     execute_deploy_operation, load_deploy_execution_facts_from_nats,
 };
@@ -55,7 +55,6 @@ impl CertificateProvisioner for CertificateManager {
 
 pub async fn run_deploy_operation<N, H, C>(
     accepted_execution: AcceptedDeployExecution,
-    machine_candidates: DeployMachineCandidates,
     stores: DeployOperationStores,
     ports: DeployOperationPorts<'_, N, H, C>,
     step_timeout: Duration,
@@ -94,14 +93,8 @@ where
             },
         )
         .await?;
-        load_deploy_execution_facts_from_nats(
-            &request,
-            machine_candidates,
-            intent_reader,
-            facts_reader,
-            step_timeout,
-        )
-        .await
+        load_deploy_execution_facts_from_nats(&request, intent_reader, facts_reader, step_timeout)
+            .await
     }
     .await
     {
@@ -350,7 +343,6 @@ pub enum DeployOperationRunError {
 #[derive(Debug, Clone)]
 pub struct DeployOperationDriver {
     stores: DeployOperationStores,
-    machine_candidates: DeployMachineCandidates,
     certificate_manager: CertificateManager,
     step_timeout: Duration,
     task_registry: TaskRegistry,
@@ -360,14 +352,12 @@ impl DeployOperationDriver {
     #[must_use]
     pub fn new(
         stores: DeployOperationStores,
-        machine_candidates: DeployMachineCandidates,
         certificate_manager: CertificateManager,
         step_timeout: Duration,
         task_registry: TaskRegistry,
     ) -> Self {
         Self {
             stores,
-            machine_candidates,
             certificate_manager,
             step_timeout,
             task_registry,
@@ -406,7 +396,6 @@ impl DeployOperationDriver {
         let controllers = self.stores.controllers.clone();
         let result = run_deploy_operation(
             accepted,
-            self.machine_candidates,
             self.stores,
             DeployOperationPorts {
                 facts_reader: &facts_reader,
