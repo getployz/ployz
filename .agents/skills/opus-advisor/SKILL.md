@@ -6,28 +6,33 @@ description: Run Claude Opus as a scarce, read-only advisor for Ployz implementa
 # Opus Advisor
 
 Keep Codex as supervisor, implementer, integrator, and verifier. Use Opus only
-for judgment-heavy plan and review gates. Never give Opus write, mutation,
-publication, or agent-spawning tools.
+for judgment-heavy plan and review gates. Give Opus `Read`, `Grep`, and `Glob`
+so it can verify the packet against the repository; keep mutation, publication,
+and agent-spawning tools unavailable.
 
 ## Invoke Opus
 
-Create a self-contained packet in a temporary file and pass it on stdin. Keep
-repository discovery and raw evidence gathering in Codex.
+Create a self-contained packet in a temporary file and pass it on stdin from the
+repository root. Codex owns complete discovery and evidence gathering; Opus may
+inspect repository files to verify the packet.
 
 For plans and self-contained review packets:
 
 ```sh
-claude -p --remote-control --model opus --effort high --safe-mode --tools "" \
+claude -p --remote-control --model opus --effort high --safe-mode \
+  --tools Read,Grep,Glob --allowedTools Read,Grep,Glob \
   --permission-mode dontAsk --no-session-persistence \
   --prompt-suggestions false --output-format json < "$PACKET"
 ```
 
-For the thermo-nuclear cold read only, permit `Read` so Opus can load the local
-skill named by the minimal prompt:
+For the thermo-nuclear cold read, use the same read-only repository tools so
+Opus can load the local skill named by the minimal prompt and inspect relevant
+code:
 
 ```sh
-claude -p --remote-control --model opus --effort max --safe-mode --tools Read \
-  --allowedTools Read --permission-mode dontAsk --no-session-persistence \
+claude -p --remote-control --model opus --effort max --safe-mode \
+  --tools Read,Grep,Glob --allowedTools Read,Grep,Glob \
+  --permission-mode dontAsk --no-session-persistence \
   --prompt-suggestions false --output-format json < "$PACKET"
 ```
 
