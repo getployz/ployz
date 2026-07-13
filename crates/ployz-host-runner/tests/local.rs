@@ -539,23 +539,11 @@ fn local_effects_prepare_dataplane_packages_for_each_supported_family() {
             "{id} did not use {expected_install}: {:?}",
             effects.runner().command_calls,
         );
-        if id == "arch" {
-            assert_eq!(
-                effects
-                    .runner()
-                    .command_calls
-                    .iter()
-                    .filter(|call| call.starts_with("pacman "))
-                    .map(String::as_str)
-                    .collect::<Vec<_>>(),
-                [expected_install],
-            );
-        }
     }
 }
 
 #[test]
-fn arch_docker_install_uses_existing_pacman_sync_databases() {
+fn arch_package_installs_use_existing_pacman_sync_databases() {
     let root = temp_dir("ployz-host-runner-arch-docker");
     let systemd_dir = root.join("systemd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
@@ -568,6 +556,9 @@ fn arch_docker_install_uses_existing_pacman_sync_databases() {
     let mut effects = HostRunnerLocalEffects::new(local_config(&root, &systemd_dir), runner);
     validate_host(&mut effects);
 
+    effects
+        .apply_step(&HostRunnerStep::PrepareDataplaneHost)
+        .expect("Arch installs dataplane packages from existing pacman sync databases");
     effects
         .apply_step(&HostRunnerStep::PrepareContainerRuntime(
             ContainerRuntime::Docker,
@@ -583,7 +574,10 @@ fn arch_docker_install_uses_existing_pacman_sync_databases() {
             .filter(|call| call.starts_with("pacman "))
             .map(String::as_str)
             .collect::<Vec<_>>(),
-        ["pacman -S --noconfirm --needed docker docker-compose"]
+        [
+            "pacman -S --noconfirm --needed wireguard-tools iproute2 iputils",
+            "pacman -S --noconfirm --needed docker docker-compose",
+        ]
     );
 }
 
