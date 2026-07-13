@@ -11,23 +11,27 @@ publication, or agent-spawning tools.
 
 ## Invoke Opus
 
-Create a self-contained packet in a temporary file and pass it on stdin. Keep
-repository discovery and raw evidence gathering in Codex.
+Create a self-contained packet in a temporary file and pass it on stdin. Run
+the command from the repository root. Codex owns complete repository discovery
+and raw evidence gathering; Opus may inspect the repository to verify the
+packet and diff.
 
 For plans and self-contained review packets:
 
 ```sh
-claude -p --remote-control --model opus --effort high --safe-mode --tools "" \
+claude -p --remote-control --model opus --effort high --safe-mode \
+  --tools Read,Grep,Glob --allowedTools Read,Grep,Glob \
   --permission-mode dontAsk --no-session-persistence \
   --prompt-suggestions false --output-format json < "$PACKET"
 ```
 
-For the thermo-nuclear cold read only, permit `Read` so Opus can load the local
-skill named by the minimal prompt:
+For the thermo-nuclear cold read, use the same read-only repository tools so
+Opus can load the local skill and inspect the frozen diff:
 
 ```sh
-claude -p --remote-control --model opus --effort max --safe-mode --tools Read \
-  --allowedTools Read --permission-mode dontAsk --no-session-persistence \
+claude -p --remote-control --model opus --effort max --safe-mode \
+  --tools Read,Grep,Glob --allowedTools Read,Grep,Glob \
+  --permission-mode dontAsk --no-session-persistence \
   --prompt-suggestions false --output-format json < "$PACKET"
 ```
 
@@ -73,7 +77,8 @@ every finding.
 ## Build packets
 
 The plan packet includes the ticket intent, acceptance criteria, relevant
-repository facts and constraints, Codex's plan, risks, and verification.
+repository facts and constraints, Codex's plan, risks, and verification. The
+packet remains self-contained even though Opus can verify it against the repo.
 
 Freeze one review SHA. Each review packet includes that SHA, base, commit list,
 ticket or spec, applicable standards or lane instructions, and the frozen diff.
