@@ -64,7 +64,7 @@ Scenarios in `crates/ployz-e2e/tests/dind_cluster.rs`:
   readiness; teardown leaves nothing labeled behind.
 - `scenario_init_and_activate_first_machine` — Host Runner first-machine install +
   `init activate-first-machine` through the real product path; mint event
-  sequence, unit states, authority file, bootstrap KV/streams.
+  sequence, unit states, authority file, and bootstrap evidence.
 - `scenario_machine_add_via_join_bundle` — `machine add` + the
   `scripts/ployz.sh` join flow on an edge machine; per-machine credential
   minting, never-shrinking authority file, single-use join token.

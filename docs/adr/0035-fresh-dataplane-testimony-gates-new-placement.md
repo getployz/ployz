@@ -47,9 +47,8 @@ stored liveness or cluster truth. It does not evict a machine, move or stop an
 existing workload, or change serving state. Those changes still require their
 own explicit operations.
 
-This supersedes ADR 0027 only where it says that a placement bid alone is the
-complete live answer for placement. ADR 0027's gateway, DNS, observation-age,
-and no-inferred-liveness decisions remain unchanged.
+This refines ADR 0027's point-of-use placement answer without changing its
+gateway, DNS, observation-age, or no-inferred-liveness decisions.
 
 ## Consequences
 
