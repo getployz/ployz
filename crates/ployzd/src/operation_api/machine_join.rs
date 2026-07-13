@@ -99,7 +99,7 @@ pub async fn machine_join_report(
                         .repository()
                         .record_machine_join_failed(
                             &raw_token,
-                            MachineAddFailure::ConnectivityProofFailed {
+                            MachineAddFailure::DataplaneProjectionAdmissionFailed {
                                 evidence: evidence.clone(),
                             },
                         )
@@ -107,9 +107,10 @@ pub async fn machine_join_report(
                     (
                         result,
                         MachineJoinReportedOutcome::Failed {
-                            failure: MachineJoinReportedFailure::ConnectivityProofFailed {
-                                evidence,
-                            },
+                            failure:
+                                MachineJoinReportedFailure::DataplaneProjectionAdmissionFailed {
+                                    evidence,
+                                },
                         },
                     )
                 }
@@ -122,7 +123,7 @@ pub async fn machine_join_report(
                     (result, MachineJoinReportedOutcome::Completed)
                 }
                 Err(MachineJoinReportError::Unavailable { message }) => {
-                    let message = connectivity_proof_unavailable_message(message);
+                    let message = dataplane_admission_unavailable_message(message);
                     let result = handlers
                         .controllers
                         .repository()
@@ -224,14 +225,12 @@ pub async fn machine_join_report(
     })
 }
 
-fn connectivity_proof_unavailable_message(message: String) -> ployz_core::ops::FailureMessage {
-    ployz_core::ops::FailureMessage::try_new(format!(
-        "overlay connectivity proof unavailable: {message}"
-    ))
-    .unwrap_or_else(|_| {
-        ployz_core::ops::FailureMessage::try_new("overlay connectivity proof unavailable")
-            .expect("static failure message is valid")
-    })
+fn dataplane_admission_unavailable_message(message: String) -> ployz_core::ops::FailureMessage {
+    ployz_core::ops::FailureMessage::try_new(format!("dataplane admission unavailable: {message}"))
+        .unwrap_or_else(|_| {
+            ployz_core::ops::FailureMessage::try_new("dataplane admission unavailable")
+                .expect("static failure message is valid")
+        })
 }
 
 async fn repair_completed_machine_join_report(

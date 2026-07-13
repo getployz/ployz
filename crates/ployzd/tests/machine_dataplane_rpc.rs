@@ -61,49 +61,6 @@ async fn nats_machine_preparer_calls_wireguard_ebpf_prepare_service() {
 }
 
 #[tokio::test]
-async fn nats_machine_preparer_returns_unreachable_overlay_targets() {
-    let nats = test_nats().await;
-    let received = Arc::new(Mutex::new(Vec::new()));
-    let _service =
-        start_wireguard_ebpf_prepare_service(nats.machine_a, &machine_id("machine_a"), {
-            let received = Arc::clone(&received);
-            move |request| {
-                received
-                    .lock()
-                    .expect("received request lock is not poisoned")
-                    .push(request);
-            }
-        })
-        .await;
-    let preparer = NatsMachineDataplanePreparer::new(nats.client);
-    let peer = wireguard_public_key("peer-public-key");
-
-    let unreachable = preparer
-        .probe_overlay(
-            operation_id("op_123"),
-            &machine_id("machine_a"),
-            vec![machine_id("machine_a")],
-            vec![peer.clone()],
-        )
-        .await
-        .expect("overlay probe succeeds");
-
-    assert_eq!(unreachable, vec![peer.clone()]);
-    assert_eq!(
-        received
-            .lock()
-            .expect("received request lock is not poisoned")
-            .as_slice(),
-        [native_mesh_rpc_request(
-            &["machine_a"],
-            MachinePloyzNativeMeshPrepareRpcRequest::ProbeOverlay {
-                public_keys: vec![peer],
-            },
-        )]
-    );
-}
-
-#[tokio::test]
 async fn nats_machine_preparer_bootstraps_public_keys_then_programs_peers() {
     let nats = test_nats().await;
     let received = Arc::new(Mutex::new(Vec::new()));

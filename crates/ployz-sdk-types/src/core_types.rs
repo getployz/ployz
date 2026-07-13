@@ -50,7 +50,8 @@ pub use ployz_core::internal_dns::{
     InternalDnsResolverStatus, InternalDnsStatus, InternalServiceName, InternalServiceNameError,
 };
 pub use ployz_core::machine::{
-    ConnectivityProofEvidence, ConnectivityProofUnreachablePeer, IssuedJoinToken,
+    ConnectivityProofEvidence, ConnectivityProofUnreachablePeer, DataplaneAdmissionPeer,
+    DataplaneProjectionAdmissionEvidence, DataplaneProjectionAdmissionFailure, IssuedJoinToken,
     JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt, MachineAddFailure,
     MachineCredentialProvisioningStep, MachineName, MachineReadinessCheck,
     MachineReadinessEvidence,

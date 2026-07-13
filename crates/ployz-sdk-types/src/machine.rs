@@ -199,6 +199,9 @@ pub enum MachineJoinReportedFailure {
     BootstrapFailed {
         message: FailureMessage,
     },
+    DataplaneProjectionAdmissionFailed {
+        evidence: crate::core_types::DataplaneProjectionAdmissionEvidence,
+    },
     ConnectivityProofFailed {
         evidence: crate::core_types::ConnectivityProofEvidence,
     },

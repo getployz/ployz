@@ -153,6 +153,10 @@ pub enum MachineAddFailure {
     BootstrapFailed { message: FailureMessage },
     #[error("machine readiness failed: {evidence}")]
     ReadinessFailed { evidence: MachineReadinessEvidence },
+    #[error("dataplane projection admission failed for {}: {}", .evidence.machine_id.as_str(), .evidence.reason)]
+    DataplaneProjectionAdmissionFailed {
+        evidence: DataplaneProjectionAdmissionEvidence,
+    },
     #[error("overlay connectivity proof failed: {evidence}")]
     ConnectivityProofFailed { evidence: ConnectivityProofEvidence },
     #[error("authorization render failed: {message}")]
@@ -166,6 +170,103 @@ pub enum MachineAddFailure {
     /// operation non-terminal.
     #[error("credential evidence write failed: {message}")]
     CredentialEvidenceWriteFailed { message: FailureMessage },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct DataplaneProjectionAdmissionEvidence {
+    pub machine_id: MachineId,
+    pub reason: DataplaneProjectionAdmissionFailure,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct DataplaneAdmissionPeer {
+    pub public_key: crate::dataplane::WireGuardPublicKey,
+    pub endpoint_subnet: crate::dataplane::WireGuardPeerEndpointSubnet,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DataplaneProjectionAdmissionFailure {
+    NoAnswer {
+        message: FailureMessage,
+    },
+    UnusableProjection {
+        failure: crate::dataplane::DataplaneProjectionFailure,
+    },
+    AwaitingTargetRevision {
+        expected: crate::dataplane::DataplaneProjectionRevision,
+        observed: Option<crate::dataplane::DataplaneProjectionRevision>,
+    },
+    EndpointBridgeNotReady {
+        status: crate::dataplane::EndpointBridgeStatus,
+    },
+    WireGuardNotReady {
+        message: FailureMessage,
+    },
+    EbpfNotReady {
+        status: crate::dataplane::EbpfAttachmentStatus,
+    },
+    PeerSetMismatch {
+        expected: Vec<DataplaneAdmissionPeer>,
+        observed: Vec<DataplaneAdmissionPeer>,
+    },
+    PeerHandshakeNever {
+        peer_machine_id: MachineId,
+    },
+    PeerHandshakeStale {
+        peer_machine_id: MachineId,
+        observed_age_seconds: u64,
+    },
+}
+
+impl fmt::Display for DataplaneProjectionAdmissionFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoAnswer { message } => write!(formatter, "no answer: {message}"),
+            Self::UnusableProjection { failure } => {
+                write!(formatter, "unusable projection: {failure:?}")
+            }
+            Self::AwaitingTargetRevision { expected, observed } => match observed {
+                Some(observed) => write!(
+                    formatter,
+                    "awaiting target revision {}: observed {}",
+                    expected.as_str(),
+                    observed.as_str()
+                ),
+                None => write!(
+                    formatter,
+                    "awaiting target revision {}: no attempted revision",
+                    expected.as_str()
+                ),
+            },
+            Self::EndpointBridgeNotReady { status } => {
+                write!(formatter, "endpoint bridge not ready: {status:?}")
+            }
+            Self::WireGuardNotReady { message } => {
+                write!(formatter, "WireGuard not ready: {message}")
+            }
+            Self::EbpfNotReady { status } => write!(formatter, "eBPF not ready: {status:?}"),
+            Self::PeerSetMismatch { .. } => formatter.write_str("peer set mismatch"),
+            Self::PeerHandshakeNever { peer_machine_id } => write!(
+                formatter,
+                "peer {} has never completed a handshake",
+                peer_machine_id.as_str()
+            ),
+            Self::PeerHandshakeStale {
+                peer_machine_id,
+                observed_age_seconds,
+            } => write!(
+                formatter,
+                "peer {} handshake is {observed_age_seconds}s old",
+                peer_machine_id.as_str()
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

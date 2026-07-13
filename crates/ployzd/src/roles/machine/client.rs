@@ -13,17 +13,20 @@ use crate::roles::machine::protocol::{
     MachineContainerRunDomainError, MachineContainerRunHookDomainError,
     MachineContainerRunHookRpcOk, MachineContainerRunHookRpcRequest, MachineContainerRunRpcOk,
     MachineContainerRunRpcRequest, MachineContainerStopDomainError, MachineContainerStopRpcRequest,
-    MachineEnsureEndpointNetworkDomainError, MachineEnsureEndpointNetworkRpcOk,
-    MachineEnsureEndpointNetworkRpcRequest, MachineFactsGetDomainError, MachineFactsGetRpcOk,
-    MachineFactsGetRpcRequest, MachineFactsRefreshDomainError, MachineFactsRefreshRpcOk,
-    MachineFactsRefreshRpcRequest, MachineLogsTailDomainError, MachineLogsTailResult,
-    MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineRpcResponder, MachineRpcResponse,
-    MachineRunContainerOutcome, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
+    MachineDataplaneStatusDomainError, MachineDataplaneStatusRpcOk,
+    MachineDataplaneStatusRpcRequest, MachineEnsureEndpointNetworkDomainError,
+    MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcRequest,
+    MachineFactsGetDomainError, MachineFactsGetRpcOk, MachineFactsGetRpcRequest,
+    MachineFactsRefreshDomainError, MachineFactsRefreshRpcOk, MachineFactsRefreshRpcRequest,
+    MachineLogsTailDomainError, MachineLogsTailResult, MachineLogsTailRpcOk,
+    MachineLogsTailRpcRequest, MachineRpcResponder, MachineRpcResponse, MachineRunContainerOutcome,
+    MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
     MachineSubstrateUpdateDomainError, MachineSubstrateUpdateRpcOk,
     MachineSubstrateUpdateRpcRequest, MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk,
     MachineVolumeRemoveRpcRequest,
 };
 use futures_util::{StreamExt, stream};
+use ployz_core::dataplane::{MachineDataplaneStatus, NetworkStatusMode};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::image::{ImageEnsureOk, ImageEnsureRequest, ImageRpcDomainError, OciDigest};
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
@@ -554,6 +557,29 @@ impl NatsMachineDataplanePreparer {
         self.request_timeout = request_timeout;
         self.facts_reader = self.facts_reader.with_request_timeout(request_timeout);
         self
+    }
+
+    pub(crate) async fn read_dataplane_status(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<MachineDataplaneStatus, ployz_core::ops::FailureMessage> {
+        call_machine::<MachineDataplaneStatusRpcOk, MachineDataplaneStatusDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::DataplaneStatus,
+            &MachineDataplaneStatusRpcRequest {
+                mode: NetworkStatusMode::Snapshot,
+            },
+        )
+        .await
+        .map(|response| response.value)
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => reason.failure_message(),
+            MachineCallError::Domain(MachineDataplaneStatusDomainError::ReadFailed { message }) => {
+                message
+            }
+        })
     }
 
     #[must_use]
