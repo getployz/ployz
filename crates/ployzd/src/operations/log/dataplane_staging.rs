@@ -72,33 +72,6 @@ impl OperationRepository {
         }
     }
 
-    pub async fn staged_machine_dataplane(
-        &self,
-    ) -> Result<Option<StagedMachineDataplaneState>, OperationStatusStoreError> {
-        self.store
-            .call(|conn| {
-                let staged: Option<StagedMachineDataplaneState> = query_json(
-                    conn,
-                    "SELECT json FROM machine_dataplane_staging WHERE id = ?1",
-                    "1",
-                )?;
-                let Some(staged) = staged else {
-                    return Ok(None);
-                };
-                let joining = matches!(
-                    select_status(conn, &staged.operation_id)?,
-                    Some(OperationStatus::MachineAdd {
-                        machine_id,
-                        state: MachineAddOperationState::Joining { .. },
-                        ..
-                    }) if machine_id == staged.machine_id
-                );
-                Ok(joining.then_some(staged))
-            })
-            .await
-            .map_err(|error| index_error(&error))
-    }
-
     pub async fn machine_dataplane_staging(
         &self,
         operation_id: &OperationId,

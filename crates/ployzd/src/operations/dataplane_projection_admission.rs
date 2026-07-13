@@ -5,157 +5,174 @@ use std::time::Duration;
 use ployz_core::dataplane::{DataplaneProjection, MachineDataplaneStatus};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::{
-    DataplaneProjectionAdmissionEvidence, DataplaneProjectionAdmissionFailure, RawJoinToken,
+    DataplaneProjectionAdmissionEvidence, DataplaneProjectionAdmissionFailure,
     validate_target_machine as validate_machine,
 };
-use ployz_core::ops::{FailureMessage, MachineAddOperationState, OperationStatus};
+use ployz_core::ops::FailureMessage;
 use ployz_core::state::StagedMachineDataplaneState;
-use ployz_sdk_types::MachineJoinReportError;
 
-use crate::roles::machine::client::{NatsMachineDataplaneReader, NatsMachineFactsReader};
+use crate::intent::service::NatsIntentReader;
+use crate::operation_api::admission::OperationControllers;
+use crate::roles::machine::client::NatsMachineFactsReader;
 use crate::roles::machine::convergence::gather_dataplane_statuses;
-
-use super::OperationApiHandlers;
-use super::error_map::{corrupt, machine_join_report_error};
 
 const DATAPLANE_ADMISSION_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const DATAPLANE_ADMISSION_DEADLINE: Duration = Duration::from_secs(45);
 const DATAPLANE_ADMISSION_RETRY_DELAY: Duration = Duration::from_millis(250);
 
-// ponytail: join report owns one bounded gather; move it to an operation worker if admission becomes asynchronous.
-pub(super) async fn prove_completed_join(
-    handlers: &OperationApiHandlers,
-    raw_token: &RawJoinToken,
-) -> Result<Option<DataplaneProjectionAdmissionEvidence>, MachineJoinReportError> {
-    let target = handlers
-        .controllers
-        .repository()
-        .machine_join_report_target(raw_token)
-        .await
-        .map_err(machine_join_report_error)?;
-    let status = handlers
-        .controllers
-        .repository()
-        .get(&target.operation_id)
-        .await
-        .map_err(unavailable)?
-        .ok_or_else(|| MachineJoinReportError::Unavailable {
-            message: corrupt("missing machine-add operation before dataplane admission"),
-        })?;
-    let OperationStatus::MachineAdd {
-        id: operation_id,
-        machine_id,
-        state,
-        ..
-    } = status
-    else {
-        return Err(MachineJoinReportError::Unavailable {
-            message: corrupt("joined operation is not machine-add"),
-        });
-    };
-    match state {
-        MachineAddOperationState::Joining { .. } => {
-            admit_projection(handlers, operation_id, machine_id, target.endpoint_subnet).await
-        }
-        MachineAddOperationState::Pending { .. }
-        | MachineAddOperationState::Completed
-        | MachineAddOperationState::Failed { .. }
-        | MachineAddOperationState::Cancelled { .. } => Ok(None),
-    }
+#[derive(Debug, Clone)]
+pub struct DataplaneProjectionAdmissionOperation {
+    controllers: OperationControllers,
+    intent_change_client: async_nats::Client,
+    intent_reader: NatsIntentReader,
 }
 
-async fn admit_projection(
-    handlers: &OperationApiHandlers,
-    operation_id: OperationId,
-    joining_machine_id: MachineId,
-    joining_subnet: ployz_core::dataplane::MachineEndpointSubnet,
-) -> Result<Option<DataplaneProjectionAdmissionEvidence>, MachineJoinReportError> {
-    let mesh_lock = handlers.controllers.mesh_lock();
-    let _mesh_guard = mesh_lock.lock().await;
-    let dataplane_reader = NatsMachineDataplaneReader::new(handlers.intent_change_client.clone())
-        .with_request_timeout(DATAPLANE_ADMISSION_REQUEST_TIMEOUT);
-    let public_key = match dataplane_reader
-        .read_projection_public_key(&joining_machine_id)
-        .await
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
+pub struct DataplaneProjectionAdmissionError {
+    message: String,
+}
+
+impl DataplaneProjectionAdmissionOperation {
+    #[must_use]
+    pub const fn new(
+        controllers: OperationControllers,
+        intent_change_client: async_nats::Client,
+        intent_reader: NatsIntentReader,
+    ) -> Self {
+        Self {
+            controllers,
+            intent_change_client,
+            intent_reader,
+        }
+    }
+
+    pub async fn admit(
+        &self,
+        operation_id: OperationId,
+        joining_machine_id: MachineId,
+        joining_subnet: ployz_core::dataplane::MachineEndpointSubnet,
+    ) -> Result<Option<DataplaneProjectionAdmissionEvidence>, DataplaneProjectionAdmissionError>
     {
-        Ok(public_key) => public_key,
-        Err(error) => {
+        let mesh_lock = self.controllers.mesh_lock();
+        let _mesh_guard = mesh_lock.lock().await;
+        let facts_reader = NatsMachineFactsReader::new(self.intent_change_client.clone())
+            .with_request_timeout(DATAPLANE_ADMISSION_REQUEST_TIMEOUT);
+        let public_key = match facts_reader
+            .read_projection_public_key(&joining_machine_id)
+            .await
+        {
+            Ok(public_key) => public_key,
+            Err(error) => {
+                return Ok(Some(no_answer(
+                    joining_machine_id,
+                    format!("WireGuard public key unavailable: {error:?}"),
+                )));
+            }
+        };
+        let facts = facts_reader.machine_facts(&joining_machine_id).await;
+        let mut mesh_endpoints = match facts {
+            Ok(facts) => facts
+                .endpoints()
+                .map(|endpoints| endpoints.mesh_endpoints.clone())
+                .unwrap_or_default(),
+            Err(error) => {
+                return Ok(Some(no_answer(joining_machine_id, error.to_string())));
+            }
+        };
+        if mesh_endpoints.is_empty() {
             return Ok(Some(no_answer(
                 joining_machine_id,
-                format!("WireGuard public key unavailable: {error:?}"),
+                "machine facts contain no mesh endpoint".to_owned(),
             )));
         }
-    };
-    let facts_reader = NatsMachineFactsReader::new(handlers.intent_change_client.clone())
-        .with_request_timeout(DATAPLANE_ADMISSION_REQUEST_TIMEOUT);
-    let facts = facts_reader.machine_facts(&joining_machine_id).await;
-    let mut mesh_endpoints = match facts {
-        Ok(facts) => facts
-            .endpoints()
-            .map(|endpoints| endpoints.mesh_endpoints.clone())
-            .unwrap_or_default(),
-        Err(error) => {
-            return Ok(Some(no_answer(joining_machine_id, error.to_string())));
+        mesh_endpoints.sort();
+        mesh_endpoints.dedup();
+
+        let staged = StagedMachineDataplaneState {
+            operation_id: operation_id.clone(),
+            machine_id: joining_machine_id.clone(),
+            endpoint_subnet: joining_subnet,
+            mesh_endpoints,
+            wireguard_public_key: public_key,
+        };
+        self.controllers
+            .repository()
+            .stage_machine_dataplane(staged.clone())
+            .await
+            .map_err(unavailable)?;
+
+        let result = self
+            .admit_staged_projection(&joining_machine_id, &staged, &facts_reader)
+            .await;
+        if !matches!(result, Ok(None)) {
+            self.clear_staging(&operation_id).await?;
         }
-    };
-    if mesh_endpoints.is_empty() {
-        return Ok(Some(no_answer(
-            joining_machine_id,
-            "machine facts contain no mesh endpoint".to_owned(),
-        )));
-    }
-    mesh_endpoints.sort();
-    mesh_endpoints.dedup();
-
-    let staged = StagedMachineDataplaneState {
-        operation_id: operation_id.clone(),
-        machine_id: joining_machine_id.clone(),
-        endpoint_subnet: joining_subnet,
-        mesh_endpoints,
-        wireguard_public_key: public_key,
-    };
-    handlers
-        .controllers
-        .repository()
-        .stage_machine_dataplane(staged.clone())
-        .await
-        .map_err(unavailable)?;
-
-    let result =
-        admit_staged_projection(handlers, &joining_machine_id, &staged, &facts_reader).await;
-    if !matches!(result, Ok(None)) {
-        clear_staging(handlers, &operation_id).await?;
-    }
-    result
-}
-
-async fn admit_staged_projection(
-    handlers: &OperationApiHandlers,
-    joining_machine_id: &MachineId,
-    staged: &StagedMachineDataplaneState,
-    facts_reader: &NatsMachineFactsReader,
-) -> Result<Option<DataplaneProjectionAdmissionEvidence>, MachineJoinReportError> {
-    if let Err(error) = publish_invalidation(handlers).await {
-        return Ok(Some(no_answer(joining_machine_id.clone(), error)));
+        result
     }
 
-    let projection = match handlers.intent_reader.intent().await {
-        Ok(intent) => intent.dataplane_projection,
-        Err(error) => {
-            return Ok(Some(no_answer(
+    async fn admit_staged_projection(
+        &self,
+        joining_machine_id: &MachineId,
+        staged: &StagedMachineDataplaneState,
+        facts_reader: &NatsMachineFactsReader,
+    ) -> Result<Option<DataplaneProjectionAdmissionEvidence>, DataplaneProjectionAdmissionError>
+    {
+        if let Err(error) = self.publish_invalidation().await {
+            return Ok(Some(no_answer(joining_machine_id.clone(), error)));
+        }
+
+        let projection = match self.intent_reader.intent().await {
+            Ok(intent) => intent.dataplane_projection,
+            Err(error) => {
+                return Ok(Some(no_answer(
+                    joining_machine_id.clone(),
+                    error.to_string(),
+                )));
+            }
+        };
+        if let Err(message) = validate_staged_projection(&projection, staged) {
+            return Ok(Some(invalid_staged_projection(
                 joining_machine_id.clone(),
-                error.to_string(),
+                message,
             )));
         }
-    };
-    if let Err(message) = validate_staged_projection(&projection, staged) {
-        return Ok(Some(invalid_staged_projection(
-            joining_machine_id.clone(),
-            message,
-        )));
+
+        Ok(gather_admission(facts_reader, &projection).await)
     }
 
-    Ok(gather_admission(facts_reader, &projection).await)
+    async fn clear_staging(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<(), DataplaneProjectionAdmissionError> {
+        self.controllers
+            .repository()
+            .clear_staged_machine_dataplane(operation_id)
+            .await
+            .map_err(unavailable)?;
+        let _ = self.publish_invalidation().await;
+        Ok(())
+    }
+
+    async fn publish_invalidation(&self) -> Result<(), String> {
+        tokio::time::timeout(DATAPLANE_ADMISSION_REQUEST_TIMEOUT, async {
+            self.intent_change_client
+                .publish(ployz_core::subjects::INTENT_CHANGED, Vec::new().into())
+                .await
+                .map_err(|error| error.to_string())?;
+            self.intent_change_client
+                .flush()
+                .await
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|_| {
+            format!(
+                "intent invalidation timed out after {}s",
+                DATAPLANE_ADMISSION_REQUEST_TIMEOUT.as_secs()
+            )
+        })?
+    }
 }
 
 async fn gather_admission(
@@ -255,42 +272,6 @@ fn validate_staged_projection(
     Ok(())
 }
 
-async fn clear_staging(
-    handlers: &OperationApiHandlers,
-    operation_id: &OperationId,
-) -> Result<(), MachineJoinReportError> {
-    handlers
-        .controllers
-        .repository()
-        .clear_staged_machine_dataplane(operation_id)
-        .await
-        .map_err(unavailable)?;
-    let _ = publish_invalidation(handlers).await;
-    Ok(())
-}
-
-async fn publish_invalidation(handlers: &OperationApiHandlers) -> Result<(), String> {
-    tokio::time::timeout(DATAPLANE_ADMISSION_REQUEST_TIMEOUT, async {
-        handlers
-            .intent_change_client
-            .publish(ployz_core::subjects::INTENT_CHANGED, Vec::new().into())
-            .await
-            .map_err(|error| error.to_string())?;
-        handlers
-            .intent_change_client
-            .flush()
-            .await
-            .map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|_| {
-        format!(
-            "intent invalidation timed out after {}s",
-            DATAPLANE_ADMISSION_REQUEST_TIMEOUT.as_secs()
-        )
-    })?
-}
-
 fn no_answer(machine_id: MachineId, message: String) -> DataplaneProjectionAdmissionEvidence {
     DataplaneProjectionAdmissionEvidence {
         machine_id,
@@ -321,8 +302,8 @@ fn failure_message(message: impl AsRef<str>) -> FailureMessage {
     })
 }
 
-fn unavailable(error: impl std::fmt::Display) -> MachineJoinReportError {
-    MachineJoinReportError::Unavailable {
+fn unavailable(error: impl std::fmt::Display) -> DataplaneProjectionAdmissionError {
+    DataplaneProjectionAdmissionError {
         message: error.to_string(),
     }
 }

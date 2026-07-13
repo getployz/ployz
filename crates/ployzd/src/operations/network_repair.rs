@@ -145,21 +145,7 @@ impl NetworkRepairOperation {
             }
             None => machine_ids.clone(),
         };
-        let projection = match self.intent_reader.intent().await {
-            Ok(intent) => intent.dataplane_projection,
-            Err(error) => {
-                self.record_terminal(
-                    &operation_id,
-                    NetworkRepairTransition::Failed {
-                        failure: NetworkRepairFailure::IntentReadFailed {
-                            message: failure_message(error.to_string()),
-                        },
-                    },
-                )
-                .await;
-                return;
-            }
-        };
+        let projection = intent.dataplane_projection;
         let invalidation = match tokio::time::timeout(self.operation_timeout, async {
             self.client
                 .publish(ployz_core::subjects::INTENT_CHANGED, Vec::new().into())

@@ -125,16 +125,10 @@ pub trait MachineContainerRunner {
 
     fn ensure_projection_endpoint_network(
         &self,
-        _expected_subnet: &MachineEndpointSubnet,
-    ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send {
-        self.ensure_endpoint_network()
-    }
+        expected_subnet: &MachineEndpointSubnet,
+    ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
 
-    fn read_endpoint_network_status(
-        &self,
-    ) -> impl Future<Output = Option<EndpointBridgeStatus>> + Send {
-        std::future::ready(None)
-    }
+    fn read_endpoint_network_status(&self) -> impl Future<Output = EndpointBridgeStatus> + Send;
 
     fn resolve_registry_image(
         &self,

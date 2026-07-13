@@ -99,6 +99,17 @@ impl MachineContainerRunner for ObservingContainerRunner {
         Ok(())
     }
 
+    async fn ensure_projection_endpoint_network(
+        &self,
+        _expected_subnet: &ployz_core::dataplane::MachineEndpointSubnet,
+    ) -> Result<(), MachineContainerRunnerError> {
+        Ok(())
+    }
+
+    async fn read_endpoint_network_status(&self) -> ployz_core::dataplane::EndpointBridgeStatus {
+        ployz_core::dataplane::EndpointBridgeStatus::Missing
+    }
+
     async fn resolve_registry_image(
         &self,
         reference: &ImageReference,

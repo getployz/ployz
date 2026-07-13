@@ -1,6 +1,6 @@
 //! Request-side adapter for reading a machine's WireGuard admission identity.
 
-use crate::roles::machine::client::{MachineCallError, NatsMachineDataplaneReader, call_machine};
+use crate::roles::machine::client::{MachineCallError, NatsMachineFactsReader, call_machine};
 use crate::roles::machine::protocol::{
     MachineDataplanePublicKeyDomainError, MachineDataplanePublicKeyRpcOk,
     MachineDataplanePublicKeyRpcRequest,
@@ -11,7 +11,7 @@ use ployz_core::dataplane::{
 use ployz_core::ids::MachineId;
 use ployz_core::subjects::MachineServiceEndpoint;
 
-impl NatsMachineDataplaneReader {
+impl NatsMachineFactsReader {
     pub(crate) async fn read_projection_public_key(
         &self,
         machine_id: &MachineId,

@@ -68,6 +68,9 @@ pub enum DataplaneProjectionFailure {
         component: DataplaneProjectionComponent,
         message: FailureMessage,
     },
+    ApplyTimedOut {
+        timeout_seconds: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

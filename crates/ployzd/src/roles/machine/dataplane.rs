@@ -43,10 +43,10 @@ where
     {
         Ok(mut value) => {
             let projection = state.projection.snapshot();
-            value.projection = match state.runner.read_endpoint_network_status().await {
-                Some(endpoint_bridge) => merge_endpoint_bridge_status(projection, endpoint_bridge),
-                None => projection,
-            };
+            value.projection = merge_endpoint_bridge_status(
+                projection,
+                state.runner.read_endpoint_network_status().await,
+            );
             machine_success(MachineDataplaneStatusRpcResponse::Ok(
                 MachineDataplaneStatusRpcOk { machine_id, value },
             ))

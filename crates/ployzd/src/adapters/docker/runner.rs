@@ -1,4 +1,7 @@
-use super::network::{DRIVER_MTU_OPTION, ENDPOINT_NETWORK_NAME, endpoint_network_create_request};
+use super::network::{
+    ENDPOINT_NETWORK_NAME, ensure_endpoint_network, is_docker_object_missing,
+    read_endpoint_network_status, require_endpoint_network,
+};
 use crate::adapters::docker::labels::{self, MANAGED_LABEL, ManagedContainerLabelError};
 use crate::adapters::host_dataplane::WireGuardMtuPolicy;
 use crate::adapters::host_dataplane::resolve_wireguard_mtu;
@@ -14,13 +17,13 @@ use bollard::errors::Error as BollardError;
 use bollard::models::{
     ContainerCreateBody, ContainerSummary, ContainerSummaryHealthStatusEnum,
     ContainerSummaryNetworkSettings, ContainerSummaryStateEnum, EndpointSettings, HealthConfig,
-    HealthStatusEnum, HostConfig, Mount, MountType, NetworkInspect, NetworkingConfig,
-    RestartPolicy, RestartPolicyNameEnum,
+    HealthStatusEnum, HostConfig, Mount, MountType, NetworkingConfig, RestartPolicy,
+    RestartPolicyNameEnum,
 };
 use bollard::query_parameters::{
-    CreateImageOptionsBuilder, InspectContainerOptions, InspectNetworkOptions,
-    ListContainersOptionsBuilder, LogsOptionsBuilder, RemoveContainerOptionsBuilder,
-    RemoveVolumeOptionsBuilder, RestartContainerOptions, StopContainerOptionsBuilder,
+    CreateImageOptionsBuilder, InspectContainerOptions, ListContainersOptionsBuilder,
+    LogsOptionsBuilder, RemoveContainerOptionsBuilder, RemoveVolumeOptionsBuilder,
+    RestartContainerOptions, StopContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
 use ployz_core::dataplane::{
@@ -163,7 +166,20 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
     }
 
     async fn ensure_endpoint_network(&self) -> Result<(), MachineContainerRunnerError> {
-        self.ensure_endpoint_network_inner().await
+        let docker = self.docker().await.map_err(|error| {
+            MachineContainerRunnerError::EnsureEndpointNetwork {
+                message: error.to_string(),
+            }
+        })?;
+        let endpoint_mtu =
+            resolve_wireguard_mtu(self.endpoint_mtu_policy, &self.endpoint_wg_ifname).await;
+        ensure_endpoint_network(
+            docker,
+            &self.endpoint_network_subnet,
+            &self.endpoint_bridge_ifname,
+            endpoint_mtu,
+        )
+        .await
     }
 
     async fn ensure_projection_endpoint_network(
@@ -182,11 +198,37 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
                 observed,
             });
         }
-        self.ensure_endpoint_network_inner().await
+        self.ensure_endpoint_network().await
     }
 
-    async fn read_endpoint_network_status(&self) -> Option<EndpointBridgeStatus> {
-        Some(self.read_endpoint_network_status_inner().await)
+    async fn read_endpoint_network_status(&self) -> EndpointBridgeStatus {
+        let expected = match MachineEndpointSubnet::try_new(&self.endpoint_network_subnet) {
+            Ok(expected) => expected,
+            Err(_) => {
+                return EndpointBridgeStatus::InvalidSubnet {
+                    observed: self.endpoint_network_subnet.clone(),
+                };
+            }
+        };
+        let docker = match self.docker().await {
+            Ok(docker) => docker,
+            Err(error) => {
+                return EndpointBridgeStatus::Unavailable {
+                    message: ployz_core::ops::FailureMessage::try_new(error.to_string())
+                        .expect("Docker connection failure is non-empty"),
+                };
+            }
+        };
+        let endpoint_mtu =
+            resolve_wireguard_mtu(self.endpoint_mtu_policy, &self.endpoint_wg_ifname).await;
+        read_endpoint_network_status(
+            docker,
+            expected,
+            &self.endpoint_network_subnet,
+            &self.endpoint_bridge_ifname,
+            endpoint_mtu,
+        )
+        .await
     }
 
     async fn resolve_registry_image(
@@ -223,23 +265,29 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
         &self,
         command: CreateManagedContainer,
     ) -> Result<ContainerId, MachineContainerRunnerError> {
-        let pull_reference = command.pull.reference();
-        let credential = match &command.pull {
-            MachineImagePull::Registry { credential, .. } => credential.as_ref(),
-            MachineImagePull::MeshSeed { .. } => None,
-        };
-        self.pull_image(&pull_reference, credential).await?;
-
-        // Every service container joins the endpoint network at creation;
-        // route state alone decides whether anything dials it (ADR 0023).
-        self.ensure_endpoint_network_inner().await?;
-
         let docker = self
             .docker()
             .await
             .map_err(|error| MachineContainerRunnerError::Create {
                 message: error.to_string(),
             })?;
+        let endpoint_mtu =
+            resolve_wireguard_mtu(self.endpoint_mtu_policy, &self.endpoint_wg_ifname).await;
+        require_endpoint_network(
+            docker,
+            &self.endpoint_network_subnet,
+            &self.endpoint_bridge_ifname,
+            endpoint_mtu,
+        )
+        .await?;
+        let pull_reference = command.pull.reference();
+        let credential = match &command.pull {
+            MachineImagePull::Registry { credential, .. } => credential.as_ref(),
+            MachineImagePull::MeshSeed { .. } => None,
+        };
+        self.pull_image(&pull_reference, credential).await?;
+        // Every service container joins the already-converged endpoint
+        // network; route state alone decides whether anything dials it.
         let response = docker
             .create_container(None, create_body(command, &self.endpoint_network_subnet))
             .await
@@ -551,121 +599,6 @@ impl DockerManagedContainerRunner {
 
         Ok(())
     }
-
-    async fn ensure_endpoint_network_inner(&self) -> Result<(), MachineContainerRunnerError> {
-        let docker = self
-            .docker()
-            .await
-            .map_err(|error| MachineContainerRunnerError::Create {
-                message: error.to_string(),
-            })?;
-        let endpoint_mtu =
-            resolve_wireguard_mtu(self.endpoint_mtu_policy, &self.endpoint_wg_ifname).await;
-        match docker
-            .inspect_network(ENDPOINT_NETWORK_NAME, None::<InspectNetworkOptions>)
-            .await
-        {
-            Ok(network) => {
-                return validate_endpoint_network(
-                    &network,
-                    &self.endpoint_network_subnet,
-                    &self.endpoint_bridge_ifname,
-                    endpoint_mtu,
-                );
-            }
-            Err(error) if is_docker_object_missing(&error) => {}
-            Err(error) => {
-                return Err(MachineContainerRunnerError::EnsureEndpointNetwork {
-                    message: format!("inspect Docker network {ENDPOINT_NETWORK_NAME}: {error}"),
-                });
-            }
-        }
-
-        let request = endpoint_network_create_request(
-            &self.endpoint_network_subnet,
-            &self.endpoint_bridge_ifname,
-            endpoint_mtu,
-        );
-
-        match docker.create_network(request).await {
-            Ok(_) => {}
-            Err(error) if is_network_already_exists(&error) => {}
-            Err(error) => {
-                return Err(MachineContainerRunnerError::EnsureEndpointNetwork {
-                    message: format!("create Docker network {ENDPOINT_NETWORK_NAME}: {error}"),
-                });
-            }
-        }
-        let network = docker
-            .inspect_network(ENDPOINT_NETWORK_NAME, None::<InspectNetworkOptions>)
-            .await
-            .map_err(|error| MachineContainerRunnerError::EnsureEndpointNetwork {
-                message: format!(
-                    "inspect Docker network {ENDPOINT_NETWORK_NAME} after create: {error}"
-                ),
-            })?;
-        validate_endpoint_network(
-            &network,
-            &self.endpoint_network_subnet,
-            &self.endpoint_bridge_ifname,
-            endpoint_mtu,
-        )
-    }
-
-    async fn read_endpoint_network_status_inner(&self) -> EndpointBridgeStatus {
-        let expected = match MachineEndpointSubnet::try_new(&self.endpoint_network_subnet) {
-            Ok(expected) => expected,
-            Err(_) => {
-                return EndpointBridgeStatus::InvalidSubnet {
-                    observed: self.endpoint_network_subnet.clone(),
-                };
-            }
-        };
-        let docker = match self.docker().await {
-            Ok(docker) => docker,
-            Err(error) => {
-                return EndpointBridgeStatus::Unavailable {
-                    message: endpoint_status_failure(error.to_string()),
-                };
-            }
-        };
-        let network = match docker
-            .inspect_network(ENDPOINT_NETWORK_NAME, None::<InspectNetworkOptions>)
-            .await
-        {
-            Ok(network) => network,
-            Err(error) if is_docker_object_missing(&error) => return EndpointBridgeStatus::Missing,
-            Err(error) => {
-                return EndpointBridgeStatus::Unavailable {
-                    message: endpoint_status_failure(format!(
-                        "inspect Docker network {ENDPOINT_NETWORK_NAME}: {error}"
-                    )),
-                };
-            }
-        };
-        let endpoint_mtu =
-            resolve_wireguard_mtu(self.endpoint_mtu_policy, &self.endpoint_wg_ifname).await;
-        match validate_endpoint_network(
-            &network,
-            &self.endpoint_network_subnet,
-            &self.endpoint_bridge_ifname,
-            endpoint_mtu,
-        ) {
-            Ok(()) => EndpointBridgeStatus::Ready { subnet: expected },
-            Err(MachineContainerRunnerError::EndpointNetworkSubnetMismatch {
-                expected,
-                observed,
-            }) => EndpointBridgeStatus::SubnetMismatch { expected, observed },
-            Err(error) => EndpointBridgeStatus::Unavailable {
-                message: endpoint_status_failure(format!("{error:?}")),
-            },
-        }
-    }
-}
-
-fn endpoint_status_failure(message: String) -> ployz_core::ops::FailureMessage {
-    ployz_core::ops::FailureMessage::try_new(message)
-        .expect("Docker endpoint status failure is non-empty")
 }
 
 fn docker_credentials(credential: Option<&RegistryCredential>) -> Option<DockerCredentials> {
@@ -687,90 +620,6 @@ fn redact_registry_credential(message: String, credential: Option<&RegistryCrede
         Some(credential) => credential.redact_secret_in(message),
         None => message,
     }
-}
-
-fn endpoint_network_mtu_matches(network: &NetworkInspect, endpoint_mtu: u32) -> bool {
-    endpoint_network_mtu(network).as_deref() == Some(&endpoint_mtu.to_string())
-}
-
-fn endpoint_network_mtu(network: &NetworkInspect) -> Option<String> {
-    network
-        .options
-        .as_ref()
-        .and_then(|options| options.get(DRIVER_MTU_OPTION).cloned())
-}
-
-fn endpoint_network_subnet(network: &NetworkInspect) -> Option<&str> {
-    network
-        .ipam
-        .as_ref()
-        .and_then(|ipam| ipam.config.as_ref())
-        .and_then(|configs| configs.first())
-        .and_then(|config| config.subnet.as_deref())
-}
-
-fn endpoint_network_bridge(network: &NetworkInspect) -> Option<&str> {
-    network
-        .options
-        .as_ref()
-        .and_then(|options| options.get("com.docker.network.bridge.name"))
-        .map(String::as_str)
-}
-
-fn validate_endpoint_network(
-    network: &NetworkInspect,
-    expected_subnet: &str,
-    expected_bridge: &str,
-    expected_mtu: u32,
-) -> Result<(), MachineContainerRunnerError> {
-    if endpoint_network_subnet(network) != Some(expected_subnet) {
-        if let (Ok(expected), Some(Ok(observed))) = (
-            MachineEndpointSubnet::try_new(expected_subnet),
-            endpoint_network_subnet(network).map(MachineEndpointSubnet::try_new),
-        ) {
-            return Err(MachineContainerRunnerError::EndpointNetworkSubnetMismatch {
-                expected,
-                observed,
-            });
-        }
-        return Err(MachineContainerRunnerError::EnsureEndpointNetwork {
-            message: format!(
-                "Docker network {ENDPOINT_NETWORK_NAME} has subnet {}, expected {expected_subnet}",
-                endpoint_network_subnet(network).unwrap_or("unset")
-            ),
-        });
-    }
-    if network.driver.as_deref() != Some("bridge")
-        || endpoint_network_bridge(network) != Some(expected_bridge)
-        || !endpoint_network_mtu_matches(network, expected_mtu)
-    {
-        return Err(MachineContainerRunnerError::EnsureEndpointNetwork {
-            message: format!(
-                "Docker network {ENDPOINT_NETWORK_NAME} does not match bridge {expected_bridge} and MTU {expected_mtu}"
-            ),
-        });
-    }
-    Ok(())
-}
-
-fn is_network_already_exists(error: &BollardError) -> bool {
-    matches!(
-        error,
-        BollardError::DockerResponseServerError {
-            status_code: 409,
-            message
-        } if message.contains("already exists")
-    )
-}
-
-fn is_docker_object_missing(error: &BollardError) -> bool {
-    matches!(
-        error,
-        BollardError::DockerResponseServerError {
-            status_code: 404,
-            ..
-        }
-    )
 }
 
 fn docker_container_state(
@@ -1419,66 +1268,6 @@ mod tests {
                 .map(|endpoints| endpoints.contains_key(ENDPOINT_NETWORK_NAME)),
             Some(true)
         );
-    }
-
-    #[test]
-    fn endpoint_network_create_conflict_is_idempotent() {
-        assert!(is_network_already_exists(
-            &BollardError::DockerResponseServerError {
-                status_code: 409,
-                message: "network with name ployz already exists".to_owned(),
-            }
-        ));
-        assert!(!is_network_already_exists(
-            &BollardError::DockerResponseServerError {
-                status_code: 409,
-                message: "different conflict".to_owned(),
-            }
-        ));
-    }
-
-    #[test]
-    fn endpoint_network_mtu_matches_driver_option() {
-        let network = NetworkInspect {
-            options: Some(HashMap::from([(
-                DRIVER_MTU_OPTION.to_owned(),
-                "1420".to_owned(),
-            )])),
-            ..Default::default()
-        };
-
-        assert!(endpoint_network_mtu_matches(&network, 1420));
-        assert!(!endpoint_network_mtu_matches(&network, 1412));
-    }
-
-    #[test]
-    fn endpoint_network_validation_requires_exact_subnet_bridge_and_mtu() {
-        let exact = NetworkInspect {
-            driver: Some("bridge".to_owned()),
-            options: Some(HashMap::from([
-                (
-                    "com.docker.network.bridge.name".to_owned(),
-                    "br-ployz".to_owned(),
-                ),
-                (DRIVER_MTU_OPTION.to_owned(), "1420".to_owned()),
-            ])),
-            ipam: Some(bollard::models::Ipam {
-                config: Some(vec![bollard::models::IpamConfig {
-                    subnet: Some("10.198.1.0/24".to_owned()),
-                    ..Default::default()
-                }]),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-
-        assert!(validate_endpoint_network(&exact, "10.198.1.0/24", "br-ployz", 1420).is_ok());
-        assert!(matches!(
-            validate_endpoint_network(&exact, "10.198.2.0/24", "br-ployz", 1420),
-            Err(MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. })
-        ));
-        assert!(validate_endpoint_network(&exact, "10.198.1.0/24", "other-bridge", 1420).is_err());
-        assert!(validate_endpoint_network(&exact, "10.198.1.0/24", "br-ployz", 1400).is_err());
     }
 
     #[tokio::test]

@@ -356,15 +356,11 @@ export type DataplaneMember = { machine_id: MachineId, endpoint_subnet: MachineE
 
 export type DataplaneProjectionRevision = Brand<string, "DataplaneProjectionRevision">;
 
-export type DataplaneProjectionMember = { machine_id: MachineId, endpoint_subnet: MachineEndpointSubnet, mesh_endpoints: Array<string>, wireguard_public_key: WireGuardPublicKey, };
-
-export type DataplaneProjection = { declared_members: Array<DataplaneProjectionMember>, staged_member: DataplaneProjectionMember | null, };
-
 export type DataplaneProjectionRevisions = { declared_revision: DataplaneProjectionRevision, target_revision: DataplaneProjectionRevision, };
 
 export type DataplaneProjectionTestimony = { "status": "applied", revisions: DataplaneProjectionRevisions, } | { "status": "unusable", attempted_revisions: DataplaneProjectionRevisions | null, last_applied_revisions: DataplaneProjectionRevisions | null, failure: DataplaneProjectionFailure, };
 
-export type DataplaneProjectionFailure = { "kind": "fetch_failed", message: FailureMessage, } | { "kind": "invalid_view", message: FailureMessage, } | { "kind": "local_member_missing" } | { "kind": "endpoint_bridge_missing" } | { "kind": "endpoint_bridge_subnet_mismatch", expected: MachineEndpointSubnet, observed: MachineEndpointSubnet, } | { "kind": "apply_failed", component: DataplaneProjectionComponent, message: FailureMessage, };
+export type DataplaneProjectionFailure = { "kind": "fetch_failed", message: FailureMessage, } | { "kind": "invalid_view", message: FailureMessage, } | { "kind": "local_member_missing" } | { "kind": "endpoint_bridge_missing" } | { "kind": "endpoint_bridge_subnet_mismatch", expected: MachineEndpointSubnet, observed: MachineEndpointSubnet, } | { "kind": "apply_failed", component: DataplaneProjectionComponent, message: FailureMessage, } | { "kind": "apply_timed_out", timeout_seconds: number, };
 
 export type DataplaneProjectionComponent = "endpoint_bridge" | "wire_guard" | "ebpf";
 

@@ -5,6 +5,7 @@ mod facts;
 mod failure;
 mod images;
 mod phase;
+mod placement;
 mod ports;
 mod preparation;
 mod step;

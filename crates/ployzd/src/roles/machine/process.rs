@@ -538,6 +538,19 @@ mod tests {
             Ok(())
         }
 
+        async fn ensure_projection_endpoint_network(
+            &self,
+            _expected_subnet: &ployz_core::dataplane::MachineEndpointSubnet,
+        ) -> Result<(), MachineContainerRunnerError> {
+            Ok(())
+        }
+
+        async fn read_endpoint_network_status(
+            &self,
+        ) -> ployz_core::dataplane::EndpointBridgeStatus {
+            ployz_core::dataplane::EndpointBridgeStatus::Missing
+        }
+
         async fn resolve_registry_image(
             &self,
             reference: &ployz_core::deploy::ImageReference,
@@ -634,6 +647,22 @@ mod tests {
             Err(MachineContainerRunnerError::EnsureEndpointNetwork {
                 message: "docker unavailable".to_owned(),
             })
+        }
+
+        async fn ensure_projection_endpoint_network(
+            &self,
+            _expected_subnet: &ployz_core::dataplane::MachineEndpointSubnet,
+        ) -> Result<(), MachineContainerRunnerError> {
+            self.ensure_endpoint_network().await
+        }
+
+        async fn read_endpoint_network_status(
+            &self,
+        ) -> ployz_core::dataplane::EndpointBridgeStatus {
+            ployz_core::dataplane::EndpointBridgeStatus::Unavailable {
+                message: ployz_core::ops::FailureMessage::try_new("docker unavailable")
+                    .expect("failure"),
+            }
         }
 
         async fn resolve_registry_image(

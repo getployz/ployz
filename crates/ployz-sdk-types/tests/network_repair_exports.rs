@@ -16,7 +16,16 @@ fn sdk_exports_network_repair_dataplane_converged_event() {
     };
 
     let json = serde_json::to_value(event).expect("event serializes");
-    assert_eq!(json["event"], "network_repair_dataplane_converged");
-    assert_eq!(json["revision"], revision.as_str());
-    assert_eq!(json["machine_ids"], serde_json::json!(["machine_a"]));
+    assert_eq!(
+        json.get("event"),
+        Some(&serde_json::json!("network_repair_dataplane_converged"))
+    );
+    assert_eq!(
+        json.get("revision"),
+        Some(&serde_json::json!(revision.as_str()))
+    );
+    assert_eq!(
+        json.get("machine_ids"),
+        Some(&serde_json::json!(["machine_a"]))
+    );
 }

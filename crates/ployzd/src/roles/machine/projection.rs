@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -20,6 +21,7 @@ use crate::roles::machine::runner::{MachineContainerRunner, MachineContainerRunn
 use crate::roles::machine::service::MachinePloyzNativeMeshPreparer;
 
 const PROJECTION_READ_TIMEOUT: Duration = Duration::from_secs(30);
+const PROJECTION_CONVERGENCE_TIMEOUT: Duration = Duration::from_secs(60);
 const PROJECTION_RESUBSCRIBE_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
@@ -75,6 +77,23 @@ impl MachineProjectionState {
                 attempted_revisions: Some(attempted_revisions),
                 last_applied_revisions,
                 failure,
+            },
+        };
+    }
+
+    fn record_apply_timeout(&self, timeout_seconds: u64) {
+        let mut status = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let last_applied_revisions = last_applied_revisions(&status.testimony);
+        let endpoint_bridge = status.endpoint_bridge.clone();
+        *status = NativeDataplaneProjectionStatus {
+            endpoint_bridge,
+            testimony: DataplaneProjectionTestimony::Unusable {
+                attempted_revisions: None,
+                last_applied_revisions,
+                failure: DataplaneProjectionFailure::ApplyTimedOut { timeout_seconds },
             },
         };
     }
@@ -146,19 +165,38 @@ where
                     }
                 }
             };
-            converge_once(&projection_reader, &machine_id, &runner, &preparer, &state).await;
+            if run_convergence_attempt(
+                converge_once(&projection_reader, &machine_id, &runner, &preparer, &state),
+                &state,
+                &mut shutdown_rx,
+                PROJECTION_CONVERGENCE_TIMEOUT,
+            )
+            .await
+                == ConvergenceControl::Shutdown
+            {
+                return;
+            }
             loop {
                 tokio::select! {
                     message = changed.next() => {
                         let Some(_) = message else { break };
-                        converge_once(
-                            &projection_reader,
-                            &machine_id,
-                            &runner,
-                            &preparer,
+                        if run_convergence_attempt(
+                            converge_once(
+                                &projection_reader,
+                                &machine_id,
+                                &runner,
+                                &preparer,
+                                &state,
+                            ),
                             &state,
+                            &mut shutdown_rx,
+                            PROJECTION_CONVERGENCE_TIMEOUT,
                         )
-                        .await;
+                        .await
+                            == ConvergenceControl::Shutdown
+                        {
+                            return;
+                        }
                     }
                     _ = &mut shutdown_rx => return,
                 }
@@ -170,6 +208,32 @@ where
         }
     });
     RunningProjectionTask { shutdown, task }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConvergenceControl {
+    Continue,
+    Shutdown,
+}
+
+async fn run_convergence_attempt<F>(
+    attempt: F,
+    state: &MachineProjectionState,
+    shutdown: &mut oneshot::Receiver<()>,
+    timeout: Duration,
+) -> ConvergenceControl
+where
+    F: Future<Output = ()>,
+{
+    tokio::select! {
+        biased;
+        _ = shutdown => ConvergenceControl::Shutdown,
+        () = attempt => ConvergenceControl::Continue,
+        () = tokio::time::sleep(timeout) => {
+            state.record_apply_timeout(timeout.as_secs());
+            ConvergenceControl::Continue
+        },
+    }
 }
 
 async fn converge_once<R, P>(
@@ -380,6 +444,7 @@ fn failure_message(message: impl Into<String>) -> FailureMessage {
 mod tests {
     use super::*;
     use ployz_core::dataplane::{DataplaneProjectionMember, WireGuardPublicKey};
+    use std::future::pending;
     use std::net::SocketAddr;
 
     fn member(id: &str, subnet: &str, endpoint: Option<&str>) -> DataplaneProjectionMember {
@@ -493,6 +558,57 @@ mod tests {
                 failure: DataplaneProjectionFailure::EndpointBridgeMissing,
                 ..
             } if attempted == revisions
+        ));
+    }
+
+    #[tokio::test]
+    async fn pending_convergence_attempt_stops_on_shutdown() {
+        let (shutdown, mut shutdown_rx) = oneshot::channel();
+        let state = MachineProjectionState::new();
+        let attempt = tokio::spawn(async move {
+            run_convergence_attempt(
+                pending::<()>(),
+                &state,
+                &mut shutdown_rx,
+                Duration::from_secs(30),
+            )
+            .await
+        });
+
+        shutdown.send(()).expect("send shutdown");
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), attempt)
+                .await
+                .expect("shutdown is prompt")
+                .expect("attempt task"),
+            ConvergenceControl::Shutdown
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timed_out_convergence_attempt_has_typed_testimony() {
+        let state = MachineProjectionState::new();
+        let (_shutdown, mut shutdown_rx) = oneshot::channel();
+
+        let outcome = run_convergence_attempt(
+            pending::<()>(),
+            &state,
+            &mut shutdown_rx,
+            Duration::from_secs(30),
+        )
+        .await;
+
+        assert_eq!(outcome, ConvergenceControl::Continue);
+
+        assert!(matches!(
+            state.snapshot().testimony,
+            DataplaneProjectionTestimony::Unusable {
+                failure: DataplaneProjectionFailure::ApplyTimedOut {
+                    timeout_seconds: 30
+                },
+                ..
+            }
         ));
     }
 }
