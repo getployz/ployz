@@ -421,7 +421,7 @@ impl ReadyWireGuardEbpf {
 
 #[must_use]
 pub fn test_wireguard_public_key(machine_id: &MachineId) -> WireGuardPublicKey {
-    WireGuardPublicKey::try_new(format!("test-public-key-{}", machine_id.as_str()))
+    WireGuardPublicKey::try_new(format!("public-{}", machine_id.as_str()))
         .expect("test public key is valid")
 }
 
