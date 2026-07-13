@@ -919,7 +919,7 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
     assert!(upstream_request.starts_with("GET /smoke HTTP/1.1\r\n"));
     assert!(upstream_request.contains("\r\nHost: api.example.com\r\n"));
 
-    gateway.shutdown().await;
+    gateway.shutdown().await.expect("gateway shuts down");
     machine_runtime
         .shutdown()
         .await

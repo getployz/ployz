@@ -214,7 +214,7 @@ impl PloyzdRoleUnit {
             }
         };
         format!(
-            "[Unit]\nDescription=Ployz {}\nAfter={}\nWants={}\n\n[Service]\nType=exec\nEnvironmentFile={}\nExecStart={}\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
+            "[Unit]\nDescription=Ployz {}\nAfter={}\nWants={}\n\n[Service]\nType=exec\nEnvironmentFile={}\nExecStart={}\nTimeoutStopSec=10s\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n",
             self.role.process_name(),
             after,
             wants,

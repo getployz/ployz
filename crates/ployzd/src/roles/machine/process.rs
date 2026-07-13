@@ -9,7 +9,9 @@ use crate::adapters::host_dataplane::{
     PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer, WireGuardMtuPolicy,
 };
 use crate::config::MachineProcessConfig;
-use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, shutdown_signal};
+use crate::process_support::{
+    BackoffSchedule, RecordedAttempt, bounded_role_shutdown, record_attempt, shutdown_signal,
+};
 use crate::roles::machine::facts::{
     MachineEndpointCache, MachineFactsPublishError, publish_machine_facts,
 };
@@ -45,6 +47,7 @@ const MACHINE_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MACHINE_OBSERVATION_INTERVAL: Duration =
     ployz_core::machine_runtime::OBSERVATION_PUBLISH_INTERVAL;
 const MACHINE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
+const MACHINE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const INTENT_MIRROR_RESUBSCRIBE_DELAY: Duration = Duration::from_secs(5);
 
 pub struct RunningMachineProcess {
@@ -59,15 +62,36 @@ pub struct RunningMachineProcess {
 
 impl RunningMachineProcess {
     pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
-        if let Some(image_registry) = self.image_registry {
-            image_registry.shutdown().await;
-        }
-        self.pending_join_mirror.shutdown().await;
-        self.projection.shutdown().await;
-        let _ = self.intent_mirror_shutdown.send(());
-        let _ = self.intent_mirror.await;
-        self.observer.shutdown().await;
-        self.machine_service.shutdown().await
+        let Self {
+            machine_service,
+            mut observer,
+            intent_mirror_shutdown,
+            mut intent_mirror,
+            mut pending_join_mirror,
+            mut projection,
+            image_registry,
+        } = self;
+        pending_join_mirror.request_shutdown();
+        projection.request_shutdown();
+        let _ = intent_mirror_shutdown.send(());
+        observer.request_shutdown();
+        let abort_handles = [
+            pending_join_mirror.task.abort_handle(),
+            projection.abort_handle(),
+            intent_mirror.abort_handle(),
+            observer.task.abort_handle(),
+        ];
+        let cleanup = async {
+            if let Some(image_registry) = image_registry {
+                image_registry.shutdown().await;
+            }
+            pending_join_mirror.wait().await;
+            projection.wait().await;
+            let _ = (&mut intent_mirror).await;
+            observer.wait().await;
+            machine_service.shutdown().await
+        };
+        bounded_role_shutdown("machine", MACHINE_SHUTDOWN_TIMEOUT, &abort_handles, cleanup).await
     }
 }
 
@@ -241,14 +265,19 @@ where
 /// A background task owned by the machine process: a shutdown signal and its
 /// join handle. Shared by the observer and the pending-join mirror.
 struct RunningTask {
-    shutdown: oneshot::Sender<()>,
+    shutdown: Option<oneshot::Sender<()>>,
     task: JoinHandle<()>,
 }
 
 impl RunningTask {
-    async fn shutdown(self) {
-        let _ = self.shutdown.send(());
-        let _ = self.task.await;
+    fn request_shutdown(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+    }
+
+    async fn wait(&mut self) {
+        let _ = (&mut self.task).await;
     }
 }
 
@@ -280,7 +309,10 @@ fn start_pending_join_mirror(client: NatsClient, mirror: MachinePendingJoinMirro
             }
         }
     });
-    RunningTask { shutdown, task }
+    RunningTask {
+        shutdown: Some(shutdown),
+        task,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -315,9 +347,14 @@ where
         let mut backoff = interval;
         let mut publisher = MachineObservationPublisher::new(client, endpoint_cache);
         loop {
-            let attempt = publisher
-                .publish_with_timeout(&machine_id, &runner, MACHINE_OBSERVATION_TIMEOUT)
-                .await;
+            let attempt = tokio::select! {
+                attempt = publisher.publish_with_timeout(
+                    &machine_id,
+                    &runner,
+                    MACHINE_OBSERVATION_TIMEOUT,
+                ) => attempt,
+                _ = &mut shutdown_rx => break,
+            };
             backoff = record_observer_attempt(&task_health, attempt, interval, backoff);
             tokio::select! {
                 () = tokio::time::sleep(backoff) => {}
@@ -326,7 +363,10 @@ where
         }
     });
 
-    RunningTask { shutdown, task }
+    RunningTask {
+        shutdown: Some(shutdown),
+        task,
+    }
 }
 
 fn record_observer_attempt(
@@ -469,6 +509,7 @@ mod tests {
     };
     use ployz_core::subjects::machine_facts;
     use std::sync::{Arc, Mutex};
+    use tokio::sync::Notify;
 
     #[test]
     fn stopped_and_not_startable_containers_are_observed_as_exited() {
@@ -511,14 +552,46 @@ mod tests {
 
     #[derive(Debug, Clone)]
     struct StaticRunner {
-        containers: Arc<Mutex<Vec<ExistingManagedContainer>>>,
+        containers: StaticContainerList,
     }
 
     impl StaticRunner {
         fn new(containers: impl IntoIterator<Item = ExistingManagedContainer>) -> Self {
             Self {
-                containers: Arc::new(Mutex::new(containers.into_iter().collect())),
+                containers: StaticContainerList::Ready(Arc::new(Mutex::new(
+                    containers.into_iter().collect(),
+                ))),
             }
+        }
+
+        fn blocking() -> (Self, BlockedList) {
+            let blocked_list = BlockedList::default();
+            (
+                Self {
+                    containers: StaticContainerList::Blocked(blocked_list.clone()),
+                },
+                blocked_list,
+            )
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    enum StaticContainerList {
+        Ready(Arc<Mutex<Vec<ExistingManagedContainer>>>),
+        Blocked(BlockedList),
+    }
+
+    #[derive(Debug, Clone, Default)]
+    struct BlockedList {
+        started: Arc<Notify>,
+        cancelled: Arc<Notify>,
+    }
+
+    struct NotifyOnDrop(Arc<Notify>);
+
+    impl Drop for NotifyOnDrop {
+        fn drop(&mut self) {
+            self.0.notify_one();
         }
     }
 
@@ -526,12 +599,19 @@ mod tests {
         async fn existing_managed_containers(
             &self,
         ) -> Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError> {
-            self.containers
-                .lock()
-                .map(|containers| containers.clone())
-                .map_err(|error| MachineContainerRunnerError::ListExisting {
-                    message: error.to_string(),
-                })
+            match &self.containers {
+                StaticContainerList::Ready(containers) => containers
+                    .lock()
+                    .map(|containers| containers.clone())
+                    .map_err(|error| MachineContainerRunnerError::ListExisting {
+                        message: error.to_string(),
+                    }),
+                StaticContainerList::Blocked(blocked) => {
+                    blocked.started.notify_one();
+                    let _cancelled = NotifyOnDrop(Arc::clone(&blocked.cancelled));
+                    std::future::pending().await
+                }
+            }
         }
 
         async fn ensure_endpoint_network(&self) -> Result<(), MachineContainerRunnerError> {
@@ -629,6 +709,30 @@ mod tests {
                 message: "not used".to_owned(),
             })
         }
+    }
+
+    #[tokio::test]
+    async fn machine_observer_shutdown_cancels_blocked_fact_collection() {
+        let nats = TestNats::start_bootstrapped().await;
+        let (runner, blocked) = StaticRunner::blocking();
+        let mut observer = start_machine_observer(
+            machine_id("machine_a"),
+            runner,
+            nats.client.clone(),
+            Duration::from_secs(60),
+            MachineEndpointCache::default(),
+        );
+        tokio::time::timeout(Duration::from_secs(1), blocked.started.notified())
+            .await
+            .expect("fact collection starts");
+
+        observer.request_shutdown();
+        tokio::time::timeout(Duration::from_secs(1), observer.wait())
+            .await
+            .expect("observer shutdown cancels fact collection");
+        tokio::time::timeout(Duration::from_secs(1), blocked.cancelled.notified())
+            .await
+            .expect("blocked fact collection future is dropped");
     }
 
     #[derive(Debug, Clone)]

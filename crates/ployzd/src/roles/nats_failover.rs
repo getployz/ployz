@@ -80,7 +80,12 @@ async fn run_intent_failover_mirror(
             Ok(subscription) => subscription,
             Err(error) => {
                 run.warn("subscribe", error);
-                run.repair_from_intent_get(&reader).await;
+                if run
+                    .repair_from_intent_get_or_shutdown(&reader, &mut shutdown)
+                    .await
+                {
+                    return;
+                }
                 tokio::select! {
                     () = tokio::time::sleep(INTENT_MIRROR_RESUBSCRIBE_DELAY) => continue,
                     _ = shutdown.recv() => return,
@@ -93,7 +98,12 @@ async fn run_intent_failover_mirror(
                     let Some(message) = message else {
                         // Repair the possibly missed snapshots before the
                         // outer loop resubscribes (spec U3).
-                        run.repair_from_intent_get(&reader).await;
+                        if run
+                            .repair_from_intent_get_or_shutdown(&reader, &mut shutdown)
+                            .await
+                        {
+                            return;
+                        }
                         break;
                     };
                     if message.payload.is_empty() {
@@ -103,7 +113,12 @@ async fn run_intent_failover_mirror(
                         Ok(snapshot) => run.apply_snapshot(&snapshot).await,
                         Err(error) => {
                             run.warn("decode-intent", error);
-                            run.repair_from_intent_get(&reader).await;
+                            if run
+                                .repair_from_intent_get_or_shutdown(&reader, &mut shutdown)
+                                .await
+                            {
+                                return;
+                            }
                         }
                     }
                 }
@@ -206,6 +221,17 @@ impl IntentFailoverRun {
         }
     }
 
+    async fn repair_from_intent_get_or_shutdown(
+        &mut self,
+        reader: &NatsIntentReader,
+        shutdown: &mut broadcast::Receiver<()>,
+    ) -> bool {
+        tokio::select! {
+            () = self.repair_from_intent_get(reader) => false,
+            _ = shutdown.recv() => true,
+        }
+    }
+
     fn warn(&mut self, phase: &str, error: impl std::fmt::Display) {
         self.consecutive_failures += 1;
         eprintln!(
@@ -278,6 +304,7 @@ fn push_unique(pool: &mut Vec<String>, urls: impl IntoIterator<Item = String>) {
 mod tests {
     use super::*;
     use ployz_core::state::{ActiveMachineState, ControlPlaneEpoch, MachineLifecycle};
+    use ployz_core::subjects::INTENT_GET;
     use ployz_test_support::ids::{machine_id, operation_id};
 
     fn active_machine_with(id: &str, endpoints: &[&str]) -> ActiveMachineState {
@@ -461,5 +488,59 @@ mod tests {
             mirrored_server_pool(&mirror, &seed),
             vec!["tls://203.0.113.5:4222".to_owned()]
         );
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancels_blocked_intent_repair() {
+        let nats =
+            ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_a")])
+                .await;
+        let client = nats.machine_client(&machine_id("machine_a")).await;
+        let mut blocked_intent = nats
+            .controller
+            .subscribe(INTENT_GET)
+            .await
+            .expect("subscribe without replying to intent requests");
+        nats.controller
+            .flush()
+            .await
+            .expect("blocked responder is ready");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (shutdown, shutdown_rx) = broadcast::channel(1);
+        let task = spawn_intent_failover_mirror(
+            client,
+            IntentFailover {
+                mirror: MachineIntentMirror::new(dir.path().join("intent-mirror.json")),
+                seed: NatsClientUrl::try_new("tls://127.0.0.1:4222").expect("seed url"),
+            },
+            shutdown_rx,
+        );
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                nats.controller
+                    .publish(INTENT_CHANGED, vec![b'{'].into())
+                    .await
+                    .expect("invalid intent publishes");
+                nats.controller
+                    .flush()
+                    .await
+                    .expect("intent publish flushes");
+                if tokio::time::timeout(Duration::from_millis(20), blocked_intent.next())
+                    .await
+                    .is_ok_and(|request| request.is_some())
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("invalid intent triggers repair");
+
+        shutdown.send(()).expect("shutdown sends");
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("shutdown cancels intent repair")
+            .expect("failover task joins");
     }
 }

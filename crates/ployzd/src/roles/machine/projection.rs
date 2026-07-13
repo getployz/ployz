@@ -126,14 +126,28 @@ fn last_applied_revisions(
 }
 
 pub(crate) struct RunningProjectionTask {
-    shutdown: oneshot::Sender<()>,
+    shutdown: Option<oneshot::Sender<()>>,
     task: JoinHandle<()>,
 }
 
 impl RunningProjectionTask {
-    pub(crate) async fn shutdown(self) {
-        let _ = self.shutdown.send(());
-        let _ = self.task.await;
+    pub(crate) fn request_shutdown(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+    }
+
+    pub(crate) fn abort_handle(&self) -> tokio::task::AbortHandle {
+        self.task.abort_handle()
+    }
+
+    pub(crate) async fn wait(&mut self) {
+        let _ = (&mut self.task).await;
+    }
+
+    pub(crate) async fn shutdown(mut self) {
+        self.request_shutdown();
+        self.wait().await;
     }
 }
 
@@ -207,7 +221,10 @@ where
             }
         }
     });
-    RunningProjectionTask { shutdown, task }
+    RunningProjectionTask {
+        shutdown: Some(shutdown),
+        task,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -411,7 +411,10 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
     assert!(upstream_request.starts_with("GET /smoke HTTP/1.1\r\n"));
     assert!(upstream_request.contains("\r\nHost: api.example.com\r\n"));
 
-    gateway_runtime.shutdown().await;
+    gateway_runtime
+        .shutdown()
+        .await
+        .expect("gateway runtime shuts down");
     machine_runtime
         .shutdown()
         .await
@@ -521,7 +524,10 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
     assert_smoke_response(&http_get_with_host(gateway_runtime.listen_addr(), &route_host).await?);
     assert_eq!(upstream.requests().await.len(), 2);
 
-    gateway_runtime.shutdown().await;
+    gateway_runtime
+        .shutdown()
+        .await
+        .expect("gateway runtime shuts down");
     control_runtime
         .shutdown()
         .await
@@ -622,7 +628,10 @@ async fn e2e_gateway_keeps_serving_last_projection_after_control_shutdown()
         );
     }
 
-    gateway_runtime.shutdown().await;
+    gateway_runtime
+        .shutdown()
+        .await
+        .expect("gateway runtime shuts down");
     machine_runtime
         .shutdown()
         .await
@@ -736,8 +745,14 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
     );
     assert_eq!(upstream.requests().await.len(), 2);
 
-    edge_gateway_runtime.shutdown().await;
-    core_gateway_runtime.shutdown().await;
+    edge_gateway_runtime
+        .shutdown()
+        .await
+        .expect("edge gateway runtime shuts down");
+    core_gateway_runtime
+        .shutdown()
+        .await
+        .expect("core gateway runtime shuts down");
     edge_machine_runtime
         .shutdown()
         .await
