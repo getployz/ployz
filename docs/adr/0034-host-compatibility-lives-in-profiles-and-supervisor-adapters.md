@@ -51,6 +51,7 @@ The Docker strategies are finite and native:
 - Arch-family hosts use pacman against the existing sync databases without
   refreshing them or performing a system upgrade; host system updates and
   required reboots remain operator-owned substrate work;
+- SUSE-family hosts use zypper's native Docker package;
 - Amazon Linux uses DNF's Docker package;
 - Rocky downloads Docker's RHEL repository file and installs the Docker CE packages with DNF;
 - AlmaLinux and TencentOS download Docker's CentOS repository file and install the Docker CE packages with DNF;

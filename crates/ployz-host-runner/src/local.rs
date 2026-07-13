@@ -271,13 +271,19 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
             }
             HostPackageFamily::Rpm => {
                 let _ = self.rpm_command(&["install", "-y", "epel-release"]);
-                self.require_rpm_command(&[
-                    "install",
-                    "-y",
-                    "wireguard-tools",
-                    "iproute",
-                    "iputils",
-                ])?;
+                let packages: &[&str] = if self.host_platform()?.requires_iproute_tc_package() {
+                    &[
+                        "install",
+                        "-y",
+                        "wireguard-tools",
+                        "iproute",
+                        "iproute-tc",
+                        "iputils",
+                    ]
+                } else {
+                    &["install", "-y", "wireguard-tools", "iproute", "iputils"]
+                };
+                self.require_rpm_command(packages)?;
             }
             HostPackageFamily::Arch => self.require_long_command(
                 "pacman",
@@ -387,6 +393,10 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
                 "pacman",
                 &["-S", "--noconfirm", "--needed", "docker", "docker-compose"],
             ),
+            DockerInstall::SusePackages => {
+                self.require_long_command("zypper", &["refresh"])?;
+                self.require_long_command("zypper", &["--non-interactive", "install", "docker"])
+            }
             DockerInstall::AmazonPackages => self.require_rpm_command(&["install", "-y", "docker"]),
             DockerInstall::RhelRepositoryFile => self
                 .install_docker_repository("https://download.docker.com/linux/rhel/docker-ce.repo"),

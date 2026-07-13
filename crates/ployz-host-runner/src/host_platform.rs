@@ -23,6 +23,7 @@ pub enum DockerInstall {
     GetDocker,
     AlpinePackages,
     ArchPackages,
+    SusePackages,
     AmazonPackages,
     RhelRepositoryFile,
     CentosRepositoryFile,
@@ -70,6 +71,10 @@ impl HostPlatformProfile {
     #[must_use]
     pub const fn package_family(&self) -> HostPackageFamily {
         self.package_family
+    }
+
+    pub(crate) const fn requires_iproute_tc_package(&self) -> bool {
+        matches!(self.distribution, LinuxDistribution::Fedora)
     }
 
     /// Returns the host process supervisor.
@@ -168,7 +173,7 @@ pub fn detect_host_platform(
             version_id,
             HostPackageFamily::Suse,
             SupervisorKind::Systemd,
-            DockerInstall::GetDocker,
+            DockerInstall::SusePackages,
         ),
         LinuxDistribution::AlmaLinux => profile(
             distribution,

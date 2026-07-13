@@ -6,15 +6,15 @@ description: Run Claude Opus as a scarce, read-only advisor for Ployz implementa
 # Opus Advisor
 
 Keep Codex as supervisor, implementer, integrator, and verifier. Use Opus only
-for judgment-heavy plan and review gates. Never give Opus write, mutation,
-publication, or agent-spawning tools.
+for judgment-heavy plan and review gates. Give Opus `Read`, `Grep`, and `Glob`
+so it can verify the packet against the repository; keep mutation, publication,
+and agent-spawning tools unavailable.
 
 ## Invoke Opus
 
-Create a self-contained packet in a temporary file and pass it on stdin. Run
-the command from the repository root. Codex owns complete repository discovery
-and raw evidence gathering; Opus may inspect the repository to verify the
-packet and diff.
+Create a self-contained packet in a temporary file and pass it on stdin from the
+repository root. Codex owns complete discovery and evidence gathering; Opus may
+inspect repository files to verify the packet.
 
 For plans and self-contained review packets:
 
@@ -26,7 +26,8 @@ claude -p --remote-control --model opus --effort high --safe-mode \
 ```
 
 For the thermo-nuclear cold read, use the same read-only repository tools so
-Opus can load the local skill and inspect the frozen diff:
+Opus can load the local skill named by the minimal prompt and inspect relevant
+code:
 
 ```sh
 claude -p --remote-control --model opus --effort max --safe-mode \

@@ -505,6 +505,10 @@ fn local_effects_prepare_dataplane_packages_for_each_supported_family() {
         ),
         ("rocky", "dnf install -y wireguard-tools iproute iputils"),
         (
+            "fedora",
+            "dnf install -y wireguard-tools iproute iproute-tc iputils",
+        ),
+        (
             "arch",
             "pacman -S --noconfirm --needed wireguard-tools iproute2 iputils",
         ),
@@ -863,6 +867,56 @@ fn local_effects_install_docker_when_runtime_is_missing() {
         docker_downloads
             .iter()
             .all(|download| download.is_cleaned_up())
+    );
+}
+
+#[test]
+fn local_effects_install_docker_from_native_packages_on_opensuse() {
+    let root = temp_dir("ployz-host-runner-local-docker-opensuse");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let runner = RecordingRunner {
+        docker_installed: false,
+        docker_running: false,
+        os_release: "ID=opensuse-leap\nVERSION_ID=16.0\n".to_owned(),
+        ..RecordingRunner::root_linux()
+    };
+    let mut effects = HostRunnerLocalEffects::new(local_config(&root, &systemd_dir), runner);
+    validate_host(&mut effects);
+
+    effects
+        .apply_step(&HostRunnerStep::PrepareContainerRuntime(
+            ContainerRuntime::Docker,
+            ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+        ))
+        .expect("openSUSE installs Docker from native packages");
+
+    assert_eq!(effects.runner().docker_install_runs, 1);
+    assert!(effects.runner().downloads.is_empty());
+    for command in ["zypper refresh", "zypper --non-interactive install docker"] {
+        assert!(
+            effects.runner().command_calls.contains(&command.to_owned()),
+            "missing {command}: {:?}",
+            effects.runner().command_calls
+        );
+    }
+    let config: serde_json::Value = serde_json::from_slice(
+        &fs::read(root.join("etc/docker/daemon.json")).expect("Docker config can be read"),
+    )
+    .expect("Docker config is JSON");
+    assert_eq!(
+        config.pointer("/features/containerd-snapshotter"),
+        Some(&serde_json::json!(true))
+    );
+    assert_eq!(
+        config.get("insecure-registries"),
+        Some(&serde_json::json!(["10.198.0.0/16"]))
+    );
+    assert!(
+        effects
+            .runner()
+            .systemctl_calls
+            .contains(&docker_enable_call())
     );
 }
 
@@ -1673,7 +1727,7 @@ impl HostRunnerCommandRunner for RecordingRunner {
             }
             return Ok(succeeded_command(""));
         }
-        if matches!(program, "apk" | "pacman" | "dnf" | "yum")
+        if matches!(program, "apk" | "pacman" | "zypper" | "dnf" | "yum")
             && args
                 .iter()
                 .any(|arg| *arg == "docker" || *arg == "docker-ce")
