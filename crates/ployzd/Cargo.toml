@@ -44,6 +44,7 @@ instant-acme = { version = "0.8.5", default-features = false, features = ["hyper
 http-body-util = "=0.1.3"
 bytes = "=1.11.1"
 ureq = { version = "3", default-features = false, features = ["json", "rustls"] }
+wait-timeout.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rtnetlink.workspace = true

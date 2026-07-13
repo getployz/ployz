@@ -42,6 +42,7 @@ fn binary_init_can_print_machine_join_template_without_nats() {
     let recovery_key_file = write_recovery_key_file(&temp);
     let core_seeds_file = write_core_seeds_file(&temp);
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .env_remove("PLOYZ_NATS_URL")
         .args(init_join_template_args(
             &artifact_spec,

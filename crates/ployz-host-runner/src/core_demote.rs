@@ -2,6 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::command::HostRunnerCommandRunner;
+use crate::host_platform::detect_host_platform;
+use crate::supervisor::{SupervisorBackend, SupervisorChange, execute_supervisor_commands};
 use crate::systemd::SupervisorUnitTarget;
 use ployz_core::ids::MachineId;
 use ployz_core::ops::FailureMessage;
@@ -36,30 +38,46 @@ pub fn demote_local_core(
     target: &CoreDemoteTarget,
     runner: &mut impl HostRunnerCommandRunner,
 ) -> Result<(), FailureMessage> {
-    repoint_non_core_roles(&target.env_dir, &target.successor_nats_url, runner)?;
+    let supervisor = detect_supervisor(runner)?;
+    repoint_non_core_roles_with(
+        &target.env_dir,
+        &target.successor_nats_url,
+        supervisor,
+        runner,
+    )?;
 
-    let control = SupervisorUnitTarget::PloyzdRole(DaemonProcessRole::Control).unit_name();
-    let nats = SupervisorUnitTarget::NatsServer.unit_name();
-    runner.systemctl(&["disable", &control, &nats])?;
-    runner.systemctl(&["stop", &nats])?;
-    if let Err(stop_error) = runner.systemctl(&["stop", &control]) {
-        let kill_result = runner.systemctl(&["kill", "--signal=SIGKILL", &control]);
-        let retry_stop_result = runner.systemctl(&["stop", &control]);
+    let control = SupervisorUnitTarget::PloyzdRole(DaemonProcessRole::Control);
+    let nats = SupervisorUnitTarget::NatsServer;
+    execute_supervisor_commands(
+        runner,
+        supervisor
+            .commands_for_targets(SupervisorChange::Disable, &[control.clone(), nats.clone()]),
+    )?;
+    apply_supervisor_change(supervisor, SupervisorChange::Stop, &nats, runner)?;
+    if let Err(stop_error) =
+        apply_supervisor_change(supervisor, SupervisorChange::Stop, &control, runner)
+    {
+        let kill_result =
+            apply_supervisor_change(supervisor, SupervisorChange::Kill, &control, runner);
+        let retry_stop_result =
+            apply_supervisor_change(supervisor, SupervisorChange::Stop, &control, runner);
         if kill_result.is_err() && retry_stop_result.is_err() {
             return Err(stop_error);
         }
     }
-    ensure_unit_inactive(&control, runner)?;
+    ensure_unit_inactive(supervisor, &control, runner)?;
     Ok(())
 }
 
 fn ensure_unit_inactive(
-    unit: &str,
+    supervisor: SupervisorBackend,
+    target: &SupervisorUnitTarget,
     runner: &mut impl HostRunnerCommandRunner,
 ) -> Result<(), FailureMessage> {
-    if runner.systemctl(&["is-active", "--quiet", unit]).is_ok() {
+    if apply_supervisor_change(supervisor, SupervisorChange::IsActive, target, runner).is_ok() {
+        let service = supervisor.service_name(target);
         return Err(failure_message(format!(
-            "{unit} is still active after demotion"
+            "{service} is still active after demotion"
         )));
     }
     Ok(())
@@ -77,12 +95,23 @@ pub fn repoint_non_core_roles(
     successor: &NatsClientUrl,
     runner: &mut impl HostRunnerCommandRunner,
 ) -> Result<(), FailureMessage> {
-    repoint_machine_role(env_dir, successor, runner)?;
+    let supervisor = detect_supervisor(runner)?;
+    repoint_non_core_roles_with(env_dir, successor, supervisor, runner)
+}
+
+fn repoint_non_core_roles_with(
+    env_dir: &Path,
+    successor: &NatsClientUrl,
+    supervisor: SupervisorBackend,
+    runner: &mut impl HostRunnerCommandRunner,
+) -> Result<(), FailureMessage> {
+    repoint_machine_role(env_dir, successor, supervisor, runner)?;
     repoint_fixed_role(
         env_dir,
         successor,
         DaemonProcessRole::Gateway,
         "ployzd-gateway.env",
+        supervisor,
         runner,
     )?;
     repoint_fixed_role(
@@ -90,6 +119,7 @@ pub fn repoint_non_core_roles(
         successor,
         DaemonProcessRole::Dns,
         "ployzd-dns.env",
+        supervisor,
         runner,
     )
 }
@@ -97,6 +127,7 @@ pub fn repoint_non_core_roles(
 fn repoint_machine_role(
     env_dir: &Path,
     successor: &NatsClientUrl,
+    supervisor: SupervisorBackend,
     runner: &mut impl HostRunnerCommandRunner,
 ) -> Result<(), FailureMessage> {
     let path = env_dir.join("ployzd-machine.env");
@@ -112,7 +143,7 @@ fn repoint_machine_role(
         ))
     })?);
     write_repointed_env(&path, &contents, successor)?;
-    restart_repointed_role(&SupervisorUnitTarget::PloyzdRole(role).unit_name(), runner)
+    restart_repointed_role(supervisor, &SupervisorUnitTarget::PloyzdRole(role), runner)
 }
 
 fn repoint_fixed_role(
@@ -120,6 +151,7 @@ fn repoint_fixed_role(
     successor: &NatsClientUrl,
     role: DaemonProcessRole,
     file_name: &str,
+    supervisor: SupervisorBackend,
     runner: &mut impl HostRunnerCommandRunner,
 ) -> Result<(), FailureMessage> {
     let path = env_dir.join(file_name);
@@ -127,18 +159,37 @@ fn repoint_fixed_role(
         return Ok(());
     };
     write_repointed_env(&path, &contents, successor)?;
-    restart_repointed_role(&SupervisorUnitTarget::PloyzdRole(role).unit_name(), runner)
+    restart_repointed_role(supervisor, &SupervisorUnitTarget::PloyzdRole(role), runner)
 }
 
 fn restart_repointed_role(
-    unit: &str,
+    supervisor: SupervisorBackend,
+    target: &SupervisorUnitTarget,
     runner: &mut impl HostRunnerCommandRunner,
 ) -> Result<(), FailureMessage> {
-    if runner.systemctl(&["restart", unit]).is_ok() {
+    if apply_supervisor_change(supervisor, SupervisorChange::Restart, target, runner).is_ok() {
         return Ok(());
     }
-    let _ = runner.systemctl(&["kill", "--signal=SIGKILL", unit]);
-    runner.systemctl(&["restart", unit])
+    let _ = apply_supervisor_change(supervisor, SupervisorChange::Kill, target, runner);
+    apply_supervisor_change(supervisor, SupervisorChange::Restart, target, runner)
+}
+
+fn detect_supervisor(
+    runner: &mut impl HostRunnerCommandRunner,
+) -> Result<SupervisorBackend, FailureMessage> {
+    let os_release = runner.read_os_release()?;
+    let profile =
+        detect_host_platform(&os_release).map_err(|error| failure_message(error.to_string()))?;
+    Ok(profile.supervisor().into())
+}
+
+fn apply_supervisor_change(
+    supervisor: SupervisorBackend,
+    change: SupervisorChange,
+    target: &SupervisorUnitTarget,
+    runner: &mut impl HostRunnerCommandRunner,
+) -> Result<(), FailureMessage> {
+    execute_supervisor_commands(runner, supervisor.commands(change, target))
 }
 
 fn read_optional_env(path: &Path) -> Result<Option<String>, FailureMessage> {
@@ -199,15 +250,62 @@ mod tests {
         systemctl_calls: Vec<Vec<String>>,
         fail_systemctl_once: Vec<Vec<String>>,
         active_systemctl: Vec<Vec<String>>,
+        os_release: Option<String>,
+        openrc_calls: Vec<String>,
     }
 
     impl HostRunnerCommandRunner for RecordingRunner {
         fn command(
             &mut self,
-            _program: &str,
-            _args: &[&str],
+            program: &str,
+            args: &[&str],
         ) -> Result<crate::command::HostRunnerCommandOutput, FailureMessage> {
-            unreachable!("core demotion does not run generic host commands")
+            if program != "systemctl" {
+                self.openrc_calls
+                    .push(format!("{program} {}", args.join(" ")));
+                let success = !(program == "rc-service" && args.get(1) == Some(&"status"));
+                return Ok(crate::command::HostRunnerCommandOutput {
+                    success,
+                    exit_code: Some(if success { 0 } else { 3 }),
+                    stdout: String::new(),
+                    failure: if success {
+                        String::new()
+                    } else {
+                        "simulated inactive service".to_owned()
+                    },
+                });
+            }
+            let call: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+            self.systemctl_calls.push(call.clone());
+            let failed = self
+                .fail_systemctl_once
+                .iter()
+                .position(|failure| failure == &call)
+                .map(|index| self.fail_systemctl_once.remove(index))
+                .is_some();
+            let inactive = args.first() == Some(&"is-active")
+                && args.get(1) == Some(&"--quiet")
+                && !self.active_systemctl.contains(&call);
+            let success = !failed && !inactive;
+            Ok(crate::command::HostRunnerCommandOutput {
+                success,
+                exit_code: Some(if success { 0 } else { 1 }),
+                stdout: String::new(),
+                failure: if success {
+                    String::new()
+                } else if inactive {
+                    "simulated inactive unit".to_owned()
+                } else {
+                    "simulated systemctl failure".to_owned()
+                },
+            })
+        }
+
+        fn read_os_release(&mut self) -> Result<String, FailureMessage> {
+            Ok(self
+                .os_release
+                .clone()
+                .unwrap_or_else(|| "ID=ubuntu\nVERSION_ID=24.04\n".to_owned()))
         }
 
         fn is_linux(&mut self) -> bool {
@@ -216,26 +314,6 @@ mod tests {
 
         fn current_uid(&mut self) -> Result<u32, FailureMessage> {
             Ok(0)
-        }
-
-        fn systemctl(&mut self, args: &[&str]) -> Result<(), FailureMessage> {
-            let call: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
-            self.systemctl_calls.push(call.clone());
-            if let Some(index) = self
-                .fail_systemctl_once
-                .iter()
-                .position(|failure| failure == &call)
-            {
-                self.fail_systemctl_once.remove(index);
-                return Err(failure_message("simulated systemctl failure"));
-            }
-            if args.first() == Some(&"is-active") && args.get(1) == Some(&"--quiet") {
-                if self.active_systemctl.contains(&call) {
-                    return Ok(());
-                }
-                return Err(failure_message("simulated inactive unit"));
-            }
-            Ok(())
         }
 
         fn download(&mut self, _url: &str, _destination: &Path) -> Result<(), FailureMessage> {
@@ -256,18 +334,6 @@ mod tests {
 
         fn docker_has_insecure_registry(&mut self, _cidr: &str) -> Result<bool, FailureMessage> {
             Ok(true)
-        }
-
-        fn enable_docker_service(&mut self) -> Result<(), FailureMessage> {
-            Ok(())
-        }
-
-        fn run_docker_install_script(&mut self, _script: &Path) -> Result<(), FailureMessage> {
-            Ok(())
-        }
-
-        fn prepare_dataplane_host(&mut self) -> Result<(), FailureMessage> {
-            Ok(())
         }
     }
 
@@ -318,6 +384,32 @@ mod tests {
                 .expect("machine env reads")
                 .starts_with("PLOYZ_NATS_URL=tls://new:4222\n")
         );
+    }
+
+    #[test]
+    fn demote_local_core_uses_openrc_on_alpine() {
+        let env = tempfile::tempdir().expect("env dir");
+        let mut runner = RecordingRunner {
+            os_release: Some("ID=alpine\nVERSION_ID=3.22\n".to_owned()),
+            ..RecordingRunner::default()
+        };
+        let target =
+            CoreDemoteTarget::new(NatsClientUrl::try_new("tls://new:4222").expect("valid url"))
+                .with_env_dir(env.path().to_path_buf());
+
+        demote_local_core(&target, &mut runner).expect("demote succeeds");
+
+        assert_eq!(
+            runner.openrc_calls,
+            [
+                "rc-update del ployzd-control default",
+                "rc-update del nats-server default",
+                "rc-service nats-server stop",
+                "rc-service ployzd-control stop",
+                "rc-service ployzd-control status",
+            ]
+        );
+        assert!(runner.systemctl_calls.is_empty());
     }
 
     #[test]

@@ -18,8 +18,8 @@ pub use mint::{
     MachineCredentialMint, MintOutcome, MintRequest, MintResumeError, MintVerifyEndpoint,
 };
 pub use reload::{
-    NatsReloadEvidence, NatsReloadFailure, NatsReloadOutcome, NatsReloadRunner,
-    SignalNatsReloadRunner, SystemctlNatsReloadRunner,
+    HostNatsReloadRunner, NatsReloadEvidence, NatsReloadFailure, NatsReloadOutcome,
+    NatsReloadRunner, SignalNatsReloadRunner,
 };
 pub use writer::{
     AuthorizedUsersFileError, CredentialMutationChange, CredentialMutationFailure,
