@@ -417,6 +417,10 @@ async fn operation_api_client_returns_service_error_headers_as_transport_failure
             },
         }
     );
+    assert_eq!(
+        error.to_string(),
+        "deploy.submit returned service error 400: bad json"
+    );
 }
 
 #[tokio::test]

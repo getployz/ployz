@@ -529,9 +529,11 @@ pub(crate) fn api_error<E>(source: OperationApiClientError<E>) -> PloyzctlExecut
 where
     E: fmt::Display,
 {
-    PloyzctlExecutionError::OperationApi {
-        message: source.to_string(),
-    }
+    let message = match source {
+        OperationApiClientError::Domain { error, .. } => error.to_string(),
+        error => error.to_string(),
+    };
+    PloyzctlExecutionError::OperationApi { message }
 }
 
 pub(crate) async fn watch_operation_until_terminal(
@@ -890,13 +892,10 @@ mod tests {
         let PloyzctlExecutionError::OperationApi { message } = error else {
             panic!("api_error maps to the operation API execution error");
         };
-        assert!(
-            message.ends_with(
-                "failed: deploy submit op_123 unavailable: operation status CAS conflict: contended"
-            ),
-            "unexpected rendering: {message}"
+        assert_eq!(
+            message,
+            "deploy submit op_123 unavailable: operation status CAS conflict: contended"
         );
-        assert!(!message.contains('{'), "Debug braces leaked: {message}");
     }
 
     fn cluster_context() -> ClusterContext {
