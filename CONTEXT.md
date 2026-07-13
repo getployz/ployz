@@ -453,7 +453,7 @@ A client credential minted for a human operator or automation client to call clu
 _Avoid_: Shared operator seed, machine join, remote operator join
 
 **Operator Context**:
-A client-local record that lets `ployzctl` connect to one cluster using NATS endpoint, trust material, and an operator credential. Operator context is client access material, not cluster truth, machine state, or proof that a machine joined the cluster.
+A client-local record that lets `ployz` connect to one cluster using NATS endpoint, trust material, and an operator credential. Operator context is client access material, not cluster truth, machine state, or proof that a machine joined the cluster.
 _Avoid_: Cluster membership, machine join, shared context
 
 **Machine Bootstrap**:

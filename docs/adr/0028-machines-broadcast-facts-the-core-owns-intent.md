@@ -16,7 +16,7 @@ replay, ordering, or version bookkeeping.
 **Intent** is what an operator decided: the machine roster and subnets,
 lifecycle (drain/resume), route bindings, serving promotions, and
 authorized users. Intent's durable home is evidence files on the core
-machine's disk (the ADR 0001/0026 pattern), written only by operations
+machine's disk, written only by operations
 through the core's single sequencer process. The core serves intent by
 request and rebroadcasts it on the same periodic drumbeat as facts; readers
 re-list on reconnect and never trust having seen deltas (ADR 0005).

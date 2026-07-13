@@ -2,7 +2,7 @@
 
 Ployz runtime code reads only the current persisted state schema. Query,
 deploy, gateway, DNS, and operation workers must not carry legacy decoders or
-best-effort compatibility branches for old JetStream KV record shapes.
+best-effort compatibility branches for old persisted record shapes.
 
 Compatibility belongs in explicit state migrations. A future migration path can
 read old schemas, validate preconditions, write the current schema, emit
