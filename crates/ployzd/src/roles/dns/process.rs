@@ -40,6 +40,7 @@ const DNS_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DNS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const DNS_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 const DNS_WATCH_RESTART_DELAY: Duration = Duration::from_secs(1);
+const DNS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct RunningDnsProcess {
     runtime: Arc<Mutex<DnsProjector>>,
@@ -53,12 +54,35 @@ pub struct RunningDnsProcess {
 
 impl RunningDnsProcess {
     pub async fn shutdown(self) {
-        let _ = self.shutdown.send(());
-        for task in self.tasks {
-            let _ = task.await;
+        let Self {
+            shutdown,
+            role_service,
+            facts_cache,
+            mut tasks,
+            ..
+        } = self;
+        let _ = shutdown.send(());
+        let cleanup = async {
+            facts_cache.shutdown().await;
+            let _ = role_service.shutdown().await;
+            for task in &mut tasks {
+                let _ = task.await;
+            }
+        };
+        if tokio::time::timeout(DNS_SHUTDOWN_TIMEOUT, cleanup)
+            .await
+            .is_err()
+        {
+            for task in &tasks {
+                if !task.is_finished() {
+                    task.abort();
+                }
+            }
+            eprintln!(
+                "ployzd DNS shutdown warning: cleanup exceeded {}s; forcing remaining tasks",
+                DNS_SHUTDOWN_TIMEOUT.as_secs()
+            );
         }
-        let _ = self.role_service.shutdown().await;
-        self.facts_cache.shutdown().await;
     }
 
     #[must_use]
@@ -194,7 +218,10 @@ pub async fn start_dns_process_with_client(
 
         loop {
             drain_refresh_wakes(&mut refresh_wake_rx);
-            let attempt = source.refresh_with_timeout(&task_runtime).await;
+            let attempt = tokio::select! {
+                attempt = source.refresh_with_timeout(&task_runtime) => attempt,
+                _ = refresh_shutdown.recv() => break,
+            };
             backoff = record_dns_attempt(&task_health, attempt, refresh_interval, backoff);
 
             match wait_for_refresh_delay(backoff, &mut refresh_wake_rx, &mut refresh_shutdown).await

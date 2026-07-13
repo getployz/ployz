@@ -84,8 +84,24 @@ fn role_units_render_the_supervised_ployzd_commands() {
     assert_eq!(machine_unit.unit_name(), "ployzd-machine-machine_7.service");
     assert_eq!(
         machine_unit.render(),
-        "[Unit]\nDescription=Ployz machine\nAfter=network-online.target docker.service sys-fs-bpf.mount\nWants=network-online.target docker.service\n\n[Service]\nType=exec\nEnvironmentFile=/etc/ployz/ployzd.env\nExecStart=/usr/local/bin/ployzd machine --id machine_7\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
+        "[Unit]\nDescription=Ployz machine\nAfter=network-online.target docker.service sys-fs-bpf.mount\nWants=network-online.target docker.service\n\n[Service]\nType=exec\nEnvironmentFile=/etc/ployz/ployzd.env\nExecStart=/usr/local/bin/ployzd machine --id machine_7\nTimeoutStopSec=10s\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
     );
+}
+
+#[test]
+fn ployzd_role_units_limit_systemd_stop_to_ten_seconds() {
+    for role in [
+        DaemonProcessRole::Control,
+        DaemonProcessRole::Machine(machine_id("machine_7")),
+        DaemonProcessRole::Gateway,
+        DaemonProcessRole::Dns,
+    ] {
+        let rendered = PloyzdRoleUnit::new(role, &ployzd_artifact(), &role_env())
+            .expect("role unit is valid")
+            .render();
+
+        assert!(rendered.contains("\nTimeoutStopSec=10s\n"), "{rendered}");
+    }
 }
 
 #[test]
@@ -123,7 +139,7 @@ fn role_units_quote_paths_that_need_systemd_escaping() {
         )
         .expect("spaced path can be quoted")
         .render(),
-        "[Unit]\nDescription=Ployz gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nEnvironmentFile=/etc/ployz/ployzd.env\nExecStart=\"/opt/Ployz Tools/ployzd\" gateway\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
+        "[Unit]\nDescription=Ployz gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nEnvironmentFile=/etc/ployz/ployzd.env\nExecStart=\"/opt/Ployz Tools/ployzd\" gateway\nTimeoutStopSec=10s\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
     );
     assert_eq!(
         PloyzdRoleUnit::new(
@@ -133,7 +149,7 @@ fn role_units_quote_paths_that_need_systemd_escaping() {
         )
         .expect("percent path can be escaped")
         .render(),
-        "[Unit]\nDescription=Ployz gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nEnvironmentFile=/etc/ployz/ployzd.env\nExecStart=/opt/ployz%%tools/ployzd gateway\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
+        "[Unit]\nDescription=Ployz gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nEnvironmentFile=/etc/ployz/ployzd.env\nExecStart=/opt/ployz%%tools/ployzd gateway\nTimeoutStopSec=10s\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
     );
     assert_eq!(
         PloyzdRoleUnit::new(
@@ -143,7 +159,7 @@ fn role_units_quote_paths_that_need_systemd_escaping() {
         )
         .expect("dollar path can be escaped")
         .render(),
-        "[Unit]\nDescription=Ployz gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nEnvironmentFile=/etc/ployz/ployzd.env\nExecStart=\"/opt/ployz$$tools/ployzd\" gateway\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
+        "[Unit]\nDescription=Ployz gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=exec\nEnvironmentFile=/etc/ployz/ployzd.env\nExecStart=\"/opt/ployz$$tools/ployzd\" gateway\nTimeoutStopSec=10s\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
     );
 }
 

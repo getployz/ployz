@@ -14,7 +14,7 @@ use ployz_core::state::{
     RouteBindingState,
 };
 use ployz_core::subjects::{
-    MachineServiceEndpoint, gateway_status, machine_facts, machine_service,
+    INTENT_GET, MachineServiceEndpoint, gateway_status, machine_facts, machine_service,
 };
 use ployz_nats::service_runtime::{
     NatsJsonServiceRequestError, NatsServiceRequestFailure, NatsServiceResponse,
@@ -228,6 +228,41 @@ async fn gateway_process_owns_certificate_service_lifecycle() {
             failure: NatsServiceRequestFailure::NoResponders,
         })
     ));
+}
+
+#[tokio::test]
+async fn gateway_shutdown_cancels_blocked_projection_refresh_and_releases_listener() {
+    let nats = TestNats::start().await;
+    let mut blocked_intent = nats
+        .client
+        .subscribe(INTENT_GET)
+        .await
+        .expect("subscribe without replying to intent requests");
+    nats.client
+        .flush()
+        .await
+        .expect("blocked responder is ready");
+    let runtime = start_gateway_process_with_client(
+        nats.machine_client.clone(),
+        Duration::from_secs(60),
+        socket_addr("127.0.0.1:0"),
+        machine_id("machine_7"),
+        None,
+    )
+    .await
+    .expect("gateway runtime starts");
+    let listen_addr = runtime.listen_addr();
+    tokio::time::timeout(Duration::from_secs(1), blocked_intent.next())
+        .await
+        .expect("projection refresh requests intent")
+        .expect("blocked intent responder stays open");
+
+    tokio::time::timeout(Duration::from_secs(3), runtime.shutdown())
+        .await
+        .expect("gateway shutdown cancels the blocked refresh");
+    TcpListener::bind(listen_addr)
+        .await
+        .expect("gateway listener is released after shutdown");
 }
 
 #[tokio::test]

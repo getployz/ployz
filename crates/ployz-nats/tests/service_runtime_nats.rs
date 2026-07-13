@@ -8,9 +8,11 @@ use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
 };
 use serde::{Deserialize, Serialize};
+use std::future::pending;
 use std::num::NonZeroUsize;
-use std::time::Duration;
-use tokio::sync::oneshot;
+use std::time::{Duration, Instant};
+use tokio::sync::{mpsc, oneshot};
+use tokio::time::timeout;
 
 /// A secured server with the production service split: the Controller hosts
 /// API endpoints and the Operator requests them.
@@ -300,6 +302,133 @@ async fn service_runtime_shutdown_waits_for_in_flight_request() {
         .expect("runtime shuts down");
 
     assert_eq!(response.payload.as_ref(), b"done");
+}
+
+#[tokio::test]
+async fn service_runtime_shutdown_completes_immediately_when_nats_disconnects() {
+    let nats = test_nats().await;
+    let service_client = nats.service_client.clone();
+    let spec = test_service_spec("plz.v1.rpc.operator.query.test.disconnected_shutdown");
+    let endpoint = spec.endpoints.first().expect("test endpoint is present");
+    let mut runtime = start_nats_service(service_client.clone(), &spec)
+        .await
+        .expect("service starts");
+
+    runtime
+        .bind_endpoint(endpoint, |_request| async move {
+            NatsServiceResponse::ok(Vec::new())
+        })
+        .await
+        .expect("endpoint binds");
+    drop(nats);
+    timeout(Duration::from_secs(2), async {
+        while service_client.connection_state() == async_nats::connection::State::Connected {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("service client observes NATS disconnect");
+
+    timeout(Duration::from_secs(1), runtime.shutdown())
+        .await
+        .expect("disconnected shutdown completes well below the grace deadline")
+        .expect("runtime shuts down");
+}
+
+#[tokio::test]
+async fn service_runtime_shutdown_cancels_all_endpoints_after_one_shared_grace_deadline() {
+    let nats = test_nats().await;
+    let first_subject = "plz.v1.rpc.operator.query.test.slow_shutdown.first";
+    let second_subject = "plz.v1.rpc.operator.query.test.slow_shutdown.second";
+    let spec = NatsServiceSpec::new(
+        "plz-api.test",
+        "plz-api",
+        ServiceVersion::new(0, 1, 0),
+        "test service",
+        ServiceMetadata::empty(),
+        vec![
+            NatsServiceEndpointSpec::new(
+                "test.endpoint.first",
+                first_subject,
+                EndpointExecution::Query,
+            ),
+            NatsServiceEndpointSpec::new(
+                "test.endpoint.second",
+                second_subject,
+                EndpointExecution::Query,
+            ),
+        ],
+    );
+    let [first_endpoint, second_endpoint] = spec.endpoints.as_slice() else {
+        unreachable!("test service has two endpoints");
+    };
+    let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
+        .await
+        .expect("service starts");
+    let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+    let (cancelled_tx, mut cancelled_rx) = mpsc::unbounded_channel();
+    for endpoint in [first_endpoint, second_endpoint] {
+        let started_tx = started_tx.clone();
+        let cancelled_tx = cancelled_tx.clone();
+        runtime
+            .bind_endpoint(endpoint, move |_request| {
+                let started_tx = started_tx.clone();
+                let cancelled_tx = cancelled_tx.clone();
+                async move {
+                    let _cancelled = SendOnDrop(cancelled_tx);
+                    let _ = started_tx.send(());
+                    pending::<NatsServiceResponse>().await
+                }
+            })
+            .await
+            .expect("endpoint binds");
+    }
+    wait_for_requester_interest(&nats.request_client).await;
+
+    let first_request = tokio::spawn({
+        let client = nats.request_client.clone();
+        async move { client.request(first_subject, Vec::new().into()).await }
+    });
+    let second_request = tokio::spawn({
+        let client = nats.request_client.clone();
+        async move { client.request(second_subject, Vec::new().into()).await }
+    });
+    timeout(Duration::from_secs(2), async {
+        started_rx.recv().await.expect("first handler starts");
+        started_rx.recv().await.expect("second handler starts");
+    })
+    .await
+    .expect("both handlers start");
+
+    let started = Instant::now();
+    timeout(Duration::from_secs(3), runtime.shutdown())
+        .await
+        .expect("all endpoints share one grace deadline")
+        .expect("runtime shuts down after cancelling slow handlers");
+    let elapsed = started.elapsed();
+    cancelled_rx
+        .recv()
+        .await
+        .expect("first handler is cancelled");
+    cancelled_rx
+        .recv()
+        .await
+        .expect("second handler is cancelled");
+    first_request.abort();
+    second_request.abort();
+
+    assert!(
+        elapsed >= Duration::from_millis(1_800),
+        "shutdown skipped its grace period: {elapsed:?}"
+    );
+}
+
+struct SendOnDrop(mpsc::UnboundedSender<()>);
+
+impl Drop for SendOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
 }
 
 fn test_service_spec(subject: &str) -> NatsServiceSpec {

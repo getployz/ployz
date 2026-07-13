@@ -49,6 +49,7 @@ const GATEWAY_WATCH_RESTART_DELAY: Duration = Duration::from_secs(1);
 const GATEWAY_HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 const GATEWAY_LISTENER_READY_TIMEOUT: Duration = Duration::from_secs(2);
 const GATEWAY_LISTENER_READY_POLL: Duration = Duration::from_millis(10);
+const GATEWAY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 mod service;
 
@@ -68,13 +69,38 @@ pub struct RunningGatewayProcess {
 
 impl RunningGatewayProcess {
     pub async fn shutdown(self) {
-        let _ = self.shutdown.send(());
-        let _ = self.pingora_shutdown.send(true);
-        let _ = self.certificate_service.shutdown().await;
-        for task in self.tasks {
-            let _ = task.await;
+        let Self {
+            shutdown,
+            pingora_shutdown,
+            facts_cache,
+            certificate_service,
+            _certificate_state_guard,
+            mut tasks,
+            ..
+        } = self;
+        let _ = shutdown.send(());
+        let _ = pingora_shutdown.send(true);
+        let cleanup = async {
+            facts_cache.shutdown().await;
+            let _ = certificate_service.shutdown().await;
+            for task in &mut tasks {
+                let _ = task.await;
+            }
+        };
+        if tokio::time::timeout(GATEWAY_SHUTDOWN_TIMEOUT, cleanup)
+            .await
+            .is_err()
+        {
+            for task in &tasks {
+                if !task.is_finished() {
+                    task.abort();
+                }
+            }
+            eprintln!(
+                "ployzd gateway shutdown warning: cleanup exceeded {}s; forcing remaining tasks",
+                GATEWAY_SHUTDOWN_TIMEOUT.as_secs()
+            );
         }
-        self.facts_cache.shutdown().await;
     }
 
     #[must_use]
@@ -271,15 +297,17 @@ async fn start_gateway_process_inner(
 
         loop {
             drain_refresh_wakes(&mut refresh_wake_rx);
-            let attempt = source
-                .refresh_with_timeout(&task_runtime, &task_registry)
-                .await;
+            let attempt = tokio::select! {
+                attempt = source.refresh_with_timeout(&task_runtime, &task_registry) => attempt,
+                _ = refresh_shutdown.recv() => break,
+            };
             let observed = gateway_observation_from_attempt(&machine_id, listen_addr, &attempt);
             backoff = record_gateway_attempt(&task_health, attempt, refresh_interval, backoff);
-            record_gateway_status_publish_result(
-                &task_health,
-                source.replace_gateway_status(&observed).await,
-            );
+            let status_publish = tokio::select! {
+                result = source.replace_gateway_status(&observed) => result,
+                _ = refresh_shutdown.recv() => break,
+            };
+            record_gateway_status_publish_result(&task_health, status_publish);
 
             match wait_for_refresh_delay(backoff, &mut refresh_wake_rx, &mut refresh_shutdown).await
             {
