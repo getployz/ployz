@@ -86,6 +86,7 @@ import type {
   ServiceListResponse,
   ServiceListRequest,
   ServiceSnapshot,
+  WireGuardPublicKey,
 } from "../src/index.ts";
 
 const fixturePath = join(
@@ -1062,6 +1063,7 @@ function defaultFixture(): OperationFixture {
           control_endpoints: [],
           mesh_endpoints: [],
           endpoint_subnet: "10.42.2.0/24",
+          wireguard_public_key: "public-machine-2" as WireGuardPublicKey,
         },
         testimony: { status: "no_answer" as const },
       },
@@ -1112,6 +1114,7 @@ function defaultFixture(): OperationFixture {
             control_endpoints: [],
             mesh_endpoints: [],
             endpoint_subnet: "10.42.2.0/24",
+            wireguard_public_key: "public-machine-2" as WireGuardPublicKey,
           },
           testimony: { status: "no_answer" as const },
         },

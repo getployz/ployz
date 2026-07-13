@@ -40,6 +40,7 @@ pub mod roles {
 }
 pub mod operations {
     pub mod credential_grant;
+    pub mod dataplane_projection_admission;
     pub mod deploy;
     pub mod log;
     pub mod machine_lifecycle;

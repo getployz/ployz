@@ -153,6 +153,8 @@ fn intent<const N: usize>(machines: [&str; N], entry: &str) -> IntentSnapshot {
         epoch: ControlPlaneEpoch::initial(),
         core_machine_id: machine_id("machine_a"),
         active_machines: machines.into_iter().map(active_machine).collect(),
+        dataplane_projection: ployz_core::dataplane::DataplaneProjection::try_new(Vec::new(), None)
+            .expect("empty projection"),
         route_bindings: Vec::new(),
         serving_target_entries: vec![serving_target_entry("db", entry)],
         volume_pins: Vec::new(),
@@ -174,6 +176,10 @@ fn active_machine(id: &str) -> ActiveMachineState {
         mesh_endpoints: Vec::new(),
         endpoint_subnet: MachineEndpointSubnet::try_new("10.198.0.0/24")
             .expect("valid endpoint subnet"),
+        wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+            "public-{id}"
+        ))
+        .expect("public key"),
     }
 }
 

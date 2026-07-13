@@ -8,13 +8,15 @@ pub use ployz_core::cert::{
     ManagedLeaseName, ManagedLeaseRecord, ManagedLeaseRenewed, PublicUrlMode,
 };
 pub use ployz_core::dataplane::{
-    DataplaneMember, DataplaneProviderFailure, EbpfAttachmentStatus, EbpfForwardingReady,
-    EbpfForwardingReadyEvidence, MachineDataplaneStatus, MachineEndpointSubnet,
-    MachineEndpointSupernet, NetworkStatusMode, PloyzNativeMeshComponent,
-    PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport, PloyzNativeMeshReady,
-    WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardHandshakeStatus, WireGuardInterfaceMtu,
-    WireGuardMtuProbe, WireGuardPeerEndpointSubnet, WireGuardPeerStatus, WireGuardPublicKey,
-    WireGuardReady, WireGuardReadyEvidence, WireGuardRttStatus, WireGuardStatus,
+    DataplaneMember, DataplaneProjection, DataplaneProjectionComponent, DataplaneProjectionFailure,
+    DataplaneProjectionMember, DataplaneProjectionRevision, DataplaneProjectionRevisions,
+    DataplaneProjectionTestimony, EbpfAttachmentStatus, EbpfForwardingReady,
+    EbpfForwardingReadyEvidence, EndpointBridgeStatus, MachineDataplaneStatus,
+    MachineEndpointSubnet, MachineEndpointSupernet, NativeDataplaneProjectionStatus,
+    NetworkStatusMode, PloyzNativeMeshComponent, PloyzNativeMeshReady, WireGuardConfiguredMtu,
+    WireGuardDetectedMtu, WireGuardHandshakeStatus, WireGuardInterfaceMtu, WireGuardMtuProbe,
+    WireGuardPeerEndpointSubnet, WireGuardPeerStatus, WireGuardPublicKey, WireGuardReady,
+    WireGuardReadyEvidence, WireGuardRttStatus, WireGuardStatus,
 };
 pub use ployz_core::deploy::{
     ContainerCommand, ContainerCommandError, ContainerEntrypoint, ContainerHealthcheck,
@@ -47,10 +49,10 @@ pub use ployz_core::internal_dns::{
     InternalDnsResolverStatus, InternalDnsStatus, InternalServiceName, InternalServiceNameError,
 };
 pub use ployz_core::machine::{
-    ConnectivityProofEvidence, ConnectivityProofUnreachablePeer, IssuedJoinToken,
-    JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt, MachineAddFailure,
-    MachineCredentialProvisioningStep, MachineName, MachineReadinessCheck,
-    MachineReadinessEvidence,
+    DataplaneAdmissionPeer, DataplaneProjectionAdmissionEvidence,
+    DataplaneProjectionAdmissionFailure, IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint,
+    JoinTokenRedeemedAt, MachineAddFailure, MachineCredentialProvisioningStep, MachineName,
+    MachineReadinessCheck, MachineReadinessEvidence, WireGuardReadinessFailure,
 };
 pub use ployz_core::machine_runtime::{
     ContainerHealth, ContainerRuntimeState, MachineDiskSpace, MachineFactsRefreshConfirmation,
@@ -89,8 +91,8 @@ pub use ployz_core::ops::{
 };
 pub use ployz_core::roles::{GatewayRole, InstallRolePolicy};
 pub use ployz_core::security::NatsPrincipal;
-pub use ployz_core::state::MachineUsabilityReason;
 pub use ployz_core::state::{
-    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation,
-    MachineLifecycle, RouteBindingState, ServingTargetEntry, VolumePinState,
+    ActiveMachineState, DataplaneUnavailableReason, GatewayServingStatus, GatewayStatusObservation,
+    MachineEndpointObservation, MachineLifecycle, MachineUsabilityReason, RouteBindingState,
+    ServingTargetEntry, VolumePinState,
 };

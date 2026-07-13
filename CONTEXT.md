@@ -569,12 +569,12 @@ Best-effort cleanup or expiry of stale observations for removed or inactive mach
 _Avoid_: Observation deletion as removal success, stale observation as authority
 
 **Machine Usability View**:
-The one rule set for whether a machine may take new workload placement, derived from durable operator intent (machine lifecycle) and future placement constraints. Liveness is never part of it: a dead machine answers at the point of use (an unanswered placement bid, a failed upstream dial), so no consumer infers availability from observation age.
-_Avoid_: Scattered eligibility checks, lifecycle as readiness, freshness as eligibility, eligibility booleans
+The one rule set for whether a machine may take new workload placement. It combines durable operator intent such as Machine Lifecycle with fresh, point-of-use testimony required by that placement attempt. Placement first forms a preliminary set of lifecycle-active machines that answered facts and dataplane status, match the declared Dataplane Projection revision, and report their local bridge, WireGuard interface, and eBPF attachment ready. A preliminary candidate must contain and show a handshake no more than 275 seconds old with every other preliminary candidate. The set is validated once: excluded candidates do not trigger recursive shrinking or revalidation. Silent and locally unusable declared machines remain in intent and the configured projection but are not expected peers for that attempt. The view is never stored as cluster truth and never changes existing workloads or serving state.
+_Avoid_: Scattered eligibility checks, lifecycle as readiness, stored liveness, observation-age eligibility, eligibility booleans
 
 **Machine Usability Reason**:
-A typed explanation for why a machine is excluded from new workload placement. The current reason is draining; future reasons cover operator-declared placement constraints. Liveness is never a reason - offline machines fail at the point of use rather than being inferred out of the pool.
-_Avoid_: Generic unhealthy, free-text eligibility, hidden scheduler decision, stale-observation eligibility
+A typed explanation for why a machine is excluded from one new-placement attempt. Reasons include durable policy such as draining and fresh Dataplane Unavailable evidence such as no answer, the wrong projection revision, unusable local dataplane components, a peer-set mismatch, or a missing or stale peer handshake. These reasons are attempt evidence, not durable machine state; exclusion does not evict workloads or rewrite serving truth.
+_Avoid_: Generic unhealthy, free-text eligibility, hidden scheduler decision, stored health flag
 
 **Fresh Role Observation**:
 A recent observation from a role process such as a machine agent, gateway, or DNS process. Fresh role observations make a process visible for warning-only coordination and diagnostics, but they are not durable membership or operation quorum.

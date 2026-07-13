@@ -8,19 +8,18 @@ use crate::operations::log::{
 };
 use crate::roles::dns::protocol::{DnsStatusRpcOk, DnsStatusRpcRequest};
 use crate::roles::machine::client::{
-    MAX_CONCURRENT_MACHINE_READS, MachineFactsRefreshError, NatsMachineDataplanePreparer,
-    NatsMachineFactsReader, unavailable_reason,
+    MAX_CONCURRENT_MACHINE_READS, MachineFactsRefreshError, NatsMachineFactsReader,
+    unavailable_reason,
 };
+use crate::roles::machine::convergence::gather_dataplane_statuses;
 use crate::tasks::TaskRegistry;
 use futures_util::{StreamExt, stream};
-use ployz_core::dataplane::{
-    DataplaneMember, DataplanePrepareError, DataplanePrepareRequest, DataplaneProviderFailure,
-    PloyzNativeMeshPrepareReport,
-};
+use ployz_core::dataplane::DataplaneProjection;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::internal_dns::{
     InternalDnsFactWatermark, InternalDnsResolverStatus, InternalDnsStatus,
 };
+use ployz_core::machine::validate_declared_machine;
 use ployz_core::machine_runtime::MachineFactsRefreshConfirmation;
 use ployz_core::ops::{
     FailureMessage, NetworkRepairDnsRefreshProblem, NetworkRepairEvidence, NetworkRepairFailure,
@@ -29,7 +28,6 @@ use ployz_core::ops::{
 };
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_runtime::{NatsJsonServiceRequestError, request_json};
-use std::future::Future;
 use std::time::Duration;
 
 const DNS_REFRESH_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -47,7 +45,6 @@ struct DnsRefreshBaseline {
 pub struct NetworkRepairOperation {
     controllers: OperationControllers,
     intent_reader: NatsIntentReader,
-    dataplane: NatsMachineDataplanePreparer,
     facts_reader: NatsMachineFactsReader,
     client: async_nats::Client,
     operation_timeout: Duration,
@@ -59,7 +56,6 @@ impl NetworkRepairOperation {
     pub fn new(
         controllers: OperationControllers,
         intent_reader: NatsIntentReader,
-        dataplane: NatsMachineDataplanePreparer,
         facts_reader: NatsMachineFactsReader,
         client: async_nats::Client,
         operation_timeout: Duration,
@@ -68,7 +64,6 @@ impl NetworkRepairOperation {
         Self {
             controllers,
             intent_reader,
-            dataplane,
             facts_reader,
             client,
             operation_timeout,
@@ -92,7 +87,7 @@ impl NetworkRepairOperation {
             .record_transition_with_retry(
                 &operation_id,
                 NetworkRepairTransition::Running {
-                    stage: NetworkRepairRunningStage::PreparingDataplane,
+                    stage: NetworkRepairRunningStage::AwaitingDataplane,
                 },
             )
             .await
@@ -126,15 +121,7 @@ impl NetworkRepairOperation {
             .iter()
             .map(|machine| machine.machine_id.clone())
             .collect::<Vec<_>>();
-        let membership = intent
-            .active_machines
-            .iter()
-            .map(|machine| DataplaneMember {
-                machine_id: machine.machine_id.clone(),
-                endpoint_subnet: machine.endpoint_subnet.clone(),
-            })
-            .collect::<Vec<_>>();
-        if membership.is_empty() {
+        if machine_ids.is_empty() {
             self.record_terminal(
                 &operation_id,
                 NetworkRepairTransition::Failed {
@@ -158,28 +145,49 @@ impl NetworkRepairOperation {
             }
             None => machine_ids.clone(),
         };
-        let request = DataplanePrepareRequest {
-            operation_id: operation_id.clone(),
-            membership,
-        };
-        let report = match bounded_dataplane_convergence(
-            self.operation_timeout,
-            self.dataplane
-                .prepare_dataplane_for_targets(request, &targets),
-        )
+        let projection = intent.dataplane_projection;
+        let invalidation = match tokio::time::timeout(self.operation_timeout, async {
+            self.client
+                .publish(ployz_core::subjects::INTENT_CHANGED, Vec::new().into())
+                .await
+                .map_err(|error| error.to_string())?;
+            self.client.flush().await.map_err(|error| error.to_string())
+        })
         .await
         {
-            Ok(report) => report,
+            Ok(result) => result,
+            Err(_) => Err(format!(
+                "intent invalidation timed out after {}s",
+                self.operation_timeout.as_secs()
+            )),
+        };
+        if let Err(error) = invalidation {
+            self.record_terminal(
+                &operation_id,
+                NetworkRepairTransition::Failed {
+                    failure: NetworkRepairFailure::IntentReadFailed {
+                        message: failure_message(error.to_string()),
+                    },
+                },
+            )
+            .await;
+            return;
+        }
+        match self.await_declared_projection(&projection, &targets).await {
+            Ok(()) => {}
             Err(failure) => {
                 self.record_terminal(&operation_id, NetworkRepairTransition::Failed { failure })
                     .await;
                 return;
             }
-        };
+        }
         if !self
             .record_evidence(
                 &operation_id,
-                NetworkRepairEvidence::DataplanePrepared { report },
+                NetworkRepairEvidence::DataplaneConverged {
+                    revision: projection.declared_revision().clone(),
+                    machine_ids: targets,
+                },
                 NetworkRepairProgressPhase::RecordingDataplaneEvidence,
             )
             .await
@@ -258,6 +266,53 @@ impl NetworkRepairOperation {
             NetworkRepairProgressPhase::Completing,
         )
         .await;
+    }
+
+    async fn await_declared_projection(
+        &self,
+        projection: &DataplaneProjection,
+        targets: &[MachineId],
+    ) -> Result<(), NetworkRepairFailure> {
+        for machine_id in targets {
+            declared_projection_member(projection, machine_id)?;
+        }
+        let deadline = tokio::time::Instant::now() + self.operation_timeout;
+        loop {
+            let mut latest = None;
+            let statuses = gather_dataplane_statuses(&self.facts_reader, targets).await;
+            for (machine_id, result) in statuses {
+                let member = declared_projection_member(projection, &machine_id)?;
+                match result {
+                    Ok(status) => {
+                        if let Some(reason) = validate_declared_machine(projection, member, &status)
+                        {
+                            latest = Some(NetworkRepairFailure::DataplaneUnavailable {
+                                machine_id,
+                                reason,
+                            });
+                            break;
+                        }
+                    }
+                    Err(message) => {
+                        latest = Some(NetworkRepairFailure::DataplaneUnavailable {
+                            machine_id,
+                            reason:
+                                ployz_core::machine::DataplaneProjectionAdmissionFailure::NoAnswer {
+                                    message,
+                                },
+                        });
+                        break;
+                    }
+                }
+            }
+            let Some(failure) = latest else {
+                return Ok(());
+            };
+            if tokio::time::Instant::now() >= deadline {
+                return Err(failure);
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     async fn record_stage(
@@ -555,40 +610,25 @@ impl NetworkRepairOperation {
     }
 }
 
+fn declared_projection_member<'a>(
+    projection: &'a DataplaneProjection,
+    machine_id: &MachineId,
+) -> Result<&'a ployz_core::dataplane::DataplaneProjectionMember, NetworkRepairFailure> {
+    projection
+        .declared_members()
+        .iter()
+        .find(|member| &member.machine_id == machine_id)
+        .ok_or_else(|| NetworkRepairFailure::ProjectionMemberMissing {
+            machine_id: machine_id.clone(),
+            revision: projection.declared_revision().clone(),
+        })
+}
+
 fn retryable_record_failure(error: &RecordOperationEventError) -> bool {
     matches!(
         error,
         RecordOperationEventError::StoreStatus(OperationStatusStoreError::Index { .. })
     )
-}
-
-fn network_repair_failure(error: DataplanePrepareError) -> NetworkRepairFailure {
-    match error {
-        DataplanePrepareError::Unavailable {
-            machine_id,
-            provider: DataplaneProviderFailure::PloyzNativeMesh { component },
-            message,
-        } => NetworkRepairFailure::DataplaneConvergenceFailed {
-            machine_id,
-            component,
-            message,
-        },
-        DataplanePrepareError::InvalidReport { message } => {
-            NetworkRepairFailure::DataplaneReportInvalid { message }
-        }
-    }
-}
-
-async fn bounded_dataplane_convergence(
-    timeout: Duration,
-    convergence: impl Future<Output = Result<PloyzNativeMeshPrepareReport, DataplanePrepareError>>,
-) -> Result<PloyzNativeMeshPrepareReport, NetworkRepairFailure> {
-    match tokio::time::timeout(timeout, convergence).await {
-        Ok(result) => result.map_err(network_repair_failure),
-        Err(_) => Err(NetworkRepairFailure::DataplaneConvergenceTimedOut {
-            timeout_seconds: timeout.as_secs(),
-        }),
-    }
 }
 
 fn machine_facts_refresh_outcome(
@@ -735,7 +775,6 @@ fn record_warning(operation_id: &OperationId, phase: &str, error: &RecordOperati
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures_util::future;
     use ployz_core::internal_dns::{
         InternalDnsFactGeneration, InternalDnsResolverCacheIncarnation,
     };
@@ -758,15 +797,18 @@ mod tests {
         assert!(!retryable_record_failure(&invariant));
     }
 
-    #[tokio::test]
-    async fn dataplane_convergence_timeout_bounds_lock_waits() {
-        let failure = bounded_dataplane_convergence(Duration::ZERO, future::pending())
-            .await
-            .expect_err("pending dataplane convergence times out");
+    #[test]
+    fn requested_target_missing_from_declared_projection_cannot_converge() {
+        let projection =
+            DataplaneProjection::try_new(Vec::new(), None).expect("empty projection is valid");
+        let machine_id = machine_id("machine_a");
 
         assert_eq!(
-            failure,
-            NetworkRepairFailure::DataplaneConvergenceTimedOut { timeout_seconds: 0 }
+            declared_projection_member(&projection, &machine_id),
+            Err(NetworkRepairFailure::ProjectionMemberMissing {
+                machine_id,
+                revision: projection.declared_revision().clone(),
+            })
         );
     }
 

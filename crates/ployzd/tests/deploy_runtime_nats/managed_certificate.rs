@@ -15,7 +15,12 @@ use tokio::net::TcpListener;
 #[tokio::test]
 async fn auto_hostname_deploy_waits_for_managed_certificate_and_stores_ready_bundle() {
     let nats = test_nats().await;
-    let _facts = start_facts_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
+    let _facts = start_facts_subscription(
+        nats.machine_a.clone(),
+        nats.client.clone(),
+        machine_id("machine_a"),
+    )
+    .await;
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind lease worker");
@@ -47,14 +52,12 @@ async fn auto_hostname_deploy_waits_for_managed_certificate_and_stores_ready_bun
         .submit_deploy(deploy_submit_command(&controllers, auto_hostname_deploy_request()).await)
         .await
         .expect("deploy operation accepted");
-    let mut dataplane = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
     let mut certificates = RecordingCertificates::successful();
 
     run_deploy_operation(
         accepted,
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
@@ -69,7 +72,6 @@ async fn auto_hostname_deploy_waits_for_managed_certificate_and_stores_ready_bun
         DeployOperationPorts {
             facts_reader: &facts_reader,
             intent_reader: &intent_reader,
-            dataplane: &mut dataplane,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             certificate_provisioner: &mut certificates,
@@ -95,7 +97,12 @@ async fn auto_hostname_deploy_waits_for_managed_certificate_and_stores_ready_bun
 #[tokio::test]
 async fn auto_hostname_deploy_fails_typed_when_certificate_stays_pending() {
     let nats = test_nats().await;
-    let _facts = start_facts_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
+    let _facts = start_facts_subscription(
+        nats.machine_a.clone(),
+        nats.client.clone(),
+        machine_id("machine_a"),
+    )
+    .await;
     let (lease_client, request_count, server) = always_pending_lease_client().await;
     nats.lease_intent
         .store_lease(pending_lease_record(), None)
@@ -108,14 +115,12 @@ async fn auto_hostname_deploy_fails_typed_when_certificate_stays_pending() {
         .submit_deploy(deploy_submit_command(&controllers, auto_hostname_deploy_request()).await)
         .await
         .expect("deploy operation accepted");
-    let mut dataplane = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_should_not_start"]);
     let mut health = RecordingHealth::healthy();
     let mut certificates = RecordingCertificates::successful();
 
     let error = run_deploy_operation(
         accepted,
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
@@ -130,7 +135,6 @@ async fn auto_hostname_deploy_fails_typed_when_certificate_stays_pending() {
         DeployOperationPorts {
             facts_reader: &facts_reader,
             intent_reader: &intent_reader,
-            dataplane: &mut dataplane,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             certificate_provisioner: &mut certificates,
@@ -168,7 +172,12 @@ async fn auto_hostname_deploy_fails_typed_when_certificate_stays_pending() {
 #[tokio::test]
 async fn deploy_without_auto_hostname_does_not_poll_record_only_lease() {
     let nats = test_nats().await;
-    let _facts = start_facts_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
+    let _facts = start_facts_subscription(
+        nats.machine_a.clone(),
+        nats.client.clone(),
+        machine_id("machine_a"),
+    )
+    .await;
     let (lease_client, request_count, server) = always_pending_lease_client().await;
     nats.lease_intent
         .store_lease(pending_lease_record(), None)
@@ -181,14 +190,12 @@ async fn deploy_without_auto_hostname_does_not_poll_record_only_lease() {
         .submit_deploy(deploy_submit_command(&controllers, deploy_request(1)).await)
         .await
         .expect("deploy operation accepted");
-    let mut dataplane = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
     let mut certificates = RecordingCertificates::successful();
 
     run_deploy_operation(
         accepted,
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
@@ -203,7 +210,6 @@ async fn deploy_without_auto_hostname_does_not_poll_record_only_lease() {
         DeployOperationPorts {
             facts_reader: &facts_reader,
             intent_reader: &intent_reader,
-            dataplane: &mut dataplane,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             certificate_provisioner: &mut certificates,

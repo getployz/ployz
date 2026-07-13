@@ -1,5 +1,8 @@
 # Liveness Surfaces At The Point Of Use
 
+> The placement bullet is partially superseded by ADR 0035: a fresh placement
+> bid is necessary, and fresh dataplane testimony must also pass.
+
 Ployz never infers liveness from observation age and never lets an inferred
 signal change cluster behavior. Every consumer of "is this machine alive"
 has an exact, live answer at the moment it matters:

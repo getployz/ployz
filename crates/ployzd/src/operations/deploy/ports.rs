@@ -1,7 +1,4 @@
 use ployz_core::cert::ActiveCertState;
-use ployz_core::dataplane::{
-    DataplanePrepareError, DataplanePrepareRequest, PloyzNativeMeshPrepareReport,
-};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::image::{ImageEnsureOk, ImageEnsureRequest};
 use ployz_core::ops::ControlPlaneCommitScope;
@@ -18,8 +15,7 @@ use crate::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerResolveImageRpcRequest,
     MachineContainerRestartRpcRequest, MachineContainerRunHookRpcOk,
     MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
-    MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
-    MachineRunContainerOutcome,
+    MachineContainerStopRpcRequest, MachineRunContainerOutcome,
 };
 
 use super::{
@@ -53,12 +49,6 @@ pub trait MachineContainerRuntime {
         machine_id: &MachineId,
         request: ImageEnsureRequest,
     ) -> impl Future<Output = Result<ImageEnsureOk, MachineImageEnsureError>> + Send;
-
-    fn ensure_endpoint_network(
-        &mut self,
-        machine_id: &MachineId,
-        request: MachineEnsureEndpointNetworkRpcRequest,
-    ) -> impl Future<Output = Result<(), MachineContainerRuntimeError>> + Send;
 
     fn run_container(
         &mut self,
@@ -95,13 +85,6 @@ pub trait MachineContainerRuntime {
         machine_id: &MachineId,
         request: MachineContainerStopRpcRequest,
     ) -> impl Future<Output = Result<(), MachineContainerRuntimeError>> + Send;
-}
-
-pub trait DataplanePreparer {
-    fn prepare_dataplane(
-        &mut self,
-        request: DataplanePrepareRequest,
-    ) -> impl Future<Output = Result<PloyzNativeMeshPrepareReport, DataplanePrepareError>> + Send;
 }
 
 pub trait DeployHealthChecker {

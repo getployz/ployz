@@ -22,15 +22,14 @@ use crate::operation_api::admission::OperationControllers;
 use crate::operation_api::service::{ApiServiceError, start_operation_api_service_with_handlers};
 use crate::operation_api::{OperationApiHandlers, OperationWorkers};
 use crate::operations::credential_grant::CredentialGrantOperation;
+use crate::operations::deploy::ManagedCertificateWaitPolicy;
 use crate::operations::deploy::driver::{DeployOperationDriver, DeployOperationStores};
-use crate::operations::deploy::{DeployMachineCandidates, ManagedCertificateWaitPolicy};
 use crate::operations::log::OperationRepository;
 use crate::operations::machine_lifecycle::MachineLifecycleOperation;
 use crate::operations::machine_update::MachineUpdateOperation;
 use crate::process_support::shutdown_signal;
 use crate::roles::machine::client::{
-    NatsMachineDataplanePreparer, NatsMachineFactsReader, NatsMachineLogsTailer,
-    NatsMachineSubstrateUpdater,
+    NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
 };
 use crate::roles::machine::intent_mirror::{MachineIntentMirror, MachinePendingJoinMirror};
 use crate::seed::{SeedCoreError, seed_core_from_snapshot};
@@ -234,7 +233,6 @@ pub async fn start_control_process_with_client_and_reload(
             managed_certificate_wait: ManagedCertificateWaitPolicy::production(),
             controllers: controllers.clone(),
         },
-        DeployMachineCandidates::same_machines(config.deploy_machines.clone()),
         certificate_manager.clone(),
         config.deploy_step_timeout,
         deploy_tasks.clone(),
@@ -288,9 +286,6 @@ pub async fn start_control_process_with_client_and_reload(
         intent_reader
             .clone()
             .with_request_timeout(config.deploy_step_timeout),
-        NatsMachineDataplanePreparer::new(client.clone())
-            .with_request_timeout(config.deploy_step_timeout)
-            .with_mesh_lock(controllers.mesh_lock()),
         NatsMachineFactsReader::new(client.clone())
             .with_request_timeout(config.deploy_step_timeout),
         client.clone(),
@@ -321,7 +316,6 @@ pub async fn start_control_process_with_client_and_reload(
     let intent = start_intent_service(
         client.clone(),
         core_machine_id.clone(),
-        machine_roster.clone(),
         namespace_intent,
         core_store.clone(),
         INTENT_PUBLISH_INTERVAL,
@@ -568,6 +562,11 @@ mod tests {
             epoch,
             core_machine_id: machine_id("machine_a"),
             active_machines: Vec::new(),
+            dataplane_projection: ployz_core::dataplane::DataplaneProjection::try_new(
+                Vec::new(),
+                None,
+            )
+            .expect("empty projection"),
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),
@@ -609,6 +608,10 @@ mod tests {
             mesh_endpoints: Vec::new(),
             endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
                 .expect("valid endpoint subnet"),
+            wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+                "public-{machine_id_value}"
+            ))
+            .expect("public key"),
         }
     }
 

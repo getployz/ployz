@@ -17,10 +17,13 @@ use crate::roles::machine::facts::{
 };
 use crate::roles::machine::images::AvailableImageService;
 use crate::roles::machine::intent_mirror::{MachineIntentMirror, MachinePendingJoinMirror};
+use crate::roles::machine::projection::{
+    MachineProjectionState, RunningProjectionTask, start_projection_task,
+};
 use crate::roles::machine::registry_v2::RunningRegistryV2;
 use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
 use crate::roles::machine::service::{
-    MachineFactsReadError, MachineServiceError,
+    MachineFactsReadError, MachineRoleProjectionServices, MachineServiceError,
     start_machine_role_service_with_endpoint_cache_and_image,
 };
 use crate::roles::nats_failover::{
@@ -53,6 +56,7 @@ pub struct RunningMachineProcess {
     intent_mirror_shutdown: broadcast::Sender<()>,
     intent_mirror: JoinHandle<()>,
     pending_join_mirror: RunningTask,
+    projection: RunningProjectionTask,
     image_registry: Option<RunningRegistryV2>,
 }
 
@@ -64,13 +68,16 @@ impl RunningMachineProcess {
             intent_mirror_shutdown,
             mut intent_mirror,
             mut pending_join_mirror,
+            mut projection,
             image_registry,
         } = self;
         pending_join_mirror.request_shutdown();
+        projection.request_shutdown();
         let _ = intent_mirror_shutdown.send(());
         observer.request_shutdown();
         let abort_handles = [
             pending_join_mirror.task.abort_handle(),
+            projection.abort_handle(),
             intent_mirror.abort_handle(),
             observer.task.abort_handle(),
         ];
@@ -79,6 +86,7 @@ impl RunningMachineProcess {
                 image_registry.shutdown().await;
             }
             pending_join_mirror.wait().await;
+            projection.wait().await;
             let _ = (&mut intent_mirror).await;
             observer.wait().await;
             machine_service.shutdown().await
@@ -203,14 +211,18 @@ where
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
     let endpoint_cache = MachineEndpointCache::new(wg_ifname);
+    let projection_state = MachineProjectionState::new();
     let machine_service = start_machine_role_service_with_endpoint_cache_and_image(
         client.clone(),
         machine_id.clone(),
         runner.clone(),
-        preparer,
+        preparer.clone(),
         log_reader,
         endpoint_cache.clone(),
-        image_state,
+        MachineRoleProjectionServices {
+            image_state,
+            projection_state: projection_state.clone(),
+        },
     )
     .await
     .map_err(MachineProcessError::StartMachineService)?;
@@ -224,6 +236,13 @@ where
         intent_mirror_shutdown_rx,
     );
     let pending_join_mirror = start_pending_join_mirror(client.clone(), pending_join_mirror);
+    let projection = start_projection_task(
+        client.clone(),
+        machine_id.clone(),
+        runner.clone(),
+        preparer,
+        projection_state,
+    );
     let observer = start_machine_observer(
         machine_id,
         runner,
@@ -238,6 +257,7 @@ where
         intent_mirror_shutdown,
         intent_mirror,
         pending_join_mirror,
+        projection,
         image_registry: None,
     })
 }
@@ -598,6 +618,19 @@ mod tests {
             Ok(())
         }
 
+        async fn ensure_projection_endpoint_network(
+            &self,
+            _expected_subnet: &ployz_core::dataplane::MachineEndpointSubnet,
+        ) -> Result<(), MachineContainerRunnerError> {
+            Ok(())
+        }
+
+        async fn read_endpoint_network_status(
+            &self,
+        ) -> ployz_core::dataplane::EndpointBridgeStatus {
+            ployz_core::dataplane::EndpointBridgeStatus::Missing
+        }
+
         async fn resolve_registry_image(
             &self,
             reference: &ployz_core::deploy::ImageReference,
@@ -718,6 +751,22 @@ mod tests {
             Err(MachineContainerRunnerError::EnsureEndpointNetwork {
                 message: "docker unavailable".to_owned(),
             })
+        }
+
+        async fn ensure_projection_endpoint_network(
+            &self,
+            _expected_subnet: &ployz_core::dataplane::MachineEndpointSubnet,
+        ) -> Result<(), MachineContainerRunnerError> {
+            self.ensure_endpoint_network().await
+        }
+
+        async fn read_endpoint_network_status(
+            &self,
+        ) -> ployz_core::dataplane::EndpointBridgeStatus {
+            ployz_core::dataplane::EndpointBridgeStatus::Unavailable {
+                message: ployz_core::ops::FailureMessage::try_new("docker unavailable")
+                    .expect("failure"),
+            }
         }
 
         async fn resolve_registry_image(
@@ -916,21 +965,6 @@ mod tests {
             self.prepare_ployz_native_mesh(endpoint_routes, peers)
                 .await
                 .map(|ready| ready.wireguard)
-        }
-
-        async fn probe_overlay(
-            &self,
-            _peers: &[ployz_core::dataplane::WireGuardPublicKey],
-        ) -> Result<Vec<ployz_core::dataplane::WireGuardPublicKey>, WireGuardEbpfPrepareError>
-        {
-            Ok(Vec::new())
-        }
-
-        async fn probe_link_mtu(
-            &self,
-            _peer_gateway: std::net::Ipv4Addr,
-        ) -> Result<u32, WireGuardEbpfPrepareError> {
-            Ok(1380)
         }
     }
 

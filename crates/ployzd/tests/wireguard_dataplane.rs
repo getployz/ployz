@@ -1,20 +1,15 @@
 use ployz_core::dataplane::{
-    DataplanePrepareRequest, EbpfForwardingReadyEvidence, PloyzNativeMeshComponent,
-    WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey,
-    WireGuardReadyEvidence,
+    EbpfForwardingReadyEvidence, PloyzNativeMeshComponent, WireGuardEbpfEndpointRoute,
+    WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey, WireGuardReadyEvidence,
 };
-use ployz_test_support::ids::{machine_id, operation_id};
+use ployz_test_support::ids::machine_id;
 use ployzd::adapters::docker::runner::DockerManagedContainerRunner;
 use ployzd::adapters::host_dataplane::{
     PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer, WireGuardMtuPolicy,
 };
 use ployzd::config::{DEFAULT_DATAPLANE_BRIDGE_IFNAME, DEFAULT_DATAPLANE_WG_IFNAME};
-use ployzd::operations::deploy::{DataplanePreparer, MachineContainerRuntime};
-use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
-use ployzd::roles::machine::protocol::MachineEnsureEndpointNetworkRpcRequest;
 use ployzd::roles::machine::runner::MachineContainerRunner;
 use ployzd::roles::machine::service::MachinePloyzNativeMeshPreparer;
-use ployzd::roles::machine::service::start_machine_role_service;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;
@@ -87,80 +82,6 @@ async fn local_privileged_docker_dataplane_prepares_wireguard_ebpf_and_routes() 
     }));
     assert_ebpf_attached_evidence(&ready.ebpf_forwarding.evidence, &ebpf_ctl);
     assert_edge_route_evidence(&ready.ebpf_forwarding.evidence, &ebpf_ctl);
-}
-
-#[tokio::test]
-async fn local_privileged_machine_service_prepares_real_docker_dataplane() {
-    if !local_proof_enabled() {
-        return;
-    }
-    let _guard = local_dataplane_lock().lock().await;
-    require_root();
-
-    let _cleanup = DataplaneCleanup;
-    cleanup_dataplane();
-    let ebpf_ctl = required_path_env(EBPF_CTL_ENV);
-    let ebpf_bytecode = required_path_env(EBPF_BYTECODE_ENV);
-    let nats = test_nats().await;
-    let machine_id = machine_id("core_1");
-    let runner = DockerManagedContainerRunner::local_defaults(
-        ENDPOINT_NETWORK_SUBNET,
-        DEFAULT_DATAPLANE_BRIDGE_IFNAME,
-        DEFAULT_DATAPLANE_WG_IFNAME,
-        WireGuardMtuPolicy::Fixed(1420),
-    )
-    .expect("connect to local Docker daemon");
-    let preparer = PloyzNativeMeshPreparer::new(
-        PloyzNativeMeshHostConfig::with_default_key_material(
-            machine_id.clone(),
-            ebpf_bytecode,
-            ebpf_ctl.clone(),
-            DEFAULT_DATAPLANE_BRIDGE_IFNAME.to_owned(),
-            DEFAULT_DATAPLANE_WG_IFNAME.to_owned(),
-        )
-        .with_mtu_policy(WireGuardMtuPolicy::Fixed(1420)),
-    )
-    .with_command_timeout(Duration::from_secs(20));
-    let _service = start_machine_role_service(
-        nats.machine_client.clone(),
-        machine_id.clone(),
-        runner.clone(),
-        preparer,
-        runner,
-    )
-    .await
-    .expect("machine runtime service starts");
-
-    let mut runtime = NatsMachineContainerRuntime::new(nats.client.clone())
-        .with_request_timeout(Duration::from_secs(30));
-    runtime
-        .ensure_endpoint_network(
-            &machine_id,
-            MachineEnsureEndpointNetworkRpcRequest {
-                operation_id: operation_id("op_123"),
-            },
-        )
-        .await
-        .expect("endpoint network is created through machine service");
-    command_ok(
-        "ip",
-        &["link", "show", "dev", DEFAULT_DATAPLANE_BRIDGE_IFNAME],
-    );
-
-    let mut dataplane = NatsMachineDataplanePreparer::new(nats.client)
-        .with_request_timeout(Duration::from_secs(30));
-    let report = dataplane
-        .prepare_dataplane(DataplanePrepareRequest::for_machines(
-            operation_id("op_123"),
-            vec![machine_id.clone()],
-        ))
-        .await
-        .expect("real dataplane prepares through machine-scoped NATS service");
-    let [ready] = report.machines.as_slice() else {
-        panic!("expected one machine readiness report");
-    };
-    assert_eq!(ready.machine_id, machine_id);
-    assert_ebpf_attached_evidence(&ready.ready.ebpf_forwarding.evidence, &ebpf_ctl);
 }
 
 #[tokio::test]
@@ -328,27 +249,6 @@ fn command_ignore(program: &str, args: &[&str]) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-}
-
-struct TestNats {
-    _nats: ployz_test_support::nats::TestNats,
-    /// Controller principal: the deploy-worker request side.
-    client: async_nats::Client,
-    /// Machine principal: the machine-runtime service side.
-    machine_client: async_nats::Client,
-}
-
-async fn test_nats() -> TestNats {
-    let nats =
-        ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("core_1")]).await;
-    let client = nats.controller.clone();
-    let machine_client = nats.machine_client(&machine_id("core_1")).await;
-
-    TestNats {
-        _nats: nats,
-        client,
-        machine_client,
-    }
 }
 
 struct DataplaneCleanup;

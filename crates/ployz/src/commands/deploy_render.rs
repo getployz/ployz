@@ -172,10 +172,6 @@ impl DeployTree {
                     *current = PlannedStage::Running(*stage);
                 }
             }
-            OperationEvent::DeployDataplanePrepared {
-                operation_id: _,
-                report: _,
-            } => {}
             OperationEvent::DeployImageAvailabilityVerified {
                 operation_id,
                 service_id,
@@ -350,7 +346,7 @@ impl DeployTree {
             | OperationEvent::CredentialGrantFailed { .. }
             | OperationEvent::NetworkRepairSubmitted { .. }
             | OperationEvent::NetworkRepairRunning { .. }
-            | OperationEvent::NetworkRepairDataplanePrepared { .. }
+            | OperationEvent::NetworkRepairDataplaneConverged { .. }
             | OperationEvent::NetworkRepairMachineFactsRefreshed { .. }
             | OperationEvent::NetworkRepairDnsRefreshConfirmed { .. }
             | OperationEvent::NetworkRepairCompleted { .. }
@@ -795,9 +791,6 @@ fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine
                         | DeployOperationFailure::PlanningFailed { .. }
                         | DeployOperationFailure::AutoDnsWithoutLease { .. }
                         | DeployOperationFailure::CertificatePending { .. }
-                        | DeployOperationFailure::DataplaneUnavailable { .. }
-                        | DeployOperationFailure::DataplanePrepareTimedOut { .. }
-                        | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
                         | DeployOperationFailure::RuntimeUnavailable { .. }
                         | DeployOperationFailure::ContainerStartFailed { .. }
                         | DeployOperationFailure::PreStartHookFailed { .. }
@@ -889,7 +882,6 @@ fn render_service_step(
                 };
             }
             let step_text = match tree.stage() {
-                Some(DeployRunningStage::PreparingDataplane) => "preparing dataplane",
                 Some(DeployRunningStage::EnsuringImages) => "ensuring images",
                 Some(DeployRunningStage::StartingContainers)
                 | Some(DeployRunningStage::WaitingForHealth)
@@ -934,8 +926,7 @@ fn render_route_line(
         Some(DeployRunningStage::RouteCutover) => "cutting over",
         Some(DeployRunningStage::ServingTargetCommit)
         | Some(DeployRunningStage::RemovingSupersededContainers) => "committing",
-        Some(DeployRunningStage::PreparingDataplane)
-        | Some(DeployRunningStage::EnsuringImages)
+        Some(DeployRunningStage::EnsuringImages)
         | Some(DeployRunningStage::StartingContainers)
         | Some(DeployRunningStage::WaitingForHealth)
         | None => "queued",
@@ -1015,14 +1006,13 @@ impl DeployTree {
 
 const fn stage_rank(stage: DeployRunningStage) -> u8 {
     match stage {
-        DeployRunningStage::PreparingDataplane => 0,
-        DeployRunningStage::EnsuringImages => 1,
-        DeployRunningStage::StartingContainers => 2,
-        DeployRunningStage::WaitingForHealth => 3,
-        DeployRunningStage::EnsuringCertificates => 4,
-        DeployRunningStage::RouteCutover => 5,
-        DeployRunningStage::ServingTargetCommit => 6,
-        DeployRunningStage::RemovingSupersededContainers => 7,
+        DeployRunningStage::EnsuringImages => 0,
+        DeployRunningStage::StartingContainers => 1,
+        DeployRunningStage::WaitingForHealth => 2,
+        DeployRunningStage::EnsuringCertificates => 3,
+        DeployRunningStage::RouteCutover => 4,
+        DeployRunningStage::ServingTargetCommit => 5,
+        DeployRunningStage::RemovingSupersededContainers => 6,
     }
 }
 

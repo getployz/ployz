@@ -132,8 +132,8 @@ fn machine_subjects_use_known_endpoint_and_event_tokens() {
         "plz.v1.rpc.machine.command.machine_7.volume.remove"
     );
     assert_eq!(
-        machine_service(&machine_id, MachineServiceEndpoint::DataplanePrepare),
-        "plz.v1.rpc.machine.command.machine_7.dataplane.prepare"
+        machine_service(&machine_id, MachineServiceEndpoint::DataplanePublicKey),
+        "plz.v1.rpc.machine.query.machine_7.dataplane.public_key"
     );
     assert_eq!(
         machine_facts(&machine_id),

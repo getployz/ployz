@@ -193,6 +193,14 @@ const MIGRATIONS: &[&str] = &[
         WHERE idempotency_key IN (SELECT idempotency_key FROM legacy_machine_adds);
     DROP TABLE legacy_machine_adds;
     ",
+    "
+    CREATE TABLE machine_dataplane_staging (
+        id           INTEGER PRIMARY KEY CHECK (id = 1),
+        operation_id TEXT NOT NULL UNIQUE,
+        machine_id   TEXT NOT NULL UNIQUE,
+        json         TEXT NOT NULL
+    );
+    ",
 ];
 
 /// A cloneable handle to the core database. Clones share one connection and one
@@ -464,6 +472,7 @@ mod tests {
             "machines",
             "managed_lease_intent",
             "managed_lease_applied_addresses",
+            "machine_dataplane_staging",
             "operation_events",
             "operations",
             "deploy_reservations",
@@ -489,7 +498,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("ployz-core.db");
         let conn = Connection::open(&path).expect("open legacy db");
-        let Some(legacy_migrations) = MIGRATIONS.get(..MIGRATIONS.len() - 1) else {
+        let Some(legacy_migrations) = MIGRATIONS.get(..MIGRATIONS.len() - 2) else {
             panic!("endpoint-subnet migration must follow an existing schema");
         };
         for migration in legacy_migrations {
@@ -509,7 +518,7 @@ mod tests {
             ),
         )
         .expect("insert legacy submission");
-        conn.execute_batch(&format!("PRAGMA user_version = {}", MIGRATIONS.len() - 1))
+        conn.execute_batch(&format!("PRAGMA user_version = {}", MIGRATIONS.len() - 2))
             .expect("set legacy version");
         drop(conn);
 

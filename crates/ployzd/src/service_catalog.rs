@@ -166,10 +166,6 @@ pub fn machine_role_service(machine_id: &MachineId) -> NatsServiceSpec {
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::Inspect),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::FactsGet),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::FactsRefresh),
-            machine_endpoint_spec(
-                machine_id,
-                MachineServiceEndpoint::ContainerEnsureEndpointNetwork,
-            ),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerInspect),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerResolveImage),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerRun),
@@ -178,9 +174,8 @@ pub fn machine_role_service(machine_id: &MachineId) -> NatsServiceSpec {
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerStop),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerRemove),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::VolumeRemove),
-            machine_endpoint_spec(machine_id, MachineServiceEndpoint::DataplanePrepare),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::DataplanePublicKey),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::DataplaneStatus),
-            machine_endpoint_spec(machine_id, MachineServiceEndpoint::DataplaneProbeMtu),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::SubstrateUpdate),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::SubstrateReport),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::LogsTail),
@@ -253,9 +248,6 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         MachineServiceEndpoint::FactsRefresh => "machine.facts.refresh",
         MachineServiceEndpoint::DnsResolve => "machine.dns.resolve",
         MachineServiceEndpoint::DnsStatus => "machine.dns.status",
-        MachineServiceEndpoint::ContainerEnsureEndpointNetwork => {
-            "machine.container.ensure_endpoint_network"
-        }
         MachineServiceEndpoint::ContainerInspect => "machine.container.inspect",
         MachineServiceEndpoint::ContainerResolveImage => "machine.container.resolve_image",
         MachineServiceEndpoint::ContainerRun => "machine.container.run",
@@ -264,9 +256,8 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         MachineServiceEndpoint::ContainerStop => "machine.container.stop",
         MachineServiceEndpoint::ContainerRemove => "machine.container.remove",
         MachineServiceEndpoint::VolumeRemove => "machine.volume.remove",
-        MachineServiceEndpoint::DataplanePrepare => "machine.dataplane.prepare",
+        MachineServiceEndpoint::DataplanePublicKey => "machine.dataplane.public_key",
         MachineServiceEndpoint::DataplaneStatus => "machine.dataplane.status",
-        MachineServiceEndpoint::DataplaneProbeMtu => "machine.dataplane.probe_mtu",
         MachineServiceEndpoint::SubstrateUpdate => "machine.substrate.update",
         MachineServiceEndpoint::SubstrateReport => "machine.substrate.report",
         MachineServiceEndpoint::LogsTail => "machine.logs.tail",

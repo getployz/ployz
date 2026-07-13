@@ -1,35 +1,31 @@
-use ployz_sdk_types::{
-    OperationEvent, PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport,
-    PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady,
-};
+use ployz_sdk_types::{DataplaneProjection, OperationEvent};
 
 #[test]
-fn sdk_exports_network_repair_dataplane_prepared_event() {
-    let report = PloyzNativeMeshPrepareReport::for_targets(
-        &[ployz_sdk_types::MachineId::try_new("machine_a").expect("valid machine id")],
-        [PloyzNativeMeshMachineReady {
-            machine_id: ployz_sdk_types::MachineId::try_new("machine_a").expect("valid machine id"),
-            ready: PloyzNativeMeshReady {
-                wireguard: WireGuardReady {
-                    public_key: WireGuardPublicKey::try_new("public-key-a")
-                        .expect("valid wireguard public key"),
-                    evidence: Vec::new(),
-                },
-                ebpf_forwarding: ployz_sdk_types::EbpfForwardingReady {
-                    evidence: Vec::new(),
-                },
-            },
-        }],
-    )
-    .expect("valid dataplane report");
-    let event = OperationEvent::NetworkRepairDataplanePrepared {
+fn sdk_exports_network_repair_dataplane_converged_event() {
+    let revision = DataplaneProjection::try_new(Vec::new(), None)
+        .expect("empty projection")
+        .declared_revision()
+        .clone();
+    let event = OperationEvent::NetworkRepairDataplaneConverged {
         operation_id: ployz_sdk_types::OperationId::try_new("op_network_repair")
             .expect("valid operation id"),
-        report,
+        revision: revision.clone(),
+        machine_ids: vec![
+            ployz_sdk_types::MachineId::try_new("machine_a").expect("valid machine id"),
+        ],
     };
 
+    let json = serde_json::to_value(event).expect("event serializes");
     assert_eq!(
-        serde_json::to_string(&event).expect("event serializes"),
-        r#"{"event":"network_repair_dataplane_prepared","operation_id":"op_network_repair","report":{"machines":[{"machine_id":"machine_a","wireguard":{"public_key":"public-key-a","evidence":[]},"ebpf_forwarding":{"evidence":[]}}]}}"#
+        json.get("event"),
+        Some(&serde_json::json!("network_repair_dataplane_converged"))
+    );
+    assert_eq!(
+        json.get("revision"),
+        Some(&serde_json::json!(revision.as_str()))
+    );
+    assert_eq!(
+        json.get("machine_ids"),
+        Some(&serde_json::json!(["machine_a"]))
     );
 }

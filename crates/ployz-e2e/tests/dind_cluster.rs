@@ -26,7 +26,7 @@ mod support;
 use futures_util::StreamExt;
 use ployz::compose::{ComposeInput, UnsupportedFieldMode, parse_deploy_file};
 use ployz::image_push::{prepare_deploy_images, push_local_image};
-use ployz_core::dataplane::{DEFAULT_WIREGUARD_LISTEN_PORT, DataplaneMember};
+use ployz_core::dataplane::DEFAULT_WIREGUARD_LISTEN_PORT;
 use ployz_core::deploy::{
     ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerMountPath,
     ContainerResourceLimits, ContainerRestartPolicy, ContainerRuntimeSpec, DependencyCondition,
@@ -37,7 +37,7 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::MachineId;
 use ployz_core::machine::{
-    ConnectivityProofUnreachablePeer, MachineAddFailure, MachineCredentialProvisioningStep,
+    DataplaneProjectionAdmissionFailure, MachineAddFailure, MachineCredentialProvisioningStep,
 };
 use ployz_core::ops::{
     ArtifactUnavailableReason, DeployCompletionOutcome, DeployOperationFailure,
@@ -952,9 +952,8 @@ async fn scenario_machine_add_rejects_unreachable_overlay_peer() {
             "unreachable edge join unexpectedly succeeded: {join:?}"
         );
 
-        // The proof waits the full handshake budget before the join reports its
-        // failure, so poll the operation until it records the terminal
-        // connectivity-proof failure rather than reading once.
+        // Admission waits the full handshake budget before the join reports its
+        // failure, so poll the operation until it records the terminal result.
         let deadline = Instant::now() + Duration::from_secs(60);
         let evidence = loop {
             let status = operation_status(&core, &operation_id).await;
@@ -962,25 +961,25 @@ async fn scenario_machine_add_rejects_unreachable_overlay_peer() {
                 panic!("machine add is not a machine add: {status:?}");
             };
             if let MachineAddOperationState::Failed {
-                failure: MachineAddFailure::ConnectivityProofFailed { evidence },
+                failure: MachineAddFailure::DataplaneProjectionAdmissionFailed { evidence },
             } = &state
             {
                 break evidence.clone();
             }
             assert!(
                 Instant::now() < deadline,
-                "unreachable machine add did not fail connectivity proof: {state:?}"
+                "unreachable machine add did not fail projection admission: {state:?}"
             );
             tokio::time::sleep(Duration::from_millis(500)).await;
         };
-        let core_member = DataplaneMember::default_for_machine(machine_id("core_1"));
-        assert_eq!(
-            evidence.unreachable_peers(),
-            [ConnectivityProofUnreachablePeer {
-                machine_id: machine_id("core_1"),
-                gateway: core_member.endpoint_subnet.bridge_gateway_ipv4(),
-            }]
-        );
+        assert!(matches!(
+            evidence.reason,
+            DataplaneProjectionAdmissionFailure::PeerHandshakeNever { peer_machine_id }
+                | DataplaneProjectionAdmissionFailure::PeerHandshakeStale {
+                    peer_machine_id,
+                    ..
+                } if peer_machine_id == machine_id("core_1")
+        ));
     })
     .await;
 

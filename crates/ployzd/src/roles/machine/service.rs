@@ -3,11 +3,10 @@
 use super::containers::{
     MachineContainerState, handle_container_inspect, handle_container_remove,
     handle_container_resolve_image, handle_container_restart, handle_container_run,
-    handle_container_run_hook, handle_container_stop, handle_ensure_endpoint_network,
-    handle_volume_remove,
+    handle_container_run_hook, handle_container_stop, handle_volume_remove,
 };
 use super::dataplane::{
-    handle_dataplane_mtu_probe, handle_dataplane_prepare, handle_dataplane_status,
+    MachineDataplaneStatusState, handle_dataplane_public_key, handle_dataplane_status,
 };
 use super::facts::{
     MachineEndpointCache, MachineFactsState, handle_facts_get, handle_facts_refresh,
@@ -19,20 +18,22 @@ use super::images::{
 use super::logs::handle_logs_tail;
 use super::substrate::{handle_substrate_report, handle_substrate_update};
 use crate::adapters::host_dataplane::dataplane_status_budget;
+use crate::roles::machine::projection::{
+    MachineProjectionState, RunningProjectionTask, start_projection_task,
+};
 use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
 use crate::service_catalog::{machine_endpoint_spec, machine_role_service_base};
 use ployz_core::dataplane::{
-    OVERLAY_CONNECTIVITY_PROOF_BUDGET, PloyzNativeMeshReady, WireGuardEbpfEndpointRoute,
-    WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey, WireGuardReady,
+    PloyzNativeMeshReady, WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer,
+    WireGuardPublicKey, WireGuardReady,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::subjects::MachineServiceEndpoint;
 use ployz_nats::service_runtime::{
     EndpointExecutionPolicy, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
-    RunningNatsService, start_nats_service,
+    NatsServiceShutdownError, RunningNatsService, start_nats_service,
 };
 use std::future::Future;
-use std::net::Ipv4Addr;
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
@@ -42,11 +43,54 @@ const PRE_START_HOOK_ENDPOINT_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 
 
 pub use super::facts::MachineFactsReadError;
 
-const DATAPLANE_REQUEST_TIMEOUT: Duration =
-    OVERLAY_CONNECTIVITY_PROOF_BUDGET.saturating_add(Duration::from_secs(15));
 const DATAPLANE_STATUS_ENDPOINT_TIMEOUT: Duration =
     dataplane_status_budget(ployz_core::dataplane::NetworkStatusMode::ProbePathMtu)
         .saturating_add(Duration::from_secs(10));
+
+pub struct RunningMachineRoleRuntime {
+    service: RunningNatsService,
+    projection: RunningProjectionTask,
+}
+
+impl RunningMachineRoleRuntime {
+    pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
+        self.projection.shutdown().await;
+        self.service.shutdown().await
+    }
+}
+
+pub async fn start_machine_role_runtime<R, P, L>(
+    client: ployz_nats::service_runtime::NatsClient,
+    machine_id: MachineId,
+    runner: R,
+    preparer: P,
+    log_reader: L,
+) -> Result<RunningMachineRoleRuntime, MachineServiceError>
+where
+    R: Clone + MachineContainerRunner + Send + Sync + 'static,
+    P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
+    L: Clone + MachineLogReader + Send + Sync + 'static,
+{
+    let projection_state = MachineProjectionState::new();
+    let service = start_machine_role_service_with_endpoint_cache_and_image(
+        client.clone(),
+        machine_id.clone(),
+        runner.clone(),
+        preparer.clone(),
+        log_reader,
+        MachineEndpointCache::default(),
+        MachineRoleProjectionServices {
+            image_state: None,
+            projection_state: projection_state.clone(),
+        },
+    )
+    .await?;
+    let projection = start_projection_task(client, machine_id, runner, preparer, projection_state);
+    Ok(RunningMachineRoleRuntime {
+        service,
+        projection,
+    })
+}
 
 pub async fn start_machine_role_service<R, P, L>(
     client: ployz_nats::service_runtime::NatsClient,
@@ -91,7 +135,10 @@ where
         preparer,
         log_reader,
         endpoint_cache,
-        None,
+        MachineRoleProjectionServices {
+            image_state: None,
+            projection_state: MachineProjectionState::new(),
+        },
     )
     .await
 }
@@ -103,13 +150,17 @@ pub(crate) async fn start_machine_role_service_with_endpoint_cache_and_image<R, 
     preparer: P,
     log_reader: L,
     endpoint_cache: MachineEndpointCache,
-    image_state: Option<AvailableImageService>,
+    projection_services: MachineRoleProjectionServices,
 ) -> Result<RunningNatsService, MachineServiceError>
 where
     R: Clone + MachineContainerRunner + Send + Sync + 'static,
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
+    let MachineRoleProjectionServices {
+        image_state,
+        projection_state,
+    } = projection_services;
     let spec = machine_role_service_base(&machine_id);
     let mutation_state = MachineContainerState {
         runner: runner.clone(),
@@ -141,14 +192,6 @@ where
             client: client.clone(),
         },
         handle_facts_refresh,
-    )
-    .await?;
-    bind_machine_endpoint(
-        &mut runtime,
-        &machine_id,
-        MachineServiceEndpoint::ContainerEnsureEndpointNetwork,
-        runner.clone(),
-        handle_ensure_endpoint_network,
     )
     .await?;
     bind_machine_endpoint(
@@ -223,24 +266,20 @@ where
     bind_machine_endpoint(
         &mut runtime,
         &machine_id,
-        MachineServiceEndpoint::DataplaneProbeMtu,
+        MachineServiceEndpoint::DataplanePublicKey,
         preparer.clone(),
-        handle_dataplane_mtu_probe,
-    )
-    .await?;
-    bind_machine_endpoint(
-        &mut runtime,
-        &machine_id,
-        MachineServiceEndpoint::DataplanePrepare,
-        preparer.clone(),
-        handle_dataplane_prepare,
+        handle_dataplane_public_key,
     )
     .await?;
     bind_machine_endpoint(
         &mut runtime,
         &machine_id,
         MachineServiceEndpoint::DataplaneStatus,
-        preparer,
+        MachineDataplaneStatusState {
+            runner: runner.clone(),
+            preparer,
+            projection: projection_state,
+        },
         handle_dataplane_status,
     )
     .await?;
@@ -331,9 +370,7 @@ where
 
 fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutionPolicy {
     let mut policy = EndpointExecutionPolicy::default();
-    if endpoint == MachineServiceEndpoint::DataplanePrepare {
-        policy.request_timeout = DATAPLANE_REQUEST_TIMEOUT;
-    } else if endpoint == MachineServiceEndpoint::DataplaneStatus {
+    if endpoint == MachineServiceEndpoint::DataplaneStatus {
         policy.request_timeout = DATAPLANE_STATUS_ENDPOINT_TIMEOUT;
     }
     policy
@@ -360,16 +397,6 @@ pub trait MachinePloyzNativeMeshPreparer {
         endpoint_routes: &[WireGuardEbpfEndpointRoute],
         peers: &[WireGuardPeer],
     ) -> impl Future<Output = Result<WireGuardReady, WireGuardEbpfPrepareError>> + Send;
-
-    fn probe_overlay(
-        &self,
-        peers: &[WireGuardPublicKey],
-    ) -> impl Future<Output = Result<Vec<WireGuardPublicKey>, WireGuardEbpfPrepareError>> + Send;
-
-    fn probe_link_mtu(
-        &self,
-        peer_gateway: Ipv4Addr,
-    ) -> impl Future<Output = Result<u32, WireGuardEbpfPrepareError>> + Send;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -378,16 +405,14 @@ pub enum MachineServiceError {
     Nats(NatsServiceRuntimeError),
 }
 
+pub(crate) struct MachineRoleProjectionServices {
+    pub image_state: Option<AvailableImageService>,
+    pub projection_state: MachineProjectionState,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn dataplane_endpoint_timeout_covers_the_overlay_probe_budget() {
-        let policy = machine_endpoint_policy(MachineServiceEndpoint::DataplanePrepare);
-
-        assert!(policy.request_timeout > OVERLAY_CONNECTIVITY_PROOF_BUDGET);
-    }
 
     #[test]
     fn dataplane_status_endpoint_timeout_covers_snapshot_and_probe_budgets() {

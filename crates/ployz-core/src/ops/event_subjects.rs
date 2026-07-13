@@ -19,7 +19,6 @@ impl OperationEvent {
             }
             Self::DeployPlanCreated { .. } => "deploy.plan.created".to_owned(),
             Self::DeployRunning { stage, .. } => format!("deploy.running.{}", stage.as_subject()),
-            Self::DeployDataplanePrepared { .. } => "deploy.dataplane.prepared".to_owned(),
             Self::DeployImageAvailabilityVerified {
                 service_id, seed, ..
             } => format!(
@@ -79,8 +78,8 @@ impl OperationEvent {
             Self::NetworkRepairRunning { stage, .. } => {
                 format!("network.repair.running.{}", stage.as_subject())
             }
-            Self::NetworkRepairDataplanePrepared { .. } => {
-                "network.repair.dataplane.prepared".to_owned()
+            Self::NetworkRepairDataplaneConverged { .. } => {
+                "network.repair.dataplane.converged".to_owned()
             }
             Self::NetworkRepairMachineFactsRefreshed { .. } => {
                 "network.repair.machine_facts.refreshed".to_owned()

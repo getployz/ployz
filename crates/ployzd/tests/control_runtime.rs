@@ -32,7 +32,9 @@ use ployz_core::subjects::{
 };
 use ployz_nats::connect::connect_authenticated;
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
-use ployz_nats::service_runtime::{NatsServiceResponse, RunningNatsService, start_nats_service};
+use ployz_nats::service_runtime::{
+    NatsServiceResponse, RunningNatsService, request_json, start_nats_service,
+};
 use ployz_sdk_types::{
     DeployReserveRequest, DeploySubmitRequest, InitFirstMachineActivateRequest, MachineAddError,
     MachineAddRequest, MachineInspectRequest, MachineJoinReportOutcome, MachineJoinReportRequest,
@@ -48,11 +50,12 @@ use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use ployzd::operation_api::admission::MachineAddBootstrapConfig;
 use ployzd::roles::gateway::process::start_gateway_process_with_client;
 use ployzd::roles::machine::protocol::{
-    MachineFactsGetRpcOk, MachineFactsGetRpcResponse, MachineSubstrateReportRpcOk,
+    MachineDataplaneStatusRpcRequest, MachineDataplaneStatusRpcResponse, MachineFactsGetRpcOk,
+    MachineFactsGetRpcResponse, MachineRpcResponse, MachineSubstrateReportRpcOk,
     MachineSubstrateReportRpcResponse, MachineSubstrateUpdateRpcOk,
     MachineSubstrateUpdateRpcResponse,
 };
-use ployzd::roles::machine::service::start_machine_role_service;
+use ployzd::roles::machine::service::start_machine_role_runtime;
 use ployzd::service_catalog::machine_role_service;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
@@ -254,15 +257,8 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
     let redeemed = redeem_when_ready(&join_api, &accepted.join_token).await;
     assert_eq!(redeemed.machine_id, machine_id("machine_2"));
 
-    join_api
-        .machine_join_report(&MachineJoinReportRequest {
-            join_token: accepted.join_token.clone(),
-            outcome: MachineJoinReportOutcome::Completed,
-        })
-        .await
-        .expect("join completion reports");
     // The minted per-machine seed is a working Machine credential: connect
-    // with it and publish this machine's facts.
+    // with it and converge the target dataplane before reporting completion.
     let minted_seed = ployz_core::nats_config::NatsUserSeed::try_new(
         redeemed.secret_delivery.nats_credentials.secret(),
     )
@@ -278,6 +274,40 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
     )
     .await
     .expect("minted machine credential connects");
+    let runner = ObservingContainerRunner::new(machine_id("machine_2"));
+    let machine_runtime = start_machine_role_runtime(
+        minted_client.clone(),
+        machine_id("machine_2"),
+        runner.clone(),
+        ReadyWireGuardEbpf::for_machine(&machine_id("machine_2")),
+        runner,
+    )
+    .await
+    .expect("machine runtime starts");
+    join_api
+        .machine_join_report(&MachineJoinReportRequest {
+            join_token: accepted.join_token.clone(),
+            outcome: MachineJoinReportOutcome::Completed,
+        })
+        .await
+        .expect("join completion reports");
+    wait_for_dataplane_projection(&nats, &machine_id("machine_2")).await;
+    let status =
+        wait_for_terminal_status(&api, &operation_id("op_machine"), Duration::from_secs(4)).await;
+    assert!(
+        matches!(
+            status,
+            OperationStatus::MachineAdd {
+                state: ployz_core::ops::MachineAddOperationState::Completed,
+                ..
+            }
+        ),
+        "expected machine add to complete, got {status:?}"
+    );
+    machine_runtime
+        .shutdown()
+        .await
+        .expect("machine runtime shuts down");
     let _facts = start_facts_subscription(
         minted_client.clone(),
         machine_id("machine_2"),
@@ -515,15 +545,16 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         .await
         .expect("active machine stores");
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_role_service(
+    let machine_runtime = start_machine_role_runtime(
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
-        ReadyWireGuardEbpf,
+        ReadyWireGuardEbpf::for_machine(&machine_id("machine_a")),
         runner.clone(),
     )
     .await
     .expect("machine runtime starts");
+    wait_for_dataplane_projection(&nats, &machine_id("machine_a")).await;
     let api = nats.api();
     let credential = RegistryCredential::try_basic("alice", "deploy-only-secret")
         .expect("valid registry credential");
@@ -668,15 +699,16 @@ async fn control_runtime_records_typed_planning_failure_when_tag_cannot_resolve(
         .expect("active machine stores");
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
     runner.fail_registry_resolution("registry denied the manifest");
-    let machine_runtime = start_machine_role_service(
+    let machine_runtime = start_machine_role_runtime(
         machine_client,
         machine_id("machine_a"),
         runner.clone(),
-        ReadyWireGuardEbpf,
+        ReadyWireGuardEbpf::for_machine(&machine_id("machine_a")),
         runner.clone(),
     )
     .await
     .expect("machine runtime starts");
+    wait_for_dataplane_projection(&nats, &machine_id("machine_a")).await;
     let api = nats.api();
     let request =
         reserved_deploy_request(&api, "idem_resolution_failure", deploy_target("svc_api")).await;
@@ -828,15 +860,16 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         .await
         .expect("active machine stores");
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_role_service(
+    let machine_runtime = start_machine_role_runtime(
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
-        ReadyWireGuardEbpf,
+        ReadyWireGuardEbpf::for_machine(&machine_id("machine_a")),
         runner.clone(),
     )
     .await
     .expect("machine runtime starts");
+    wait_for_dataplane_projection(&nats, &machine_id("machine_a")).await;
     let gateway_client = nats.machine_client(&machine_id("machine_gateway")).await;
     let gateway = start_gateway_process_with_client(
         gateway_client,
@@ -946,6 +979,36 @@ async fn machine_roster(config: &ployzd::config::ControlProcessConfig) -> Machin
     )
 }
 
+async fn wait_for_dataplane_projection(nats: &TestNats, machine_id: &MachineId) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let response = request_json::<_, MachineDataplaneStatusRpcResponse>(
+            &nats.connected.controller,
+            machine_service(machine_id, MachineServiceEndpoint::DataplaneStatus),
+            &MachineDataplaneStatusRpcRequest {
+                mode: ployz_core::dataplane::NetworkStatusMode::Snapshot,
+            },
+            Duration::from_millis(250),
+        )
+        .await;
+        if matches!(
+            response,
+            Ok(MachineRpcResponse::Ok(ok))
+                if matches!(
+                    ok.value.projection.testimony,
+                    ployz_core::dataplane::DataplaneProjectionTestimony::Applied { .. }
+                )
+        ) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "machine {machine_id:?} did not converge its dataplane projection"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 fn active_machine(value: &str) -> ActiveMachineState {
     ActiveMachineState {
         control_endpoints: Vec::new(),
@@ -957,6 +1020,10 @@ fn active_machine(value: &str) -> ActiveMachineState {
         roles: ployz_core::roles::InstallRolePolicy::install_all(),
         endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
             .expect("valid endpoint subnet"),
+        wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+            "public-{value}"
+        ))
+        .expect("public key"),
     }
 }
 

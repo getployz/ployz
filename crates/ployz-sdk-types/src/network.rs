@@ -88,7 +88,7 @@ pub struct NetworkStatusMachine {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NetworkDataplaneTestimony {
-    Answered { value: MachineDataplaneStatus },
+    Answered { value: Box<MachineDataplaneStatus> },
     NoAnswer,
     ReadFailed { message: FailureMessage },
     WrongResponder { actual_machine_id: MachineId },

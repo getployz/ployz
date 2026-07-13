@@ -240,9 +240,8 @@ impl DeployContainer {
     }
 }
 
-pub struct DeployExecutionPorts<'a, R, D, N, H, C, S> {
+pub struct DeployExecutionPorts<'a, R, N, H, C, S> {
     pub recorder: &'a mut R,
-    pub dataplane: &'a mut D,
     pub machine_runtime: &'a mut N,
     pub health_checker: &'a mut H,
     pub certificate_provisioner: &'a mut C,

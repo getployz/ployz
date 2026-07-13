@@ -1,7 +1,6 @@
 //! Operator-facing operation service handlers.
 
 pub mod admission;
-mod connectivity_proof;
 mod core_replace;
 mod error_map;
 mod first_machine;
@@ -33,6 +32,7 @@ use crate::intent::machine_roster::MachineRosterStore;
 use crate::intent::service::{NatsIntentReader, publish_pending_machine_joins};
 use crate::operation_api::admission::OperationControllers;
 use crate::operations::credential_grant::CredentialGrantOperation;
+use crate::operations::dataplane_projection_admission::DataplaneProjectionAdmissionOperation;
 use crate::operations::deploy::driver::DeployOperationDriver;
 use crate::operations::machine_lifecycle::MachineLifecycleOperation;
 use crate::operations::machine_update::MachineUpdateOperation;
@@ -69,6 +69,7 @@ pub struct OperationApiHandlers {
     volume_remove: Arc<VolumeRemoveOperation>,
     machine_update: Arc<MachineUpdateOperation>,
     machine_lifecycle: Arc<MachineLifecycleOperation>,
+    dataplane_projection_admission: Arc<DataplaneProjectionAdmissionOperation>,
     machine_mint: Arc<MachineCredentialMint>,
     credential_grant: Arc<CredentialGrantOperation>,
     dataplane_endpoint_supernet: MachineEndpointSupernet,
@@ -126,6 +127,11 @@ impl OperationApiHandlers {
         );
         let logs_query = LogsQueryService::new(intent_reader.clone(), facts_reader, logs_tailer);
         let lease_intent = LeaseIntentStore::new(core_store.clone());
+        let dataplane_projection_admission = Arc::new(DataplaneProjectionAdmissionOperation::new(
+            controllers.clone(),
+            intent_change_client.clone(),
+            intent_reader.clone(),
+        ));
         Self {
             controllers,
             deploy_driver: Arc::new(deploy_driver),
@@ -135,6 +141,7 @@ impl OperationApiHandlers {
             volume_remove: Arc::new(volume_remove),
             machine_update: Arc::new(machine_update),
             machine_lifecycle: Arc::new(machine_lifecycle),
+            dataplane_projection_admission,
             machine_mint: Arc::new(machine_mint),
             credential_grant: Arc::new(credential_grant),
             dataplane_endpoint_supernet,

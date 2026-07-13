@@ -3,6 +3,7 @@
 mod fixtures;
 #[path = "deploy_runtime_nats/managed_certificate.rs"]
 mod managed_certificate;
+mod support;
 
 use fixtures::*;
 use futures_util::StreamExt;
@@ -10,10 +11,12 @@ use ployz_core::deploy::{
     DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, ReplicaCount,
 };
 use ployz_core::install::MachineBootstrapUrl;
+use ployz_core::machine::MachineName;
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, OperationStatus,
 };
+use ployz_core::state::{ActiveMachineState, MachineLifecycle};
 use ployz_core::subjects::{INTENT_CHANGED, MachineServiceEndpoint, machine_service};
 use ployz_test_support::ids::idempotency_key;
 use ployzd::certificate::{CertificateManager, CertificateManagerConfig};
@@ -27,17 +30,14 @@ use ployzd::lease::{LeaseClient, LeaseWorkerUrl};
 use ployzd::operation_api::admission::{
     DeploySubmitCommand, MachineAddBootstrapConfig, OperationControllers, SubmitCommandError,
 };
+use ployzd::operations::deploy::ManagedCertificateWaitPolicy;
 use ployzd::operations::deploy::driver::{
     DeployOperationDriver, DeployOperationPorts, DeployOperationRunError, DeployOperationStores,
     run_deploy_operation,
 };
-use ployzd::operations::deploy::{DeployMachineCandidates, ManagedCertificateWaitPolicy};
 use ployzd::operations::log::{OperationRepository, SubmitOperationError};
 use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineFactsReader};
-use ployzd::roles::machine::protocol::{
-    MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcResponse,
-    MachineFactsGetRpcOk, MachineFactsGetRpcResponse,
-};
+use ployzd::roles::machine::protocol::{MachineFactsGetRpcOk, MachineFactsGetRpcResponse};
 use ployzd::tasks::TaskRegistry;
 use std::path::Path;
 use std::time::Duration;
@@ -45,7 +45,12 @@ use std::time::Duration;
 #[tokio::test]
 async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     let nats = test_nats().await;
-    let _facts = start_facts_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
+    let _facts = start_facts_subscription(
+        nats.machine_a.clone(),
+        nats.client.clone(),
+        machine_id("machine_a"),
+    )
+    .await;
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     let controllers = operation_controllers(nats.client.clone()).await;
@@ -54,7 +59,6 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
         .submit_deploy(deploy_submit_command(&controllers, deploy_request).await)
         .await
         .expect("deploy operation accepted");
-    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
     let mut certificates = RecordingCertificates::successful();
@@ -73,7 +77,6 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
 
     let outcome = run_deploy_operation(
         accepted,
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
@@ -85,7 +88,6 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
         DeployOperationPorts {
             facts_reader: &facts_reader,
             intent_reader: &intent_reader,
-            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             certificate_provisioner: &mut certificates,
@@ -123,25 +125,34 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
             .namespace_revision_entry_id,
         resolved_entry_id
     );
-    assert!(matches!(
-        controllers
-            .repository()
-            .get(&operation_id("op_123"))
-            .await
-            .expect("status reads"),
-        Some(OperationStatus::Deploy {
-            state: DeployOperationState::Completed {
-                outcome: DeployCompletionOutcome::Completed,
-            },
-            ..
-        })
-    ));
+    let status = controllers
+        .repository()
+        .get(&operation_id("op_123"))
+        .await
+        .expect("status reads");
+    assert!(
+        matches!(
+            status,
+            Some(OperationStatus::Deploy {
+                state: DeployOperationState::Completed {
+                    outcome: DeployCompletionOutcome::Completed,
+                },
+                ..
+            })
+        ),
+        "unexpected operation status: {status:?}"
+    );
 }
 
 #[tokio::test]
 async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
     let nats = test_nats().await;
-    let _facts = start_facts_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
+    let _facts = start_facts_subscription(
+        nats.machine_a.clone(),
+        nats.client.clone(),
+        machine_id("machine_a"),
+    )
+    .await;
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     let controllers = operation_controllers(nats.client.clone()).await;
@@ -149,14 +160,12 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
         .submit_deploy(deploy_submit_command(&controllers, deploy_request(1)).await)
         .await
         .expect("deploy operation accepted");
-    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
     let mut certificates = RecordingCertificates::successful();
 
     run_deploy_operation(
         accepted,
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
@@ -168,7 +177,6 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
         DeployOperationPorts {
             facts_reader: &facts_reader,
             intent_reader: &intent_reader,
-            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             certificate_provisioner: &mut certificates,
@@ -206,7 +214,12 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
 #[tokio::test]
 async fn health_failure_records_failed_operation_without_committing_active_state() {
     let nats = test_nats().await;
-    let _facts = start_facts_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
+    let _facts = start_facts_subscription(
+        nats.machine_a.clone(),
+        nats.client.clone(),
+        machine_id("machine_a"),
+    )
+    .await;
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     let controllers = operation_controllers(nats.client.clone()).await;
@@ -215,14 +228,12 @@ async fn health_failure_records_failed_operation_without_committing_active_state
         .submit_deploy(deploy_submit_command(&controllers, deploy_request).await)
         .await
         .expect("deploy operation accepted");
-    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::unhealthy("machine_a", "ctr_1");
     let mut certificates = RecordingCertificates::successful();
 
     let error = run_deploy_operation(
         accepted,
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
@@ -234,7 +245,6 @@ async fn health_failure_records_failed_operation_without_committing_active_state
         DeployOperationPorts {
             facts_reader: &facts_reader,
             intent_reader: &intent_reader,
-            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             certificate_provisioner: &mut certificates,
@@ -253,12 +263,13 @@ async fn health_failure_records_failed_operation_without_committing_active_state
             .serving_target_entries
             .is_empty()
     );
+    let health_status = controllers
+        .repository()
+        .get(&operation_id("op_123"))
+        .await
+        .expect("status reads");
     assert!(matches!(
-        controllers
-            .repository()
-            .get(&operation_id("op_123"))
-            .await
-            .expect("status reads"),
+        &health_status,
         Some(OperationStatus::Deploy {
             state:
                 DeployOperationState::Failed {
@@ -269,14 +280,19 @@ async fn health_failure_records_failed_operation_without_committing_active_state
                         },
                 },
             ..
-        }) if retained_artifacts == vec![retained_container("machine_a", "ctr_1")]
+        }) if *retained_artifacts == vec![retained_container("machine_a", "ctr_1")]
     ));
 }
 
 #[tokio::test]
 async fn auto_dns_without_lease_fails_before_runtime_work_with_guidance() {
     let nats = test_nats().await;
-    let _facts = start_facts_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
+    let _facts = start_facts_subscription(
+        nats.machine_a.clone(),
+        nats.client.clone(),
+        machine_id("machine_a"),
+    )
+    .await;
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     let controllers = operation_controllers(nats.client.clone()).await;
@@ -294,14 +310,12 @@ async fn auto_dns_without_lease_fails_before_runtime_work_with_guidance() {
         .submit_deploy(deploy_submit_command(&controllers, request).await)
         .await
         .expect("deploy operation accepted");
-    let mut dataplane = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_should_not_start"]);
     let mut health = RecordingHealth::healthy();
     let mut certificates = RecordingCertificates::successful();
 
     let error = run_deploy_operation(
         accepted,
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
@@ -313,7 +327,6 @@ async fn auto_dns_without_lease_fails_before_runtime_work_with_guidance() {
         DeployOperationPorts {
             facts_reader: &facts_reader,
             intent_reader: &intent_reader,
-            dataplane: &mut dataplane,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             certificate_provisioner: &mut certificates,
@@ -371,7 +384,6 @@ async fn duplicate_driver_execution_does_not_release_the_original_namespace_lock
             managed_certificate_wait: ManagedCertificateWaitPolicy::production(),
             controllers: controllers.clone(),
         },
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
         CertificateManager::new(
             CoreStore::open_in_memory()
                 .await
@@ -416,7 +428,6 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
         .submit_deploy(deploy_submit_command(&controllers, resolved_deploy_request(1)).await)
         .await
         .expect("deploy operation accepted");
-    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = NatsMachineContainerRuntime::new(nats.client.clone())
         .with_request_timeout(Duration::from_millis(200));
     let mut health = RecordingHealth::healthy();
@@ -424,7 +435,6 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
 
     let error = run_deploy_operation(
         accepted,
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_missing")]),
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
@@ -436,7 +446,6 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
         DeployOperationPorts {
             facts_reader: &facts_reader,
             intent_reader: &intent_reader,
-            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             certificate_provisioner: &mut certificates,
@@ -455,34 +464,45 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
             .serving_target_entries
             .is_empty()
     );
-    assert!(matches!(
-        controllers
-            .repository()
-            .get(&operation_id("op_123"))
-            .await
-            .expect("status reads"),
-        Some(OperationStatus::Deploy {
-            state:
-                DeployOperationState::Failed {
-                    failure:
-                        DeployOperationFailure::NoUsableMachines { reasons },
+    let missing_status = controllers
+        .repository()
+        .get(&operation_id("op_123"))
+        .await
+        .expect("status reads");
+    assert!(
+        matches!(
+            &missing_status,
+            Some(OperationStatus::Deploy {
+                state:
+                    DeployOperationState::Failed {
+                        failure:
+                            DeployOperationFailure::NoUsableMachines { reasons },
+                    },
+                ..
+            }) if *reasons == vec![
+                ployz_core::ops::UnusableMachine {
+                    machine_id: machine_id("machine_a"),
+                    reason: ployz_core::state::MachineUsabilityReason::FactsUnavailable,
                 },
-            ..
-        }) if reasons == vec![ployz_core::ops::UnusableMachine {
-            machine_id: machine_id("machine_missing"),
-            reason: ployz_core::state::MachineUsabilityReason::FactsUnavailable,
-        }]
-    ));
+                ployz_core::ops::UnusableMachine {
+                    machine_id: machine_id("machine_slow"),
+                    reason: ployz_core::state::MachineUsabilityReason::FactsUnavailable,
+                },
+            ]
+        ),
+        "unexpected missing-machine status: {missing_status:?}"
+    );
 }
 
 #[tokio::test]
 async fn machine_service_timeout_marks_deploy_failed_without_committing_active_state() {
     let nats = test_nats().await;
-    let _facts =
-        start_facts_subscription(nats.machine_slow.clone(), machine_id("machine_slow")).await;
-    let _endpoint_network =
-        start_endpoint_network_subscription(nats.machine_slow.clone(), machine_id("machine_slow"))
-            .await;
+    let _facts = start_facts_subscription(
+        nats.machine_slow.clone(),
+        nats.client.clone(),
+        machine_id("machine_slow"),
+    )
+    .await;
     let _unresponsive_machine = start_unresponsive_container_run_subscription(
         nats.machine_slow.clone(),
         machine_id("machine_slow"),
@@ -495,7 +515,6 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
         .submit_deploy(deploy_submit_command(&controllers, resolved_deploy_request(1)).await)
         .await
         .expect("deploy operation accepted");
-    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = NatsMachineContainerRuntime::new(nats.client.clone())
         .with_request_timeout(Duration::from_millis(50));
     let mut health = RecordingHealth::healthy();
@@ -503,7 +522,6 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
 
     let error = run_deploy_operation(
         accepted,
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_slow")]),
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
@@ -515,7 +533,6 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
         DeployOperationPorts {
             facts_reader: &facts_reader,
             intent_reader: &intent_reader,
-            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             certificate_provisioner: &mut certificates,
@@ -708,19 +725,22 @@ async fn test_nats() -> TestNats {
             .await
             .expect("open core store"),
     );
-    let machine_roster = MachineRosterStore::new(
-        ployzd::core_store::CoreStore::open_in_memory()
-            .await
-            .expect("open core store"),
-    );
     let intent_core_store = ployzd::core_store::CoreStore::open_in_memory()
         .await
         .expect("open intent core store");
+    let machine_roster = MachineRosterStore::new(intent_core_store.clone());
+    machine_roster
+        .replace_active_machine(&active_machine("machine_a", "10.198.1.0/24"))
+        .await
+        .expect("machine a enters roster");
+    machine_roster
+        .replace_active_machine(&active_machine("machine_slow", "10.198.2.0/24"))
+        .await
+        .expect("slow machine enters roster");
     let lease_intent = LeaseIntentStore::new(intent_core_store.clone());
     let intent = start_intent_service(
         client.clone(),
         machine_id("machine_a"),
-        machine_roster,
         namespace_intent.clone(),
         intent_core_store,
         Duration::from_secs(30),
@@ -737,6 +757,24 @@ async fn test_nats() -> TestNats {
         client,
         machine_a,
         machine_slow,
+    }
+}
+
+fn active_machine(machine: &str, subnet: &str) -> ActiveMachineState {
+    ActiveMachineState {
+        machine_id: machine_id(machine),
+        name: MachineName::try_new(machine).expect("valid machine name"),
+        activated_by: operation_id("op_machine_add"),
+        roles: ployz_core::roles::InstallRolePolicy::install_all(),
+        lifecycle: MachineLifecycle::Active,
+        control_endpoints: Vec::new(),
+        mesh_endpoints: vec!["192.0.2.1:51820".parse().expect("mesh endpoint")],
+        endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(subnet)
+            .expect("endpoint subnet"),
+        wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+            "public-{machine}"
+        ))
+        .expect("wireguard key"),
     }
 }
 
@@ -762,8 +800,15 @@ async fn start_unresponsive_container_run_subscription(
 
 async fn start_facts_subscription(
     client: async_nats::Client,
+    intent_client: async_nats::Client,
     machine_id: ployz_core::ids::MachineId,
 ) -> tokio::task::JoinHandle<()> {
+    support::dataplane::start_applied_status_responder(
+        client.clone(),
+        intent_client,
+        machine_id.clone(),
+    )
+    .await;
     let subject = machine_service(&machine_id, MachineServiceEndpoint::FactsGet);
     let mut subscriber = client
         .subscribe(subject)
@@ -812,37 +857,6 @@ fn empty_machine_facts(machine_id: &ployz_core::ids::MachineId) -> MachineFactsS
 
 fn test_disk_space() -> ployz_core::machine_runtime::MachineDiskSpace {
     ployz_test_support::fixtures::test_disk_space()
-}
-
-async fn start_endpoint_network_subscription(
-    client: async_nats::Client,
-    machine_id: ployz_core::ids::MachineId,
-) -> tokio::task::JoinHandle<()> {
-    let subject = machine_service(
-        &machine_id,
-        MachineServiceEndpoint::ContainerEnsureEndpointNetwork,
-    );
-    let mut subscriber = client
-        .subscribe(subject)
-        .await
-        .expect("subscribe endpoint network service");
-    client
-        .flush()
-        .await
-        .expect("flush endpoint network service subscription");
-    tokio::spawn(async move {
-        while let Some(message) = subscriber.next().await {
-            if let Some(reply) = message.reply {
-                let response = serde_json::to_vec(&MachineEnsureEndpointNetworkRpcResponse::Ok(
-                    MachineEnsureEndpointNetworkRpcOk {
-                        machine_id: machine_id.clone(),
-                    },
-                ))
-                .expect("endpoint network response serializes");
-                let _ = client.publish(reply, response.into()).await;
-            }
-        }
-    })
 }
 
 async fn operation_controllers(client: async_nats::Client) -> OperationControllers {

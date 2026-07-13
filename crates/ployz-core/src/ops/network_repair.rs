@@ -1,9 +1,10 @@
-//! Network repair operation: re-apply the cluster dataplane projection to all
-//! active machines or one selected active machine through a bounded operation.
+//! Network repair operation: rebroadcast cluster intent and verify dataplane,
+//! machine-facts, and DNS convergence for all active machines or one selected
+//! active machine through a bounded operation.
 
 use serde::{Deserialize, Serialize};
 
-use crate::dataplane::{PloyzNativeMeshComponent, PloyzNativeMeshPrepareReport};
+use crate::dataplane::DataplaneProjectionRevision;
 use crate::ids::{MachineId, OperationId};
 use crate::machine_runtime::MachineFactsRefreshConfirmation;
 
@@ -19,7 +20,7 @@ use super::{EventSequence, OperationKind, OperationStatus};
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkRepairRunningStage {
-    PreparingDataplane,
+    AwaitingDataplane,
     RefreshingMachineFacts,
     ConfirmingDnsRefresh,
 }
@@ -53,19 +54,16 @@ pub enum NetworkRepairFailure {
     TargetMachineNotFound {
         machine_id: MachineId,
     },
+    ProjectionMemberMissing {
+        machine_id: MachineId,
+        revision: DataplaneProjectionRevision,
+    },
     IntentReadFailed {
         message: FailureMessage,
     },
-    DataplaneConvergenceFailed {
+    DataplaneUnavailable {
         machine_id: MachineId,
-        component: PloyzNativeMeshComponent,
-        message: FailureMessage,
-    },
-    DataplaneConvergenceTimedOut {
-        timeout_seconds: u64,
-    },
-    DataplaneReportInvalid {
-        message: FailureMessage,
+        reason: crate::machine::DataplaneProjectionAdmissionFailure,
     },
     MachineFactsRefreshFailed {
         outcomes: Vec<NetworkRepairMachineFactsRefreshOutcome>,
@@ -166,8 +164,9 @@ pub enum NetworkRepairTransition {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkRepairEvidence {
-    DataplanePrepared {
-        report: PloyzNativeMeshPrepareReport,
+    DataplaneConverged {
+        revision: DataplaneProjectionRevision,
+        machine_ids: Vec<MachineId>,
     },
     MachineFactsRefreshed {
         refreshes: Vec<MachineFactsRefreshConfirmation>,
@@ -181,9 +180,13 @@ impl NetworkRepairEvidence {
     #[must_use]
     pub fn event(&self, operation_id: &OperationId) -> OperationEvent {
         match self {
-            Self::DataplanePrepared { report } => OperationEvent::NetworkRepairDataplanePrepared {
+            Self::DataplaneConverged {
+                revision,
+                machine_ids,
+            } => OperationEvent::NetworkRepairDataplaneConverged {
                 operation_id: operation_id.clone(),
-                report: report.clone(),
+                revision: revision.clone(),
+                machine_ids: machine_ids.clone(),
             },
             Self::MachineFactsRefreshed { refreshes } => {
                 OperationEvent::NetworkRepairMachineFactsRefreshed {
@@ -256,8 +259,8 @@ pub(super) fn project_event(
         NetworkRepairEvent::Submitted => Ok(OperationProjection::AlreadySatisfied),
         NetworkRepairEvent::Evidence(evidence) => {
             let expected_stage = match evidence {
-                NetworkRepairEvidence::DataplanePrepared { .. } => {
-                    NetworkRepairRunningStage::PreparingDataplane
+                NetworkRepairEvidence::DataplaneConverged { .. } => {
+                    NetworkRepairRunningStage::AwaitingDataplane
                 }
                 NetworkRepairEvidence::MachineFactsRefreshed { .. } => {
                     NetworkRepairRunningStage::RefreshingMachineFacts
@@ -320,7 +323,7 @@ fn transition_allowed(
         (
             NetworkRepairOperationState::Accepted,
             NetworkRepairOperationState::Running {
-                stage: NetworkRepairRunningStage::PreparingDataplane,
+                stage: NetworkRepairRunningStage::AwaitingDataplane,
             }
             | NetworkRepairOperationState::Cancelled { .. },
         )
@@ -332,7 +335,7 @@ fn transition_allowed(
         )
         | (
             NetworkRepairOperationState::Running {
-                stage: NetworkRepairRunningStage::PreparingDataplane,
+                stage: NetworkRepairRunningStage::AwaitingDataplane,
             },
             NetworkRepairOperationState::Running {
                 stage: NetworkRepairRunningStage::RefreshingMachineFacts,
@@ -368,14 +371,14 @@ fn transition_allowed(
         | (
             NetworkRepairOperationState::Running {
                 stage:
-                    NetworkRepairRunningStage::PreparingDataplane
+                    NetworkRepairRunningStage::AwaitingDataplane
                     | NetworkRepairRunningStage::RefreshingMachineFacts
                     | NetworkRepairRunningStage::ConfirmingDnsRefresh,
             },
             NetworkRepairOperationState::Accepted
             | NetworkRepairOperationState::Running {
                 stage:
-                    NetworkRepairRunningStage::PreparingDataplane
+                    NetworkRepairRunningStage::AwaitingDataplane
                     | NetworkRepairRunningStage::RefreshingMachineFacts
                     | NetworkRepairRunningStage::ConfirmingDnsRefresh,
             },
@@ -383,7 +386,7 @@ fn transition_allowed(
         | (
             NetworkRepairOperationState::Running {
                 stage:
-                    NetworkRepairRunningStage::PreparingDataplane
+                    NetworkRepairRunningStage::AwaitingDataplane
                     | NetworkRepairRunningStage::RefreshingMachineFacts,
             },
             NetworkRepairOperationState::Completed,

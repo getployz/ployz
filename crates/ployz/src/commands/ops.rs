@@ -630,7 +630,6 @@ const fn deploy_completion_outcome(
 
 const fn deploy_running_stage(stage: DeployRunningStage) -> &'static str {
     match stage {
-        DeployRunningStage::PreparingDataplane => "running:preparing-dataplane",
         DeployRunningStage::EnsuringImages => "running:ensuring-images",
         DeployRunningStage::StartingContainers => "running:starting-containers",
         DeployRunningStage::WaitingForHealth => "running:waiting-for-health",
@@ -699,7 +698,6 @@ impl DeployEventRenderContext {
             | OperationEvent::DeployHealthCheckStarted { .. }
             | OperationEvent::DeployPhaseStarted { .. }
             | OperationEvent::DeployPhaseFinished { .. }
-            | OperationEvent::DeployDataplanePrepared { .. }
             | OperationEvent::DeployImageAvailabilityVerified { .. }
             | OperationEvent::DeployCleanupFinished { .. }
             | OperationEvent::DeployCompleted { .. }
@@ -729,7 +727,7 @@ impl DeployEventRenderContext {
             | OperationEvent::CredentialGrantFailed { .. }
             | OperationEvent::NetworkRepairSubmitted { .. }
             | OperationEvent::NetworkRepairRunning { .. }
-            | OperationEvent::NetworkRepairDataplanePrepared { .. }
+            | OperationEvent::NetworkRepairDataplaneConverged { .. }
             | OperationEvent::NetworkRepairMachineFactsRefreshed { .. }
             | OperationEvent::NetworkRepairDnsRefreshConfirmed { .. }
             | OperationEvent::NetworkRepairCompleted { .. }
@@ -821,7 +819,6 @@ fn render_replayed_event_text(
         | OperationEvent::DeployHealthCheckStarted { .. }
         | OperationEvent::DeployPhaseStarted { .. }
         | OperationEvent::DeployPhaseFinished { .. }
-        | OperationEvent::DeployDataplanePrepared { .. }
         | OperationEvent::DeployImageAvailabilityVerified { .. }
         | OperationEvent::DeployCleanupFinished { .. }
         | OperationEvent::DeployCompleted { .. }
@@ -849,7 +846,7 @@ fn render_replayed_event_text(
         | OperationEvent::CredentialGrantCompleted { .. }
         | OperationEvent::NetworkRepairSubmitted { .. }
         | OperationEvent::NetworkRepairRunning { .. }
-        | OperationEvent::NetworkRepairDataplanePrepared { .. }
+        | OperationEvent::NetworkRepairDataplaneConverged { .. }
         | OperationEvent::NetworkRepairMachineFactsRefreshed { .. }
         | OperationEvent::NetworkRepairDnsRefreshConfirmed { .. }
         | OperationEvent::NetworkRepairCompleted { .. }
@@ -895,7 +892,6 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::DeployHealthCheckStarted { .. } => "deploy.health_check_started",
         OperationEvent::DeployPhaseStarted { .. } => "deploy.phase_started",
         OperationEvent::DeployPhaseFinished { .. } => "deploy.phase_finished",
-        OperationEvent::DeployDataplanePrepared { .. } => "deploy.dataplane_prepared",
         OperationEvent::DeployImageAvailabilityVerified { .. } => {
             "deploy.image_availability_verified"
         }
@@ -946,8 +942,8 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::CredentialGrantFailed { .. } => "credential.grant.failed",
         OperationEvent::NetworkRepairSubmitted { .. } => "network.repair.submitted",
         OperationEvent::NetworkRepairRunning { .. } => "network.repair.running",
-        OperationEvent::NetworkRepairDataplanePrepared { .. } => {
-            "network.repair.dataplane_prepared"
+        OperationEvent::NetworkRepairDataplaneConverged { .. } => {
+            "network.repair.dataplane_converged"
         }
         OperationEvent::NetworkRepairMachineFactsRefreshed { .. } => {
             "network.repair.machine_facts_refreshed"

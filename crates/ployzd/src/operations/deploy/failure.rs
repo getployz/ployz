@@ -1,6 +1,5 @@
 use crate::machine_runtime::MachineRuntimeUnavailableReason;
 use crate::roles::machine::response::log_hint;
-use ployz_core::dataplane::DataplanePrepareError;
 use ployz_core::deploy::DeployPlanError;
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceRevisionId, OperationId, ServiceId, StepId, SubjectTokenError,
@@ -203,7 +202,6 @@ pub enum DeployExecutionError {
     },
     RecordTransition(DeployOperationRecordError),
     RecordEvidence(DeployOperationRecordError),
-    PrepareDataplane(DataplanePrepareError),
     Image {
         failure: Box<DeployOperationFailure>,
     },
@@ -407,8 +405,6 @@ impl DeployExecutionStep {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::RecordOperationEvent => "record_operation_event",
-            Self::EnsureEndpointNetwork { .. } => "ensure_endpoint_network",
-            Self::PrepareDataplane { .. } => "prepare_dataplane",
             Self::RunContainer { .. } => "run_container",
             Self::RunPreStartHook { .. } => "run_pre_start_hook",
             Self::WaitHealthy => "wait_healthy",
@@ -427,13 +423,6 @@ impl DeployExecutionStep {
         retained_artifacts: Vec<RetainedArtifact>,
     ) -> DeployOperationFailure {
         match self {
-            Self::EnsureEndpointNetwork { machine_id } => {
-                DeployOperationFailure::RuntimeUnavailable {
-                    machine_id: machine_id.clone(),
-                    message: timeout_failure_message("endpoint network ensure", timeout),
-                    retained_artifacts,
-                }
-            }
             Self::RunContainer { machine_id } => DeployOperationFailure::RuntimeUnavailable {
                 machine_id: machine_id.clone(),
                 message: timeout_failure_message("machine runtime", timeout),
@@ -446,13 +435,6 @@ impl DeployExecutionStep {
                 },
                 retained_artifacts,
             },
-            Self::PrepareDataplane { machines } => {
-                DeployOperationFailure::DataplanePrepareTimedOut {
-                    machines: machines.clone(),
-                    timeout_seconds: timeout_seconds(timeout),
-                    retained_artifacts,
-                }
-            }
             Self::WaitHealthy => DeployOperationFailure::HealthCheckFailed {
                 health_check: HealthCheckFailure::TimedOut {
                     timeout_seconds: timeout_seconds(timeout),
@@ -518,12 +500,6 @@ impl DeployExecutionError {
 impl From<DeployHealthCheckError> for DeployExecutionError {
     fn from(value: DeployHealthCheckError) -> Self {
         Self::WaitHealthy(value)
-    }
-}
-
-impl From<DataplanePrepareError> for DeployExecutionError {
-    fn from(value: DataplanePrepareError) -> Self {
-        Self::PrepareDataplane(value)
     }
 }
 
@@ -597,7 +573,6 @@ impl DeployExecutionError {
             Self::RecordTransition(_) | Self::RecordEvidence(_) => {
                 Self::record_failure(command, retained_artifacts)
             }
-            Self::PrepareDataplane(error) => dataplane_deploy_failure(error, retained_artifacts),
             Self::Image { failure } => (**failure).clone(),
             Self::RunContainer(error) => error.deploy_failure(retained_artifacts),
             Self::PreStartHook(error) => error.deploy_failure(retained_artifacts),
@@ -638,30 +613,6 @@ impl DeployExecutionError {
             }
             Self::CommitNamespaceState(error) => error.deploy_failure(retained_artifacts),
             Self::Failed { failure, .. } => (**failure).clone(),
-        }
-    }
-}
-
-fn dataplane_deploy_failure(
-    error: &DataplanePrepareError,
-    retained_artifacts: Vec<RetainedArtifact>,
-) -> DeployOperationFailure {
-    match error {
-        DataplanePrepareError::Unavailable {
-            machine_id,
-            provider,
-            message,
-        } => DeployOperationFailure::DataplaneUnavailable {
-            machine_id: machine_id.clone(),
-            provider_failure: *provider,
-            message: message.clone(),
-            retained_artifacts,
-        },
-        DataplanePrepareError::InvalidReport { message } => {
-            DeployOperationFailure::DataplanePrepareInvalidReport {
-                message: message.clone(),
-                retained_artifacts,
-            }
         }
     }
 }
@@ -924,16 +875,7 @@ fn retained_artifacts(containers: &[DeployContainer]) -> Vec<RetainedArtifact> {
 
 fn add_retained_artifacts(failure: &mut DeployOperationFailure, artifacts: Vec<RetainedArtifact>) {
     let retained_artifacts = match failure {
-        DeployOperationFailure::DataplaneUnavailable {
-            retained_artifacts, ..
-        }
-        | DeployOperationFailure::DataplanePrepareTimedOut {
-            retained_artifacts, ..
-        }
-        | DeployOperationFailure::DataplanePrepareInvalidReport {
-            retained_artifacts, ..
-        }
-        | DeployOperationFailure::RuntimeUnavailable {
+        DeployOperationFailure::RuntimeUnavailable {
             retained_artifacts, ..
         }
         | DeployOperationFailure::ContainerStartFailed {

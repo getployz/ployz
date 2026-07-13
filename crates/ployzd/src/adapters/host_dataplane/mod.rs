@@ -2,13 +2,13 @@
 
 use ployz_core::dataplane::{
     DEFAULT_WIREGUARD_LISTEN_PORT, EbpfAttachmentStatus, EbpfForwardingReady,
-    MachineDataplaneStatus, NetworkStatusMode, OVERLAY_CONNECTIVITY_PROOF_BUDGET,
+    MachineDataplaneStatus, NativeDataplaneProjectionStatus, NetworkStatusMode,
     PloyzNativeMeshComponent, PloyzNativeMeshReady, WireGuardEbpfEndpointRoute,
     WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey, WireGuardReady,
     WireGuardReadyEvidence,
 };
 use ployz_core::ids::MachineId;
-use std::net::Ipv4Addr;
+use ployz_core::ops::FailureMessage;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -179,6 +179,10 @@ impl MachinePloyzNativeMeshPreparer for PloyzNativeMeshPreparer {
             },
         };
         Ok(MachineDataplaneStatus {
+            projection: NativeDataplaneProjectionStatus::unavailable(
+                FailureMessage::try_new("dataplane projection has not been observed")
+                    .expect("static failure message"),
+            ),
             wireguard,
             ebpf_attachment,
         })
@@ -329,70 +333,6 @@ impl MachinePloyzNativeMeshPreparer for PloyzNativeMeshPreparer {
             },
         })
     }
-
-    /// Overlay reachability is proven by the WireGuard handshake: after the
-    /// mesh is prepared, `persistent-keepalive` drives a handshake with every
-    /// reachable peer within seconds, needing no endpoint bridge (that is only
-    /// created at deploy). A peer whose public key never records a non-zero
-    /// latest handshake during this proof attempt is unreachable (NAT-to-NAT).
-    async fn probe_overlay(
-        &self,
-        peers: &[WireGuardPublicKey],
-    ) -> Result<Vec<WireGuardPublicKey>, WireGuardEbpfPrepareError> {
-        if peers.is_empty() {
-            return Ok(Vec::new());
-        }
-        let proof_started_at = current_unix_seconds();
-        let wait = async {
-            loop {
-                if let Ok(handshakes) = host_network::read_latest_handshakes(&self.wg_ifname)
-                    && peers.iter().all(|peer| {
-                        handshakes.get(peer.as_str()).is_some_and(|&handshake| {
-                            handshake_is_current(handshake, proof_started_at)
-                        })
-                    })
-                {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            }
-        };
-        let _ = tokio::time::timeout(OVERLAY_CONNECTIVITY_PROOF_BUDGET, wait).await;
-        let handshakes =
-            host_network::read_latest_handshakes(&self.wg_ifname).map_err(|message| {
-                unavailable(
-                    &self.machine_id,
-                    PloyzNativeMeshComponent::WireGuard,
-                    format!("read WireGuard handshake testimony: {message}"),
-                )
-            })?;
-        Ok(peers
-            .iter()
-            .filter(|peer| {
-                handshakes
-                    .get(peer.as_str())
-                    .is_none_or(|&handshake| !handshake_is_current(handshake, proof_started_at))
-            })
-            .cloned()
-            .collect())
-    }
-
-    async fn probe_link_mtu(
-        &self,
-        peer_gateway: Ipv4Addr,
-    ) -> Result<u32, WireGuardEbpfPrepareError> {
-        let configured_mtu =
-            host_network::resolve_wireguard_mtu(self.mtu_policy, &self.wg_ifname).await;
-        host_network::probe_wireguard_path_mtu(&self.wg_ifname, peer_gateway, configured_mtu)
-            .await
-            .map_err(|message| {
-                unavailable(
-                    &self.machine_id,
-                    PloyzNativeMeshComponent::WireGuard,
-                    message,
-                )
-            })
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -445,9 +385,6 @@ const ROTATION_TICK: Duration = Duration::from_secs(1);
 /// A freshly-changed endpoint gets this long to complete a handshake before it is
 /// eligible to rotate again — WireGuard retries handshakes roughly every 5s.
 const ENDPOINT_SETTLE: Duration = Duration::from_secs(15);
-/// A previously-established peer silent for this long is treated as down. WireGuard
-/// rekeys well within ~180s, so 275s is comfortably past a dead tunnel.
-const HANDSHAKE_DEAD_SECS: u64 = 275;
 
 #[derive(Debug)]
 struct WireGuardEndpointRotation {
@@ -578,7 +515,8 @@ impl WireGuardEndpointRotation {
             // otherwise the loop cycles through every candidate each tick (thrash).
             let established_down = after_change
                 && last_handshake != 0
-                && now_unix.saturating_sub(last_handshake) >= HANDSHAKE_DEAD_SECS;
+                && now_unix.saturating_sub(last_handshake)
+                    >= ployz_core::dataplane::MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS;
             let never_connected = last_handshake == 0 && after_change;
             if !established_down && !never_connected {
                 continue;
@@ -618,10 +556,6 @@ fn current_unix_seconds() -> u64 {
         .unwrap_or_default()
 }
 
-const fn handshake_is_current(handshake_at: u64, proof_started_at: u64) -> bool {
-    handshake_at >= proof_started_at
-}
-
 fn read_wireguard_public_key(private_key_path: &Path) -> Result<WireGuardPublicKey, String> {
     let private_key = ensure_private_key(private_key_path)?;
     public_key_from_private_key(&private_key)
@@ -630,12 +564,6 @@ fn read_wireguard_public_key(private_key_path: &Path) -> Result<WireGuardPublicK
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn connectivity_proof_rejects_a_handshake_from_before_the_attempt() {
-        assert!(!handshake_is_current(41, 42));
-        assert!(handshake_is_current(42, 42));
-    }
 
     #[tokio::test]
     async fn host_preparer_rejects_empty_command_plan_set() {

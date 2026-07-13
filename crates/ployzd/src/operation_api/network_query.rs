@@ -357,7 +357,9 @@ fn dataplane_testimony(
         Ok(MachineRpcResponse::Ok(MachineDataplaneStatusRpcOk { machine_id, value }))
             if machine_id == *expected_machine_id =>
         {
-            NetworkDataplaneTestimony::Answered { value }
+            NetworkDataplaneTestimony::Answered {
+                value: Box::new(value),
+            }
         }
         Ok(MachineRpcResponse::Ok(MachineDataplaneStatusRpcOk { machine_id, .. })) => {
             NetworkDataplaneTestimony::WrongResponder {
@@ -845,6 +847,10 @@ mod tests {
             let response = MachineDataplaneStatusRpcResponse::Ok(MachineDataplaneStatusRpcOk {
                 machine_id: responder_machine,
                 value: MachineDataplaneStatus {
+                    projection: ployz_core::dataplane::NativeDataplaneProjectionStatus::unavailable(
+                        ployz_core::ops::FailureMessage::try_new("projection unavailable")
+                            .expect("failure message"),
+                    ),
                     wireguard: WireGuardStatus {
                         interface: "ployz-wg0".to_owned(),
                         configured_mtu: WireGuardConfiguredMtu::Auto,
@@ -908,6 +914,10 @@ mod tests {
             control_endpoints: Vec::new(),
             mesh_endpoints: Vec::new(),
             endpoint_subnet: MachineEndpointSubnet::try_new(subnet).expect("endpoint subnet"),
+            wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+                "public-{id}"
+            ))
+            .expect("public key"),
         }
     }
 }

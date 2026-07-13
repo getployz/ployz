@@ -203,6 +203,10 @@ mod tests {
                     "10.198.0.0/24",
                 )
                 .expect("valid endpoint subnet"),
+                wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+                    "public-{machine}"
+                ))
+                .expect("public key"),
             })
             .await
             .expect("seed machine");

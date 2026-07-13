@@ -116,6 +116,7 @@ mod tests {
             "epoch": epoch,
             "core_machine_id": "machine_a",
             "active_machines": [],
+            "dataplane_projection": { "declared_members": [], "staged_member": null },
             "route_bindings": [],
             "serving_target_entries": [],
             "nats_authorizations": [],

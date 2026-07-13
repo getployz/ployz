@@ -25,7 +25,6 @@ use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, route_hostname, route_port, service_id,
 };
-use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use ployzd::intent::service::{RunningIntentService, start_intent_service};
 use ployzd::roles::gateway::process::{
@@ -434,11 +433,6 @@ impl TestNats {
         start_intent_service(
             self.client.clone(),
             machine_id("machine_a"),
-            MachineRosterStore::new(
-                ployzd::core_store::CoreStore::open_in_memory()
-                    .await
-                    .expect("open core store"),
-            ),
             self.namespace_intent.clone(),
             ployzd::core_store::CoreStore::open_in_memory()
                 .await
@@ -459,6 +453,11 @@ impl TestNats {
                     epoch: ControlPlaneEpoch::initial(),
                     core_machine_id: machine_id("machine_a"),
                     active_machines: Vec::new(),
+                    dataplane_projection: ployz_core::dataplane::DataplaneProjection::try_new(
+                        Vec::new(),
+                        None,
+                    )
+                    .expect("empty projection"),
                     route_bindings: Vec::new(),
                     serving_target_entries: Vec::new(),
                     volume_pins: Vec::new(),

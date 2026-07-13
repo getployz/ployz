@@ -3,10 +3,7 @@ use std::net::Ipv4Addr;
 use ployz::commands::network::{NetworkResolveOutput, NetworkStatusOutput};
 use ployz::commands::ops::{OpsWatchOutput, StatusOutput, WatchOutput};
 use ployz::commands::{PloyzctlCommand, parse_command};
-use ployz_core::dataplane::{
-    EbpfForwardingReady, MachineEndpointSubnet, PloyzNativeMeshMachineReady,
-    PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady,
-};
+use ployz_core::dataplane::{DataplaneProjection, MachineEndpointSubnet};
 use ployz_core::ids::{NamespaceId, ServiceId};
 use ployz_core::internal_dns::InternalServiceName;
 use ployz_core::machine::MachineName;
@@ -81,6 +78,10 @@ fn network_status_keeps_no_answer_machine_row() {
                 mesh_endpoints: vec!["203.0.113.10:51820".parse().expect("valid socket address")],
                 endpoint_subnet: MachineEndpointSubnet::try_new("10.198.1.0/24")
                     .expect("valid endpoint subnet"),
+                wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(
+                    "public-machine-a",
+                )
+                .expect("public key"),
             },
             dataplane: NetworkDataplaneTestimony::NoAnswer,
             internal_dns: NetworkInternalDnsTestimony::NoAnswer,
@@ -290,6 +291,10 @@ fn status_machine(dataplane: NetworkDataplaneTestimony) -> NetworkStatusMachine 
             mesh_endpoints: Vec::new(),
             endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.1.0/24")
                 .expect("valid endpoint subnet"),
+            wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(
+                "public-machine-a",
+            )
+            .expect("public key"),
         },
         dataplane,
         internal_dns: NetworkInternalDnsTestimony::NoAnswer,
@@ -317,6 +322,36 @@ fn network_repair_status_renders_typed_failure() {
 }
 
 #[test]
+fn network_repair_status_renders_missing_projection_member() {
+    let revision = ployz_sdk_types::DataplaneProjection::try_new(Vec::new(), None)
+        .expect("empty projection")
+        .declared_revision()
+        .clone();
+    let output = StatusOutput::new(
+        ployz_sdk_types::OperationStatusSnapshot {
+            status: ployz_sdk_types::OperationStatus::NetworkRepair {
+                id: operation_id("op_network_repair"),
+                target_machine_id: Some(machine_id("machine_a")),
+                state: ployz_sdk_types::NetworkRepairOperationState::Failed {
+                    failure: ployz_sdk_types::NetworkRepairFailure::ProjectionMemberMissing {
+                        machine_id: machine_id("machine_a"),
+                        revision: revision.clone(),
+                    },
+                },
+                last_event_sequence: event_sequence(3),
+            },
+        },
+        Vec::new(),
+    )
+    .render();
+
+    assert!(output.contains(&format!(
+        "failure projection-member-missing machine=machine_a revision={}\n",
+        revision.as_str()
+    )));
+}
+
+#[test]
 fn targeted_network_repair_status_renders_machine_subject() {
     let output = StatusOutput::new(
         ployz_sdk_types::OperationStatusSnapshot {
@@ -324,7 +359,7 @@ fn targeted_network_repair_status_renders_machine_subject() {
                 id: operation_id("op_network_repair"),
                 target_machine_id: Some(machine_id("machine_a")),
                 state: ployz_sdk_types::NetworkRepairOperationState::Running {
-                    stage: ployz_sdk_types::NetworkRepairRunningStage::PreparingDataplane,
+                    stage: ployz_sdk_types::NetworkRepairRunningStage::AwaitingDataplane,
                 },
                 last_event_sequence: event_sequence(2),
             },
@@ -343,11 +378,12 @@ fn network_repair_watch_renders_dataplane_failure_evidence() {
             sequence: event_sequence(3),
             event: ployz_sdk_types::OperationEvent::NetworkRepairFailed {
                 operation_id: operation_id("op_network_repair"),
-                failure: ployz_sdk_types::NetworkRepairFailure::DataplaneConvergenceFailed {
+                failure: ployz_sdk_types::NetworkRepairFailure::DataplaneUnavailable {
                     machine_id: machine_id("machine_a"),
-                    component: ployz_sdk_types::PloyzNativeMeshComponent::WireGuard,
-                    message: ployz_sdk_types::FailureMessage::try_new("prepare rejected")
-                        .expect("valid failure message"),
+                    reason: ployz_sdk_types::DataplaneProjectionAdmissionFailure::NoAnswer {
+                        message: ployz_sdk_types::FailureMessage::try_new("prepare rejected")
+                            .expect("valid failure message"),
+                    },
                 },
             },
         }],
@@ -357,40 +393,28 @@ fn network_repair_watch_renders_dataplane_failure_evidence() {
 
     assert_eq!(
         output,
-        "3 network.repair.failed dataplane-convergence-failed machine=machine_a component=wireguard message=prepare rejected\n"
+        "3 network.repair.failed dataplane-unavailable machine=machine_a reason=no answer: prepare rejected\n"
     );
 }
 
 #[test]
-fn network_repair_watch_renders_dataplane_prepared_evidence() {
-    let report = PloyzNativeMeshPrepareReport::for_targets(
-        &[machine_id("machine_a")],
-        [PloyzNativeMeshMachineReady {
-            machine_id: machine_id("machine_a"),
-            ready: PloyzNativeMeshReady {
-                wireguard: WireGuardReady {
-                    public_key: WireGuardPublicKey::try_new("public-key-a")
-                        .expect("valid wireguard public key"),
-                    evidence: Vec::new(),
-                },
-                ebpf_forwarding: EbpfForwardingReady {
-                    evidence: Vec::new(),
-                },
-            },
-        }],
-    )
-    .expect("valid dataplane report");
+fn network_repair_watch_renders_dataplane_converged_evidence() {
+    let revision = DataplaneProjection::try_new(Vec::new(), None)
+        .expect("empty projection")
+        .declared_revision()
+        .clone();
     let output = WatchOutput {
         events: vec![ployz_sdk_types::ReplayedOperationEvent {
             sequence: event_sequence(3),
-            event: ployz_sdk_types::OperationEvent::NetworkRepairDataplanePrepared {
+            event: ployz_sdk_types::OperationEvent::NetworkRepairDataplaneConverged {
                 operation_id: operation_id("op_network_repair"),
-                report,
+                revision,
+                machine_ids: vec![machine_id("machine_a")],
             },
         }],
         output: OpsWatchOutput::Text,
     }
     .render();
 
-    assert_eq!(output, "3 network.repair.dataplane_prepared\n");
+    assert_eq!(output, "3 network.repair.dataplane_converged\n");
 }

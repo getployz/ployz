@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cert::{AcmeHttp01Challenge, ActiveCertState, ManagedCertBundle, ManagedLeaseRecord};
-use crate::dataplane::MachineEndpointSubnet;
+use crate::dataplane::{DataplaneProjection, MachineEndpointSubnet, WireGuardPublicKey};
 use crate::deploy::{ImageReference, ReplicaCount, VolumeName};
 use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
 use crate::machine::{IssuedJoinToken, MachineName};
@@ -71,6 +71,18 @@ pub struct ActiveMachineState {
     pub mesh_endpoints: Vec<SocketAddr>,
     /// Core-owned overlay endpoint subnet allocated from cluster intent.
     pub endpoint_subnet: MachineEndpointSubnet,
+    pub wireguard_public_key: WireGuardPublicKey,
+}
+
+/// Operation-owned machine identity admitted into the target dataplane projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StagedMachineDataplaneState {
+    pub operation_id: OperationId,
+    pub machine_id: MachineId,
+    pub endpoint_subnet: MachineEndpointSubnet,
+    pub mesh_endpoints: Vec<SocketAddr>,
+    pub wireguard_public_key: WireGuardPublicKey,
 }
 
 /// Epoch-stamped non-secret pending machine-add recovery hints mirrored for
@@ -136,6 +148,7 @@ pub struct IntentSnapshot {
     pub epoch: ControlPlaneEpoch,
     pub core_machine_id: MachineId,
     pub active_machines: Vec<ActiveMachineState>,
+    pub dataplane_projection: DataplaneProjection,
     pub route_bindings: Vec<RouteBindingState>,
     pub serving_target_entries: Vec<ServingTargetEntry>,
     #[serde(default)]
@@ -162,6 +175,7 @@ struct IntentSnapshotWire {
     epoch: ControlPlaneEpoch,
     core_machine_id: MachineId,
     active_machines: Vec<ActiveMachineState>,
+    dataplane_projection: DataplaneProjection,
     route_bindings: Vec<RouteBindingState>,
     serving_target_entries: Vec<ServingTargetEntry>,
     #[serde(default)]
@@ -207,6 +221,7 @@ impl<'de> Deserialize<'de> for IntentSnapshot {
             epoch: wire.epoch,
             core_machine_id: wire.core_machine_id,
             active_machines: wire.active_machines,
+            dataplane_projection: wire.dataplane_projection,
             route_bindings: wire.route_bindings,
             serving_target_entries: wire.serving_target_entries,
             volume_pins: wire.volume_pins,
@@ -279,12 +294,24 @@ pub enum MachineLifecycle {
 /// Why a machine is excluded from new workload placement for one operation.
 /// Operator intent excludes durably; unavailable machine facts exclude only
 /// the current operation runtime snapshot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineUsabilityReason {
     Draining,
     FactsUnavailable,
+    DataplaneUnavailable { reason: DataplaneUnavailableReason },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DataplaneUnavailableReason {
+    NotDeclared,
+    TestimonyMissing,
+    Admission {
+        failure: crate::machine::DataplaneProjectionAdmissionFailure,
+    },
 }
 
 #[must_use]
@@ -421,6 +448,8 @@ mod tests {
             epoch: ControlPlaneEpoch::initial(),
             core_machine_id: MachineId::try_new("core").expect("machine id"),
             active_machines: Vec::new(),
+            dataplane_projection: DataplaneProjection::try_new(Vec::new(), None)
+                .expect("empty projection"),
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),

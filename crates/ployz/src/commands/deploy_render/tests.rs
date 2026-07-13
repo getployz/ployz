@@ -178,7 +178,7 @@ fn happy_events() -> Vec<ReplayedOperationEvent> {
             4,
             OperationEvent::DeployRunning {
                 operation_id: operation_id.clone(),
-                stage: DeployRunningStage::PreparingDataplane,
+                stage: DeployRunningStage::EnsuringImages,
             },
         ),
         replay(

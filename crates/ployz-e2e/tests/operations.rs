@@ -2,43 +2,49 @@ use std::error::Error;
 use std::time::Duration;
 
 use ployz::api_client::OperationApiClient;
-use ployz_core::dataplane::{
-    EbpfForwardingReady, EbpfForwardingReadyEvidence, PloyzNativeMeshMachineReady,
-    PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady,
-    WireGuardReadyEvidence,
-};
 use ployz_core::deploy::{
     DeployPlanningInput, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec,
     ImageReference, ReplicaCount, plan_namespace_deploy,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::install::MachineBootstrapUrl;
+use ployz_core::machine::MachineName;
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, DeployPhaseNumber, DeployPhaseOutcome,
     DeployRunningStage, DeployServiceResult, EventSequence, OperationEvent,
     OperationEventReplayCursor, OperationEventReplayRequest, OperationStatus,
 };
-use ployz_core::state::MachineEndpointObservation;
-use ployz_core::subjects::machine_facts;
+use ployz_core::roles::InstallRolePolicy;
+use ployz_core::state::{ActiveMachineState, MachineEndpointObservation, MachineLifecycle};
+use ployz_core::subjects::{MachineServiceEndpoint, machine_facts, machine_service};
 use ployz_nats::operation_api_client::OperationApiClientError;
+use ployz_nats::service_runtime::request_json;
 use ployz_sdk_types::{
     DeployReserveRequest, DeploySubmitError, DeploySubmitRequest, OpsStatusRequest,
     ServiceInspectRequest,
 };
+use ployzd::config::ControlProcessConfig;
+use ployzd::core_store::CoreStore;
+use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::operation_api::admission::MachineAddBootstrapConfig;
 use ployzd::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
 };
 use ployzd::roles::gateway::process::start_gateway_process_with_client;
 use ployzd::roles::machine::client::NatsMachineContainerRuntime;
-use ployzd::roles::machine::protocol::MachineContainerRunRpcRequest;
-use ployzd::roles::machine::service::start_machine_role_service;
+use ployzd::roles::machine::protocol::{
+    MachineContainerRunRpcRequest, MachineDataplaneStatusRpcRequest,
+    MachineDataplaneStatusRpcResponse, MachineRpcResponse,
+};
+use ployzd::roles::machine::service::start_machine_role_runtime;
 
 mod support;
 
 use ployz_test_support::ops::wait_for_terminal_status;
-use support::machine_runtime::{ObservingContainerRunner, ReadyWireGuardEbpf};
+use support::machine_runtime::{
+    ObservingContainerRunner, ReadyWireGuardEbpf, test_wireguard_public_key,
+};
 
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
@@ -185,17 +191,18 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
         .with_deploy_machines(vec![machine_id("machine_a")])
         .with_deploy_step_timeout(Duration::from_secs(2))
         .with_machine_bootstrap(machine_bootstrap_config());
-    let control_runtime = nats.start_control(&config).await?;
+    let control_runtime = start_control_with_deploy_roster(&nats, &config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_role_service(
+    let machine_runtime = start_machine_role_runtime(
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
-        ReadyWireGuardEbpf,
+        ReadyWireGuardEbpf::for_machine(&machine_id("machine_a")),
         runner.clone(),
     )
     .await?;
+    wait_for_dataplane_projection(&nats, &machine_id("machine_a")).await;
     let api = OperationApiClient::new(nats.user_client());
     let request = reserved_deploy_request(&api, "idem_e2e_run", deploy_target("svc_api")).await?;
 
@@ -278,36 +285,6 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
             },
             OperationEvent::DeployRunning {
                 operation_id: deploy_operation.clone(),
-                stage: DeployRunningStage::PreparingDataplane,
-            },
-            OperationEvent::DeployDataplanePrepared {
-                operation_id: deploy_operation.clone(),
-                report: PloyzNativeMeshPrepareReport {
-                    machines: vec![PloyzNativeMeshMachineReady {
-                        machine_id: machine_id("machine_a"),
-                        ready: PloyzNativeMeshReady {
-                            wireguard: WireGuardReady {
-                                public_key: wireguard_public_key("test-public-key"),
-                                evidence: vec![WireGuardReadyEvidence::Command {
-                                    program: "wg".to_owned(),
-                                    args: vec!["--version".to_owned()],
-                                }],
-                            },
-                            ebpf_forwarding: EbpfForwardingReady {
-                                evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
-                                    path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
-                                    symbols: vec![
-                                        "ployz_egress".to_owned(),
-                                        "ployz_ingress".to_owned(),
-                                    ],
-                                }],
-                            },
-                        },
-                    }],
-                },
-            },
-            OperationEvent::DeployRunning {
-                operation_id: deploy_operation.clone(),
                 stage: DeployRunningStage::StartingContainers,
             },
             OperationEvent::DeployPhaseStarted {
@@ -369,17 +346,18 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
         .with_deploy_machines(vec![machine_id("machine_a")])
         .with_deploy_step_timeout(Duration::from_secs(2))
         .with_machine_bootstrap(machine_bootstrap_config());
-    let control_runtime = nats.start_control(&config).await?;
+    let control_runtime = start_control_with_deploy_roster(&nats, &config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_role_service(
+    let machine_runtime = start_machine_role_runtime(
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
-        ReadyWireGuardEbpf,
+        ReadyWireGuardEbpf::for_machine(&machine_id("machine_a")),
         runner.clone(),
     )
     .await?;
+    wait_for_dataplane_projection(&nats, &machine_id("machine_a")).await;
     let gateway_runtime = start_gateway_process_with_client(
         machine_client.clone(),
         Duration::from_millis(10),
@@ -459,17 +437,18 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
         .with_deploy_machines(vec![machine_id("machine_a")])
         .with_deploy_step_timeout(Duration::from_secs(2))
         .with_machine_bootstrap(machine_bootstrap_config());
-    let control_runtime = nats.start_control(&config).await?;
+    let control_runtime = start_control_with_deploy_roster(&nats, &config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_role_service(
+    let machine_runtime = start_machine_role_runtime(
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
-        ReadyWireGuardEbpf,
+        ReadyWireGuardEbpf::for_machine(&machine_id("machine_a")),
         runner.clone(),
     )
     .await?;
+    wait_for_dataplane_projection(&nats, &machine_id("machine_a")).await;
     let gateway_runtime = start_gateway_process_with_client(
         machine_client.clone(),
         Duration::from_millis(10),
@@ -566,17 +545,18 @@ async fn e2e_gateway_keeps_serving_last_projection_after_control_shutdown()
         .with_deploy_machines(vec![machine_id("machine_a")])
         .with_deploy_step_timeout(Duration::from_secs(2))
         .with_machine_bootstrap(machine_bootstrap_config());
-    let control_runtime = nats.start_control(&config).await?;
+    let control_runtime = start_control_with_deploy_roster(&nats, &config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_role_service(
+    let machine_runtime = start_machine_role_runtime(
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
-        ReadyWireGuardEbpf,
+        ReadyWireGuardEbpf::for_machine(&machine_id("machine_a")),
         runner.clone(),
     )
     .await?;
+    wait_for_dataplane_projection(&nats, &machine_id("machine_a")).await;
     let gateway_runtime = start_gateway_process_with_client(
         machine_client.clone(),
         Duration::from_millis(10),
@@ -670,27 +650,29 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
         .with_deploy_machines(vec![machine_id("core_1"), machine_id("edge_2")])
         .with_deploy_step_timeout(Duration::from_secs(2))
         .with_machine_bootstrap(machine_bootstrap_config());
-    let control_runtime = nats.start_control(&config).await?;
+    let control_runtime = start_control_with_deploy_roster(&nats, &config).await?;
     let core_machine_client = nats.machine_client(&machine_id("core_1")).await;
     let edge_machine_client = nats.machine_client(&machine_id("edge_2")).await;
     let core_runner = ObservingContainerRunner::new(machine_id("core_1"));
     let edge_runner = ObservingContainerRunner::new(machine_id("edge_2"));
-    let core_machine_runtime = start_machine_role_service(
+    let core_machine_runtime = start_machine_role_runtime(
         core_machine_client.clone(),
         machine_id("core_1"),
         core_runner.clone(),
-        ReadyWireGuardEbpf,
+        ReadyWireGuardEbpf::for_machine(&machine_id("core_1")),
         core_runner.clone(),
     )
     .await?;
-    let edge_machine_runtime = start_machine_role_service(
+    let edge_machine_runtime = start_machine_role_runtime(
         edge_machine_client.clone(),
         machine_id("edge_2"),
         edge_runner.clone(),
-        ReadyWireGuardEbpf,
+        ReadyWireGuardEbpf::for_machine(&machine_id("edge_2")),
         edge_runner.clone(),
     )
     .await?;
+    wait_for_dataplane_projection(&nats, &machine_id("core_1")).await;
+    wait_for_dataplane_projection(&nats, &machine_id("edge_2")).await;
     let core_gateway_runtime = start_gateway_process_with_client(
         core_machine_client.clone(),
         Duration::from_millis(10),
@@ -731,25 +713,6 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
             }
         ),
         "expected two-machine routed deploy to complete, got {status:?}"
-    );
-    assert_eq!(
-        operation_events(&api, deploy_operation, accepted.start_sequence,)
-            .await?
-            .into_iter()
-            .filter_map(|event| {
-                let OperationEvent::DeployDataplanePrepared { report, .. } = event else {
-                    return None;
-                };
-                Some(
-                    report
-                        .machines
-                        .into_iter()
-                        .map(|machine| machine.machine_id.clone())
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .collect::<Vec<_>>(),
-        vec![vec![machine_id("core_1"), machine_id("edge_2")]]
     );
     publish_machine_facts(
         &core_machine_client,
@@ -821,10 +784,6 @@ async fn operation_events(
     assert_eq!(page.cursor, OperationEventReplayCursor::Terminal);
 
     Ok(page.events.into_iter().map(|event| event.event).collect())
-}
-
-fn wireguard_public_key(value: &str) -> WireGuardPublicKey {
-    WireGuardPublicKey::try_new(value).expect("valid wireguard public key")
 }
 
 fn image(value: &str) -> ImageReference {
@@ -978,6 +937,66 @@ fn assert_smoke_response(response: &str) {
         response.ends_with("\r\n\r\nsmoke"),
         "unexpected response body: {response:?}"
     );
+}
+
+async fn start_control_with_deploy_roster(
+    nats: &TestNats,
+    config: &ControlProcessConfig,
+) -> Result<ployzd::roles::control::RunningControlProcess, Box<dyn Error + Send + Sync>> {
+    let store = CoreStore::open(config.core_db_path.clone()).await?;
+    let roster = MachineRosterStore::new(store);
+    for (index, machine_id) in config.deploy_machines.iter().enumerate() {
+        let endpoint_subnet = ployz_core::dataplane::MachineEndpointSubnet::try_new(
+            ployz_core::dataplane::default_endpoint_subnet(machine_id),
+        )?;
+        roster
+            .replace_active_machine(&ActiveMachineState {
+                machine_id: machine_id.clone(),
+                name: MachineName::try_new(format!("test_machine_{}", index + 1))?,
+                activated_by: OperationId::try_new(format!("op_seed_machine_{}", index + 1))?,
+                roles: InstallRolePolicy::install_all(),
+                lifecycle: MachineLifecycle::Active,
+                control_endpoints: Vec::new(),
+                mesh_endpoints: vec![std::net::SocketAddr::new(
+                    public_ip(u8::try_from(index + 1)?),
+                    ployz_core::dataplane::DEFAULT_WIREGUARD_LISTEN_PORT,
+                )],
+                endpoint_subnet,
+                wireguard_public_key: test_wireguard_public_key(machine_id),
+            })
+            .await?;
+    }
+    Ok(nats.start_control(config).await?)
+}
+
+async fn wait_for_dataplane_projection(nats: &TestNats, machine_id: &ployz_core::ids::MachineId) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let response = request_json::<_, MachineDataplaneStatusRpcResponse>(
+            &nats.controller_client(),
+            machine_service(machine_id, MachineServiceEndpoint::DataplaneStatus),
+            &MachineDataplaneStatusRpcRequest {
+                mode: ployz_core::dataplane::NetworkStatusMode::Snapshot,
+            },
+            Duration::from_millis(250),
+        )
+        .await;
+        if matches!(
+            response,
+            Ok(MachineRpcResponse::Ok(ok))
+                if matches!(
+                    ok.value.projection.testimony,
+                    ployz_core::dataplane::DataplaneProjectionTestimony::Applied { .. }
+                )
+        ) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "machine {machine_id:?} did not converge its dataplane projection"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 fn machine_bootstrap_config() -> MachineAddBootstrapConfig {

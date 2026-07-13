@@ -300,7 +300,6 @@ impl DeployRunningStage {
     #[must_use]
     pub const fn as_subject(&self) -> &'static str {
         match self {
-            Self::PreparingDataplane => "preparing_dataplane",
             Self::EnsuringImages => "ensuring_images",
             Self::StartingContainers => "starting_containers",
             Self::WaitingForHealth => "waiting_for_health",
@@ -326,7 +325,7 @@ impl NetworkRepairRunningStage {
     #[must_use]
     pub const fn as_subject(&self) -> &'static str {
         match self {
-            Self::PreparingDataplane => "preparing_dataplane",
+            Self::AwaitingDataplane => "awaiting_dataplane",
             Self::RefreshingMachineFacts => "refreshing_machine_facts",
             Self::ConfirmingDnsRefresh => "confirming_dns_refresh",
         }
@@ -360,7 +359,6 @@ pub enum MachineServiceEndpoint {
     FactsRefresh,
     DnsResolve,
     DnsStatus,
-    ContainerEnsureEndpointNetwork,
     ContainerInspect,
     ContainerResolveImage,
     ContainerRun,
@@ -369,9 +367,8 @@ pub enum MachineServiceEndpoint {
     ContainerStop,
     ContainerRemove,
     VolumeRemove,
-    DataplanePrepare,
+    DataplanePublicKey,
     DataplaneStatus,
-    DataplaneProbeMtu,
     SubstrateUpdate,
     SubstrateReport,
     LogsTail,
@@ -398,7 +395,6 @@ impl MachineServiceEndpoint {
             Self::FactsRefresh => "facts.refresh",
             Self::DnsResolve => "dns.resolve",
             Self::DnsStatus => "dns.status",
-            Self::ContainerEnsureEndpointNetwork => "container.ensure_endpoint_network",
             Self::ContainerInspect => "container.inspect",
             Self::ContainerResolveImage => "container.resolve_image",
             Self::ContainerRun => "container.run",
@@ -407,9 +403,8 @@ impl MachineServiceEndpoint {
             Self::ContainerStop => "container.stop",
             Self::ContainerRemove => "container.remove",
             Self::VolumeRemove => "volume.remove",
-            Self::DataplanePrepare => "dataplane.prepare",
+            Self::DataplanePublicKey => "dataplane.public_key",
             Self::DataplaneStatus => "dataplane.status",
-            Self::DataplaneProbeMtu => "dataplane.probe_mtu",
             Self::SubstrateUpdate => "substrate.update",
             Self::SubstrateReport => "substrate.report",
             Self::LogsTail => "logs.tail",
@@ -435,21 +430,19 @@ impl MachineServiceEndpoint {
             | Self::DnsStatus
             | Self::ContainerInspect
             | Self::ContainerResolveImage
-            | Self::DataplaneProbeMtu
+            | Self::DataplanePublicKey
             | Self::SubstrateReport
             | Self::DataplaneStatus
             | Self::LogsTail
             | Self::ImageBlobCheck
             | Self::CertificateChallengeStatus => MachineServiceEndpointExecution::Query,
-            Self::ContainerEnsureEndpointNetwork
-            | Self::FactsRefresh
+            Self::FactsRefresh
             | Self::ContainerRun
             | Self::ContainerRunHook
             | Self::ContainerRestart
             | Self::ContainerStop
             | Self::ContainerRemove
             | Self::VolumeRemove
-            | Self::DataplanePrepare
             | Self::SubstrateUpdate
             | Self::ImageBlobPush
             | Self::ImageManifestPush

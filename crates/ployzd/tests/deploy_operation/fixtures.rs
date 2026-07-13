@@ -1,12 +1,6 @@
 use ployz_core::cert::{
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, ManagedLeaseName,
 };
-use ployz_core::dataplane::{
-    DataplanePrepareError, DataplanePrepareRequest, DataplaneProviderFailure, EbpfForwardingReady,
-    EbpfForwardingReadyEvidence, PloyzNativeMeshComponent, PloyzNativeMeshMachineReady,
-    PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady,
-    WireGuardReadyEvidence,
-};
 use ployz_core::deploy::{
     ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerMountPath,
     DependencyCondition, DeployCleanupContainer, DeployRequest, DeployRoute, DeployRouteTarget,
@@ -37,19 +31,17 @@ pub(super) fn phase_number(value: u16) -> ployz_core::ops::DeployPhaseNumber {
 }
 use ployzd::certificate::GatewayCertificateTarget;
 use ployzd::operations::deploy::{
-    CertificateProvisioner, DataplanePreparer, DeployExecutionFacts, DeployExecutionInput,
-    DeployHealthCheckError, DeployHealthChecker, DeployOperationRecordError,
-    DeployOperationRecorder, DeployPhasePromotion, MachineContainerRuntime,
-    MachineContainerRuntimeError, MachineRuntimeUnavailableReason, NamespaceCommitError,
-    NamespaceStateCommitter, PreStartHookRuntimeError,
+    CertificateProvisioner, DeployExecutionFacts, DeployExecutionInput, DeployHealthCheckError,
+    DeployHealthChecker, DeployOperationRecordError, DeployOperationRecorder, DeployPhasePromotion,
+    MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
+    NamespaceCommitError, NamespaceStateCommitter, PreStartHookRuntimeError,
 };
 use ployzd::roles::machine::client::MachineImageResolveError;
 use ployzd::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerResolveImageRpcRequest,
     MachineContainerRestartRpcRequest, MachineContainerRunHookRpcOk,
     MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
-    MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
-    MachineRunContainerOutcome,
+    MachineContainerStopRpcRequest, MachineRunContainerOutcome,
 };
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -107,9 +99,6 @@ pub(super) enum RecordedOperation {
     PlanCreated {
         replica_count: usize,
     },
-    DataplanePrepared {
-        machine_count: usize,
-    },
     ImageAvailabilityVerified,
     HealthCheckStarted,
     ContainerStarted {
@@ -161,11 +150,6 @@ impl DeployOperationRecorder for RecordingOperations {
                         .sum(),
                 });
             }
-            DeployEvidence::DataplanePrepared { report } => {
-                self.records.push(RecordedOperation::DataplanePrepared {
-                    machine_count: report.machines.len(),
-                });
-            }
             DeployEvidence::ImageAvailabilityVerified { .. } => {
                 self.records
                     .push(RecordedOperation::ImageAvailabilityVerified);
@@ -211,7 +195,6 @@ impl DeployOperationRecorder for RecordingOperations {
 
 pub(super) struct RecordingRuntime {
     pub(super) resolutions: Vec<(MachineId, MachineContainerResolveImageRpcRequest)>,
-    pub(super) endpoint_networks: Vec<(MachineId, MachineEnsureEndpointNetworkRpcRequest)>,
     pub(super) requests: Vec<(MachineId, MachineContainerRunRpcRequest)>,
     pub(super) hook_requests: Vec<(MachineId, MachineContainerRunHookRpcRequest)>,
     pub(super) stops: Vec<(MachineId, MachineContainerStopRpcRequest)>,
@@ -219,87 +202,11 @@ pub(super) struct RecordingRuntime {
     containers: Vec<ContainerId>,
     hook_outcomes: Vec<(ContainerId, i64)>,
     fail_after_first: bool,
-    fail_endpoint_network: bool,
     reuse_existing: bool,
     start_existing: bool,
     fail_start: bool,
     fail_remove: bool,
     fail_stop: bool,
-}
-
-#[derive(Default)]
-pub(super) struct RecordingWireGuardEbpf {
-    pub(super) requests: Vec<DataplanePrepareRequest>,
-    failure: Option<DataplanePrepareError>,
-}
-
-impl RecordingWireGuardEbpf {
-    pub(super) fn ready() -> Self {
-        Self::default()
-    }
-
-    pub(super) fn wireguard_failed(machine_id: &str) -> Self {
-        Self {
-            requests: Vec::new(),
-            failure: Some(DataplanePrepareError::Unavailable {
-                machine_id: self::machine_id(machine_id),
-                provider: DataplaneProviderFailure::PloyzNativeMesh {
-                    component: PloyzNativeMeshComponent::WireGuard,
-                },
-                message: ployz_core::ops::FailureMessage::try_new("wireguard interface failed")
-                    .expect("valid failure message"),
-            }),
-        }
-    }
-}
-
-impl DataplanePreparer for RecordingWireGuardEbpf {
-    async fn prepare_dataplane(
-        &mut self,
-        request: DataplanePrepareRequest,
-    ) -> Result<PloyzNativeMeshPrepareReport, DataplanePrepareError> {
-        let ready_machines = request
-            .membership
-            .iter()
-            .map(|member| ready_machine(member.machine_id.clone()))
-            .collect::<Vec<_>>();
-        self.requests.push(request);
-        match &self.failure {
-            Some(error) => Err(error.clone()),
-            None => {
-                let expected = ready_machines
-                    .iter()
-                    .map(|machine| machine.machine_id.clone())
-                    .collect::<Vec<_>>();
-                Ok(
-                    PloyzNativeMeshPrepareReport::for_targets(&expected, ready_machines)
-                        .expect("recording report matches requested machines"),
-                )
-            }
-        }
-    }
-}
-
-fn ready_machine(machine_id: MachineId) -> PloyzNativeMeshMachineReady {
-    let public_key = wireguard_public_key(format!("public-{}", machine_id.as_str()));
-    PloyzNativeMeshMachineReady {
-        machine_id,
-        ready: PloyzNativeMeshReady {
-            wireguard: WireGuardReady {
-                public_key,
-                evidence: vec![WireGuardReadyEvidence::Command {
-                    program: "wg".to_owned(),
-                    args: vec!["--version".to_owned()],
-                }],
-            },
-            ebpf_forwarding: EbpfForwardingReady {
-                evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
-                    path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
-                    symbols: vec!["ployz_egress".to_owned(), "ployz_ingress".to_owned()],
-                }],
-            },
-        },
-    }
 }
 
 /// How the fake handles serving-target commits; routes always record.
@@ -599,7 +506,6 @@ impl RecordingRuntime {
     pub(super) fn with_containers<const N: usize>(containers: [&str; N]) -> Self {
         Self {
             resolutions: Vec::new(),
-            endpoint_networks: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
             stops: Vec::new(),
@@ -607,7 +513,6 @@ impl RecordingRuntime {
             containers: containers.into_iter().map(container_id).rev().collect(),
             hook_outcomes: Vec::new(),
             fail_after_first: false,
-            fail_endpoint_network: false,
             reuse_existing: false,
             start_existing: false,
             fail_start: false,
@@ -619,7 +524,6 @@ impl RecordingRuntime {
     pub(super) fn reusing_containers<const N: usize>(containers: [&str; N]) -> Self {
         Self {
             resolutions: Vec::new(),
-            endpoint_networks: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
             stops: Vec::new(),
@@ -627,7 +531,6 @@ impl RecordingRuntime {
             containers: containers.into_iter().map(container_id).rev().collect(),
             hook_outcomes: Vec::new(),
             fail_after_first: false,
-            fail_endpoint_network: false,
             reuse_existing: true,
             start_existing: false,
             fail_start: false,
@@ -639,7 +542,6 @@ impl RecordingRuntime {
     pub(super) fn starting_existing_containers<const N: usize>(containers: [&str; N]) -> Self {
         Self {
             resolutions: Vec::new(),
-            endpoint_networks: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
             stops: Vec::new(),
@@ -647,7 +549,6 @@ impl RecordingRuntime {
             containers: containers.into_iter().map(container_id).rev().collect(),
             hook_outcomes: Vec::new(),
             fail_after_first: false,
-            fail_endpoint_network: false,
             reuse_existing: false,
             start_existing: true,
             fail_start: false,
@@ -659,7 +560,6 @@ impl RecordingRuntime {
     pub(super) fn failing_after_first_container() -> Self {
         Self {
             resolutions: Vec::new(),
-            endpoint_networks: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
             stops: Vec::new(),
@@ -667,7 +567,6 @@ impl RecordingRuntime {
             containers: vec![container_id("ctr_1")],
             hook_outcomes: Vec::new(),
             fail_after_first: true,
-            fail_endpoint_network: false,
             reuse_existing: false,
             start_existing: false,
             fail_start: false,
@@ -679,7 +578,6 @@ impl RecordingRuntime {
     pub(super) fn failing_start(container_id: &str) -> Self {
         Self {
             resolutions: Vec::new(),
-            endpoint_networks: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
             stops: Vec::new(),
@@ -687,7 +585,6 @@ impl RecordingRuntime {
             containers: vec![self::container_id(container_id)],
             hook_outcomes: Vec::new(),
             fail_after_first: false,
-            fail_endpoint_network: false,
             reuse_existing: false,
             start_existing: false,
             fail_start: true,
@@ -709,11 +606,6 @@ impl RecordingRuntime {
 
     pub(super) fn with_stop_failure(mut self) -> Self {
         self.fail_stop = true;
-        self
-    }
-
-    pub(super) fn with_endpoint_network_failure(mut self) -> Self {
-        self.fail_endpoint_network = true;
         self
     }
 }
@@ -744,23 +636,6 @@ impl MachineContainerRuntime for RecordingRuntime {
                 architecture: "amd64".to_owned(),
             },
         })
-    }
-
-    async fn ensure_endpoint_network(
-        &mut self,
-        machine_id: &MachineId,
-        request: MachineEnsureEndpointNetworkRpcRequest,
-    ) -> Result<(), MachineContainerRuntimeError> {
-        self.endpoint_networks.push((machine_id.clone(), request));
-        if self.fail_endpoint_network {
-            return Err(MachineContainerRuntimeError::Unavailable {
-                machine_id: machine_id.clone(),
-                reason: MachineRuntimeUnavailableReason::RequestFailed {
-                    message: "synthetic endpoint network failure".to_owned(),
-                },
-            });
-        }
-        Ok(())
     }
 
     async fn run_container(
@@ -1528,10 +1403,6 @@ fn namespace_cleanup_candidates(
         &namespace_id("default"),
         observed_machines,
     )
-}
-
-fn wireguard_public_key(value: impl Into<String>) -> WireGuardPublicKey {
-    WireGuardPublicKey::try_new(value).expect("valid wireguard public key")
 }
 
 fn observed_service_container(

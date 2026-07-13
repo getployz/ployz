@@ -6,12 +6,12 @@ use crate::adapters::nats_authorization::MintRequest;
 use crate::operations::log::{
     MachineJoinRedemption, RecordMachineJoinReportError, RedeemMachineJoinTokenError,
 };
-use ployz_core::dataplane::MachineEndpointSubnet;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::{
-    MachineAddFailure, MachineName, RawJoinToken, active_machine_from_completed_add,
+    DataplaneProjectionAdmissionEvidence, MachineAddFailure, MachineName, RawJoinToken,
+    active_machine_from_completed_add,
 };
-use ployz_core::ops::OperationStatus;
+use ployz_core::ops::{MachineAddOperationState, OperationStatus};
 use ployz_core::subjects::INTENT_CHANGED;
 use ployz_sdk_types::{
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinRedeemed,
@@ -21,7 +21,6 @@ use ployz_sdk_types::{
 };
 
 use super::OperationApiHandlers;
-use super::connectivity_proof;
 use super::error_map::{
     completed_machine_add_operation_id, corrupt, machine_join_redeem_error_from_repository_error,
     machine_join_report_error,
@@ -84,7 +83,7 @@ pub async fn machine_join_report(
 ) -> Result<MachineJoinReported, MachineJoinReportError> {
     let raw_token = RawJoinToken::try_new(request.join_token.as_str())
         .map_err(|_| MachineJoinReportError::InvalidJoinToken)?;
-    let report_target = handlers
+    handlers
         .controllers
         .repository()
         .machine_join_report_target(&raw_token)
@@ -92,14 +91,14 @@ pub async fn machine_join_report(
         .map_err(machine_join_report_error)?;
     let (result, outcome) = match request.outcome {
         MachineJoinReportOutcome::Completed => {
-            match connectivity_proof::prove_completed_join(handlers, &raw_token).await {
+            match admit_completed_join(handlers, &raw_token).await {
                 Ok(Some(evidence)) => {
                     let result = handlers
                         .controllers
                         .repository()
                         .record_machine_join_failed(
                             &raw_token,
-                            MachineAddFailure::ConnectivityProofFailed {
+                            MachineAddFailure::DataplaneProjectionAdmissionFailed {
                                 evidence: evidence.clone(),
                             },
                         )
@@ -107,9 +106,10 @@ pub async fn machine_join_report(
                     (
                         result,
                         MachineJoinReportedOutcome::Failed {
-                            failure: MachineJoinReportedFailure::ConnectivityProofFailed {
-                                evidence,
-                            },
+                            failure:
+                                MachineJoinReportedFailure::DataplaneProjectionAdmissionFailed {
+                                    evidence,
+                                },
                         },
                     )
                 }
@@ -122,7 +122,7 @@ pub async fn machine_join_report(
                     (result, MachineJoinReportedOutcome::Completed)
                 }
                 Err(MachineJoinReportError::Unavailable { message }) => {
-                    let message = connectivity_proof_unavailable_message(message);
+                    let message = dataplane_admission_unavailable_message(message);
                     let result = handlers
                         .controllers
                         .repository()
@@ -167,13 +167,7 @@ pub async fn machine_join_report(
     let reported = match result {
         Ok(reported) => reported,
         Err(error) if matches!(outcome, MachineJoinReportedOutcome::Completed) => {
-            if let Some(reported) = repair_completed_machine_join_report(
-                handlers,
-                &error,
-                report_target.endpoint_subnet.clone(),
-            )
-            .await?
-            {
+            if let Some(reported) = repair_completed_machine_join_report(handlers, &error).await? {
                 return Ok(reported);
             }
             return Err(machine_join_report_error(error));
@@ -205,14 +199,7 @@ pub async fn machine_join_report(
         });
     };
     if let MachineJoinReportedOutcome::Completed = outcome {
-        activate_reported_machine(
-            handlers,
-            &reported.operation_id,
-            &machine_id,
-            &name,
-            report_target.endpoint_subnet,
-        )
-        .await?;
+        activate_reported_machine(handlers, &reported.operation_id, &machine_id, &name).await?;
         scrub_completed_machine_add_secrets(handlers, &reported.operation_id).await?;
     }
 
@@ -224,20 +211,64 @@ pub async fn machine_join_report(
     })
 }
 
-fn connectivity_proof_unavailable_message(message: String) -> ployz_core::ops::FailureMessage {
-    ployz_core::ops::FailureMessage::try_new(format!(
-        "overlay connectivity proof unavailable: {message}"
-    ))
-    .unwrap_or_else(|_| {
-        ployz_core::ops::FailureMessage::try_new("overlay connectivity proof unavailable")
-            .expect("static failure message is valid")
-    })
+async fn admit_completed_join(
+    handlers: &OperationApiHandlers,
+    raw_token: &RawJoinToken,
+) -> Result<Option<DataplaneProjectionAdmissionEvidence>, MachineJoinReportError> {
+    let target = handlers
+        .controllers
+        .repository()
+        .machine_join_report_target(raw_token)
+        .await
+        .map_err(machine_join_report_error)?;
+    let status = handlers
+        .controllers
+        .repository()
+        .get(&target.operation_id)
+        .await
+        .map_err(|error| MachineJoinReportError::Unavailable {
+            message: error.to_string(),
+        })?
+        .ok_or_else(|| MachineJoinReportError::Unavailable {
+            message: corrupt("missing machine-add operation before dataplane admission"),
+        })?;
+    let OperationStatus::MachineAdd {
+        id: operation_id,
+        machine_id,
+        state,
+        ..
+    } = status
+    else {
+        return Err(MachineJoinReportError::Unavailable {
+            message: corrupt("joined operation is not machine-add"),
+        });
+    };
+    match state {
+        MachineAddOperationState::Joining { .. } => handlers
+            .dataplane_projection_admission
+            .admit(operation_id, machine_id, target.endpoint_subnet)
+            .await
+            .map_err(|error| MachineJoinReportError::Unavailable {
+                message: error.to_string(),
+            }),
+        MachineAddOperationState::Pending { .. }
+        | MachineAddOperationState::Completed
+        | MachineAddOperationState::Failed { .. }
+        | MachineAddOperationState::Cancelled { .. } => Ok(None),
+    }
+}
+
+fn dataplane_admission_unavailable_message(message: String) -> ployz_core::ops::FailureMessage {
+    ployz_core::ops::FailureMessage::try_new(format!("dataplane admission unavailable: {message}"))
+        .unwrap_or_else(|_| {
+            ployz_core::ops::FailureMessage::try_new("dataplane admission unavailable")
+                .expect("static failure message is valid")
+        })
 }
 
 async fn repair_completed_machine_join_report(
     handlers: &OperationApiHandlers,
     error: &RecordMachineJoinReportError,
-    endpoint_subnet: MachineEndpointSubnet,
 ) -> Result<Option<MachineJoinReported>, MachineJoinReportError> {
     let Some(operation_id) = completed_machine_add_operation_id(error) else {
         return Ok(None);
@@ -267,7 +298,7 @@ async fn repair_completed_machine_join_report(
         return Ok(None);
     };
 
-    activate_reported_machine(handlers, &id, &machine_id, &name, endpoint_subnet).await?;
+    activate_reported_machine(handlers, &id, &machine_id, &name).await?;
     scrub_completed_machine_add_secrets(handlers, &id).await?;
     Ok(Some(MachineJoinReported {
         operation_id: id,
@@ -299,8 +330,30 @@ async fn activate_reported_machine(
     operation_id: &OperationId,
     machine_id: &MachineId,
     name: &MachineName,
-    endpoint_subnet: MachineEndpointSubnet,
 ) -> Result<(), MachineJoinReportError> {
+    if let Some(active) = handlers
+        .machine_roster
+        .active_machine(machine_id)
+        .await
+        .map_err(|error| MachineJoinReportError::Unavailable {
+            message: error.to_string(),
+        })?
+    {
+        if active.activated_by != *operation_id {
+            return Err(MachineJoinReportError::Unavailable {
+                message: corrupt("active machine belongs to another operation"),
+            });
+        }
+        handlers
+            .controllers
+            .repository()
+            .clear_staged_machine_dataplane(operation_id)
+            .await
+            .map_err(|error| MachineJoinReportError::Unavailable {
+                message: error.to_string(),
+            })?;
+        return Ok(());
+    }
     let status = handlers
         .controllers
         .repository()
@@ -317,12 +370,22 @@ async fn activate_reported_machine(
             message: corrupt("activation operation is not machine-add"),
         });
     };
+    let staged = handlers
+        .controllers
+        .repository()
+        .machine_dataplane_staging(operation_id)
+        .await
+        .map_err(|error| MachineJoinReportError::Unavailable {
+            message: error.to_string(),
+        })?
+        .filter(|staged| &staged.operation_id == operation_id && &staged.machine_id == machine_id)
+        .ok_or_else(|| MachineJoinReportError::Unavailable {
+            message: corrupt("completed machine-add has no staged dataplane identity"),
+        })?;
     let active_machine = active_machine_from_completed_add(
-        operation_id.clone(),
-        machine_id.clone(),
         name.clone(),
         roles,
-        endpoint_subnet,
+        staged,
         ployz_core::ops::MachineAddOperationState::Completed,
     )
     .map_err(|_| MachineJoinReportError::Unavailable {
@@ -331,6 +394,14 @@ async fn activate_reported_machine(
     handlers
         .machine_roster
         .replace_active_machine(&active_machine)
+        .await
+        .map_err(|error| MachineJoinReportError::Unavailable {
+            message: error.to_string(),
+        })?;
+    handlers
+        .controllers
+        .repository()
+        .clear_staged_machine_dataplane(operation_id)
         .await
         .map_err(|error| MachineJoinReportError::Unavailable {
             message: error.to_string(),

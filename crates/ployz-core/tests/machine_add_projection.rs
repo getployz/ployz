@@ -3,9 +3,8 @@
 
 use ployz_core::install::HostPortAssurance;
 use ployz_core::machine::{
-    ConnectivityProofEvidence, ConnectivityProofUnreachablePeer, IssuedJoinToken,
-    JoinTokenExpiresAt, JoinTokenFingerprint, MachineAddFailure, MachineReadinessCheck,
-    MachineReadinessEvidence,
+    IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, MachineAddFailure,
+    MachineReadinessCheck, MachineReadinessEvidence,
 };
 use ployz_core::ops::{
     FailureMessage, MachineAddOperationState, OperationEvent, OperationKind, OperationProjection,
@@ -269,52 +268,6 @@ fn machine_add_readiness_failure_after_join_is_allowed() {
             }),
         })
     );
-}
-
-#[test]
-fn machine_add_connectivity_proof_failure_after_join_is_allowed() {
-    let joined_at =
-        ployz_core::machine::JoinTokenRedeemedAt::try_new(650).expect("valid joined at");
-    let joined = machine_add_joining_status(joined_at);
-    let failure = MachineAddFailure::ConnectivityProofFailed {
-        evidence: ConnectivityProofEvidence::try_new(vec![ConnectivityProofUnreachablePeer {
-            machine_id: machine_id("machine_1"),
-            gateway: "10.198.1.1".parse().expect("valid gateway"),
-        }])
-        .expect("non-empty connectivity evidence"),
-    };
-
-    assert_eq!(
-        project_operation_event(
-            &joined,
-            OperationEvent::MachineAddFailed {
-                operation_id: operation_id("op_machine"),
-                machine_id: machine_id("machine_2"),
-                failure: failure.clone(),
-            },
-            event_sequence(9),
-        ),
-        Ok(OperationProjection::StatusChanged {
-            status: Box::new(OperationStatus::MachineAdd {
-                id: operation_id("op_machine"),
-                machine_id: machine_id("machine_2"),
-                name: machine_name("edge_2"),
-                roles: InstallRolePolicy::install_all().without_gateway(),
-                host_port_assurance: HostPortAssurance::Keeper,
-                state: MachineAddOperationState::Failed { failure },
-                last_event_sequence: event_sequence(9),
-            }),
-        })
-    );
-}
-
-#[test]
-fn connectivity_proof_evidence_rejects_empty_unreachable_peers() {
-    let evidence = serde_json::from_value::<ConnectivityProofEvidence>(serde_json::json!({
-        "unreachable_peers": [],
-    }));
-
-    assert!(evidence.is_err(), "empty connectivity evidence must fail");
 }
 
 #[test]

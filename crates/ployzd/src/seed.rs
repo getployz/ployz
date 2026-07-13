@@ -142,7 +142,16 @@ mod tests {
                     "10.198.0.0/24",
                 )
                 .expect("valid endpoint subnet"),
+                wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(
+                    "public-machine-a",
+                )
+                .expect("public key"),
             }],
+            dataplane_projection: ployz_core::dataplane::DataplaneProjection::try_new(
+                Vec::new(),
+                None,
+            )
+            .expect("empty projection"),
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),

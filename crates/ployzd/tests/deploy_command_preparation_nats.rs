@@ -10,7 +10,7 @@ use ployz_core::machine_runtime::{
 use ployz_core::ops::RouteHostname;
 use ployz_core::state::ActiveMachineState;
 use ployz_core::state::MachineLifecycle;
-use ployz_nats::service_runtime::RunningNatsService;
+use ployz_nats::service_runtime::request_json;
 use ployz_test_support::containers;
 use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{
@@ -21,21 +21,31 @@ use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
 use ployzd::operations::deploy::{
-    DeployExecutionCommand, DeployMachineCandidates, DeployServiceExecutionCommand,
-    load_deploy_execution_facts_from_nats, prepare_deploy_execution_command,
+    DeployExecutionCommand, DeployServiceExecutionCommand, load_deploy_execution_facts_from_nats,
+    prepare_deploy_execution_command,
 };
 use ployzd::roles::machine::client::NatsMachineFactsReader;
+use ployzd::roles::machine::protocol::{
+    MachineDataplaneStatusRpcRequest, MachineDataplaneStatusRpcResponse, MachineRpcResponse,
+};
 use ployzd::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
     MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
     MachineLogTail,
 };
-use ployzd::roles::machine::service::{MachinePloyzNativeMeshPreparer, start_machine_role_service};
+use ployzd::roles::machine::service::{RunningMachineRoleRuntime, start_machine_role_runtime};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+mod support;
+
+use support::machine_runtime::{ReadyWireGuardEbpf, test_wireguard_public_key};
 
 #[tokio::test]
 async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
     let nats = test_nats().await;
+    nats.declare_active_machine("machine_a").await;
+    nats.declare_active_machine("machine_b").await;
     let facts_reader = nats.facts_reader();
     let intent_reader = nats.intent_reader();
 
@@ -79,11 +89,6 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         deploy_request(),
-        DeployMachineCandidates::same_machines(vec![
-            machine_id("machine_a"),
-            machine_id("machine_b"),
-            machine_id("machine_missing"),
-        ]),
         &intent_reader,
         &facts_reader,
         Duration::from_secs(7),
@@ -147,7 +152,6 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         deploy_request(),
-        DeployMachineCandidates::same_machines(vec![machine_id("core_1")]),
         &intent_reader,
         &facts_reader,
         Duration::from_secs(7),
@@ -192,7 +196,6 @@ async fn nats_preparation_excludes_draining_machines_from_placement() {
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         deploy_request(),
-        DeployMachineCandidates::same_machines(vec![machine_id("core_1")]),
         &intent_reader,
         &facts_reader,
         Duration::from_secs(7),
@@ -228,7 +231,6 @@ async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         routed_deploy_request(),
-        DeployMachineCandidates::same_machines(vec![machine_id("core_1")]),
         &intent_reader,
         &facts_reader,
         Duration::from_secs(7),
@@ -247,7 +249,7 @@ async fn routed_nats_preparation_uses_active_machine_scope_for_dataplane() {
 }
 
 #[tokio::test]
-async fn routed_nats_preparation_uses_configured_dataplane_fallback_without_active_machines() {
+async fn routed_nats_preparation_ignores_configured_machine_outside_durable_roster() {
     let nats = test_nats().await;
     let facts_reader = nats.facts_reader();
     let intent_reader = nats.intent_reader();
@@ -257,18 +259,15 @@ async fn routed_nats_preparation_uses_configured_dataplane_fallback_without_acti
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         routed_deploy_request(),
-        DeployMachineCandidates::same_machines(vec![machine_id("core_1")]),
         &intent_reader,
         &facts_reader,
         Duration::from_secs(7),
     )
     .await;
 
-    assert_eq!(
-        single_service(&command).eligible_machines(),
-        [machine_id("core_1")]
-    );
-    assert_eq!(command.dataplane_machines(), [machine_id("core_1")]);
+    assert!(single_service(&command).eligible_machines().is_empty());
+    assert!(command.dataplane_machines().is_empty());
+    assert!(command.unusable_machines().is_empty());
 }
 
 #[tokio::test]
@@ -288,7 +287,6 @@ async fn routed_nats_preparation_does_not_require_dataplane_public_ip() {
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         routed_deploy_request(),
-        DeployMachineCandidates::same_machines(vec![machine_id("core_1")]),
         &intent_reader,
         &facts_reader,
         Duration::from_secs(7),
@@ -310,7 +308,6 @@ async fn nats_preparation_uses_absent_active_state_when_service_is_new() {
     let command = prepare_command_from_nats(
         operation_id("op_123"),
         deploy_request(),
-        DeployMachineCandidates::same_machines(vec![machine_id("machine_a")]),
         &intent_reader,
         &facts_reader,
         Duration::from_secs(7),
@@ -330,20 +327,14 @@ fn single_service(command: &DeployExecutionCommand) -> &DeployServiceExecutionCo
 async fn prepare_command_from_nats(
     operation_id: OperationId,
     request: DeployRequest,
-    machine_scope: DeployMachineCandidates,
     intent_reader: &NatsIntentReader,
     facts_reader: &NatsMachineFactsReader,
     step_timeout: Duration,
 ) -> ployzd::operations::deploy::DeployExecutionCommand {
-    let facts = load_deploy_execution_facts_from_nats(
-        &request,
-        machine_scope,
-        intent_reader,
-        facts_reader,
-        step_timeout,
-    )
-    .await
-    .expect("deploy facts load from nats");
+    let facts =
+        load_deploy_execution_facts_from_nats(&request, intent_reader, facts_reader, step_timeout)
+            .await
+            .expect("deploy facts load from nats");
     prepare_deploy_execution_command(operation_id, request, facts)
 }
 
@@ -370,27 +361,81 @@ impl TestNats {
             .with_request_timeout(Duration::from_secs(1))
     }
 
+    async fn declare_active_machine(&self, machine: &str) {
+        self.machine_roster
+            .replace_active_machine(&active_machine(machine))
+            .await
+            .expect("active machine stores");
+    }
+
     async fn serve_machine_facts(
         &self,
         snapshot: MachineContainerObservationSnapshot,
-    ) -> RunningNatsService {
+    ) -> RunningMachineRoleRuntime {
         let machine_id = snapshot.machine_id().clone();
         let machine_client = self.connected.machine_client(&machine_id).await;
-        start_machine_role_service(
+        let runtime = start_machine_role_runtime(
             machine_client,
-            machine_id,
+            machine_id.clone(),
             StaticRunner::from_snapshot(snapshot),
-            UnusedPreparer,
+            ReadyWireGuardEbpf::for_machine(&machine_id),
             UnusedLogs,
         )
         .await
-        .expect("machine facts service starts")
+        .expect("machine facts service starts");
+        if self
+            .intent_reader()
+            .intent()
+            .await
+            .expect("intent reads")
+            .dataplane_projection
+            .declared_members()
+            .iter()
+            .any(|member| member.machine_id == machine_id)
+        {
+            self.wait_for_dataplane_projection(&machine_id).await;
+        }
+        runtime
+    }
+
+    async fn wait_for_dataplane_projection(&self, machine_id: &ployz_core::ids::MachineId) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let response = request_json::<_, MachineDataplaneStatusRpcResponse>(
+                &self.connected.controller,
+                ployz_core::subjects::machine_service(
+                    machine_id,
+                    ployz_core::subjects::MachineServiceEndpoint::DataplaneStatus,
+                ),
+                &MachineDataplaneStatusRpcRequest {
+                    mode: ployz_core::dataplane::NetworkStatusMode::Snapshot,
+                },
+                Duration::from_millis(250),
+            )
+            .await;
+            if matches!(
+                response,
+                Ok(MachineRpcResponse::Ok(ok))
+                    if matches!(
+                        ok.value.projection.testimony,
+                        ployz_core::dataplane::DataplaneProjectionTestimony::Applied { .. }
+                    )
+            ) {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "machine {machine_id:?} did not converge its dataplane projection"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 }
 
 #[derive(Clone)]
 struct StaticRunner {
     existing: Vec<ExistingManagedContainer>,
+    endpoint_subnet: Arc<Mutex<Option<ployz_core::dataplane::MachineEndpointSubnet>>>,
 }
 
 impl StaticRunner {
@@ -407,7 +452,10 @@ impl StaticRunner {
                 created_at_unix_seconds: container.created_at_unix_seconds,
             })
             .collect();
-        Self { existing }
+        Self {
+            existing,
+            endpoint_subnet: Arc::new(Mutex::new(None)),
+        }
     }
 }
 
@@ -422,6 +470,28 @@ impl MachineContainerRunner for StaticRunner {
         Err(MachineContainerRunnerError::EnsureEndpointNetwork {
             message: "not used".to_owned(),
         })
+    }
+
+    async fn ensure_projection_endpoint_network(
+        &self,
+        expected_subnet: &ployz_core::dataplane::MachineEndpointSubnet,
+    ) -> Result<(), MachineContainerRunnerError> {
+        *self
+            .endpoint_subnet
+            .lock()
+            .expect("endpoint subnet lock is not poisoned") = Some(expected_subnet.clone());
+        Ok(())
+    }
+
+    async fn read_endpoint_network_status(&self) -> ployz_core::dataplane::EndpointBridgeStatus {
+        self.endpoint_subnet
+            .lock()
+            .expect("endpoint subnet lock is not poisoned")
+            .clone()
+            .map_or(
+                ployz_core::dataplane::EndpointBridgeStatus::Missing,
+                |subnet| ployz_core::dataplane::EndpointBridgeStatus::Ready { subnet },
+            )
     }
 
     async fn resolve_registry_image(
@@ -534,86 +604,6 @@ impl MachineLogReader for UnusedLogs {
     }
 }
 
-#[derive(Clone)]
-struct UnusedPreparer;
-
-impl MachinePloyzNativeMeshPreparer for UnusedPreparer {
-    async fn read_ployz_native_mesh_status(
-        &self,
-        _mode: ployz_core::dataplane::NetworkStatusMode,
-    ) -> Result<ployz_core::dataplane::MachineDataplaneStatus, String> {
-        Err("dataplane status is unavailable".to_owned())
-    }
-
-    async fn read_wireguard_public_key(
-        &self,
-    ) -> Result<
-        ployz_core::dataplane::WireGuardPublicKey,
-        ployz_core::dataplane::WireGuardEbpfPrepareError,
-    > {
-        Err(
-            ployz_core::dataplane::WireGuardEbpfPrepareError::InvalidReport {
-                message: ployz_core::ops::FailureMessage::try_new("not used")
-                    .expect("static message is valid"),
-            },
-        )
-    }
-
-    async fn prepare_ployz_native_mesh(
-        &self,
-        _endpoint_routes: &[ployz_core::dataplane::WireGuardEbpfEndpointRoute],
-        _peers: &[ployz_core::dataplane::WireGuardPeer],
-    ) -> Result<
-        ployz_core::dataplane::PloyzNativeMeshReady,
-        ployz_core::dataplane::WireGuardEbpfPrepareError,
-    > {
-        Err(
-            ployz_core::dataplane::WireGuardEbpfPrepareError::InvalidReport {
-                message: ployz_core::ops::FailureMessage::try_new("not used")
-                    .expect("static message is valid"),
-            },
-        )
-    }
-
-    async fn prepare_wireguard(
-        &self,
-        _endpoint_routes: &[ployz_core::dataplane::WireGuardEbpfEndpointRoute],
-        _peers: &[ployz_core::dataplane::WireGuardPeer],
-    ) -> Result<
-        ployz_core::dataplane::WireGuardReady,
-        ployz_core::dataplane::WireGuardEbpfPrepareError,
-    > {
-        Err(
-            ployz_core::dataplane::WireGuardEbpfPrepareError::InvalidReport {
-                message: ployz_core::ops::FailureMessage::try_new("not used")
-                    .expect("static message is valid"),
-            },
-        )
-    }
-
-    async fn probe_overlay(
-        &self,
-        peers: &[ployz_core::dataplane::WireGuardPublicKey],
-    ) -> Result<
-        Vec<ployz_core::dataplane::WireGuardPublicKey>,
-        ployz_core::dataplane::WireGuardEbpfPrepareError,
-    > {
-        Ok(peers.to_vec())
-    }
-
-    async fn probe_link_mtu(
-        &self,
-        _peer_gateway: std::net::Ipv4Addr,
-    ) -> Result<u32, ployz_core::dataplane::WireGuardEbpfPrepareError> {
-        Err(
-            ployz_core::dataplane::WireGuardEbpfPrepareError::InvalidReport {
-                message: ployz_core::ops::FailureMessage::try_new("not used")
-                    .expect("static message is valid"),
-            },
-        )
-    }
-}
-
 async fn test_nats() -> TestNats {
     let machine_ids = [
         machine_id("machine_a"),
@@ -624,24 +614,16 @@ async fn test_nats() -> TestNats {
     ];
     let connected = ployz_test_support::nats::TestNats::start_with_machines(&machine_ids).await;
     let intent_dir = tempfile::tempdir().expect("intent dir");
-    let namespace_intent = NamespaceIntentStore::new(
-        ployzd::core_store::CoreStore::open_in_memory()
-            .await
-            .expect("open core store"),
-    );
-    let machine_roster = MachineRosterStore::new(
-        ployzd::core_store::CoreStore::open_in_memory()
-            .await
-            .expect("open core store"),
-    );
+    let core_store = ployzd::core_store::CoreStore::open_in_memory()
+        .await
+        .expect("open core store");
+    let namespace_intent = NamespaceIntentStore::new(core_store.clone());
+    let machine_roster = MachineRosterStore::new(core_store.clone());
     let intent = start_intent_service(
         connected.controller.clone(),
         machine_id("machine_a"),
-        machine_roster.clone(),
         namespace_intent.clone(),
-        ployzd::core_store::CoreStore::open_in_memory()
-            .await
-            .expect("core store opens"),
+        core_store,
         Duration::from_secs(30),
     )
     .await
@@ -746,16 +728,28 @@ fn managed_observation_with_entry(
 }
 
 fn active_machine(machine_id: &str) -> ActiveMachineState {
+    let ordinal = machine_id
+        .as_bytes()
+        .iter()
+        .fold(0_u8, |acc, byte| acc.wrapping_add(*byte))
+        .max(1);
+    let machine_id = self::machine_id(machine_id);
     ActiveMachineState {
         control_endpoints: Vec::new(),
-        mesh_endpoints: Vec::new(),
+        mesh_endpoints: vec![std::net::SocketAddr::from((
+            [203, 0, 113, ordinal],
+            ployz_core::dataplane::DEFAULT_WIREGUARD_LISTEN_PORT,
+        ))],
         lifecycle: MachineLifecycle::Active,
-        machine_id: self::machine_id(machine_id),
-        name: MachineName::try_new(machine_id).expect("valid machine name"),
+        machine_id: machine_id.clone(),
+        name: MachineName::try_new(machine_id.as_str()).expect("valid machine name"),
         activated_by: operation_id("op_machine_add"),
         roles: ployz_core::roles::InstallRolePolicy::install_all(),
-        endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
-            .expect("valid endpoint subnet"),
+        endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(
+            ployz_core::dataplane::default_endpoint_subnet(&machine_id),
+        )
+        .expect("valid endpoint subnet"),
+        wireguard_public_key: test_wireguard_public_key(&machine_id),
     }
 }
 
