@@ -282,7 +282,7 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
             HostPackageFamily::Arch => self.require_long_command(
                 "pacman",
                 &[
-                    "-Sy",
+                    "-S",
                     "--noconfirm",
                     "--needed",
                     "wireguard-tools",
@@ -385,13 +385,7 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
             }
             DockerInstall::ArchPackages => self.require_long_command(
                 "pacman",
-                &[
-                    "-Syu",
-                    "--noconfirm",
-                    "--needed",
-                    "docker",
-                    "docker-compose",
-                ],
+                &["-S", "--noconfirm", "--needed", "docker", "docker-compose"],
             ),
             DockerInstall::AmazonPackages => self.require_rpm_command(&["install", "-y", "docker"]),
             DockerInstall::RhelRepositoryFile => self

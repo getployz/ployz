@@ -506,7 +506,7 @@ fn local_effects_prepare_dataplane_packages_for_each_supported_family() {
         ("rocky", "dnf install -y wireguard-tools iproute iputils"),
         (
             "arch",
-            "pacman -Sy --noconfirm --needed wireguard-tools iproute2 iputils",
+            "pacman -S --noconfirm --needed wireguard-tools iproute2 iputils",
         ),
         ("alpine", "apk add wireguard-tools iproute2 iputils"),
         (
@@ -539,7 +539,52 @@ fn local_effects_prepare_dataplane_packages_for_each_supported_family() {
             "{id} did not use {expected_install}: {:?}",
             effects.runner().command_calls,
         );
+        if id == "arch" {
+            assert_eq!(
+                effects
+                    .runner()
+                    .command_calls
+                    .iter()
+                    .filter(|call| call.starts_with("pacman "))
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                [expected_install],
+            );
+        }
     }
+}
+
+#[test]
+fn arch_docker_install_uses_existing_pacman_sync_databases() {
+    let root = temp_dir("ployz-host-runner-arch-docker");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let runner = RecordingRunner {
+        os_release: "ID=arch\n".to_owned(),
+        docker_installed: false,
+        docker_running: false,
+        ..RecordingRunner::root_linux()
+    };
+    let mut effects = HostRunnerLocalEffects::new(local_config(&root, &systemd_dir), runner);
+    validate_host(&mut effects);
+
+    effects
+        .apply_step(&HostRunnerStep::PrepareContainerRuntime(
+            ContainerRuntime::Docker,
+            ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+        ))
+        .expect("Arch installs Docker from existing pacman sync databases");
+
+    assert_eq!(
+        effects
+            .runner()
+            .command_calls
+            .iter()
+            .filter(|call| call.starts_with("pacman "))
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["pacman -S --noconfirm --needed docker docker-compose"]
+    );
 }
 
 #[test]

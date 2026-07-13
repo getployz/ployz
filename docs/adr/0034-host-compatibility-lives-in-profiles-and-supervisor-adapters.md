@@ -41,7 +41,9 @@ step before Host Runner writes files or runs host mutation commands.
 The Docker strategies are finite and native:
 
 - Alpine and postmarketOS use APK;
-- Arch-family hosts use pacman;
+- Arch-family hosts use pacman against the existing sync databases without
+  refreshing them or performing a system upgrade; host system updates and
+  required reboots remain operator-owned substrate work;
 - Amazon Linux uses DNF's Docker package;
 - Rocky downloads Docker's RHEL repository file and installs the Docker CE packages with DNF;
 - AlmaLinux and TencentOS download Docker's CentOS repository file and install the Docker CE packages with DNF;
