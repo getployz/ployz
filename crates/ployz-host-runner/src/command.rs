@@ -12,30 +12,40 @@ use std::time::Duration;
 use ployz_core::ops::FailureMessage;
 use wait_timeout::ChildExt;
 
-const DOCKER_INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
-const DATAPLANE_HOST_INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
-
 pub trait HostRunnerCommandRunner {
     fn command(
         &mut self,
         program: &str,
         args: &[&str],
     ) -> Result<HostRunnerCommandOutput, FailureMessage>;
+    fn command_with_timeout(
+        &mut self,
+        program: &str,
+        args: &[&str],
+        _timeout: Duration,
+    ) -> Result<HostRunnerCommandOutput, FailureMessage> {
+        self.command(program, args)
+    }
+    fn read_os_release(&mut self) -> Result<String, FailureMessage> {
+        let output = self.command("cat", &["/etc/os-release"])?;
+        if output.success {
+            return Ok(output.stdout);
+        }
+        Err(failure_message(format!(
+            "failed to read /etc/os-release: {}",
+            output.failure
+        )))
+    }
     fn is_linux(&mut self) -> bool;
     fn current_uid(&mut self) -> Result<u32, FailureMessage>;
-    fn systemctl(&mut self, args: &[&str]) -> Result<(), FailureMessage>;
     fn download(&mut self, url: &str, destination: &Path) -> Result<(), FailureMessage>;
     fn docker_info(&mut self) -> Result<(), FailureMessage>;
     fn docker_is_installed(&mut self) -> bool;
     fn docker_uses_containerd_snapshotter(&mut self) -> Result<bool, FailureMessage>;
     fn docker_has_insecure_registry(&mut self, cidr: &str) -> Result<bool, FailureMessage>;
-    fn enable_docker_service(&mut self) -> Result<(), FailureMessage>;
-    fn run_docker_install_script(&mut self, script: &Path) -> Result<(), FailureMessage>;
-    fn install_docker_from_rhel_repository(
-        &mut self,
-        releasever: &str,
-    ) -> Result<(), FailureMessage>;
-    fn prepare_dataplane_host(&mut self) -> Result<(), FailureMessage>;
+    fn dataplane_host_ready(&mut self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -69,6 +79,15 @@ impl HostRunnerCommandRunner for SystemHostRunnerCommandRunner {
     ) -> Result<HostRunnerCommandOutput, FailureMessage> {
         host_runner_command(program, args, self.timeout)
     }
+
+    fn command_with_timeout(
+        &mut self,
+        program: &str,
+        args: &[&str],
+        timeout: Duration,
+    ) -> Result<HostRunnerCommandOutput, FailureMessage> {
+        host_runner_command(program, args, timeout)
+    }
     fn is_linux(&mut self) -> bool {
         std::env::consts::OS == "linux"
     }
@@ -86,17 +105,6 @@ impl HostRunnerCommandRunner for SystemHostRunnerCommandRunner {
             .trim()
             .parse::<u32>()
             .map_err(|error| failure_message(format!("id -u returned invalid uid: {error}")))
-    }
-
-    fn systemctl(&mut self, args: &[&str]) -> Result<(), FailureMessage> {
-        let output = run_command("systemctl", args, self.timeout)?;
-        if output.status.success() {
-            return Ok(());
-        }
-        Err(failure_message(format!(
-            "systemctl failed: {}",
-            output.failure_summary()
-        )))
     }
 
     fn download(&mut self, url: &str, destination: &Path) -> Result<(), FailureMessage> {
@@ -173,186 +181,9 @@ impl HostRunnerCommandRunner for SystemHostRunnerCommandRunner {
         Ok(registries.iter().any(|registry| registry == cidr))
     }
 
-    fn enable_docker_service(&mut self) -> Result<(), FailureMessage> {
-        self.systemctl(&["enable", "--now", "docker"])
+    fn dataplane_host_ready(&mut self) -> bool {
+        dataplane_host_ready(self.timeout)
     }
-
-    fn run_docker_install_script(&mut self, script: &Path) -> Result<(), FailureMessage> {
-        let output = run_os_command_with_display(
-            "sh",
-            &[script.as_os_str().to_os_string()],
-            "sh <docker-install-script>".to_owned(),
-            DOCKER_INSTALL_TIMEOUT,
-        )?;
-        if output.status.success() {
-            return Ok(());
-        }
-        Err(failure_message(format!(
-            "docker install script failed: {}",
-            output.failure_summary()
-        )))
-    }
-
-    fn install_docker_from_rhel_repository(
-        &mut self,
-        releasever: &str,
-    ) -> Result<(), FailureMessage> {
-        for args in [
-            vec!["install", "-y", "dnf-plugins-core"],
-            vec![
-                "config-manager",
-                "--add-repo",
-                "https://download.docker.com/linux/rhel/docker-ce.repo",
-            ],
-            vec![
-                "--releasever",
-                releasever,
-                "install",
-                "-y",
-                "docker-ce",
-                "docker-ce-cli",
-                "containerd.io",
-                "docker-buildx-plugin",
-                "docker-compose-plugin",
-            ],
-        ] {
-            let output = run_command("dnf", &args, DOCKER_INSTALL_TIMEOUT)?;
-            if !output.status.success() {
-                return Err(failure_message(format!(
-                    "Docker package installation failed: {}",
-                    output.failure_summary()
-                )));
-            }
-        }
-        Ok(())
-    }
-
-    fn prepare_dataplane_host(&mut self) -> Result<(), FailureMessage> {
-        if dataplane_host_ready(self.timeout) {
-            return Ok(());
-        }
-
-        let Some(package_manager) = detect_host_package_manager(self.timeout) else {
-            return Err(failure_message(
-                "no supported host package manager found (tried apt-get, dnf, yum); \
-                 install wireguard-tools, iproute2/iproute, and iputils manually",
-            ));
-        };
-        install_dataplane_packages(package_manager)?;
-
-        if dataplane_host_ready(self.timeout) {
-            return Ok(());
-        }
-        Err(failure_message(
-            "dataplane host packages installed but wg/ip/tc/tun are not ready",
-        ))
-    }
-}
-
-/// Host package manager used to install the dataplane dependencies. Distro
-/// families disagree on package names (Debian splits `iproute2`/`iputils-ping`;
-/// RHEL ships `iproute`/`iputils`), so the manager carries its own names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HostPackageManager {
-    Apt,
-    Dnf,
-    Yum,
-}
-
-impl HostPackageManager {
-    /// Managers probed in preference order: Debian's apt, then RHEL's dnf, then
-    /// legacy yum.
-    const CANDIDATES: [Self; 3] = [Self::Apt, Self::Dnf, Self::Yum];
-
-    const fn program(self) -> &'static str {
-        match self {
-            Self::Apt => "apt-get",
-            Self::Dnf => "dnf",
-            Self::Yum => "yum",
-        }
-    }
-
-    const fn dataplane_packages(self) -> [&'static str; 3] {
-        match self {
-            Self::Apt => ["wireguard-tools", "iproute2", "iputils-ping"],
-            Self::Dnf | Self::Yum => ["wireguard-tools", "iproute", "iputils"],
-        }
-    }
-}
-
-fn detect_host_package_manager(timeout: Duration) -> Option<HostPackageManager> {
-    HostPackageManager::CANDIDATES
-        .into_iter()
-        .find(|manager| command_success(manager.program(), &["--version"], timeout))
-}
-
-fn install_dataplane_packages(package_manager: HostPackageManager) -> Result<(), FailureMessage> {
-    let packages = package_manager.dataplane_packages();
-
-    // apt needs an explicit metadata refresh; dnf/yum refresh on install.
-    if package_manager == HostPackageManager::Apt {
-        let update = run_command("apt-get", &["update"], DATAPLANE_HOST_INSTALL_TIMEOUT)?;
-        if !update.status.success() {
-            return Err(failure_message(format!(
-                "apt-get update failed: {}",
-                update.failure_summary()
-            )));
-        }
-    }
-
-    // wireguard-tools ships in EPEL on RHEL-family hosts, so enable it before the
-    // install. Best-effort: on Rocky/Alma `epel-release` is in the default extras
-    // repo and this succeeds; on Fedora the package is absent and unneeded. A
-    // failure here is not fatal — the package install below is the real gate and
-    // yields typed evidence if wireguard-tools still cannot be resolved.
-    // ponytail: ignore epel-release outcome; the wireguard-tools install verifies it transitively.
-    if matches!(
-        package_manager,
-        HostPackageManager::Dnf | HostPackageManager::Yum
-    ) {
-        let program = package_manager.program();
-        let _ = run_os_command_with_display(
-            program,
-            &[
-                OsString::from("install"),
-                OsString::from("-y"),
-                OsString::from("epel-release"),
-            ],
-            format!("{program} install -y epel-release"),
-            DATAPLANE_HOST_INSTALL_TIMEOUT,
-        );
-    }
-
-    let (program, mut args) = match package_manager {
-        // The env wrapper keeps apt fully non-interactive.
-        HostPackageManager::Apt => (
-            "env",
-            vec![
-                OsString::from("DEBIAN_FRONTEND=noninteractive"),
-                OsString::from("apt-get"),
-                OsString::from("install"),
-                OsString::from("-y"),
-            ],
-        ),
-        HostPackageManager::Dnf => ("dnf", vec![OsString::from("install"), OsString::from("-y")]),
-        HostPackageManager::Yum => ("yum", vec![OsString::from("install"), OsString::from("-y")]),
-    };
-    args.extend(packages.iter().map(OsString::from));
-    let display = format!(
-        "{} install -y {}",
-        package_manager.program(),
-        packages.join(" ")
-    );
-
-    let output =
-        run_os_command_with_display(program, &args, display, DATAPLANE_HOST_INSTALL_TIMEOUT)?;
-    if output.status.success() {
-        return Ok(());
-    }
-    Err(failure_message(format!(
-        "dataplane host package install failed: {}",
-        output.failure_summary()
-    )))
 }
 
 fn dataplane_host_ready(timeout: Duration) -> bool {
@@ -516,7 +347,6 @@ fn failure_message(message: impl Into<String>) -> FailureMessage {
 
 #[cfg(test)]
 mod tests {
-    use super::DOCKER_INSTALL_TIMEOUT;
     use std::ffi::OsString;
     use std::time::Duration;
 
@@ -539,11 +369,6 @@ mod tests {
     }
 
     #[test]
-    fn docker_install_timeout_allows_first_bootstrap_package_install() {
-        assert_eq!(DOCKER_INSTALL_TIMEOUT, Duration::from_secs(300));
-    }
-
-    #[test]
     fn large_command_output_does_not_sigpipe_the_child() {
         // A child that writes well past the 4 KB read cap must still succeed:
         // the reader drains the remainder instead of closing the pipe and
@@ -563,27 +388,5 @@ mod tests {
             output.failure_summary()
         );
         assert!(!output.stdout.is_empty());
-    }
-
-    #[test]
-    fn dataplane_packages_use_the_distro_family_names() {
-        use super::HostPackageManager;
-
-        // Debian splits the tools; RHEL uses single iproute/iputils packages.
-        assert_eq!(
-            HostPackageManager::Apt.dataplane_packages(),
-            ["wireguard-tools", "iproute2", "iputils-ping"]
-        );
-        assert_eq!(
-            HostPackageManager::Dnf.dataplane_packages(),
-            ["wireguard-tools", "iproute", "iputils"]
-        );
-        assert_eq!(
-            HostPackageManager::Yum.dataplane_packages(),
-            ["wireguard-tools", "iproute", "iputils"]
-        );
-        assert_eq!(HostPackageManager::Dnf.program(), "dnf");
-        assert_eq!(HostPackageManager::Yum.program(), "yum");
-        assert_eq!(HostPackageManager::Apt.program(), "apt-get");
     }
 }

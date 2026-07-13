@@ -170,7 +170,7 @@ impl HostRunnerStepLabel {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostPrerequisite {
-    LinuxRootSystemd,
+    LinuxRoot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -960,6 +960,7 @@ pub(crate) fn host_runner_join_install_plan(target: HostRunnerJoinTarget) -> Hos
 fn host_runner_join_material_steps(target: &HostRunnerJoinTarget) -> Vec<HostRunnerStep> {
     let assigned = join_assigned_substrate(&target.roles, target.host_port_assurance);
     vec![
+        HostRunnerStep::VerifyHost(HostPrerequisite::LinuxRoot),
         HostRunnerStep::PreflightHostPorts(assigned.clone()),
         HostRunnerStep::StoreAssignedSubstrate(assigned),
         HostRunnerStep::StoreJoinMaterial(target.material.clone()),
@@ -1145,7 +1146,7 @@ pub fn core_promote_plan(target: CorePromoteTarget) -> HostRunnerStepPlan {
     );
     let control = DaemonProcessRole::Control;
     HostRunnerStepPlan::new(vec![
-        HostRunnerStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
+        HostRunnerStep::VerifyHost(HostPrerequisite::LinuxRoot),
         HostRunnerStep::PreflightHostPorts(target.assigned_substrate.clone()),
         HostRunnerStep::AssureHostPorts(target.assigned_substrate.clone()),
         HostRunnerStep::StoreAssignedSubstrate(target.assigned_substrate),
@@ -1225,7 +1226,7 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> HostRunn
     );
     let assigned = founder_assigned_substrate(target.roles, target.host_port_assurance);
     let mut steps = vec![
-        HostRunnerStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
+        HostRunnerStep::VerifyHost(HostPrerequisite::LinuxRoot),
         HostRunnerStep::PreflightHostPorts(assigned.clone()),
         HostRunnerStep::AssureHostPorts(assigned.clone()),
         HostRunnerStep::StoreAssignedSubstrate(assigned),

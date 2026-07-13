@@ -21,6 +21,7 @@ pub mod executor;
 pub mod firewall;
 mod first_machine;
 pub mod fsx;
+pub mod host_platform;
 pub mod join;
 mod join_client;
 pub mod join_executor;
@@ -32,6 +33,7 @@ pub mod report;
 mod runtime;
 pub mod steps;
 mod substrate_update;
+pub mod supervisor;
 pub mod systemd;
 
 use std::process::ExitCode;

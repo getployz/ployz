@@ -3831,6 +3831,7 @@ dependencies = [
  "time",
  "tokio",
  "ureq",
+ "wait-timeout",
 ]
 
 [[package]]

@@ -15,6 +15,7 @@ use ployz_core::ops::FailureMessage;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileMode {
     Plain,
+    Executable0755,
     Secret0600,
 }
 
@@ -24,6 +25,14 @@ impl FileMode {
         options.write(true).create_new(true);
         match self {
             Self::Plain => {}
+            Self::Executable0755 => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+
+                    options.mode(0o755);
+                }
+            }
             Self::Secret0600 => {
                 #[cfg(unix)]
                 {
@@ -40,6 +49,15 @@ impl FileMode {
         let mut options = AtomicWriteFile::options();
         match self {
             Self::Plain => {}
+            Self::Executable0755 => {
+                #[cfg(unix)]
+                {
+                    use atomic_write_file::unix::OpenOptionsExt as AtomicOpenOptionsExt;
+                    use std::os::unix::fs::OpenOptionsExt as _;
+
+                    options.mode(0o755).preserve_mode(false);
+                }
+            }
             Self::Secret0600 => {
                 #[cfg(unix)]
                 {

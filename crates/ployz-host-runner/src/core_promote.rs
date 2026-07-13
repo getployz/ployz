@@ -124,9 +124,10 @@ pub(crate) fn run_core_promote_command(promote: HostRunnerCorePromote) -> ExitCo
     let plan = core_promote_plan(target);
     let mut effects = HostRunnerLocalEffects::new(
         HostRunnerLocalConfig {
-            systemd_dir: "/etc/systemd/system".into(),
+            supervisor_dirs: crate::supervisor::SupervisorDirectories::host_defaults(),
             state_dir: HOST_RUNNER_STATE_DIR.into(),
             docker_daemon_config: "/etc/docker/daemon.json".into(),
+            docker_repository_dir: "/etc/yum.repos.d".into(),
         },
         SystemHostRunnerCommandRunner::default(),
     );

@@ -1,8 +1,8 @@
 //! Process wiring for the control role.
 
 use crate::adapters::nats_authorization::{
-    MachineCredentialMint, MintResumeError, MintVerifyEndpoint, NatsAuthorizationWriter,
-    NatsReloadRunner, RenderFailure, SystemctlNatsReloadRunner,
+    HostNatsReloadRunner, MachineCredentialMint, MintResumeError, MintVerifyEndpoint,
+    NatsAuthorizationWriter, NatsReloadRunner, RenderFailure,
 };
 use crate::certificate::CertificateManager;
 use crate::certificate::task::{
@@ -121,14 +121,16 @@ pub async fn start_control_process(
     let client = connect_authenticated(&config.nats_connect, CONTROL_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(ControlProcessError::ConnectNats)?;
-    start_control_process_with_client_and_reload(client, config, SystemctlNatsReloadRunner).await
+    start_control_process_with_client_and_reload(client, config, HostNatsReloadRunner::default())
+        .await
 }
 
 pub async fn start_control_process_with_client(
     client: NatsClient,
     config: &ControlProcessConfig,
 ) -> Result<RunningControlProcess, ControlProcessError> {
-    start_control_process_with_client_and_reload(client, config, SystemctlNatsReloadRunner).await
+    start_control_process_with_client_and_reload(client, config, HostNatsReloadRunner::default())
+        .await
 }
 
 pub async fn start_control_process_with_client_and_reload(

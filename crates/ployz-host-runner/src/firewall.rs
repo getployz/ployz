@@ -4,6 +4,7 @@ use ployz_core::ops::FailureMessage;
 
 use crate::assigned_substrate::{AssignedHostPort, HostPortProtocol};
 use crate::command::HostRunnerCommandRunner;
+use crate::supervisor::SupervisorBackend;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FirewallBackend {
@@ -14,22 +15,13 @@ pub enum FirewallBackend {
 }
 
 pub(crate) fn detect_firewall_backend(
+    supervisor: SupervisorBackend,
     runner: &mut impl HostRunnerCommandRunner,
 ) -> Result<FirewallBackend, FailureMessage> {
-    if command_probe(
-        runner,
-        "systemctl",
-        &["is-active", "--quiet", "firewalld.service"],
-        &[3, 4],
-    )? {
+    if service_active(supervisor, runner, "firewalld")? {
         return Ok(FirewallBackend::Firewalld);
     }
-    if command_probe(
-        runner,
-        "systemctl",
-        &["is-active", "--quiet", "ufw.service"],
-        &[3, 4],
-    )? {
+    if service_active(supervisor, runner, "ufw")? {
         let output = runner.command("ufw", &["status"])?;
         if !output.success {
             return Err(failure_message(output.failure));
@@ -42,12 +34,7 @@ pub(crate) fn detect_firewall_backend(
             return Ok(FirewallBackend::Ufw);
         }
     }
-    let nft_service_active = command_probe(
-        runner,
-        "systemctl",
-        &["is-active", "--quiet", "nftables.service"],
-        &[3, 4],
-    )?;
+    let nft_service_active = service_active(supervisor, runner, "nftables")?;
     let nft_installed = command_probe(
         runner,
         "sh",
@@ -64,14 +51,9 @@ pub(crate) fn detect_firewall_backend(
         }
     }
     let mut iptables_service = None;
-    for service in ["iptables.service", "netfilter-persistent.service"] {
-        if command_probe(
-            runner,
-            "systemctl",
-            &["is-active", "--quiet", service],
-            &[3, 4],
-        )? {
-            iptables_service = Some(service.trim_end_matches(".service"));
+    for service in ["iptables", "netfilter-persistent"] {
+        if service_active(supervisor, runner, service)? {
+            iptables_service = Some(service);
         }
     }
     let iptables_installed = command_probe(
@@ -92,16 +74,19 @@ pub(crate) fn detect_firewall_backend(
         }
     }
 
-    let output = runner.command(
-        "systemctl",
-        &[
-            "list-units",
-            "--type=service",
-            "--state=active",
-            "--no-legend",
-            "--plain",
-        ],
-    )?;
+    let output = match supervisor {
+        SupervisorBackend::Systemd => runner.command(
+            "systemctl",
+            &[
+                "list-units",
+                "--type=service",
+                "--state=active",
+                "--no-legend",
+                "--plain",
+            ],
+        )?,
+        SupervisorBackend::OpenRc => runner.command("rc-status", &["--servicelist"])?,
+    };
     if !output.success {
         return Err(failure_message(output.failure));
     }
@@ -109,6 +94,27 @@ pub(crate) fn detect_firewall_backend(
         return Ok(FirewallBackend::Unmanaged(service.to_owned()));
     }
     Ok(FirewallBackend::None)
+}
+
+fn service_active(
+    supervisor: SupervisorBackend,
+    runner: &mut impl HostRunnerCommandRunner,
+    service: &str,
+) -> Result<bool, FailureMessage> {
+    match supervisor {
+        SupervisorBackend::Systemd => {
+            let unit = format!("{service}.service");
+            command_probe(
+                runner,
+                "systemctl",
+                &["is-active", "--quiet", &unit],
+                &[3, 4],
+            )
+        }
+        SupervisorBackend::OpenRc => {
+            command_probe(runner, "rc-service", &[service, "status"], &[1, 3])
+        }
+    }
 }
 
 impl FirewallBackend {
@@ -317,9 +323,6 @@ mod tests {
         fn current_uid(&mut self) -> Result<u32, FailureMessage> {
             unreachable!()
         }
-        fn systemctl(&mut self, _: &[&str]) -> Result<(), FailureMessage> {
-            unreachable!()
-        }
         fn download(&mut self, _: &str, _: &Path) -> Result<(), FailureMessage> {
             unreachable!()
         }
@@ -333,18 +336,6 @@ mod tests {
             unreachable!()
         }
         fn docker_has_insecure_registry(&mut self, _: &str) -> Result<bool, FailureMessage> {
-            unreachable!()
-        }
-        fn enable_docker_service(&mut self) -> Result<(), FailureMessage> {
-            unreachable!()
-        }
-        fn run_docker_install_script(&mut self, _: &Path) -> Result<(), FailureMessage> {
-            unreachable!()
-        }
-        fn install_docker_from_rhel_repository(&mut self, _: &str) -> Result<(), FailureMessage> {
-            unreachable!()
-        }
-        fn prepare_dataplane_host(&mut self) -> Result<(), FailureMessage> {
             unreachable!()
         }
     }
@@ -391,9 +382,10 @@ mod tests {
 
     #[test]
     fn detection_propagates_probe_errors() {
-        let error = detect_firewall_backend(&mut RecordingRunner::with_outputs([probe_error(
-            "systemctl timed out",
-        )]))
+        let error = detect_firewall_backend(
+            SupervisorBackend::Systemd,
+            &mut RecordingRunner::with_outputs([probe_error("systemctl timed out")]),
+        )
         .expect_err("probe failure is not inactivity");
 
         assert_eq!(error.as_str(), "systemctl timed out");
@@ -415,7 +407,7 @@ mod tests {
         ]);
 
         assert_eq!(
-            detect_firewall_backend(&mut runner).expect("detection"),
+            detect_firewall_backend(SupervisorBackend::Systemd, &mut runner).expect("detection"),
             FirewallBackend::None
         );
     }
@@ -431,7 +423,7 @@ mod tests {
         ]);
 
         assert_eq!(
-            detect_firewall_backend(&mut runner).expect("detection"),
+            detect_firewall_backend(SupervisorBackend::Systemd, &mut runner).expect("detection"),
             FirewallBackend::Unmanaged("nftables".to_owned())
         );
     }
@@ -453,7 +445,8 @@ mod tests {
                 active(rules),
             ]);
             assert!(matches!(
-                detect_firewall_backend(&mut runner).expect("detection"),
+                detect_firewall_backend(SupervisorBackend::Systemd, &mut runner)
+                    .expect("detection"),
                 FirewallBackend::Unmanaged(_)
             ));
         }
@@ -473,7 +466,7 @@ mod tests {
         ]);
 
         assert_eq!(
-            detect_firewall_backend(&mut runner).expect("detection"),
+            detect_firewall_backend(SupervisorBackend::Systemd, &mut runner).expect("detection"),
             FirewallBackend::Unmanaged("custom-firewall.service".to_owned())
         );
     }
@@ -492,7 +485,7 @@ mod tests {
         ]);
 
         assert_eq!(
-            detect_firewall_backend(&mut runner).expect("detection"),
+            detect_firewall_backend(SupervisorBackend::Systemd, &mut runner).expect("detection"),
             FirewallBackend::None
         );
     }

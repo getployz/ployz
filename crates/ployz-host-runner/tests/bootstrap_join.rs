@@ -41,6 +41,7 @@ fn host_runner_join_installs_ployzd_and_only_assigned_role_units() {
             .contains(&HostRunnerStep::StoreJoinMaterial(material))
     );
     let [
+        verify_host,
         preflight_material,
         store_assigned,
         store_material,
@@ -55,6 +56,7 @@ fn host_runner_join_installs_ployzd_and_only_assigned_role_units() {
     else {
         panic!("join install plan records material and Docker prep before artifacts");
     };
+    assert!(matches!(verify_host, HostRunnerStep::VerifyHost(_)));
     assert!(matches!(
         preflight_material,
         HostRunnerStep::PreflightHostPorts(_)

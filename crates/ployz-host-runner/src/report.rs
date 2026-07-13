@@ -45,8 +45,8 @@ pub fn render_step_event(event: &HostRunnerStepEvent) -> String {
 
 fn render_step_label(step: &HostRunnerStepLabel) -> String {
     match step {
-        HostRunnerStepLabel::VerifyHost(HostPrerequisite::LinuxRootSystemd) => {
-            "verify-host linux-root-systemd".to_owned()
+        HostRunnerStepLabel::VerifyHost(HostPrerequisite::LinuxRoot) => {
+            "verify-host linux-root".to_owned()
         }
         HostRunnerStepLabel::PreflightHostPorts(ports) => {
             format!("preflight-host-ports {}", render_host_ports(ports))

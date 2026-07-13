@@ -245,27 +245,30 @@ fn write_cloud_attempt_state(
 
 pub fn inspect_cloud_bootstrap_local_state(
     state_dir: &Path,
-    systemd_dir: &Path,
+    supervisor_dir: &Path,
 ) -> Result<CloudBootstrapLocalState, CloudBootstrapLocalStateError> {
     for path in accepted_machine_evidence_paths(state_dir) {
         if path.exists() {
             return Ok(CloudBootstrapLocalState::AlreadyBootstrapped { evidence: path });
         }
     }
-    if systemd_dir.exists() {
-        for entry in fs::read_dir(systemd_dir).map_err(|error| {
-            CloudBootstrapLocalStateError::ReadSystemd {
-                path: systemd_dir.to_path_buf(),
+    if supervisor_dir.exists() {
+        for entry in fs::read_dir(supervisor_dir).map_err(|error| {
+            CloudBootstrapLocalStateError::ReadSupervisorServices {
+                path: supervisor_dir.to_path_buf(),
                 message: error.to_string(),
             }
         })? {
-            let entry = entry.map_err(|error| CloudBootstrapLocalStateError::ReadSystemd {
-                path: systemd_dir.to_path_buf(),
-                message: error.to_string(),
-            })?;
+            let entry =
+                entry.map_err(
+                    |error| CloudBootstrapLocalStateError::ReadSupervisorServices {
+                        path: supervisor_dir.to_path_buf(),
+                        message: error.to_string(),
+                    },
+                )?;
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name.starts_with("ployzd-") && name.ends_with(".service") {
+            if name.starts_with("ployzd-") && (name.ends_with(".service") || !name.contains('.')) {
                 return Ok(CloudBootstrapLocalState::AlreadyBootstrapped {
                     evidence: entry.path(),
                 });
@@ -341,8 +344,8 @@ pub enum CloudAttemptStateError {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CloudBootstrapLocalStateError {
-    #[error("failed to read systemd directory {}: {message}", path.display())]
-    ReadSystemd { path: PathBuf, message: String },
+    #[error("failed to read supervisor service directory {}: {message}", path.display())]
+    ReadSupervisorServices { path: PathBuf, message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -357,8 +360,11 @@ pub enum CloudJoinerEnvelopeError {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::{
-        cloud_joiner_connect_config, cloud_joiner_success_callback, write_cloud_joiner_trusted_ca,
+        CloudBootstrapLocalState, cloud_joiner_connect_config, cloud_joiner_success_callback,
+        write_cloud_joiner_trusted_ca,
     };
     use ployz_core::ids::{MachineId, OperationId};
     use ployz_core::install::{
@@ -466,6 +472,22 @@ mod tests {
                 .expect("preflight inspects"),
             super::CloudBootstrapLocalState::PartialSameAttempt
         );
+    }
+
+    #[test]
+    fn cloud_preflight_detects_existing_openrc_service() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let state_dir = root.path().join("state");
+        let openrc_dir = root.path().join("openrc");
+        fs::create_dir_all(&state_dir).expect("state dir");
+        fs::create_dir_all(&openrc_dir).expect("OpenRC dir");
+        fs::write(openrc_dir.join("ployzd-dns"), "#!/sbin/openrc-run\n").expect("OpenRC service");
+
+        assert!(matches!(
+            super::inspect_cloud_bootstrap_local_state(&state_dir, &openrc_dir)
+                .expect("local state"),
+            CloudBootstrapLocalState::AlreadyBootstrapped { .. }
+        ));
     }
 
     #[test]
