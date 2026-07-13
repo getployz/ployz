@@ -75,6 +75,30 @@ generic package-manager DSL, a trait hierarchy for every host command, or a
 third-party service-manager wrapper. A new capability becomes a new explicit
 variant; a new distribution normally maps to an existing profile.
 
+## Real-host certification
+
+The latest complete real-host matrix passed on `v0.0.2-alpha.55` on 2026-07-13
+using fresh Vultr `vc2-1c-1gb` `amd64` hosts in Frankfurt, without bootstrap
+retries or manual dataplane workarounds.
+
+| Distribution | Version | Certified role |
+| --- | --- | --- |
+| Ubuntu | 24.04 | core and gateway |
+| Ubuntu | 26.04 | edge and gateway |
+| Rocky Linux | 9.8 | edge and gateway |
+| CentOS Stream | 9 | edge and gateway |
+| Fedora | 43 | edge and gateway |
+| Fedora | 44 | edge and gateway |
+| Arch Linux | rolling | edge, gateway, and workload host |
+| openSUSE Leap | 16.0 | edge and gateway |
+
+All eight machines reported `ebpf=attached` and fresh WireGuard peer
+handshakes. Exactly one `nginx:alpine` replica ran on Arch Linux, and all eight
+public gateways returned HTTP 200 in three consecutive probes (24/24). This
+certifies only the versions, architecture, and roles listed; an accepted
+distribution ID or deterministic adapter test does not establish real-host
+certification.
+
 ## Consequences
 
 The bootstrap plan has one host-verification step and one set of product
