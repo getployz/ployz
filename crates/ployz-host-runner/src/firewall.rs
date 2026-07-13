@@ -341,6 +341,9 @@ mod tests {
         fn run_docker_install_script(&mut self, _: &Path) -> Result<(), FailureMessage> {
             unreachable!()
         }
+        fn install_docker_from_rhel_repository(&mut self, _: &str) -> Result<(), FailureMessage> {
+            unreachable!()
+        }
         fn prepare_dataplane_host(&mut self) -> Result<(), FailureMessage> {
             unreachable!()
         }

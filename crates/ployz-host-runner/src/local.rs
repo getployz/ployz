@@ -292,19 +292,9 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
                     .download(DOCKER_INSTALL_SCRIPT_URL, script.path())?;
                 self.runner.run_docker_install_script(script.path())?;
             }
-            DockerInstallTarget::Rhel { releasever } => {
-                let script = DockerInstallScript::new()?;
-                fs::write(
-                    script.path(),
-                    format!(
-                        "set -eu\ndnf install -y dnf-plugins-core\ndnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo\ndnf --releasever {releasever} install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin\n"
-                    ),
-                )
-                .map_err(|error| {
-                    failure_message(format!("failed to write Docker install script: {error}"))
-                })?;
-                self.runner.run_docker_install_script(script.path())?;
-            }
+            DockerInstallTarget::Rhel { releasever } => self
+                .runner
+                .install_docker_from_rhel_repository(&releasever)?,
         }
         self.runner.enable_docker_service()?;
         self.verify_running_docker(&endpoint_supernet)

@@ -266,6 +266,13 @@ mod tests {
             Ok(())
         }
 
+        fn install_docker_from_rhel_repository(
+            &mut self,
+            _releasever: &str,
+        ) -> Result<(), FailureMessage> {
+            Ok(())
+        }
+
         fn prepare_dataplane_host(&mut self) -> Result<(), FailureMessage> {
             Ok(())
         }

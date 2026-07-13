@@ -31,6 +31,10 @@ pub trait HostRunnerCommandRunner {
     fn docker_has_insecure_registry(&mut self, cidr: &str) -> Result<bool, FailureMessage>;
     fn enable_docker_service(&mut self) -> Result<(), FailureMessage>;
     fn run_docker_install_script(&mut self, script: &Path) -> Result<(), FailureMessage>;
+    fn install_docker_from_rhel_repository(
+        &mut self,
+        releasever: &str,
+    ) -> Result<(), FailureMessage>;
     fn prepare_dataplane_host(&mut self) -> Result<(), FailureMessage>;
 }
 
@@ -187,6 +191,40 @@ impl HostRunnerCommandRunner for SystemHostRunnerCommandRunner {
             "docker install script failed: {}",
             output.failure_summary()
         )))
+    }
+
+    fn install_docker_from_rhel_repository(
+        &mut self,
+        releasever: &str,
+    ) -> Result<(), FailureMessage> {
+        for args in [
+            vec!["install", "-y", "dnf-plugins-core"],
+            vec![
+                "config-manager",
+                "--add-repo",
+                "https://download.docker.com/linux/rhel/docker-ce.repo",
+            ],
+            vec![
+                "--releasever",
+                releasever,
+                "install",
+                "-y",
+                "docker-ce",
+                "docker-ce-cli",
+                "containerd.io",
+                "docker-buildx-plugin",
+                "docker-compose-plugin",
+            ],
+        ] {
+            let output = run_command("dnf", &args, DOCKER_INSTALL_TIMEOUT)?;
+            if !output.status.success() {
+                return Err(failure_message(format!(
+                    "Docker package installation failed: {}",
+                    output.failure_summary()
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn prepare_dataplane_host(&mut self) -> Result<(), FailureMessage> {

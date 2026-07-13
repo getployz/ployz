@@ -726,11 +726,7 @@ fn local_effects_install_docker_from_rhel_repository_on_rocky() {
 
     assert_eq!(effects.runner().docker_install_runs, 1);
     assert!(effects.runner().downloads.is_empty());
-    let [script] = effects.runner().docker_install_scripts.as_slice() else {
-        panic!("one Docker install script must run");
-    };
-    assert!(script.contains("download.docker.com/linux/rhel/docker-ce.repo"));
-    assert!(script.contains("dnf --releasever 9 install -y docker-ce"));
+    assert_eq!(effects.runner().rhel_docker_releasevers, ["9"]);
     let config: serde_json::Value = serde_json::from_slice(
         &fs::read(root.join("etc/docker/daemon.json")).expect("Docker config can be read"),
     )
@@ -1355,6 +1351,7 @@ struct RecordingRunner {
     docker_running: bool,
     docker_install_runs: usize,
     docker_install_scripts: Vec<String>,
+    rhel_docker_releasevers: Vec<String>,
     dataplane_host_prepare_runs: usize,
     fail_docker_install: bool,
     fail_dataplane_host_prepare: bool,
@@ -1378,6 +1375,7 @@ impl RecordingRunner {
             docker_running: true,
             docker_install_runs: 0,
             docker_install_scripts: Vec::new(),
+            rhel_docker_releasevers: Vec::new(),
             dataplane_host_prepare_runs: 0,
             fail_docker_install: false,
             fail_dataplane_host_prepare: false,
@@ -1493,6 +1491,16 @@ impl HostRunnerCommandRunner for RecordingRunner {
         if self.fail_docker_install {
             return Err(failure_message("simulated docker install failure"));
         }
+        self.docker_installed = true;
+        Ok(())
+    }
+
+    fn install_docker_from_rhel_repository(
+        &mut self,
+        releasever: &str,
+    ) -> Result<(), FailureMessage> {
+        self.rhel_docker_releasevers.push(releasever.to_owned());
+        self.docker_install_runs += 1;
         self.docker_installed = true;
         Ok(())
     }
