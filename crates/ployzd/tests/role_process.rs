@@ -365,6 +365,7 @@ fn control_role_rejects_invalid_machine_bootstrap_url() {
 fn binary_machine_role_enters_real_runtime_and_fails_when_nats_is_unreachable() {
     let seed_file = temp_seed_file("binary-machine.seed");
     let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
+        .env("DO_NOT_TRACK", "1")
         .args(["machine", "--id", "machine_7"])
         .env(PLOYZ_NATS_URL_ENV, "nats://127.0.0.1:7422")
         .env(PLOYZ_NATS_CA_FILE_ENV, "/tmp/ployz-test-ca.pem")
@@ -384,6 +385,7 @@ fn binary_machine_role_enters_real_runtime_and_fails_when_nats_is_unreachable() 
 fn binary_gateway_role_enters_real_runtime_and_fails_when_nats_is_unreachable() {
     let seed_file = temp_seed_file("binary-gateway.seed");
     let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
+        .env("DO_NOT_TRACK", "1")
         .args(["gateway"])
         .env(PLOYZ_MACHINE_ID_ENV, "machine_7")
         .env(PLOYZ_NATS_URL_ENV, "nats://127.0.0.1:7422")
@@ -404,6 +406,7 @@ fn binary_gateway_role_enters_real_runtime_and_fails_when_nats_is_unreachable() 
 fn binary_dns_role_enters_real_runtime_and_fails_when_nats_is_unreachable() {
     let seed_file = temp_seed_file("binary-dns.seed");
     let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
+        .env("DO_NOT_TRACK", "1")
         .args(["dns"])
         .env(PLOYZ_MACHINE_ID_ENV, "machine_7")
         .env(PLOYZ_NATS_URL_ENV, "nats://127.0.0.1:7422")
@@ -515,6 +518,7 @@ fn control_role_requires_a_readable_controller_seed_file() {
 #[test]
 fn binary_machine_role_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployzd"))
+        .env("DO_NOT_TRACK", "1")
         .args(["machine", "--id", "machine_7"])
         .env_remove(PLOYZ_NATS_URL_ENV)
         .output()
