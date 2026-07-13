@@ -1,8 +1,7 @@
 # JetStream Exits: Core NATS Is Transport, Disks Are Storage
 
-Supersedes ADR 0001's JetStream classification/reindex model for current
-control-plane storage. Historical ADRs that require JetStream are retained as
-recorded decisions, but new implementation work follows this ADR.
+This replaces the former JetStream classification and reindex model for
+control-plane storage.
 
 With state split per ADR 0028, every JetStream feature the control plane
 uses has a simpler owner, so JetStream is removed entirely
@@ -23,8 +22,8 @@ The replacement for each tenant:
   their own step evidence in their fact ledgers, so a deep inspection can
   corroborate an operation from the machines it touched — everyone
   testifies about themselves, nobody holds another party's memory.
-  Operation history is mortal with the core, by declaration (ADR 0001's
-  disposable class); Cloud subscribes live if it wants durable memory.
+  Operation history is mortal with the core by declaration; Cloud subscribes
+  live if it wants durable memory.
   Standalone Ployz does not promise durable long-term operation history
   after core evidence loss. Evidence logs live in ployzd-owned `0700`
   directories as `0600` files, are written atomically with fsync, exclude
