@@ -7,7 +7,8 @@ use super::containers::{
     handle_volume_remove,
 };
 use super::dataplane::{
-    handle_dataplane_mtu_probe, handle_dataplane_prepare, handle_dataplane_status,
+    MachineDataplaneStatusState, handle_dataplane_mtu_probe, handle_dataplane_prepare,
+    handle_dataplane_status,
 };
 use super::facts::{
     MachineEndpointCache, MachineFactsState, handle_facts_get, handle_facts_refresh,
@@ -19,6 +20,7 @@ use super::images::{
 use super::logs::handle_logs_tail;
 use super::substrate::{handle_substrate_report, handle_substrate_update};
 use crate::adapters::host_dataplane::dataplane_status_budget;
+use crate::roles::machine::projection::MachineProjectionState;
 use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
 use crate::service_catalog::{machine_endpoint_spec, machine_role_service_base};
 use ployz_core::dataplane::{
@@ -92,6 +94,7 @@ where
         log_reader,
         endpoint_cache,
         None,
+        MachineProjectionState::new(),
     )
     .await
 }
@@ -104,6 +107,7 @@ pub(crate) async fn start_machine_role_service_with_endpoint_cache_and_image<R, 
     log_reader: L,
     endpoint_cache: MachineEndpointCache,
     image_state: Option<AvailableImageService>,
+    projection_state: MachineProjectionState,
 ) -> Result<RunningNatsService, MachineServiceError>
 where
     R: Clone + MachineContainerRunner + Send + Sync + 'static,
@@ -240,7 +244,11 @@ where
         &mut runtime,
         &machine_id,
         MachineServiceEndpoint::DataplaneStatus,
-        preparer,
+        MachineDataplaneStatusState {
+            runner: runner.clone(),
+            preparer,
+            projection: projection_state,
+        },
         handle_dataplane_status,
     )
     .await?;

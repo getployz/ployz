@@ -450,9 +450,6 @@ const ROTATION_TICK: Duration = Duration::from_secs(1);
 /// A freshly-changed endpoint gets this long to complete a handshake before it is
 /// eligible to rotate again — WireGuard retries handshakes roughly every 5s.
 const ENDPOINT_SETTLE: Duration = Duration::from_secs(15);
-/// A previously-established peer silent for this long is treated as down. WireGuard
-/// rekeys well within ~180s, so 275s is comfortably past a dead tunnel.
-const HANDSHAKE_DEAD_SECS: u64 = 275;
 
 #[derive(Debug)]
 struct WireGuardEndpointRotation {
@@ -583,7 +580,8 @@ impl WireGuardEndpointRotation {
             // otherwise the loop cycles through every candidate each tick (thrash).
             let established_down = after_change
                 && last_handshake != 0
-                && now_unix.saturating_sub(last_handshake) >= HANDSHAKE_DEAD_SECS;
+                && now_unix.saturating_sub(last_handshake)
+                    >= ployz_core::dataplane::MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS;
             let never_connected = last_handshake == 0 && after_change;
             if !established_down && !never_connected {
                 continue;

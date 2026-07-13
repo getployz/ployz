@@ -62,6 +62,16 @@ where
                 },
             })
         }
+        Err(MachineContainerRunnerError::EndpointNetworkSubnetMismatch { expected, observed }) => {
+            machine_domain_error(MachineEnsureEndpointNetworkRpcResponse::DomainError {
+                machine_id,
+                error: MachineEnsureEndpointNetworkDomainError::EnsureFailed {
+                    message: failure_message(format!(
+                        "endpoint network subnet is {observed:?}, expected {expected:?}"
+                    )),
+                },
+            })
+        }
         Err(error) => runner_error(error),
     }
 }
@@ -235,6 +245,7 @@ where
                 }
                 Err(error @ MachineContainerRunnerError::ListExisting { .. })
                 | Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. })
+                | Err(error @ MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. })
                 | Err(error @ MachineContainerRunnerError::ImagePull { .. })
                 | Err(error @ MachineContainerRunnerError::Start { .. })
                 | Err(error @ MachineContainerRunnerError::Wait { .. })
@@ -292,6 +303,7 @@ where
             }
             Ok(Err(error @ MachineContainerRunnerError::ListExisting { .. }))
             | Ok(Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. }))
+            | Ok(Err(error @ MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. }))
             | Ok(Err(error @ MachineContainerRunnerError::Create { .. }))
             | Ok(Err(error @ MachineContainerRunnerError::ImagePull { .. }))
             | Ok(Err(error @ MachineContainerRunnerError::Start { .. }))
@@ -317,6 +329,11 @@ where
                     ),
                     Err(error @ MachineContainerRunnerError::ListExisting { .. })
                     | Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. })
+                    | Err(
+                        error @ MachineContainerRunnerError::EndpointNetworkSubnetMismatch {
+                            ..
+                        },
+                    )
                     | Err(error @ MachineContainerRunnerError::Create { .. })
                     | Err(error @ MachineContainerRunnerError::ImagePull { .. })
                     | Err(error @ MachineContainerRunnerError::Start { .. })
@@ -366,6 +383,7 @@ fn hook_start_error(
         }
         error @ (MachineContainerRunnerError::ListExisting { .. }
         | MachineContainerRunnerError::EnsureEndpointNetwork { .. }
+        | MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. }
         | MachineContainerRunnerError::Create { .. }
         | MachineContainerRunnerError::ImagePull { .. }
         | MachineContainerRunnerError::Wait { .. }

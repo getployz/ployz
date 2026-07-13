@@ -17,6 +17,7 @@ pub mod intent_mirror;
 mod logs;
 mod ployz_native_mesh;
 pub mod process;
+pub(crate) mod projection;
 pub mod protocol;
 pub mod registry_v2;
 pub(crate) mod response;

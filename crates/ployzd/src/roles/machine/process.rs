@@ -15,6 +15,9 @@ use crate::roles::machine::facts::{
 };
 use crate::roles::machine::images::AvailableImageService;
 use crate::roles::machine::intent_mirror::{MachineIntentMirror, MachinePendingJoinMirror};
+use crate::roles::machine::projection::{
+    MachineProjectionState, RunningProjectionTask, start_projection_task,
+};
 use crate::roles::machine::registry_v2::RunningRegistryV2;
 use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
 use crate::roles::machine::service::{
@@ -50,6 +53,7 @@ pub struct RunningMachineProcess {
     intent_mirror_shutdown: broadcast::Sender<()>,
     intent_mirror: JoinHandle<()>,
     pending_join_mirror: RunningTask,
+    projection: RunningProjectionTask,
     image_registry: Option<RunningRegistryV2>,
 }
 
@@ -59,6 +63,7 @@ impl RunningMachineProcess {
             image_registry.shutdown().await;
         }
         self.pending_join_mirror.shutdown().await;
+        self.projection.shutdown().await;
         let _ = self.intent_mirror_shutdown.send(());
         let _ = self.intent_mirror.await;
         self.observer.shutdown().await;
@@ -182,14 +187,16 @@ where
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
     let endpoint_cache = MachineEndpointCache::new(wg_ifname);
+    let projection_state = MachineProjectionState::new();
     let machine_service = start_machine_role_service_with_endpoint_cache_and_image(
         client.clone(),
         machine_id.clone(),
         runner.clone(),
-        preparer,
+        preparer.clone(),
         log_reader,
         endpoint_cache.clone(),
         image_state,
+        projection_state.clone(),
     )
     .await
     .map_err(MachineProcessError::StartMachineService)?;
@@ -203,6 +210,13 @@ where
         intent_mirror_shutdown_rx,
     );
     let pending_join_mirror = start_pending_join_mirror(client.clone(), pending_join_mirror);
+    let projection = start_projection_task(
+        client.clone(),
+        machine_id.clone(),
+        runner.clone(),
+        preparer,
+        projection_state,
+    );
     let observer = start_machine_observer(
         machine_id,
         runner,
@@ -217,6 +231,7 @@ where
         intent_mirror_shutdown,
         intent_mirror,
         pending_join_mirror,
+        projection,
         image_registry: None,
     })
 }

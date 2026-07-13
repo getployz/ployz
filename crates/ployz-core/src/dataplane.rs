@@ -17,6 +17,8 @@ pub const DEFAULT_WIREGUARD_LISTEN_PORT: u16 = 51820;
 pub const MIN_WIREGUARD_MTU: u32 = 1280;
 pub const MAX_WIREGUARD_MTU: u32 = 1420;
 pub const OVERLAY_CONNECTIVITY_PROOF_BUDGET: Duration = Duration::from_secs(45);
+/// A previously-established peer silent beyond this age is not healthy.
+pub const MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS: u64 = 275;
 pub const DEFAULT_ENDPOINT_SUPERNET: &str = "10.198.0.0/16";
 pub const INTERNAL_DNS_SUFFIX: &str = "internal";
 
@@ -96,7 +98,7 @@ impl DataplaneProjection {
         declared_members.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
         if declared_members
             .windows(2)
-            .any(|pair| pair[0].machine_id == pair[1].machine_id)
+            .any(|pair| matches!(pair, [left, right] if left.machine_id == right.machine_id))
         {
             return Err(DataplaneProjectionError::DuplicateMachine);
         }

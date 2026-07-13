@@ -26,6 +26,11 @@ pub(crate) fn runner_error(error: MachineContainerRunnerError) -> NatsServiceRes
                 "endpoint network ensure failed: {message}"
             )))
         }
+        MachineContainerRunnerError::EndpointNetworkSubnetMismatch { expected, observed } => {
+            NatsServiceResponse::transport_error(NatsServiceError::internal(format!(
+                "endpoint network subnet is {observed:?}, expected {expected:?}"
+            )))
+        }
         MachineContainerRunnerError::Create { message } => NatsServiceResponse::transport_error(
             NatsServiceError::internal(format!("container create failed: {message}")),
         ),
@@ -84,6 +89,7 @@ pub(crate) fn container_start_error(
         }
         error @ (MachineContainerRunnerError::ListExisting { .. }
         | MachineContainerRunnerError::EnsureEndpointNetwork { .. }
+        | MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. }
         | MachineContainerRunnerError::Create { .. }
         | MachineContainerRunnerError::ImagePull { .. }
         | MachineContainerRunnerError::Wait { .. }
