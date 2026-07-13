@@ -194,34 +194,13 @@ impl HostRunnerCommandRunner for SystemHostRunnerCommandRunner {
             return Ok(());
         }
 
-        let output = run_command("apt-get", &["update"], DATAPLANE_HOST_INSTALL_TIMEOUT)?;
-        if !output.status.success() {
-            return Err(failure_message(format!(
-                "apt-get update failed: {}",
-                output.failure_summary()
-            )));
-        }
-
-        let output = run_os_command_with_display(
-            "env",
-            &[
-                OsString::from("DEBIAN_FRONTEND=noninteractive"),
-                OsString::from("apt-get"),
-                OsString::from("install"),
-                OsString::from("-y"),
-                OsString::from("wireguard-tools"),
-                OsString::from("iproute2"),
-                OsString::from("iputils-ping"),
-            ],
-            "apt-get install -y wireguard-tools iproute2 iputils-ping".to_owned(),
-            DATAPLANE_HOST_INSTALL_TIMEOUT,
-        )?;
-        if !output.status.success() {
-            return Err(failure_message(format!(
-                "dataplane host package install failed: {}",
-                output.failure_summary()
-            )));
-        }
+        let Some(package_manager) = detect_host_package_manager(self.timeout) else {
+            return Err(failure_message(
+                "no supported host package manager found (tried apt-get, dnf, yum); \
+                 install wireguard-tools, iproute2/iproute, and iputils manually",
+            ));
+        };
+        install_dataplane_packages(package_manager)?;
 
         if dataplane_host_ready(self.timeout) {
             return Ok(());
@@ -230,6 +209,112 @@ impl HostRunnerCommandRunner for SystemHostRunnerCommandRunner {
             "dataplane host packages installed but wg/ip/tc/tun are not ready",
         ))
     }
+}
+
+/// Host package manager used to install the dataplane dependencies. Distro
+/// families disagree on package names (Debian splits `iproute2`/`iputils-ping`;
+/// RHEL ships `iproute`/`iputils`), so the manager carries its own names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostPackageManager {
+    Apt,
+    Dnf,
+    Yum,
+}
+
+impl HostPackageManager {
+    /// Managers probed in preference order: Debian's apt, then RHEL's dnf, then
+    /// legacy yum.
+    const CANDIDATES: [Self; 3] = [Self::Apt, Self::Dnf, Self::Yum];
+
+    const fn program(self) -> &'static str {
+        match self {
+            Self::Apt => "apt-get",
+            Self::Dnf => "dnf",
+            Self::Yum => "yum",
+        }
+    }
+
+    const fn dataplane_packages(self) -> [&'static str; 3] {
+        match self {
+            Self::Apt => ["wireguard-tools", "iproute2", "iputils-ping"],
+            Self::Dnf | Self::Yum => ["wireguard-tools", "iproute", "iputils"],
+        }
+    }
+}
+
+fn detect_host_package_manager(timeout: Duration) -> Option<HostPackageManager> {
+    HostPackageManager::CANDIDATES
+        .into_iter()
+        .find(|manager| command_success(manager.program(), &["--version"], timeout))
+}
+
+fn install_dataplane_packages(package_manager: HostPackageManager) -> Result<(), FailureMessage> {
+    let packages = package_manager.dataplane_packages();
+
+    // apt needs an explicit metadata refresh; dnf/yum refresh on install.
+    if package_manager == HostPackageManager::Apt {
+        let update = run_command("apt-get", &["update"], DATAPLANE_HOST_INSTALL_TIMEOUT)?;
+        if !update.status.success() {
+            return Err(failure_message(format!(
+                "apt-get update failed: {}",
+                update.failure_summary()
+            )));
+        }
+    }
+
+    // wireguard-tools ships in EPEL on RHEL-family hosts, so enable it before the
+    // install. Best-effort: on Rocky/Alma `epel-release` is in the default extras
+    // repo and this succeeds; on Fedora the package is absent and unneeded. A
+    // failure here is not fatal — the package install below is the real gate and
+    // yields typed evidence if wireguard-tools still cannot be resolved.
+    // ponytail: ignore epel-release outcome; the wireguard-tools install verifies it transitively.
+    if matches!(
+        package_manager,
+        HostPackageManager::Dnf | HostPackageManager::Yum
+    ) {
+        let program = package_manager.program();
+        let _ = run_os_command_with_display(
+            program,
+            &[
+                OsString::from("install"),
+                OsString::from("-y"),
+                OsString::from("epel-release"),
+            ],
+            format!("{program} install -y epel-release"),
+            DATAPLANE_HOST_INSTALL_TIMEOUT,
+        );
+    }
+
+    let (program, mut args) = match package_manager {
+        // The env wrapper keeps apt fully non-interactive.
+        HostPackageManager::Apt => (
+            "env",
+            vec![
+                OsString::from("DEBIAN_FRONTEND=noninteractive"),
+                OsString::from("apt-get"),
+                OsString::from("install"),
+                OsString::from("-y"),
+            ],
+        ),
+        HostPackageManager::Dnf => ("dnf", vec![OsString::from("install"), OsString::from("-y")]),
+        HostPackageManager::Yum => ("yum", vec![OsString::from("install"), OsString::from("-y")]),
+    };
+    args.extend(packages.iter().map(OsString::from));
+    let display = format!(
+        "{} install -y {}",
+        package_manager.program(),
+        packages.join(" ")
+    );
+
+    let output =
+        run_os_command_with_display(program, &args, display, DATAPLANE_HOST_INSTALL_TIMEOUT)?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(failure_message(format!(
+        "dataplane host package install failed: {}",
+        output.failure_summary()
+    )))
 }
 
 fn dataplane_host_ready(timeout: Duration) -> bool {
@@ -440,5 +525,27 @@ mod tests {
             output.failure_summary()
         );
         assert!(!output.stdout.is_empty());
+    }
+
+    #[test]
+    fn dataplane_packages_use_the_distro_family_names() {
+        use super::HostPackageManager;
+
+        // Debian splits the tools; RHEL uses single iproute/iputils packages.
+        assert_eq!(
+            HostPackageManager::Apt.dataplane_packages(),
+            ["wireguard-tools", "iproute2", "iputils-ping"]
+        );
+        assert_eq!(
+            HostPackageManager::Dnf.dataplane_packages(),
+            ["wireguard-tools", "iproute", "iputils"]
+        );
+        assert_eq!(
+            HostPackageManager::Yum.dataplane_packages(),
+            ["wireguard-tools", "iproute", "iputils"]
+        );
+        assert_eq!(HostPackageManager::Dnf.program(), "dnf");
+        assert_eq!(HostPackageManager::Yum.program(), "yum");
+        assert_eq!(HostPackageManager::Apt.program(), "apt-get");
     }
 }
