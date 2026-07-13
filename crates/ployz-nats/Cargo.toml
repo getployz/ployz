@@ -25,3 +25,4 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [lib]
 path = "src/lib.rs"
+doctest = false
