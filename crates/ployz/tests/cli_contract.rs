@@ -69,6 +69,7 @@ fn cli_telemetry_names_are_canonical_across_aliases() {
 #[test]
 fn binary_login_fails_fast_when_cloud_is_unconfigured() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .arg("login")
         .output()
         .expect("ployz binary runs");
@@ -914,6 +915,7 @@ fn binary_rejects_unimplemented_commands() {
 #[test]
 fn binary_machine_add_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .env_remove("PLOYZ_NATS_URL")
         .env_remove("HOME")
         .env_remove("XDG_CONFIG_HOME")
@@ -932,6 +934,7 @@ fn binary_machine_add_requires_nats_url() {
 #[test]
 fn binary_ops_watch_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .env_remove("PLOYZ_NATS_URL")
         .env_remove("HOME")
         .env_remove("XDG_CONFIG_HOME")
@@ -950,6 +953,7 @@ fn binary_ops_watch_requires_nats_url() {
 #[test]
 fn binary_ops_status_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .env_remove("PLOYZ_NATS_URL")
         .env_remove("HOME")
         .env_remove("XDG_CONFIG_HOME")
@@ -968,6 +972,7 @@ fn binary_ops_status_requires_nats_url() {
 #[test]
 fn binary_machine_list_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .env_remove("PLOYZ_NATS_URL")
         .env_remove("HOME")
         .env_remove("XDG_CONFIG_HOME")
@@ -993,6 +998,7 @@ fn binary_rejects_corrupt_cluster_context_file() {
     fs::write(context_dir.join("context.json"), "{not json").expect("corrupt context writes");
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .env_remove("PLOYZ_NATS_URL")
         .env_remove("HOME")
         .env("XDG_CONFIG_HOME", &config_home)
@@ -1014,6 +1020,7 @@ fn binary_corrupt_cluster_context_does_not_block_local_init_summary() {
     fs::write(context_dir.join("context.json"), "{not json").expect("corrupt context writes");
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .env_remove("HOME")
         .env("XDG_CONFIG_HOME", &config_home)
         .args(["internal", "init", "--machine", "machine_1"])
@@ -1036,6 +1043,7 @@ fn binary_corrupt_cluster_context_does_not_block_local_init_summary() {
 #[test]
 fn binary_machine_inspect_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .env_remove("PLOYZ_NATS_URL")
         .env_remove("HOME")
         .env_remove("XDG_CONFIG_HOME")
