@@ -547,7 +547,7 @@ fn local_effects_prepare_dataplane_packages_for_each_supported_family() {
 }
 
 #[test]
-fn arch_docker_install_uses_existing_pacman_sync_databases() {
+fn arch_package_installs_use_existing_pacman_sync_databases() {
     let root = temp_dir("ployz-host-runner-arch-docker");
     let systemd_dir = root.join("systemd");
     fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
@@ -561,17 +561,27 @@ fn arch_docker_install_uses_existing_pacman_sync_databases() {
     validate_host(&mut effects);
 
     effects
+        .apply_step(&HostRunnerStep::PrepareDataplaneHost)
+        .expect("Arch installs dataplane packages from existing pacman sync databases");
+    effects
         .apply_step(&HostRunnerStep::PrepareContainerRuntime(
             ContainerRuntime::Docker,
             ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
         ))
         .expect("Arch installs Docker from existing pacman sync databases");
 
-    assert!(
+    assert_eq!(
         effects
             .runner()
             .command_calls
-            .contains(&"pacman -S --noconfirm --needed docker docker-compose".to_owned())
+            .iter()
+            .filter(|call| call.starts_with("pacman "))
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        [
+            "pacman -S --noconfirm --needed wireguard-tools iproute2 iputils",
+            "pacman -S --noconfirm --needed docker docker-compose",
+        ]
     );
 }
 
