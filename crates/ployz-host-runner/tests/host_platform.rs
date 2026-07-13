@@ -63,19 +63,19 @@ fn supported_distributions_select_host_capabilities() {
             "sles",
             HostPackageFamily::Suse,
             SupervisorKind::Systemd,
-            DockerInstall::GetDocker,
+            DockerInstall::SusePackages,
         ),
         (
             "opensuse-leap",
             HostPackageFamily::Suse,
             SupervisorKind::Systemd,
-            DockerInstall::GetDocker,
+            DockerInstall::SusePackages,
         ),
         (
             "opensuse-tumbleweed",
             HostPackageFamily::Suse,
             SupervisorKind::Systemd,
-            DockerInstall::GetDocker,
+            DockerInstall::SusePackages,
         ),
         (
             "almalinux",
