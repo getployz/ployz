@@ -30,17 +30,24 @@ The compatibility matrix accepts these distribution IDs:
 
 - `arch`, `ubuntu`, `debian`, `raspbian`, `centos`, `fedora`, `rhel`, `ol`,
   `rocky`, `sles`, `opensuse-leap`, `opensuse-tumbleweed`, `almalinux`, `amzn`,
-  `alpine`, `postmarketos`, and `tencentos`;
+  and `tencentos`;
 - `manjaro`, `manjaro-arm`, `endeavouros`, and `cachyos` normalize to Arch;
 - `fedora-asahi-remix` normalizes to Fedora;
 - `pop`, `linuxmint`, and `zorin` normalize to Ubuntu.
+
+Alpine and postmarketOS are TBD rather than supported hosts. Their APK and
+OpenRC adapters exist, but published Ployz Linux artifacts are linked against
+glibc and cannot execute on their musl userspace. Supporting these hosts
+requires musl-compatible release artifacts and real-host certification; the
+presence of host adapters alone does not establish compatibility.
 
 An unrecognized distribution or a missing supervisor directory fails the verify
 step before Host Runner writes files or runs host mutation commands.
 
 The Docker strategies are finite and native:
 
-- Alpine and postmarketOS use APK;
+- Alpine and postmarketOS will use APK when musl-compatible release artifacts
+  make those hosts supportable;
 - Arch-family hosts use pacman against the existing sync databases without
   refreshing them or performing a system upgrade; host system updates and
   required reboots remain operator-owned substrate work;
