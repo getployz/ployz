@@ -343,7 +343,7 @@ impl Telemetry {
         }
         let persisted = config
             .as_ref()
-            .map_or(PersistedTelemetry::Unset, ConfigFile::persisted_telemetry);
+            .map_or(PersistedTelemetry::Corrupt, ConfigFile::persisted_telemetry);
         let consent = Consent::from_environment(persisted);
         let mut telemetry =
             Self::start(surface, version, consent, SENTRY_DSN).unwrap_or_else(|error| {
