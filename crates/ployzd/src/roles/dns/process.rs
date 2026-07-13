@@ -12,8 +12,8 @@ use crate::config::DnsProcessConfig;
 use crate::fact_cache::{FactCache, FactCacheError, RunningFactCache, start_fact_cache};
 use crate::intent::service::NatsIntentReader;
 use crate::process_support::{
-    BackoffSchedule, RecordedAttempt, RefreshDelay, drain_refresh_wakes, record_attempt,
-    shutdown_signal, sleep_or_shutdown, wait_for_refresh_delay,
+    BackoffSchedule, RecordedAttempt, RefreshDelay, bounded_role_shutdown, drain_refresh_wakes,
+    record_attempt, shutdown_signal, sleep_or_shutdown, wait_for_refresh_delay,
 };
 use crate::roles::dns::InternalResolverHealth;
 use crate::roles::dns::internal::{InternalDnsIntentCache, spawn_internal_resolver};
@@ -64,6 +64,10 @@ impl RunningDnsProcess {
             ..
         } = self;
         let _ = shutdown.send(());
+        let abort_handles = tasks
+            .iter()
+            .map(JoinHandle::abort_handle)
+            .collect::<Vec<_>>();
         let cleanup = async {
             facts_cache.shutdown().await;
             let service_shutdown = role_service.shutdown().await;
@@ -72,19 +76,7 @@ impl RunningDnsProcess {
             }
             service_shutdown
         };
-        match tokio::time::timeout(DNS_SHUTDOWN_TIMEOUT, cleanup).await {
-            Ok(result) => result,
-            Err(_) => {
-                for task in &tasks {
-                    task.abort();
-                }
-                eprintln!(
-                    "ployzd DNS shutdown warning: cleanup exceeded {}s; forcing remaining tasks",
-                    DNS_SHUTDOWN_TIMEOUT.as_secs()
-                );
-                Ok(())
-            }
-        }
+        bounded_role_shutdown("DNS", DNS_SHUTDOWN_TIMEOUT, &abort_handles, cleanup).await
     }
 
     #[must_use]

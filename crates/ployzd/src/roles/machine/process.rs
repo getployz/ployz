@@ -9,7 +9,9 @@ use crate::adapters::host_dataplane::{
     PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer, WireGuardMtuPolicy,
 };
 use crate::config::MachineProcessConfig;
-use crate::process_support::{BackoffSchedule, RecordedAttempt, record_attempt, shutdown_signal};
+use crate::process_support::{
+    BackoffSchedule, RecordedAttempt, bounded_role_shutdown, record_attempt, shutdown_signal,
+};
 use crate::roles::machine::facts::{
     MachineEndpointCache, MachineFactsPublishError, publish_machine_facts,
 };
@@ -67,6 +69,11 @@ impl RunningMachineProcess {
         pending_join_mirror.request_shutdown();
         let _ = intent_mirror_shutdown.send(());
         observer.request_shutdown();
+        let abort_handles = [
+            pending_join_mirror.task.abort_handle(),
+            intent_mirror.abort_handle(),
+            observer.task.abort_handle(),
+        ];
         let cleanup = async {
             if let Some(image_registry) = image_registry {
                 image_registry.shutdown().await;
@@ -76,20 +83,7 @@ impl RunningMachineProcess {
             observer.wait().await;
             machine_service.shutdown().await
         };
-
-        match tokio::time::timeout(MACHINE_SHUTDOWN_TIMEOUT, cleanup).await {
-            Ok(result) => result,
-            Err(_) => {
-                pending_join_mirror.abort();
-                intent_mirror.abort();
-                observer.abort();
-                eprintln!(
-                    "ployzd machine shutdown warning: cleanup exceeded {}s; forcing remaining tasks",
-                    MACHINE_SHUTDOWN_TIMEOUT.as_secs()
-                );
-                Ok(())
-            }
-        }
+        bounded_role_shutdown("machine", MACHINE_SHUTDOWN_TIMEOUT, &abort_handles, cleanup).await
     }
 }
 
@@ -264,10 +258,6 @@ impl RunningTask {
 
     async fn wait(&mut self) {
         let _ = (&mut self.task).await;
-    }
-
-    fn abort(&self) {
-        self.task.abort();
     }
 }
 
