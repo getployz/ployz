@@ -317,7 +317,6 @@ pub async fn start_control_process_with_client_and_reload(
     let intent = start_intent_service(
         client.clone(),
         core_machine_id.clone(),
-        machine_roster.clone(),
         namespace_intent,
         core_store.clone(),
         INTENT_PUBLISH_INTERVAL,
@@ -564,6 +563,11 @@ mod tests {
             epoch,
             core_machine_id: machine_id("machine_a"),
             active_machines: Vec::new(),
+            dataplane_projection: ployz_core::dataplane::DataplaneProjection::try_new(
+                Vec::new(),
+                None,
+            )
+            .expect("empty projection"),
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),

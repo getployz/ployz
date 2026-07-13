@@ -2,23 +2,18 @@
 
 use std::time::Duration;
 
-use futures_util::future::try_join_all;
-use ployz_core::dataplane::{
-    DataplaneProjection, DataplaneProjectionMember, DataplaneProjectionTestimony,
-    EbpfAttachmentStatus, EndpointBridgeStatus, MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS,
-    MachineDataplaneStatus, WireGuardHandshakeStatus, WireGuardInterfaceMtu,
-    WireGuardPeerEndpointSubnet,
-};
+use ployz_core::dataplane::{DataplaneProjection, MachineDataplaneStatus};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::{
-    DataplaneAdmissionPeer, DataplaneProjectionAdmissionEvidence,
-    DataplaneProjectionAdmissionFailure, RawJoinToken,
+    DataplaneProjectionAdmissionEvidence, DataplaneProjectionAdmissionFailure, RawJoinToken,
+    validate_target_machine as validate_machine,
 };
 use ployz_core::ops::{FailureMessage, MachineAddOperationState, OperationStatus};
 use ployz_core::state::StagedMachineDataplaneState;
 use ployz_sdk_types::MachineJoinReportError;
 
 use crate::roles::machine::client::{NatsMachineDataplaneReader, NatsMachineFactsReader};
+use crate::roles::machine::convergence::gather_dataplane_statuses;
 
 use super::OperationApiHandlers;
 use super::error_map::{corrupt, machine_join_report_error};
@@ -77,26 +72,10 @@ async fn admit_projection(
 ) -> Result<Option<DataplaneProjectionAdmissionEvidence>, MachineJoinReportError> {
     let mesh_lock = handlers.controllers.mesh_lock();
     let _mesh_guard = mesh_lock.lock().await;
-    let active = handlers
-        .machine_roster
-        .active_machines()
-        .await
-        .map_err(unavailable)?;
-    let mut machine_ids = active
-        .iter()
-        .map(|machine| machine.machine_id.clone())
-        .chain(std::iter::once(joining_machine_id.clone()))
-        .collect::<Vec<_>>();
-    machine_ids.sort();
-
-    let preparer = NatsMachineDataplaneReader::new(handlers.intent_change_client.clone())
+    let dataplane_reader = NatsMachineDataplaneReader::new(handlers.intent_change_client.clone())
         .with_request_timeout(DATAPLANE_ADMISSION_REQUEST_TIMEOUT);
-    let public_key = match preparer
-        .read_projection_public_key(
-            operation_id.clone(),
-            &joining_machine_id,
-            machine_ids.clone(),
-        )
+    let public_key = match dataplane_reader
+        .read_projection_public_key(&joining_machine_id)
         .await
     {
         Ok(public_key) => public_key,
@@ -107,10 +86,9 @@ async fn admit_projection(
             )));
         }
     };
-    let facts = NatsMachineFactsReader::new(handlers.intent_change_client.clone())
-        .with_request_timeout(DATAPLANE_ADMISSION_REQUEST_TIMEOUT)
-        .machine_facts(&joining_machine_id)
-        .await;
+    let facts_reader = NatsMachineFactsReader::new(handlers.intent_change_client.clone())
+        .with_request_timeout(DATAPLANE_ADMISSION_REQUEST_TIMEOUT);
+    let facts = facts_reader.machine_facts(&joining_machine_id).await;
     let mut mesh_endpoints = match facts {
         Ok(facts) => facts
             .endpoints()
@@ -143,52 +121,67 @@ async fn admit_projection(
         .await
         .map_err(unavailable)?;
 
-    if let Err(error) = publish_invalidation(handlers).await {
-        let evidence = no_answer(joining_machine_id, error);
+    let result =
+        admit_staged_projection(handlers, &joining_machine_id, &staged, &facts_reader).await;
+    if !matches!(result, Ok(None)) {
         clear_staging(handlers, &operation_id).await?;
-        return Ok(Some(evidence));
+    }
+    result
+}
+
+async fn admit_staged_projection(
+    handlers: &OperationApiHandlers,
+    joining_machine_id: &MachineId,
+    staged: &StagedMachineDataplaneState,
+    facts_reader: &NatsMachineFactsReader,
+) -> Result<Option<DataplaneProjectionAdmissionEvidence>, MachineJoinReportError> {
+    if let Err(error) = publish_invalidation(handlers).await {
+        return Ok(Some(no_answer(joining_machine_id.clone(), error)));
     }
 
-    let projection = match handlers.intent_reader.dataplane_projection().await {
-        Ok(projection) => projection,
+    let projection = match handlers.intent_reader.intent().await {
+        Ok(intent) => intent.dataplane_projection,
         Err(error) => {
-            let evidence = no_answer(joining_machine_id, error.to_string());
-            clear_staging(handlers, &operation_id).await?;
-            return Ok(Some(evidence));
+            return Ok(Some(no_answer(
+                joining_machine_id.clone(),
+                error.to_string(),
+            )));
         }
     };
-    if let Err(message) = validate_staged_projection(&projection, &staged) {
-        let evidence = invalid_staged_projection(joining_machine_id, message);
-        clear_staging(handlers, &operation_id).await?;
-        return Ok(Some(evidence));
+    if let Err(message) = validate_staged_projection(&projection, staged) {
+        return Ok(Some(invalid_staged_projection(
+            joining_machine_id.clone(),
+            message,
+        )));
     }
 
-    let evidence = gather_admission(&preparer, &projection).await;
-    if let Some(evidence) = evidence {
-        clear_staging(handlers, &operation_id).await?;
-        return Ok(Some(evidence));
-    }
-
-    Ok(None)
+    Ok(gather_admission(facts_reader, &projection).await)
 }
 
 async fn gather_admission(
-    preparer: &NatsMachineDataplaneReader,
+    facts_reader: &NatsMachineFactsReader,
     projection: &DataplaneProjection,
 ) -> Option<DataplaneProjectionAdmissionEvidence> {
     let deadline = tokio::time::Instant::now() + DATAPLANE_ADMISSION_DEADLINE;
     loop {
-        let statuses = try_join_all(projection.target_members.iter().map(|member| async {
-            preparer
-                .read_dataplane_status(&member.machine_id)
-                .await
-                .map(|status| (member.machine_id.clone(), status))
+        let statuses = gather_dataplane_statuses(
+            facts_reader,
+            projection
+                .target_members()
+                .iter()
+                .map(|member| &member.machine_id),
+        )
+        .await
+        .into_iter()
+        .map(|(machine_id, result)| {
+            result
+                .map(|status| (machine_id.clone(), status))
                 .map_err(|message| DataplaneProjectionAdmissionEvidence {
-                    machine_id: member.machine_id.clone(),
+                    machine_id,
                     reason: DataplaneProjectionAdmissionFailure::NoAnswer { message },
                 })
-        }))
-        .await;
+        })
+        .collect::<Result<Vec<_>, _>>();
         let evidence = match statuses {
             Ok(statuses) => validate_admission(projection, &statuses),
             Err(evidence) => Some(evidence),
@@ -206,6 +199,8 @@ fn retryable_admission(reason: &DataplaneProjectionAdmissionFailure) -> bool {
         reason,
         DataplaneProjectionAdmissionFailure::NoAnswer { .. }
             | DataplaneProjectionAdmissionFailure::AwaitingTargetRevision { .. }
+            | DataplaneProjectionAdmissionFailure::PeerHandshakeNever { .. }
+            | DataplaneProjectionAdmissionFailure::PeerHandshakeStale { .. }
             | DataplaneProjectionAdmissionFailure::UnusableProjection {
                 failure: ployz_core::dataplane::DataplaneProjectionFailure::FetchFailed { .. }
             }
@@ -216,7 +211,7 @@ fn validate_admission(
     projection: &DataplaneProjection,
     statuses: &[(MachineId, MachineDataplaneStatus)],
 ) -> Option<DataplaneProjectionAdmissionEvidence> {
-    for member in &projection.target_members {
+    for member in projection.target_members() {
         let Some((_, status)) = statuses
             .iter()
             .find(|(machine_id, _)| machine_id == &member.machine_id)
@@ -241,14 +236,14 @@ fn validate_staged_projection(
     staged: &StagedMachineDataplaneState,
 ) -> Result<(), &'static str> {
     let Some(projected_joiner) = projection
-        .target_members
+        .target_members()
         .iter()
         .find(|member| member.machine_id == staged.machine_id)
     else {
         return Err("core-stamped projection is missing the staged machine");
     };
     if projection
-        .declared_members
+        .declared_members()
         .iter()
         .any(|member| member.machine_id == staged.machine_id)
         || projected_joiner.endpoint_subnet != staged.endpoint_subnet
@@ -258,197 +253,6 @@ fn validate_staged_projection(
         return Err("core-stamped projection does not match the staged machine identity");
     }
     Ok(())
-}
-
-pub(crate) fn validate_machine(
-    projection: &DataplaneProjection,
-    member: &DataplaneProjectionMember,
-    status: &MachineDataplaneStatus,
-) -> Option<DataplaneProjectionAdmissionFailure> {
-    validate_machine_scope(projection, member, status, AdmissionScope::Target)
-}
-
-pub(crate) fn validate_declared_machine(
-    projection: &DataplaneProjection,
-    member: &DataplaneProjectionMember,
-    status: &MachineDataplaneStatus,
-) -> Option<DataplaneProjectionAdmissionFailure> {
-    validate_machine_scope(projection, member, status, AdmissionScope::Declared)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AdmissionScope {
-    Target,
-    Declared,
-}
-
-impl AdmissionScope {
-    fn expected_revision(
-        self,
-        projection: &DataplaneProjection,
-    ) -> &ployz_core::dataplane::DataplaneProjectionRevision {
-        match self {
-            Self::Target => &projection.target_revision,
-            Self::Declared => &projection.declared_revision,
-        }
-    }
-
-    fn observed_revision(
-        self,
-        revisions: &ployz_core::dataplane::DataplaneProjectionRevisions,
-    ) -> ployz_core::dataplane::DataplaneProjectionRevision {
-        match self {
-            Self::Target => revisions.target_revision.clone(),
-            Self::Declared => revisions.declared_revision.clone(),
-        }
-    }
-
-    fn required_members(self, projection: &DataplaneProjection) -> &[DataplaneProjectionMember] {
-        match self {
-            Self::Target => &projection.target_members,
-            Self::Declared => &projection.declared_members,
-        }
-    }
-}
-
-fn validate_machine_scope(
-    projection: &DataplaneProjection,
-    member: &DataplaneProjectionMember,
-    status: &MachineDataplaneStatus,
-    scope: AdmissionScope,
-) -> Option<DataplaneProjectionAdmissionFailure> {
-    let expected_revision = scope.expected_revision(projection);
-    match &status.projection.testimony {
-        DataplaneProjectionTestimony::Applied { revisions }
-            if scope.observed_revision(revisions) == *expected_revision => {}
-        DataplaneProjectionTestimony::Applied { revisions } => {
-            return Some(
-                DataplaneProjectionAdmissionFailure::AwaitingTargetRevision {
-                    expected: expected_revision.clone(),
-                    observed: Some(scope.observed_revision(revisions)),
-                },
-            );
-        }
-        DataplaneProjectionTestimony::Unusable {
-            attempted_revisions,
-            failure,
-            ..
-        } if attempted_revisions
-            .as_ref()
-            .is_none_or(|revisions| scope.observed_revision(revisions) != *expected_revision) =>
-        {
-            return Some(
-                DataplaneProjectionAdmissionFailure::AwaitingTargetRevision {
-                    expected: expected_revision.clone(),
-                    observed: attempted_revisions
-                        .as_ref()
-                        .map(|revisions| scope.observed_revision(revisions)),
-                },
-            );
-        }
-        DataplaneProjectionTestimony::Unusable { failure, .. } => {
-            return Some(DataplaneProjectionAdmissionFailure::UnusableProjection {
-                failure: failure.clone(),
-            });
-        }
-    }
-    if status.projection.endpoint_bridge
-        != (EndpointBridgeStatus::Ready {
-            subnet: member.endpoint_subnet.clone(),
-        })
-    {
-        return Some(
-            DataplaneProjectionAdmissionFailure::EndpointBridgeNotReady {
-                status: status.projection.endpoint_bridge.clone(),
-            },
-        );
-    }
-    if status.wireguard.interface.is_empty() {
-        return Some(DataplaneProjectionAdmissionFailure::WireGuardNotReady {
-            failure: ployz_core::machine::WireGuardReadinessFailure::InterfaceMissing,
-        });
-    }
-    if let WireGuardInterfaceMtu::Unavailable { .. } = &status.wireguard.interface_mtu {
-        return Some(DataplaneProjectionAdmissionFailure::WireGuardNotReady {
-            failure: ployz_core::machine::WireGuardReadinessFailure::InterfaceMtuUnavailable {
-                observed: status.wireguard.interface_mtu.clone(),
-            },
-        });
-    }
-    if status.ebpf_attachment != EbpfAttachmentStatus::Attached {
-        return Some(DataplaneProjectionAdmissionFailure::EbpfNotReady {
-            status: status.ebpf_attachment.clone(),
-        });
-    }
-
-    let required_members = scope.required_members(projection);
-    let mut expected = required_members
-        .iter()
-        .filter(|peer| peer.machine_id != member.machine_id)
-        .map(|peer| DataplaneAdmissionPeer {
-            public_key: peer.wireguard_public_key.clone(),
-            endpoint_subnet: WireGuardPeerEndpointSubnet::Valid {
-                subnet: peer.endpoint_subnet.clone(),
-            },
-        })
-        .collect::<Vec<_>>();
-    let allowed_keys = projection
-        .target_members
-        .iter()
-        .map(|peer| &peer.wireguard_public_key)
-        .collect::<std::collections::BTreeSet<_>>();
-    let has_unknown_peer = status
-        .wireguard
-        .peers
-        .iter()
-        .any(|peer| !allowed_keys.contains(&peer.public_key));
-    let required_keys = required_members
-        .iter()
-        .map(|peer| &peer.wireguard_public_key)
-        .collect::<std::collections::BTreeSet<_>>();
-    let mut observed = status
-        .wireguard
-        .peers
-        .iter()
-        .filter(|peer| required_keys.contains(&peer.public_key))
-        .map(|peer| DataplaneAdmissionPeer {
-            public_key: peer.public_key.clone(),
-            endpoint_subnet: peer.endpoint_subnet.clone(),
-        })
-        .collect::<Vec<_>>();
-    expected.sort_by(|left, right| left.public_key.cmp(&right.public_key));
-    observed.sort_by(|left, right| left.public_key.cmp(&right.public_key));
-    if has_unknown_peer || expected != observed {
-        return Some(DataplaneProjectionAdmissionFailure::PeerSetMismatch { expected, observed });
-    }
-
-    for peer in required_members
-        .iter()
-        .filter(|peer| peer.machine_id != member.machine_id)
-    {
-        let observed = status
-            .wireguard
-            .peers
-            .iter()
-            .find(|observed| observed.public_key == peer.wireguard_public_key)
-            .expect("the exact peer-set check established every expected peer");
-        match observed.handshake {
-            WireGuardHandshakeStatus::Ago { seconds }
-                if seconds <= MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS => {}
-            WireGuardHandshakeStatus::Ago { seconds } => {
-                return Some(DataplaneProjectionAdmissionFailure::PeerHandshakeStale {
-                    peer_machine_id: peer.machine_id.clone(),
-                    observed_age_seconds: seconds,
-                });
-            }
-            WireGuardHandshakeStatus::Never => {
-                return Some(DataplaneProjectionAdmissionFailure::PeerHandshakeNever {
-                    peer_machine_id: peer.machine_id.clone(),
-                });
-            }
-        }
-    }
-    None
 }
 
 async fn clear_staging(
@@ -466,16 +270,25 @@ async fn clear_staging(
 }
 
 async fn publish_invalidation(handlers: &OperationApiHandlers) -> Result<(), String> {
-    handlers
-        .intent_change_client
-        .publish(ployz_core::subjects::INTENT_CHANGED, Vec::new().into())
-        .await
-        .map_err(|error| error.to_string())?;
-    handlers
-        .intent_change_client
-        .flush()
-        .await
-        .map_err(|error| error.to_string())
+    tokio::time::timeout(DATAPLANE_ADMISSION_REQUEST_TIMEOUT, async {
+        handlers
+            .intent_change_client
+            .publish(ployz_core::subjects::INTENT_CHANGED, Vec::new().into())
+            .await
+            .map_err(|error| error.to_string())?;
+        handlers
+            .intent_change_client
+            .flush()
+            .await
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| {
+        format!(
+            "intent invalidation timed out after {}s",
+            DATAPLANE_ADMISSION_REQUEST_TIMEOUT.as_secs()
+        )
+    })?
 }
 
 fn no_answer(machine_id: MachineId, message: String) -> DataplaneProjectionAdmissionEvidence {
@@ -518,10 +331,13 @@ fn unavailable(error: impl std::fmt::Display) -> MachineJoinReportError {
 mod tests {
     use super::*;
     use ployz_core::dataplane::{
-        DataplaneProjectionRevisions, NativeDataplaneProjectionStatus, WireGuardConfiguredMtu,
-        WireGuardDetectedMtu, WireGuardInterfaceMtu, WireGuardMtuProbe, WireGuardPeerStatus,
+        DataplaneProjectionMember, DataplaneProjectionRevisions, DataplaneProjectionTestimony,
+        EbpfAttachmentStatus, EndpointBridgeStatus, NativeDataplaneProjectionStatus,
+        WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardHandshakeStatus,
+        WireGuardInterfaceMtu, WireGuardMtuProbe, WireGuardPeerEndpointSubnet, WireGuardPeerStatus,
         WireGuardPublicKey, WireGuardRttStatus, WireGuardStatus,
     };
+    use ployz_core::machine::validate_declared_machine;
 
     #[test]
     fn founder_is_admitted_with_local_readiness_and_no_peers() {
@@ -587,6 +403,21 @@ mod tests {
     }
 
     #[test]
+    fn pending_handshakes_remain_retryable_until_the_admission_deadline() {
+        assert!(retryable_admission(
+            &DataplaneProjectionAdmissionFailure::PeerHandshakeNever {
+                peer_machine_id: machine_id("edge"),
+            }
+        ));
+        assert!(retryable_admission(
+            &DataplaneProjectionAdmissionFailure::PeerHandshakeStale {
+                peer_machine_id: machine_id("edge"),
+                observed_age_seconds: 276,
+            }
+        ));
+    }
+
+    #[test]
     fn wrong_target_revision_is_rejected() {
         let target = projection(&["core", "edge"]);
         let other = projection(&["other"]);
@@ -595,7 +426,7 @@ mod tests {
         else {
             panic!("ready status is applied");
         };
-        revisions.target_revision = other.target_revision;
+        revisions.target_revision = other.target_revision().clone();
 
         let evidence = validate_admission(&target, &[(machine_id("core"), status)])
             .expect("wrong revision is rejected");
@@ -612,8 +443,8 @@ mod tests {
         let mut status = ready_status(&target, "edge", &[("core", handshake(1))]);
         status.projection.testimony = DataplaneProjectionTestimony::Unusable {
             attempted_revisions: Some(DataplaneProjectionRevisions {
-                declared_revision: old.declared_revision,
-                target_revision: old.target_revision.clone(),
+                declared_revision: old.declared_revision().clone(),
+                target_revision: old.target_revision().clone(),
             }),
             last_applied_revisions: None,
             failure: ployz_core::dataplane::DataplaneProjectionFailure::LocalMemberMissing,
@@ -626,7 +457,7 @@ mod tests {
             DataplaneProjectionAdmissionFailure::AwaitingTargetRevision {
                 observed: Some(observed),
                 ..
-            } if observed == &old.target_revision
+            } if observed == old.target_revision()
         ));
         assert!(retryable_admission(&reason));
     }
@@ -792,8 +623,8 @@ mod tests {
                 },
                 testimony: DataplaneProjectionTestimony::Applied {
                     revisions: DataplaneProjectionRevisions {
-                        declared_revision: projection.declared_revision.clone(),
-                        target_revision: projection.target_revision.clone(),
+                        declared_revision: projection.declared_revision().clone(),
+                        target_revision: projection.target_revision().clone(),
                     },
                 },
             },
@@ -838,7 +669,7 @@ mod tests {
         machine: &str,
     ) -> &'a DataplaneProjectionMember {
         projection
-            .target_members
+            .target_members()
             .iter()
             .find(|member| member.machine_id == machine_id(machine))
             .expect("projection member exists")

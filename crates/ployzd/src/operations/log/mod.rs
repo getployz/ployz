@@ -23,6 +23,7 @@ mod action;
 mod cert;
 mod core_replace;
 mod credential_grant;
+mod dataplane_staging;
 mod deploy;
 mod machine_add;
 mod machine_lifecycle;

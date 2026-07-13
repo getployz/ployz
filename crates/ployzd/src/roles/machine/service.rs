@@ -3,8 +3,7 @@
 use super::containers::{
     MachineContainerState, handle_container_inspect, handle_container_remove,
     handle_container_resolve_image, handle_container_restart, handle_container_run,
-    handle_container_run_hook, handle_container_stop, handle_ensure_endpoint_network,
-    handle_volume_remove,
+    handle_container_run_hook, handle_container_stop, handle_volume_remove,
 };
 use super::dataplane::{
     MachineDataplaneStatusState, handle_dataplane_public_key, handle_dataplane_status,
@@ -146,14 +145,6 @@ where
             client: client.clone(),
         },
         handle_facts_refresh,
-    )
-    .await?;
-    bind_machine_endpoint(
-        &mut runtime,
-        &machine_id,
-        MachineServiceEndpoint::ContainerEnsureEndpointNetwork,
-        runner.clone(),
-        handle_ensure_endpoint_network,
     )
     .await?;
     bind_machine_endpoint(

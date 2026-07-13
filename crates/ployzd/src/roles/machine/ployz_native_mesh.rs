@@ -14,11 +14,9 @@ use ployz_core::subjects::MachineServiceEndpoint;
 impl NatsMachineDataplaneReader {
     pub(crate) async fn read_projection_public_key(
         &self,
-        operation_id: ployz_core::ids::OperationId,
         machine_id: &MachineId,
-        machines: Vec<MachineId>,
     ) -> Result<WireGuardPublicKey, WireGuardEbpfPrepareError> {
-        let request = MachineDataplanePublicKeyRpcRequest::new(operation_id, machines);
+        let request = MachineDataplanePublicKeyRpcRequest {};
         call_machine::<MachineDataplanePublicKeyRpcOk, MachineDataplanePublicKeyDomainError>(
             &self.client,
             self.request_timeout,

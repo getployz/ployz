@@ -153,6 +153,8 @@ fn intent<const N: usize>(machines: [&str; N], entry: &str) -> IntentSnapshot {
         epoch: ControlPlaneEpoch::initial(),
         core_machine_id: machine_id("machine_a"),
         active_machines: machines.into_iter().map(active_machine).collect(),
+        dataplane_projection: ployz_core::dataplane::DataplaneProjection::try_new(Vec::new(), None)
+            .expect("empty projection"),
         route_bindings: Vec::new(),
         serving_target_entries: vec![serving_target_entry("db", entry)],
         volume_pins: Vec::new(),

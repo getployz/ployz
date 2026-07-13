@@ -2,8 +2,8 @@
 
 use ployz_core::ids::MachineId;
 use ployz_core::subjects::{
-    DATAPLANE_PROJECTION_GET, INTENT_GET, MachineServiceEndpoint, OperationApiEndpoint,
-    OperationApiEndpointExecution, machine_service,
+    INTENT_GET, MachineServiceEndpoint, OperationApiEndpoint, OperationApiEndpointExecution,
+    machine_service,
 };
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceDiscoveryQuery,
@@ -131,25 +131,13 @@ pub fn intent_service() -> NatsServiceSpec {
         SERVICE_VERSION,
         INTENT_SERVICE_DESCRIPTION,
         ServiceMetadata::empty(),
-        vec![
-            intent_get_endpoint_spec(),
-            dataplane_projection_get_endpoint_spec(),
-        ],
+        vec![intent_get_endpoint_spec()],
     )
 }
 
 #[must_use]
 pub fn intent_get_endpoint_spec() -> NatsServiceEndpointSpec {
     NatsServiceEndpointSpec::new("intent.get", INTENT_GET, EndpointExecution::Query)
-}
-
-#[must_use]
-pub fn dataplane_projection_get_endpoint_spec() -> NatsServiceEndpointSpec {
-    NatsServiceEndpointSpec::new(
-        "dataplane.projection.get",
-        DATAPLANE_PROJECTION_GET,
-        EndpointExecution::Query,
-    )
 }
 
 #[must_use]
@@ -178,10 +166,6 @@ pub fn machine_role_service(machine_id: &MachineId) -> NatsServiceSpec {
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::Inspect),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::FactsGet),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::FactsRefresh),
-            machine_endpoint_spec(
-                machine_id,
-                MachineServiceEndpoint::ContainerEnsureEndpointNetwork,
-            ),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerInspect),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerResolveImage),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerRun),
@@ -264,9 +248,6 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         MachineServiceEndpoint::FactsRefresh => "machine.facts.refresh",
         MachineServiceEndpoint::DnsResolve => "machine.dns.resolve",
         MachineServiceEndpoint::DnsStatus => "machine.dns.status",
-        MachineServiceEndpoint::ContainerEnsureEndpointNetwork => {
-            "machine.container.ensure_endpoint_network"
-        }
         MachineServiceEndpoint::ContainerInspect => "machine.container.inspect",
         MachineServiceEndpoint::ContainerResolveImage => "machine.container.resolve_image",
         MachineServiceEndpoint::ContainerRun => "machine.container.run",

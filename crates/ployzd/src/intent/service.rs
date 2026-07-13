@@ -3,22 +3,17 @@
 use crate::core_store::CoreStore;
 use crate::intent::certificate_intent::CertificateIntentStore;
 use crate::intent::lease_intent::LeaseIntentStore;
-use crate::intent::machine_roster::MachineRosterStore;
 use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::intent::nats_authorizations::NatsAuthorizationStore;
 use crate::operations::log::OperationRepository;
-use crate::service_catalog::{
-    dataplane_projection_get_endpoint_spec, intent_get_endpoint_spec, intent_service,
-};
+use crate::service_catalog::{intent_get_endpoint_spec, intent_service};
 use ployz_core::cert::{AutoLeaseState, ManagedLeaseIntent};
 use ployz_core::dataplane::{DataplaneProjection, DataplaneProjectionMember};
 use ployz_core::ids::MachineId;
 use ployz_core::state::{
     IntentSnapshot, ManagedLeaseProjection, PendingMachineJoinRecoverySnapshot,
 };
-use ployz_core::subjects::{
-    DATAPLANE_PROJECTION_GET, INTENT_CHANGED, INTENT_GET, PENDING_MACHINE_JOINS_CHANGED,
-};
+use ployz_core::subjects::{INTENT_CHANGED, INTENT_GET, PENDING_MACHINE_JOINS_CHANGED};
 use ployz_nats::service_protocol::NatsServiceError;
 use ployz_nats::service_runtime::{
     NatsJsonServiceRequestError, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
@@ -33,10 +28,6 @@ use tokio::task::JoinHandle;
 #[serde(deny_unknown_fields)]
 pub struct IntentGetRequest {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DataplaneProjectionGetRequest {}
-
 #[derive(Debug)]
 pub struct RunningIntentService {
     service: RunningNatsService,
@@ -44,12 +35,12 @@ pub struct RunningIntentService {
 }
 
 struct IntentSnapshotSources<'a> {
-    machine_roster: &'a MachineRosterStore,
     namespace_intent: &'a NamespaceIntentStore,
     lease_intent: &'a LeaseIntentStore,
     certificate_intent: &'a CertificateIntentStore,
     core_store: &'a CoreStore,
     nats_authorizations: &'a NatsAuthorizationStore,
+    operation_repository: &'a OperationRepository,
 }
 
 impl RunningIntentService {
@@ -90,17 +81,6 @@ impl NatsIntentReader {
         .await
         .map_err(IntentReadError::from)
     }
-
-    pub async fn dataplane_projection(&self) -> Result<DataplaneProjection, IntentReadError> {
-        request_json(
-            &self.client,
-            DATAPLANE_PROJECTION_GET.to_owned(),
-            &DataplaneProjectionGetRequest {},
-            self.request_timeout,
-        )
-        .await
-        .map_err(IntentReadError::from)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -120,7 +100,6 @@ impl From<NatsJsonServiceRequestError> for IntentReadError {
 pub async fn start_intent_service(
     client: async_nats::Client,
     core_machine_id: MachineId,
-    machine_roster: MachineRosterStore,
     namespace_intent: NamespaceIntentStore,
     core_store: CoreStore,
     publish_interval: Duration,
@@ -134,55 +113,42 @@ pub async fn start_intent_service(
     let operation_repository = OperationRepository::open(core_store.clone(), client.clone());
     let service_core_machine_id = core_machine_id.clone();
     let publisher_core_machine_id = core_machine_id;
-    let service_machine_roster = machine_roster.clone();
     let service_namespace_intent = namespace_intent.clone();
     let service_lease_intent = lease_intent.clone();
     let service_certificate_intent = certificate_intent.clone();
     let service_core_store = core_store.clone();
     let service_authorizations = nats_authorizations.clone();
+    let service_operation_repository = operation_repository.clone();
     service
         .bind_endpoint(&intent_get_endpoint_spec(), move |request| {
-            let machine_roster = service_machine_roster.clone();
             let namespace_intent = service_namespace_intent.clone();
             let lease_intent = service_lease_intent.clone();
             let certificate_intent = service_certificate_intent.clone();
             let core_store = service_core_store.clone();
             let nats_authorizations = service_authorizations.clone();
+            let operation_repository = service_operation_repository.clone();
             let core_machine_id = service_core_machine_id.clone();
             async move {
                 let sources = IntentSnapshotSources {
-                    machine_roster: &machine_roster,
                     namespace_intent: &namespace_intent,
                     lease_intent: &lease_intent,
                     certificate_intent: &certificate_intent,
                     core_store: &core_store,
                     nats_authorizations: &nats_authorizations,
+                    operation_repository: &operation_repository,
                 };
                 intent_get_response(request, &core_machine_id, &sources).await
             }
         })
         .await?;
-    let projection_machine_roster = machine_roster.clone();
-    let projection_repository = operation_repository.clone();
-    service
-        .bind_endpoint(&dataplane_projection_get_endpoint_spec(), move |request| {
-            let machine_roster = projection_machine_roster.clone();
-            let operation_repository = projection_repository.clone();
-            async move {
-                dataplane_projection_get_response(request, &machine_roster, &operation_repository)
-                    .await
-            }
-        })
-        .await?;
-
     let publisher = tokio::spawn(async move {
         let sources = IntentSnapshotSources {
-            machine_roster: &machine_roster,
             namespace_intent: &namespace_intent,
             lease_intent: &lease_intent,
             certificate_intent: &certificate_intent,
             core_store: &core_store,
             nats_authorizations: &nats_authorizations,
+            operation_repository: &operation_repository,
         };
         let mut interval = tokio::time::interval(publish_interval);
         let mut consecutive_failures: u64 = 0;
@@ -219,29 +185,13 @@ pub async fn start_intent_service(
     Ok(RunningIntentService { service, publisher })
 }
 
-async fn dataplane_projection_get_response(
-    request: NatsServiceRequest,
-    machine_roster: &MachineRosterStore,
-    operation_repository: &OperationRepository,
-) -> NatsServiceResponse {
-    if let Err(response) = decode_json_request::<DataplaneProjectionGetRequest>(&request) {
-        return response;
-    }
-    match load_dataplane_projection(machine_roster, operation_repository).await {
-        Ok(projection) => NatsServiceResponse::json_ok(&projection),
-        Err(message) => NatsServiceResponse::transport_error(NatsServiceError::internal(message)),
-    }
-}
-
-async fn load_dataplane_projection(
-    machine_roster: &MachineRosterStore,
-    operation_repository: &OperationRepository,
+fn dataplane_projection(
+    active_machines: &[ployz_core::state::ActiveMachineState],
+    staged: Option<ployz_core::state::StagedMachineDataplaneState>,
 ) -> Result<DataplaneProjection, String> {
-    let declared = machine_roster
-        .active_machines()
-        .await
-        .map_err(|error| error.to_string())?
-        .into_iter()
+    let declared = active_machines
+        .iter()
+        .cloned()
         .map(|machine| DataplaneProjectionMember {
             machine_id: machine.machine_id,
             endpoint_subnet: machine.endpoint_subnet,
@@ -249,16 +199,12 @@ async fn load_dataplane_projection(
             wireguard_public_key: machine.wireguard_public_key,
         })
         .collect();
-    let staged = operation_repository
-        .staged_machine_dataplane()
-        .await
-        .map_err(|error| error.to_string())?
-        .map(|machine| DataplaneProjectionMember {
-            machine_id: machine.machine_id,
-            endpoint_subnet: machine.endpoint_subnet,
-            mesh_endpoints: machine.mesh_endpoints,
-            wireguard_public_key: machine.wireguard_public_key,
-        });
+    let staged = staged.map(|machine| DataplaneProjectionMember {
+        machine_id: machine.machine_id,
+        endpoint_subnet: machine.endpoint_subnet,
+        mesh_endpoints: machine.mesh_endpoints,
+        wireguard_public_key: machine.wireguard_public_key,
+    });
     DataplaneProjection::try_new(declared, staged).map_err(|error| error.to_string())
 }
 
@@ -286,11 +232,12 @@ async fn load_intent(
         .control_plane_epoch()
         .await
         .map_err(|error| error.to_string())?;
-    let active_machines = sources
-        .machine_roster
-        .active_machines()
+    let (active_machines, staged_machine) = sources
+        .operation_repository
+        .intent_machine_sources()
         .await
         .map_err(|error| error.to_string())?;
+    let dataplane_projection = dataplane_projection(&active_machines, staged_machine)?;
     let namespace_intent = sources
         .namespace_intent
         .load()
@@ -326,6 +273,7 @@ async fn load_intent(
         epoch,
         core_machine_id: core_machine_id.clone(),
         active_machines,
+        dataplane_projection,
         route_bindings: namespace_intent.route_bindings,
         serving_target_entries: namespace_intent.serving_target_entries,
         volume_pins: namespace_intent.volume_pins,

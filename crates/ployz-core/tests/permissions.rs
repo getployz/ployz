@@ -3,9 +3,9 @@ use ployz_core::permissions::{
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{
-    CORE_RPC_QUERY_SCOPE, DATAPLANE_PROJECTION_GET, INTENT_CHANGED, INTENT_GET,
-    JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT, MACHINE_RPC_COMMAND_SCOPE, MACHINE_RPC_QUERY_SCOPE,
-    MachineServiceEndpoint, OPERATION_PROGRESS_SCOPE, OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE,
+    CORE_RPC_QUERY_SCOPE, INTENT_CHANGED, INTENT_GET, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT,
+    MACHINE_RPC_COMMAND_SCOPE, MACHINE_RPC_QUERY_SCOPE, MachineServiceEndpoint,
+    OPERATION_PROGRESS_SCOPE, OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE,
     OPERATOR_MACHINE_IMAGE_QUERY_SCOPE, OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE,
     OPERATOR_RUNTIME_SNAPSHOT, PENDING_MACHINE_JOINS_CHANGED, gateway_status, gateway_status_scope,
     machine_container_facts, machine_facts, machine_facts_scope, machine_service,
@@ -23,7 +23,6 @@ fn machine_credential_renders_own_scopes_and_intent_request() {
     let expected_publish = vec![
         "_INBOX_machine_machine_7.>".to_owned(),
         INTENT_GET.to_owned(),
-        DATAPLANE_PROJECTION_GET.to_owned(),
         machine_facts(&machine_id),
         machine_container_facts(&machine_id),
         gateway_status(&machine_id),

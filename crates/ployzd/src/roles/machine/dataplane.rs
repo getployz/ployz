@@ -1,10 +1,10 @@
 use super::response::{failure_message, machine_domain_error, machine_success};
 use super::service::MachinePloyzNativeMeshPreparer;
 use crate::roles::machine::protocol::{
-    MachineDataplanePublicKeyDomainError, MachineDataplanePublicKeyRpcOk,
-    MachineDataplanePublicKeyRpcRequest, MachineDataplanePublicKeyRpcResponse,
-    MachineDataplaneStatusDomainError, MachineDataplaneStatusRpcOk,
-    MachineDataplaneStatusRpcRequest, MachineDataplaneStatusRpcResponse,
+    MachineDataplanePublicKeyRpcOk, MachineDataplanePublicKeyRpcRequest,
+    MachineDataplanePublicKeyRpcResponse, MachineDataplaneStatusDomainError,
+    MachineDataplaneStatusRpcOk, MachineDataplaneStatusRpcRequest,
+    MachineDataplaneStatusRpcResponse,
 };
 use ployz_core::dataplane::{
     DataplaneProjectionComponent, DataplaneProjectionFailure, DataplaneProjectionTestimony,
@@ -110,24 +110,9 @@ pub(crate) async fn handle_dataplane_public_key<P>(
 where
     P: MachinePloyzNativeMeshPreparer,
 {
-    let request = match decode_json_request::<MachineDataplanePublicKeyRpcRequest>(&request) {
-        Ok(request) => request,
+    match decode_json_request::<MachineDataplanePublicKeyRpcRequest>(&request) {
+        Ok(MachineDataplanePublicKeyRpcRequest {}) => {}
         Err(response) => return response,
-    };
-    if !request
-        .machines
-        .iter()
-        .any(|candidate| candidate == &machine_id)
-    {
-        return machine_domain_error(MachineDataplanePublicKeyRpcResponse::DomainError {
-            machine_id: machine_id.clone(),
-            error: MachineDataplanePublicKeyDomainError::Unavailable {
-                component: ployz_core::dataplane::PloyzNativeMeshComponent::WireGuard,
-                message: failure_message(
-                    "dataplane public key request did not target this machine",
-                ),
-            },
-        });
     }
 
     match preparer.read_wireguard_public_key().await {
@@ -166,8 +151,8 @@ mod tests {
         )
         .expect("projection");
         let revisions = DataplaneProjectionRevisions {
-            declared_revision: view.declared_revision,
-            target_revision: view.target_revision,
+            declared_revision: view.declared_revision().clone(),
+            target_revision: view.target_revision().clone(),
         };
         let cached = NativeDataplaneProjectionStatus {
             endpoint_bridge: EndpointBridgeStatus::Ready { subnet },

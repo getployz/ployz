@@ -9,6 +9,7 @@
 
 pub mod client;
 mod containers;
+pub(crate) mod convergence;
 mod dataplane;
 mod endpoints;
 mod facts;

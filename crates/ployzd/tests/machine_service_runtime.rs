@@ -1,9 +1,9 @@
 use futures_util::StreamExt;
 use ployz_core::dataplane::{
     EbpfAttachmentStatus, EbpfForwardingReady, EbpfForwardingReadyEvidence, MachineDataplaneStatus,
-    PloyzNativeMeshComponent, PloyzNativeMeshReady, WireGuardConfiguredMtu, WireGuardDetectedMtu,
-    WireGuardEbpfPrepareError, WireGuardInterfaceMtu, WireGuardPublicKey, WireGuardReady,
-    WireGuardReadyEvidence, WireGuardStatus,
+    PloyzNativeMeshReady, WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardEbpfPrepareError,
+    WireGuardInterfaceMtu, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
+    WireGuardStatus,
 };
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::ContainerId;
@@ -28,13 +28,13 @@ use ployzd::roles::machine::protocol::{
     MachineContainerRestartRpcResponse, MachineContainerRpcOk, MachineContainerRunHookRpcOk,
     MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
     MachineContainerStopDomainError, MachineContainerStopRpcRequest,
-    MachineContainerStopRpcResponse, MachineDataplanePublicKeyDomainError,
-    MachineDataplanePublicKeyRpcRequest, MachineDataplanePublicKeyRpcResponse,
-    MachineDataplaneStatusRpcOk, MachineDataplaneStatusRpcRequest,
-    MachineDataplaneStatusRpcResponse, MachineImagePull, MachineLogsTailRpcOk,
-    MachineLogsTailRpcRequest, MachineLogsTailRpcResponse, MachineRunContainerOutcome,
-    MachineSubstrateReportRpcRequest, MachineSubstrateReportRpcResponse, MachineVolumeRemoveRpcOk,
-    MachineVolumeRemoveRpcRequest, MachineVolumeRemoveRpcResponse,
+    MachineContainerStopRpcResponse, MachineDataplanePublicKeyRpcRequest,
+    MachineDataplanePublicKeyRpcResponse, MachineDataplaneStatusRpcOk,
+    MachineDataplaneStatusRpcRequest, MachineDataplaneStatusRpcResponse, MachineImagePull,
+    MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineLogsTailRpcResponse,
+    MachineRunContainerOutcome, MachineSubstrateReportRpcRequest,
+    MachineSubstrateReportRpcResponse, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
+    MachineVolumeRemoveRpcResponse,
 };
 use ployzd::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
@@ -1147,7 +1147,7 @@ async fn machine_dataplane_status_service_returns_local_testimony() {
 }
 
 #[tokio::test]
-async fn machine_public_key_service_rejects_request_not_targeting_this_machine() {
+async fn machine_public_key_service_answers_empty_query() {
     let nats = test_nats().await;
     let state = RecordingWireGuardEbpfState::default();
     let _service = start_machine_role_service(
@@ -1169,10 +1169,7 @@ async fn machine_public_key_service_rejects_request_not_targeting_this_machine()
             &machine_id("machine_a"),
             MachineServiceEndpoint::DataplanePublicKey,
         ),
-        &MachineDataplanePublicKeyRpcRequest::new(
-            operation_id("op_123"),
-            vec![machine_id("machine_b")],
-        ),
+        &MachineDataplanePublicKeyRpcRequest {},
         Duration::from_secs(1),
     )
     .await
@@ -1180,13 +1177,9 @@ async fn machine_public_key_service_rejects_request_not_targeting_this_machine()
 
     assert!(matches!(
         response,
-        MachineDataplanePublicKeyRpcResponse::DomainError {
-            machine_id,
-            error: MachineDataplanePublicKeyDomainError::Unavailable {
-                component: PloyzNativeMeshComponent::WireGuard,
-                ..
-            },
-        } if machine_id == self::machine_id("machine_a")
+        MachineDataplanePublicKeyRpcResponse::Ok(response)
+            if response.machine_id == self::machine_id("machine_a")
+                && response.public_key.as_str() == "test-public-key"
     ));
     assert_eq!(state.prepare_count(), 0);
 }

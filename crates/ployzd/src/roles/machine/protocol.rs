@@ -38,34 +38,6 @@ impl MachineRunContainerOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct MachineEnsureEndpointNetworkRpcRequest {
-    pub operation_id: OperationId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MachineEnsureEndpointNetworkRpcOk {
-    pub machine_id: MachineId,
-}
-
-impl MachineRpcResponder for MachineEnsureEndpointNetworkRpcOk {
-    fn responder_machine_id(&self) -> &MachineId {
-        let Self { machine_id } = self;
-        machine_id
-    }
-}
-
-pub type MachineEnsureEndpointNetworkRpcResponse =
-    MachineRpcResponse<MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkDomainError>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
-pub enum MachineEnsureEndpointNetworkDomainError {
-    EnsureFailed { message: FailureMessage },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct MachineContainerInspectRpcRequest {
     pub container_id: ContainerId,
 }
@@ -491,20 +463,7 @@ pub type MachineSubstrateReportRpcResponse =
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct MachineDataplanePublicKeyRpcRequest {
-    pub operation_id: OperationId,
-    pub machines: Vec<MachineId>,
-}
-
-impl MachineDataplanePublicKeyRpcRequest {
-    #[must_use]
-    pub const fn new(operation_id: OperationId, machines: Vec<MachineId>) -> Self {
-        Self {
-            operation_id,
-            machines,
-        }
-    }
-}
+pub struct MachineDataplanePublicKeyRpcRequest {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -573,14 +532,8 @@ mod tests {
 
     #[test]
     fn dataplane_public_key_wire_shape_is_pinned() {
-        let request = MachineDataplanePublicKeyRpcRequest::new(
-            operation_id("op_123"),
-            vec![machine_id("machine_a")],
-        );
-        let request_json = json!({
-            "operation_id": "op_123",
-            "machines": ["machine_a"],
-        });
+        let request = MachineDataplanePublicKeyRpcRequest {};
+        let request_json = json!({});
 
         assert_eq!(
             serde_json::to_value(&request).expect("request serializes"),
@@ -608,44 +561,6 @@ mod tests {
             serde_json::from_value::<MachineDataplanePublicKeyRpcResponse>(public_key_json)
                 .expect("response deserializes"),
             public_key
-        );
-    }
-
-    #[test]
-    fn ensure_endpoint_network_response_wire_shape_is_pinned() {
-        let ok = MachineEnsureEndpointNetworkRpcResponse::Ok(MachineEnsureEndpointNetworkRpcOk {
-            machine_id: machine_id("machine_a"),
-        });
-        let ok_json = json!({ "status": "ok", "machine_id": "machine_a" });
-        assert_eq!(
-            serde_json::to_value(&ok).expect("response serializes"),
-            ok_json
-        );
-        assert_eq!(
-            serde_json::from_value::<MachineEnsureEndpointNetworkRpcResponse>(ok_json)
-                .expect("response deserializes"),
-            ok
-        );
-
-        let domain_error = MachineEnsureEndpointNetworkRpcResponse::DomainError {
-            machine_id: machine_id("machine_a"),
-            error: MachineEnsureEndpointNetworkDomainError::EnsureFailed {
-                message: failure_message("ensure failed"),
-            },
-        };
-        let domain_error_json = json!({
-            "status": "domain_error",
-            "machine_id": "machine_a",
-            "error": { "error": "ensure_failed", "message": "ensure failed" },
-        });
-        assert_eq!(
-            serde_json::to_value(&domain_error).expect("response serializes"),
-            domain_error_json
-        );
-        assert_eq!(
-            serde_json::from_value::<MachineEnsureEndpointNetworkRpcResponse>(domain_error_json)
-                .expect("response deserializes"),
-            domain_error
         );
     }
 

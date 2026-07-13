@@ -11,7 +11,8 @@ use ployz_test_support::ids::{event_sequence, operation_id};
 fn dataplane_revision() -> ployz_core::dataplane::DataplaneProjectionRevision {
     DataplaneProjection::try_new(Vec::new(), None)
         .expect("empty projection")
-        .declared_revision
+        .declared_revision()
+        .clone()
 }
 
 #[test]

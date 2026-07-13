@@ -76,7 +76,6 @@ pub enum DataplaneProjectionFailure {
 pub enum DataplaneProjectionComponent {
     EndpointBridge,
     WireGuard,
-    Routes,
     Ebpf,
 }
 

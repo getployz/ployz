@@ -1,15 +1,21 @@
 //! Machine state and machine-add operation policy.
 
+mod dataplane_admission;
+
+pub use dataplane_admission::{
+    validate_declared_local_machine, validate_declared_machine, validate_placement_machine_peers,
+    validate_target_machine,
+};
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
-use crate::dataplane::{MachineEndpointSubnet, WireGuardPublicKey};
 use crate::ids::{MachineId, OperationId, SubjectToken, SubjectTokenError};
 use crate::ops::{
     FailureMessage, MachineAddOperationState, MachineAddOperationStateName, OperationIdempotencyKey,
 };
-use crate::state::ActiveMachineState;
+use crate::state::{ActiveMachineState, StagedMachineDataplaneState};
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -330,12 +336,9 @@ pub fn redeem_pending_join_token(
 }
 
 pub fn active_machine_from_completed_add(
-    operation_id: OperationId,
-    machine_id: MachineId,
     name: MachineName,
     roles: crate::roles::InstallRolePolicy,
-    endpoint_subnet: MachineEndpointSubnet,
-    wireguard_public_key: WireGuardPublicKey,
+    staged: StagedMachineDataplaneState,
     operation: MachineAddOperationState,
 ) -> Result<ActiveMachineState, MachineTransitionRejected> {
     let MachineAddOperationState::Completed = operation else {
@@ -344,6 +347,13 @@ pub fn active_machine_from_completed_add(
         });
     };
 
+    let StagedMachineDataplaneState {
+        operation_id,
+        machine_id,
+        endpoint_subnet,
+        mesh_endpoints,
+        wireguard_public_key,
+    } = staged;
     Ok(ActiveMachineState {
         lifecycle: crate::state::MachineLifecycle::Active,
         machine_id,
@@ -351,7 +361,7 @@ pub fn active_machine_from_completed_add(
         activated_by: operation_id,
         roles,
         control_endpoints: Vec::new(),
-        mesh_endpoints: Vec::new(),
+        mesh_endpoints,
         endpoint_subnet,
         wireguard_public_key,
     })

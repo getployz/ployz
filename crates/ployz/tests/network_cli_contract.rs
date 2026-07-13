@@ -325,7 +325,8 @@ fn network_repair_status_renders_typed_failure() {
 fn network_repair_status_renders_missing_projection_member() {
     let revision = ployz_sdk_types::DataplaneProjection::try_new(Vec::new(), None)
         .expect("empty projection")
-        .declared_revision;
+        .declared_revision()
+        .clone();
     let output = StatusOutput::new(
         ployz_sdk_types::OperationStatusSnapshot {
             status: ployz_sdk_types::OperationStatus::NetworkRepair {
@@ -400,7 +401,8 @@ fn network_repair_watch_renders_dataplane_failure_evidence() {
 fn network_repair_watch_renders_dataplane_converged_evidence() {
     let revision = DataplaneProjection::try_new(Vec::new(), None)
         .expect("empty projection")
-        .declared_revision;
+        .declared_revision()
+        .clone();
     let output = WatchOutput {
         events: vec![ployz_sdk_types::ReplayedOperationEvent {
             sequence: event_sequence(3),

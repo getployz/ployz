@@ -25,7 +25,8 @@ use std::time::Duration;
 async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
     let nats =
         ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_a")]).await;
-    let machine_roster = temp_machine_roster().await;
+    let core_store = CoreStore::open_in_memory().await.expect("core store opens");
+    let machine_roster = MachineRosterStore::new(core_store.clone());
     machine_roster
         .replace_active_machine(&ActiveMachineState {
             control_endpoints: Vec::new(),
@@ -51,11 +52,8 @@ async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
     let _runtime = start_intent_service(
         nats.controller.clone(),
         machine_id("machine_a"),
-        machine_roster,
-        temp_namespace_intent().await,
-        ployzd::core_store::CoreStore::open_in_memory()
-            .await
-            .expect("core store opens"),
+        NamespaceIntentStore::new(core_store.clone()),
+        core_store,
         Duration::from_millis(10),
     )
     .await
@@ -85,7 +83,6 @@ async fn intent_reader_gets_current_intent() {
     let _runtime = start_intent_service(
         nats.controller.clone(),
         machine_id("machine_a"),
-        temp_machine_roster().await,
         temp_namespace_intent().await,
         ployzd::core_store::CoreStore::open_in_memory()
             .await
@@ -161,7 +158,6 @@ async fn machine_reads_core_stamped_projection_with_one_staged_joiner() {
     let _runtime = start_intent_service(
         nats.controller.clone(),
         machine.clone(),
-        MachineRosterStore::new(core_store.clone()),
         NamespaceIntentStore::new(core_store.clone()),
         core_store,
         Duration::from_secs(30),
@@ -171,13 +167,14 @@ async fn machine_reads_core_stamped_projection_with_one_staged_joiner() {
 
     let projection = NatsIntentReader::new(nats.machine_client(&machine).await)
         .with_request_timeout(Duration::from_secs(1))
-        .dataplane_projection()
+        .intent()
         .await
-        .expect("projection");
+        .expect("intent")
+        .dataplane_projection;
 
-    assert!(projection.declared_members.is_empty());
-    assert_eq!(projection.target_members.len(), 1);
-    assert_ne!(projection.declared_revision, projection.target_revision);
+    assert!(projection.declared_members().is_empty());
+    assert_eq!(projection.target_members().len(), 1);
+    assert_ne!(projection.declared_revision(), projection.target_revision());
 
     repository
         .record_machine_add_failed(
@@ -192,10 +189,11 @@ async fn machine_reads_core_stamped_projection_with_one_staged_joiner() {
         .expect("fail operation");
     let projection = NatsIntentReader::new(nats.machine_client(&machine).await)
         .with_request_timeout(Duration::from_secs(1))
-        .dataplane_projection()
+        .intent()
         .await
-        .expect("projection after failure");
-    assert!(projection.target_members.is_empty());
+        .expect("intent after failure")
+        .dataplane_projection;
+    assert!(projection.target_members().is_empty());
 }
 
 #[tokio::test]
@@ -240,7 +238,6 @@ async fn intent_runtime_publishes_redeemable_pending_machine_joins() {
     let _runtime = start_intent_service(
         nats.controller.clone(),
         machine_id("machine_a"),
-        temp_machine_roster().await,
         temp_namespace_intent().await,
         core_store,
         Duration::from_millis(10),
@@ -270,7 +267,8 @@ async fn intent_runtime_publishes_redeemable_pending_machine_joins() {
 #[tokio::test]
 async fn intent_reader_overlays_machine_lifecycle_evidence() {
     let nats = ployz_test_support::nats::TestNats::start().await;
-    let machine_roster = temp_machine_roster().await;
+    let core_store = CoreStore::open_in_memory().await.expect("core store opens");
+    let machine_roster = MachineRosterStore::new(core_store.clone());
     machine_roster
         .replace_active_machine(&ActiveMachineState {
             control_endpoints: Vec::new(),
@@ -290,11 +288,8 @@ async fn intent_reader_overlays_machine_lifecycle_evidence() {
     let _runtime = start_intent_service(
         nats.controller.clone(),
         machine_id("machine_a"),
-        machine_roster,
-        temp_namespace_intent().await,
-        ployzd::core_store::CoreStore::open_in_memory()
-            .await
-            .expect("core store opens"),
+        NamespaceIntentStore::new(core_store.clone()),
+        core_store,
         Duration::from_secs(30),
     )
     .await
@@ -344,7 +339,6 @@ async fn intent_reader_gets_namespace_intent_from_file() {
     let _runtime = start_intent_service(
         nats.controller.clone(),
         machine_id("machine_a"),
-        temp_machine_roster().await,
         namespace_intent,
         ployzd::core_store::CoreStore::open_in_memory()
             .await
@@ -437,14 +431,6 @@ async fn namespace_intent_store_commits_a_deploy_phase_atomically() {
 
 async fn temp_namespace_intent() -> NamespaceIntentStore {
     NamespaceIntentStore::new(
-        ployzd::core_store::CoreStore::open_in_memory()
-            .await
-            .expect("open core store"),
-    )
-}
-
-async fn temp_machine_roster() -> MachineRosterStore {
-    MachineRosterStore::new(
         ployzd::core_store::CoreStore::open_in_memory()
             .await
             .expect("open core store"),

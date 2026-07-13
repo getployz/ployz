@@ -3,16 +3,10 @@
 mod fixtures;
 #[path = "deploy_runtime_nats/managed_certificate.rs"]
 mod managed_certificate;
+mod support;
 
 use fixtures::*;
 use futures_util::StreamExt;
-use ployz_core::dataplane::{
-    DataplaneProjectionRevisions, DataplaneProjectionTestimony, EbpfAttachmentStatus,
-    EndpointBridgeStatus, MachineDataplaneStatus, NativeDataplaneProjectionStatus,
-    WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardHandshakeStatus, WireGuardInterfaceMtu,
-    WireGuardMtuProbe, WireGuardPeerEndpointSubnet, WireGuardPeerStatus, WireGuardRttStatus,
-    WireGuardStatus,
-};
 use ployz_core::deploy::{
     DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, ReplicaCount,
 };
@@ -43,11 +37,7 @@ use ployzd::operations::deploy::driver::{
 use ployzd::operations::deploy::{DeployMachineCandidates, ManagedCertificateWaitPolicy};
 use ployzd::operations::log::{OperationRepository, SubmitOperationError};
 use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineFactsReader};
-use ployzd::roles::machine::protocol::{
-    MachineDataplaneStatusRpcOk, MachineDataplaneStatusRpcResponse,
-    MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcResponse,
-    MachineFactsGetRpcOk, MachineFactsGetRpcResponse,
-};
+use ployzd::roles::machine::protocol::{MachineFactsGetRpcOk, MachineFactsGetRpcResponse};
 use ployzd::tasks::TaskRegistry;
 use std::path::Path;
 use std::time::Duration;
@@ -519,9 +509,6 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
         machine_id("machine_slow"),
     )
     .await;
-    let _endpoint_network =
-        start_endpoint_network_subscription(nats.machine_slow.clone(), machine_id("machine_slow"))
-            .await;
     let _unresponsive_machine = start_unresponsive_container_run_subscription(
         nats.machine_slow.clone(),
         machine_id("machine_slow"),
@@ -745,11 +732,10 @@ async fn test_nats() -> TestNats {
             .await
             .expect("open core store"),
     );
-    let machine_roster = MachineRosterStore::new(
-        ployzd::core_store::CoreStore::open_in_memory()
-            .await
-            .expect("open core store"),
-    );
+    let intent_core_store = ployzd::core_store::CoreStore::open_in_memory()
+        .await
+        .expect("open intent core store");
+    let machine_roster = MachineRosterStore::new(intent_core_store.clone());
     machine_roster
         .replace_active_machine(&active_machine("machine_a", "10.198.1.0/24"))
         .await
@@ -758,14 +744,10 @@ async fn test_nats() -> TestNats {
         .replace_active_machine(&active_machine("machine_slow", "10.198.2.0/24"))
         .await
         .expect("slow machine enters roster");
-    let intent_core_store = ployzd::core_store::CoreStore::open_in_memory()
-        .await
-        .expect("open intent core store");
     let lease_intent = LeaseIntentStore::new(intent_core_store.clone());
     let intent = start_intent_service(
         client.clone(),
         machine_id("machine_a"),
-        machine_roster,
         namespace_intent.clone(),
         intent_core_store,
         Duration::from_secs(30),
@@ -828,85 +810,21 @@ async fn start_facts_subscription(
     intent_client: async_nats::Client,
     machine_id: ployz_core::ids::MachineId,
 ) -> tokio::task::JoinHandle<()> {
+    support::dataplane::start_applied_status_responder(
+        client.clone(),
+        intent_client,
+        machine_id.clone(),
+    )
+    .await;
     let subject = machine_service(&machine_id, MachineServiceEndpoint::FactsGet);
     let mut subscriber = client
         .subscribe(subject)
         .await
         .expect("subscribe facts service");
-    let mut status = client
-        .subscribe(machine_service(
-            &machine_id,
-            MachineServiceEndpoint::DataplaneStatus,
-        ))
-        .await
-        .expect("subscribe dataplane status service");
     client
         .flush()
         .await
         .expect("flush facts service subscription");
-    let status_client = client.clone();
-    let status_machine_id = machine_id.clone();
-    tokio::spawn(async move {
-        let reader = NatsIntentReader::new(intent_client);
-        while let Some(message) = status.next().await {
-            let Some(reply) = message.reply else { continue };
-            let projection = reader
-                .dataplane_projection()
-                .await
-                .expect("projection reads for status testimony");
-            let local = projection
-                .target_members
-                .iter()
-                .find(|member| member.machine_id == status_machine_id)
-                .expect("machine is projected");
-            let peers = projection
-                .target_members
-                .iter()
-                .filter(|peer| peer.machine_id != status_machine_id)
-                .map(|peer| WireGuardPeerStatus {
-                    public_key: peer.wireguard_public_key.clone(),
-                    endpoint_subnet: WireGuardPeerEndpointSubnet::Valid {
-                        subnet: peer.endpoint_subnet.clone(),
-                    },
-                    endpoint: peer.mesh_endpoints.first().copied(),
-                    handshake: WireGuardHandshakeStatus::Ago { seconds: 1 },
-                    rtt: WireGuardRttStatus::Unavailable {
-                        message: "not probed".to_owned(),
-                    },
-                    rx_bytes: 0,
-                    tx_bytes: 0,
-                    mtu_probe: WireGuardMtuProbe::NotRequested,
-                })
-                .collect();
-            let value = MachineDataplaneStatus {
-                projection: NativeDataplaneProjectionStatus {
-                    endpoint_bridge: EndpointBridgeStatus::Ready {
-                        subnet: local.endpoint_subnet.clone(),
-                    },
-                    testimony: DataplaneProjectionTestimony::Applied {
-                        revisions: DataplaneProjectionRevisions {
-                            declared_revision: projection.declared_revision,
-                            target_revision: projection.target_revision,
-                        },
-                    },
-                },
-                wireguard: WireGuardStatus {
-                    interface: "ployz-wg0".to_owned(),
-                    configured_mtu: WireGuardConfiguredMtu::Auto,
-                    detected_mtu: WireGuardDetectedMtu::Detected { mtu: 1420 },
-                    interface_mtu: WireGuardInterfaceMtu::Detected { mtu: 1420 },
-                    peers,
-                },
-                ebpf_attachment: EbpfAttachmentStatus::Attached,
-            };
-            let response = MachineDataplaneStatusRpcResponse::Ok(MachineDataplaneStatusRpcOk {
-                machine_id: status_machine_id.clone(),
-                value,
-            });
-            let payload = serde_json::to_vec(&response).expect("status response serializes");
-            let _ = status_client.publish(reply, payload.into()).await;
-        }
-    });
     tokio::spawn(async move {
         while let Some(message) = subscriber.next().await {
             let Some(reply) = message.reply else {
@@ -946,37 +864,6 @@ fn empty_machine_facts(machine_id: &ployz_core::ids::MachineId) -> MachineFactsS
 
 fn test_disk_space() -> ployz_core::machine_runtime::MachineDiskSpace {
     ployz_test_support::fixtures::test_disk_space()
-}
-
-async fn start_endpoint_network_subscription(
-    client: async_nats::Client,
-    machine_id: ployz_core::ids::MachineId,
-) -> tokio::task::JoinHandle<()> {
-    let subject = machine_service(
-        &machine_id,
-        MachineServiceEndpoint::ContainerEnsureEndpointNetwork,
-    );
-    let mut subscriber = client
-        .subscribe(subject)
-        .await
-        .expect("subscribe endpoint network service");
-    client
-        .flush()
-        .await
-        .expect("flush endpoint network service subscription");
-    tokio::spawn(async move {
-        while let Some(message) = subscriber.next().await {
-            if let Some(reply) = message.reply {
-                let response = serde_json::to_vec(&MachineEnsureEndpointNetworkRpcResponse::Ok(
-                    MachineEnsureEndpointNetworkRpcOk {
-                        machine_id: machine_id.clone(),
-                    },
-                ))
-                .expect("endpoint network response serializes");
-                let _ = client.publish(reply, response.into()).await;
-            }
-        }
-    })
 }
 
 async fn operation_controllers(client: async_nats::Client) -> OperationControllers {

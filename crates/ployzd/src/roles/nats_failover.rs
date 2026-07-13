@@ -307,6 +307,11 @@ mod tests {
             epoch,
             core_machine_id: machine_id(core_machine_id),
             active_machines: machines,
+            dataplane_projection: ployz_core::dataplane::DataplaneProjection::try_new(
+                Vec::new(),
+                None,
+            )
+            .expect("empty projection"),
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),

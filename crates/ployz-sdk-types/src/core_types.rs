@@ -91,8 +91,8 @@ pub use ployz_core::ops::{
 };
 pub use ployz_core::roles::{GatewayRole, InstallRolePolicy};
 pub use ployz_core::security::NatsPrincipal;
-pub use ployz_core::state::MachineUsabilityReason;
 pub use ployz_core::state::{
-    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation,
-    MachineLifecycle, RouteBindingState, ServingTargetEntry, VolumePinState,
+    ActiveMachineState, DataplaneUnavailableReason, GatewayServingStatus, GatewayStatusObservation,
+    MachineEndpointObservation, MachineLifecycle, MachineUsabilityReason, RouteBindingState,
+    ServingTargetEntry, VolumePinState,
 };

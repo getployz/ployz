@@ -7,7 +7,6 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::str::FromStr;
-use std::time::Duration;
 
 use crate::ids::MachineId;
 use crate::ops::FailureMessage;
@@ -15,7 +14,6 @@ use crate::ops::FailureMessage;
 pub const DEFAULT_WIREGUARD_LISTEN_PORT: u16 = 51820;
 pub const MIN_WIREGUARD_MTU: u32 = 1280;
 pub const MAX_WIREGUARD_MTU: u32 = 1420;
-pub const OVERLAY_CONNECTIVITY_PROOF_BUDGET: Duration = Duration::from_secs(45);
 /// A previously-established peer silent beyond this age is not healthy.
 pub const MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS: u64 = 275;
 pub const DEFAULT_ENDPOINT_SUPERNET: &str = "10.198.0.0/16";
@@ -74,11 +72,20 @@ pub struct DataplaneProjectionMember {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
+struct DataplaneProjectionWire {
+    declared_members: Vec<DataplaneProjectionMember>,
+    staged_member: Option<DataplaneProjectionMember>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(as = "DataplaneProjectionWire"))]
+#[serde(try_from = "DataplaneProjectionWire", into = "DataplaneProjectionWire")]
 pub struct DataplaneProjection {
-    pub declared_revision: DataplaneProjectionRevision,
-    pub target_revision: DataplaneProjectionRevision,
-    pub declared_members: Vec<DataplaneProjectionMember>,
-    pub target_members: Vec<DataplaneProjectionMember>,
+    declared_revision: DataplaneProjectionRevision,
+    target_revision: DataplaneProjectionRevision,
+    declared_members: Vec<DataplaneProjectionMember>,
+    target_members: Vec<DataplaneProjectionMember>,
 }
 
 impl DataplaneProjection {
@@ -130,6 +137,54 @@ impl DataplaneProjection {
             declared_members,
             target_members,
         })
+    }
+
+    #[must_use]
+    pub fn declared_revision(&self) -> &DataplaneProjectionRevision {
+        &self.declared_revision
+    }
+
+    #[must_use]
+    pub fn target_revision(&self) -> &DataplaneProjectionRevision {
+        &self.target_revision
+    }
+
+    #[must_use]
+    pub fn declared_members(&self) -> &[DataplaneProjectionMember] {
+        &self.declared_members
+    }
+
+    #[must_use]
+    pub fn target_members(&self) -> &[DataplaneProjectionMember] {
+        &self.target_members
+    }
+
+    #[must_use]
+    pub fn staged_member(&self) -> Option<&DataplaneProjectionMember> {
+        self.target_members.iter().find(|target| {
+            !self
+                .declared_members
+                .iter()
+                .any(|declared| declared.machine_id == target.machine_id)
+        })
+    }
+}
+
+impl TryFrom<DataplaneProjectionWire> for DataplaneProjection {
+    type Error = DataplaneProjectionError;
+
+    fn try_from(wire: DataplaneProjectionWire) -> Result<Self, Self::Error> {
+        Self::try_new(wire.declared_members, wire.staged_member)
+    }
+}
+
+impl From<DataplaneProjection> for DataplaneProjectionWire {
+    fn from(projection: DataplaneProjection) -> Self {
+        let staged_member = projection.staged_member().cloned();
+        Self {
+            declared_members: projection.declared_members,
+            staged_member,
+        }
     }
 }
 
@@ -354,42 +409,6 @@ impl WireGuardEbpfEndpointRoute {
             endpoint_subnet: default_endpoint_subnet(machine_id),
         }
     }
-
-    #[must_use]
-    pub fn from_member(member: DataplaneMember) -> Self {
-        Self {
-            machine_id: member.machine_id,
-            endpoint_subnet: member.endpoint_subnet.as_string(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct WireGuardPeerEndpoint {
-    pub machine_id: MachineId,
-    pub endpoint_subnet: String,
-    pub active_endpoint: SocketAddr,
-    pub candidate_endpoints: Vec<SocketAddr>,
-}
-
-impl WireGuardPeerEndpoint {
-    #[must_use]
-    pub fn new(machine_id: MachineId, active_endpoint: SocketAddr) -> Self {
-        Self {
-            endpoint_subnet: default_endpoint_subnet(&machine_id),
-            machine_id,
-            active_endpoint,
-            candidate_endpoints: vec![active_endpoint],
-        }
-    }
-
-    #[must_use]
-    pub fn with_candidates(mut self, candidate_endpoints: Vec<SocketAddr>) -> Self {
-        self.candidate_endpoints = candidate_endpoints;
-        self
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -401,19 +420,6 @@ pub struct WireGuardPeer {
     pub active_endpoint: SocketAddr,
     pub candidate_endpoints: Vec<SocketAddr>,
     pub public_key: WireGuardPublicKey,
-}
-
-impl WireGuardPeer {
-    #[must_use]
-    pub fn from_endpoint(endpoint: WireGuardPeerEndpoint, public_key: WireGuardPublicKey) -> Self {
-        Self {
-            machine_id: endpoint.machine_id,
-            endpoint_subnet: endpoint.endpoint_subnet,
-            active_endpoint: endpoint.active_endpoint,
-            candidate_endpoints: endpoint.candidate_endpoints,
-            public_key,
-        }
-    }
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -682,7 +688,10 @@ mod tests {
 
         assert_eq!(staged.target_revision, promoted.declared_revision);
         assert_eq!(promoted.declared_revision, promoted.target_revision);
-        assert_eq!(promoted.declared_members[0].mesh_endpoints.len(), 2);
+        let [promoted_first, ..] = promoted.declared_members() else {
+            panic!("promoted projection has a member");
+        };
+        assert_eq!(promoted_first.mesh_endpoints.len(), 2);
     }
 
     #[test]
@@ -706,5 +715,31 @@ mod tests {
             DataplaneProjection::try_new(vec![first], Some(duplicate_key)),
             Err(DataplaneProjectionError::DuplicateWireGuardPublicKey)
         );
+    }
+
+    #[test]
+    fn projection_wire_contains_only_canonical_inputs_and_revalidates_them() {
+        let projection = DataplaneProjection::try_new(
+            vec![projection_member("machine_a", "10.198.1.0/24")],
+            Some(projection_member("machine_b", "10.198.2.0/24")),
+        )
+        .expect("projection");
+        let encoded = serde_json::to_value(&projection).expect("serialize projection");
+
+        assert!(encoded.get("declared_members").is_some());
+        assert!(encoded.get("staged_member").is_some());
+        assert!(encoded.get("declared_revision").is_none());
+        assert!(encoded.get("target_revision").is_none());
+        assert!(encoded.get("target_members").is_none());
+        assert_eq!(
+            serde_json::from_value::<DataplaneProjection>(encoded).expect("deserialize projection"),
+            projection
+        );
+
+        let duplicate = serde_json::json!({
+            "declared_members": [projection_member("machine_a", "10.198.1.0/24")],
+            "staged_member": projection_member("machine_a", "10.198.2.0/24"),
+        });
+        assert!(serde_json::from_value::<DataplaneProjection>(duplicate).is_err());
     }
 }

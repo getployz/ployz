@@ -5,7 +5,6 @@ use ployz_core::state::{
 };
 use ployz_core::subjects::{INTENT_CHANGED, gateway_status, machine_facts};
 use ployz_test_support::ids::{machine_id, namespace_id, route_hostname, route_port, service_id};
-use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use ployzd::intent::service::{RunningIntentService, start_intent_service};
 use ployzd::roles::dns::process::{
@@ -165,11 +164,6 @@ impl TestNats {
         start_intent_service(
             self.connected.controller.clone(),
             machine_id("machine_a"),
-            MachineRosterStore::new(
-                ployzd::core_store::CoreStore::open_in_memory()
-                    .await
-                    .expect("open core store"),
-            ),
             self.namespace_intent.clone(),
             ployzd::core_store::CoreStore::open_in_memory()
                 .await

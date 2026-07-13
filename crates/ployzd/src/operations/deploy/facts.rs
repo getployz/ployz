@@ -4,14 +4,17 @@ use crate::certificate::gateway_certificate_targets;
 use crate::intent::lease_intent::{LeaseIntentStore, StoreLeaseOutcome};
 use crate::intent::service::NatsIntentReader;
 use crate::lease::{BundleDownloadOutcome, LeaseClient};
-use crate::operation_api::connectivity_proof::validate_declared_machine;
 use crate::operations::log::OperationRepository;
 use crate::roles::machine::client::{NatsMachineFactsReader, read_machine_placement_facts};
+use crate::roles::machine::convergence::gather_dataplane_statuses;
 use ployz_core::cert::ManagedCertificateIssuanceFailureKind;
 use ployz_core::dataplane::{DataplaneMember, DataplaneProjection, MachineDataplaneStatus};
 use ployz_core::deploy::{DeployRequest, DeployRouteTarget};
 use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::machine::DataplaneProjectionAdmissionFailure;
+use ployz_core::machine::{
+    DataplaneProjectionAdmissionFailure, validate_declared_local_machine,
+    validate_placement_machine_peers,
+};
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
 use ployz_core::ops::{DeployEvidence, UnusableMachine};
 use ployz_core::state::{
@@ -79,12 +82,7 @@ pub async fn load_deploy_execution_facts_from_nats(
         ployz_core::state::ManagedLeaseProjection::Unacquired
         | ployz_core::state::ManagedLeaseProjection::RecordOnly { .. } => None,
     };
-    let projection = intent_reader
-        .dataplane_projection()
-        .await
-        .map_err(|source| DeployFactLoadError::IntentRead {
-            message: source.to_string(),
-        })?;
+    let projection = intent.dataplane_projection.clone();
     deploy_execution_facts(
         request,
         fallback_candidates,
@@ -156,14 +154,14 @@ async fn deploy_execution_facts(
         .filter(|pin| pin.namespace_id == request.namespace_id)
         .collect::<Vec<_>>();
     let placement_facts = read_machine_placement_facts(facts_reader, machine_lifecycles).await;
-    let dataplane_statuses =
-        futures_util::future::join_all(projection.declared_members.iter().map(|member| async {
-            (
-                member.machine_id.clone(),
-                facts_reader.read_dataplane_status(&member.machine_id).await,
-            )
-        }))
-        .await;
+    let dataplane_statuses = gather_dataplane_statuses(
+        facts_reader,
+        projection
+            .declared_members()
+            .iter()
+            .map(|member| &member.machine_id),
+    )
+    .await;
     let observed_machines = placement_facts
         .iter()
         .filter_map(|facts| facts.containers.clone())
@@ -360,8 +358,8 @@ fn classify_machine_usability(
         Result<MachineDataplaneStatus, ployz_core::ops::FailureMessage>,
     )],
 ) -> (Vec<MachineId>, Vec<UnusableMachine>) {
-    let mut eligible = Vec::new();
     let mut unusable = BTreeMap::new();
+    let mut preliminary = Vec::new();
 
     for facts in placement_facts {
         if let Some(reason) = placement_rejection(facts.lifecycle) {
@@ -373,7 +371,7 @@ fn classify_machine_usability(
             Some(MachineUsabilityReason::FactsUnavailable)
         } else {
             let dataplane_reason = match projection
-                .declared_members
+                .declared_members()
                 .iter()
                 .find(|member| member.machine_id == facts.machine_id)
             {
@@ -383,20 +381,49 @@ fn classify_machine_usability(
                     .find(|(machine_id, _)| machine_id == &facts.machine_id)
                 {
                     None => Some(DataplaneUnavailableReason::TestimonyMissing),
-                    Some((_, Err(message))) => Some(DataplaneUnavailableReason::NoAnswer {
-                        message: message.clone(),
+                    Some((_, Err(message))) => Some(DataplaneUnavailableReason::Admission {
+                        failure: DataplaneProjectionAdmissionFailure::NoAnswer {
+                            message: message.clone(),
+                        },
                     }),
-                    Some((_, Ok(status))) => validate_declared_machine(projection, member, status)
-                        .map(dataplane_unavailable_reason),
+                    Some((_, Ok(status))) => {
+                        match validate_declared_local_machine(projection, member, status) {
+                            Some(failure) => {
+                                Some(DataplaneUnavailableReason::Admission { failure })
+                            }
+                            None => {
+                                preliminary.push((facts.machine_id.clone(), member, status));
+                                None
+                            }
+                        }
+                    }
                 },
             };
             dataplane_reason.map(|reason| MachineUsabilityReason::DataplaneUnavailable { reason })
         };
         let Some(reason) = reason else {
-            eligible.push(facts.machine_id.clone());
             continue;
         };
         unusable.insert(facts.machine_id.clone(), reason);
+    }
+
+    let placement_members = preliminary
+        .iter()
+        .map(|(_, member, _)| *member)
+        .collect::<Vec<_>>();
+    let mut eligible = Vec::new();
+    for (machine_id, member, status) in preliminary {
+        if let Some(failure) = validate_placement_machine_peers(&placement_members, member, status)
+        {
+            unusable.insert(
+                machine_id,
+                MachineUsabilityReason::DataplaneUnavailable {
+                    reason: DataplaneUnavailableReason::Admission { failure },
+                },
+            );
+        } else {
+            eligible.push(machine_id);
+        }
     }
 
     (
@@ -406,44 +433,6 @@ fn classify_machine_usability(
             .map(|(machine_id, reason)| UnusableMachine { machine_id, reason })
             .collect(),
     )
-}
-
-fn dataplane_unavailable_reason(
-    reason: DataplaneProjectionAdmissionFailure,
-) -> DataplaneUnavailableReason {
-    match reason {
-        DataplaneProjectionAdmissionFailure::NoAnswer { message } => {
-            DataplaneUnavailableReason::NoAnswer { message }
-        }
-        DataplaneProjectionAdmissionFailure::AwaitingTargetRevision { expected, observed } => {
-            DataplaneUnavailableReason::WrongRevision { expected, observed }
-        }
-        DataplaneProjectionAdmissionFailure::UnusableProjection { failure } => {
-            DataplaneUnavailableReason::ProjectionUnusable { failure }
-        }
-        DataplaneProjectionAdmissionFailure::EndpointBridgeNotReady { status } => {
-            DataplaneUnavailableReason::EndpointBridgeNotReady { status }
-        }
-        DataplaneProjectionAdmissionFailure::WireGuardNotReady { failure } => {
-            DataplaneUnavailableReason::WireGuardNotReady { failure }
-        }
-        DataplaneProjectionAdmissionFailure::EbpfNotReady { status } => {
-            DataplaneUnavailableReason::EbpfNotReady { status }
-        }
-        DataplaneProjectionAdmissionFailure::PeerSetMismatch { expected, observed } => {
-            DataplaneUnavailableReason::PeerSetMismatch { expected, observed }
-        }
-        DataplaneProjectionAdmissionFailure::PeerHandshakeStale {
-            peer_machine_id,
-            observed_age_seconds,
-        } => DataplaneUnavailableReason::PeerHandshakeStale {
-            peer_machine_id,
-            observed_age_seconds,
-        },
-        DataplaneProjectionAdmissionFailure::PeerHandshakeNever { peer_machine_id } => {
-            DataplaneUnavailableReason::PeerHandshakeNever { peer_machine_id }
-        }
-    }
 }
 
 /// An intent read failed before deploy execution started. The rendered
@@ -471,7 +460,12 @@ mod tests {
     use super::*;
     use crate::roles::machine::client::MachinePlacementFacts;
     use ployz_core::dataplane::{
-        DataplaneProjectionMember, MachineEndpointSubnet, WireGuardPublicKey,
+        DataplaneProjectionMember, DataplaneProjectionRevisions, DataplaneProjectionTestimony,
+        EbpfAttachmentStatus, EndpointBridgeStatus, MachineEndpointSubnet,
+        NativeDataplaneProjectionStatus, WireGuardConfiguredMtu, WireGuardDetectedMtu,
+        WireGuardHandshakeStatus, WireGuardInterfaceMtu, WireGuardMtuProbe,
+        WireGuardPeerEndpointSubnet, WireGuardPeerStatus, WireGuardPublicKey, WireGuardRttStatus,
+        WireGuardStatus,
     };
     use ployz_core::ops::FailureMessage;
 
@@ -493,7 +487,9 @@ mod tests {
             vec![UnusableMachine {
                 machine_id: machine,
                 reason: MachineUsabilityReason::DataplaneUnavailable {
-                    reason: DataplaneUnavailableReason::NoAnswer { message },
+                    reason: DataplaneUnavailableReason::Admission {
+                        failure: DataplaneProjectionAdmissionFailure::NoAnswer { message },
+                    },
                 },
             }]
         );
@@ -532,6 +528,113 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn silent_declared_machine_does_not_poison_connected_placement_candidates() {
+        let projection = three_machine_projection();
+        let core = machine_id("core");
+        let edge = machine_id("edge");
+        let silent = machine_id("silent");
+        let facts = vec![
+            answering_facts(core.clone()),
+            answering_facts(edge.clone()),
+            silent_facts(silent.clone()),
+        ];
+        let statuses = vec![
+            (
+                core.clone(),
+                Ok(ready_status(
+                    &projection,
+                    "core",
+                    &[
+                        ("edge", WireGuardHandshakeStatus::Ago { seconds: 1 }),
+                        ("silent", WireGuardHandshakeStatus::Never),
+                    ],
+                )),
+            ),
+            (
+                edge.clone(),
+                Ok(ready_status(
+                    &projection,
+                    "edge",
+                    &[
+                        ("core", WireGuardHandshakeStatus::Ago { seconds: 1 }),
+                        ("silent", WireGuardHandshakeStatus::Never),
+                    ],
+                )),
+            ),
+        ];
+
+        let (eligible, unusable) = classify_machine_usability(&facts, &projection, &statuses);
+
+        assert_eq!(eligible, vec![core, edge]);
+        assert_eq!(
+            unusable,
+            vec![UnusableMachine {
+                machine_id: silent,
+                reason: MachineUsabilityReason::FactsUnavailable,
+            }]
+        );
+    }
+
+    #[test]
+    fn placement_peer_validation_does_not_rescue_candidates_after_exclusion() {
+        let projection = three_machine_projection();
+        let core = machine_id("core");
+        let edge = machine_id("edge");
+        let isolated = machine_id("silent");
+        let facts = vec![
+            answering_facts(core.clone()),
+            answering_facts(edge.clone()),
+            answering_facts(isolated.clone()),
+        ];
+        let statuses = vec![
+            (
+                core.clone(),
+                Ok(ready_status(
+                    &projection,
+                    "core",
+                    &[("edge", WireGuardHandshakeStatus::Ago { seconds: 1 })],
+                )),
+            ),
+            (
+                edge.clone(),
+                Ok(ready_status(
+                    &projection,
+                    "edge",
+                    &[
+                        ("core", WireGuardHandshakeStatus::Ago { seconds: 1 }),
+                        ("silent", WireGuardHandshakeStatus::Ago { seconds: 1 }),
+                    ],
+                )),
+            ),
+            (
+                isolated.clone(),
+                Ok(ready_status(
+                    &projection,
+                    "silent",
+                    &[("edge", WireGuardHandshakeStatus::Ago { seconds: 1 })],
+                )),
+            ),
+        ];
+
+        let (eligible, unusable) = classify_machine_usability(&facts, &projection, &statuses);
+
+        assert_eq!(eligible, vec![edge]);
+        let [core_unusable, isolated_unusable] = unusable.as_slice() else {
+            panic!("expected exactly two unusable machines: {unusable:?}");
+        };
+        assert_eq!(core_unusable.machine_id, core);
+        assert_eq!(isolated_unusable.machine_id, isolated);
+        assert!(unusable.iter().all(|machine| matches!(
+            machine.reason,
+            MachineUsabilityReason::DataplaneUnavailable {
+                reason: DataplaneUnavailableReason::Admission {
+                    failure: DataplaneProjectionAdmissionFailure::PeerSetMismatch { .. },
+                },
+            }
+        )));
+    }
+
     fn answering_facts(machine_id: MachineId) -> MachinePlacementFacts {
         MachinePlacementFacts {
             containers: Some(
@@ -543,6 +646,97 @@ mod tests {
             platform: None,
             endpoints: None,
         }
+    }
+
+    fn silent_facts(machine_id: MachineId) -> MachinePlacementFacts {
+        MachinePlacementFacts {
+            containers: None,
+            machine_id,
+            lifecycle: MachineLifecycle::Active,
+            platform: None,
+            endpoints: None,
+        }
+    }
+
+    fn three_machine_projection() -> DataplaneProjection {
+        DataplaneProjection::try_new(
+            [("core", 1_u8), ("edge", 2), ("silent", 3)]
+                .into_iter()
+                .map(|(machine, octet)| DataplaneProjectionMember {
+                    machine_id: machine_id(machine),
+                    endpoint_subnet: MachineEndpointSubnet::try_new(format!("10.198.{octet}.0/24"))
+                        .expect("endpoint subnet"),
+                    mesh_endpoints: vec![
+                        format!("192.0.2.{octet}:51820")
+                            .parse()
+                            .expect("mesh endpoint"),
+                    ],
+                    wireguard_public_key: WireGuardPublicKey::try_new(format!("public-{machine}"))
+                        .expect("wireguard public key"),
+                })
+                .collect(),
+            None,
+        )
+        .expect("projection")
+    }
+
+    fn ready_status(
+        projection: &DataplaneProjection,
+        local: &str,
+        peers: &[(&str, WireGuardHandshakeStatus)],
+    ) -> MachineDataplaneStatus {
+        let local = projection_member(projection, local);
+        MachineDataplaneStatus {
+            projection: NativeDataplaneProjectionStatus {
+                endpoint_bridge: EndpointBridgeStatus::Ready {
+                    subnet: local.endpoint_subnet.clone(),
+                },
+                testimony: DataplaneProjectionTestimony::Applied {
+                    revisions: DataplaneProjectionRevisions {
+                        declared_revision: projection.declared_revision().clone(),
+                        target_revision: projection.target_revision().clone(),
+                    },
+                },
+            },
+            wireguard: WireGuardStatus {
+                interface: "ployz-wg0".to_owned(),
+                configured_mtu: WireGuardConfiguredMtu::Auto,
+                detected_mtu: WireGuardDetectedMtu::Detected { mtu: 1420 },
+                interface_mtu: WireGuardInterfaceMtu::Detected { mtu: 1420 },
+                peers: peers
+                    .iter()
+                    .map(|(peer, handshake)| {
+                        let peer = projection_member(projection, peer);
+                        WireGuardPeerStatus {
+                            public_key: peer.wireguard_public_key.clone(),
+                            endpoint_subnet: WireGuardPeerEndpointSubnet::Valid {
+                                subnet: peer.endpoint_subnet.clone(),
+                            },
+                            endpoint: peer.mesh_endpoints.first().copied(),
+                            handshake: *handshake,
+                            rtt: WireGuardRttStatus::Unavailable {
+                                message: "not measured".to_owned(),
+                            },
+                            rx_bytes: 0,
+                            tx_bytes: 0,
+                            mtu_probe: WireGuardMtuProbe::NotRequested,
+                        }
+                    })
+                    .collect(),
+            },
+            ebpf_attachment: EbpfAttachmentStatus::Attached,
+        }
+    }
+
+    fn projection_member<'a>(
+        projection: &'a DataplaneProjection,
+        machine: &str,
+    ) -> &'a DataplaneProjectionMember {
+        projection
+            .declared_members()
+            .iter()
+            .find(|member| member.machine_id == machine_id(machine))
+            .expect("projection member")
     }
 
     fn projection_for(machine_id: &MachineId) -> DataplaneProjection {

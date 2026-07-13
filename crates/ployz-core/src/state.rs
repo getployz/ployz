@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cert::{AcmeHttp01Challenge, ActiveCertState, ManagedCertBundle, ManagedLeaseRecord};
-use crate::dataplane::{MachineEndpointSubnet, WireGuardPublicKey};
+use crate::dataplane::{DataplaneProjection, MachineEndpointSubnet, WireGuardPublicKey};
 use crate::deploy::{ImageReference, ReplicaCount, VolumeName};
 use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
 use crate::machine::{IssuedJoinToken, MachineName};
@@ -148,6 +148,7 @@ pub struct IntentSnapshot {
     pub epoch: ControlPlaneEpoch,
     pub core_machine_id: MachineId,
     pub active_machines: Vec<ActiveMachineState>,
+    pub dataplane_projection: DataplaneProjection,
     pub route_bindings: Vec<RouteBindingState>,
     pub serving_target_entries: Vec<ServingTargetEntry>,
     #[serde(default)]
@@ -174,6 +175,7 @@ struct IntentSnapshotWire {
     epoch: ControlPlaneEpoch,
     core_machine_id: MachineId,
     active_machines: Vec<ActiveMachineState>,
+    dataplane_projection: DataplaneProjection,
     route_bindings: Vec<RouteBindingState>,
     serving_target_entries: Vec<ServingTargetEntry>,
     #[serde(default)]
@@ -219,6 +221,7 @@ impl<'de> Deserialize<'de> for IntentSnapshot {
             epoch: wire.epoch,
             core_machine_id: wire.core_machine_id,
             active_machines: wire.active_machines,
+            dataplane_projection: wire.dataplane_projection,
             route_bindings: wire.route_bindings,
             serving_target_entries: wire.serving_target_entries,
             volume_pins: wire.volume_pins,
@@ -304,37 +307,10 @@ pub enum MachineUsabilityReason {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DataplaneUnavailableReason {
-    NoAnswer {
-        message: crate::ops::FailureMessage,
-    },
     NotDeclared,
     TestimonyMissing,
-    WrongRevision {
-        expected: crate::dataplane::DataplaneProjectionRevision,
-        observed: Option<crate::dataplane::DataplaneProjectionRevision>,
-    },
-    ProjectionUnusable {
-        failure: crate::dataplane::DataplaneProjectionFailure,
-    },
-    EndpointBridgeNotReady {
-        status: crate::dataplane::EndpointBridgeStatus,
-    },
-    WireGuardNotReady {
-        failure: crate::machine::WireGuardReadinessFailure,
-    },
-    EbpfNotReady {
-        status: crate::dataplane::EbpfAttachmentStatus,
-    },
-    PeerSetMismatch {
-        expected: Vec<crate::machine::DataplaneAdmissionPeer>,
-        observed: Vec<crate::machine::DataplaneAdmissionPeer>,
-    },
-    PeerHandshakeStale {
-        peer_machine_id: MachineId,
-        observed_age_seconds: u64,
-    },
-    PeerHandshakeNever {
-        peer_machine_id: MachineId,
+    Admission {
+        failure: crate::machine::DataplaneProjectionAdmissionFailure,
     },
 }
 
@@ -472,6 +448,8 @@ mod tests {
             epoch: ControlPlaneEpoch::initial(),
             core_machine_id: MachineId::try_new("core").expect("machine id"),
             active_machines: Vec::new(),
+            dataplane_projection: DataplaneProjection::try_new(Vec::new(), None)
+                .expect("empty projection"),
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),

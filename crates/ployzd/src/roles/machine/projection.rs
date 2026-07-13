@@ -182,19 +182,19 @@ async fn converge_once<R, P>(
     R: MachineContainerRunner,
     P: MachinePloyzNativeMeshPreparer,
 {
-    let projection = match projection_reader.dataplane_projection().await {
-        Ok(projection) => projection,
+    let projection = match projection_reader.intent().await {
+        Ok(intent) => intent.dataplane_projection,
         Err(error) => {
             state.record_fetch_failure(error.to_string());
             return;
         }
     };
     let revisions = DataplaneProjectionRevisions {
-        declared_revision: projection.declared_revision.clone(),
-        target_revision: projection.target_revision.clone(),
+        declared_revision: projection.declared_revision().clone(),
+        target_revision: projection.target_revision().clone(),
     };
     if !projection
-        .target_members
+        .target_members()
         .iter()
         .any(|member| &member.machine_id == machine_id)
     {
@@ -274,9 +274,8 @@ fn render_projection(
     projection: DataplaneProjection,
     machine_id: &MachineId,
 ) -> Result<RenderedProjection, FailureMessage> {
-    validate_projection(&projection)?;
     let Some(local) = projection
-        .target_members
+        .target_members()
         .iter()
         .find(|member| &member.machine_id == machine_id)
     else {
@@ -286,7 +285,7 @@ fn render_projection(
         )));
     };
     let endpoint_routes = projection
-        .target_members
+        .target_members()
         .iter()
         .map(|member| WireGuardEbpfEndpointRoute {
             machine_id: member.machine_id.clone(),
@@ -294,7 +293,7 @@ fn render_projection(
         })
         .collect();
     let peers = projection
-        .target_members
+        .target_members()
         .iter()
         .filter(|member| &member.machine_id != machine_id)
         .map(|member| {
@@ -315,45 +314,14 @@ fn render_projection(
         .collect::<Result<Vec<_>, _>>()?;
     Ok(RenderedProjection {
         revisions: DataplaneProjectionRevisions {
-            declared_revision: projection.declared_revision,
-            target_revision: projection.target_revision,
+            declared_revision: projection.declared_revision().clone(),
+            target_revision: projection.target_revision().clone(),
         },
         local_subnet: local.endpoint_subnet.clone(),
         local_public_key: local.wireguard_public_key.clone(),
         endpoint_routes,
         peers,
     })
-}
-
-fn validate_projection(projection: &DataplaneProjection) -> Result<(), FailureMessage> {
-    let staged = projection
-        .target_members
-        .iter()
-        .filter(|target| {
-            !projection
-                .declared_members
-                .iter()
-                .any(|declared| declared.machine_id == target.machine_id)
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let staged = match staged.as_slice() {
-        [] => None,
-        [member] => Some(member.clone()),
-        _ => {
-            return Err(failure_message(
-                "dataplane projection has multiple staged machines",
-            ));
-        }
-    };
-    let rebuilt = DataplaneProjection::try_new(projection.declared_members.clone(), staged)
-        .map_err(|error| failure_message(error.to_string()))?;
-    if &rebuilt != projection {
-        return Err(failure_message(
-            "dataplane projection revisions or target membership are inconsistent",
-        ));
-    }
-    Ok(())
 }
 
 fn endpoint_network_failure(
@@ -461,8 +429,8 @@ mod tests {
             DataplaneProjection::try_new(vec![member("machine_a", "10.198.1.0/24", None)], None)
                 .expect("projection");
         let revisions = DataplaneProjectionRevisions {
-            declared_revision: projection.declared_revision,
-            target_revision: projection.target_revision,
+            declared_revision: projection.declared_revision().clone(),
+            target_revision: projection.target_revision().clone(),
         };
         let subnet = MachineEndpointSubnet::try_new("10.198.1.0/24").expect("subnet");
         state.record_applied(revisions.clone(), subnet);
@@ -509,8 +477,8 @@ mod tests {
             DataplaneProjection::try_new(vec![member("machine_a", "10.198.1.0/24", None)], None)
                 .expect("projection");
         let revisions = DataplaneProjectionRevisions {
-            declared_revision: projection.declared_revision,
-            target_revision: projection.target_revision,
+            declared_revision: projection.declared_revision().clone(),
+            target_revision: projection.target_revision().clone(),
         };
         state.record_failure(
             revisions.clone(),

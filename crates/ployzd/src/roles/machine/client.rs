@@ -52,7 +52,6 @@ pub struct NatsMachineContainerRuntime {
 #[derive(Debug, Clone)]
 pub struct NatsMachineDataplaneReader {
     pub(super) client: async_nats::Client,
-    pub(super) facts_reader: NatsMachineFactsReader,
     pub(super) request_timeout: Duration,
 }
 
@@ -540,7 +539,6 @@ impl NatsMachineDataplaneReader {
     #[must_use]
     pub fn new(client: async_nats::Client) -> Self {
         Self {
-            facts_reader: NatsMachineFactsReader::new(client.clone()),
             client,
             request_timeout: DEFAULT_MACHINE_RPC_TIMEOUT,
         }
@@ -549,15 +547,7 @@ impl NatsMachineDataplaneReader {
     #[must_use]
     pub fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
         self.request_timeout = request_timeout;
-        self.facts_reader = self.facts_reader.with_request_timeout(request_timeout);
         self
-    }
-
-    pub(crate) async fn read_dataplane_status(
-        &self,
-        machine_id: &MachineId,
-    ) -> Result<MachineDataplaneStatus, ployz_core::ops::FailureMessage> {
-        self.facts_reader.read_dataplane_status(machine_id).await
     }
 }
 

@@ -4,7 +4,8 @@ use ployz_sdk_types::{DataplaneProjection, OperationEvent};
 fn sdk_exports_network_repair_dataplane_converged_event() {
     let revision = DataplaneProjection::try_new(Vec::new(), None)
         .expect("empty projection")
-        .declared_revision;
+        .declared_revision()
+        .clone();
     let event = OperationEvent::NetworkRepairDataplaneConverged {
         operation_id: ployz_sdk_types::OperationId::try_new("op_network_repair")
             .expect("valid operation id"),

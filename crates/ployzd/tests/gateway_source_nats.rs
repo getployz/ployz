@@ -9,7 +9,6 @@ use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, route_hostname, route_port, service_id,
 };
 use ployzd::fact_cache::FactCache;
-use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
 use ployzd::roles::gateway::projection::{
@@ -101,11 +100,6 @@ async fn test_nats() -> TestNats {
     let intent = start_intent_service(
         nats.controller.clone(),
         machine_id("machine_a"),
-        MachineRosterStore::new(
-            ployzd::core_store::CoreStore::open_in_memory()
-                .await
-                .expect("open core store"),
-        ),
         namespace_intent.clone(),
         ployzd::core_store::CoreStore::open_in_memory()
             .await
