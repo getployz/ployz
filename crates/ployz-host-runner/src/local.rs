@@ -276,7 +276,6 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
             ));
         }
 
-        merge_docker_daemon_config(&self.config.docker_daemon_config, &endpoint_supernet)?;
         let os_release = self.runner.command("cat", &["/etc/os-release"])?;
         if !os_release.success {
             return Err(PrepareDockerError::Other(failure_message(format!(
@@ -284,7 +283,9 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
                 os_release.failure
             ))));
         }
-        match docker_install_target(&os_release.stdout)? {
+        let install_target = docker_install_target(&os_release.stdout)?;
+        merge_docker_daemon_config(&self.config.docker_daemon_config, &endpoint_supernet)?;
+        match install_target {
             DockerInstallTarget::Script => {
                 let script = DockerInstallScript::new()?;
                 self.runner

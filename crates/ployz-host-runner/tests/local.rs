@@ -724,8 +724,25 @@ fn local_effects_install_docker_from_rhel_repository_on_rocky() {
         ))
         .expect("Rocky installs Docker from the supported RHEL repository");
 
-    assert_eq!(effects.runner().rhel_docker_install_runs, 1);
-    assert_eq!(effects.runner().docker_install_runs, 0);
+    assert_eq!(effects.runner().docker_install_runs, 1);
+    assert!(effects.runner().downloads.is_empty());
+    let [script] = effects.runner().docker_install_scripts.as_slice() else {
+        panic!("one Docker install script must run");
+    };
+    assert!(script.contains("download.docker.com/linux/rhel/docker-ce.repo"));
+    assert!(script.contains("dnf --releasever 9 install -y docker-ce"));
+    let config: serde_json::Value = serde_json::from_slice(
+        &fs::read(root.join("etc/docker/daemon.json")).expect("Docker config can be read"),
+    )
+    .expect("Docker config is JSON");
+    assert_eq!(
+        config.pointer("/features/containerd-snapshotter"),
+        Some(&serde_json::json!(true))
+    );
+    assert_eq!(
+        config.get("insecure-registries"),
+        Some(&serde_json::json!(["10.198.0.0/16"]))
+    );
     assert!(
         effects
             .runner()
@@ -759,9 +776,9 @@ fn local_effects_report_unsupported_docker_host_family() {
                 == Some(HostRunnerStepFailureReason::ContainerRuntimeHostUnsupported)
                 && error.message().as_str().contains("alpine")
     ));
-    assert_eq!(effects.runner().rhel_docker_install_runs, 0);
     assert_eq!(effects.runner().docker_install_runs, 0);
     assert!(effects.runner().downloads.is_empty());
+    assert!(!root.join("etc/docker/daemon.json").exists());
 }
 
 #[test]
@@ -1337,7 +1354,7 @@ struct RecordingRunner {
     docker_installed: bool,
     docker_running: bool,
     docker_install_runs: usize,
-    rhel_docker_install_runs: usize,
+    docker_install_scripts: Vec<String>,
     dataplane_host_prepare_runs: usize,
     fail_docker_install: bool,
     fail_dataplane_host_prepare: bool,
@@ -1360,7 +1377,7 @@ impl RecordingRunner {
             docker_installed: true,
             docker_running: true,
             docker_install_runs: 0,
-            rhel_docker_install_runs: 0,
+            docker_install_scripts: Vec::new(),
             dataplane_host_prepare_runs: 0,
             fail_docker_install: false,
             fail_dataplane_host_prepare: false,
@@ -1471,12 +1488,8 @@ impl HostRunnerCommandRunner for RecordingRunner {
     fn run_docker_install_script(&mut self, script: &Path) -> Result<(), FailureMessage> {
         let script = fs::read_to_string(script)
             .map_err(|error| failure_message(&format!("failed to read fake script: {error}")))?;
-        if script.contains("download.docker.com/linux/rhel/docker-ce.repo") {
-            assert!(script.contains("dnf --releasever 9 install -y docker-ce"));
-            self.rhel_docker_install_runs += 1;
-        } else {
-            self.docker_install_runs += 1;
-        }
+        self.docker_install_scripts.push(script);
+        self.docker_install_runs += 1;
         if self.fail_docker_install {
             return Err(failure_message("simulated docker install failure"));
         }
