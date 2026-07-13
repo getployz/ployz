@@ -3,11 +3,11 @@
 use std::ffi::OsString;
 use std::fs::File;
 use std::io;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ployz_core::ops::FailureMessage;
 use wait_timeout::ChildExt;
@@ -71,6 +71,122 @@ impl Default for SystemHostRunnerCommandRunner {
     }
 }
 
+#[derive(Debug)]
+enum DownloadAttemptError {
+    Transient(String),
+    Permanent(String),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DownloadFailureEnd {
+    PermanentFailure,
+    RetryLimit,
+    OverallDeadline,
+}
+
+fn download_with_retry(
+    source: &str,
+    destination: &Path,
+    deadline: Duration,
+    initial_backoff: Duration,
+    mut attempt_download: impl FnMut(&mut File, Duration) -> Result<(), DownloadAttemptError>,
+) -> Result<(), FailureMessage> {
+    const MAX_ATTEMPTS: usize = 11;
+    const MAX_BACKOFF: Duration = Duration::from_secs(1);
+
+    let deadline = Instant::now() + deadline;
+    let mut backoff = initial_backoff;
+    let mut last_error = "overall deadline elapsed".to_owned();
+
+    for attempts in 1..=MAX_ATTEMPTS {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(download_failure(
+                source,
+                attempts - 1,
+                &last_error,
+                DownloadFailureEnd::OverallDeadline,
+            ));
+        }
+
+        let mut file = File::create(destination).map_err(|error| {
+            download_failure(
+                source,
+                attempts - 1,
+                &format!("failed to create downloaded artifact: {error}"),
+                DownloadFailureEnd::PermanentFailure,
+            )
+        })?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(download_failure(
+                source,
+                attempts - 1,
+                &last_error,
+                DownloadFailureEnd::OverallDeadline,
+            ));
+        }
+        match attempt_download(&mut file, remaining) {
+            Ok(()) if deadline.saturating_duration_since(Instant::now()).is_zero() => {
+                return Err(download_failure(
+                    source,
+                    attempts,
+                    "attempt completed after the overall deadline",
+                    DownloadFailureEnd::OverallDeadline,
+                ));
+            }
+            Ok(()) => return Ok(()),
+            Err(DownloadAttemptError::Permanent(error)) => {
+                return Err(download_failure(
+                    source,
+                    attempts,
+                    &error,
+                    DownloadFailureEnd::PermanentFailure,
+                ));
+            }
+            Err(DownloadAttemptError::Transient(error)) => last_error = error,
+        }
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(download_failure(
+                source,
+                attempts,
+                &last_error,
+                DownloadFailureEnd::OverallDeadline,
+            ));
+        }
+        if attempts < MAX_ATTEMPTS {
+            thread::sleep(backoff.min(remaining));
+            backoff = backoff.saturating_mul(2).min(MAX_BACKOFF);
+        }
+    }
+
+    Err(download_failure(
+        source,
+        MAX_ATTEMPTS,
+        &last_error,
+        DownloadFailureEnd::RetryLimit,
+    ))
+}
+
+fn download_failure(
+    source: &str,
+    attempts: usize,
+    error: &str,
+    ending: DownloadFailureEnd,
+) -> FailureMessage {
+    let attempt = if attempts == 1 { "attempt" } else { "attempts" };
+    let ending = match ending {
+        DownloadFailureEnd::PermanentFailure => "permanent failure",
+        DownloadFailureEnd::RetryLimit => "retry limit",
+        DownloadFailureEnd::OverallDeadline => "overall deadline",
+    };
+    failure_message(format!(
+        "artifact download from {source} failed after {attempts} {attempt}: {error}; ended by {ending}"
+    ))
+}
+
 impl HostRunnerCommandRunner for SystemHostRunnerCommandRunner {
     fn command(
         &mut self,
@@ -108,22 +224,13 @@ impl HostRunnerCommandRunner for SystemHostRunnerCommandRunner {
     }
 
     fn download(&mut self, url: &str, destination: &Path) -> Result<(), FailureMessage> {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(self.timeout))
-            .timeout_connect(Some(self.timeout.min(Duration::from_secs(5))))
-            .build()
-            .into();
-        let mut response = agent
-            .get(url)
-            .call()
-            .map_err(|error| failure_message(format!("artifact download failed: {error}")))?;
-        let mut destination = File::create(destination).map_err(|error| {
-            failure_message(format!("failed to create downloaded artifact: {error}"))
-        })?;
-        io::copy(&mut response.body_mut().as_reader(), &mut destination).map_err(|error| {
-            failure_message(format!("failed to write downloaded artifact: {error}"))
-        })?;
-        Ok(())
+        download_with_retry(
+            url,
+            destination,
+            Duration::from_secs(10 * 60),
+            Duration::from_millis(10),
+            |file, remaining| download_attempt(url, file, remaining),
+        )
     }
 
     fn docker_info(&mut self) -> Result<(), FailureMessage> {
@@ -183,6 +290,79 @@ impl HostRunnerCommandRunner for SystemHostRunnerCommandRunner {
 
     fn dataplane_host_ready(&mut self) -> bool {
         dataplane_host_ready(self.timeout)
+    }
+}
+
+fn download_attempt(
+    source: &str,
+    destination: &mut File,
+    remaining: Duration,
+) -> Result<(), DownloadAttemptError> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(remaining))
+        .timeout_resolve(Some(remaining.min(Duration::from_secs(5))))
+        .timeout_connect(Some(remaining.min(Duration::from_secs(5))))
+        .build()
+        .into();
+    let mut response = agent.get(source).call().map_err(classify_download_error)?;
+    let mut reader = response.body_mut().as_reader();
+    let mut buffer = [0; 16 * 1024];
+    loop {
+        let count = reader.read(&mut buffer).map_err(classify_body_read_error)?;
+        if count == 0 {
+            return Ok(());
+        }
+        let (bytes, _) = buffer.split_at(count);
+        destination
+            .write_all(bytes)
+            .map_err(|error| DownloadAttemptError::Permanent(error.to_string()))?;
+    }
+}
+
+fn classify_download_error(error: ureq::Error) -> DownloadAttemptError {
+    let message = error.to_string();
+    if transient_download_error(&error) {
+        DownloadAttemptError::Transient(message)
+    } else {
+        DownloadAttemptError::Permanent(message)
+    }
+}
+
+fn transient_download_error(error: &ureq::Error) -> bool {
+    matches!(
+        error,
+        ureq::Error::StatusCode(408 | 429 | 500..=599)
+            | ureq::Error::Io(_)
+            | ureq::Error::Timeout(_)
+            | ureq::Error::HostNotFound
+            | ureq::Error::ConnectionFailed
+    )
+}
+
+fn classify_body_read_error(error: io::Error) -> DownloadAttemptError {
+    let message = error.to_string();
+    let transient = error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<ureq::Error>())
+        .map_or_else(
+            || {
+                matches!(
+                    error.kind(),
+                    io::ErrorKind::TimedOut
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::ConnectionAborted
+                        | io::ErrorKind::BrokenPipe
+                        | io::ErrorKind::UnexpectedEof
+                        | io::ErrorKind::NotConnected
+                        | io::ErrorKind::Interrupted
+                )
+            },
+            transient_download_error,
+        );
+    if transient {
+        DownloadAttemptError::Transient(message)
+    } else {
+        DownloadAttemptError::Permanent(message)
     }
 }
 
@@ -349,6 +529,226 @@ fn failure_message(message: impl Into<String>) -> FailureMessage {
 mod tests {
     use std::ffi::OsString;
     use std::time::Duration;
+
+    use super::{
+        DownloadAttemptError, classify_body_read_error, classify_download_error,
+        download_with_retry,
+    };
+
+    #[test]
+    fn http_statuses_classify_retryability() {
+        for status in [408, 429, 500] {
+            assert!(matches!(
+                classify_download_error(ureq::Error::StatusCode(status)),
+                DownloadAttemptError::Transient(_)
+            ));
+        }
+        assert!(matches!(
+            classify_download_error(ureq::Error::StatusCode(404)),
+            DownloadAttemptError::Permanent(_)
+        ));
+    }
+
+    #[test]
+    fn download_retry_stops_when_destination_cannot_be_created() {
+        let destination = tempfile::tempdir().expect("temporary directory");
+        let mut attempts = 0;
+
+        let error = download_with_retry(
+            "https://example.invalid/artifact",
+            destination.path(),
+            Duration::from_secs(1),
+            Duration::ZERO,
+            |_file, _remaining| {
+                attempts += 1;
+                Ok(())
+            },
+        )
+        .expect_err("a directory cannot be replaced by an artifact file")
+        .to_string();
+
+        assert_eq!(attempts, 0);
+        assert!(error.contains("failed after 0 attempts"), "{error}");
+        assert!(error.contains("ended by permanent failure"), "{error}");
+    }
+
+    #[test]
+    fn body_read_errors_retry_transport_failures_only() {
+        assert!(matches!(
+            classify_body_read_error(std::io::ErrorKind::TimedOut.into()),
+            DownloadAttemptError::Transient(_)
+        ));
+        assert!(matches!(
+            classify_body_read_error(std::io::ErrorKind::ConnectionReset.into()),
+            DownloadAttemptError::Transient(_)
+        ));
+        assert!(matches!(
+            classify_body_read_error(std::io::ErrorKind::InvalidData.into()),
+            DownloadAttemptError::Permanent(_)
+        ));
+    }
+
+    #[test]
+    fn download_retry_recovers_from_transient_failure() {
+        let destination = tempfile::NamedTempFile::new().expect("temporary destination");
+        let mut attempts = 0;
+
+        download_with_retry(
+            "https://example.invalid/artifact",
+            destination.path(),
+            Duration::from_secs(1),
+            Duration::ZERO,
+            |file, _remaining| {
+                attempts += 1;
+                if attempts == 1 {
+                    return Err(DownloadAttemptError::Transient(
+                        "connection reset".to_owned(),
+                    ));
+                }
+                std::io::Write::write_all(file, b"artifact")
+                    .map_err(|error| DownloadAttemptError::Permanent(error.to_string()))
+            },
+        )
+        .expect("second attempt succeeds");
+
+        assert_eq!(
+            (
+                attempts,
+                std::fs::read(destination.path()).expect("read artifact")
+            ),
+            (2, b"artifact".to_vec())
+        );
+    }
+
+    #[test]
+    fn download_retry_reports_retry_limit_after_eleven_attempts() {
+        let destination = tempfile::NamedTempFile::new().expect("temporary destination");
+        let source = "https://example.invalid/artifact?token=raw";
+        let mut attempts = 0;
+
+        let error = download_with_retry(
+            source,
+            destination.path(),
+            Duration::from_secs(5),
+            Duration::ZERO,
+            |_file, _remaining| {
+                attempts += 1;
+                Err(DownloadAttemptError::Transient(
+                    "connection reset".to_owned(),
+                ))
+            },
+        )
+        .expect_err("retry limit is terminal")
+        .to_string();
+
+        assert_eq!(attempts, 11);
+        assert!(error.contains("11 attempts"), "{error}");
+        assert!(error.contains(source), "{error}");
+        assert!(error.contains("ended by retry limit"), "{error}");
+    }
+
+    #[test]
+    fn download_retry_reports_deadline_before_retry_limit() {
+        let destination = tempfile::NamedTempFile::new().expect("temporary destination");
+        let source = "https://example.invalid/slow-artifact";
+        let mut attempts = 0;
+
+        let error = download_with_retry(
+            source,
+            destination.path(),
+            Duration::from_millis(50),
+            Duration::ZERO,
+            |_file, _remaining| {
+                attempts += 1;
+                std::thread::sleep(Duration::from_millis(100));
+                Err(DownloadAttemptError::Transient("timed out".to_owned()))
+            },
+        )
+        .expect_err("deadline is terminal")
+        .to_string();
+
+        assert_eq!(attempts, 1);
+        assert!(error.contains("1 attempt"), "{error}");
+        assert!(error.contains(source), "{error}");
+        assert!(error.contains("ended by overall deadline"), "{error}");
+    }
+
+    #[test]
+    fn download_retry_rejects_success_after_deadline() {
+        let destination = tempfile::NamedTempFile::new().expect("temporary destination");
+
+        let error = download_with_retry(
+            "https://example.invalid/slow-artifact",
+            destination.path(),
+            Duration::from_millis(50),
+            Duration::ZERO,
+            |_file, _remaining| {
+                std::thread::sleep(Duration::from_millis(100));
+                Ok(())
+            },
+        )
+        .expect_err("success after the deadline is terminal")
+        .to_string();
+
+        assert!(error.contains("1 attempt"), "{error}");
+        assert!(error.contains("ended by overall deadline"), "{error}");
+    }
+
+    #[test]
+    fn download_retry_replaces_partial_bytes_before_retry() {
+        let destination = tempfile::NamedTempFile::new().expect("temporary destination");
+        let mut attempts = 0;
+
+        download_with_retry(
+            "https://example.invalid/artifact",
+            destination.path(),
+            Duration::from_secs(1),
+            Duration::ZERO,
+            |file, _remaining| {
+                attempts += 1;
+                if attempts == 1 {
+                    std::io::Write::write_all(file, b"partial garbage").expect("write partial");
+                    return Err(DownloadAttemptError::Transient(
+                        "body read failed".to_owned(),
+                    ));
+                }
+                std::io::Write::write_all(file, b"ok")
+                    .map_err(|error| DownloadAttemptError::Permanent(error.to_string()))
+            },
+        )
+        .expect("retry succeeds");
+
+        assert_eq!(
+            std::fs::read(destination.path()).expect("read artifact"),
+            b"ok"
+        );
+    }
+
+    #[test]
+    fn download_retry_stops_after_permanent_failure() {
+        let destination = tempfile::NamedTempFile::new().expect("temporary destination");
+        let source = "https://example.invalid/missing";
+        let mut attempts = 0;
+
+        let error = download_with_retry(
+            source,
+            destination.path(),
+            Duration::from_secs(1),
+            Duration::ZERO,
+            |_file, _remaining| {
+                attempts += 1;
+                Err(DownloadAttemptError::Permanent(
+                    "http status: 404".to_owned(),
+                ))
+            },
+        )
+        .expect_err("permanent failure is terminal")
+        .to_string();
+
+        assert_eq!(attempts, 1);
+        assert!(error.contains("http status: 404"), "{error}");
+        assert!(error.contains("ended by permanent failure"), "{error}");
+    }
 
     #[test]
     fn command_failure_summary_uses_redacted_display_command() {
