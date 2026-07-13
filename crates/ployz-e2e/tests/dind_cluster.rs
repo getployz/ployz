@@ -19,6 +19,8 @@
 mod acceptance;
 #[path = "dind_cluster/network.rs"]
 mod network;
+#[path = "dind_cluster/placement.rs"]
+mod placement;
 #[path = "dind_cluster/rollback.rs"]
 mod rollback;
 mod support;

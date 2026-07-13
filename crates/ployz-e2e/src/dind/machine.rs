@@ -163,6 +163,7 @@ fn machine_create_body(
         hostname: Some(name.to_owned()),
         image: Some(image.to_owned()),
         cmd: Some(vec!["/sbin/init".to_owned()]),
+        tty: Some(true),
         labels: Some(HashMap::from([
             (MANAGED_LABEL.to_owned(), MANAGED_LABEL_VALUE.to_owned()),
             (RUN_LABEL.to_owned(), run_id.as_str().to_owned()),
@@ -192,6 +193,29 @@ fn loopback_binding(address: SocketAddr) -> PortBinding {
     PortBinding {
         host_ip: Some(address.ip().to_string()),
         host_port: Some(address.port().to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn machine_console_is_attached_to_docker_logs() {
+        let body = machine_create_body(
+            &DindRunId::generate(),
+            "ployz-test-network",
+            Path::new("/tmp/ployz-artifacts"),
+            "ployz-dind-machine:test",
+            "ployz-test-machine",
+            PublishedPorts {
+                nats: SocketAddr::from((Ipv4Addr::LOCALHOST, 14222)),
+                gateway: SocketAddr::from((Ipv4Addr::LOCALHOST, 18080)),
+                gateway_tls: SocketAddr::from((Ipv4Addr::LOCALHOST, 18443)),
+            },
+        );
+
+        assert_eq!(body.tty, Some(true));
     }
 }
 
