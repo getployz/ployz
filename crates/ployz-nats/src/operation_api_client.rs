@@ -336,19 +336,19 @@ impl OperationApiClient {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum OperationApiClientError<E> {
-    #[error("failed to encode {} request: {message}", endpoint.subject())]
+    #[error("failed to encode {} request: {message}", endpoint.name())]
     EncodeRequest {
         endpoint: OperationApiEndpoint,
         message: String,
     },
-    #[error("{} request failed: {failure}", endpoint.subject())]
+    #[error("{} request failed: {failure}", endpoint.name())]
     Request {
         endpoint: OperationApiEndpoint,
         failure: NatsServiceRequestFailure,
     },
     #[error(
         "{} returned service error {}: {}",
-        endpoint.subject(),
+        endpoint.name(),
         failure.code.http_status_code(),
         failure.message
     )]
@@ -356,17 +356,17 @@ pub enum OperationApiClientError<E> {
         endpoint: OperationApiEndpoint,
         failure: NatsServiceError,
     },
-    #[error("{} returned malformed service error headers: {error}", endpoint.subject())]
+    #[error("{} returned malformed service error headers: {error}", endpoint.name())]
     ServiceProtocol {
         endpoint: OperationApiEndpoint,
         error: NatsServiceErrorHeaderDecodeError,
     },
-    #[error("failed to decode {} response: {message}", endpoint.subject())]
+    #[error("failed to decode {} response: {message}", endpoint.name())]
     DecodeResponse {
         endpoint: OperationApiEndpoint,
         message: String,
     },
-    #[error("{} failed: {error}", endpoint.subject())]
+    #[error("{} failed: {error}", endpoint.name())]
     Domain {
         endpoint: OperationApiEndpoint,
         error: E,
