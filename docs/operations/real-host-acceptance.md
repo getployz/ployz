@@ -1,88 +1,82 @@
 # Real-Host Acceptance
 
-Two scripts prove ployz on real cloud hosts (the DinD harness covers the same
-product flow locally; this exercises tcx eBPF, real WireGuard, and the public
-install path, which containers can mask):
+`scripts/real-host-acceptance.sh <core-ip> <edge-ip>` is the release-candidate
+capstone that DinD cannot replace: real tcx eBPF, WireGuard, mixed architecture,
+host firewalls, public DNS/TLS, and the public installer on two fresh machines.
 
-- `scripts/real-host-acceptance.sh <core-ip> <edge-ip>` — the beta-gate proof:
-  form a two-machine cluster, deploy an image-based service across both
-  machines, and check cross-machine routing and daemon-restart invisibility.
-  Prints per-step timing.
-- `scripts/cli-smoke-test.sh <core-ip> <edge-ip>` — run every realistic CLI
-  command (happy and unhappy paths) and print each with its real output and
-  exit code. Forms the cluster if it is not already up, so it runs standalone
-  or against the cluster the acceptance script just left.
+It proves this flow:
 
-Both install the **public alpha channel** from `https://ployz.sh`, so they test
-whatever `machine init` currently resolves — cut/promote a release first if you
-need to test unreleased `main` (see `docs/operations/release.md`; `machine init`
-has no `--version`, so the alpha channel must point at the build under test).
+1. Install Ployz and form the cluster on the core.
+2. Join the edge.
+3. Deploy an image-based Compose app with one replica on each machine.
+4. Receive and serve its managed public HTTPS URL.
+5. Route through both gateways, including to the replica on the other machine.
+6. Restart the control daemon without interrupting the public route.
 
-## Host requirements
+The fixed matrix deliberately covers both release architectures and both
+managed firewall backends:
 
-- Two **fresh** Ubuntu 24.04+ **amd64** hosts, kernel **6.6+** (tcx eBPF
-  attach). 1 GB / 1 vCPU is enough — a full run uses ~410 MB and does not OOM.
-- Run the scripts from a machine with **root SSH to both hosts** (key in your
-  ssh-agent). If your local uplink to the hosts is flaky, run them from a small
-  VM that has stable SSH to the pair.
-- Ports left open: `22`, `80`, `443`, `4222/tcp`, `51820/udp`. Cloud images with
-  no host firewall (the default on Vultr/Hetzner) need nothing extra.
+| Role | OS | Architecture | Firewall |
+| --- | --- | --- | --- |
+| core | Rocky Linux 9 | amd64 (`x86_64`) | firewalld, already active |
+| edge | Ubuntu 24.04 | arm64 (`aarch64`) | UFW, enabled by the script |
 
-amd64-only today: the arm64 half of the mixed-arch gate is pending Hetzner
-Ampere stock, and RHEL-family hosts are blocked by the `apt-get` hardcode
-(getployz/ployz#402).
+Use fresh hosts. The script rejects a different OS/architecture pair, requires
+root SSH to both public IPs, and leaves the machines running for inspection.
+The operator machine needs Bash, SSH, curl, and its key in `ssh-agent`. At
+least 1 GB RAM and 1 vCPU per host is sufficient.
 
-## Provision two hosts
+## Before running
 
-Vultr (cheapest; `vc2-1c-1gb`, ~\$0.007/hr each):
+Promote the exact build under test to the public alpha channel. The public
+installer and `machine init` resolve that channel; this harness does not test
+unpublished local binaries. See [`release.md`](release.md).
 
-```sh
-KEYS=<ssh-key-id>          # vultr-cli ssh-key list
-for n in ployz-core ployz-edge; do
-  vultr-cli instance create --plan vc2-1c-1gb --region fra --os 2284 \
-    --ssh-keys "$KEYS" --label "$n" --host "$n"
-done
-vultr-cli instance list    # grab the two IPs once STATUS is active
-```
-
-Hetzner (native mixed-arch when ARM returns; `cpx22` amd64):
+Provision the two hosts in the same region when possible. Hetzner's `cx22` or
+`cpx22` covers the Rocky amd64 core and `cax11` covers the Ubuntu arm64 edge:
 
 ```sh
-for n in ployz-core ployz-edge; do
-  hcloud server create --name "$n" --type cpx22 --image ubuntu-24.04 \
-    --location fsn1 --ssh-key <your-key>
-done
+hcloud server create --name ployz-core --type cpx22 --image rocky-9 \
+  --location fsn1 --ssh-key <your-key>
+hcloud server create --name ployz-edge --type cax11 --image ubuntu-24.04 \
+  --location fsn1 --ssh-key <your-key>
 hcloud server list
 ```
+
+If the provider has an external firewall, allow inbound `22/tcp`, `80/tcp`,
+`443/tcp`, `4222/tcp`, and `51820/udp` to both hosts. That firewall is outside
+the guest and remains operator-owned. Inside the guests, keeper opens exactly
+the Ployz ports in firewalld and UFW; the script verifies both runtime and
+permanent firewalld rules and the UFW rules. Do not pass
+`--host-ports-assured-externally` for this run.
 
 ## Run
 
 ```sh
 scripts/real-host-acceptance.sh <core-ip> <edge-ip>
-scripts/cli-smoke-test.sh       <core-ip> <edge-ip>   # optional, same pair
 ```
 
-`real-host-acceptance.sh` exits non-zero if any route check does not return
-`200`; a green run ends with `ACCEPTANCE PASSED` and lines like:
+Run it once on fresh hosts. A green run ends with:
 
-```
-[..] TIMING machine-init=53s
-[..] TIMING machine-add=40s
-[..] TIMING deploy=13s
-[..]   gateway <core> -> HTTP 200
-[..]   gateway <edge> -> HTTP 200
-[..]   post-restart route -> HTTP 200
-[..] ACCEPTANCE PASSED
+```text
+[..] gateway <core-ip> -> HTTPS 200
+[..] gateway <edge-ip> -> HTTPS 200
+[..] post-restart route -> HTTPS 200
+[..] ACCEPTANCE PASSED: mixed-arch + firewalld/UFW + public HTTPS
 ```
 
-`cli-smoke-test.sh` prints a `$ ployz <cmd>` / output / `[exit N]` block per
-command; redirect it to a file to keep the transcript.
+The script first checks public DNS/TLS. It then stops each gateway's local
+replica in turn and uses `curl --resolve` through that gateway, proving the
+request reaches the other machine while TLS still validates the managed
+certificate. A continuous probe must see no failed request while the control
+daemon restarts. Any failed command or non-200 response exits non-zero. Keep
+the full transcript as release evidence. `scripts/cli-smoke-test.sh` is an
+optional broader CLI check against the cluster left by this run.
 
 ## Tear down
 
-The scripts never delete hosts — do it yourself so idle boxes stop billing:
+The harness never deletes hosts:
 
 ```sh
-vultr-cli instance list | awk '/ployz-/{print $1}' | xargs -n1 vultr-cli instance delete
-# or: hcloud server delete ployz-core ployz-edge
+hcloud server delete ployz-core ployz-edge
 ```

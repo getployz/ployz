@@ -101,17 +101,19 @@ async fn machine_add_accepts_before_reload_then_mints_material() {
     );
     assert!(!reload.outcomes().is_empty(), "reload runner was invoked");
 
-    let retry_error = api
-        .machine_add(&MachineAddRequest {
+    let retry_error = machine_add_result(
+        &api,
+        &MachineAddRequest {
             operation_id: operation_id("op_machine_retry"),
             idempotency_key: idempotency_key("idem_machine"),
             machine_id: machine_id("machine_2"),
             name: ployz_sdk_types::MachineName::try_new("machine_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
             host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
-        })
-        .await
-        .expect_err("duplicate machine add idempotency key is rejected");
+        },
+    )
+    .await
+    .expect_err("duplicate machine add idempotency key is rejected");
     assert_eq!(
         retry_error,
         OperationApiClientError::Domain {
@@ -650,8 +652,9 @@ async fn rejected_duplicate_machine_add_operation_id_does_not_poison_recovery() 
     let join_api = nats.join_api();
 
     let accepted = machine_add(&api, "op_dup", "idem_dup_a", "machine_dup").await;
-    let duplicate = api
-        .machine_add(&MachineAddRequest {
+    let duplicate = machine_add_result(
+        &api,
+        &MachineAddRequest {
             operation_id: operation_id("op_dup"),
             idempotency_key: idempotency_key("idem_dup_b"),
             machine_id: machine_id("machine_dup_b"),
@@ -659,9 +662,10 @@ async fn rejected_duplicate_machine_add_operation_id_does_not_poison_recovery() 
                 .expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
             host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
-        })
-        .await
-        .expect_err("duplicate operation id with new idempotency is rejected");
+        },
+    )
+    .await
+    .expect_err("duplicate operation id with new idempotency is rejected");
     assert_eq!(
         duplicate,
         OperationApiClientError::Domain {
@@ -714,8 +718,9 @@ async fn terminal_machine_add_scrubs_working_secrets_and_status_corruption_is_un
         })
         .await
         .expect("machine join completion reports");
-    let duplicate = api
-        .machine_add(&MachineAddRequest {
+    let duplicate = machine_add_result(
+        &api,
+        &MachineAddRequest {
             operation_id: operation_id("op_scrub_retry"),
             idempotency_key: idempotency_key("idem_scrub"),
             machine_id: machine_id("machine_scrub_retry"),
@@ -723,9 +728,10 @@ async fn terminal_machine_add_scrubs_working_secrets_and_status_corruption_is_un
                 .expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
             host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
-        })
-        .await
-        .expect_err("terminal scrub keeps the non-secret idempotency tombstone");
+        },
+    )
+    .await
+    .expect_err("terminal scrub keeps the non-secret idempotency tombstone");
     assert_eq!(
         duplicate,
         OperationApiClientError::Domain {
@@ -875,17 +881,19 @@ async fn machine_add_reusing_another_operations_idempotency_key_is_rejected() {
 
     // op_b already exists; reusing op_a's idempotency key must not return
     // op_a's join material — it is a duplicate key, not an adopt of op_b.
-    let mismatch = api
-        .machine_add(&MachineAddRequest {
+    let mismatch = machine_add_result(
+        &api,
+        &MachineAddRequest {
             operation_id: operation_id("op_b"),
             idempotency_key: idempotency_key("idem_a"),
             machine_id: machine_id("machine_b"),
             name: ployz_sdk_types::MachineName::try_new("machine_b").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
             host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
-        })
-        .await
-        .expect_err("reusing another operation's idempotency key is rejected");
+        },
+    )
+    .await
+    .expect_err("reusing another operation's idempotency key is rejected");
     assert_eq!(
         mismatch,
         OperationApiClientError::Domain {
@@ -945,16 +953,40 @@ async fn machine_add_with_assurance(
     machine: &str,
     host_port_assurance: ployz_core::install::HostPortAssurance,
 ) -> MachineAddAccepted {
-    api.machine_add(&MachineAddRequest {
-        operation_id: operation_id(operation),
-        idempotency_key: idempotency_key(idempotency),
-        machine_id: machine_id(machine),
-        name: ployz_sdk_types::MachineName::try_new(machine).expect("valid machine name"),
-        roles: InstallRolePolicy::install_all().without_gateway(),
-        host_port_assurance,
-    })
+    machine_add_result(
+        api,
+        &MachineAddRequest {
+            operation_id: operation_id(operation),
+            idempotency_key: idempotency_key(idempotency),
+            machine_id: machine_id(machine),
+            name: ployz_sdk_types::MachineName::try_new(machine).expect("valid machine name"),
+            roles: InstallRolePolicy::install_all().without_gateway(),
+            host_port_assurance,
+        },
+    )
     .await
     .expect("machine add accepts")
+}
+
+/// Send a machine-add, retrying only transient transport (`Request`) timeouts.
+/// machine-add is idempotent — the operation id and idempotency key dedupe the
+/// re-send server-side — so a request that times out under a starved CI runner
+/// is safely repeated. A settled result (`Ok`, or a typed `MachineAddError`
+/// domain rejection) is surfaced as soon as it arrives; the retry is bounded
+/// (~20s) so a genuinely wedged runtime still fails the test rather than hanging.
+async fn machine_add_result(
+    api: &OperationApiClient,
+    request: &MachineAddRequest,
+) -> Result<MachineAddAccepted, OperationApiClientError<MachineAddError>> {
+    for _ in 0..200 {
+        match api.machine_add(request).await {
+            Err(OperationApiClientError::Request { .. }) => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            settled => return settled,
+        }
+    }
+    api.machine_add(request).await
 }
 
 fn public_key_of(seed: &str) -> NatsUserPublicKey {
