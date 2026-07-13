@@ -73,3 +73,25 @@ fn openrc_machine_service_keeps_environment_and_docker_dependencies() {
         ]
     );
 }
+
+#[test]
+fn openrc_kill_sets_the_service_context_for_supervise_daemon() {
+    let role = DaemonProcessRole::Machine(machine_id("machine_7"));
+
+    assert_eq!(
+        SupervisorBackend::OpenRc.commands(
+            SupervisorChange::Kill,
+            &SupervisorUnitTarget::PloyzdRole(role),
+        ),
+        [(
+            "env",
+            vec![
+                "RC_SVCNAME=ployzd-machine-machine_7".to_owned(),
+                "supervise-daemon".to_owned(),
+                "ployzd-machine-machine_7".to_owned(),
+                "--signal".to_owned(),
+                "KILL".to_owned(),
+            ]
+        )]
+    );
+}

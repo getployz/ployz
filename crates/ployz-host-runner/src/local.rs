@@ -15,7 +15,7 @@ use crate::artifacts::{
 use crate::assigned_substrate::{
     AssignedHostPort, AssignedSubstrateState, write_assigned_substrate_state,
 };
-use crate::command::HostRunnerCommandRunner;
+use crate::command::{HostRunnerCommandOutput, HostRunnerCommandRunner};
 use crate::executor::HostRunnerStepEffects;
 use crate::firewall::{FirewallBackend, detect_firewall_backend};
 use crate::fsx::{FileMode, StagedDirectory, ensure_directory, write_durable_file};
@@ -270,15 +270,14 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
                 )?;
             }
             HostPackageFamily::Rpm => {
-                let _ = self.runner.command_with_timeout(
-                    "dnf",
-                    &["install", "-y", "epel-release"],
-                    DOCKER_INSTALL_TIMEOUT,
-                );
-                self.require_long_command(
-                    "dnf",
-                    &["install", "-y", "wireguard-tools", "iproute", "iputils"],
-                )?;
+                let _ = self.rpm_command(&["install", "-y", "epel-release"]);
+                self.require_rpm_command(&[
+                    "install",
+                    "-y",
+                    "wireguard-tools",
+                    "iproute",
+                    "iputils",
+                ])?;
             }
             HostPackageFamily::Arch => self.require_long_command(
                 "pacman",
@@ -394,9 +393,7 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
                     "docker-compose",
                 ],
             ),
-            DockerInstall::AmazonPackages => {
-                self.require_long_command("dnf", &["install", "-y", "docker"])
-            }
+            DockerInstall::AmazonPackages => self.require_rpm_command(&["install", "-y", "docker"]),
             DockerInstall::RhelRepositoryFile => self
                 .install_docker_repository("https://download.docker.com/linux/rhel/docker-ce.repo"),
             DockerInstall::CentosRepositoryFile => self.install_docker_repository(
@@ -425,18 +422,32 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
             FileMode::Plain,
             &contents,
         )?;
-        self.require_long_command(
-            "dnf",
-            &[
-                "install",
-                "-y",
-                "docker-ce",
-                "docker-ce-cli",
-                "containerd.io",
-                "docker-buildx-plugin",
-                "docker-compose-plugin",
-            ],
-        )
+        self.require_rpm_command(&[
+            "install",
+            "-y",
+            "docker-ce",
+            "docker-ce-cli",
+            "containerd.io",
+            "docker-buildx-plugin",
+            "docker-compose-plugin",
+        ])
+    }
+
+    fn rpm_command(&mut self, args: &[&str]) -> Result<HostRunnerCommandOutput, FailureMessage> {
+        self.runner
+            .command_with_timeout("dnf", args, DOCKER_INSTALL_TIMEOUT)
+            .or_else(|_| {
+                self.runner
+                    .command_with_timeout("yum", args, DOCKER_INSTALL_TIMEOUT)
+            })
+    }
+
+    fn require_rpm_command(&mut self, args: &[&str]) -> Result<(), FailureMessage> {
+        let output = self.rpm_command(args)?;
+        if output.success {
+            return Ok(());
+        }
+        Err(failure_message(output.failure))
     }
 
     fn require_long_command(&mut self, program: &str, args: &[&str]) -> Result<(), FailureMessage> {

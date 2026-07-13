@@ -153,10 +153,19 @@ impl SupervisorBackend {
                     ["del", openrc_name.as_str(), "default"],
                 )]
             }
-            (Self::OpenRc, SupervisorChange::Kill) => vec![command(
-                "supervise-daemon",
-                [openrc_name.as_str(), "--signal", "KILL"],
-            )],
+            (Self::OpenRc, SupervisorChange::Kill) => {
+                let service_environment = format!("RC_SVCNAME={openrc_name}");
+                vec![command(
+                    "env",
+                    [
+                        service_environment.as_str(),
+                        "supervise-daemon",
+                        openrc_name.as_str(),
+                        "--signal",
+                        "KILL",
+                    ],
+                )]
+            }
             (Self::OpenRc, SupervisorChange::IsActive) => {
                 vec![command("rc-service", [openrc_name.as_str(), "status"])]
             }

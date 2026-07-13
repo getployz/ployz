@@ -543,6 +543,43 @@ fn local_effects_prepare_dataplane_packages_for_each_supported_family() {
 }
 
 #[test]
+fn amazon_linux_2_falls_back_to_yum_for_dataplane_and_docker_packages() {
+    let root = temp_dir("ployz-host-runner-amazon-linux-2");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let runner = RecordingRunner {
+        os_release: "ID=amzn\nVERSION_ID=2\n".to_owned(),
+        dnf_available: false,
+        docker_installed: false,
+        docker_running: false,
+        ..RecordingRunner::root_linux()
+    };
+    let mut effects = HostRunnerLocalEffects::new(local_config(&root, &systemd_dir), runner);
+    validate_host(&mut effects);
+
+    effects
+        .apply_step(&HostRunnerStep::PrepareDataplaneHost)
+        .expect("Amazon Linux 2 installs dataplane packages with yum");
+    effects
+        .apply_step(&HostRunnerStep::PrepareContainerRuntime(
+            ContainerRuntime::Docker,
+            ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+        ))
+        .expect("Amazon Linux 2 installs Docker with yum");
+
+    for command in [
+        "yum install -y wireguard-tools iproute iputils",
+        "yum install -y docker",
+    ] {
+        assert!(
+            effects.runner().command_calls.contains(&command.to_owned()),
+            "missing {command}: {:?}",
+            effects.runner().command_calls
+        );
+    }
+}
+
+#[test]
 fn local_effects_skip_docker_install_when_runtime_is_ready() {
     let root = temp_dir("ployz-host-runner-local-docker-ready");
     let systemd_dir = root.join("systemd");
@@ -1511,6 +1548,7 @@ struct RecordingRunner {
     linux: bool,
     uid: u32,
     os_release: String,
+    dnf_available: bool,
     docker_installed: bool,
     docker_running: bool,
     docker_install_runs: usize,
@@ -1536,6 +1574,7 @@ impl RecordingRunner {
             linux: true,
             uid: 0,
             os_release: "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"24.04\"\n".to_owned(),
+            dnf_available: true,
             docker_installed: true,
             docker_running: true,
             docker_install_runs: 0,
@@ -1566,6 +1605,9 @@ impl HostRunnerCommandRunner for RecordingRunner {
         if let Some(output) = self.command_outputs.pop_front() {
             return Ok(output);
         }
+        if program == "dnf" && !self.dnf_available {
+            return Err(failure_message("failed to run dnf"));
+        }
         if program == "systemctl" {
             let call = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
             if !matches!(args.first(), Some(&"is-active" | &"list-units")) {
@@ -1592,7 +1634,7 @@ impl HostRunnerCommandRunner for RecordingRunner {
             }
             return Ok(succeeded_command(""));
         }
-        if matches!(program, "apk" | "pacman" | "dnf")
+        if matches!(program, "apk" | "pacman" | "dnf" | "yum")
             && args
                 .iter()
                 .any(|arg| *arg == "docker" || *arg == "docker-ce")
