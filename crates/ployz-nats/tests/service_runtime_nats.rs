@@ -340,25 +340,7 @@ async fn service_runtime_shutdown_cancels_all_endpoints_after_one_shared_grace_d
     let nats = test_nats().await;
     let first_subject = "plz.v1.rpc.operator.query.test.slow_shutdown.first";
     let second_subject = "plz.v1.rpc.operator.query.test.slow_shutdown.second";
-    let spec = NatsServiceSpec::new(
-        "plz-api.test",
-        "plz-api",
-        ServiceVersion::new(0, 1, 0),
-        "test service",
-        ServiceMetadata::empty(),
-        vec![
-            NatsServiceEndpointSpec::new(
-                "test.endpoint.first",
-                first_subject,
-                EndpointExecution::Query,
-            ),
-            NatsServiceEndpointSpec::new(
-                "test.endpoint.second",
-                second_subject,
-                EndpointExecution::Query,
-            ),
-        ],
-    );
+    let spec = test_service_spec_with_two_endpoints(first_subject, second_subject);
     let [first_endpoint, second_endpoint] = spec.endpoints.as_slice() else {
         unreachable!("test service has two endpoints");
     };
@@ -423,6 +405,68 @@ async fn service_runtime_shutdown_cancels_all_endpoints_after_one_shared_grace_d
     );
 }
 
+#[tokio::test]
+async fn service_runtime_shutdown_handles_completed_endpoint_before_stuck_endpoint() {
+    let nats = test_nats().await;
+    let idle_subject = "plz.v1.rpc.operator.query.test.mixed_shutdown.idle";
+    let stuck_subject = "plz.v1.rpc.operator.query.test.mixed_shutdown.stuck";
+    let spec = test_service_spec_with_two_endpoints(idle_subject, stuck_subject);
+    let [idle_endpoint, stuck_endpoint] = spec.endpoints.as_slice() else {
+        unreachable!("test service has two endpoints");
+    };
+    let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
+        .await
+        .expect("service starts");
+
+    runtime
+        .bind_endpoint(idle_endpoint, |_request| async move {
+            NatsServiceResponse::ok(Vec::new())
+        })
+        .await
+        .expect("idle endpoint binds");
+    let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+    let (cancelled_tx, mut cancelled_rx) = mpsc::unbounded_channel();
+    runtime
+        .bind_endpoint(stuck_endpoint, move |_request| {
+            let started_tx = started_tx.clone();
+            let cancelled_tx = cancelled_tx.clone();
+            async move {
+                let _cancelled = SendOnDrop(cancelled_tx);
+                let _ = started_tx.send(());
+                pending::<NatsServiceResponse>().await
+            }
+        })
+        .await
+        .expect("stuck endpoint binds");
+    wait_for_requester_interest(&nats.request_client).await;
+
+    let request = tokio::spawn({
+        let client = nats.request_client.clone();
+        async move { client.request(stuck_subject, Vec::new().into()).await }
+    });
+    timeout(Duration::from_secs(2), started_rx.recv())
+        .await
+        .expect("stuck handler starts before timeout")
+        .expect("stuck handler starts");
+
+    let started = Instant::now();
+    timeout(Duration::from_secs(3), runtime.shutdown())
+        .await
+        .expect("mixed endpoint shutdown uses one grace deadline")
+        .expect("mixed endpoint shutdown does not double-poll completed tasks");
+    let elapsed = started.elapsed();
+    cancelled_rx
+        .recv()
+        .await
+        .expect("stuck handler is cancelled");
+    request.abort();
+
+    assert!(
+        elapsed >= Duration::from_millis(1_800),
+        "shutdown skipped its grace period: {elapsed:?}"
+    );
+}
+
 struct SendOnDrop(mpsc::UnboundedSender<()>);
 
 impl Drop for SendOnDrop {
@@ -443,6 +487,31 @@ fn test_service_spec(subject: &str) -> NatsServiceSpec {
             subject,
             EndpointExecution::Query,
         )],
+    )
+}
+
+fn test_service_spec_with_two_endpoints(
+    first_subject: &str,
+    second_subject: &str,
+) -> NatsServiceSpec {
+    NatsServiceSpec::new(
+        "plz-api.test",
+        "plz-api",
+        ServiceVersion::new(0, 1, 0),
+        "test service",
+        ServiceMetadata::empty(),
+        vec![
+            NatsServiceEndpointSpec::new(
+                "test.endpoint.first",
+                first_subject,
+                EndpointExecution::Query,
+            ),
+            NatsServiceEndpointSpec::new(
+                "test.endpoint.second",
+                second_subject,
+                EndpointExecution::Query,
+            ),
+        ],
     )
 }
 

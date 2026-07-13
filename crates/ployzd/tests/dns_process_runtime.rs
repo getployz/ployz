@@ -37,7 +37,7 @@ async fn dns_process_fails_fast_before_projection_sources_exist() {
     })
     .await;
 
-    runtime.shutdown().await;
+    runtime.shutdown().await.expect("DNS shuts down");
 }
 
 #[tokio::test]
@@ -72,7 +72,7 @@ async fn dns_process_applies_route_changes_on_next_poll() {
         Some(DnsProcessAttempt::Current { record_count: 1 })
     );
 
-    runtime.shutdown().await;
+    runtime.shutdown().await.expect("DNS shuts down");
 }
 
 #[tokio::test]
@@ -115,7 +115,7 @@ async fn intent_invalidation_wakes_dns_refresh_before_poll_interval() {
     })
     .await;
 
-    runtime.shutdown().await;
+    runtime.shutdown().await.expect("DNS shuts down");
 }
 
 #[tokio::test]
@@ -148,7 +148,8 @@ async fn dns_shutdown_cancels_blocked_projection_refresh() {
 
     tokio::time::timeout(Duration::from_secs(1), runtime.shutdown())
         .await
-        .expect("DNS shutdown cancels the blocked refresh");
+        .expect("DNS shutdown cancels the blocked refresh")
+        .expect("DNS shuts down");
 }
 
 fn dns_serves_answer(runtime: &RunningDnsProcess, hostname: &str, answer: &str) -> bool {

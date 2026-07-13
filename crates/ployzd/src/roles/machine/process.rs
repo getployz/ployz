@@ -267,9 +267,7 @@ impl RunningTask {
     }
 
     fn abort(&self) {
-        if !self.task.is_finished() {
-            self.task.abort();
-        }
+        self.task.abort();
     }
 }
 
@@ -544,15 +542,15 @@ mod tests {
 
     #[derive(Debug, Clone)]
     struct StaticRunner {
-        containers: Arc<Mutex<Vec<ExistingManagedContainer>>>,
-        blocked_list: Option<BlockedList>,
+        containers: StaticContainerList,
     }
 
     impl StaticRunner {
         fn new(containers: impl IntoIterator<Item = ExistingManagedContainer>) -> Self {
             Self {
-                containers: Arc::new(Mutex::new(containers.into_iter().collect())),
-                blocked_list: None,
+                containers: StaticContainerList::Ready(Arc::new(Mutex::new(
+                    containers.into_iter().collect(),
+                ))),
             }
         }
 
@@ -560,12 +558,17 @@ mod tests {
             let blocked_list = BlockedList::default();
             (
                 Self {
-                    containers: Arc::default(),
-                    blocked_list: Some(blocked_list.clone()),
+                    containers: StaticContainerList::Blocked(blocked_list.clone()),
                 },
                 blocked_list,
             )
         }
+    }
+
+    #[derive(Debug, Clone)]
+    enum StaticContainerList {
+        Ready(Arc<Mutex<Vec<ExistingManagedContainer>>>),
+        Blocked(BlockedList),
     }
 
     #[derive(Debug, Clone, Default)]
@@ -586,17 +589,19 @@ mod tests {
         async fn existing_managed_containers(
             &self,
         ) -> Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError> {
-            if let Some(blocked) = &self.blocked_list {
-                blocked.started.notify_one();
-                let _cancelled = NotifyOnDrop(Arc::clone(&blocked.cancelled));
-                return std::future::pending().await;
+            match &self.containers {
+                StaticContainerList::Ready(containers) => containers
+                    .lock()
+                    .map(|containers| containers.clone())
+                    .map_err(|error| MachineContainerRunnerError::ListExisting {
+                        message: error.to_string(),
+                    }),
+                StaticContainerList::Blocked(blocked) => {
+                    blocked.started.notify_one();
+                    let _cancelled = NotifyOnDrop(Arc::clone(&blocked.cancelled));
+                    std::future::pending().await
+                }
             }
-            self.containers
-                .lock()
-                .map(|containers| containers.clone())
-                .map_err(|error| MachineContainerRunnerError::ListExisting {
-                    message: error.to_string(),
-                })
         }
 
         async fn ensure_endpoint_network(&self) -> Result<(), MachineContainerRunnerError> {

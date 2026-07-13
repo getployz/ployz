@@ -33,7 +33,9 @@ use ployz_core::ops::RoutePort;
 use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation};
 use ployz_core::subjects::{INTENT_CHANGED, gateway_status, machine_facts_scope};
 use ployz_nats::connect::{NatsConnectError, connect_authenticated_pool};
-use ployz_nats::service_runtime::{NatsClient, NatsServiceRuntimeError, RunningNatsService};
+use ployz_nats::service_runtime::{
+    NatsClient, NatsServiceRuntimeError, NatsServiceShutdownError, RunningNatsService,
+};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -49,7 +51,7 @@ const GATEWAY_WATCH_RESTART_DELAY: Duration = Duration::from_secs(1);
 const GATEWAY_HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 const GATEWAY_LISTENER_READY_TIMEOUT: Duration = Duration::from_secs(2);
 const GATEWAY_LISTENER_READY_POLL: Duration = Duration::from_millis(10);
-const GATEWAY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+const GATEWAY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(9);
 
 mod service;
 
@@ -68,7 +70,7 @@ pub struct RunningGatewayProcess {
 }
 
 impl RunningGatewayProcess {
-    pub async fn shutdown(self) {
+    pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
         let Self {
             shutdown,
             pingora_shutdown,
@@ -82,24 +84,24 @@ impl RunningGatewayProcess {
         let _ = pingora_shutdown.send(true);
         let cleanup = async {
             facts_cache.shutdown().await;
-            let _ = certificate_service.shutdown().await;
+            let service_shutdown = certificate_service.shutdown().await;
             for task in &mut tasks {
                 let _ = task.await;
             }
+            service_shutdown
         };
-        if tokio::time::timeout(GATEWAY_SHUTDOWN_TIMEOUT, cleanup)
-            .await
-            .is_err()
-        {
-            for task in &tasks {
-                if !task.is_finished() {
+        match tokio::time::timeout(GATEWAY_SHUTDOWN_TIMEOUT, cleanup).await {
+            Ok(result) => result,
+            Err(_) => {
+                for task in &tasks {
                     task.abort();
                 }
+                eprintln!(
+                    "ployzd gateway shutdown warning: cleanup exceeded {}s; forcing remaining tasks",
+                    GATEWAY_SHUTDOWN_TIMEOUT.as_secs()
+                );
+                Ok(())
             }
-            eprintln!(
-                "ployzd gateway shutdown warning: cleanup exceeded {}s; forcing remaining tasks",
-                GATEWAY_SHUTDOWN_TIMEOUT.as_secs()
-            );
         }
     }
 
@@ -892,8 +894,10 @@ pub async fn run_gateway_until_shutdown(
     shutdown_signal()
         .await
         .map_err(GatewayProcessError::ShutdownSignal)?;
-    runtime.shutdown().await;
-    Ok(())
+    runtime
+        .shutdown()
+        .await
+        .map_err(GatewayProcessError::ShutdownGatewayService)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -931,6 +935,8 @@ pub enum GatewayProcessError {
     RefreshTimedOut { timeout: Duration },
     #[error("failed to wait for shutdown: {0}")]
     ShutdownSignal(std::io::Error),
+    #[error("failed to stop gateway service: {0:?}")]
+    ShutdownGatewayService(NatsServiceShutdownError),
 }
 
 #[cfg(test)]

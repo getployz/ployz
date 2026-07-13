@@ -29,7 +29,9 @@ use crate::roles::nats_failover::{
 use futures_util::StreamExt;
 use ployz_core::subjects::INTENT_CHANGED;
 use ployz_nats::connect::{NatsConnectError, connect_authenticated_pool};
-use ployz_nats::service_runtime::{NatsClient, NatsServiceRuntimeError, RunningNatsService};
+use ployz_nats::service_runtime::{
+    NatsClient, NatsServiceRuntimeError, NatsServiceShutdownError, RunningNatsService,
+};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -53,7 +55,7 @@ pub struct RunningDnsProcess {
 }
 
 impl RunningDnsProcess {
-    pub async fn shutdown(self) {
+    pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
         let Self {
             shutdown,
             role_service,
@@ -64,24 +66,24 @@ impl RunningDnsProcess {
         let _ = shutdown.send(());
         let cleanup = async {
             facts_cache.shutdown().await;
-            let _ = role_service.shutdown().await;
+            let service_shutdown = role_service.shutdown().await;
             for task in &mut tasks {
                 let _ = task.await;
             }
+            service_shutdown
         };
-        if tokio::time::timeout(DNS_SHUTDOWN_TIMEOUT, cleanup)
-            .await
-            .is_err()
-        {
-            for task in &tasks {
-                if !task.is_finished() {
+        match tokio::time::timeout(DNS_SHUTDOWN_TIMEOUT, cleanup).await {
+            Ok(result) => result,
+            Err(_) => {
+                for task in &tasks {
                     task.abort();
                 }
+                eprintln!(
+                    "ployzd DNS shutdown warning: cleanup exceeded {}s; forcing remaining tasks",
+                    DNS_SHUTDOWN_TIMEOUT.as_secs()
+                );
+                Ok(())
             }
-            eprintln!(
-                "ployzd DNS shutdown warning: cleanup exceeded {}s; forcing remaining tasks",
-                DNS_SHUTDOWN_TIMEOUT.as_secs()
-            );
         }
     }
 
@@ -454,8 +456,10 @@ pub async fn run_dns_until_shutdown(config: &DnsProcessConfig) -> Result<(), Dns
     shutdown_signal()
         .await
         .map_err(DnsProcessError::ShutdownSignal)?;
-    runtime.shutdown().await;
-    Ok(())
+    runtime
+        .shutdown()
+        .await
+        .map_err(DnsProcessError::ShutdownRoleService)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -472,6 +476,8 @@ pub enum DnsProcessError {
     RefreshTimedOut { timeout: Duration },
     #[error("failed to wait for shutdown: {0}")]
     ShutdownSignal(std::io::Error),
+    #[error("failed to stop DNS role service: {0:?}")]
+    ShutdownRoleService(NatsServiceShutdownError),
 }
 
 #[cfg(test)]

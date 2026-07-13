@@ -126,7 +126,7 @@ async fn gateway_process_serves_http_from_nats_projection() {
     assert!(upstream_request.contains("\r\nConnection: close\r\n"));
     drop(client);
 
-    runtime.shutdown().await;
+    runtime.shutdown().await.expect("gateway shuts down");
 }
 
 #[tokio::test]
@@ -171,7 +171,7 @@ async fn gateway_process_serves_http01_challenge_before_route_attachment() {
     assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
     assert!(response.ends_with("\r\n\r\nchallenge-token.account-thumbprint"));
 
-    runtime.shutdown().await;
+    runtime.shutdown().await.expect("gateway shuts down");
 }
 
 #[tokio::test]
@@ -214,7 +214,7 @@ async fn gateway_process_owns_certificate_service_lifecycle() {
                 && ok.application == CertificateChallengeApplicationStatus::NotApplied
     ));
 
-    runtime.shutdown().await;
+    runtime.shutdown().await.expect("gateway shuts down");
 
     assert!(matches!(
         request_json::<_, CertificateChallengeStatusResponse>(
@@ -259,7 +259,8 @@ async fn gateway_shutdown_cancels_blocked_projection_refresh_and_releases_listen
 
     tokio::time::timeout(Duration::from_secs(3), runtime.shutdown())
         .await
-        .expect("gateway shutdown cancels the blocked refresh");
+        .expect("gateway shutdown cancels the blocked refresh")
+        .expect("gateway shuts down");
     TcpListener::bind(listen_addr)
         .await
         .expect("gateway listener is released after shutdown");
@@ -313,7 +314,7 @@ async fn gateway_process_applies_route_changes_on_next_poll() {
     );
     wait_until_gateway_status_current(&mut status_sub).await;
 
-    runtime.shutdown().await;
+    runtime.shutdown().await.expect("gateway shuts down");
 }
 
 #[tokio::test]
@@ -359,7 +360,7 @@ async fn gateway_process_records_http_proxy_failures() {
     assert_eq!(runtime.health().consecutive_http_failures, 1);
     assert!(response.starts_with("HTTP/1.1 404 Not Found\r\n"));
 
-    runtime.shutdown().await;
+    runtime.shutdown().await.expect("gateway shuts down");
 }
 
 async fn wait_until_gateway_status_current(status_sub: &mut async_nats::Subscriber) {

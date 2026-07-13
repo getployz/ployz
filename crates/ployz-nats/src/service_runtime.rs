@@ -269,21 +269,19 @@ impl RunningNatsService {
     }
 
     async fn await_endpoint_tasks(&mut self) -> Result<(), NatsServiceShutdownError> {
-        for task in &mut self.endpoint_tasks {
+        while let Some(task) = self.endpoint_tasks.first_mut() {
             task.await
                 .map_err(|error| NatsServiceShutdownError::EndpointTaskJoin {
                     message: error.to_string(),
                 })?;
+            self.endpoint_tasks.remove(0);
         }
-        self.endpoint_tasks.clear();
         Ok(())
     }
 
     fn abort_endpoint_tasks(&self) {
         for task in &self.endpoint_tasks {
-            if !task.is_finished() {
-                task.abort();
-            }
+            task.abort();
         }
     }
 
