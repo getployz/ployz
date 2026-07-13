@@ -4,7 +4,7 @@
 //! prefixes make reply sniffing impossible.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -120,7 +120,8 @@ async fn operator_can_read_intent_and_subscribe_runtime_broadcasts_only() {
 #[tokio::test]
 async fn plaintext_connect_to_tls_port_fails() {
     let fixture = SecuredTestNats::start().await.expect("secured fixture");
-    let mut plaintext = TcpStream::connect(("127.0.0.1", fixture.port()))
+    let address = SocketAddr::from(([127, 0, 0, 1], fixture.port()));
+    let mut plaintext = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT)
         .expect("plaintext TCP reaches the listener");
     plaintext
         .set_read_timeout(Some(NO_DELIVERY_WINDOW))
