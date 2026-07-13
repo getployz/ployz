@@ -239,6 +239,75 @@ async fn scenario_init_and_activate_first_machine() {
 
         wait_for_machine_observations(&core, &machine_id("core_1")).await;
 
+        for interface in ["br-ployz", "ployz-wg0"] {
+            let link = core
+                .exec_on(cluster.core(), &["ip", "link", "show", "dev", interface])
+                .await;
+            assert!(
+                link.success() && link.stdout.contains("UP"),
+                "first-machine dataplane link {interface} is not up: {link:?}"
+            );
+        }
+
+        let listed = core
+            .api
+            .machine_list(&MachineListRequest {})
+            .await
+            .expect("first machine list succeeds");
+        assert!(
+            matches!(
+                listed.machines.as_slice(),
+                [machine] if machine.active.machine_id == machine_id("core_1")
+            ),
+            "first machine is not the only active roster member: {:?}",
+            listed.machines
+        );
+
+        let controller = connect_core_client(
+            &core,
+            NatsPrincipal::Controller,
+            &core.material.controller_seed,
+        )
+        .await
+        .expect("connect controller for first-machine intent read");
+        let intent = NatsIntentReader::new(controller)
+            .intent()
+            .await
+            .expect("read first-machine intent");
+        let status = core
+            .api
+            .network_status(&ployz_sdk_types::NetworkStatusRequest::First {
+                mode: ployz_sdk_types::NetworkStatusMode::Snapshot,
+            })
+            .await
+            .expect("read first-machine dataplane testimony");
+        assert!(
+            matches!(
+                status.machines.as_slice(),
+                [machine]
+                    if machine.active.machine_id == machine_id("core_1")
+                        && matches!(
+                            &machine.dataplane,
+                            ployz_sdk_types::NetworkDataplaneTestimony::Answered { value }
+                                if matches!(
+                                    &value.projection.testimony,
+                                    ployz_core::dataplane::DataplaneProjectionTestimony::Applied {
+                                        revisions,
+                                    } if revisions.declared_revision
+                                        == *intent.dataplane_projection.declared_revision()
+                                )
+                                && matches!(
+                                    &value.projection.endpoint_bridge,
+                                    ployz_core::dataplane::EndpointBridgeStatus::Ready { .. }
+                                )
+                                && value.wireguard.interface == "ployz-wg0"
+                                && value.ebpf_attachment
+                                    == ployz_core::dataplane::EbpfAttachmentStatus::Attached
+                        )
+            ),
+            "first-machine dataplane testimony is not ready for declared projection: {status:?}"
+        );
+
         let authorized =
             read_file_from_container(&docker, &cluster.core().container_id, AUTHORIZED_USERS_FILE)
                 .await

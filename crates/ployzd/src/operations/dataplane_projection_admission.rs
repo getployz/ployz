@@ -2,7 +2,9 @@
 
 use std::time::Duration;
 
-use ployz_core::dataplane::{DataplaneProjection, MachineDataplaneStatus};
+use ployz_core::dataplane::{
+    DataplaneProjection, MachineDataplaneStatus, WireGuardEbpfPrepareError, WireGuardPublicKey,
+};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::{
     DataplaneProjectionAdmissionEvidence, DataplaneProjectionAdmissionFailure,
@@ -13,7 +15,7 @@ use ployz_core::state::StagedMachineDataplaneState;
 
 use crate::intent::service::NatsIntentReader;
 use crate::operation_api::admission::OperationControllers;
-use crate::roles::machine::client::NatsMachineFactsReader;
+use crate::roles::machine::client::{MachineFactsReadError, NatsMachineFactsReader};
 use crate::roles::machine::convergence::gather_dataplane_statuses;
 
 const DATAPLANE_ADMISSION_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -56,30 +58,14 @@ impl DataplaneProjectionAdmissionOperation {
     {
         let mesh_lock = self.controllers.mesh_lock();
         let _mesh_guard = mesh_lock.lock().await;
+        let deadline = tokio::time::Instant::now() + DATAPLANE_ADMISSION_DEADLINE;
         let facts_reader = NatsMachineFactsReader::new(self.intent_change_client.clone())
             .with_request_timeout(DATAPLANE_ADMISSION_REQUEST_TIMEOUT);
-        let public_key = match facts_reader
-            .read_projection_public_key(&joining_machine_id)
-            .await
-        {
-            Ok(public_key) => public_key,
-            Err(error) => {
-                return Ok(Some(no_answer(
-                    joining_machine_id,
-                    format!("WireGuard public key unavailable: {error:?}"),
-                )));
-            }
-        };
-        let facts = facts_reader.machine_facts(&joining_machine_id).await;
-        let mut mesh_endpoints = match facts {
-            Ok(facts) => facts
-                .endpoints()
-                .map(|endpoints| endpoints.mesh_endpoints.clone())
-                .unwrap_or_default(),
-            Err(error) => {
-                return Ok(Some(no_answer(joining_machine_id, error.to_string())));
-            }
-        };
+        let (public_key, mut mesh_endpoints) =
+            match gather_joining_machine(&facts_reader, &joining_machine_id, deadline).await {
+                Ok(identity) => identity,
+                Err(evidence) => return Ok(Some(evidence)),
+            };
         if mesh_endpoints.is_empty() {
             return Ok(Some(no_answer(
                 joining_machine_id,
@@ -103,7 +89,7 @@ impl DataplaneProjectionAdmissionOperation {
             .map_err(unavailable)?;
 
         let result = self
-            .admit_staged_projection(&joining_machine_id, &staged, &facts_reader)
+            .admit_staged_projection(&joining_machine_id, &staged, &facts_reader, deadline)
             .await;
         if !matches!(result, Ok(None)) {
             self.clear_staging(&operation_id).await?;
@@ -116,6 +102,7 @@ impl DataplaneProjectionAdmissionOperation {
         joining_machine_id: &MachineId,
         staged: &StagedMachineDataplaneState,
         facts_reader: &NatsMachineFactsReader,
+        deadline: tokio::time::Instant,
     ) -> Result<Option<DataplaneProjectionAdmissionEvidence>, DataplaneProjectionAdmissionError>
     {
         if let Err(error) = self.publish_invalidation().await {
@@ -138,7 +125,7 @@ impl DataplaneProjectionAdmissionOperation {
             )));
         }
 
-        Ok(gather_admission(facts_reader, &projection).await)
+        Ok(gather_admission(facts_reader, &projection, deadline).await)
     }
 
     async fn clear_staging(
@@ -175,11 +162,58 @@ impl DataplaneProjectionAdmissionOperation {
     }
 }
 
+async fn gather_joining_machine(
+    facts_reader: &NatsMachineFactsReader,
+    machine_id: &MachineId,
+    deadline: tokio::time::Instant,
+) -> Result<(WireGuardPublicKey, Vec<std::net::SocketAddr>), DataplaneProjectionAdmissionEvidence> {
+    loop {
+        let public_key = match facts_reader.read_projection_public_key(machine_id).await {
+            Ok(public_key) => public_key,
+            Err(error @ WireGuardEbpfPrepareError::Unavailable { .. }) => {
+                let evidence = no_answer(
+                    machine_id.clone(),
+                    format!("WireGuard public key unavailable: {error:?}"),
+                );
+                if wait_for_admission_retry(deadline).await {
+                    continue;
+                }
+                return Err(evidence);
+            }
+            Err(error @ WireGuardEbpfPrepareError::InvalidReport { .. }) => {
+                return Err(no_answer(
+                    machine_id.clone(),
+                    format!("WireGuard public key unavailable: {error:?}"),
+                ));
+            }
+        };
+        match facts_reader.machine_facts(machine_id).await {
+            Ok(facts) => {
+                let mesh_endpoints = facts
+                    .endpoints()
+                    .map(|endpoints| endpoints.mesh_endpoints.clone())
+                    .unwrap_or_default();
+                return Ok((public_key, mesh_endpoints));
+            }
+            Err(error @ MachineFactsReadError::Unavailable { .. }) => {
+                let evidence = no_answer(machine_id.clone(), error.to_string());
+                if wait_for_admission_retry(deadline).await {
+                    continue;
+                }
+                return Err(evidence);
+            }
+            Err(error @ MachineFactsReadError::GatherFailed { .. }) => {
+                return Err(no_answer(machine_id.clone(), error.to_string()));
+            }
+        }
+    }
+}
+
 async fn gather_admission(
     facts_reader: &NatsMachineFactsReader,
     projection: &DataplaneProjection,
+    deadline: tokio::time::Instant,
 ) -> Option<DataplaneProjectionAdmissionEvidence> {
-    let deadline = tokio::time::Instant::now() + DATAPLANE_ADMISSION_DEADLINE;
     loop {
         let statuses = gather_dataplane_statuses(
             facts_reader,
@@ -204,11 +238,19 @@ async fn gather_admission(
             Err(evidence) => Some(evidence),
         };
         let evidence = evidence?;
-        if tokio::time::Instant::now() >= deadline || !retryable_admission(&evidence.reason) {
+        if !retryable_admission(&evidence.reason) || !wait_for_admission_retry(deadline).await {
             return Some(evidence);
         }
-        tokio::time::sleep(DATAPLANE_ADMISSION_RETRY_DELAY).await;
     }
+}
+
+async fn wait_for_admission_retry(deadline: tokio::time::Instant) -> bool {
+    let now = tokio::time::Instant::now();
+    if now >= deadline {
+        return false;
+    }
+    tokio::time::sleep_until((now + DATAPLANE_ADMISSION_RETRY_DELAY).min(deadline)).await;
+    tokio::time::Instant::now() < deadline
 }
 
 fn retryable_admission(reason: &DataplaneProjectionAdmissionFailure) -> bool {

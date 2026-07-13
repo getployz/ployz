@@ -728,14 +728,14 @@ async fn terminal_machine_add_scrubs_working_secrets_and_status_corruption_is_un
         "machine_scrub",
     )
     .await;
-    redeem_when_ready(&join_api, &accepted.join_token).await;
-    join_api
-        .machine_join_report(&MachineJoinReportRequest {
-            join_token: accepted.join_token.clone(),
-            outcome: MachineJoinReportOutcome::Completed,
-        })
-        .await
-        .expect("machine join completion reports");
+    let redeemed = redeem_when_ready(&join_api, &accepted.join_token).await;
+    dataplane::report_join_completed_with_retry(
+        &nats,
+        machine_id("machine_scrub"),
+        redeemed.secret_delivery.nats_credentials,
+        accepted.join_token.clone(),
+    )
+    .await;
     let duplicate = machine_add_result(
         &api,
         &MachineAddRequest {
