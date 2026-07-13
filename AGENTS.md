@@ -244,10 +244,6 @@ Live` section above. These rules are about truth semantics, not storage:
   money, privacy, destructive behavior, persistence, migrations, concurrency,
   distributed state, public contracts, architecture boundaries, or a broad
   multi-module diff as large or risky. The supervisor records the classification.
-- Freeze one review SHA. Apply accepted findings in one batch.
-- Re-review only the accepted-finding delta, and only in the lane that raised
-  it, with both Codex and Opus when both reviewed that lane. Do not rerun
-  unaffected lanes or reread the full branch for a narrow fix.
 - A second full Codex/Opus wave requires dispatcher approval and is reserved
   for fixes that materially change the public contract, authority boundary,
   state model, or more than roughly 20% of the reviewed diff.
@@ -264,15 +260,6 @@ Live` section above. These rules are about truth semantics, not storage:
 - During implementation, run focused tests for changed seams. After review
   findings are dispositioned, a ticket may run full workspace gates immediately;
   it does not wait for the landing queue.
-- Cargo gates may run concurrently in separate worktrees with separate target
-  directories. Only DinD and landing are globally serialized.
-- Within one worktree, run workspace Clippy, workspace tests, and SDK generation
-  sequentially. Never generate SDK files concurrently with a command that reads
-  them.
-- Keep a dedicated clean cargo-cache worktree on `origin/main`. When main
-  advances, fast-forward it and run `cargo test --workspace --no-run` before
-  seeding new worktrees. Never update or clean a dirty user checkout to refresh
-  the cache.
 - Keep `pnpm check:generated` on every final candidate. Run SDK typecheck/tests
   when SDK source or generated output changed; otherwise record them as not
   applicable.
@@ -323,13 +310,6 @@ workflow is added here in the same change:
   `scripts/cli-smoke-test.sh <core-ip> <edge-ip>` — see
   `docs/operations/real-host-acceptance.md`. It installs the public alpha
   channel, so promote the build under test first.
-- Cold target dirs — a fresh worktree's `target/` or a per-agent
-  `PLOYZ_DIND_TARGET_DIR` — are seeded from the clean `origin/main` cargo-cache
-  worktree with
-  `scripts/cargo-hardlink-deps.py <src-target-dir> <dst-target-dir>`: it
-  hardlinks third-party dependency artifacts only, so dependencies skip
-  recompilation while workspace crates still rebuild from the branch's own
-  code.
 - When merging main into a branch, compose semantic conflicts: union the
   imports, keep both sides' additions, and give each side's exhaustive
   matches the arms the other side's new enum variants need.
