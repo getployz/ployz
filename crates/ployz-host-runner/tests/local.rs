@@ -702,6 +702,69 @@ fn local_effects_install_docker_when_runtime_is_missing() {
 }
 
 #[test]
+fn local_effects_install_docker_from_rhel_repository_on_rocky() {
+    let root = temp_dir("ployz-host-runner-local-docker-rocky");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let mut runner = RecordingRunner {
+        docker_installed: false,
+        docker_running: false,
+        ..RecordingRunner::root_linux()
+    };
+    runner.command_outputs = [succeeded_command(
+        "ID=rocky\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=\"9.8\"\n",
+    )]
+    .into();
+    let mut effects = HostRunnerLocalEffects::new(local_config(&root, &systemd_dir), runner);
+
+    effects
+        .apply_step(&HostRunnerStep::PrepareContainerRuntime(
+            ContainerRuntime::Docker,
+            ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+        ))
+        .expect("Rocky installs Docker from the supported RHEL repository");
+
+    assert_eq!(effects.runner().rhel_docker_install_runs, 1);
+    assert_eq!(effects.runner().docker_install_runs, 0);
+    assert!(
+        effects
+            .runner()
+            .systemctl_calls
+            .contains(&docker_enable_call())
+    );
+}
+
+#[test]
+fn local_effects_report_unsupported_docker_host_family() {
+    let root = temp_dir("ployz-host-runner-local-docker-unsupported");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let mut runner = RecordingRunner {
+        docker_installed: false,
+        docker_running: false,
+        ..RecordingRunner::root_linux()
+    };
+    runner.command_outputs = [succeeded_command("ID=alpine\nVERSION_ID=\"3.22\"\n")].into();
+    let mut effects = HostRunnerLocalEffects::new(local_config(&root, &systemd_dir), runner);
+
+    let result = effects.apply_step(&HostRunnerStep::PrepareContainerRuntime(
+        ContainerRuntime::Docker,
+        ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+    ));
+
+    assert!(matches!(
+        result,
+        Err(error)
+            if error.reason()
+                == Some(HostRunnerStepFailureReason::ContainerRuntimeHostUnsupported)
+                && error.message().as_str().contains("alpine")
+    ));
+    assert_eq!(effects.runner().rhel_docker_install_runs, 0);
+    assert_eq!(effects.runner().docker_install_runs, 0);
+    assert!(effects.runner().downloads.is_empty());
+}
+
+#[test]
 fn local_effects_report_docker_install_failure_as_prepare_failure() {
     let root = temp_dir("ployz-host-runner-local-docker-install-fail");
     let systemd_dir = root.join("systemd");
@@ -1274,6 +1337,7 @@ struct RecordingRunner {
     docker_installed: bool,
     docker_running: bool,
     docker_install_runs: usize,
+    rhel_docker_install_runs: usize,
     dataplane_host_prepare_runs: usize,
     fail_docker_install: bool,
     fail_dataplane_host_prepare: bool,
@@ -1296,6 +1360,7 @@ impl RecordingRunner {
             docker_installed: true,
             docker_running: true,
             docker_install_runs: 0,
+            rhel_docker_install_runs: 0,
             dataplane_host_prepare_runs: 0,
             fail_docker_install: false,
             fail_dataplane_host_prepare: false,
@@ -1319,7 +1384,9 @@ impl HostRunnerCommandRunner for RecordingRunner {
         self.command_calls
             .push(format!("{program} {}", args.join(" ")));
         Ok(self.command_outputs.pop_front().unwrap_or_else(|| {
-            if program == "systemctl" && args.first() == Some(&"list-units") {
+            if program == "cat" && args == ["/etc/os-release"] {
+                succeeded_command("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"24.04\"\n")
+            } else if program == "systemctl" && args.first() == Some(&"list-units") {
                 succeeded_command("")
             } else if program == "sh" && args.first() == Some(&"-c") {
                 absent_command()
@@ -1401,8 +1468,15 @@ impl HostRunnerCommandRunner for RecordingRunner {
         Ok(())
     }
 
-    fn run_docker_install_script(&mut self, _script: &Path) -> Result<(), FailureMessage> {
-        self.docker_install_runs += 1;
+    fn run_docker_install_script(&mut self, script: &Path) -> Result<(), FailureMessage> {
+        let script = fs::read_to_string(script)
+            .map_err(|error| failure_message(&format!("failed to read fake script: {error}")))?;
+        if script.contains("download.docker.com/linux/rhel/docker-ce.repo") {
+            assert!(script.contains("dnf --releasever 9 install -y docker-ce"));
+            self.rhel_docker_install_runs += 1;
+        } else {
+            self.docker_install_runs += 1;
+        }
         if self.fail_docker_install {
             return Err(failure_message("simulated docker install failure"));
         }

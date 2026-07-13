@@ -201,6 +201,12 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
                             message,
                         );
                     }
+                    PrepareDockerError::UnsupportedHost(message) => {
+                        return HostRunnerStepEffectError::new(
+                            HostRunnerStepFailureReason::ContainerRuntimeHostUnsupported,
+                            message,
+                        );
+                    }
                     PrepareDockerError::Other(message) => message,
                 };
                 HostRunnerStepEffectError::new(
@@ -271,10 +277,34 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
         }
 
         merge_docker_daemon_config(&self.config.docker_daemon_config, &endpoint_supernet)?;
-        let script = DockerInstallScript::new()?;
-        self.runner
-            .download(DOCKER_INSTALL_SCRIPT_URL, script.path())?;
-        self.runner.run_docker_install_script(script.path())?;
+        let os_release = self.runner.command("cat", &["/etc/os-release"])?;
+        if !os_release.success {
+            return Err(PrepareDockerError::Other(failure_message(format!(
+                "failed to read /etc/os-release: {}",
+                os_release.failure
+            ))));
+        }
+        match docker_install_target(&os_release.stdout)? {
+            DockerInstallTarget::Script => {
+                let script = DockerInstallScript::new()?;
+                self.runner
+                    .download(DOCKER_INSTALL_SCRIPT_URL, script.path())?;
+                self.runner.run_docker_install_script(script.path())?;
+            }
+            DockerInstallTarget::Rhel { releasever } => {
+                let script = DockerInstallScript::new()?;
+                fs::write(
+                    script.path(),
+                    format!(
+                        "set -eu\ndnf install -y dnf-plugins-core\ndnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo\ndnf --releasever {releasever} install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin\n"
+                    ),
+                )
+                .map_err(|error| {
+                    failure_message(format!("failed to write Docker install script: {error}"))
+                })?;
+                self.runner.run_docker_install_script(script.path())?;
+            }
+        }
         self.runner.enable_docker_service()?;
         self.verify_running_docker(&endpoint_supernet)
     }
@@ -554,6 +584,43 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DockerInstallTarget {
+    Script,
+    Rhel { releasever: String },
+}
+
+fn docker_install_target(os_release: &str) -> Result<DockerInstallTarget, PrepareDockerError> {
+    let value = |name: &str| {
+        os_release.lines().find_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            (key == name).then(|| value.trim_matches(['"', '\'']).to_owned())
+        })
+    };
+    let id = value("ID").unwrap_or_else(|| "unknown".to_owned());
+    let id_like = value("ID_LIKE").unwrap_or_default();
+    let family = |name: &str| id_like.split_ascii_whitespace().any(|value| value == name);
+
+    if matches!(id.as_str(), "rhel" | "rocky" | "almalinux") || family("rhel") {
+        let version = value("VERSION_ID").unwrap_or_default();
+        let releasever = version.split('.').next().unwrap_or_default();
+        if matches!(releasever, "9" | "10") {
+            return Ok(DockerInstallTarget::Rhel {
+                releasever: releasever.to_owned(),
+            });
+        }
+        return Err(PrepareDockerError::UnsupportedHost(failure_message(
+            format!("Docker is unsupported on RHEL-family host {id} version {version}"),
+        )));
+    }
+    if matches!(id.as_str(), "debian" | "ubuntu" | "fedora" | "centos") || family("debian") {
+        return Ok(DockerInstallTarget::Script);
+    }
+    Err(PrepareDockerError::UnsupportedHost(failure_message(
+        format!("Docker automatic installation is unsupported on host family {id}"),
+    )))
+}
+
 fn render_assigned_host_ports(ports: &[AssignedHostPort]) -> String {
     ports
         .iter()
@@ -578,6 +645,7 @@ fn host_ports_assurance_error(message: FailureMessage) -> HostRunnerStepEffectEr
 #[derive(Debug)]
 enum PrepareDockerError {
     ClassicStore(FailureMessage),
+    UnsupportedHost(FailureMessage),
     Other(FailureMessage),
 }
 

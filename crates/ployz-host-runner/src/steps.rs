@@ -1399,6 +1399,7 @@ pub enum HostRunnerStepFailureReason {
     DataplaneHostPrepareFailed,
     ContainerRuntimePrepareFailed,
     ContainerRuntimeVerifyFailed,
+    ContainerRuntimeHostUnsupported,
     ContainerRuntimeClassicStoreUnsupported,
 }
 
