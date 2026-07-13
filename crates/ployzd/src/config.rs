@@ -78,6 +78,16 @@ impl DaemonProcessConfig {
             Self::Dns(_) => DaemonProcessRole::Dns,
         }
     }
+
+    #[must_use]
+    pub fn machine_id(&self) -> &MachineId {
+        match self {
+            Self::Control(config) => &config.machine_id,
+            Self::Machine(config) => &config.machine_id,
+            Self::Gateway(config) => &config.machine_id,
+            Self::Dns(config) => &config.machine_id,
+        }
+    }
 }
 
 pub fn load_daemon_process_config(
@@ -707,6 +717,7 @@ impl std::error::Error for DaemonProcessConfigError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlProcessConfig {
+    pub machine_id: MachineId,
     pub nats: NatsServerLaunch,
     pub nats_connect: NatsConnectConfig,
     pub nats_authorization: ControlNatsAuthorizationConfig,
@@ -733,6 +744,7 @@ impl ControlProcessConfig {
         nats_connect: NatsConnectConfig,
     ) -> Self {
         Self {
+            machine_id: first_deploy_machine.clone(),
             nats,
             nats_connect,
             nats_authorization: ControlNatsAuthorizationConfig::in_default_paths(),

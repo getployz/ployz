@@ -26,6 +26,7 @@ ployz-core.workspace = true
 ployz-ebpf-common = { path = "../ployz-ebpf-common", features = ["validation"] }
 ployz-nats.workspace = true
 ployz-sdk-types.workspace = true
+ployz-telemetry.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

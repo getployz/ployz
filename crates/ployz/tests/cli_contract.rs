@@ -8,7 +8,9 @@ use ployz::commands::init::{
 use ployz::commands::machine::MachineName;
 use ployz::commands::ops::{ListOutput, OpsWatchOutput, StatusOutput, WatchOutput};
 use ployz::commands::service::{ServiceInspectOutput, ServiceListOutput};
-use ployz::commands::{PloyzctlCliError, PloyzctlCommand, parse_command, parse_invocation};
+use ployz::commands::{
+    PloyzctlCliError, PloyzctlCommand, TelemetryCommand, parse_command, parse_invocation,
+};
 use ployz_core::cert::{ManagedLeaseAddressSet, ManagedLeaseName};
 use ployz_core::dataplane::{
     EbpfForwardingReady, EbpfForwardingReadyEvidence, PloyzNativeMeshMachineReady,
@@ -38,6 +40,30 @@ fn cli_login_is_reserved_cloud_verb() {
     let command = parse_command(["login"].map(str::to_owned)).expect("login parses");
 
     assert_eq!(command, PloyzctlCommand::Login);
+}
+
+#[test]
+fn cli_telemetry_preference_commands_parse_locally() {
+    for (verb, expected) in [
+        ("enable", TelemetryCommand::Enable),
+        ("disable", TelemetryCommand::Disable),
+    ] {
+        let command = parse_command(["telemetry", verb].map(str::to_owned))
+            .expect("telemetry preference command parses");
+
+        assert_eq!(command, PloyzctlCommand::Telemetry(expected));
+        assert_eq!(command.telemetry_name(), None);
+    }
+}
+
+#[test]
+fn cli_telemetry_names_are_canonical_across_aliases() {
+    for args in [["ls", ""], ["list", ""], ["service", "list"]] {
+        let args = args.into_iter().filter(|arg| !arg.is_empty());
+        let command = parse_command(args.map(str::to_owned)).expect("service list parses");
+
+        assert_eq!(command.telemetry_name(), Some("service list"));
+    }
 }
 
 #[test]
@@ -709,6 +735,7 @@ fn binary_dispatches_init_first_machine() {
 #[test]
 fn binary_init_can_print_host_runner_first_machine_install_command() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .args(init_with_host_runner_install_arg_refs())
         .output()
         .expect("ployz binary runs");
@@ -743,6 +770,7 @@ fn binary_init_can_run_host_runner_first_machine_install_command() {
     make_executable(&host_runner);
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .args(init_with_host_runner_run_arg_refs(
             host_runner.to_str().expect("Host Runner path is utf-8"),
         ))
@@ -778,6 +806,7 @@ fn binary_init_succeeds_when_host_runner_output_is_truncated() {
     make_executable(&host_runner);
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .args(init_with_host_runner_run_arg_refs(
             host_runner.to_str().expect("Host Runner path is utf-8"),
         ))
@@ -1649,6 +1678,7 @@ fn first_machine_install_spec_json(ployzd_source: &str, machine_public_ip: Optio
 
 fn run_ployz(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .args(args)
         .output()
         .expect("ployz binary runs")
