@@ -3,7 +3,7 @@ use ployz_host_runner::host_platform::{
 };
 
 #[test]
-fn coolify_supported_distributions_select_host_capabilities() {
+fn supported_distributions_select_host_capabilities() {
     let cases = [
         (
             "arch",
@@ -111,7 +111,7 @@ fn coolify_supported_distributions_select_host_capabilities() {
 
     for (id, package_family, supervisor, docker_install) in cases {
         let profile = detect_host_platform(&format!("ID=\"{id}\"\nVERSION_ID=\"9.4\"\n"))
-            .expect("Coolify-supported distribution is detected");
+            .expect("supported distribution is detected");
 
         assert_eq!(
             (
@@ -126,7 +126,7 @@ fn coolify_supported_distributions_select_host_capabilities() {
 }
 
 #[test]
-fn coolify_distribution_aliases_normalize_to_their_base_profile() {
+fn distribution_aliases_normalize_to_their_base_profile() {
     let cases = [
         ("manjaro", "arch"),
         ("manjaro-arm", "arch"),
@@ -139,8 +139,8 @@ fn coolify_distribution_aliases_normalize_to_their_base_profile() {
     ];
 
     for (alias, canonical) in cases {
-        let alias_profile = detect_host_platform(&format!("ID={alias}\n"))
-            .expect("Coolify-supported alias is detected");
+        let alias_profile =
+            detect_host_platform(&format!("ID={alias}\n")).expect("supported alias is detected");
         let canonical_profile = detect_host_platform(&format!("ID={canonical}\n"))
             .expect("canonical distribution is detected");
 

@@ -13,11 +13,8 @@ every new host another branch through orchestration code. It also couples releas
 acceptance to one package-manager command spelling, such as the DNF4
 `config-manager --add-repo` syntax that is not accepted by DNF5.
 
-Coolify's public installer is the compatibility baseline. The matrix and aliases
-in this decision are based on its
-[`scripts/install.sh`](https://github.com/coollabsio/coolify/blob/e7dff30b7c998c301fd91bd169727b90c59ec291/scripts/install.sh).
-Ployz does not execute that installer because it also installs and configures the
-Coolify product.
+Ployz needs an explicit compatibility matrix whose package, Docker, and
+supervisor choices can be tested independently of bootstrap orchestration.
 
 ## Decision
 
@@ -80,5 +77,5 @@ systemd/OpenRC rendering, lifecycle translation, and fail-before-mutation
 behavior. Real-host evidence can tighten version constraints without changing
 the orchestration interface.
 
-Changes in Coolify's installer or upstream package layouts require an explicit
+Changes in upstream package layouts or supervisor behavior require an explicit
 matrix or strategy update and focused adapter tests.
