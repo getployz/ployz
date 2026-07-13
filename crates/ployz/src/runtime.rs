@@ -225,6 +225,7 @@ pub async fn execute_command(
         PloyzctlCommand::Login => {
             Err(PloyzctlExecutionError::CloudUnconfigured { command: "login" })
         }
+        PloyzctlCommand::Telemetry(_) => Err(PloyzctlExecutionError::LocalCommand),
         PloyzctlCommand::CorePromote(command) => execute_core_promote_remote(command, config).await,
         PloyzctlCommand::CoreReplace(command) => execute_core_replace_remote(command, config).await,
         PloyzctlCommand::ComposeCheck(command) => Ok(compose::check(command)),
@@ -758,6 +759,8 @@ fn nats_connect_config(
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PloyzctlExecutionError {
+    #[error("telemetry preferences are handled locally by the ployz binary")]
+    LocalCommand,
     #[error(
         "ployz {command} is reserved for Ployz Cloud and no Cloud connection is configured; configure a Ployz Cloud connection before using Cloud verbs"
     )]

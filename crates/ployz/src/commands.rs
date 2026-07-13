@@ -29,6 +29,7 @@ pub struct PloyzctlInvocation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PloyzctlCommand {
     Login,
+    Telemetry(TelemetryCommand),
     CorePromote(core::CorePromoteCommand),
     CoreReplace(core::CoreReplaceCommand),
     ComposeCheck(compose::ComposeCheckCommand),
@@ -58,6 +59,54 @@ pub enum PloyzctlCommand {
     OpsList(ops::OpsListCommand),
     OpsStatus(ops::OpsStatusCommand),
     OpsWatch(ops::OpsWatchCommand),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TelemetryCommand {
+    Enable,
+    Disable,
+}
+
+impl PloyzctlCommand {
+    #[must_use]
+    pub const fn telemetry_name(&self) -> Option<&'static str> {
+        match self {
+            Self::Login => Some("login"),
+            Self::Telemetry(_) => None,
+            Self::CorePromote(_) => Some("core promote"),
+            Self::CoreReplace(_) => Some("core demote"),
+            Self::ComposeCheck(_) => Some("compose check"),
+            Self::Deploy(_) => Some("deploy"),
+            Self::DeployHistory(_) => Some("deploy history"),
+            Self::DeployRollback(_) => Some("deploy rollback"),
+            Self::InternalInit(_) => Some("internal init"),
+            Self::InitFirstMachineActivate(_) => Some("internal init activate-first-machine"),
+            Self::InitJoinTemplate(_) => Some("internal init join-template"),
+            Self::MachineInit(_) => Some("init"),
+            Self::MachineAdd(_) => Some("internal machine-add"),
+            Self::MachineAddRemote(_) => Some("machine add"),
+            Self::MachineUpdate(_) => Some("machine update"),
+            Self::MachineLifecycle(command) => match command.target {
+                MachineLifecycle::Draining => Some("machine drain"),
+                MachineLifecycle::Active => Some("machine resume"),
+            },
+            Self::MachineList(_) => Some("machine list"),
+            Self::MachineInspect(_) => Some("machine inspect"),
+            Self::NetworkStatus(_) => Some("network status"),
+            Self::NetworkResolve(_) => Some("network resolve"),
+            Self::NetworkRepair(_) => Some("network repair"),
+            Self::ServiceList(_) => Some("service list"),
+            Self::ServiceInspect(_) => Some("service inspect"),
+            Self::ServiceRestart(_) => Some("service restart"),
+            Self::NamespaceRemove(_) => Some("namespace rm"),
+            Self::VolumeList(_) => Some("volume list"),
+            Self::VolumeRemove(_) => Some("volume rm"),
+            Self::LogsTail(_) => Some("logs"),
+            Self::OpsList(_) => Some("ops list"),
+            Self::OpsStatus(_) => Some("ops status"),
+            Self::OpsWatch(_) => Some("ops watch"),
+        }
+    }
 }
 
 pub fn parse_invocation(
@@ -102,6 +151,10 @@ pub fn parse_command(
 #[derive(Debug, Subcommand)]
 enum CommandCli {
     Login(service::EmptyCli),
+    Telemetry {
+        #[command(subcommand)]
+        command: TelemetryCli,
+    },
     Init(machine::MachineInitCli),
     Deploy(deploy::DeployRootCli),
     Compose(compose::ComposeRootCli),
@@ -143,6 +196,12 @@ enum CommandCli {
         #[command(subcommand)]
         command: InternalCli,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum TelemetryCli {
+    Enable,
+    Disable,
 }
 
 #[derive(Debug, Args)]
@@ -221,6 +280,10 @@ enum InternalCli {
 fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliError> {
     match command {
         CommandCli::Login(_) => Ok(PloyzctlCommand::Login),
+        CommandCli::Telemetry { command } => Ok(PloyzctlCommand::Telemetry(match command {
+            TelemetryCli::Enable => TelemetryCommand::Enable,
+            TelemetryCli::Disable => TelemetryCommand::Disable,
+        })),
         CommandCli::Init(command) => {
             machine::machine_init_command(command).map(PloyzctlCommand::MachineInit)
         }

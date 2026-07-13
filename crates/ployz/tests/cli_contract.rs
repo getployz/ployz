@@ -8,7 +8,9 @@ use ployz::commands::init::{
 use ployz::commands::machine::MachineName;
 use ployz::commands::ops::{ListOutput, OpsWatchOutput, StatusOutput, WatchOutput};
 use ployz::commands::service::{ServiceInspectOutput, ServiceListOutput};
-use ployz::commands::{PloyzctlCliError, PloyzctlCommand, parse_command, parse_invocation};
+use ployz::commands::{
+    PloyzctlCliError, PloyzctlCommand, TelemetryCommand, parse_command, parse_invocation,
+};
 use ployz_core::cert::{ManagedLeaseAddressSet, ManagedLeaseName};
 use ployz_core::dataplane::{
     EbpfForwardingReady, EbpfForwardingReadyEvidence, PloyzNativeMeshMachineReady,
@@ -41,8 +43,33 @@ fn cli_login_is_reserved_cloud_verb() {
 }
 
 #[test]
+fn cli_telemetry_preference_commands_parse_locally() {
+    for (verb, expected) in [
+        ("enable", TelemetryCommand::Enable),
+        ("disable", TelemetryCommand::Disable),
+    ] {
+        let command = parse_command(["telemetry", verb].map(str::to_owned))
+            .expect("telemetry preference command parses");
+
+        assert_eq!(command, PloyzctlCommand::Telemetry(expected));
+        assert_eq!(command.telemetry_name(), None);
+    }
+}
+
+#[test]
+fn cli_telemetry_names_are_canonical_across_aliases() {
+    for args in [["ls", ""], ["list", ""], ["service", "list"]] {
+        let args = args.into_iter().filter(|arg| !arg.is_empty());
+        let command = parse_command(args.map(str::to_owned)).expect("service list parses");
+
+        assert_eq!(command.telemetry_name(), Some("service list"));
+    }
+}
+
+#[test]
 fn binary_login_fails_fast_when_cloud_is_unconfigured() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .arg("login")
         .output()
         .expect("ployz binary runs");
@@ -709,6 +736,7 @@ fn binary_dispatches_init_first_machine() {
 #[test]
 fn binary_init_can_print_host_runner_first_machine_install_command() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .args(init_with_host_runner_install_arg_refs())
         .output()
         .expect("ployz binary runs");
@@ -743,6 +771,7 @@ fn binary_init_can_run_host_runner_first_machine_install_command() {
     make_executable(&host_runner);
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .args(init_with_host_runner_run_arg_refs(
             host_runner.to_str().expect("Host Runner path is utf-8"),
         ))
@@ -778,6 +807,7 @@ fn binary_init_succeeds_when_host_runner_output_is_truncated() {
     make_executable(&host_runner);
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .args(init_with_host_runner_run_arg_refs(
             host_runner.to_str().expect("Host Runner path is utf-8"),
         ))
@@ -885,6 +915,7 @@ fn binary_rejects_unimplemented_commands() {
 #[test]
 fn binary_machine_add_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .env_remove("PLOYZ_NATS_URL")
         .env_remove("HOME")
         .env_remove("XDG_CONFIG_HOME")
@@ -903,6 +934,7 @@ fn binary_machine_add_requires_nats_url() {
 #[test]
 fn binary_ops_watch_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .env_remove("PLOYZ_NATS_URL")
         .env_remove("HOME")
         .env_remove("XDG_CONFIG_HOME")
@@ -921,6 +953,7 @@ fn binary_ops_watch_requires_nats_url() {
 #[test]
 fn binary_ops_status_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .env_remove("PLOYZ_NATS_URL")
         .env_remove("HOME")
         .env_remove("XDG_CONFIG_HOME")
@@ -939,6 +972,7 @@ fn binary_ops_status_requires_nats_url() {
 #[test]
 fn binary_machine_list_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .env_remove("PLOYZ_NATS_URL")
         .env_remove("HOME")
         .env_remove("XDG_CONFIG_HOME")
@@ -964,6 +998,7 @@ fn binary_rejects_corrupt_cluster_context_file() {
     fs::write(context_dir.join("context.json"), "{not json").expect("corrupt context writes");
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .env_remove("PLOYZ_NATS_URL")
         .env_remove("HOME")
         .env("XDG_CONFIG_HOME", &config_home)
@@ -985,6 +1020,7 @@ fn binary_corrupt_cluster_context_does_not_block_local_init_summary() {
     fs::write(context_dir.join("context.json"), "{not json").expect("corrupt context writes");
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .env_remove("HOME")
         .env("XDG_CONFIG_HOME", &config_home)
         .args(["internal", "init", "--machine", "machine_1"])
@@ -1007,6 +1043,7 @@ fn binary_corrupt_cluster_context_does_not_block_local_init_summary() {
 #[test]
 fn binary_machine_inspect_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .env_remove("PLOYZ_NATS_URL")
         .env_remove("HOME")
         .env_remove("XDG_CONFIG_HOME")
@@ -1649,6 +1686,7 @@ fn first_machine_install_spec_json(ployzd_source: &str, machine_public_ip: Optio
 
 fn run_ployz(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .args(args)
         .output()
         .expect("ployz binary runs")
