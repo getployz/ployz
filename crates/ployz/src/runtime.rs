@@ -531,7 +531,11 @@ where
 {
     let message = match source {
         OperationApiClientError::Domain { error, .. } => error.to_string(),
-        error => error.to_string(),
+        error @ (OperationApiClientError::EncodeRequest { .. }
+        | OperationApiClientError::Request { .. }
+        | OperationApiClientError::Service { .. }
+        | OperationApiClientError::ServiceProtocol { .. }
+        | OperationApiClientError::DecodeResponse { .. }) => error.to_string(),
     };
     PloyzctlExecutionError::OperationApi { message }
 }
