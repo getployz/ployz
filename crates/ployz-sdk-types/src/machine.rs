@@ -202,9 +202,6 @@ pub enum MachineJoinReportedFailure {
     DataplaneProjectionAdmissionFailed {
         evidence: crate::core_types::DataplaneProjectionAdmissionEvidence,
     },
-    ConnectivityProofFailed {
-        evidence: crate::core_types::ConnectivityProofEvidence,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -7,19 +7,18 @@ use crate::intent::service::NatsIntentReader;
 use crate::lease::LeaseClient;
 use crate::operation_api::admission::{AcceptedDeployExecution, OperationControllers};
 use crate::operations::deploy::{
-    CertificateProvisioner, DataplanePreparer, DeployContainer, DeployExecutionError,
-    DeployExecutionInput, DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError,
-    DeployHealthCheckError, DeployHealthChecker, DeployMachineCandidates, DeployPhasePromotion,
-    MachineContainerRuntime, ManagedCertificateWaitPolicy, NamespaceCommitError,
-    NamespaceStateCommitter, execute_deploy_operation, load_deploy_execution_facts_from_nats,
+    CertificateProvisioner, DeployContainer, DeployExecutionError, DeployExecutionInput,
+    DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError, DeployHealthCheckError,
+    DeployHealthChecker, DeployMachineCandidates, DeployPhasePromotion, MachineContainerRuntime,
+    ManagedCertificateWaitPolicy, NamespaceCommitError, NamespaceStateCommitter,
+    execute_deploy_operation, load_deploy_execution_facts_from_nats,
 };
 use crate::operations::log::{
     AcceptedDeploySubmission, OperationStatusWrite, RecordDeployTransitionError,
     RecordOperationEventError,
 };
 use crate::roles::machine::client::{
-    MachineContainerInspectError, NatsMachineContainerRuntime, NatsMachineDataplanePreparer,
-    NatsMachineFactsReader,
+    MachineContainerInspectError, NatsMachineContainerRuntime, NatsMachineFactsReader,
 };
 use crate::roles::machine::protocol::{
     MachineContainerInspectRpcOk, MachineContainerInspectRpcRequest,
@@ -54,15 +53,14 @@ impl CertificateProvisioner for CertificateManager {
     }
 }
 
-pub async fn run_deploy_operation<D, N, H, C>(
+pub async fn run_deploy_operation<N, H, C>(
     accepted_execution: AcceptedDeployExecution,
     machine_candidates: DeployMachineCandidates,
     stores: DeployOperationStores,
-    ports: DeployOperationPorts<'_, D, N, H, C>,
+    ports: DeployOperationPorts<'_, N, H, C>,
     step_timeout: Duration,
 ) -> Result<DeployExecutionOutcome, DeployOperationRunError>
 where
-    D: DataplanePreparer,
     N: MachineContainerRuntime,
     H: DeployHealthChecker,
     C: CertificateProvisioner,
@@ -77,7 +75,6 @@ where
     let DeployOperationPorts {
         facts_reader,
         intent_reader,
-        dataplane,
         machine_runtime,
         health_checker,
         certificate_provisioner,
@@ -167,7 +164,6 @@ where
         input,
         DeployExecutionPorts {
             recorder: &mut recorder,
-            dataplane,
             machine_runtime,
             health_checker,
             certificate_provisioner,
@@ -225,10 +221,9 @@ pub struct DeployOperationStores {
     pub controllers: OperationControllers,
 }
 
-pub struct DeployOperationPorts<'a, D, N, H, C> {
+pub struct DeployOperationPorts<'a, N, H, C> {
     pub facts_reader: &'a NatsMachineFactsReader,
     pub intent_reader: &'a NatsIntentReader,
-    pub dataplane: &'a mut D,
     pub machine_runtime: &'a mut N,
     pub health_checker: &'a mut H,
     pub certificate_provisioner: &'a mut C,
@@ -395,9 +390,6 @@ impl DeployOperationDriver {
         accepted: AcceptedDeployExecution,
     ) -> Result<DeployExecutionOutcome, DeployOperationRunError> {
         let client = self.stores.intent_change_client.clone();
-        let mut dataplane = NatsMachineDataplanePreparer::new(client.clone())
-            .with_request_timeout(self.step_timeout)
-            .with_mesh_lock(self.stores.controllers.mesh_lock());
         let mut machine_runtime = NatsMachineContainerRuntime::new(client.clone())
             .with_request_timeout(self.step_timeout);
         let facts_reader =
@@ -419,7 +411,6 @@ impl DeployOperationDriver {
             DeployOperationPorts {
                 facts_reader: &facts_reader,
                 intent_reader: &intent_reader,
-                dataplane: &mut dataplane,
                 machine_runtime: &mut machine_runtime,
                 health_checker: &mut health_checker,
                 certificate_provisioner: &mut certificate_manager,

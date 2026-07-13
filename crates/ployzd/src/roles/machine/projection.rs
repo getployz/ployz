@@ -437,7 +437,10 @@ mod tests {
 
         assert_eq!(rendered.endpoint_routes.len(), 2);
         assert_eq!(rendered.peers.len(), 1);
-        assert_eq!(rendered.peers[0].machine_id, peer.machine_id);
+        let [rendered_peer] = rendered.peers.as_slice() else {
+            panic!("expected one rendered peer");
+        };
+        assert_eq!(rendered_peer.machine_id, peer.machine_id);
         assert_eq!(rendered.local_subnet, local.endpoint_subnet);
     }
 

@@ -258,15 +258,13 @@ fn failure_allowed(current: &MachineAddOperationState, failure: &MachineAddFailu
             MachineAddOperationState::Joining { .. },
             MachineAddFailure::BootstrapFailed { .. }
             | MachineAddFailure::ReadinessFailed { .. }
-            | MachineAddFailure::DataplaneProjectionAdmissionFailed { .. }
-            | MachineAddFailure::ConnectivityProofFailed { .. },
+            | MachineAddFailure::DataplaneProjectionAdmissionFailed { .. },
         ) => true,
         (
             MachineAddOperationState::Pending { .. },
             MachineAddFailure::BootstrapFailed { .. }
             | MachineAddFailure::ReadinessFailed { .. }
-            | MachineAddFailure::DataplaneProjectionAdmissionFailed { .. }
-            | MachineAddFailure::ConnectivityProofFailed { .. },
+            | MachineAddFailure::DataplaneProjectionAdmissionFailed { .. },
         )
         | (
             MachineAddOperationState::Joining { .. },

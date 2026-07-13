@@ -21,7 +21,7 @@ use crate::roles::machine::projection::{
 use crate::roles::machine::registry_v2::RunningRegistryV2;
 use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
 use crate::roles::machine::service::{
-    MachineFactsReadError, MachineServiceError,
+    MachineFactsReadError, MachineRoleProjectionServices, MachineServiceError,
     start_machine_role_service_with_endpoint_cache_and_image,
 };
 use crate::roles::nats_failover::{
@@ -195,8 +195,10 @@ where
         preparer.clone(),
         log_reader,
         endpoint_cache.clone(),
-        image_state,
-        projection_state.clone(),
+        MachineRoleProjectionServices {
+            image_state,
+            projection_state: projection_state.clone(),
+        },
     )
     .await
     .map_err(MachineProcessError::StartMachineService)?;
@@ -830,21 +832,6 @@ mod tests {
             self.prepare_ployz_native_mesh(endpoint_routes, peers)
                 .await
                 .map(|ready| ready.wireguard)
-        }
-
-        async fn probe_overlay(
-            &self,
-            _peers: &[ployz_core::dataplane::WireGuardPublicKey],
-        ) -> Result<Vec<ployz_core::dataplane::WireGuardPublicKey>, WireGuardEbpfPrepareError>
-        {
-            Ok(Vec::new())
-        }
-
-        async fn probe_link_mtu(
-            &self,
-            _peer_gateway: std::net::Ipv4Addr,
-        ) -> Result<u32, WireGuardEbpfPrepareError> {
-            Ok(1380)
         }
     }
 

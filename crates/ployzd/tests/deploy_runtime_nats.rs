@@ -6,14 +6,23 @@ mod managed_certificate;
 
 use fixtures::*;
 use futures_util::StreamExt;
+use ployz_core::dataplane::{
+    DataplaneProjectionRevisions, DataplaneProjectionTestimony, EbpfAttachmentStatus,
+    EndpointBridgeStatus, MachineDataplaneStatus, NativeDataplaneProjectionStatus,
+    WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardHandshakeStatus, WireGuardInterfaceMtu,
+    WireGuardMtuProbe, WireGuardPeerEndpointSubnet, WireGuardPeerStatus, WireGuardRttStatus,
+    WireGuardStatus,
+};
 use ployz_core::deploy::{
     DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, ReplicaCount,
 };
 use ployz_core::install::MachineBootstrapUrl;
+use ployz_core::machine::MachineName;
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, OperationStatus,
 };
+use ployz_core::state::{ActiveMachineState, MachineLifecycle};
 use ployz_core::subjects::{INTENT_CHANGED, MachineServiceEndpoint, machine_service};
 use ployz_test_support::ids::idempotency_key;
 use ployzd::certificate::{CertificateManager, CertificateManagerConfig};
@@ -35,6 +44,7 @@ use ployzd::operations::deploy::{DeployMachineCandidates, ManagedCertificateWait
 use ployzd::operations::log::{OperationRepository, SubmitOperationError};
 use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineFactsReader};
 use ployzd::roles::machine::protocol::{
+    MachineDataplaneStatusRpcOk, MachineDataplaneStatusRpcResponse,
     MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkRpcResponse,
     MachineFactsGetRpcOk, MachineFactsGetRpcResponse,
 };
@@ -45,7 +55,12 @@ use std::time::Duration;
 #[tokio::test]
 async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     let nats = test_nats().await;
-    let _facts = start_facts_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
+    let _facts = start_facts_subscription(
+        nats.machine_a.clone(),
+        nats.client.clone(),
+        machine_id("machine_a"),
+    )
+    .await;
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     let controllers = operation_controllers(nats.client.clone()).await;
@@ -54,7 +69,6 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
         .submit_deploy(deploy_submit_command(&controllers, deploy_request).await)
         .await
         .expect("deploy operation accepted");
-    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
     let mut certificates = RecordingCertificates::successful();
@@ -85,7 +99,6 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
         DeployOperationPorts {
             facts_reader: &facts_reader,
             intent_reader: &intent_reader,
-            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             certificate_provisioner: &mut certificates,
@@ -123,25 +136,34 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
             .namespace_revision_entry_id,
         resolved_entry_id
     );
-    assert!(matches!(
-        controllers
-            .repository()
-            .get(&operation_id("op_123"))
-            .await
-            .expect("status reads"),
-        Some(OperationStatus::Deploy {
-            state: DeployOperationState::Completed {
-                outcome: DeployCompletionOutcome::Completed,
-            },
-            ..
-        })
-    ));
+    let status = controllers
+        .repository()
+        .get(&operation_id("op_123"))
+        .await
+        .expect("status reads");
+    assert!(
+        matches!(
+            status,
+            Some(OperationStatus::Deploy {
+                state: DeployOperationState::Completed {
+                    outcome: DeployCompletionOutcome::Completed,
+                },
+                ..
+            })
+        ),
+        "unexpected operation status: {status:?}"
+    );
 }
 
 #[tokio::test]
 async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
     let nats = test_nats().await;
-    let _facts = start_facts_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
+    let _facts = start_facts_subscription(
+        nats.machine_a.clone(),
+        nats.client.clone(),
+        machine_id("machine_a"),
+    )
+    .await;
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     let controllers = operation_controllers(nats.client.clone()).await;
@@ -149,7 +171,6 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
         .submit_deploy(deploy_submit_command(&controllers, deploy_request(1)).await)
         .await
         .expect("deploy operation accepted");
-    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
     let mut certificates = RecordingCertificates::successful();
@@ -168,7 +189,6 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
         DeployOperationPorts {
             facts_reader: &facts_reader,
             intent_reader: &intent_reader,
-            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             certificate_provisioner: &mut certificates,
@@ -206,7 +226,12 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
 #[tokio::test]
 async fn health_failure_records_failed_operation_without_committing_active_state() {
     let nats = test_nats().await;
-    let _facts = start_facts_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
+    let _facts = start_facts_subscription(
+        nats.machine_a.clone(),
+        nats.client.clone(),
+        machine_id("machine_a"),
+    )
+    .await;
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     let controllers = operation_controllers(nats.client.clone()).await;
@@ -215,7 +240,6 @@ async fn health_failure_records_failed_operation_without_committing_active_state
         .submit_deploy(deploy_submit_command(&controllers, deploy_request).await)
         .await
         .expect("deploy operation accepted");
-    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::unhealthy("machine_a", "ctr_1");
     let mut certificates = RecordingCertificates::successful();
@@ -234,7 +258,6 @@ async fn health_failure_records_failed_operation_without_committing_active_state
         DeployOperationPorts {
             facts_reader: &facts_reader,
             intent_reader: &intent_reader,
-            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             certificate_provisioner: &mut certificates,
@@ -253,12 +276,13 @@ async fn health_failure_records_failed_operation_without_committing_active_state
             .serving_target_entries
             .is_empty()
     );
+    let health_status = controllers
+        .repository()
+        .get(&operation_id("op_123"))
+        .await
+        .expect("status reads");
     assert!(matches!(
-        controllers
-            .repository()
-            .get(&operation_id("op_123"))
-            .await
-            .expect("status reads"),
+        &health_status,
         Some(OperationStatus::Deploy {
             state:
                 DeployOperationState::Failed {
@@ -269,14 +293,19 @@ async fn health_failure_records_failed_operation_without_committing_active_state
                         },
                 },
             ..
-        }) if retained_artifacts == vec![retained_container("machine_a", "ctr_1")]
+        }) if *retained_artifacts == vec![retained_container("machine_a", "ctr_1")]
     ));
 }
 
 #[tokio::test]
 async fn auto_dns_without_lease_fails_before_runtime_work_with_guidance() {
     let nats = test_nats().await;
-    let _facts = start_facts_subscription(nats.machine_a.clone(), machine_id("machine_a")).await;
+    let _facts = start_facts_subscription(
+        nats.machine_a.clone(),
+        nats.client.clone(),
+        machine_id("machine_a"),
+    )
+    .await;
     let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
     let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     let controllers = operation_controllers(nats.client.clone()).await;
@@ -294,7 +323,6 @@ async fn auto_dns_without_lease_fails_before_runtime_work_with_guidance() {
         .submit_deploy(deploy_submit_command(&controllers, request).await)
         .await
         .expect("deploy operation accepted");
-    let mut dataplane = RecordingWireGuardEbpf::ready();
     let mut runtime = RecordingRuntime::with_containers(["ctr_should_not_start"]);
     let mut health = RecordingHealth::healthy();
     let mut certificates = RecordingCertificates::successful();
@@ -313,7 +341,6 @@ async fn auto_dns_without_lease_fails_before_runtime_work_with_guidance() {
         DeployOperationPorts {
             facts_reader: &facts_reader,
             intent_reader: &intent_reader,
-            dataplane: &mut dataplane,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             certificate_provisioner: &mut certificates,
@@ -416,7 +443,6 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
         .submit_deploy(deploy_submit_command(&controllers, resolved_deploy_request(1)).await)
         .await
         .expect("deploy operation accepted");
-    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = NatsMachineContainerRuntime::new(nats.client.clone())
         .with_request_timeout(Duration::from_millis(200));
     let mut health = RecordingHealth::healthy();
@@ -436,7 +462,6 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
         DeployOperationPorts {
             facts_reader: &facts_reader,
             intent_reader: &intent_reader,
-            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             certificate_provisioner: &mut certificates,
@@ -455,31 +480,45 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
             .serving_target_entries
             .is_empty()
     );
-    assert!(matches!(
-        controllers
-            .repository()
-            .get(&operation_id("op_123"))
-            .await
-            .expect("status reads"),
-        Some(OperationStatus::Deploy {
-            state:
-                DeployOperationState::Failed {
-                    failure:
-                        DeployOperationFailure::NoUsableMachines { reasons },
+    let missing_status = controllers
+        .repository()
+        .get(&operation_id("op_123"))
+        .await
+        .expect("status reads");
+    assert!(
+        matches!(
+            &missing_status,
+            Some(OperationStatus::Deploy {
+                state:
+                    DeployOperationState::Failed {
+                        failure:
+                            DeployOperationFailure::NoUsableMachines { reasons },
+                    },
+                ..
+            }) if *reasons == vec![
+                ployz_core::ops::UnusableMachine {
+                    machine_id: machine_id("machine_a"),
+                    reason: ployz_core::state::MachineUsabilityReason::FactsUnavailable,
                 },
-            ..
-        }) if reasons == vec![ployz_core::ops::UnusableMachine {
-            machine_id: machine_id("machine_missing"),
-            reason: ployz_core::state::MachineUsabilityReason::FactsUnavailable,
-        }]
-    ));
+                ployz_core::ops::UnusableMachine {
+                    machine_id: machine_id("machine_slow"),
+                    reason: ployz_core::state::MachineUsabilityReason::FactsUnavailable,
+                },
+            ]
+        ),
+        "unexpected missing-machine status: {missing_status:?}"
+    );
 }
 
 #[tokio::test]
 async fn machine_service_timeout_marks_deploy_failed_without_committing_active_state() {
     let nats = test_nats().await;
-    let _facts =
-        start_facts_subscription(nats.machine_slow.clone(), machine_id("machine_slow")).await;
+    let _facts = start_facts_subscription(
+        nats.machine_slow.clone(),
+        nats.client.clone(),
+        machine_id("machine_slow"),
+    )
+    .await;
     let _endpoint_network =
         start_endpoint_network_subscription(nats.machine_slow.clone(), machine_id("machine_slow"))
             .await;
@@ -495,7 +534,6 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
         .submit_deploy(deploy_submit_command(&controllers, resolved_deploy_request(1)).await)
         .await
         .expect("deploy operation accepted");
-    let mut wireguard_ebpf = RecordingWireGuardEbpf::ready();
     let mut runtime = NatsMachineContainerRuntime::new(nats.client.clone())
         .with_request_timeout(Duration::from_millis(50));
     let mut health = RecordingHealth::healthy();
@@ -515,7 +553,6 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
         DeployOperationPorts {
             facts_reader: &facts_reader,
             intent_reader: &intent_reader,
-            dataplane: &mut wireguard_ebpf,
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             certificate_provisioner: &mut certificates,
@@ -713,6 +750,14 @@ async fn test_nats() -> TestNats {
             .await
             .expect("open core store"),
     );
+    machine_roster
+        .replace_active_machine(&active_machine("machine_a", "10.198.1.0/24"))
+        .await
+        .expect("machine a enters roster");
+    machine_roster
+        .replace_active_machine(&active_machine("machine_slow", "10.198.2.0/24"))
+        .await
+        .expect("slow machine enters roster");
     let intent_core_store = ployzd::core_store::CoreStore::open_in_memory()
         .await
         .expect("open intent core store");
@@ -740,6 +785,24 @@ async fn test_nats() -> TestNats {
     }
 }
 
+fn active_machine(machine: &str, subnet: &str) -> ActiveMachineState {
+    ActiveMachineState {
+        machine_id: machine_id(machine),
+        name: MachineName::try_new(machine).expect("valid machine name"),
+        activated_by: operation_id("op_machine_add"),
+        roles: ployz_core::roles::InstallRolePolicy::install_all(),
+        lifecycle: MachineLifecycle::Active,
+        control_endpoints: Vec::new(),
+        mesh_endpoints: vec!["192.0.2.1:51820".parse().expect("mesh endpoint")],
+        endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(subnet)
+            .expect("endpoint subnet"),
+        wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+            "public-{machine}"
+        ))
+        .expect("wireguard key"),
+    }
+}
+
 async fn start_unresponsive_container_run_subscription(
     client: async_nats::Client,
     machine_id: ployz_core::ids::MachineId,
@@ -762,6 +825,7 @@ async fn start_unresponsive_container_run_subscription(
 
 async fn start_facts_subscription(
     client: async_nats::Client,
+    intent_client: async_nats::Client,
     machine_id: ployz_core::ids::MachineId,
 ) -> tokio::task::JoinHandle<()> {
     let subject = machine_service(&machine_id, MachineServiceEndpoint::FactsGet);
@@ -769,10 +833,80 @@ async fn start_facts_subscription(
         .subscribe(subject)
         .await
         .expect("subscribe facts service");
+    let mut status = client
+        .subscribe(machine_service(
+            &machine_id,
+            MachineServiceEndpoint::DataplaneStatus,
+        ))
+        .await
+        .expect("subscribe dataplane status service");
     client
         .flush()
         .await
         .expect("flush facts service subscription");
+    let status_client = client.clone();
+    let status_machine_id = machine_id.clone();
+    tokio::spawn(async move {
+        let reader = NatsIntentReader::new(intent_client);
+        while let Some(message) = status.next().await {
+            let Some(reply) = message.reply else { continue };
+            let projection = reader
+                .dataplane_projection()
+                .await
+                .expect("projection reads for status testimony");
+            let local = projection
+                .target_members
+                .iter()
+                .find(|member| member.machine_id == status_machine_id)
+                .expect("machine is projected");
+            let peers = projection
+                .target_members
+                .iter()
+                .filter(|peer| peer.machine_id != status_machine_id)
+                .map(|peer| WireGuardPeerStatus {
+                    public_key: peer.wireguard_public_key.clone(),
+                    endpoint_subnet: WireGuardPeerEndpointSubnet::Valid {
+                        subnet: peer.endpoint_subnet.clone(),
+                    },
+                    endpoint: peer.mesh_endpoints.first().copied(),
+                    handshake: WireGuardHandshakeStatus::Ago { seconds: 1 },
+                    rtt: WireGuardRttStatus::Unavailable {
+                        message: "not probed".to_owned(),
+                    },
+                    rx_bytes: 0,
+                    tx_bytes: 0,
+                    mtu_probe: WireGuardMtuProbe::NotRequested,
+                })
+                .collect();
+            let value = MachineDataplaneStatus {
+                projection: NativeDataplaneProjectionStatus {
+                    endpoint_bridge: EndpointBridgeStatus::Ready {
+                        subnet: local.endpoint_subnet.clone(),
+                    },
+                    testimony: DataplaneProjectionTestimony::Applied {
+                        revisions: DataplaneProjectionRevisions {
+                            declared_revision: projection.declared_revision,
+                            target_revision: projection.target_revision,
+                        },
+                    },
+                },
+                wireguard: WireGuardStatus {
+                    interface: "ployz-wg0".to_owned(),
+                    configured_mtu: WireGuardConfiguredMtu::Auto,
+                    detected_mtu: WireGuardDetectedMtu::Detected { mtu: 1420 },
+                    interface_mtu: WireGuardInterfaceMtu::Detected { mtu: 1420 },
+                    peers,
+                },
+                ebpf_attachment: EbpfAttachmentStatus::Attached,
+            };
+            let response = MachineDataplaneStatusRpcResponse::Ok(MachineDataplaneStatusRpcOk {
+                machine_id: status_machine_id.clone(),
+                value,
+            });
+            let payload = serde_json::to_vec(&response).expect("status response serializes");
+            let _ = status_client.publish(reply, payload.into()).await;
+        }
+    });
     tokio::spawn(async move {
         while let Some(message) = subscriber.next().await {
             let Some(reply) = message.reply else {

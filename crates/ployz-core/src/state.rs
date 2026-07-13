@@ -291,12 +291,51 @@ pub enum MachineLifecycle {
 /// Why a machine is excluded from new workload placement for one operation.
 /// Operator intent excludes durably; unavailable machine facts exclude only
 /// the current operation runtime snapshot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineUsabilityReason {
     Draining,
     FactsUnavailable,
+    DataplaneUnavailable { reason: DataplaneUnavailableReason },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DataplaneUnavailableReason {
+    NoAnswer {
+        message: crate::ops::FailureMessage,
+    },
+    NotDeclared,
+    TestimonyMissing,
+    WrongRevision {
+        expected: crate::dataplane::DataplaneProjectionRevision,
+        observed: Option<crate::dataplane::DataplaneProjectionRevision>,
+    },
+    ProjectionUnusable {
+        failure: crate::dataplane::DataplaneProjectionFailure,
+    },
+    EndpointBridgeNotReady {
+        status: crate::dataplane::EndpointBridgeStatus,
+    },
+    WireGuardNotReady {
+        failure: crate::machine::WireGuardReadinessFailure,
+    },
+    EbpfNotReady {
+        status: crate::dataplane::EbpfAttachmentStatus,
+    },
+    PeerSetMismatch {
+        expected: Vec<crate::machine::DataplaneAdmissionPeer>,
+        observed: Vec<crate::machine::DataplaneAdmissionPeer>,
+    },
+    PeerHandshakeStale {
+        peer_machine_id: MachineId,
+        observed_age_seconds: u64,
+    },
+    PeerHandshakeNever {
+        peer_machine_id: MachineId,
+    },
 }
 
 #[must_use]

@@ -2,11 +2,6 @@ use std::error::Error;
 use std::time::Duration;
 
 use ployz::api_client::OperationApiClient;
-use ployz_core::dataplane::{
-    EbpfForwardingReady, EbpfForwardingReadyEvidence, PloyzNativeMeshMachineReady,
-    PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady,
-    WireGuardReadyEvidence,
-};
 use ployz_core::deploy::{
     DeployPlanningInput, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec,
     ImageReference, ReplicaCount, plan_namespace_deploy,
@@ -275,36 +270,6 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
                     Vec::new(),
                 )
                 .expect("single-machine deploy plan is valid"),
-            },
-            OperationEvent::DeployRunning {
-                operation_id: deploy_operation.clone(),
-                stage: DeployRunningStage::PreparingDataplane,
-            },
-            OperationEvent::DeployDataplanePrepared {
-                operation_id: deploy_operation.clone(),
-                report: PloyzNativeMeshPrepareReport {
-                    machines: vec![PloyzNativeMeshMachineReady {
-                        machine_id: machine_id("machine_a"),
-                        ready: PloyzNativeMeshReady {
-                            wireguard: WireGuardReady {
-                                public_key: wireguard_public_key("test-public-key"),
-                                evidence: vec![WireGuardReadyEvidence::Command {
-                                    program: "wg".to_owned(),
-                                    args: vec!["--version".to_owned()],
-                                }],
-                            },
-                            ebpf_forwarding: EbpfForwardingReady {
-                                evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
-                                    path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
-                                    symbols: vec![
-                                        "ployz_egress".to_owned(),
-                                        "ployz_ingress".to_owned(),
-                                    ],
-                                }],
-                            },
-                        },
-                    }],
-                },
             },
             OperationEvent::DeployRunning {
                 operation_id: deploy_operation.clone(),
@@ -723,25 +688,6 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
         ),
         "expected two-machine routed deploy to complete, got {status:?}"
     );
-    assert_eq!(
-        operation_events(&api, deploy_operation, accepted.start_sequence,)
-            .await?
-            .into_iter()
-            .filter_map(|event| {
-                let OperationEvent::DeployDataplanePrepared { report, .. } = event else {
-                    return None;
-                };
-                Some(
-                    report
-                        .machines
-                        .into_iter()
-                        .map(|machine| machine.machine_id.clone())
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .collect::<Vec<_>>(),
-        vec![vec![machine_id("core_1"), machine_id("edge_2")]]
-    );
     publish_machine_facts(
         &core_machine_client,
         core_runner.snapshot(),
@@ -806,10 +752,6 @@ async fn operation_events(
     assert_eq!(page.cursor, OperationEventReplayCursor::Terminal);
 
     Ok(page.events.into_iter().map(|event| event.event).collect())
-}
-
-fn wireguard_public_key(value: &str) -> WireGuardPublicKey {
-    WireGuardPublicKey::try_new(value).expect("valid wireguard public key")
 }
 
 fn image(value: &str) -> ImageReference {

@@ -4,7 +4,6 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cert::{AcmeHttp01Challenge, ActiveCertState};
-use crate::dataplane::PloyzNativeMeshPrepareReport;
 use crate::deploy::{
     DeployCleanupContainer, DeployPlan, DeployRequest, DeployReservationId, VolumeName,
 };
@@ -114,10 +113,6 @@ pub enum OperationEvent {
     DeployRunning {
         operation_id: OperationId,
         stage: DeployRunningStage,
-    },
-    DeployDataplanePrepared {
-        operation_id: OperationId,
-        report: PloyzNativeMeshPrepareReport,
     },
     DeployImageAvailabilityVerified {
         operation_id: OperationId,
@@ -273,9 +268,10 @@ pub enum OperationEvent {
         operation_id: OperationId,
         stage: NetworkRepairRunningStage,
     },
-    NetworkRepairDataplanePrepared {
+    NetworkRepairDataplaneConverged {
         operation_id: OperationId,
-        report: PloyzNativeMeshPrepareReport,
+        revision: crate::dataplane::DataplaneProjectionRevision,
+        machine_ids: Vec<MachineId>,
     },
     NetworkRepairMachineFactsRefreshed {
         operation_id: OperationId,
@@ -383,7 +379,6 @@ impl OperationEvent {
             | Self::DeployImageResolved { operation_id, .. }
             | Self::DeployPlanCreated { operation_id, .. }
             | Self::DeployRunning { operation_id, .. }
-            | Self::DeployDataplanePrepared { operation_id, .. }
             | Self::DeployImageAvailabilityVerified { operation_id, .. }
             | Self::DeployContainerStarted { operation_id, .. }
             | Self::DeployHealthCheckStarted { operation_id }
@@ -417,7 +412,7 @@ impl OperationEvent {
             | Self::CredentialGrantFailed { operation_id, .. }
             | Self::NetworkRepairSubmitted { operation_id, .. }
             | Self::NetworkRepairRunning { operation_id, .. }
-            | Self::NetworkRepairDataplanePrepared { operation_id, .. }
+            | Self::NetworkRepairDataplaneConverged { operation_id, .. }
             | Self::NetworkRepairMachineFactsRefreshed { operation_id, .. }
             | Self::NetworkRepairDnsRefreshConfirmed { operation_id, .. }
             | Self::NetworkRepairCompleted { operation_id }
@@ -455,9 +450,8 @@ impl OperationEvent {
                 Some("deploy.managed_certificate.waiting")
             }
             Self::DeployPlanCreated { .. } => Some("deploy.plan.created"),
-            Self::DeployDataplanePrepared { .. } => Some("deploy.dataplane.prepared"),
-            Self::NetworkRepairDataplanePrepared { .. } => {
-                Some("network.repair.dataplane.prepared")
+            Self::NetworkRepairDataplaneConverged { .. } => {
+                Some("network.repair.dataplane.converged")
             }
             Self::NetworkRepairMachineFactsRefreshed { .. } => {
                 Some("network.repair.machine_facts.refreshed")
@@ -551,11 +545,6 @@ impl OperationEvent {
             Self::DeployPlanCreated { plan, .. } => {
                 Some(DeployEvidence::PlanCreated { plan: plan.clone() })
             }
-            Self::DeployDataplanePrepared { report, .. } => {
-                Some(DeployEvidence::DataplanePrepared {
-                    report: report.clone(),
-                })
-            }
             Self::DeployImageAvailabilityVerified {
                 service_id,
                 seed,
@@ -627,7 +616,7 @@ impl OperationEvent {
             | Self::CredentialGrantFailed { .. }
             | Self::NetworkRepairSubmitted { .. }
             | Self::NetworkRepairRunning { .. }
-            | Self::NetworkRepairDataplanePrepared { .. }
+            | Self::NetworkRepairDataplaneConverged { .. }
             | Self::NetworkRepairMachineFactsRefreshed { .. }
             | Self::NetworkRepairDnsRefreshConfirmed { .. }
             | Self::NetworkRepairCompleted { .. }
@@ -783,13 +772,6 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
             } => Self::Deploy {
                 operation_id,
                 event: DeployEvent::Transition(DeployTransition::Running { stage }),
-            },
-            OperationEvent::DeployDataplanePrepared {
-                operation_id,
-                report,
-            } => Self::Deploy {
-                operation_id,
-                event: DeployEvent::Evidence(DeployEvidence::DataplanePrepared { report }),
             },
             OperationEvent::DeployImageAvailabilityVerified {
                 operation_id,
@@ -1094,13 +1076,15 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 event: NetworkRepairEvent::Transition(NetworkRepairTransition::Running { stage }),
             },
-            OperationEvent::NetworkRepairDataplanePrepared {
+            OperationEvent::NetworkRepairDataplaneConverged {
                 operation_id,
-                report,
+                revision,
+                machine_ids,
             } => Self::NetworkRepair {
                 operation_id,
-                event: NetworkRepairEvent::Evidence(NetworkRepairEvidence::DataplanePrepared {
-                    report,
+                event: NetworkRepairEvent::Evidence(NetworkRepairEvidence::DataplaneConverged {
+                    revision,
+                    machine_ids,
                 }),
             },
             OperationEvent::NetworkRepairMachineFactsRefreshed {

@@ -357,7 +357,9 @@ fn dataplane_testimony(
         Ok(MachineRpcResponse::Ok(MachineDataplaneStatusRpcOk { machine_id, value }))
             if machine_id == *expected_machine_id =>
         {
-            NetworkDataplaneTestimony::Answered { value }
+            NetworkDataplaneTestimony::Answered {
+                value: Box::new(value),
+            }
         }
         Ok(MachineRpcResponse::Ok(MachineDataplaneStatusRpcOk { machine_id, .. })) => {
             NetworkDataplaneTestimony::WrongResponder {

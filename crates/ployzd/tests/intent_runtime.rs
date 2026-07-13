@@ -109,7 +109,9 @@ async fn intent_reader_gets_current_intent() {
 #[tokio::test]
 async fn machine_reads_core_stamped_projection_with_one_staged_joiner() {
     let machine = machine_id("machine_a");
-    let nats = ployz_test_support::nats::TestNats::start_with_machines(&[machine.clone()]).await;
+    let nats =
+        ployz_test_support::nats::TestNats::start_with_machines(std::slice::from_ref(&machine))
+            .await;
     let core_store = CoreStore::open_in_memory().await.expect("core store");
     let repository = OperationRepository::open(core_store.clone(), nats.controller.clone());
     let raw_join_token = RawJoinToken::try_new("join_machine_a").expect("join token");

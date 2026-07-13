@@ -275,36 +275,6 @@ pub fn assert_deploy_event_sequence(events: &[OperationEvent], deploy_operation:
             Box::new(|event| matches!(event, OperationEvent::DeployPlanCreated { .. })),
         ),
         (
-            "running:preparing-dataplane",
-            Box::new(|event| {
-                matches!(
-                    event,
-                    OperationEvent::DeployRunning {
-                        stage: DeployRunningStage::PreparingDataplane,
-                        ..
-                    }
-                )
-            }),
-        ),
-        (
-            "dataplane-prepared-on-both-machines",
-            Box::new(|event| {
-                matches!(
-                    event,
-                    OperationEvent::DeployDataplanePrepared {
-                        report,
-                        ..
-                    }
-                        if report
-                            .machines
-                            .iter()
-                            .map(|machine| machine.machine_id.clone())
-                            .collect::<Vec<_>>()
-                            == vec![machine_id("core_1"), machine_id("edge_2")]
-                )
-            }),
-        ),
-        (
             "running:starting-containers",
             Box::new(|event| {
                 matches!(

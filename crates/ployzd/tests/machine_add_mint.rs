@@ -6,22 +6,44 @@
 //! fixture's real `nats-server`, including the ADR-0015 single-writer
 //! fence and the ADR-0001 authority-file durability rules.
 
+use futures_util::StreamExt;
+use ployz_core::dataplane::{
+    DataplaneProjectionRevisions, DataplaneProjectionTestimony, EbpfAttachmentStatus,
+    EndpointBridgeStatus, MachineDataplaneStatus, NativeDataplaneProjectionStatus,
+    WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardHandshakeStatus, WireGuardInterfaceMtu,
+    WireGuardMtuProbe, WireGuardPeerEndpointSubnet, WireGuardPeerStatus, WireGuardPublicKey,
+    WireGuardRttStatus, WireGuardStatus,
+};
 use ployz_core::machine::{JoinTokenRedeemedAt, MachineAddFailure, RawJoinToken};
+use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::nats_config::{
     CredentialGrant, CredentialName, CredentialRole, NatsAuthorizationGrant, NatsInternalAuthority,
-    NatsUserPublicKey, parse_authorized_users, render_authorized_users,
+    NatsUserPublicKey, NatsUserSeed, parse_authorized_users, render_authorized_users,
 };
 use ployz_core::ops::MachineAddOperationState;
 use ployz_core::ops::OperationStatus;
 use ployz_core::roles::InstallRolePolicy;
-use ployz_core::state::{ControlPlaneEpoch, IntentSnapshot, PendingMachineJoinRecoverySnapshot};
+use ployz_core::security::NatsPrincipal;
+use ployz_core::state::MachineEndpointObservation;
+use ployz_core::state::{
+    ControlPlaneEpoch, IntentSnapshot, PendingMachineJoinRecoverySnapshot,
+    StagedMachineDataplaneState,
+};
+use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_core::subjects::{OPERATION_PROGRESS_SCOPE, OperationApiEndpoint};
+use ployz_nats::connect::connect_authenticated;
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
     MachineAddAccepted, MachineAddError, MachineAddRequest, MachineJoinRedeemError,
     MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinReportOutcome,
     MachineJoinReportRequest, MachineJoinToken, MachineListRequest, OpsStatusError,
     OpsStatusRequest,
+};
+use ployzd::intent::service::NatsIntentReader;
+use ployzd::roles::machine::protocol::{
+    MachineDataplanePublicKeyRpcOk, MachineDataplanePublicKeyRpcResponse,
+    MachineDataplaneStatusRpcOk, MachineDataplaneStatusRpcResponse, MachineFactsGetRpcOk,
+    MachineFactsGetRpcResponse,
 };
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -47,7 +69,22 @@ async fn lock_machine_add_mint_test() -> OwnedMutexGuard<()> {
         .await
 }
 
-async fn report_join_completed_with_retry(nats: &TestNats, join_token: MachineJoinToken) {
+async fn report_join_completed_with_retry(
+    nats: &TestNats,
+    machine_id: ployz_core::ids::MachineId,
+    machine_seed: NatsUserSeed,
+    join_token: MachineJoinToken,
+) {
+    let config = nats.server().config_with_seed(
+        NatsPrincipal::Machine {
+            machine_id: machine_id.clone(),
+        },
+        machine_seed,
+    );
+    let client = connect_authenticated(&config, Duration::from_secs(5))
+        .await
+        .expect("joined machine connects");
+    start_join_dataplane_responder(client, machine_id).await;
     for _ in 0..10 {
         let join_report_api = OperationApiClient::new(nats.connected.join.clone())
             .with_request_timeout(Duration::from_secs(2));
@@ -58,7 +95,12 @@ async fn report_join_completed_with_retry(nats: &TestNats, join_token: MachineJo
             })
             .await
         {
-            Ok(_) => return,
+            Ok(reported) => match reported.outcome {
+                ployz_sdk_types::MachineJoinReportedOutcome::Completed => return,
+                ployz_sdk_types::MachineJoinReportedOutcome::Failed { failure } => {
+                    panic!("join admission failed: {failure:?}")
+                }
+            },
             Err(OperationApiClientError::Request { .. }) => {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
@@ -177,8 +219,14 @@ async fn completed_machine_join_records_machine_derived_endpoint_subnet() {
     let join_api = nats.join_api();
 
     let accepted = machine_add(&api, "op_endpoint", "idem_endpoint", "machine_endpoint").await;
-    redeem_when_ready(&join_api, &accepted.join_token).await;
-    report_join_completed_with_retry(&nats, accepted.join_token).await;
+    let redeemed = redeem_when_ready(&join_api, &accepted.join_token).await;
+    report_join_completed_with_retry(
+        &nats,
+        machine_id("machine_endpoint"),
+        redeemed.secret_delivery.nats_credentials,
+        accepted.join_token,
+    )
+    .await;
 
     let listed = api
         .machine_list(&MachineListRequest {})
@@ -582,7 +630,13 @@ async fn promoted_core_recovers_pending_join_without_old_operation_log() {
         "promoted core minted fresh machine credentials"
     );
 
-    report_join_completed_with_retry(&nats, accepted.join_token).await;
+    report_join_completed_with_retry(
+        &nats,
+        machine_id("machine_255"),
+        redeemed.secret_delivery.nats_credentials.clone(),
+        accepted.join_token,
+    )
+    .await;
 
     let machines = api
         .machine_list(&MachineListRequest {})
@@ -804,10 +858,23 @@ async fn completed_report_can_repair_activation_before_secret_scrub() {
     let join_api = nats.join_api();
 
     let accepted = machine_add(&api, "op_repair_scrub", "idem_repair_scrub", "machine_rs").await;
-    redeem_when_ready(&join_api, &accepted.join_token).await;
+    let redeemed = redeem_when_ready(&join_api, &accepted.join_token).await;
 
     let raw_token = RawJoinToken::try_new(accepted.join_token.as_str()).expect("join token valid");
     let repository = operation_repository_for_test(&nats).await;
+    repository
+        .stage_machine_dataplane(StagedMachineDataplaneState {
+            operation_id: operation_id("op_repair_scrub"),
+            machine_id: machine_id("machine_rs"),
+            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(
+                ployz_core::dataplane::default_endpoint_subnet(&machine_id("machine_rs")),
+            )
+            .expect("endpoint subnet"),
+            mesh_endpoints: vec!["192.0.2.10:51820".parse().expect("mesh endpoint")],
+            wireguard_public_key: test_wireguard_public_key(&machine_id("machine_rs")),
+        })
+        .await
+        .expect("staged identity survives completed evidence");
     repository
         .record_machine_join_completed(&raw_token)
         .await
@@ -816,6 +883,16 @@ async fn completed_report_can_repair_activation_before_secret_scrub() {
         secret_row_count(&nats, "machine_add_submissions", "op_repair_scrub") > 0,
         "completed evidence keeps token lookup until activation can repair"
     );
+    let config = nats.server().config_with_seed(
+        NatsPrincipal::Machine {
+            machine_id: machine_id("machine_rs"),
+        },
+        redeemed.secret_delivery.nats_credentials,
+    );
+    let client = connect_authenticated(&config, Duration::from_secs(5))
+        .await
+        .expect("joined machine connects");
+    start_join_dataplane_responder(client, machine_id("machine_rs")).await;
 
     join_api
         .machine_join_report(&MachineJoinReportRequest {
@@ -917,6 +994,139 @@ async fn operation_repository_for_test(nats: &TestNats) -> OperationRepository {
             .expect("core store opens"),
         nats.connected.controller.clone(),
     )
+}
+
+async fn start_join_dataplane_responder(
+    client: async_nats::Client,
+    machine_id: ployz_core::ids::MachineId,
+) {
+    let mut prepare = client
+        .subscribe(machine_service(
+            &machine_id,
+            MachineServiceEndpoint::DataplanePublicKey,
+        ))
+        .await
+        .expect("prepare responder subscribes");
+    let mut status = client
+        .subscribe(machine_service(
+            &machine_id,
+            MachineServiceEndpoint::DataplaneStatus,
+        ))
+        .await
+        .expect("status responder subscribes");
+    let mut facts = client
+        .subscribe(machine_service(
+            &machine_id,
+            MachineServiceEndpoint::FactsGet,
+        ))
+        .await
+        .expect("facts responder subscribes");
+    client.flush().await.expect("join responders flush");
+    let facts_client = client.clone();
+    let facts_machine_id = machine_id.clone();
+    tokio::spawn(async move {
+        while let Some(message) = facts.next().await {
+            let Some(reply) = message.reply else { continue };
+            let facts = MachineFactsSnapshot::try_new(
+                facts_machine_id.clone(),
+                MachineContainerObservationSnapshot::try_new(facts_machine_id.clone(), [])
+                    .expect("empty observations"),
+                Some(MachineEndpointObservation {
+                    machine_id: facts_machine_id.clone(),
+                    control_endpoints: vec!["192.0.2.10".parse().expect("control endpoint")],
+                    mesh_endpoints: vec!["192.0.2.10:51820".parse().expect("mesh endpoint")],
+                }),
+                ployz_test_support::fixtures::test_disk_space(),
+                ployz_core::image::OciPlatform::current(),
+                1,
+            )
+            .expect("machine facts");
+            let response = MachineFactsGetRpcResponse::Ok(MachineFactsGetRpcOk { facts });
+            let payload = serde_json::to_vec(&response).expect("facts response serializes");
+            let _ = facts_client.publish(reply, payload.into()).await;
+        }
+    });
+    let prepare_client = client.clone();
+    let prepare_machine_id = machine_id.clone();
+    tokio::spawn(async move {
+        while let Some(message) = prepare.next().await {
+            let Some(reply) = message.reply else { continue };
+            let response =
+                MachineDataplanePublicKeyRpcResponse::Ok(MachineDataplanePublicKeyRpcOk {
+                    machine_id: prepare_machine_id.clone(),
+                    public_key: test_wireguard_public_key(&prepare_machine_id),
+                });
+            let payload = serde_json::to_vec(&response).expect("prepare response serializes");
+            let _ = prepare_client.publish(reply, payload.into()).await;
+        }
+    });
+    let status_client = client.clone();
+    tokio::spawn(async move {
+        let reader = NatsIntentReader::new(status_client.clone());
+        while let Some(message) = status.next().await {
+            let Some(reply) = message.reply else { continue };
+            let projection = reader
+                .dataplane_projection()
+                .await
+                .expect("projection reads for status testimony");
+            let local = projection
+                .target_members
+                .iter()
+                .find(|member| member.machine_id == machine_id)
+                .expect("staged machine is projected");
+            let peers = projection
+                .target_members
+                .iter()
+                .filter(|peer| peer.machine_id != machine_id)
+                .map(|peer| WireGuardPeerStatus {
+                    public_key: peer.wireguard_public_key.clone(),
+                    endpoint_subnet: WireGuardPeerEndpointSubnet::Valid {
+                        subnet: peer.endpoint_subnet.clone(),
+                    },
+                    endpoint: peer.mesh_endpoints.first().copied(),
+                    handshake: WireGuardHandshakeStatus::Ago { seconds: 1 },
+                    rtt: WireGuardRttStatus::Unavailable {
+                        message: "not probed".to_owned(),
+                    },
+                    rx_bytes: 0,
+                    tx_bytes: 0,
+                    mtu_probe: WireGuardMtuProbe::NotRequested,
+                })
+                .collect();
+            let value = MachineDataplaneStatus {
+                projection: NativeDataplaneProjectionStatus {
+                    endpoint_bridge: EndpointBridgeStatus::Ready {
+                        subnet: local.endpoint_subnet.clone(),
+                    },
+                    testimony: DataplaneProjectionTestimony::Applied {
+                        revisions: DataplaneProjectionRevisions {
+                            declared_revision: projection.declared_revision,
+                            target_revision: projection.target_revision,
+                        },
+                    },
+                },
+                wireguard: WireGuardStatus {
+                    interface: "ployz-wg0".to_owned(),
+                    configured_mtu: WireGuardConfiguredMtu::Auto,
+                    detected_mtu: WireGuardDetectedMtu::Detected { mtu: 1420 },
+                    interface_mtu: WireGuardInterfaceMtu::Detected { mtu: 1420 },
+                    peers,
+                },
+                ebpf_attachment: EbpfAttachmentStatus::Attached,
+            };
+            let response = MachineDataplaneStatusRpcResponse::Ok(MachineDataplaneStatusRpcOk {
+                machine_id: machine_id.clone(),
+                value,
+            });
+            let payload = serde_json::to_vec(&response).expect("status response serializes");
+            let _ = status_client.publish(reply, payload.into()).await;
+        }
+    });
+}
+
+fn test_wireguard_public_key(machine_id: &ployz_core::ids::MachineId) -> WireGuardPublicKey {
+    WireGuardPublicKey::try_new(format!("test-public-key-{}", machine_id.as_str()))
+        .expect("test public key")
 }
 
 fn secret_row_count(nats: &TestNats, table: &str, operation: &str) -> u64 {

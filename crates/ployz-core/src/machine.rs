@@ -157,8 +157,6 @@ pub enum MachineAddFailure {
     DataplaneProjectionAdmissionFailed {
         evidence: DataplaneProjectionAdmissionEvidence,
     },
-    #[error("overlay connectivity proof failed: {evidence}")]
-    ConnectivityProofFailed { evidence: ConnectivityProofEvidence },
     #[error("authorization render failed: {message}")]
     AuthorizationRenderFailed { message: FailureMessage },
     #[error("NATS reload failed: {message}")]
@@ -190,6 +188,16 @@ pub struct DataplaneAdmissionPeer {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WireGuardReadinessFailure {
+    InterfaceMissing,
+    InterfaceMtuUnavailable {
+        observed: crate::dataplane::WireGuardInterfaceMtu,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DataplaneProjectionAdmissionFailure {
     NoAnswer {
@@ -206,7 +214,7 @@ pub enum DataplaneProjectionAdmissionFailure {
         status: crate::dataplane::EndpointBridgeStatus,
     },
     WireGuardNotReady {
-        message: FailureMessage,
+        failure: WireGuardReadinessFailure,
     },
     EbpfNotReady {
         status: crate::dataplane::EbpfAttachmentStatus,
@@ -247,8 +255,8 @@ impl fmt::Display for DataplaneProjectionAdmissionFailure {
             Self::EndpointBridgeNotReady { status } => {
                 write!(formatter, "endpoint bridge not ready: {status:?}")
             }
-            Self::WireGuardNotReady { message } => {
-                write!(formatter, "WireGuard not ready: {message}")
+            Self::WireGuardNotReady { failure } => {
+                write!(formatter, "WireGuard not ready: {failure:?}")
             }
             Self::EbpfNotReady { status } => write!(formatter, "eBPF not ready: {status:?}"),
             Self::PeerSetMismatch { .. } => formatter.write_str("peer set mismatch"),
@@ -266,75 +274,6 @@ impl fmt::Display for DataplaneProjectionAdmissionFailure {
                 peer_machine_id.as_str()
             ),
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(try_from = "ConnectivityProofEvidenceWire")]
-pub struct ConnectivityProofEvidence {
-    unreachable_peers: Vec<ConnectivityProofUnreachablePeer>,
-}
-
-impl ConnectivityProofEvidence {
-    pub fn try_new(
-        unreachable_peers: Vec<ConnectivityProofUnreachablePeer>,
-    ) -> Result<Self, ConnectivityProofEvidenceError> {
-        if unreachable_peers.is_empty() {
-            return Err(ConnectivityProofEvidenceError::Empty);
-        }
-        Ok(Self { unreachable_peers })
-    }
-
-    #[must_use]
-    pub fn unreachable_peers(&self) -> &[ConnectivityProofUnreachablePeer] {
-        &self.unreachable_peers
-    }
-}
-
-impl fmt::Display for ConnectivityProofEvidence {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (index, peer) in self.unreachable_peers.iter().enumerate() {
-            if index > 0 {
-                formatter.write_str(", ")?;
-            }
-            write!(
-                formatter,
-                "{} at {}",
-                peer.machine_id.as_str(),
-                peer.gateway
-            )?;
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct ConnectivityProofUnreachablePeer {
-    pub machine_id: MachineId,
-    #[cfg_attr(feature = "typescript", ts(type = "string"))]
-    pub gateway: std::net::Ipv4Addr,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum ConnectivityProofEvidenceError {
-    #[error("connectivity proof evidence has no unreachable peers")]
-    Empty,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ConnectivityProofEvidenceWire {
-    unreachable_peers: Vec<ConnectivityProofUnreachablePeer>,
-}
-
-impl TryFrom<ConnectivityProofEvidenceWire> for ConnectivityProofEvidence {
-    type Error = ConnectivityProofEvidenceError;
-
-    fn try_from(wire: ConnectivityProofEvidenceWire) -> Result<Self, Self::Error> {
-        Self::try_new(wire.unreachable_peers)
     }
 }
 

@@ -1,4 +1,3 @@
-use ployz_core::dataplane::DataplanePrepareRequest;
 use ployz_core::deploy::ImageReference;
 use ployz_core::machine_runtime::ManagedContainerIdentity;
 use ployz_core::machine_runtime::{ContainerRuntimeState, ManagedContainerKind};
@@ -6,8 +5,8 @@ use ployz_test_support::containers;
 use ployz_test_support::ids::{
     machine_id, namespace_revision_entry_id, operation_id, service_id, step_id,
 };
-use ployzd::operations::deploy::{DataplanePreparer, MachineContainerRuntime};
-use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineDataplanePreparer};
+use ployzd::operations::deploy::MachineContainerRuntime;
+use ployzd::roles::machine::client::NatsMachineContainerRuntime;
 use ployzd::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest, MachineImagePull,
     MachineRunContainerOutcome,
@@ -93,35 +92,6 @@ async fn machine_runtime_serves_container_remove_and_updates_observations() {
         .expect("container remove succeeds");
 
     assert!(runner.snapshot().container(&container_id).is_none());
-
-    runtime
-        .shutdown()
-        .await
-        .expect("machine runtime shuts down");
-}
-
-#[tokio::test]
-async fn machine_runtime_serves_wireguard_ebpf_prepare() {
-    let nats = TestNats::start_bootstrapped().await;
-    let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let runtime = start_machine_role_service(
-        nats.machine_client.clone(),
-        machine_id("machine_a"),
-        runner.clone(),
-        ReadyWireGuardEbpf,
-        runner,
-    )
-    .await
-    .expect("machine runtime starts");
-    let mut preparer = NatsMachineDataplanePreparer::new(nats.client.clone());
-
-    preparer
-        .prepare_dataplane(DataplanePrepareRequest::for_machines(
-            operation_id("op_123"),
-            vec![machine_id("machine_a")],
-        ))
-        .await
-        .expect("dataplane prepare succeeds");
 
     runtime
         .shutdown()

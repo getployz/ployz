@@ -29,8 +29,7 @@ use crate::operations::machine_lifecycle::MachineLifecycleOperation;
 use crate::operations::machine_update::MachineUpdateOperation;
 use crate::process_support::shutdown_signal;
 use crate::roles::machine::client::{
-    NatsMachineDataplanePreparer, NatsMachineFactsReader, NatsMachineLogsTailer,
-    NatsMachineSubstrateUpdater,
+    NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
 };
 use crate::roles::machine::intent_mirror::{MachineIntentMirror, MachinePendingJoinMirror};
 use crate::seed::{SeedCoreError, seed_core_from_snapshot};
@@ -288,9 +287,6 @@ pub async fn start_control_process_with_client_and_reload(
         intent_reader
             .clone()
             .with_request_timeout(config.deploy_step_timeout),
-        NatsMachineDataplanePreparer::new(client.clone())
-            .with_request_timeout(config.deploy_step_timeout)
-            .with_mesh_lock(controllers.mesh_lock()),
         NatsMachineFactsReader::new(client.clone())
             .with_request_timeout(config.deploy_step_timeout),
         client.clone(),

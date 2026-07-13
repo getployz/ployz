@@ -10,11 +10,10 @@ pub use ployz_core::cert::{
 pub use ployz_core::dataplane::{
     DataplaneMember, DataplaneProjection, DataplaneProjectionComponent, DataplaneProjectionFailure,
     DataplaneProjectionMember, DataplaneProjectionRevision, DataplaneProjectionRevisions,
-    DataplaneProjectionTestimony, DataplaneProviderFailure, EbpfAttachmentStatus,
-    EbpfForwardingReady, EbpfForwardingReadyEvidence, EndpointBridgeStatus, MachineDataplaneStatus,
+    DataplaneProjectionTestimony, EbpfAttachmentStatus, EbpfForwardingReady,
+    EbpfForwardingReadyEvidence, EndpointBridgeStatus, MachineDataplaneStatus,
     MachineEndpointSubnet, MachineEndpointSupernet, NativeDataplaneProjectionStatus,
-    NetworkStatusMode, PloyzNativeMeshComponent, PloyzNativeMeshMachineReady,
-    PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, WireGuardConfiguredMtu,
+    NetworkStatusMode, PloyzNativeMeshComponent, PloyzNativeMeshReady, WireGuardConfiguredMtu,
     WireGuardDetectedMtu, WireGuardHandshakeStatus, WireGuardInterfaceMtu, WireGuardMtuProbe,
     WireGuardPeerEndpointSubnet, WireGuardPeerStatus, WireGuardPublicKey, WireGuardReady,
     WireGuardReadyEvidence, WireGuardRttStatus, WireGuardStatus,
@@ -50,11 +49,10 @@ pub use ployz_core::internal_dns::{
     InternalDnsResolverStatus, InternalDnsStatus, InternalServiceName, InternalServiceNameError,
 };
 pub use ployz_core::machine::{
-    ConnectivityProofEvidence, ConnectivityProofUnreachablePeer, DataplaneAdmissionPeer,
-    DataplaneProjectionAdmissionEvidence, DataplaneProjectionAdmissionFailure, IssuedJoinToken,
-    JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt, MachineAddFailure,
-    MachineCredentialProvisioningStep, MachineName, MachineReadinessCheck,
-    MachineReadinessEvidence,
+    DataplaneAdmissionPeer, DataplaneProjectionAdmissionEvidence,
+    DataplaneProjectionAdmissionFailure, IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint,
+    JoinTokenRedeemedAt, MachineAddFailure, MachineCredentialProvisioningStep, MachineName,
+    MachineReadinessCheck, MachineReadinessEvidence, WireGuardReadinessFailure,
 };
 pub use ployz_core::machine_runtime::{
     ContainerHealth, ContainerRuntimeState, MachineDiskSpace, MachineFactsRefreshConfirmation,
