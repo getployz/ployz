@@ -119,6 +119,7 @@ pub enum SshPhase {
     CorePromote,
     CoreReplace,
     ReadHostname,
+    StageLocalRelease,
     RunInstaller,
 }
 
@@ -129,6 +130,7 @@ impl SshPhase {
             Self::CorePromote => "core-promote",
             Self::CoreReplace => "core-replace",
             Self::ReadHostname => "read-hostname",
+            Self::StageLocalRelease => "stage-local-release",
             Self::RunInstaller => "run-installer",
         }
     }

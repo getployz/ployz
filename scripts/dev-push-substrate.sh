@@ -2,74 +2,75 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ARTIFACT_DIR="${PLOYZ_DEV_ARTIFACT_DIR:-${PLOYZ_DIND_TARGET_DIR:-/tmp/ployz-dind-machine-target}/release}"
-ARTIFACTS=(ployzd ployz ployz-ebpf-ctl ployz-ebpf-tc)
+ARTIFACTS=(ployz ployzd ployz-ebpf-ctl ployz-ebpf-tc ployz.sh install.sh release.env)
 
 usage() {
   cat >&2 <<EOF
-usage: scripts/dev-push-substrate.sh root@server [root@server...]
+usage: scripts/dev-push-substrate.sh [--release DIR] root@server [root@server...]
 
-Builds linux dev artifacts locally, copies them to each server, then asks the
-staged ployz Host Runner to install them from a local manifest.
-
-env:
-  PLOYZ_DEV_SKIP_BUILD=1      reuse ${ARTIFACT_DIR}
-  PLOYZ_DIND_PLATFORM=...     default linux/amd64
+Builds (or reuses) a local release bundle, stages it persistently on each host,
+then runs the explicit substrate-update command. This does not promote the
+cluster's machine join release template.
 EOF
 }
 
+release_dir=""
+if [ "${1:-}" = "--release" ]; then
+  [ "$#" -ge 3 ] || { usage; exit 1; }
+  release_dir="$2"
+  shift 2
+fi
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] || [ "$#" -eq 0 ]; then
   usage
   exit 0
 fi
 
-if [ "${PLOYZ_DEV_SKIP_BUILD:-0}" != "1" ]; then
-  PLOYZ_DIND_PLATFORM="${PLOYZ_DIND_PLATFORM:-linux/amd64}" \
-    bash "${ROOT_DIR}/scripts/build-dind-machine-image.sh"
+if [ -z "${release_dir}" ]; then
+  release_dir="$(bash "${ROOT_DIR}/scripts/dev-release.sh" build)"
 fi
+release_dir="$(cd "${release_dir}" && pwd)"
 
 for artifact in "${ARTIFACTS[@]}"; do
-  if [ ! -f "${ARTIFACT_DIR}/${artifact}" ]; then
-    echo "missing artifact: ${ARTIFACT_DIR}/${artifact}" >&2
+  [ -f "${release_dir}/${artifact}" ] || {
+    echo "invalid local release: missing ${release_dir}/${artifact}" >&2
     exit 1
-  fi
+  }
+done
+manifest_value() {
+  awk -F= -v key="$1" '$1 == key { print substr($0, length(key) + 2); exit }' "${release_dir}/release.env"
+}
+
+version="$(manifest_value PLOYZ_VERSION)"
+case "${version}" in
+  dev-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+  *) echo "invalid local release version: ${version:-<empty>}" >&2; exit 1 ;;
+esac
+remote_dir="/var/lib/ployz/dev-releases/${version}"
+if [ "$(manifest_value PLOYZ_RELEASE_TAG)" != "${version}" ]; then
+  echo "invalid local release: manifest identity does not match ${version}" >&2
+  exit 1
+fi
+for artifact in ployz ployzd ployz-ebpf-ctl ployz-ebpf-tc; do
+  case "${artifact}" in
+    ployz) key=PLOYZ ;;
+    ployzd) key=PLOYZD ;;
+    ployz-ebpf-ctl) key=PLOYZ_EBPF_CTL ;;
+    ployz-ebpf-tc) key=PLOYZ_EBPF_TC ;;
+  esac
+  [ "$(manifest_value "${key}_URL")" = "${remote_dir}/${artifact}" ] || {
+    echo "invalid local release: ${key}_URL is not canonical" >&2
+    exit 1
+  }
 done
 
 push_host() {
-  local host="$1"
-  local remote_dir="/tmp/ployz-dev-push-$RANDOM-$$"
+  local host="$1" remote_staging="${remote_dir}.tmp.$$"
 
   echo "==> ${host}"
-  ssh "${host}" "rm -rf '${remote_dir}' && mkdir -p '${remote_dir}'"
-  tar -C "${ARTIFACT_DIR}" -czf - "${ARTIFACTS[@]}" \
-    | ssh "${host}" "tar -xzf - -C '${remote_dir}'"
-
-  ssh "${host}" \
-    "PLOYZ_REMOTE_DIR='${remote_dir}' bash -se" \
-    <<'REMOTE'
-set -euo pipefail
-
-sha256_of() {
-  sha256sum "$1" | cut -d ' ' -f 1
-}
-
-chmod 0755 "${PLOYZ_REMOTE_DIR}/ployz"
-install -m 0755 "${PLOYZ_REMOTE_DIR}/ployz" /usr/local/bin/ployz
-cat > "${PLOYZ_REMOTE_DIR}/release.env" <<EOF
-PLOYZ_VERSION=dev-local
-PLOYZ_URL=${PLOYZ_REMOTE_DIR}/ployz
-PLOYZ_SHA256=$(sha256_of "${PLOYZ_REMOTE_DIR}/ployz")
-PLOYZD_URL=${PLOYZ_REMOTE_DIR}/ployzd
-PLOYZD_SHA256=$(sha256_of "${PLOYZ_REMOTE_DIR}/ployzd")
-PLOYZ_EBPF_CTL_URL=${PLOYZ_REMOTE_DIR}/ployz-ebpf-ctl
-PLOYZ_EBPF_CTL_SHA256=$(sha256_of "${PLOYZ_REMOTE_DIR}/ployz-ebpf-ctl")
-PLOYZ_EBPF_TC_URL=${PLOYZ_REMOTE_DIR}/ployz-ebpf-tc
-PLOYZ_EBPF_TC_SHA256=$(sha256_of "${PLOYZ_REMOTE_DIR}/ployz-ebpf-tc")
-EOF
-
-"${PLOYZ_REMOTE_DIR}/ployz" host substrate-update --manifest-file "${PLOYZ_REMOTE_DIR}/release.env"
-rm -rf "${PLOYZ_REMOTE_DIR}"
-REMOTE
+  ssh "${host}" "rm -rf '${remote_staging}' && install -d -m 0755 '${remote_staging}'"
+  tar -C "${release_dir}" -czf - "${ARTIFACTS[@]}" \
+    | ssh "${host}" "tar -xzf - -C '${remote_staging}' && chmod -R u=rwX,go=rX '${remote_staging}' && (mv -T '${remote_staging}' '${remote_dir}' 2>/dev/null || rm -rf '${remote_staging}')"
+  ssh "${host}" "install -m 0755 '${remote_dir}/ployz' /usr/local/bin/ployz && '${remote_dir}/ployz' host substrate-update --manifest-file '${remote_dir}/release.env'"
 }
 
 pids=()
@@ -80,9 +81,6 @@ done
 
 status=0
 for pid in "${pids[@]}"; do
-  if ! wait "${pid}"; then
-    status=1
-  fi
+  wait "${pid}" || status=1
 done
-
 exit "${status}"

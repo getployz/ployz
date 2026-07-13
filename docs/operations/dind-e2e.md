@@ -28,8 +28,9 @@ owns the Ployz Native Mesh dataplane proof.
 scripts/dind-e2e.sh
 ```
 
-This rebuilds the linux release artifacts and the machine image, then runs
-the gated suite with `PLOYZ_DIND_E2E=1` and `--test-threads=1`.
+The default gated suite refreshes every mutable workload image tag, rebuilds
+the machine image, disables incremental compilation, and runs every scenario.
+This keeps the final verification command clean and reproducible.
 
 ## Manual Pieces
 
@@ -57,6 +58,19 @@ Pass the test name (or any prefix) as a filter:
 ```sh
 scripts/dind-e2e.sh scenario_machine_add_via_join_bundle
 ```
+
+Filtered runs reuse the existing machine image when its platform
+and substrate fingerprint match the current Dockerfile, Docker daemon
+configuration, image loader unit, NATS version, and workload image references.
+They rebuild only the mounted Rust and eBPF artifacts with Cargo incremental
+compilation enabled.
+A missing, stale, or wrong-platform machine image falls back to the full build.
+
+Unfiltered and `--full` runs always pull all four workload references so mutable tags are
+refreshed. Unchanged image IDs reuse their existing tar archives; changed or
+missing archives are saved atomically before the machine image is rebuilt.
+The shared builder image contains the native and eBPF toolchains, so editing
+`ployzd` does not reinstall system packages or Rust tooling.
 
 Scenarios in `crates/ployz-e2e/tests/dind_cluster.rs`:
 
@@ -91,6 +105,7 @@ prerequisite evidence; they do not add steps to this scenario.
 | `PLOYZ_DIND_MACHINE_IMAGE` | Machine image tag (default `ployz-dind-machine:local`). |
 | `PLOYZ_DIND_ARTIFACT_DIR` | Host directory with the linux binaries (default `/tmp/ployz-dind-machine-target/release`). |
 | `PLOYZ_DIND_TARGET_DIR` | Build target dir used by the build script and the wrapper's marker file (default `/tmp/ployz-dind-machine-target`). |
+| `PLOYZ_DIND_BUILDER_IMAGE` | Shared native/eBPF builder image (default `ployz-dind-builder:rust-1.91-bookworm-v2`). |
 
 ## Evidence
 

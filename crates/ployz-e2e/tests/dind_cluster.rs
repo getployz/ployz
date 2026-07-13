@@ -28,7 +28,10 @@ mod support;
 use futures_util::StreamExt;
 use ployz::compose::{ComposeInput, UnsupportedFieldMode, parse_deploy_file};
 use ployz::image_push::{prepare_deploy_images, push_local_image};
-use ployz_core::dataplane::DEFAULT_WIREGUARD_LISTEN_PORT;
+use ployz_core::dataplane::{
+    DEFAULT_WIREGUARD_LISTEN_PORT, MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS,
+    WireGuardHandshakeStatus,
+};
 use ployz_core::deploy::{
     ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerMountPath,
     ContainerResourceLimits, ContainerRestartPolicy, ContainerRuntimeSpec, DependencyCondition,
@@ -1092,10 +1095,20 @@ async fn scenario_deploy_restart_invisibility_and_auth_rejection() {
         wait_for_machine_observations(&core, &machine_id("edge_2")).await;
 
         scenario_cross_machine_deploy(&core, edge).await;
+        let workload_image = core
+            .api
+            .service_inspect(&ServiceInspectRequest {
+                namespace_id: namespace_id("smoke"),
+                service_id: service_id("svc_smoke"),
+            })
+            .await
+            .expect("inspect resolved smoke image")
+            .active
+            .image;
         scenario_daemon_restart_invisibility(&core, edge).await;
         scenario_auth_rejection(&core, edge).await;
-        scenario_runtime_fields_deploy(&core).await;
-        scenario_named_volume_survives_redeploy(&core).await;
+        scenario_runtime_fields_deploy(&core, &workload_image).await;
+        scenario_named_volume_survives_redeploy(&core, &workload_image).await;
     })
     .await;
 
@@ -1861,14 +1874,14 @@ async fn assert_overlay_http(
 
 /// Deploys command and environment through the real machine Docker path and
 /// checks the created container's Docker config.
-async fn scenario_runtime_fields_deploy(core: &CoreContext) {
+async fn scenario_runtime_fields_deploy(core: &CoreContext, workload_image: &ImageReference) {
     let accepted = core
         .api
         .deploy_submit(
             &reserved_deploy_request(
                 core,
                 "idem_dind_runtime_fields",
-                runtime_fields_deploy_target(),
+                runtime_fields_deploy_target(workload_image),
             )
             .await,
         )
@@ -1938,17 +1951,17 @@ async fn scenario_runtime_fields_deploy(core: &CoreContext) {
     assert_eq!(container.memory, 64_000_000);
     assert_eq!(container.pids_limit, 64);
 
-    scenario_failing_healthcheck_deploy(core).await;
+    scenario_failing_healthcheck_deploy(core, workload_image).await;
 }
 
-async fn scenario_failing_healthcheck_deploy(core: &CoreContext) {
+async fn scenario_failing_healthcheck_deploy(core: &CoreContext, workload_image: &ImageReference) {
     let accepted = core
         .api
         .deploy_submit(
             &reserved_deploy_request(
                 core,
                 "idem_dind_failing_healthcheck",
-                failing_healthcheck_deploy_target(),
+                failing_healthcheck_deploy_target(workload_image),
             )
             .await,
         )
@@ -2007,14 +2020,20 @@ async fn scenario_failing_healthcheck_deploy(core: &CoreContext) {
 }
 
 /// Exercises the complete explicit named-volume lifecycle.
-async fn scenario_named_volume_survives_redeploy(core: &CoreContext) {
+async fn scenario_named_volume_survives_redeploy(
+    core: &CoreContext,
+    workload_image: &ImageReference,
+) {
     let first = core
         .api
         .deploy_submit(
             &reserved_deploy_request(
                 core,
                 "idem_dind_volume_first",
-                volume_deploy_target("printf first > /data/marker; while true; do sleep 600; done"),
+                volume_deploy_target(
+                    workload_image,
+                    "printf first > /data/marker; while true; do sleep 600; done",
+                ),
             )
             .await,
         )
@@ -2041,6 +2060,7 @@ async fn scenario_named_volume_survives_redeploy(core: &CoreContext) {
             core,
             "idem_dind_volume_second",
             volume_deploy_target(
+                workload_image,
                 "cat /data/marker > /tmp/restored-marker || true; while true; do sleep 600; done",
             ),
         ).await)
@@ -2099,7 +2119,7 @@ async fn scenario_named_volume_survives_redeploy(core: &CoreContext) {
             &reserved_deploy_request(
                 core,
                 "idem_dind_volume_drop_mount",
-                volume_deploy_target_without_mount(),
+                volume_deploy_target_without_mount(workload_image),
             )
             .await,
         )
@@ -2130,7 +2150,7 @@ async fn scenario_named_volume_survives_redeploy(core: &CoreContext) {
                 "--rm",
                 "-v",
                 &format!("{docker_volume_name}:/data"),
-                WORKLOAD_IMAGE,
+                workload_image.as_str(),
                 "cat",
                 "/data/marker",
             ],
@@ -2148,6 +2168,7 @@ async fn scenario_named_volume_survives_redeploy(core: &CoreContext) {
                 core,
                 "idem_dind_volume_reattach",
                 volume_deploy_target(
+                    workload_image,
                     "cat /data/marker > /tmp/reattached-marker; while true; do sleep 600; done",
                 ),
             )
@@ -2377,13 +2398,13 @@ fn internal_dns_deploy_target() -> DeployRequest {
     }
 }
 
-fn runtime_fields_deploy_target() -> DeployRequest {
+fn runtime_fields_deploy_target(workload_image: &ImageReference) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("runtime"),
         origin: None,
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_runtime"),
-            image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
+            image: workload_image.clone(),
             image_source: ployz_core::deploy::ImageSource::Registry,
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
             runtime: runtime_fields_spec(),
@@ -2394,13 +2415,14 @@ fn runtime_fields_deploy_target() -> DeployRequest {
     }
 }
 
-fn volume_deploy_target(command: &str) -> DeployRequest {
+fn volume_deploy_target(workload_image: &ImageReference, command: &str) -> DeployRequest {
+    let workload_image = workload_image.as_str();
     let source = format!(
         r#"
 name: volume
 services:
   svc_volume:
-    image: {WORKLOAD_IMAGE}
+    image: {workload_image}
     command: ["sh", "-c", {command:?}]
     volumes: [data:/data]
 volumes:
@@ -2423,8 +2445,8 @@ volumes:
     }
 }
 
-fn volume_deploy_target_without_mount() -> DeployRequest {
-    let mut target = volume_deploy_target("while true; do sleep 600; done");
+fn volume_deploy_target_without_mount(workload_image: &ImageReference) -> DeployRequest {
+    let mut target = volume_deploy_target(workload_image, "while true; do sleep 600; done");
     let [service] = target.services.as_mut_slice() else {
         panic!("volume target has one service");
     };
@@ -2432,7 +2454,7 @@ fn volume_deploy_target_without_mount() -> DeployRequest {
     target
 }
 
-fn failing_healthcheck_deploy_target() -> DeployRequest {
+fn failing_healthcheck_deploy_target(workload_image: &ImageReference) -> DeployRequest {
     let mut runtime = ContainerRuntimeSpec::image_defaults();
     runtime.command = Some(
         ContainerCommand::try_new(vec![
@@ -2456,7 +2478,7 @@ fn failing_healthcheck_deploy_target() -> DeployRequest {
         origin: None,
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_bad_health"),
-            image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
+            image: workload_image.clone(),
             image_source: ployz_core::deploy::ImageSource::Registry,
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
             runtime,
@@ -2767,6 +2789,44 @@ async fn scenario_daemon_restart_invisibility(core: &CoreContext, edge: &DindMac
     // observed container set).
     wait_for_matching_snapshot(core, &machine_id("core_1"), &core_snapshot_before).await;
     wait_for_matching_snapshot(core, &machine_id("edge_2"), &edge_snapshot_before).await;
+    wait_for_fresh_peer_handshakes(core).await;
+}
+
+async fn wait_for_fresh_peer_handshakes(core: &CoreContext) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let status = core
+            .api
+            .network_status(&ployz_sdk_types::NetworkStatusRequest::First {
+                mode: ployz_sdk_types::NetworkStatusMode::Snapshot,
+            })
+            .await
+            .expect("read dataplane testimony after daemon restart");
+        let ready = status.machines.len() == 2
+            && status.machines.iter().all(|machine| {
+                let ployz_sdk_types::NetworkDataplaneTestimony::Answered { value } =
+                    &machine.dataplane
+                else {
+                    return false;
+                };
+                !value.wireguard.peers.is_empty()
+                    && value.wireguard.peers.iter().all(|peer| {
+                        matches!(
+                            peer.handshake,
+                            WireGuardHandshakeStatus::Ago { seconds }
+                                if seconds <= MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS
+                        )
+                    })
+            });
+        if ready {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "peer handshakes did not recover after daemon restart: {status:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }
 
 /// Sorted running managed-container IDs inside one machine.

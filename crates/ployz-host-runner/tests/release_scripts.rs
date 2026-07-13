@@ -4,28 +4,81 @@ use std::{env, fs};
 
 const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
+#[cfg(unix)]
 #[test]
-fn release_workflow_and_packager_reject_non_version_tags() {
-    let workflow = fs::read_to_string(repo_path(".github/workflows/release.yml"))
-        .expect("release workflow is readable");
-    assert!(workflow.contains("semver=\"${tag#v}\""));
-    assert!(workflow.contains("release tag must include a version after v"));
-    assert!(workflow.contains("release tag must look like vX.Y.Z or vX.Y.Z-suffix"));
-    assert!(!workflow.contains("tag=\"${{ github.ref_name }}\""));
+fn dind_builder_modes_label_machine_image_and_cache_workload_tars() {
+    let fixture = FakeDocker::new("ployz-dind-builder");
+    seed_workload_tars(&fixture);
 
-    let package_script = fs::read_to_string(repo_path("scripts/package-release.sh"))
-        .expect("package script is readable");
-    assert!(package_script.contains("validate_release_semver \"release version\""));
-    assert!(package_script.contains("PLOYZ_RELEASE_CARGO_TARGET_DIR"));
-    assert!(package_script.contains("export CARGO_TARGET_DIR=\"${release_cargo_target_dir}\""));
-    assert!(package_script.contains("PLOYZ_NATS_SERVER_VERSION is required"));
-    assert!(package_script.contains("PLOYZ_NATS_SERVER_URL is required"));
-    assert!(package_script.contains("PLOYZ_NATS_SERVER_SHA256 is required"));
+    let unknown = fixture.run_builder(&["unknown"]);
+    assert!(!unknown.status.success());
+    assert_stderr_contains(&unknown, "unknown build mode: unknown");
 
-    let script_lib =
-        fs::read_to_string(repo_path("scripts/lib.sh")).expect("script lib is readable");
-    assert!(script_lib.contains("${label} must include a version after v"));
-    assert!(script_lib.contains("${label} must look like vX.Y.Z or vX.Y.Z-suffix"));
+    let artifacts = fixture.run_builder(&["artifacts-only"]);
+    assert_success(&artifacts);
+    assert!(String::from_utf8_lossy(&artifacts.stdout).contains("Linux release artifacts built:"));
+    assert_eq!(fixture.log(), "");
+
+    let fingerprint = fixture.fingerprint();
+    let full = fixture.run_builder(&[]);
+    assert_success(&full);
+    let log = fixture.log();
+    assert_eq!(log.matches("pull --platform linux/amd64").count(), 4);
+    assert!(!log.contains("save -o"));
+    assert!(log.contains("--label dev.ployz.dind.managed=true"));
+    assert!(log.contains(&format!("--label dev.ployz.dind.fingerprint={fingerprint}")));
+
+    fixture.clear_log();
+    fs::write(
+        fixture.0.join("target/workload-image-stamps/nginx.stamp"),
+        "stale\n",
+    )
+    .expect("stamp can be changed");
+    fs::remove_file(fixture.context().join("registry.tar")).expect("tar can be removed");
+    let changed = fixture.run_builder(&[]);
+    assert_success(&changed);
+    let log = fixture.log();
+    assert!(
+        log.lines()
+            .any(|line| line.contains("save -o") && line.ends_with(" nginx:1.27-alpine"))
+    );
+    assert!(
+        log.lines()
+            .any(|line| line.contains("save -o") && line.ends_with(" registry:2.8.3"))
+    );
+    assert_eq!(log.matches("save -o").count(), 2);
+}
+
+#[cfg(unix)]
+#[test]
+fn filtered_dind_reuses_matching_substrate_and_unfiltered_is_full() {
+    let fixture = FakeDocker::new("ployz-dind-filtered");
+    seed_workload_tars(&fixture);
+    let fingerprint = fixture.fingerprint();
+
+    let matching = fixture.run_dind(
+        Some("scenario_machine_add"),
+        &format!("linux/amd64 {fingerprint}"),
+        false,
+    );
+    assert_success(&matching);
+    assert!(String::from_utf8_lossy(&matching.stdout).contains("Linux release artifacts built:"));
+    let log = fixture.log();
+    assert!(log.contains("index .Config.Labels \"dev.ployz.dind.fingerprint\""));
+    assert!(log.contains("--env CARGO_INCREMENTAL=1"));
+    assert!(!log.contains("pull --platform"));
+
+    for identity in ["", "linux/arm64 wrong", "linux/amd64 stale"] {
+        fixture.clear_log();
+        let output = fixture.run_dind(Some("scenario_machine_add"), identity, true);
+        assert_success(&output);
+        assert!(fixture.log().contains("pull --platform linux/amd64"));
+    }
+
+    fixture.clear_log();
+    let full = fixture.run_dind(None, &format!("linux/amd64 {fingerprint}"), true);
+    assert_success(&full);
+    assert!(fixture.log().contains("pull --platform linux/amd64"));
 }
 
 #[cfg(unix)]
@@ -402,5 +455,135 @@ fn assert_stderr_contains(output: &Output, expected: &str) {
     assert!(
         stderr.contains(expected),
         "stderr should contain {expected:?}, got {stderr:?}"
+    );
+}
+
+#[cfg(unix)]
+struct FakeDocker(PathBuf);
+
+#[cfg(unix)]
+impl FakeDocker {
+    fn new(prefix: &str) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = temp_dir(prefix);
+        fs::create_dir(root.join("bin")).expect("fake bin can be created");
+        fs::create_dir(root.join("context")).expect("fake context can be created");
+        for file in ["Dockerfile", "daemon.json", "ployz-dind-images.service"] {
+            fs::copy(
+                repo_path(&format!("docker/dind-machine/{file}")),
+                root.join("context").join(file),
+            )
+            .expect("fingerprint input can be copied");
+        }
+
+        let docker = root.join("bin/docker");
+        fs::write(
+            &docker,
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${PLOYZ_FAKE_LOG}"
+if [ "${0##*/}" = cargo ]; then exit 0; fi
+case "${1:-}" in
+  info) printf 'amd64\n' ;;
+  image) case "${4:-}" in
+    *dev.ployz.dind.fingerprint*) printf '%s\n' "${PLOYZ_FAKE_MACHINE_IDENTITY:-}" ;;
+    *Architecture*) printf 'linux/amd64\n' ;;
+    *Id*) printf 'sha256:%s\n' "${5}" ;;
+  esac ;;
+  save) printf 'saved\n' > "${3}" ;;
+esac
+"#,
+        )
+        .expect("fake docker can be written");
+        fs::set_permissions(&docker, fs::Permissions::from_mode(0o755))
+            .expect("fake docker can be executable");
+        fs::hard_link(&docker, root.join("bin/cargo")).expect("fake cargo can be linked");
+        Self(root)
+    }
+
+    fn command(&self, script: &str) -> Command {
+        let mut command = Command::new("bash");
+        command
+            .arg(repo_path(script))
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", self.0.join("bin").display()),
+            )
+            .env("PLOYZ_FAKE_LOG", self.0.join("commands.log"))
+            .env("PLOYZ_DIND_CONTEXT_DIR", self.context())
+            .env("PLOYZ_DIND_TARGET_DIR", self.0.join("target"))
+            .env("PLOYZ_DIND_EBPF_TARGET_DIR", self.0.join("ebpf"))
+            .env("PLOYZ_DIND_CARGO_REGISTRY_DIR", self.0.join("registry"))
+            .env("PLOYZ_DIND_CARGO_GIT_DIR", self.0.join("git"))
+            .env("PLOYZ_DIND_PLATFORM", "linux/amd64");
+        command
+    }
+
+    fn fingerprint(&self) -> String {
+        let output = self.run_builder(&["fingerprint"]);
+        assert_success(&output);
+        String::from_utf8(output.stdout)
+            .expect("fingerprint is utf8")
+            .trim()
+            .into()
+    }
+
+    fn run_builder(&self, args: &[&str]) -> Output {
+        self.command("scripts/build-dind-machine-image.sh")
+            .args(args)
+            .env("PLOYZ_DIND_SKIP_BUILD", "1")
+            .output()
+            .expect("DinD builder can run")
+    }
+
+    fn run_dind(&self, filter: Option<&str>, identity: &str, skip: bool) -> Output {
+        let mut command = self.command("scripts/dind-e2e.sh");
+        command.args(filter);
+        command
+            .env("PLOYZ_FAKE_MACHINE_IDENTITY", identity)
+            .env("PLOYZ_DIND_SKIP_BUILD", if skip { "1" } else { "0" })
+            .output()
+            .expect("DinD wrapper can run")
+    }
+
+    fn context(&self) -> PathBuf {
+        self.0.join("context")
+    }
+    fn log(&self) -> String {
+        fs::read_to_string(self.0.join("commands.log")).unwrap_or_default()
+    }
+    fn clear_log(&self) {
+        fs::write(self.0.join("commands.log"), "").expect("log can be cleared");
+    }
+}
+
+#[cfg(unix)]
+fn seed_workload_tars(fake: &FakeDocker) {
+    let stamps = fake.0.join("target/workload-image-stamps");
+    fs::create_dir_all(&stamps).expect("stamp dir can be created");
+    for (name, image) in [
+        ("nginx", "nginx:1.27-alpine"),
+        ("registry", "registry:2.8.3"),
+        ("umami", "ghcr.io/umami-software/umami:postgresql-latest"),
+        ("postgres", "postgres:15-alpine"),
+    ] {
+        fs::write(fake.context().join(format!("{name}.tar")), "tar")
+            .expect("workload tar can be written");
+        fs::write(
+            stamps.join(format!("{name}.stamp")),
+            format!("linux/amd64 sha256:{image}\n"),
+        )
+        .expect("workload stamp can be written");
+    }
+}
+
+#[cfg(unix)]
+fn assert_success(output: &Output) {
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
 }

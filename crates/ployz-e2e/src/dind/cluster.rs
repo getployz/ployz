@@ -14,6 +14,7 @@ use bollard::query_parameters::{
 use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// Unique identifier of one harness run; part of every resource name and the
 /// value of the [`RUN_LABEL`] on every resource the run creates.
@@ -63,8 +64,9 @@ pub struct DindCluster {
 }
 
 impl DindCluster {
-    /// Sweeps stale labeled resources, creates the per-run network, and boots
-    /// every machine to readiness (core first).
+    /// Creates the per-run network and boots every machine to readiness (core
+    /// first). Runs use unique resources and clean up by run label, so one
+    /// cluster never sweeps another cluster's resources.
     ///
     /// On failure the run's resources are swept again — unless
     /// [`super::keep_requested`] — so retries start clean.
@@ -74,8 +76,6 @@ impl DindCluster {
             machines,
         } = spec;
         let (core_spec, edge_specs) = split_roles(machines)?;
-        sweep_managed_resources(docker).await?;
-
         let run_id = DindRunId::generate();
         let network_name = format!("ployz-dind-{run_id}");
         let provisioned = provision_network_and_machines(
@@ -261,18 +261,7 @@ async fn sweep_by_label(docker: &Docker, label_filter: String) -> Result<(), Din
         let Some(id) = container.id else {
             continue;
         };
-        let remove = docker
-            .remove_container(
-                &id,
-                Some(
-                    RemoveContainerOptionsBuilder::new()
-                        .force(true)
-                        .v(true)
-                        .build(),
-                ),
-            )
-            .await;
-        ignore_not_found(remove).map_err(docker_api_error("remove labeled container"))?;
+        remove_container(docker, &id).await?;
     }
 
     let networks = docker
@@ -306,6 +295,33 @@ async fn sweep_by_label(docker: &Docker, label_filter: String) -> Result<(), Din
     }
 
     Ok(())
+}
+
+async fn remove_container(docker: &Docker, id: &str) -> Result<(), DindError> {
+    const ATTEMPTS: u32 = 5;
+
+    for attempt in 0..ATTEMPTS {
+        let remove = docker
+            .remove_container(
+                id,
+                Some(
+                    RemoveContainerOptionsBuilder::new()
+                        .force(true)
+                        .v(true)
+                        .build(),
+                ),
+            )
+            .await;
+        match ignore_not_found(remove) {
+            Ok(()) => return Ok(()),
+            Err(_) if attempt + 1 < ATTEMPTS => {
+                let delay_ms = 250_u64 << attempt;
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+            Err(error) => return Err(docker_api_error("remove labeled container")(error)),
+        }
+    }
+    unreachable!("bounded container removal loop returns on every final attempt")
 }
 
 /// Sweeps race against auto-removal and against each other; a resource that

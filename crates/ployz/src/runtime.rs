@@ -30,7 +30,7 @@ use ployz_nats::connect::{
     NatsClientAuth, NatsClientUrl, NatsClientUrlError, NatsConnectConfig, NatsConnectError,
     NatsTlsTrust, connect_authenticated,
 };
-use ployz_sdk_types::{InitFirstMachineActivateError, OpsStatusRequest};
+use ployz_sdk_types::{InitFirstMachineActivateError, MachineJoinRedeemError, OpsStatusRequest};
 use tokio::time::sleep as async_sleep;
 
 mod compose;
@@ -877,6 +877,11 @@ impl PloyzctlExecutionError {
                 failure: NatsServiceRequestFailure::NoResponders
                     | NatsServiceRequestFailure::TimedOut,
                 ..
+            } | OperationApiClientError::Domain {
+                error: InitFirstMachineActivateError::JoinRedeem {
+                    failure: MachineJoinRedeemError::UnknownJoinToken,
+                },
+                ..
             }
         )
     }
@@ -1002,5 +1007,19 @@ mod tests {
                     + config.ops_watch_poll_interval(),
             "budget must allow at least one retry after a timed-out request"
         );
+    }
+
+    #[test]
+    fn first_machine_activation_retries_consumed_token_replay() {
+        let error = PloyzctlExecutionError::FirstMachineActivateApi {
+            source: OperationApiClientError::Domain {
+                endpoint: ployz_core::subjects::OperationApiEndpoint::InitFirstMachineActivate,
+                error: InitFirstMachineActivateError::JoinRedeem {
+                    failure: MachineJoinRedeemError::UnknownJoinToken,
+                },
+            },
+        };
+
+        assert!(error.is_first_machine_activation_retryable());
     }
 }

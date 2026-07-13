@@ -53,7 +53,8 @@ case "${platform_os}" in
       ployz-ebpf-tc
     )
     if [ "${PLOYZ_RELEASE_SKIP_BUILD:-0}" != "1" ]; then
-      bash "${ROOT_DIR}/scripts/build-dind-machine-image.sh"
+      PLOYZ_DIND_PLATFORM="${platform}" \
+        bash "${ROOT_DIR}/scripts/build-dind-machine-image.sh" artifacts-only
     fi
     ;;
   darwin)

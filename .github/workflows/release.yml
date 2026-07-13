@@ -48,10 +48,8 @@ jobs:
           pnpm test
           npm publish --dry-run --access public --tag alpha
 
-  package-linux:
+  package:
     if: github.event_name == 'push'
-    needs:
-      - precheck-sdk-publish
     permissions:
       contents: read
       id-token: write
@@ -63,66 +61,55 @@ jobs:
           - runner: ubuntu-24.04
             platform: linux/amd64
             slug: linux-amd64
-            nats-server-sha256: b3e7b14eb10c895fd90c2dacdb6b65bd3208adcc9524dd7689ba2c1024e6b97a
+            nats_server_sha256: b3e7b14eb10c895fd90c2dacdb6b65bd3208adcc9524dd7689ba2c1024e6b97a
           - runner: ubuntu-24.04-arm
             platform: linux/arm64
             slug: linux-arm64
-            nats-server-sha256: 15fd0c3438e7178e5316e63be68373ad581c8d78db26e649113aa303b74e5e58
+            nats_server_sha256: 15fd0c3438e7178e5316e63be68373ad581c8d78db26e649113aa303b74e5e58
+          - platform: darwin/arm64
+            slug: darwin-arm64
+            runner: macos-14
+          - platform: darwin/amd64
+            slug: darwin-amd64
+            runner: macos-14
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      - name: Restore Linux build cache
+        if: startsWith(matrix.platform, 'linux/')
+        uses: actions/cache@v4
         with:
           path: |
             /tmp/ployz-dind-machine-target
             /tmp/ployz-dind-ebpf-target
             /tmp/ployz-dind-cargo-registry
             /tmp/ployz-dind-cargo-git
-          key: ployz-linux-${{ matrix.slug }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ployz-linux-${{ matrix.slug }}-
+          key: ployz-release-${{ matrix.slug }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs', 'ebpf/**/Cargo.toml', 'ebpf/**/*.rs') }}
+          restore-keys: ployz-release-${{ matrix.slug }}-
+      - name: Restore macOS build cache
+        if: startsWith(matrix.platform, 'darwin/')
+        uses: actions/cache@v4
+        with:
+          path: |
+            target
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ployz-release-${{ matrix.slug }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs') }}
+          restore-keys: ployz-release-${{ matrix.slug }}-
       - name: Package release assets
         env:
           PLOYZ_RELEASE_VERSION: ${{ github.ref_name }}
           PLOYZ_RELEASE_PLATFORM: ${{ matrix.platform }}
           PLOYZ_NATS_SERVER_VERSION: 2.14.2
           PLOYZ_NATS_SERVER_URL: https://github.com/nats-io/nats-server/releases/download/v2.14.2/nats-server-v2.14.2-${{ matrix.slug }}.tar.gz
-          PLOYZ_NATS_SERVER_SHA256: ${{ matrix.nats-server-sha256 }}
+          PLOYZ_NATS_SERVER_SHA256: ${{ matrix.nats_server_sha256 }}
         run: bash scripts/package-release.sh
-      - name: Generate artifact attestations
-        uses: actions/attest@v4
-        with:
-          subject-path: dist/releases/${{ github.ref_name }}/*
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-${{ matrix.slug }}
-          path: dist/releases/${{ github.ref_name }}/*
-          if-no-files-found: error
-
-  package-macos:
-    if: github.event_name == 'push'
-    needs:
-      - precheck-sdk-publish
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: darwin/arm64
-            slug: darwin-arm64
-          - platform: darwin/amd64
-            slug: darwin-amd64
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-      - name: Package release assets
-        env:
-          PLOYZ_RELEASE_VERSION: ${{ github.ref_name }}
-          PLOYZ_RELEASE_PLATFORM: ${{ matrix.platform }}
-        run: bash scripts/package-release.sh
+      - name: Repair Linux cache ownership
+        if: always() && startsWith(matrix.platform, 'linux/')
+        run: |
+          for path in /tmp/ployz-dind-{machine-target,ebpf-target,cargo-registry,cargo-git}; do
+            [ ! -e "${path}" ] || sudo chown -R "$(id -u):$(id -g)" "${path}"
+          done
       - name: Generate artifact attestations
         uses: actions/attest@v4
         with:
@@ -138,11 +125,10 @@ jobs:
     permissions:
       contents: write
     needs:
-      - package-linux
-      - package-macos
+      - precheck-sdk-publish
+      - package
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist/assets
@@ -150,48 +136,14 @@ jobs:
       - name: Upload assets to a draft release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          tag="${RELEASE_TAG}"
-          if [ -z "${tag}" ] || [ "${tag#v}" = "${tag}" ]; then
-            echo "release tag must start with v: ${tag}" >&2
-            exit 1
+          if ! gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release create "${RELEASE_TAG}" --draft --verify-tag --title "${RELEASE_TAG}" --notes "Ployz ${RELEASE_TAG}"
           fi
-          semver="${tag#v}"
-          if [ -z "${semver}" ]; then
-            echo "release tag must include a version after v: ${tag}" >&2
-            exit 1
-          fi
-          version_core="${semver%%-*}"
-          major="${version_core%%.*}"
-          minor_patch="${version_core#*.}"
-          if [ "${minor_patch}" = "${version_core}" ]; then
-            echo "release tag must look like vX.Y.Z or vX.Y.Z-suffix: ${tag}" >&2
-            exit 1
-          fi
-          minor="${minor_patch%%.*}"
-          patch="${minor_patch#*.}"
-          if [ "${patch}" = "${minor_patch}" ]; then
-            echo "release tag must look like vX.Y.Z or vX.Y.Z-suffix: ${tag}" >&2
-            exit 1
-          fi
-          case "${major}:${minor}:${patch}" in
-            *[!0-9:]* | :* | *::*)
-              echo "release tag must look like vX.Y.Z or vX.Y.Z-suffix: ${tag}" >&2
-              exit 1
-              ;;
-          esac
-          case "${tag}" in
-            *[!A-Za-z0-9._-]*)
-              echo "release tag contains unsupported characters: ${tag}" >&2
-              exit 1
-              ;;
-          esac
-          if ! gh release view "${tag}" >/dev/null 2>&1; then
-            gh release create "${tag}" --draft --verify-tag --title "${tag}" --notes "Ployz ${tag}"
-          fi
-          gh release upload "${tag}" dist/assets/* --clobber
+          gh release upload "${RELEASE_TAG}" dist/assets/* --clobber
 
   publish-sdk:
     if: github.event_name == 'release'

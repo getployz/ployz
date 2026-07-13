@@ -196,29 +196,6 @@ fn loopback_binding(address: SocketAddr) -> PortBinding {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn machine_console_is_attached_to_docker_logs() {
-        let body = machine_create_body(
-            &DindRunId::generate(),
-            "ployz-test-network",
-            Path::new("/tmp/ployz-artifacts"),
-            "ployz-dind-machine:test",
-            "ployz-test-machine",
-            PublishedPorts {
-                nats: SocketAddr::from((Ipv4Addr::LOCALHOST, 14222)),
-                gateway: SocketAddr::from((Ipv4Addr::LOCALHOST, 18080)),
-                gateway_tls: SocketAddr::from((Ipv4Addr::LOCALHOST, 18443)),
-            },
-        );
-
-        assert_eq!(body.tty, Some(true));
-    }
-}
-
 async fn wait_for_machine_ready(
     docker: &Docker,
     name: &str,
@@ -320,5 +297,28 @@ async fn wait_for_bridge_ip(
             });
         }
         tokio::time::sleep(BRIDGE_IP_DELAY).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn machine_console_is_attached_to_docker_logs() {
+        let body = machine_create_body(
+            &DindRunId::generate(),
+            "ployz-test-network",
+            Path::new("/tmp/ployz-artifacts"),
+            "ployz-dind-machine:test",
+            "ployz-test-machine",
+            PublishedPorts {
+                nats: SocketAddr::from((Ipv4Addr::LOCALHOST, 14222)),
+                gateway: SocketAddr::from((Ipv4Addr::LOCALHOST, 18080)),
+                gateway_tls: SocketAddr::from((Ipv4Addr::LOCALHOST, 18443)),
+            },
+        );
+
+        assert_eq!(body.tty, Some(true));
     }
 }

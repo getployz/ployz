@@ -3,7 +3,9 @@
 //! rejected, subject permissions are enforced, and per-principal inbox
 //! prefixes make reply sniffing impossible.
 
-use std::time::{Duration, Instant};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
+use std::time::Duration;
 
 use futures_util::StreamExt;
 use ployz_core::ids::MachineId;
@@ -17,8 +19,7 @@ use ployz_core::subjects::{
     machine_service_query_scope,
 };
 use ployz_nats::connect::{
-    NatsClientUrl, NatsConnectConfig, authenticated_connect_options, connect_authenticated,
-    connect_with_timeout,
+    NatsConnectConfig, authenticated_connect_options, connect_authenticated,
 };
 use ployz_test_support::nats::SecuredTestNats;
 
@@ -119,14 +120,37 @@ async fn operator_can_read_intent_and_subscribe_runtime_broadcasts_only() {
 #[tokio::test]
 async fn plaintext_connect_to_tls_port_fails() {
     let fixture = SecuredTestNats::start().await.expect("secured fixture");
-    let plaintext_url = NatsClientUrl::try_new(format!("nats://127.0.0.1:{}", fixture.port()))
-        .expect("valid plaintext URL");
+    let mut plaintext = TcpStream::connect(("127.0.0.1", fixture.port()))
+        .expect("plaintext TCP reaches the listener");
+    plaintext
+        .set_read_timeout(Some(NO_DELIVERY_WINDOW))
+        .expect("plaintext read timeout configures");
+    plaintext
+        .set_write_timeout(Some(NO_DELIVERY_WINDOW))
+        .expect("plaintext write timeout configures");
 
-    let result = connect_with_timeout(&plaintext_url, CONNECT_TIMEOUT).await;
+    let mut info_line = String::new();
+    BufReader::new(&plaintext)
+        .read_line(&mut info_line)
+        .expect("NATS listener sends its INFO prelude");
+    let info = info_line
+        .strip_prefix("INFO ")
+        .expect("NATS prelude starts with INFO");
+    let info: serde_json::Value =
+        serde_json::from_str(info.trim()).expect("NATS INFO payload is JSON");
+    assert_eq!(
+        info.get("tls_required").and_then(|value| value.as_bool()),
+        Some(true)
+    );
 
+    plaintext
+        .write_all(b"CONNECT {\"verbose\":false}\r\nPING\r\n")
+        .expect("plaintext NATS handshake writes");
+    let mut response = [0; 4];
+    let read = plaintext.read_exact(&mut response);
     assert!(
-        result.is_err(),
-        "an anonymous plaintext client must not reach the secured port"
+        read.is_err() || response != *b"PONG",
+        "TLS-required listener accepted a plaintext NATS session"
     );
 }
 
@@ -269,24 +293,13 @@ async fn controller_can_serve_operator_rpc_subjects() {
         }
     });
 
-    let deadline = Instant::now() + EVENT_TIMEOUT;
-    let response = loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        match tokio::time::timeout(
-            remaining,
-            caller_client.request(OPERATOR_INIT_FIRST_MACHINE_ACTIVATE, "activate".into()),
-        )
-        .await
-        {
-            Ok(Ok(response)) => break response,
-            Ok(Err(error)) if Instant::now() < deadline => {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                let _ = error;
-            }
-            Ok(Err(error)) => panic!("operator receives the API response: {error:?}"),
-            Err(_) => panic!("request does not hang"),
-        }
-    };
+    let response = tokio::time::timeout(
+        EVENT_TIMEOUT,
+        caller_client.request(OPERATOR_INIT_FIRST_MACHINE_ACTIVATE, "activate".into()),
+    )
+    .await
+    .expect("request does not hang")
+    .expect("operator receives the API response");
 
     assert_eq!(response.payload.as_ref(), b"activated");
 }
@@ -428,16 +441,23 @@ async fn join_cannot_sniff_other_principals_inboxes() {
     );
 
     // The Join sniffer observably received none of that traffic.
-    for (scope, sniffer) in [
-        ("_INBOX.>", &mut sniff_shared),
-        (controller_scope.as_str(), &mut sniff_controller),
-        (machine_scope.as_str(), &mut sniff_machine),
-    ] {
-        let delivery = tokio::time::timeout(NO_DELIVERY_WINDOW, sniffer.next()).await;
-        assert!(
-            delivery.is_err(),
-            "join sniffer on {scope} must not receive request-reply traffic"
-        );
+    let observed = tokio::time::timeout(NO_DELIVERY_WINDOW, async {
+        tokio::select! {
+            message = sniff_shared.next() => ("_INBOX.>", message),
+            message = sniff_controller.next() => (controller_scope.as_str(), message),
+            message = sniff_machine.next() => (machine_scope.as_str(), message),
+        }
+    })
+    .await;
+    match observed {
+        Err(_) => {}
+        Ok((scope, Some(message))) => panic!(
+            "join sniffer on {scope} received request-reply traffic on {}",
+            message.subject
+        ),
+        Ok((scope, None)) => {
+            panic!("join sniffer on {scope} closed before the observation window elapsed")
+        }
     }
 }
 
