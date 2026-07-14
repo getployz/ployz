@@ -146,7 +146,7 @@ async fn initialize_ingress(config: &ControlProcessConfig) {
     let store = ployzd::core_store::CoreStore::open(config.core_db_path.clone())
         .await
         .expect("test core store opens");
-    let ingress = ployzd::intent::ingress_intent::IngressIntentStore::new(store);
+    let ingress = ployzd::intent::ingress_intent::IngressIntentStore::new(store.clone());
     if ingress
         .load()
         .await
@@ -155,16 +155,7 @@ async fn initialize_ingress(config: &ControlProcessConfig) {
     {
         return;
     }
-    ingress
-        .replace(
-            ployz_core::ingress::IngressConfiguration::try_new(
-                ployz_core::ingress::AutomaticHostnameConfiguration::Disabled,
-                ployz_core::ingress::PloyzDnsTargetIntent::Disabled,
-            )
-            .expect("valid test ingress configuration"),
-        )
-        .await
-        .expect("test ingress intent initializes");
+    super::intent::initialize_disabled_ingress(&store).await;
 }
 
 struct StartupThenReload {

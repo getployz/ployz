@@ -21,6 +21,8 @@ use ployzd::roles::gateway::source::{
 };
 use std::time::Duration;
 
+mod support;
+
 #[tokio::test]
 async fn gateway_source_loads_routes_and_current_observations_from_nats() {
     let nats = test_nats().await;
@@ -103,13 +105,15 @@ async fn test_nats() -> TestNats {
             .await
             .expect("open core store"),
     );
+    let intent_core_store = ployzd::core_store::CoreStore::open_in_memory()
+        .await
+        .expect("core store opens");
+    support::intent::initialize_disabled_ingress(&intent_core_store).await;
     let intent = start_intent_service(
         nats.controller.clone(),
         machine_id("machine_a"),
         namespace_intent.clone(),
-        ployzd::core_store::CoreStore::open_in_memory()
-            .await
-            .expect("core store opens"),
+        intent_core_store,
         Duration::from_secs(30),
     )
     .await

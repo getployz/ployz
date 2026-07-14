@@ -1,7 +1,8 @@
 use futures_util::StreamExt;
 use ployz_core::cert::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
-    CertificateChallengeApplicationStatus, CertificateChallengeStatusRequest,
+    CertificateChallengeApplicationStatus, CertificateChallengeApplyRequest,
+    CertificateChallengeApplyResponse, CertificateChallengeStatusRequest,
     CertificateChallengeStatusResponse,
 };
 use ployz_core::machine_rpc::MachineRpcResponse;
@@ -22,7 +23,7 @@ use ployz_nats::service_runtime::{
 use ployz_test_support::containers;
 use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{
-    container_id, machine_id, namespace_id, route_hostname, route_port, service_id,
+    container_id, machine_id, namespace_id, operation_id, route_hostname, route_port, service_id,
 };
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use ployzd::intent::service::{RunningIntentService, start_intent_service};
@@ -35,6 +36,8 @@ use ployzd::service_catalog::{intent_get_endpoint_spec, intent_service};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+
+mod support;
 
 #[tokio::test]
 async fn gateway_process_reports_http_bind_failure_before_returning() {
@@ -140,7 +143,7 @@ async fn gateway_process_serves_http01_challenge_before_route_attachment() {
         AcmeChallengeTtlSeconds::try_new(900).expect("valid ttl"),
     )
     .expect("valid challenge");
-    let _intent = nats.start_static_intent(challenge.clone()).await;
+    let _intent = nats.start_static_intent().await;
     let runtime = start_gateway_process_with_client(
         nats.machine_client.clone(),
         Duration::from_millis(10),
@@ -150,13 +153,21 @@ async fn gateway_process_serves_http01_challenge_before_route_attachment() {
     )
     .await
     .expect("gateway runtime starts");
-    wait_until(Duration::from_secs(2), || {
-        runtime
-            .served_projection()
-            .is_some_and(|projection| projection.challenges == vec![challenge.clone()])
-    })
-    .await;
-
+    let response = request_json::<_, CertificateChallengeApplyResponse>(
+        &nats.client,
+        machine_service(
+            &machine_id("machine_7"),
+            MachineServiceEndpoint::CertificateChallengeApply,
+        ),
+        &CertificateChallengeApplyRequest {
+            operation_id: operation_id("op_challenge"),
+            challenge: challenge.clone(),
+        },
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("challenge applies");
+    assert!(matches!(response, MachineRpcResponse::Ok(_)));
     let mut client = TcpStream::connect(runtime.listen_addr())
         .await
         .expect("connect gateway");
@@ -433,20 +444,22 @@ impl TestNats {
     }
 
     async fn start_intent(&self) -> RunningIntentService {
+        let core_store = ployzd::core_store::CoreStore::open_in_memory()
+            .await
+            .expect("core store opens");
+        support::intent::initialize_disabled_ingress(&core_store).await;
         start_intent_service(
             self.client.clone(),
             machine_id("machine_a"),
             self.namespace_intent.clone(),
-            ployzd::core_store::CoreStore::open_in_memory()
-                .await
-                .expect("core store opens"),
+            core_store,
             Duration::from_millis(10),
         )
         .await
         .expect("intent runtime starts")
     }
 
-    async fn start_static_intent(&self, _challenge: AcmeHttp01Challenge) -> RunningNatsService {
+    async fn start_static_intent(&self) -> RunningNatsService {
         let mut service = start_nats_service(self.client.clone(), &intent_service())
             .await
             .expect("intent service starts");

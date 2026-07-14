@@ -9,7 +9,7 @@ use ployz_core::ops::{
     DeployPhaseOutcome, DeployRunningStage, DeployServiceResult, DeployTransition, FailureMessage,
     PreStartHookFailure, RouteHostname, RouteTarget,
 };
-use ployz_core::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
+use ployz_core::state::{ServingTargetEntry, VolumePinState};
 use ployz_test_support::ids::{failure_message, namespace_id};
 use ployzd::operations::deploy::{
     CertificateProvisioner, DeployCleanupResult, DeployExecutionError, DeployExecutionInput,
@@ -1272,16 +1272,16 @@ async fn custom_https_deploy_ensures_certificate_before_route_commit() {
     .await
     .expect("routed deploy succeeds");
 
+    let [route] = namespace_state.route_requests.as_slice() else {
+        panic!("one route is committed");
+    };
+    assert_eq!(route.namespace_id, namespace_id("default"));
+    assert_eq!(route.target, route_target("api.example.com", 443));
+    assert_eq!(route.endpoint_port, route_port(8080));
+    assert_eq!(route.service_id, service_id("svc_api"));
     assert_eq!(
-        namespace_state.route_requests,
-        vec![RouteBindingState {
-            id: route_binding_id("api.example.com"),
-            namespace_id: namespace_id("default"),
-            target: route_target("api.example.com", 443),
-            endpoint_port: route_port(8080),
-            service_id: service_id("svc_api"),
-            origin: ployz_core::ingress::RouteBindingOrigin::Declared,
-        }]
+        route.origin,
+        ployz_core::ingress::RouteBindingOrigin::Declared
     );
     assert_eq!(namespace_state.serving_requests.len(), 1);
     assert_eq!(

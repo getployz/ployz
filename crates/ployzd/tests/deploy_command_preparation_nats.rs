@@ -628,6 +628,7 @@ async fn test_nats() -> TestNats {
     let core_store = ployzd::core_store::CoreStore::open_in_memory()
         .await
         .expect("open core store");
+    support::intent::initialize_disabled_ingress(&core_store).await;
     let namespace_intent = NamespaceIntentStore::new(core_store.clone());
     let machine_roster = MachineRosterStore::new(core_store.clone());
     let intent = start_intent_service(

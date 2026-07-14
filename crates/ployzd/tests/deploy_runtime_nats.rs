@@ -642,6 +642,7 @@ async fn test_nats() -> TestNats {
     let intent_core_store = ployzd::core_store::CoreStore::open_in_memory()
         .await
         .expect("open intent core store");
+    support::intent::initialize_disabled_ingress(&intent_core_store).await;
     let machine_roster = MachineRosterStore::new(intent_core_store.clone());
     machine_roster
         .replace_active_machine(&active_machine("machine_a", "10.198.1.0/24"))

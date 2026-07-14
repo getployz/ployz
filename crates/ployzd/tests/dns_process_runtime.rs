@@ -15,6 +15,8 @@ use ployzd::roles::dns::projection::DnsAnswer;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
+mod support;
+
 #[tokio::test]
 async fn dns_process_fails_fast_before_projection_sources_exist() {
     let nats = TestNats::start().await;
@@ -196,13 +198,15 @@ impl TestNats {
     }
 
     async fn start_intent_with_interval(&self, publish_interval: Duration) -> RunningIntentService {
+        let core_store = ployzd::core_store::CoreStore::open_in_memory()
+            .await
+            .expect("core store opens");
+        support::intent::initialize_disabled_ingress(&core_store).await;
         start_intent_service(
             self.connected.controller.clone(),
             machine_id("machine_a"),
             self.namespace_intent.clone(),
-            ployzd::core_store::CoreStore::open_in_memory()
-                .await
-                .expect("core store opens"),
+            core_store,
             publish_interval,
         )
         .await

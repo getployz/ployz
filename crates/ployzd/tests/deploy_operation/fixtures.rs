@@ -1516,13 +1516,6 @@ pub(super) fn route_target(hostname: &str, _port: u16) -> RouteTarget {
     RouteTarget::new(RouteHostname::try_new(hostname).expect("valid route hostname"))
 }
 
-pub(super) fn route_binding_id(hostname: &str) -> RouteBindingId {
-    use sha2::{Digest, Sha256};
-
-    let digest = Sha256::digest(hostname.as_bytes());
-    RouteBindingId::try_new(format!("route_{digest:x}")).expect("valid route binding id")
-}
-
 pub(super) fn route_port(port: u16) -> RoutePort {
     RoutePort::try_new(port).expect("valid route port")
 }
