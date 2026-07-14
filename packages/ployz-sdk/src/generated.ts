@@ -290,6 +290,22 @@ export type ManagedDnsReconcileSubject = { "reason": "acquire" } | { "reason": "
 
 export type ManagedDnsWithdrawAuthorization = { "authorization": "projection_unavailable", projection: IngressEndpointProjectionIdentity, } | { "authorization": "target_disabled" };
 
+export type IngressConfigureOperationState = { "state": "accepted" } | { "state": "completed" } | { "state": "failed", failure: IngressConfigureFailure, };
+
+export type IngressConfigureFailure = { "kind": "invalid_configuration", message: FailureMessage, } | { "kind": "intent_store_failed", message: FailureMessage, };
+
+export type IngressRefreshOperationState = { "state": "accepted" } | { "state": "completed", evidence: IngressRefreshEvidence, } | { "state": "failed", failure: IngressRefreshFailure, };
+
+export type IngressRefreshFailure = "intent_unavailable" | "gather_failed" | "storage_failed" | "concurrent_writer";
+
+export type IngressRefreshEvidence = { candidates: Array<IngressRefreshCandidateEvidence>, publishable_gateway_ids: Array<MachineId>, deadline_seconds: number, before: IngressEndpointProjectionIdentity, after: IngressEndpointProjectionIdentity, };
+
+export type IngressRefreshCandidateEvidence = { machine_id: MachineId, gateway: IngressRefreshGatewayOutcome, facts: IngressRefreshFactsOutcome, contribution: Array<string>, };
+
+export type IngressRefreshGatewayOutcome = { "status": "current" } | { "status": "last_known_good" } | { "status": "unavailable" } | { "status": "timed_out" } | { "status": "no_responder" } | { "status": "wrong_responder" } | { "status": "rejected" } | { "status": "malformed" } | { "status": "transport" };
+
+export type IngressRefreshFactsOutcome = { "status": "responded", public_control_endpoints: Array<string>, } | { "status": "timed_out" } | { "status": "no_responder" } | { "status": "wrong_responder" } | { "status": "rejected" } | { "status": "malformed" } | { "status": "transport" };
+
 export type NamespaceRemoveOperationState = { "state": "accepted" } | { "state": "running", stage: NamespaceRemoveRunningStage, } | { "state": "completed" } | { "state": "failed", failure: NamespaceRemoveFailure, } | { "state": "cancelled", reason: CancellationReason, };
 
 export type NamespaceRemoveRunningStage = "removing_route_bindings" | "removing_serving_targets" | "removing_containers";
@@ -432,6 +448,8 @@ export type ControlPlaneCommitScope = { "scope": "deploy_phase", namespace_revis
 
 export type CertificateProvisionFailure = { "class": "operation_evidence_write", message: FailureMessage, } | { "class": "dns_preflight", message: FailureMessage, } | { "class": "challenge_publish", message: FailureMessage, } | { "class": "challenge_readiness", missing_machine_ids: Array<MachineId>, } | { "class": "acme_validation", message: FailureMessage, } | { "class": "gateway_artifact_push", machine_id: MachineId, message: FailureMessage, } | { "class": "active_cert_commit", attempted_active_cert: ActiveCertState, message: FailureMessage, };
 
+export type CertificateProvisionWarning = { "warning": "dns_preflight_mismatch", message: FailureMessage, } | { "warning": "challenge_cleanup_incomplete", missing_machine_ids: Array<MachineId>, };
+
 export type DeployOperationFailure = { "kind": "no_usable_machines",
 /**
  * Why each known machine was rejected for placement.
@@ -457,6 +475,8 @@ export type AutomaticHostnameConfiguration = { "mode": "disabled" } | { "mode": 
 export type AutomaticHostnameLabel = Brand<string, "AutomaticHostnameLabel">;
 
 export type AutomaticHostnameSuffix = Brand<string, "AutomaticHostnameSuffix">;
+
+export type IngressConfiguration = { automatic_hostnames: AutomaticHostnameConfiguration, ployz_dns_target: PloyzDnsTargetIntent, };
 
 export type PloyzDnsTargetIntent = "enabled" | "disabled";
 
@@ -510,6 +530,8 @@ mesh_endpoints: Array<string>,
  * Core-owned overlay endpoint subnet allocated from cluster intent.
  */
 endpoint_subnet: MachineEndpointSubnet, wireguard_public_key: WireGuardPublicKey, };
+
+export type ControlPlaneEpoch = number;
 
 export type RouteBindingState = { id: RouteBindingId, namespace_id: NamespaceId, target: RouteTarget, endpoint_port: RoutePort, service_id: ServiceId, origin: RouteBindingOrigin, };
 
@@ -815,6 +837,10 @@ export type CredentialListError = { "error": "unavailable", message: string, };
 export type CredentialRemoveRequest = { operation_id: OperationId, public_key: NatsUserPublicKey, };
 
 export type CredentialRemoveError = { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+
+export type IngressConfigureRequest = { operation_id: OperationId, configuration: IngressConfiguration, };
+
+export type IngressConfigureError = { "error": "invalid_configuration", message: string, } | { "error": "resource_busy", owner: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
 export type MachineUpdateError = { "error": "no_such_machine", operation_id: OperationId, machine_id: MachineId, } | { "error": "current_machine_unsupported", operation_id: OperationId, machine_id: MachineId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 

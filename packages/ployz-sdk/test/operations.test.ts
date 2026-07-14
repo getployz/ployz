@@ -692,6 +692,15 @@ test("sdk exports the Rust operation API contract registry", () => {
       response: "CredentialRemoveResponse",
     },
     {
+      name: "ingress.configure",
+      subject: "plz.v1.rpc.operator.command.ingress.configure",
+      execution: "accepts_operation",
+      request: "IngressConfigureRequest",
+      success: "AcceptedOperation",
+      error: "IngressConfigureError",
+      response: "IngressConfigureResponse",
+    },
+    {
       name: "machine.list",
       subject: "plz.v1.rpc.operator.query.machine.list",
       execution: "query",

@@ -1,13 +1,14 @@
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_sdk_types::{
     AcceptedOperation, AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue,
-    AcmeHttp01Challenge, ActiveCertState, CertBundleRef, CertId, CertOperationState,
-    CertRunningStage, CertTextError, CertValidAt, CertValidityWindow, CloudBootstrapAttemptId,
+    AcmeHttp01Challenge, ActiveCertState, ActiveCertificateMetadata,
+    AutomaticHostnameConfiguration, CertBundleRef, CertId, CertOperationState, CertRunningStage,
+    CertTextError, CertValidAt, CertValidityWindow, CertificateOwner, CloudBootstrapAttemptId,
     CloudBootstrapCallbackAccepted, CloudBootstrapCallbackRequest, CloudBootstrapCallbackToken,
     CloudBootstrapDecision, CloudBootstrapEnvelope, CloudBootstrapIntent, CloudBootstrapOutcome,
     CloudBootstrapRedemptionId, CloudBootstrapSessionCreateRequest, CloudBootstrapSessionCreated,
     CloudBootstrapSessionPollRequest, CloudBootstrapToken, CloudBootstrapTokenRedeemRequest,
-    CloudFounderBootstrapResult, CoreReplaceError, CoreReplaceReportError,
+    CloudFounderBootstrapResult, ControlPlaneEpoch, CoreReplaceError, CoreReplaceReportError,
     CoreReplaceReportRequest, CoreReplaceReported, CoreReplaceRequest, CredentialAddError,
     CredentialAddRequest, CredentialListError, CredentialListRequest, CredentialListResult,
     CredentialRemoveError, CredentialRemoveRequest, DependencyCondition, DeployOperationState,
@@ -15,26 +16,27 @@ use ployz_sdk_types::{
     DeployReserveError, DeployReserveRequest, DeployReserved, DeployRunningStage,
     DeployServiceSpec, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse, EventSequence,
     EventSequenceError, HostPortAssurance, ImageReference, ImageReferenceError,
-    InitFirstMachineActivateError, InitFirstMachineActivateRequest, InitFirstMachineActivated,
-    InstallContractError, InstallRolePolicy, LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt,
-    LogsTailError, LogsTailRequest, LogsTailResult, MAX_OPERATION_EVENT_REPLAY_LIMIT,
-    MachineAddAccepted, MachineAddError, MachineAddRequest, MachineAddResponse,
-    MachineBootstrapUrl, MachineInspectError, MachineInspectRequest, MachineJoinBundle,
-    MachineJoinMaterial, MachineJoinRedeemError, MachineJoinRedeemRequest,
+    IngressConfiguration, IngressConfigureError, IngressConfigureRequest,
+    IngressEndpointProjectionIdentity, InitFirstMachineActivateError,
+    InitFirstMachineActivateRequest, InitFirstMachineActivated, InstallContractError,
+    InstallRolePolicy, LogsTailError, LogsTailRequest, LogsTailResult,
+    MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted, MachineAddError, MachineAddRequest,
+    MachineAddResponse, MachineBootstrapUrl, MachineInspectError, MachineInspectRequest,
+    MachineJoinBundle, MachineJoinMaterial, MachineJoinRedeemError, MachineJoinRedeemRequest,
     MachineJoinRedeemResponse, MachineJoinRedeemResult, MachineJoinRedeemed,
     MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
     MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinToken,
     MachineJoinTrustedNats, MachineListError, MachineListRequest, MachineListResult, MachineName,
     MachineSnapshot, MachineUpdateError, MachineUpdateRequest, MachineUpdateResponse,
-    ManagedCertBundle, ManagedLeaseAcquired, ManagedLeaseName, ManagedLeaseRecord, NamespaceId,
-    NamespaceRemoveError, NamespaceRemoveRequest, NatsCaCertificatePem, NatsUserSeed,
-    NetworkRepairError, NetworkRepairRequest, NetworkResolveError, NetworkResolveRequest,
-    NetworkResolveResult, NetworkStatusError, NetworkStatusRequest, NetworkStatusResult,
-    NonEmptyTextError, OperationApiResponse, OperationEvent, OperationEventReplayCursor,
-    OperationEventReplayLimit, OperationEventReplayLimitError, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot,
-    OperationSubject, OpsListError, OpsListRequest, OpsListResult, OpsStatusError,
-    OpsStatusRequest, OpsStatusResponse, OpsWatchResponse, ReplicaCount, ReplicaCountError,
+    ManagedDnsReconcileSubject, ManagedLeaseName, NamespaceId, NamespaceRemoveError,
+    NamespaceRemoveRequest, NatsCaCertificatePem, NatsUserSeed, NetworkRepairError,
+    NetworkRepairRequest, NetworkResolveError, NetworkResolveRequest, NetworkResolveResult,
+    NetworkStatusError, NetworkStatusRequest, NetworkStatusResult, NonEmptyTextError,
+    OperationApiResponse, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
+    OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
+    OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot, OperationSubject,
+    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest,
+    OpsStatusResponse, OpsWatchResponse, PloyzDnsTargetIntent, ReplicaCount, ReplicaCountError,
     RouteHostname, RouteHostnameError, RoutePort, RoutePortError, RuntimeSnapshotError,
     RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceDependency, ServiceId,
     ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
@@ -43,12 +45,12 @@ use ployz_sdk_types::{
     VolumeRemoveRequest,
     operation_api::{
         CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi, CredentialListApi,
-        CredentialRemoveApi, DeployReserveApi, DeploySubmitApi, InitFirstMachineActivateApi,
-        LogsTailApi, MachineAddApi, MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi,
-        MachineListApi, MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi,
-        NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi,
-        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeListApi,
-        VolumeRemoveApi,
+        CredentialRemoveApi, DeployReserveApi, DeploySubmitApi, IngressConfigureApi,
+        InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineInspectApi,
+        MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi, MachineUpdateApi,
+        NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, NetworkStatusApi,
+        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
+        ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
     },
 };
 use ts_rs::{Config, TS};
@@ -140,7 +142,10 @@ fn sdk_exports_cert_wire_types() {
     };
     let event = OperationEvent::CertCompleted {
         operation_id: ployz_sdk_types::OperationId::try_new("op_cert").expect("valid operation id"),
-        active_cert,
+        certificate: ActiveCertificateMetadata {
+            owner: CertificateOwner::PloyzAutomaticNamespace,
+            active: active_cert,
+        },
     };
     let challenge = AcmeHttp01Challenge::try_new(
         RouteHostname::try_new("api.example.com").expect("valid hostname"),
@@ -160,36 +165,38 @@ fn sdk_exports_cert_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&event).expect("event serializes"),
-        r#"{"event":"cert_completed","operation_id":"op_cert","active_cert":{"cert_id":"cert_api","hostname":"api.example.com","bundle_ref":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:/var/lib/ployz/certs/cert_api.pem","validity":{"not_before":"1700000000","not_after":"1707776000"}}}"#
+        r#"{"event":"cert_completed","operation_id":"op_cert","certificate":{"owner":{"owner":"ployz_automatic_namespace"},"active":{"cert_id":"cert_api","hostname":"api.example.com","bundle_ref":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:/var/lib/ployz/certs/cert_api.pem","validity":{"not_before":"1700000000","not_after":"1707776000"}}}}"#
     );
     assert_eq!(challenge.ttl_seconds().get(), 60);
+}
 
-    let lease = ManagedLeaseName::try_new("brisk-river-x7f3").expect("valid lease name");
-    let lease_record = ManagedLeaseRecord::try_new(
-        lease,
-        LeaseBearerToken::try_new("lease_token_123").expect("valid token"),
-        LeaseIssuedAt::try_new(1_700_000_000).expect("valid issued timestamp"),
-        LeaseExpiresAt::try_new(1_700_604_800).expect("valid expiry timestamp"),
-    )
-    .expect("valid lease record");
-    let managed = ManagedLeaseAcquired {
-        lease: lease_record.clone(),
-        bundle: Some(
-            ManagedCertBundle::try_new(
-                lease_record.name.clone(),
-                lease_record.name.wildcard_and_apex(),
-                "-----BEGIN CERTIFICATE-----\nplaceholder\n-----END CERTIFICATE-----\n".to_owned(),
-                "-----BEGIN PRIVATE KEY-----\nplaceholder\n-----END PRIVATE KEY-----\n".to_owned(),
-                lease_record.issued_at,
-                lease_record.expires_at,
-            )
-            .expect("valid bundle"),
-        ),
+#[test]
+fn sdk_exports_ingress_and_managed_dns_wire_types() {
+    let configuration = IngressConfiguration {
+        automatic_hostnames: AutomaticHostnameConfiguration::Ployz,
+        ployz_dns_target: PloyzDnsTargetIntent::Enabled,
     };
-    assert!(
-        serde_json::to_string(&managed)
-            .expect("managed lease serializes")
-            .contains("*.brisk-river-x7f3.up.ployz.app")
+    let request = IngressConfigureRequest {
+        operation_id: ployz_sdk_types::OperationId::try_new("op_ingress")
+            .expect("valid operation id"),
+        configuration,
+    };
+    let projection = IngressEndpointProjectionIdentity {
+        control_plane_epoch: ControlPlaneEpoch::initial(),
+        revision: 7,
+    };
+    let subject = ManagedDnsReconcileSubject::ProjectionApply {
+        lease: ManagedLeaseName::try_new("brisk-river-x7f3").expect("valid lease name"),
+        projection,
+    };
+
+    assert_eq!(
+        serde_json::to_string(&request).expect("ingress request serializes"),
+        r#"{"operation_id":"op_ingress","configuration":{"automatic_hostnames":{"mode":"ployz"},"ployz_dns_target":"enabled"}}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&subject).expect("managed DNS subject serializes"),
+        r#"{"reason":"projection_apply","lease":"brisk-river-x7f3","projection":{"control_plane_epoch":1,"revision":7}}"#
     );
 }
 
@@ -223,17 +230,6 @@ fn sdk_exports_operation_api_wire_types() {
             start_sequence: EventSequence::try_new(1).expect("valid event sequence"),
         },
     };
-    let mut legacy_event = serde_json::to_value(OperationEvent::DeploySubmitted {
-        operation_id: operation_id.clone(),
-        reservation_id: Some(DeployReservationId::first()),
-        target: request.target.clone(),
-    })
-    .expect("event serializes");
-    let serde_json::Value::Object(fields) = &mut legacy_event else {
-        panic!("event should serialize as an object");
-    };
-    fields.remove("reservation_id");
-
     assert_eq!(
         serde_json::to_string(&request).expect("request serializes"),
         r#"{"idempotency_key":"idem_deploy_123","reservation_id":"1","target":{"namespace_id":"default","services":[{"service_id":"svc_api","image":"ghcr.io/acme/api:rev-1","replicas":1,"runtime":{"command":null,"entrypoint":null,"environment":{},"stop_grace_period":10}}]}}"#
@@ -242,15 +238,6 @@ fn sdk_exports_operation_api_wire_types() {
         serde_json::to_string(&response).expect("response serializes"),
         r#"{"status":"ok","value":{"operation_id":"op_123","watch_subject":"plz.v1.progress.namespace.default.operation.op_123.>","start_sequence":"1"}}"#
     );
-    assert_eq!(
-        serde_json::from_value::<OperationEvent>(legacy_event).expect("legacy event deserializes"),
-        OperationEvent::DeploySubmitted {
-            operation_id: operation_id.clone(),
-            reservation_id: None,
-            target: request.target.clone(),
-        }
-    );
-
     let OperationApiResponse::Ok { value } = response else {
         panic!("response should be ok");
     };
@@ -330,24 +317,11 @@ fn sdk_exports_operation_api_wire_types() {
         serde_json::to_string(&redeem_request).expect("request serializes"),
         r#"{"join_token":"join_once_123"}"#
     );
-    let mut redeem_response_without_endpoint =
+    let redeem_response_value =
         serde_json::to_value(&redeem_response).expect("response serializes");
-    let Some(redeemed) = redeem_response_without_endpoint
-        .get_mut("value")
-        .and_then(serde_json::Value::as_object_mut)
-    else {
-        panic!("redeem response value is an object");
-    };
-    let Some(endpoint_subnet) = redeemed.remove("endpoint_subnet") else {
-        panic!("redeem response carries endpoint subnet");
-    };
-    assert_eq!(endpoint_subnet, "10.198.2.0/24");
     assert_eq!(
-        redeem_response_without_endpoint,
-        serde_json::from_str::<serde_json::Value>(
-        r#"{"status":"ok","value":{"operation_id":"op_machine","machine_id":"machine_2","name":"edge_2","roles":{"gateway":"skip"},"host_port_assurance":"external","join_bundle":{"material":{"cluster_name":"prod","dataplane_endpoint_supernet":"10.198.0.0/16","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"recovery_key_wrapped":[1,2,3],"core_seeds_wrapped":[4,5,6],"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"}}},"secret_delivery":{"nats_credentials":"SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ"},"joined_at":"60","last_event_sequence":"8","result":"joined"}}"#
-        )
-        .expect("legacy response contract parses")
+        redeem_response_value.pointer("/value/endpoint_subnet"),
+        Some(&serde_json::Value::String("10.198.2.0/24".to_owned()))
     );
     assert_eq!(
         serde_json::to_string(&join_template).expect("join template serializes"),
@@ -587,6 +561,12 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
         AcceptedOperation,
         CredentialRemoveError,
     >();
+    assert_contract::<
+        IngressConfigureApi,
+        IngressConfigureRequest,
+        AcceptedOperation,
+        IngressConfigureError,
+    >();
     assert_contract::<OpsListApi, OpsListRequest, OpsListResult, OpsListError>();
     assert_contract::<OpsStatusApi, OpsStatusRequest, OperationStatusSnapshot, OpsStatusError>();
     assert_contract::<
@@ -613,6 +593,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             OperationApiEndpoint::CredentialAdd,
             OperationApiEndpoint::CredentialList,
             OperationApiEndpoint::CredentialRemove,
+            OperationApiEndpoint::IngressConfigure,
             OperationApiEndpoint::MachineList,
             OperationApiEndpoint::MachineInspect,
             OperationApiEndpoint::NetworkStatus,
@@ -767,6 +748,15 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
                 "AcceptedOperation".to_owned(),
                 "CredentialRemoveError".to_owned(),
                 "CredentialRemoveResponse",
+            ),
+            (
+                "ingress.configure",
+                "plz.v1.rpc.operator.command.ingress.configure",
+                OperationApiEndpointExecution::AcceptsOperation,
+                "IngressConfigureRequest".to_owned(),
+                "AcceptedOperation".to_owned(),
+                "IngressConfigureError".to_owned(),
+                "IngressConfigureResponse",
             ),
             (
                 "machine.list",
