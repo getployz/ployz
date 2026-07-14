@@ -27,21 +27,31 @@ cargo test -p ployz-host-runner --test bootstrap_first_machine --test local
 cargo test -p ployzd --lib dataplane_runtime::tests::default_command_plans_ensure_wireguard_interface_and_key
 ```
 
-3. Tag and push the exact release:
+3. Tag and push the exact release commit, then wait for that `main` push's
+   `warm-linux-cache` jobs to finish:
 
 ```sh
 tag=v0.0.2-alpha.5
 git tag "${tag}"
 git push origin main
 git push origin "${tag}"
+sha="$(git rev-list -n 1 "${tag}")"
+warm_run="$(gh run list --repo getployz/ployz --workflow release.yml \
+  --event push --commit "${sha}" --json databaseId --jq '.[0].databaseId')"
+gh run watch "${warm_run}" --repo getployz/ployz --exit-status
 ```
 
-4. Watch the `release` workflow:
+4. Dispatch packaging from `main`, passing the exact tag, then watch that run:
 
 ```sh
+gh workflow run release.yml --repo getployz/ployz --ref main -f tag="${tag}"
 gh run list --repo getployz/ployz --workflow release.yml --limit 5
 gh run watch <run-id> --repo getployz/ployz --exit-status
 ```
+
+The workflow rejects a dispatch from any commit other than the tag's exact
+commit. Running it on `main` lets packaging reuse the caches warmed for that
+commit while checkout and release artifacts remain pinned to the tag.
 
 The `release` workflow packages:
 
@@ -66,7 +76,7 @@ gh release edit "${tag}" --repo getployz/ployz \
 The npm package must have trusted publishing configured for
 `getployz/ployz`, workflow filename `release.yml`, and action `npm publish`.
 Prereleases publish under the npm `alpha` dist-tag.
-The tag-push workflow checks that the SDK version is not already published and
+The dispatched workflow checks that the SDK version is not already published and
 that `npm publish --dry-run` succeeds before building release assets.
 
 6. Verify the release assets before promotion:

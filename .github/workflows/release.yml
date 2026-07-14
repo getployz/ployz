@@ -1,16 +1,20 @@
 name: release
 
-# Packages release assets for every alpha platform when a version tag is
-# pushed, then uploads them to a draft GitHub release. The public installer
-# (scripts/ployz.sh) resolves ployz-release-<os>-<arch>.env manifests from
-# the published release.
+# Main pushes warm Linux build caches. A dispatch on main packages one exact
+# version tag and uploads it to a draft GitHub release. The public installer
+# (scripts/ployz.sh) resolves ployz-release-<os>-<arch>.env manifests from the
+# published release.
 
 on:
   push:
     branches:
       - main
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact v* tag to package from the current main commit
+        required: true
+        type: string
   release:
     types:
       - published
@@ -20,7 +24,7 @@ permissions:
 
 jobs:
   warm-linux-cache:
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
       matrix:
@@ -33,9 +37,9 @@ jobs:
             slug: linux-arm64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Restore Linux build cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             /tmp/ployz-dind-machine-target
@@ -55,15 +59,46 @@ jobs:
             [ ! -e "${path}" ] || sudo chown -R "$(id -u):$(id -g)" "${path}"
           done
 
+  validate-release:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: refs/tags/${{ inputs.tag }}
+      - name: Validate release tag
+        env:
+          DISPATCH_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "release packaging must be dispatched with --ref main" >&2
+            exit 1
+          fi
+          case "${RELEASE_TAG}" in
+            v*) ;;
+            *) echo "release tag must start with v: ${RELEASE_TAG}" >&2; exit 1 ;;
+          esac
+          tag_sha="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          if [ "${tag_sha}" != "${DISPATCH_SHA}" ]; then
+            echo "${RELEASE_TAG} points at ${tag_sha}, not dispatched main ${DISPATCH_SHA}" >&2
+            exit 1
+          fi
+
   precheck-sdk-publish:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'workflow_dispatch'
+    needs: validate-release
     permissions:
       contents: read
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ inputs.tag }}
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: "24"
           registry-url: https://registry.npmjs.org
@@ -71,7 +106,7 @@ jobs:
       - name: Precheck SDK publish
         working-directory: packages/ployz-sdk
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           version="${RELEASE_TAG#v}"
@@ -87,7 +122,8 @@ jobs:
           npm publish --dry-run --access public --tag alpha
 
   package:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'workflow_dispatch'
+    needs: validate-release
     permissions:
       contents: read
       id-token: write
@@ -112,11 +148,13 @@ jobs:
             runner: macos-14
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ inputs.tag }}
       - name: Restore Linux build cache
         if: startsWith(matrix.platform, 'linux/')
         id: linux-cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             /tmp/ployz-dind-machine-target
@@ -127,7 +165,7 @@ jobs:
           restore-keys: ployz-release-${{ matrix.slug }}-
       - name: Restore macOS build cache
         if: startsWith(matrix.platform, 'darwin/')
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             target
@@ -138,7 +176,7 @@ jobs:
       - name: Package release assets
         env:
           PLOYZ_RELEASE_SKIP_BUILD: ${{ steps.linux-cache.outputs.cache-hit == 'true' && '1' || '0' }}
-          PLOYZ_RELEASE_VERSION: ${{ github.ref_name }}
+          PLOYZ_RELEASE_VERSION: ${{ inputs.tag }}
           PLOYZ_RELEASE_PLATFORM: ${{ matrix.platform }}
           PLOYZ_NATS_SERVER_VERSION: 2.14.2
           PLOYZ_NATS_SERVER_URL: https://github.com/nats-io/nats-server/releases/download/v2.14.2/nats-server-v2.14.2-${{ matrix.slug }}.tar.gz
@@ -153,15 +191,15 @@ jobs:
       - name: Generate artifact attestations
         uses: actions/attest@v4
         with:
-          subject-path: dist/releases/${{ github.ref_name }}/*
-      - uses: actions/upload-artifact@v6
+          subject-path: dist/releases/${{ inputs.tag }}/*
+      - uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.slug }}
-          path: dist/releases/${{ github.ref_name }}/*
+          path: dist/releases/${{ inputs.tag }}/*
           if-no-files-found: error
 
   publish:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'workflow_dispatch'
     permissions:
       contents: write
     needs:
@@ -169,7 +207,7 @@ jobs:
       - package
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           path: dist/assets
           merge-multiple: true
@@ -177,7 +215,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           if ! gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
@@ -192,11 +230,11 @@ jobs:
       id-token: write
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.release.tag_name }}
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: "24"
           registry-url: https://registry.npmjs.org
