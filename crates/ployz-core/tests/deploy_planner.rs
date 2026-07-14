@@ -1015,9 +1015,9 @@ fn automatic_route_commit_uses_the_exact_requested_label() {
 }
 
 #[test]
-fn identical_automatic_route_request_reuses_the_binding_identity() {
+fn automatic_route_reroute_reuses_the_binding_identity_and_updates_endpoint_port() {
     let mut request = deploy_request(1);
-    request.routes = vec![automatic_deploy_route("api", 8080)];
+    request.routes = vec![automatic_deploy_route("api", 9090)];
     let mut existing = route_binding_state("api.apps.example.com", "svc_api");
     existing.id = route_binding_id("route_existing");
     existing.origin = RouteBindingOrigin::Automatic;
@@ -1034,6 +1034,7 @@ fn identical_automatic_route_request_reuses_the_binding_identity() {
     };
 
     assert_eq!(commit.id, route_binding_id("route_existing"));
+    assert_eq!(commit.endpoint_port, route_port(9090));
 }
 
 #[test]

@@ -1709,9 +1709,11 @@ pub fn auto_hostname_route_binding_commits(
             if existing.origin == RouteBindingOrigin::Automatic
                 && existing.namespace_id == request.namespace_id
                 && existing.service_id == request.service_id
-                && existing.endpoint_port == route.endpoint_port
             {
-                bindings.push(existing.clone());
+                bindings.push(RouteBindingState {
+                    endpoint_port: route.endpoint_port,
+                    ..existing.clone()
+                });
                 continue;
             }
             return Err(AutoHostnameRouteBindingError::HostnameCollision {
