@@ -4,10 +4,10 @@ use crate::adapters::nats_authorization::{
     HostNatsReloadRunner, MachineCredentialMint, MintResumeError, MintVerifyEndpoint,
     NatsAuthorizationWriter, NatsReloadRunner, RenderFailure,
 };
-use crate::certificate::CertificateManager;
 use crate::certificate::task::{
     CertificateRenewalHealth, CertificateRenewalHealthState, start_certificate_renewal_task,
 };
+use crate::certificate::{AcmeIssuer, CertificateManager};
 use crate::config::ControlProcessConfig;
 use crate::core_store::{CoreStore, CoreStoreError};
 use crate::fact_cache::{FactCache, FactCacheError, RunningFactCache, start_fact_cache};
@@ -46,6 +46,7 @@ use ployz_core::state::{ControlPlaneEpoch, PendingMachineJoinRecovery};
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 const CONTROL_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -156,6 +157,24 @@ pub async fn start_control_process_with_client_and_reload(
     config: &ControlProcessConfig,
     reload: impl NatsReloadRunner,
 ) -> Result<RunningControlProcess, ControlProcessError> {
+    start_control_process_with_client_reload_and_issuer(client, config, reload, None).await
+}
+
+pub async fn start_control_process_with_client_and_test_issuer(
+    client: NatsClient,
+    config: &ControlProcessConfig,
+    reload: impl NatsReloadRunner,
+    issuer: Arc<dyn AcmeIssuer>,
+) -> Result<RunningControlProcess, ControlProcessError> {
+    start_control_process_with_client_reload_and_issuer(client, config, reload, Some(issuer)).await
+}
+
+async fn start_control_process_with_client_reload_and_issuer(
+    client: NatsClient,
+    config: &ControlProcessConfig,
+    reload: impl NatsReloadRunner,
+    certificate_issuer: Option<Arc<dyn AcmeIssuer>>,
+) -> Result<RunningControlProcess, ControlProcessError> {
     // A normal core needs a machine-add join template to admit new machines, so
     // fail fast if it is missing. A promoted core (one seeding from a mirror) is
     // allowed to start without one: recovery restores service first, and machine-add
@@ -233,11 +252,19 @@ pub async fn start_control_process_with_client_and_reload(
     let certificate_issuance_tasks = TaskRegistry::default();
     let certificate_renewal_tasks = TaskRegistry::default();
     let (certificate_wake, certificate_wake_rx) = tokio::sync::mpsc::channel(1);
-    let certificate_manager = CertificateManager::new(
-        core_store.clone(),
-        client.clone(),
-        config.certificate_manager.clone(),
-    )
+    let certificate_manager = match certificate_issuer {
+        Some(issuer) => CertificateManager::with_issuer(
+            core_store.clone(),
+            client.clone(),
+            config.certificate_manager.clone(),
+            issuer,
+        ),
+        None => CertificateManager::new(
+            core_store.clone(),
+            client.clone(),
+            config.certificate_manager.clone(),
+        ),
+    }
     .with_task_registry(certificate_issuance_tasks.clone());
     let machine_roster = MachineRosterStore::new(core_store.clone());
     let reachability_tasks = TaskRegistry::default();

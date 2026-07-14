@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::io::{Read, Write};
 use std::net::SocketAddr;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -87,11 +88,46 @@ pub async fn http_get_with_host(
     Ok(response)
 }
 
-pub async fn free_loopback_port() -> Result<u16, std::io::Error> {
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-    Ok(port)
+pub async fn https_get_with_host(
+    addr: SocketAddr,
+    host: &str,
+) -> Result<String, Box<dyn Error + Send + Sync>> {
+    let host = host.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let mut connector = openssl::ssl::SslConnector::builder(openssl::ssl::SslMethod::tls())?;
+        connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
+        let server_name = host.split(':').next().unwrap_or(host.as_str());
+        let stream = std::net::TcpStream::connect(addr)?;
+        let mut stream = connector.build().connect(server_name, stream)?;
+        stream.write_all(
+            format!("GET /smoke HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes(),
+        )?;
+        let mut response = String::new();
+        stream.read_to_string(&mut response)?;
+        Ok::<_, Box<dyn Error + Send + Sync>>(response)
+    })
+    .await?
+}
+
+pub async fn free_gateway_http_port() -> Result<u16, std::io::Error> {
+    loop {
+        let http_v4 = TcpListener::bind("127.0.0.1:0").await?;
+        let port = http_v4.local_addr()?.port();
+        let Some(tls_port) = port.checked_add(363) else {
+            continue;
+        };
+        let Ok(tls_v4) = TcpListener::bind(("127.0.0.1", tls_port)).await else {
+            continue;
+        };
+        let Ok(http_v6) = TcpListener::bind(("::1", port)).await else {
+            continue;
+        };
+        let Ok(tls_v6) = TcpListener::bind(("::1", tls_port)).await else {
+            continue;
+        };
+        drop((http_v4, tls_v4, http_v6, tls_v6));
+        return Ok(port);
+    }
 }
 
 async fn read_until_http_head(stream: &mut TcpStream, request: &mut Vec<u8>) -> bool {

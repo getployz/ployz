@@ -392,8 +392,11 @@ impl ProjectionRuntime {
         let deadline = tokio::time::sleep(GATHER_DEADLINE);
         tokio::pin!(deadline);
         loop {
+            if requests.is_empty() {
+                break;
+            }
             tokio::select! {
-                reply = requests.next(), if !requests.is_empty() => {
+                reply = requests.next() => {
                     let Some(reply) = reply else { break; };
                     match reply {
                         GatherReply::Gateway { machine_id, result } => {

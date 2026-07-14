@@ -121,6 +121,11 @@ impl RunningGatewayProcess {
     pub const fn listen_addr(&self) -> SocketAddr {
         self.listen_addr
     }
+
+    #[must_use]
+    pub fn tls_listen_addr(&self) -> SocketAddr {
+        gateway_tls_listen_addr(self.listen_addr)
+    }
 }
 
 pub async fn start_gateway_process(
