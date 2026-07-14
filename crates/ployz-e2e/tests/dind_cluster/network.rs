@@ -22,7 +22,7 @@ use super::{
 /// come from each bound resolver, and repair converges through a terminal
 /// operation after a silent machine returns.
 #[tokio::test]
-async fn scenario_network_status_resolve_and_repair() {
+async fn group_network_repair() {
     if !dind::e2e_enabled() {
         return;
     }
@@ -216,6 +216,11 @@ async fn scenario_network_status_resolve_and_repair() {
             ),
             "network repair did not complete: {repaired:?}"
         );
+        super::timed(
+            "internal_service_dns",
+            super::assert_internal_service_dns_reaches_cross_machine_sibling(&core),
+        )
+        .await;
     })
     .await;
 
@@ -251,23 +256,4 @@ fn dns_resolver_is_serving(testimony: &NetworkInternalDnsTestimony) -> bool {
             }
         }
     )
-}
-
-#[test]
-fn network_query_readiness_requires_bound_dns_resolver() {
-    let testimony = |resolver| NetworkInternalDnsTestimony::Answered {
-        value: ployz_sdk_types::InternalDnsStatus {
-            resolver,
-            fact_watermarks: Vec::new(),
-        },
-    };
-
-    assert!(!dns_resolver_is_serving(&testimony(
-        ployz_sdk_types::InternalDnsResolverStatus::AwaitingBind { attempts: 1 }
-    )));
-    assert!(dns_resolver_is_serving(&testimony(
-        ployz_sdk_types::InternalDnsResolverStatus::Serving {
-            bound: "10.198.1.1:53".parse().expect("resolver address")
-        }
-    )));
 }

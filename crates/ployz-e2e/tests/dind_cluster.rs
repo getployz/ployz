@@ -1,7 +1,6 @@
 //! Gated Docker-in-Docker harness tests.
 //!
-//! Run with: `PLOYZ_DIND_E2E=1 cargo test -p ployz-e2e --test dind_cluster
-//! -- --test-threads=1`. Requires the machine image from
+//! Run with `scripts/dind-e2e.sh`. Requires the machine image from
 //! `scripts/build-dind-machine-image.sh` and Docker with `--privileged`
 //! support. `PLOYZ_DIND_KEEP=1` keeps the cluster running for debugging;
 //! `scripts/dind-clean.sh` sweeps leftovers.
@@ -19,6 +18,8 @@
 mod acceptance;
 #[path = "dind_cluster/network.rs"]
 mod network;
+#[path = "dind_cluster/placement.rs"]
+mod placement;
 #[path = "dind_cluster/rollback.rs"]
 mod rollback;
 mod support;
@@ -26,7 +27,10 @@ mod support;
 use futures_util::StreamExt;
 use ployz::compose::{ComposeInput, UnsupportedFieldMode, parse_deploy_file};
 use ployz::image_push::{prepare_deploy_images, push_local_image};
-use ployz_core::dataplane::DEFAULT_WIREGUARD_LISTEN_PORT;
+use ployz_core::dataplane::{
+    DEFAULT_WIREGUARD_LISTEN_PORT, MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS,
+    WireGuardHandshakeStatus,
+};
 use ployz_core::deploy::{
     ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerMountPath,
     ContainerResourceLimits, ContainerRestartPolicy, ContainerRuntimeSpec, DependencyCondition,
@@ -49,12 +53,9 @@ use ployz_core::permissions::inbox_subscribe_scope;
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{MachineServiceEndpoint, OPERATOR_RUNTIME_SNAPSHOT, machine_service};
 use ployz_e2e::bollard::body_full;
-use ployz_e2e::bollard::query_parameters::{
-    BuildImageOptionsBuilder, ListContainersOptionsBuilder, ListNetworksOptionsBuilder,
-};
+use ployz_e2e::bollard::query_parameters::BuildImageOptionsBuilder;
 use ployz_e2e::dind::{
-    self, DindCluster, DindClusterSpec, DindMachine, DindMachineRole, MACHINE_NATS_PORT,
-    MachineSpec, exec_in_container, read_file_from_container,
+    self, DindMachine, MACHINE_NATS_PORT, exec_in_container, read_file_from_container,
 };
 use ployz_nats::connect::{NatsClientUrl, connect_with_timeout};
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
@@ -88,7 +89,9 @@ use support::dind::formation::{
     init_core_cluster, submit_machine_add,
 };
 use support::dind::join::{parse_install_line, run_edge_join, run_edge_join_outcome};
-use support::dind::{AUTHORIZED_USERS_FILE, CONNECT_TIMEOUT, EDGE_NATS_CREDS_FILE, with_evidence};
+use support::dind::{
+    AUTHORIZED_USERS_FILE, CONNECT_TIMEOUT, EDGE_NATS_CREDS_FILE, timed, with_evidence,
+};
 
 /// The workload image `scripts/build-dind-machine-image.sh` bakes into the
 /// machine image; the inner Docker daemons load it at boot.
@@ -102,131 +105,72 @@ const WORKLOAD_ENDPOINT_PORT: u16 = 80;
 /// (includes the image pull check and WireGuard/eBPF preparation).
 const DEPLOY_TERMINAL_BUDGET: Duration = Duration::from_secs(300);
 
-/// Smoke test: one machine boots to systemd + inner-docker readiness with the
-/// artifact mount in place, and teardown leaves nothing labeled behind.
 #[tokio::test]
-async fn boots_machine_image() {
-    if !dind::e2e_enabled() {
-        return;
-    }
-    let docker = dind::connect_docker().expect("connect to Docker daemon");
-    let spec = DindClusterSpec {
-        artifact_dir: dind::artifact_dir(),
-        machines: vec![MachineSpec {
-            role: DindMachineRole::Core,
-            image: dind::machine_image(),
-        }],
-    };
-    let cluster = DindCluster::provision(&docker, spec)
-        .await
-        .expect("provision one-machine DinD cluster");
-
-    // Provisioning already waited for readiness; assert it holds from the
-    // outside through the same exec surface scenarios will use.
-    with_evidence(&cluster, async {
-        let system_state = exec_in_container(
-            &docker,
-            &cluster.core().container_id,
-            &["systemctl", "is-system-running"],
-        )
-        .await;
-        assert!(
-            matches!(
-                &system_state,
-                Ok(outcome) if matches!(outcome.stdout.trim(), "running" | "degraded")
-            ),
-            "core systemd not ready: {system_state:?}"
-        );
-
-        let inner_docker =
-            exec_in_container(&docker, &cluster.core().container_id, &["docker", "info"]).await;
-        assert!(
-            matches!(&inner_docker, Ok(outcome) if outcome.success()),
-            "inner docker not ready: {inner_docker:?}"
-        );
-
-        let nested_workload = exec_in_container(
-            &docker,
-            &cluster.core().container_id,
-            &["docker", "run", "--rm", WORKLOAD_IMAGE, "true"],
-        )
-        .await;
-        assert!(
-            matches!(&nested_workload, Ok(outcome) if outcome.success()),
-            "inner docker cannot start a workload: {nested_workload:?}"
-        );
-
-        let artifacts = exec_in_container(
-            &docker,
-            &cluster.core().container_id,
-            &["test", "-x", "/opt/ployz/artifacts/ployzd"],
-        )
-        .await;
-        assert!(
-            matches!(&artifacts, Ok(outcome) if outcome.success()),
-            "artifact mount missing executable ployzd: {artifacts:?}"
-        );
-    })
-    .await;
-
-    if dind::keep_requested() {
-        eprintln!(
-            "PLOYZ_DIND_KEEP=1: keeping run {} (network {}, core container {})",
-            cluster.run_id(),
-            cluster.network_name(),
-            cluster.core().container_id,
-        );
-        return;
-    }
-
-    let run_label = format!("{}={}", dind::RUN_LABEL, cluster.run_id());
-    cluster.teardown().await.expect("teardown DinD cluster");
-
-    let filters = HashMap::from([("label".to_owned(), vec![run_label])]);
-    let leftover_containers = docker
-        .list_containers(Some(
-            ListContainersOptionsBuilder::new()
-                .all(true)
-                .filters(&filters)
-                .build(),
-        ))
-        .await
-        .expect("list containers after teardown");
-    assert!(
-        leftover_containers.is_empty(),
-        "teardown left labeled containers behind: {leftover_containers:?}"
-    );
-    let leftover_networks = docker
-        .list_networks(Some(
-            ListNetworksOptionsBuilder::new().filters(&filters).build(),
-        ))
-        .await
-        .expect("list networks after teardown");
-    assert!(
-        leftover_networks.is_empty(),
-        "teardown left labeled networks behind: {leftover_networks:?}"
-    );
-}
-
-/// Scenario 1 — machine init forms a TLS-authenticated core through product
-/// commands only and activates the first machine.
-#[tokio::test]
-async fn scenario_init_and_activate_first_machine() {
+async fn group_core_deploy_semantics() {
     if !dind::e2e_enabled() {
         return;
     }
     let docker = dind::connect_docker().expect("connect to Docker daemon");
     let core = init_core_cluster(&docker, 0).await;
+
+    timed(
+        "init_and_activate_first_machine",
+        assert_init_and_activate_first_machine(&core),
+    )
+    .await;
+    timed(
+        "auto_hostname_https_survives_core_stop",
+        assert_auto_hostname_https_survives_core_stop(&core),
+    )
+    .await;
+    timed(
+        "namespace_manifest_convergence",
+        assert_namespace_manifest_convergence_sweeps_failed_retry(&core),
+    )
+    .await;
+    timed(
+        "pre_start_hook",
+        assert_pre_start_hook_runs_before_service_and_failure_retains_evidence(&core),
+    )
+    .await;
+    timed(
+        "depends_on_order",
+        assert_services_start_in_depends_on_order(&core),
+    )
+    .await;
+    timed(
+        "deploy_rollback",
+        rollback::assert_deploy_rollback_replays_pinned_history(&core),
+    )
+    .await;
+    timed(
+        "private_registry_digest_pinning",
+        assert_private_registry_digest_pinning(&core),
+    )
+    .await;
+    timed(
+        "repush_new_layers",
+        assert_repush_transfers_only_new_layers(&core),
+    )
+    .await;
+
+    finish(core).await;
+}
+
+/// Scenario 1 — machine init forms a TLS-authenticated core through product
+/// commands only and activates the first machine.
+async fn assert_init_and_activate_first_machine(core: &CoreContext) {
+    let docker = &core.docker;
     with_evidence(&core.cluster, async {
         let cluster = &core.cluster;
         let machine_unit = "ployzd-machine-core_1";
         let gateway_unit = "ployzd-gateway";
         for unit in ["nats-server", "ployzd-control", machine_unit, gateway_unit] {
-            assert_unit_active(&core, cluster.core(), unit).await;
+            assert_unit_active(core, cluster.core(), unit).await;
         }
 
         let machine_seed = read_file_from_container(
-            &docker,
+            docker,
             &cluster.core().container_id,
             "/var/lib/ployz/nats/machine.seed",
         )
@@ -237,7 +181,7 @@ async fn scenario_init_and_activate_first_machine() {
             "machine.seed is an NKey user seed"
         );
 
-        wait_for_machine_observations(&core, &machine_id("core_1")).await;
+        wait_for_machine_observations(core, &machine_id("core_1")).await;
 
         for interface in ["br-ployz", "ployz-wg0"] {
             let link = core
@@ -264,7 +208,7 @@ async fn scenario_init_and_activate_first_machine() {
         );
 
         let controller = connect_core_client(
-            &core,
+            core,
             NatsPrincipal::Controller,
             &core.material.controller_seed,
         )
@@ -309,7 +253,7 @@ async fn scenario_init_and_activate_first_machine() {
         );
 
         let authorized =
-            read_file_from_container(&docker, &cluster.core().container_id, AUTHORIZED_USERS_FILE)
+            read_file_from_container(docker, &cluster.core().container_id, AUTHORIZED_USERS_FILE)
                 .await
                 .expect("authorized-users.conf is readable");
         for principal in ["controller", "operator", "join", "machine_core_1"] {
@@ -344,23 +288,15 @@ async fn scenario_init_and_activate_first_machine() {
         panic!("managed lease acquisition did not complete: {last_operations:?}");
     })
     .await;
-
-    finish(core).await;
 }
 
-#[tokio::test]
-async fn scenario_auto_hostname_https_survives_core_stop() {
-    if !dind::e2e_enabled() {
-        return;
-    }
-    let docker = dind::connect_docker().expect("connect to Docker daemon");
-    let core = init_core_cluster(&docker, 0).await;
+async fn assert_auto_hostname_https_survives_core_stop(core: &CoreContext) {
     with_evidence(&core.cluster, async {
         let first = core
             .api
             .deploy_submit(
                 &reserved_deploy_request(
-                    &core,
+                    core,
                     "idem_auto_https_first",
                     auto_hostname_deploy_target(),
                 )
@@ -369,7 +305,7 @@ async fn scenario_auto_hostname_https_survives_core_stop() {
             .await
             .expect("auto-hostname deploy submits");
         let status =
-            wait_for_terminal_deploy_status(&core, &first.operation_id, DEPLOY_TERMINAL_BUDGET)
+            wait_for_terminal_deploy_status(core, &first.operation_id, DEPLOY_TERMINAL_BUDGET)
                 .await;
         assert!(
             matches!(
@@ -383,7 +319,7 @@ async fn scenario_auto_hostname_https_survives_core_stop() {
         );
 
         let client = connect_core_client(
-            &core,
+            core,
             NatsPrincipal::Controller,
             &core.material.controller_seed,
         )
@@ -411,7 +347,7 @@ async fn scenario_auto_hostname_https_survives_core_stop() {
             .api
             .deploy_submit(
                 &reserved_deploy_request(
-                    &core,
+                    core,
                     "idem_auto_https_second",
                     auto_hostname_deploy_target(),
                 )
@@ -420,7 +356,7 @@ async fn scenario_auto_hostname_https_survives_core_stop() {
             .await
             .expect("auto-hostname redeploy submits");
         let second_status =
-            wait_for_terminal_deploy_status(&core, &second.operation_id, DEPLOY_TERMINAL_BUDGET)
+            wait_for_terminal_deploy_status(core, &second.operation_id, DEPLOY_TERMINAL_BUDGET)
                 .await;
         assert!(matches!(
             second_status,
@@ -475,41 +411,51 @@ async fn scenario_auto_hostname_https_survives_core_stop() {
             .exec_on(machine, &["systemctl", "start", "ployzd-control"])
             .await;
         assert!(started.success(), "restart core control: {started:?}");
+        wait_for_machine_observations(core, &machine_id("core_1")).await;
     })
     .await;
-    finish(core).await;
 }
 
 /// A failed deploy retains its stopped container for inspection until the
 /// next explicit deploy to the namespace sweeps the prior attempt.
-#[tokio::test]
-async fn scenario_namespace_manifest_convergence_sweeps_failed_retry() {
-    if !dind::e2e_enabled() {
-        return;
-    }
-    let docker = dind::connect_docker().expect("connect to Docker daemon");
-    let core = init_core_cluster(&docker, 0).await;
+async fn assert_namespace_manifest_convergence_sweeps_failed_retry(core: &CoreContext) {
     with_evidence(&core.cluster, async {
-        wait_for_machine_observations(&core, &machine_id("core_1")).await;
+        wait_for_machine_observations(core, &machine_id("core_1")).await;
 
+        let mut failed_target = convergence_deploy_target("sleep 600");
+        let [failed_service] = failed_target.services.as_mut_slice() else {
+            panic!("convergence target has one service");
+        };
+        failed_service.runtime.healthcheck = Some(always_failing_healthcheck());
+        let failed_reservation = core
+            .api
+            .deploy_reserve(&DeployReserveRequest {
+                namespace_id: failed_target.namespace_id.clone(),
+            })
+            .await
+            .expect("failed deploy reservation is issued");
+        let pushed = prepare_deploy_images(&core.api, &mut failed_target.services, false)
+            .await
+            .expect("convergence image pushes before deploy submit");
+        assert_eq!(pushed.len(), 1, "one convergence image must be pushed");
+        let [failed_service] = failed_target.services.as_slice() else {
+            panic!("convergence target has one service");
+        };
+        let mut retry_service = failed_service.clone();
+        retry_service.runtime.healthcheck = None;
         let failed = core
             .api
-            .deploy_submit(
-                &reserved_deploy_request(
-                    &core,
-                    "idem_dind_convergence_failed",
-                    // The 0.4s outlives at least one 100ms health poll (so the
-                    // container is sampled running) yet exits inside the 1.5s
-                    // running-confirmation window, exercising the fast-exit race.
-                    convergence_deploy_target("sleep 0.4; exit 42"),
-                )
-                .await,
-            )
+            .deploy_submit(&DeploySubmitRequest {
+                registry_credentials: std::collections::BTreeMap::new(),
+                idempotency_key: idempotency_key("idem_dind_convergence_failed"),
+                reservation_id: failed_reservation.reservation_id,
+                target: failed_target,
+            })
             .await
             .expect("failing deploy submits");
         let failed_operation = failed.operation_id;
         let failed_status =
-            wait_for_terminal_deploy_status(&core, &failed_operation, DEPLOY_TERMINAL_BUDGET).await;
+            wait_for_terminal_deploy_status(core, &failed_operation, DEPLOY_TERMINAL_BUDGET).await;
         let OperationStatus::Deploy {
             state:
                 DeployOperationState::Failed {
@@ -526,10 +472,11 @@ async fn scenario_namespace_manifest_convergence_sweeps_failed_retry() {
                 .iter()
                 .filter(|artifact| artifact.is_container())
                 .count(),
-            1
+            1,
+            "failed deploy must retain its container: {failed_failure:?}"
         );
 
-        let retained = namespace_managed_containers(&core, "converge").await;
+        let retained = namespace_managed_containers(core, "converge").await;
         assert!(
             retained.iter().any(|container| {
                 container.labels.get(OPERATION_ID_LABEL).map(String::as_str)
@@ -538,21 +485,21 @@ async fn scenario_namespace_manifest_convergence_sweeps_failed_retry() {
             "failed attempt container must be retained before retry: {retained:?}"
         );
 
+        let retry_target = DeployRequest {
+            namespace_id: namespace_id("converge"),
+            origin: None,
+            services: vec![retry_service],
+        };
         let retry = core
             .api
             .deploy_submit(
-                &reserved_deploy_request(
-                    &core,
-                    "idem_dind_convergence_retry",
-                    convergence_deploy_target("sleep 600"),
-                )
-                .await,
+                &reserved_deploy_request(core, "idem_dind_convergence_retry", retry_target).await,
             )
             .await
             .expect("retry deploy submits");
         let retry_operation = retry.operation_id;
         let retry_status =
-            wait_for_terminal_deploy_status(&core, &retry_operation, DEPLOY_TERMINAL_BUDGET).await;
+            wait_for_terminal_deploy_status(core, &retry_operation, DEPLOY_TERMINAL_BUDGET).await;
         assert!(
             matches!(
                 retry_status,
@@ -566,7 +513,7 @@ async fn scenario_namespace_manifest_convergence_sweeps_failed_retry() {
             "retry deploy did not complete: {retry_status:?}"
         );
 
-        let current = namespace_managed_containers(&core, "converge").await;
+        let current = namespace_managed_containers(core, "converge").await;
         assert!(
             current.iter().all(|container| {
                 container.labels.get(OPERATION_ID_LABEL).map(String::as_str)
@@ -582,7 +529,7 @@ async fn scenario_namespace_manifest_convergence_sweeps_failed_retry() {
             "retry's current attempt container must survive: {current:?}"
         );
 
-        let reread = operation_status(&core, &failed_operation).await;
+        let reread = operation_status(core, &failed_operation).await;
         let OperationStatus::Deploy {
             state:
                 DeployOperationState::Failed {
@@ -594,7 +541,7 @@ async fn scenario_namespace_manifest_convergence_sweeps_failed_retry() {
             panic!("failed deploy status must remain readable after sweep");
         };
         assert_eq!(reread_failure, failed_failure);
-        let events = terminal_operation_events(&core, &failed_operation).await;
+        let events = terminal_operation_events(core, &failed_operation).await;
         assert!(
             events.iter().any(|event| matches!(
                 event,
@@ -607,25 +554,19 @@ async fn scenario_namespace_manifest_convergence_sweeps_failed_retry() {
         );
     })
     .await;
-
-    finish(core).await;
 }
 
-#[tokio::test]
-async fn scenario_pre_start_hook_runs_before_service_and_failure_retains_evidence() {
-    if !dind::e2e_enabled() {
-        return;
-    }
-    let docker = dind::connect_docker().expect("connect to Docker daemon");
-    let core = init_core_cluster(&docker, 0).await;
+async fn assert_pre_start_hook_runs_before_service_and_failure_retains_evidence(
+    core: &CoreContext,
+) {
     with_evidence(&core.cluster, async {
-        wait_for_machine_observations(&core, &machine_id("core_1")).await;
+        wait_for_machine_observations(core, &machine_id("core_1")).await;
 
         let success = core
             .api
             .deploy_submit(
                 &reserved_deploy_request(
-                    &core,
+                    core,
                     "idem_dind_pre_start_success",
                     pre_start_deploy_target("pre_start_success", "echo ok > /data/marker"),
                 )
@@ -634,7 +575,7 @@ async fn scenario_pre_start_hook_runs_before_service_and_failure_retains_evidenc
             .await
             .expect("pre-start deploy submits");
         let success_status =
-            wait_for_terminal_deploy_status(&core, &success.operation_id, DEPLOY_TERMINAL_BUDGET)
+            wait_for_terminal_deploy_status(core, &success.operation_id, DEPLOY_TERMINAL_BUDGET)
                 .await;
         assert!(
             matches!(
@@ -648,7 +589,7 @@ async fn scenario_pre_start_hook_runs_before_service_and_failure_retains_evidenc
             ),
             "pre-start deploy did not complete: {success_status:?}"
         );
-        let running = managed_workload_containers(&core, core.cluster.core())
+        let running = managed_workload_containers(core, core.cluster.core())
             .await
             .into_iter()
             .filter(|container| {
@@ -671,7 +612,7 @@ async fn scenario_pre_start_hook_runs_before_service_and_failure_retains_evidenc
             .api
             .deploy_submit(
                 &reserved_deploy_request(
-                    &core,
+                    core,
                     "idem_dind_pre_start_failure",
                     pre_start_deploy_target("pre_start_failure", "exit 7"),
                 )
@@ -680,7 +621,7 @@ async fn scenario_pre_start_hook_runs_before_service_and_failure_retains_evidenc
             .await
             .expect("failing pre-start deploy submits");
         let failed_status =
-            wait_for_terminal_deploy_status(&core, &failed.operation_id, DEPLOY_TERMINAL_BUDGET)
+            wait_for_terminal_deploy_status(core, &failed.operation_id, DEPLOY_TERMINAL_BUDGET)
                 .await;
         let OperationStatus::Deploy {
             state: DeployOperationState::Failed { failure },
@@ -699,7 +640,7 @@ async fn scenario_pre_start_hook_runs_before_service_and_failure_retains_evidenc
             ),
             "unexpected pre-start failure: {failure:?}"
         );
-        let failed_containers = namespace_managed_containers(&core, "pre_start_failure").await;
+        let failed_containers = namespace_managed_containers(core, "pre_start_failure").await;
         assert!(
             failed_containers.iter().all(|container| {
                 container
@@ -722,23 +663,16 @@ async fn scenario_pre_start_hook_runs_before_service_and_failure_retains_evidenc
         );
     })
     .await;
-    finish(core).await;
 }
 
-#[tokio::test]
-async fn scenario_services_start_in_depends_on_order() {
-    if !dind::e2e_enabled() {
-        return;
-    }
-    let docker = dind::connect_docker().expect("connect to Docker daemon");
-    let core = init_core_cluster(&docker, 0).await;
+async fn assert_services_start_in_depends_on_order(core: &CoreContext) {
     with_evidence(&core.cluster, async {
-        wait_for_machine_observations(&core, &machine_id("core_1")).await;
+        wait_for_machine_observations(core, &machine_id("core_1")).await;
         let accepted = core
             .api
             .deploy_submit(
                 &reserved_deploy_request(
-                    &core,
+                    core,
                     "idem_dind_depends_on_order",
                     depends_on_deploy_target(),
                 )
@@ -747,7 +681,7 @@ async fn scenario_services_start_in_depends_on_order() {
             .await
             .expect("dependency deploy submits");
         let status =
-            wait_for_terminal_deploy_status(&core, &accepted.operation_id, DEPLOY_TERMINAL_BUDGET)
+            wait_for_terminal_deploy_status(core, &accepted.operation_id, DEPLOY_TERMINAL_BUDGET)
                 .await;
         assert!(
             matches!(
@@ -761,7 +695,7 @@ async fn scenario_services_start_in_depends_on_order() {
             ),
             "dependency deploy did not complete: {status:?}"
         );
-        let running = managed_workload_containers(&core, core.cluster.core())
+        let running = managed_workload_containers(core, core.cluster.core())
             .await
             .into_iter()
             .filter(|container| {
@@ -798,7 +732,7 @@ async fn scenario_services_start_in_depends_on_order() {
             "dependency must start first: {started_at:?}"
         );
 
-        let events = terminal_operation_events(&core, &accepted.operation_id).await;
+        let events = terminal_operation_events(core, &accepted.operation_id).await;
         let Some(plan) = events.iter().find_map(|event| {
             if let OperationEvent::DeployPlanCreated { plan, .. } = event {
                 Some(plan)
@@ -823,32 +757,24 @@ async fn scenario_services_start_in_depends_on_order() {
         );
     })
     .await;
-    finish(core).await;
 }
 
 /// Scenario 2 — machine add returns its operation id before the mint's
 /// reload lands, and the printed join bundle material drives the real
 /// `scripts/ployz.sh` join flow on an edge machine over direct TLS NATS.
-#[tokio::test]
-async fn scenario_machine_add_via_join_bundle() {
-    if !dind::e2e_enabled() {
-        return;
-    }
-    let docker = dind::connect_docker().expect("connect to Docker daemon");
-    // Product machine init forms and activates the core; this scenario owns
-    // the machine-add/join details through the explicit low-level path.
-    let core = init_core_cluster(&docker, 1).await;
+async fn join_edge_with_bundle_assertions(core: &CoreContext, edge: &DindMachine) {
+    let docker = &core.docker;
     with_evidence(&core.cluster, async {
         let cluster = &core.cluster;
 
         let add_operation = operation_id("op_add_edge_2");
-        let accepted = submit_machine_add(&core).await;
+        let accepted = submit_machine_add(core).await;
         assert_eq!(accepted.accepted.operation_id, add_operation);
 
         // The submit response carried the operation id before the mint's
         // reload landed: the immediately-replayed event page has no `reloaded`
         // event yet (minting is bounded operation work after acceptance).
-        let early_events = operation_events(&core, &add_operation).await;
+        let early_events = operation_events(core, &add_operation).await;
         assert!(
             !early_events.iter().any(|event| matches!(
                 event,
@@ -862,7 +788,7 @@ async fn scenario_machine_add_via_join_bundle() {
 
         // The install line is the product's own render of the join material;
         // the edge joins with exactly what it prints.
-        let install = parse_install_line(&core, accepted.clone());
+        let install = parse_install_line(core, accepted.clone());
         assert_eq!(
             install.nats_url,
             format!("tls://{}:{MACHINE_NATS_PORT}", core.core_ip()),
@@ -875,14 +801,11 @@ async fn scenario_machine_add_via_join_bundle() {
             "install line must carry the cluster CA"
         );
 
-        let [edge] = cluster.edges() else {
-            panic!("scenario requires exactly one edge machine");
-        };
-        run_edge_join(&core, edge, &install).await;
+        run_edge_join(core, edge, &install).await;
 
         // Join operation completed with the mint sequence ordered around
         // acceptance, and the machine is active.
-        let status = operation_status(&core, &add_operation).await;
+        let status = operation_status(core, &add_operation).await;
         let OperationStatus::MachineAdd { state, .. } = status else {
             panic!("machine add is not a machine add: {status:?}");
         };
@@ -891,7 +814,7 @@ async fn scenario_machine_add_via_join_bundle() {
             MachineAddOperationState::Completed,
             "machine add not completed"
         );
-        let events = terminal_operation_events(&core, &add_operation).await;
+        let events = terminal_operation_events(core, &add_operation).await;
         assert_machine_add_event_sequence(&events, &machine_id("edge_2"));
 
         let mangle_forward = core.exec_sh(edge, "iptables -t mangle -S FORWARD").await;
@@ -913,13 +836,12 @@ async fn scenario_machine_add_via_join_bundle() {
 
         // nats_connection readiness evidence: the edge's machine process connects
         // with its minted credential and publishes observations.
-        wait_for_machine_observations(&core, &machine_id("edge_2")).await;
+        wait_for_machine_observations(core, &machine_id("edge_2")).await;
 
         // The edge holds its own minted seed — not the controller's.
-        let edge_creds =
-            read_file_from_container(&docker, &edge.container_id, EDGE_NATS_CREDS_FILE)
-                .await
-                .expect("edge nats.creds exists after join");
+        let edge_creds = read_file_from_container(docker, &edge.container_id, EDGE_NATS_CREDS_FILE)
+            .await
+            .expect("edge nats.creds exists after join");
         assert!(
             edge_creds.trim().starts_with("SU"),
             "edge nats.creds is an NKey user seed"
@@ -932,7 +854,7 @@ async fn scenario_machine_add_via_join_bundle() {
 
         // Never-shrink: the edge key is appended alongside every prior user.
         let authorized =
-            read_file_from_container(&docker, &cluster.core().container_id, AUTHORIZED_USERS_FILE)
+            read_file_from_container(docker, &cluster.core().container_id, AUTHORIZED_USERS_FILE)
                 .await
                 .expect("authorized-users.conf is readable");
         for principal in [
@@ -951,7 +873,7 @@ async fn scenario_machine_add_via_join_bundle() {
         // No separate gateway credential exists: the edge gateway role env
         // points its seed file at the machine's Machine creds.
         let gateway_env =
-            read_file_from_container(&docker, &edge.container_id, "/etc/ployz/ployzd-gateway.env")
+            read_file_from_container(docker, &edge.container_id, "/etc/ployz/ployzd-gateway.env")
                 .await
                 .expect("edge gateway env file exists");
         assert!(
@@ -962,7 +884,7 @@ async fn scenario_machine_add_via_join_bundle() {
         // The join token is single-use: a completed machine-add scrubs its
         // token material, so re-redeeming is refused as an unknown token —
         // a typed refusal, not a fresh secret.
-        let join_client = connect_core_client(&core, NatsPrincipal::Join, &core.material.join_seed)
+        let join_client = connect_core_client(core, NatsPrincipal::Join, &core.material.join_seed)
             .await
             .expect("join principal connects");
         let redeem_again = OperationApiClient::new(join_client)
@@ -981,14 +903,12 @@ async fn scenario_machine_add_via_join_bundle() {
         }
     })
     .await;
-
-    finish(core).await;
 }
 
 /// An edge whose WireGuard UDP cannot reach the core keeps direct TLS NATS
 /// control-plane access but fails admission with typed overlay evidence.
 #[tokio::test]
-async fn scenario_machine_add_rejects_unreachable_overlay_peer() {
+async fn group_unreachable_join() {
     if !dind::e2e_enabled() {
         return;
     }
@@ -1041,14 +961,26 @@ async fn scenario_machine_add_rejects_unreachable_overlay_peer() {
             );
             tokio::time::sleep(Duration::from_millis(500)).await;
         };
-        assert!(matches!(
-            evidence.reason,
+        let (
             DataplaneProjectionAdmissionFailure::PeerHandshakeNever { peer_machine_id }
-                | DataplaneProjectionAdmissionFailure::PeerHandshakeStale {
-                    peer_machine_id,
-                    ..
-                } if peer_machine_id == machine_id("core_1")
-        ));
+            | DataplaneProjectionAdmissionFailure::PeerHandshakeStale {
+                peer_machine_id,
+                ..
+            }
+        ) = &evidence.reason
+        else {
+            panic!(
+                "unexpected projection admission failure: {:?}",
+                evidence.reason
+            );
+        };
+        let core_machine_id = machine_id("core_1");
+        let edge_machine_id = machine_id("edge_2");
+        assert!(
+            (evidence.machine_id == core_machine_id && peer_machine_id == &edge_machine_id)
+                || (evidence.machine_id == edge_machine_id && peer_machine_id == &core_machine_id),
+            "unexpected unreachable peer evidence: {evidence:?}"
+        );
     })
     .await;
 
@@ -1072,7 +1004,7 @@ async fn scenario_machine_add_rejects_unreachable_overlay_peer() {
 ///   clients, and over-reaching Machine/Join principals are refused by the
 ///   real cluster — which keeps serving afterwards.
 #[tokio::test]
-async fn scenario_deploy_restart_invisibility_and_auth_rejection() {
+async fn serial_smoke() {
     if !dind::e2e_enabled() {
         return;
     }
@@ -1085,15 +1017,45 @@ async fn scenario_deploy_restart_invisibility_and_auth_rejection() {
         let [edge] = cluster.edges() else {
             panic!("scenario requires exactly one edge machine");
         };
-        add_and_join_edge(&core, edge).await;
+        timed(
+            "machine_add_via_join_bundle",
+            join_edge_with_bundle_assertions(&core, edge),
+        )
+        .await;
         wait_for_machine_observations(&core, &machine_id("core_1")).await;
         wait_for_machine_observations(&core, &machine_id("edge_2")).await;
 
-        scenario_cross_machine_deploy(&core, edge).await;
-        scenario_daemon_restart_invisibility(&core, edge).await;
-        scenario_auth_rejection(&core, edge).await;
-        scenario_runtime_fields_deploy(&core).await;
-        scenario_named_volume_survives_redeploy(&core).await;
+        timed(
+            "cross_machine_deploy",
+            scenario_cross_machine_deploy(&core, edge),
+        )
+        .await;
+        let workload_image = core
+            .api
+            .service_inspect(&ServiceInspectRequest {
+                namespace_id: namespace_id("smoke"),
+                service_id: service_id("svc_smoke"),
+            })
+            .await
+            .expect("inspect resolved smoke image")
+            .active
+            .image;
+        timed(
+            "daemon_restart_invisibility",
+            scenario_daemon_restart_invisibility(&core, edge),
+        )
+        .await;
+        timed("auth_rejection", scenario_auth_rejection(&core, edge)).await;
+        timed(
+            "runtime_fields_deploy",
+            scenario_runtime_fields_deploy(&core, &workload_image),
+        )
+        .await;
+        timed(
+            "named_volume_redeploy",
+            scenario_named_volume_survives_redeploy(&core, &workload_image),
+        )
+        .await;
     })
     .await;
 
@@ -1102,28 +1064,12 @@ async fn scenario_deploy_restart_invisibility_and_auth_rejection() {
 
 /// A host-only image crosses the operator NATS connection once, then every
 /// selected machine pulls its pinned manifest from the seed over the mesh.
-#[tokio::test]
-async fn scenario_direct_push_multi_machine_deploy() {
-    if !dind::e2e_enabled() {
-        return;
-    }
-    let docker = dind::connect_docker().expect("connect to Docker daemon");
-    let core = init_core_cluster(&docker, 2).await;
+async fn assert_direct_push_multi_machine_deploy(core: &CoreContext) {
+    let docker = &core.docker;
     with_evidence(&core.cluster, async {
-        for edge in core.cluster.edges() {
-            add_and_join_edge(&core, edge).await;
-        }
-        for machine in [
-            machine_id("core_1"),
-            machine_id("edge_2"),
-            machine_id("edge_3"),
-        ] {
-            wait_for_machine_observations(&core, &machine).await;
-        }
-
         let tag = format!("ployz-e2e-push:{}", core.cluster.run_id().as_str());
         build_derived_image(
-            &docker,
+            docker,
             &tag,
             WORKLOAD_IMAGE,
             "ployz-marker",
@@ -1182,7 +1128,7 @@ async fn scenario_direct_push_multi_machine_deploy() {
             .await
             .expect("direct-push deploy submits");
         let status =
-            wait_for_terminal_deploy_status(&core, &accepted.operation_id, DEPLOY_TERMINAL_BUDGET)
+            wait_for_terminal_deploy_status(core, &accepted.operation_id, DEPLOY_TERMINAL_BUDGET)
                 .await;
         assert!(
             matches!(
@@ -1196,7 +1142,7 @@ async fn scenario_direct_push_multi_machine_deploy() {
             ),
             "direct-push deploy did not complete: {status:?}"
         );
-        let events = terminal_operation_events(&core, &accepted.operation_id).await;
+        let events = terminal_operation_events(core, &accepted.operation_id).await;
         assert!(events.iter().any(|event| matches!(
             event,
             OperationEvent::DeployImageAvailabilityVerified {
@@ -1209,7 +1155,7 @@ async fn scenario_direct_push_multi_machine_deploy() {
         let mut running = 0_usize;
         let mut running_machines = BTreeSet::new();
         for machine in std::iter::once(core.cluster.core()).chain(core.cluster.edges()) {
-            for container in managed_workload_containers(&core, machine)
+            for container in managed_workload_containers(core, machine)
                 .await
                 .into_iter()
                 .filter(|container| {
@@ -1253,21 +1199,14 @@ async fn scenario_direct_push_multi_machine_deploy() {
         );
     })
     .await;
-    finish(core).await;
 }
 
 /// A private Registry V2 image is resolved once through a target machine's
 /// Docker daemon, pulled by digest with an operation-scoped credential, and
 /// leaves no credential in machine or operation storage.
-#[tokio::test]
-async fn scenario_private_registry_digest_pinning() {
-    if !dind::e2e_enabled() {
-        return;
-    }
-    let docker = dind::connect_docker().expect("connect to Docker daemon");
-    let core = init_core_cluster(&docker, 0).await;
+async fn assert_private_registry_digest_pinning(core: &CoreContext) {
     with_evidence(&core.cluster, async {
-        wait_for_machine_observations(&core, &machine_id("core_1")).await;
+        wait_for_machine_observations(core, &machine_id("core_1")).await;
         let registry_host = "127.0.0.1";
         let requested = ImageReference::try_new(format!(
             "{registry_host}:5001/private/nginx:1"
@@ -1335,7 +1274,7 @@ exit 1",
             .await
             .expect("private registry deploy submits");
         let status =
-            wait_for_terminal_deploy_status(&core, &accepted.operation_id, DEPLOY_TERMINAL_BUDGET)
+            wait_for_terminal_deploy_status(core, &accepted.operation_id, DEPLOY_TERMINAL_BUDGET)
                 .await;
         assert!(
             matches!(
@@ -1350,7 +1289,7 @@ exit 1",
             "private registry deploy did not complete: {status:?}"
         );
 
-        let events = terminal_operation_events(&core, &accepted.operation_id).await;
+        let events = terminal_operation_events(core, &accepted.operation_id).await;
         let resolved = events.iter().find_map(|event| {
             let OperationEvent::DeployImageResolved {
                 service_id,
@@ -1399,28 +1338,22 @@ if grep -R -F 's3cr3t' /etc/ployz /var/lib/ployz /root/.docker 2>/dev/null; then
         );
     })
     .await;
-    finish(core).await;
 }
 
 /// A second image derived from the first reuses every parent layer and sends
 /// only its newly-added layer to the seed.
-#[tokio::test]
-async fn scenario_repush_transfers_only_new_layers() {
-    if !dind::e2e_enabled() {
-        return;
-    }
-    let docker = dind::connect_docker().expect("connect to Docker daemon");
-    let core = init_core_cluster(&docker, 0).await;
+async fn assert_repush_transfers_only_new_layers(core: &CoreContext) {
+    let docker = &core.docker;
     with_evidence(&core.cluster, async {
-        wait_for_machine_observations(&core, &machine_id("core_1")).await;
+        wait_for_machine_observations(core, &machine_id("core_1")).await;
         let suffix = core.cluster.run_id().as_str();
         let tag_a = format!("ployz-e2e-repush-a:{suffix}");
         let tag_b = format!("ployz-e2e-repush-b:{suffix}");
-        build_derived_image(&docker, &tag_a, WORKLOAD_IMAGE, "layer-a", suffix).await;
-        build_derived_image(&docker, &tag_b, &tag_a, "layer-b", suffix).await;
+        build_derived_image(docker, &tag_a, WORKLOAD_IMAGE, "layer-a", suffix).await;
+        build_derived_image(docker, &tag_b, &tag_a, "layer-b", suffix).await;
         let first = push_local_image(
             &core.api.nats_client(),
-            &docker,
+            docker,
             &machine_id("core_1"),
             ImageReference::try_new(&tag_a).expect("valid first image reference"),
         )
@@ -1428,7 +1361,7 @@ async fn scenario_repush_transfers_only_new_layers() {
         .expect("first image pushes");
         let second = push_local_image(
             &core.api.nats_client(),
-            &docker,
+            docker,
             &machine_id("core_1"),
             ImageReference::try_new(&tag_b).expect("valid second image reference"),
         )
@@ -1457,34 +1390,27 @@ async fn scenario_repush_transfers_only_new_layers() {
         );
     })
     .await;
-    finish(core).await;
 }
 
 /// A workload resolves a sibling service by its plain service id when the
 /// target container runs on the other machine.
-#[tokio::test]
-async fn scenario_internal_service_dns_reaches_cross_machine_sibling() {
-    if !dind::e2e_enabled() {
-        return;
-    }
-    let docker = dind::connect_docker().expect("connect to Docker daemon");
-    let core = init_core_cluster(&docker, 1).await;
+async fn assert_internal_service_dns_reaches_cross_machine_sibling(core: &CoreContext) {
+    let docker = &core.docker;
     with_evidence(&core.cluster, async {
         let [edge] = core.cluster.edges() else {
             panic!("scenario requires exactly one edge machine");
         };
-        add_and_join_edge(&core, edge).await;
-        wait_for_machine_observations(&core, &machine_id("core_1")).await;
-        wait_for_machine_observations(&core, &machine_id("edge_2")).await;
+        wait_for_machine_observations(core, &machine_id("core_1")).await;
+        wait_for_machine_observations(core, &machine_id("edge_2")).await;
         for machine in [core.cluster.core(), edge] {
-            assert_unit_active(&core, machine, "ployzd-dns").await;
+            assert_unit_active(core, machine, "ployzd-dns").await;
         }
 
         let accepted = core
             .api
             .deploy_submit(
                 &reserved_deploy_request(
-                    &core,
+                    core,
                     "idem_dind_internal_dns",
                     internal_dns_deploy_target(),
                 )
@@ -1493,7 +1419,7 @@ async fn scenario_internal_service_dns_reaches_cross_machine_sibling() {
             .await
             .expect("internal DNS deploy submits");
         let status =
-            wait_for_terminal_deploy_status(&core, &accepted.operation_id, DEPLOY_TERMINAL_BUDGET)
+            wait_for_terminal_deploy_status(core, &accepted.operation_id, DEPLOY_TERMINAL_BUDGET)
                 .await;
         assert!(
             matches!(
@@ -1511,7 +1437,7 @@ async fn scenario_internal_service_dns_reaches_cross_machine_sibling() {
         let mut servers = Vec::new();
         let mut clients = Vec::new();
         for machine in std::iter::once(core.cluster.core()).chain(core.cluster.edges()) {
-            for container in managed_workload_containers(&core, machine).await {
+            for container in managed_workload_containers(core, machine).await {
                 match container.labels.get(SERVICE_ID_LABEL).map(String::as_str) {
                     Some("server") => servers.push((machine.clone(), container)),
                     Some("client") => clients.push((machine.clone(), container)),
@@ -1538,7 +1464,7 @@ async fn scenario_internal_service_dns_reaches_cross_machine_sibling() {
         let deadline = Instant::now() + OVERLAY_FIRST_CONTACT_BUDGET;
         let last = loop {
             let outcome = exec_in_container(
-                &docker,
+                docker,
                 &client_machine.container_id,
                 &[
                     "docker",
@@ -1566,7 +1492,7 @@ async fn scenario_internal_service_dns_reaches_cross_machine_sibling() {
         );
 
         let stopped_control = exec_in_container(
-            &docker,
+            docker,
             &core.cluster.core().container_id,
             &["systemctl", "stop", "ployzd-control"],
         )
@@ -1579,7 +1505,7 @@ async fn scenario_internal_service_dns_reaches_cross_machine_sibling() {
         let deadline = Instant::now() + OVERLAY_FIRST_CONTACT_BUDGET;
         let last = loop {
             let outcome = exec_in_container(
-                &docker,
+                docker,
                 &client_machine.container_id,
                 &[
                     "docker",
@@ -1605,7 +1531,7 @@ async fn scenario_internal_service_dns_reaches_cross_machine_sibling() {
         );
 
         let stopped_server = exec_in_container(
-            &docker,
+            docker,
             &server_machine.container_id,
             &["docker", "stop", &server.id],
         )
@@ -1618,7 +1544,7 @@ async fn scenario_internal_service_dns_reaches_cross_machine_sibling() {
         let deadline = Instant::now() + OVERLAY_FIRST_CONTACT_BUDGET;
         let last = loop {
             let outcome = exec_in_container(
-                &docker,
+                docker,
                 &client_machine.container_id,
                 &[
                     "docker",
@@ -1646,8 +1572,6 @@ async fn scenario_internal_service_dns_reaches_cross_machine_sibling() {
         );
     })
     .await;
-
-    finish(core).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -1859,14 +1783,14 @@ async fn assert_overlay_http(
 
 /// Deploys command and environment through the real machine Docker path and
 /// checks the created container's Docker config.
-async fn scenario_runtime_fields_deploy(core: &CoreContext) {
+async fn scenario_runtime_fields_deploy(core: &CoreContext, workload_image: &ImageReference) {
     let accepted = core
         .api
         .deploy_submit(
             &reserved_deploy_request(
                 core,
                 "idem_dind_runtime_fields",
-                runtime_fields_deploy_target(),
+                runtime_fields_deploy_target(workload_image),
             )
             .await,
         )
@@ -1936,17 +1860,17 @@ async fn scenario_runtime_fields_deploy(core: &CoreContext) {
     assert_eq!(container.memory, 64_000_000);
     assert_eq!(container.pids_limit, 64);
 
-    scenario_failing_healthcheck_deploy(core).await;
+    scenario_failing_healthcheck_deploy(core, workload_image).await;
 }
 
-async fn scenario_failing_healthcheck_deploy(core: &CoreContext) {
+async fn scenario_failing_healthcheck_deploy(core: &CoreContext, workload_image: &ImageReference) {
     let accepted = core
         .api
         .deploy_submit(
             &reserved_deploy_request(
                 core,
                 "idem_dind_failing_healthcheck",
-                failing_healthcheck_deploy_target(),
+                failing_healthcheck_deploy_target(workload_image),
             )
             .await,
         )
@@ -2005,14 +1929,20 @@ async fn scenario_failing_healthcheck_deploy(core: &CoreContext) {
 }
 
 /// Exercises the complete explicit named-volume lifecycle.
-async fn scenario_named_volume_survives_redeploy(core: &CoreContext) {
+async fn scenario_named_volume_survives_redeploy(
+    core: &CoreContext,
+    workload_image: &ImageReference,
+) {
     let first = core
         .api
         .deploy_submit(
             &reserved_deploy_request(
                 core,
                 "idem_dind_volume_first",
-                volume_deploy_target("printf first > /data/marker; while true; do sleep 600; done"),
+                volume_deploy_target(
+                    workload_image,
+                    "printf first > /data/marker; while true; do sleep 600; done",
+                ),
             )
             .await,
         )
@@ -2039,6 +1969,7 @@ async fn scenario_named_volume_survives_redeploy(core: &CoreContext) {
             core,
             "idem_dind_volume_second",
             volume_deploy_target(
+                workload_image,
                 "cat /data/marker > /tmp/restored-marker || true; while true; do sleep 600; done",
             ),
         ).await)
@@ -2097,7 +2028,7 @@ async fn scenario_named_volume_survives_redeploy(core: &CoreContext) {
             &reserved_deploy_request(
                 core,
                 "idem_dind_volume_drop_mount",
-                volume_deploy_target_without_mount(),
+                volume_deploy_target_without_mount(workload_image),
             )
             .await,
         )
@@ -2128,7 +2059,7 @@ async fn scenario_named_volume_survives_redeploy(core: &CoreContext) {
                 "--rm",
                 "-v",
                 &format!("{docker_volume_name}:/data"),
-                WORKLOAD_IMAGE,
+                workload_image.as_str(),
                 "cat",
                 "/data/marker",
             ],
@@ -2146,6 +2077,7 @@ async fn scenario_named_volume_survives_redeploy(core: &CoreContext) {
                 core,
                 "idem_dind_volume_reattach",
                 volume_deploy_target(
+                    workload_image,
                     "cat /data/marker > /tmp/reattached-marker; while true; do sleep 600; done",
                 ),
             )
@@ -2375,13 +2307,13 @@ fn internal_dns_deploy_target() -> DeployRequest {
     }
 }
 
-fn runtime_fields_deploy_target() -> DeployRequest {
+fn runtime_fields_deploy_target(workload_image: &ImageReference) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("runtime"),
         origin: None,
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_runtime"),
-            image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
+            image: workload_image.clone(),
             image_source: ployz_core::deploy::ImageSource::Registry,
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
             runtime: runtime_fields_spec(),
@@ -2392,13 +2324,14 @@ fn runtime_fields_deploy_target() -> DeployRequest {
     }
 }
 
-fn volume_deploy_target(command: &str) -> DeployRequest {
+fn volume_deploy_target(workload_image: &ImageReference, command: &str) -> DeployRequest {
+    let workload_image = workload_image.as_str();
     let source = format!(
         r#"
 name: volume
 services:
   svc_volume:
-    image: {WORKLOAD_IMAGE}
+    image: {workload_image}
     command: ["sh", "-c", {command:?}]
     volumes: [data:/data]
 volumes:
@@ -2421,8 +2354,8 @@ volumes:
     }
 }
 
-fn volume_deploy_target_without_mount() -> DeployRequest {
-    let mut target = volume_deploy_target("while true; do sleep 600; done");
+fn volume_deploy_target_without_mount(workload_image: &ImageReference) -> DeployRequest {
+    let mut target = volume_deploy_target(workload_image, "while true; do sleep 600; done");
     let [service] = target.services.as_mut_slice() else {
         panic!("volume target has one service");
     };
@@ -2430,7 +2363,7 @@ fn volume_deploy_target_without_mount() -> DeployRequest {
     target
 }
 
-fn failing_healthcheck_deploy_target() -> DeployRequest {
+fn failing_healthcheck_deploy_target(workload_image: &ImageReference) -> DeployRequest {
     let mut runtime = ContainerRuntimeSpec::image_defaults();
     runtime.command = Some(
         ContainerCommand::try_new(vec![
@@ -2440,21 +2373,13 @@ fn failing_healthcheck_deploy_target() -> DeployRequest {
         ])
         .expect("valid runtime command"),
     );
-    runtime.healthcheck = Some(ContainerHealthcheck {
-        test: ContainerHealthcheckTest::Shell(
-            HealthcheckShellCommand::try_new("exit 1").expect("valid healthcheck"),
-        ),
-        interval: Some(HealthcheckDurationNanos::try_new(1_000_000_000).expect("duration")),
-        timeout: Some(HealthcheckDurationNanos::try_new(1_000_000_000).expect("duration")),
-        retries: Some(HealthcheckRetries::try_new(1).expect("retries")),
-        start_period: Some(HealthcheckDurationNanos::try_new(1_000_000_000).expect("duration")),
-    });
+    runtime.healthcheck = Some(always_failing_healthcheck());
     DeployRequest {
         namespace_id: namespace_id("bad_health"),
         origin: None,
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_bad_health"),
-            image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
+            image: workload_image.clone(),
             image_source: ployz_core::deploy::ImageSource::Registry,
             replicas: ReplicaCount::try_new(1).expect("valid replica count"),
             runtime,
@@ -2462,6 +2387,18 @@ fn failing_healthcheck_deploy_target() -> DeployRequest {
             depends_on: Vec::new(),
             routes: Vec::new(),
         }],
+    }
+}
+
+fn always_failing_healthcheck() -> ContainerHealthcheck {
+    ContainerHealthcheck {
+        test: ContainerHealthcheckTest::Shell(
+            HealthcheckShellCommand::try_new("exit 1").expect("valid healthcheck"),
+        ),
+        interval: Some(HealthcheckDurationNanos::try_new(1_000_000_000).expect("duration")),
+        timeout: Some(HealthcheckDurationNanos::try_new(1_000_000_000).expect("duration")),
+        retries: Some(HealthcheckRetries::try_new(1).expect("retries")),
+        start_period: Some(HealthcheckDurationNanos::try_new(1_000_000_000).expect("duration")),
     }
 }
 
@@ -2765,6 +2702,51 @@ async fn scenario_daemon_restart_invisibility(core: &CoreContext, edge: &DindMac
     // observed container set).
     wait_for_matching_snapshot(core, &machine_id("core_1"), &core_snapshot_before).await;
     wait_for_matching_snapshot(core, &machine_id("edge_2"), &edge_snapshot_before).await;
+    wait_for_fresh_peer_handshakes(core).await;
+}
+
+async fn wait_for_fresh_peer_handshakes(core: &CoreContext) {
+    let expected_machines = core
+        .api
+        .machine_list(&MachineListRequest {})
+        .await
+        .expect("list machines before handshake wait")
+        .machines
+        .len();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let status = core
+            .api
+            .network_status(&ployz_sdk_types::NetworkStatusRequest::First {
+                mode: ployz_sdk_types::NetworkStatusMode::Snapshot,
+            })
+            .await
+            .expect("read dataplane testimony after daemon restart");
+        let ready = status.machines.len() == expected_machines
+            && status.machines.iter().all(|machine| {
+                let ployz_sdk_types::NetworkDataplaneTestimony::Answered { value } =
+                    &machine.dataplane
+                else {
+                    return false;
+                };
+                value.wireguard.peers.len() == expected_machines.saturating_sub(1)
+                    && value.wireguard.peers.iter().all(|peer| {
+                        matches!(
+                            peer.handshake,
+                            WireGuardHandshakeStatus::Ago { seconds }
+                                if seconds <= MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS
+                        )
+                    })
+            });
+        if ready {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "peer handshakes did not recover after daemon restart: {status:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }
 
 /// Sorted running managed-container IDs inside one machine.

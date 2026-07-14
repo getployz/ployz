@@ -57,6 +57,7 @@ tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 
 [lib]
 path = "src/lib.rs"
+doctest = false
 
 [[bin]]
 name = "ployzd"

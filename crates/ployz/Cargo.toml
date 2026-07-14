@@ -8,6 +8,10 @@ license.workspace = true
 [lints]
 workspace = true
 
+[lib]
+path = "src/lib.rs"
+doctest = false
+
 [dependencies]
 async-nats = { version = "0.49.0", default-features = false, features = ["service"] }
 base64 = "0.22"

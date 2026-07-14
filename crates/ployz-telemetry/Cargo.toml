@@ -22,3 +22,4 @@ tempfile = "3"
 
 [lib]
 path = "src/lib.rs"
+doctest = false

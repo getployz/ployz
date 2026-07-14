@@ -13,9 +13,8 @@ owns the Ployz Native Mesh dataplane proof.
 - Docker with `--privileged` container support: OrbStack or Docker Desktop on
   macOS, plain Docker on Linux. The harness connects from the environment
   (`DOCKER_HOST` honored), so any of these contexts work.
-- Roughly 4 GB of memory per two-machine cluster pair. The suite serializes
-  (`--test-threads=1`) so only one cluster exists at a time — do not run
-  scenarios in parallel.
+- Roughly 4 GB of memory per two-machine cluster pair. The smoke path runs
+  alone; the remaining groups use two workers by default.
 - Host-arch Linux artifacts. Everything is built for the Docker server's
   architecture (`docker info --format '{{.Architecture}}'`); nothing
   hardcodes amd64, so Apple Silicon hosts build and run arm64 throughout.
@@ -28,8 +27,9 @@ owns the Ployz Native Mesh dataplane proof.
 scripts/dind-e2e.sh
 ```
 
-This rebuilds the linux release artifacts and the machine image, then runs
-the gated suite with `PLOYZ_DIND_E2E=1` and `--test-threads=1`.
+The default gated suite refreshes every mutable workload image tag, rebuilds
+the machine image, disables incremental compilation, and runs every scenario.
+This keeps the final verification command clean and reproducible.
 
 ## Manual Pieces
 
@@ -44,10 +44,10 @@ dockerd, `nats-server`, baked workload tarball) and host-arch release
 binaries under `/tmp/ployz-dind-machine-target/release/` that the harness
 volume-mounts read-only at `/opt/ployz/artifacts` inside every machine.
 
-Run the suite directly:
+Run one group directly:
 
 ```sh
-PLOYZ_DIND_E2E=1 cargo test -p ployz-e2e --test dind_cluster -- --test-threads=1
+PLOYZ_DIND_E2E=1 cargo test -p ployz-e2e --test dind_cluster group_core_deploy_semantics -- --nocapture
 ```
 
 ## Running A Single Scenario
@@ -55,27 +55,35 @@ PLOYZ_DIND_E2E=1 cargo test -p ployz-e2e --test dind_cluster -- --test-threads=1
 Pass the test name (or any prefix) as a filter:
 
 ```sh
-scripts/dind-e2e.sh scenario_machine_add_via_join_bundle
+scripts/dind-e2e.sh group_core_deploy_semantics --exact
 ```
 
-Scenarios in `crates/ployz-e2e/tests/dind_cluster.rs`:
+Filtered runs reuse the existing machine image when its platform
+and substrate fingerprint match the current Dockerfile, Docker daemon
+configuration, image loader unit, NATS version, and workload image references.
+They rebuild only the mounted Rust and eBPF artifacts with Cargo incremental
+compilation enabled.
+A missing, stale, or wrong-platform machine image falls back to the full build.
 
-- `boots_machine_image` — smoke: one machine reaches systemd + inner-docker
-  readiness; teardown leaves nothing labeled behind.
-- `scenario_init_and_activate_first_machine` — Host Runner first-machine install +
-  `init activate-first-machine` through the real product path; mint event
-  sequence, unit states, authority file, and bootstrap evidence.
-- `scenario_machine_add_via_join_bundle` — `machine add` + the
-  `scripts/ployz.sh` join flow on an edge machine; per-machine credential
-  minting, never-shrinking authority file, single-use join token.
-- `scenario_deploy_restart_invisibility_and_auth_rejection` — cross-machine
-  deploy serving through both gateways, daemon restarts invisible to the
-  data plane, and auth rejection (bad NKey, no TLS, scope violations, inbox
-  isolation) against the live cluster.
-- `scenario_v1_acceptance_five_steps_on_fresh_machines` — the five-step v1
-  acceptance journey on three fresh machines: form the cluster, deploy Umami
-  with PostgreSQL, diagnose failed deploys, prove Core downtime is invisible
-  to traffic, then retry and roll back through explicit operations.
+Unfiltered and `--full` runs always pull all four workload references so mutable tags are
+refreshed. Unchanged image IDs reuse their existing tar archives; changed or
+missing archives are saved atomically before the machine image is rebuilt.
+The shared builder image contains the native and eBPF toolchains, so editing
+`ployzd` does not reinstall system packages or Rust tooling.
+
+The suite owns six cluster lifecycles:
+
+- `serial_smoke` — init, detailed edge join, cross-machine deploy, runtime
+  fields, volumes, daemon restart, auth rejection, and teardown.
+- `group_core_deploy_semantics` — single-machine deploy convergence, hooks,
+  dependency ordering, registry behavior, repush, and rollback.
+- `group_network_repair` — two-machine network testimony, repair, resolver,
+  cross-machine DNS traffic, and last-known-good behavior.
+- `group_placement_peer_health` — direct image push and three-machine
+  placement under silent and unhealthy peers.
+- `group_unreachable_join` — isolated typed admission failure for an
+  unreachable overlay peer.
+- `group_v1_acceptance` — the five-step v1 journey on fresh machines.
 
 Harness provisioning and observation are test plumbing. Every product action
 in the five steps uses the shipped `ployz` command surface and the real install
@@ -91,6 +99,8 @@ prerequisite evidence; they do not add steps to this scenario.
 | `PLOYZ_DIND_MACHINE_IMAGE` | Machine image tag (default `ployz-dind-machine:local`). |
 | `PLOYZ_DIND_ARTIFACT_DIR` | Host directory with the linux binaries (default `/tmp/ployz-dind-machine-target/release`). |
 | `PLOYZ_DIND_TARGET_DIR` | Build target dir used by the build script and the wrapper's marker file (default `/tmp/ployz-dind-machine-target`). |
+| `PLOYZ_DIND_BUILDER_IMAGE` | Shared native/eBPF builder image (default `ployz-dind-builder:rust-1.91-bookworm-v2`). |
+| `PLOYZ_DIND_WORKERS` | Concurrent compatible groups: `1`, `2` (default), or `3`. The heavyweight acceptance group stays serial. |
 
 ## Evidence
 
@@ -106,7 +116,8 @@ target/dind-evidence/<run_id>/<machine>/
 
 Logs are evidence, not the audience: tests assert on operation status and
 events; these dumps exist so a failed gated run leaves something
-inspectable behind.
+inspectable behind. Every group and nested scenario also emits a stable
+`DIND_TIMING name=... status=... elapsed_ms=...` line.
 
 ## Cleanup
 

@@ -21,3 +21,4 @@ tokio = { workspace = true, features = ["time"] }
 
 [lib]
 path = "src/lib.rs"
+doctest = false

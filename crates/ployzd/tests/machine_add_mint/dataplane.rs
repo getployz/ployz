@@ -1,5 +1,6 @@
 use super::*;
 use futures_util::StreamExt;
+use ployz_core::cert::{ManagedLeaseIntent, PublicUrlMode};
 use ployz_core::dataplane::WireGuardPublicKey;
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::nats_config::NatsUserSeed;
@@ -7,7 +8,7 @@ use ployz_core::security::NatsPrincipal;
 use ployz_core::state::{MachineEndpointObservation, StagedMachineDataplaneState};
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::connect::connect_authenticated;
-use ployz_sdk_types::MachineJoinToken;
+use ployz_sdk_types::{InitFirstMachineActivateRequest, MachineJoinToken};
 use ployzd::roles::machine::protocol::{
     MachineDataplanePublicKeyRpcOk, MachineDataplanePublicKeyRpcResponse, MachineFactsGetRpcOk,
     MachineFactsGetRpcResponse,
@@ -162,6 +163,75 @@ async fn completed_report_can_repair_activation_before_secret_scrub() {
         secret_row_count(&nats, "machine_add_submissions", "op_repair_scrub"),
         0,
         "successful activation scrubs completed machine-add secrets"
+    );
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn first_machine_activation_repairs_completed_operation_without_roster() {
+    let _guard = lock_machine_add_mint_test().await;
+    let nats = TestNats::start().await;
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
+    let api = nats.api();
+
+    let accepted = machine_add(&api, "op_init_core_1", "idem_init_core_1", "core_1").await;
+    redeem_when_ready(&nats.join_api(), &accepted.join_token).await;
+    let repository = operation_repository_for_test(&nats).await;
+    repository
+        .stage_machine_dataplane(StagedMachineDataplaneState {
+            operation_id: operation_id("op_init_core_1"),
+            machine_id: machine_id("core_1"),
+            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(
+                ployz_core::dataplane::default_endpoint_subnet(&machine_id("core_1")),
+            )
+            .expect("endpoint subnet"),
+            mesh_endpoints: vec!["192.0.2.10:51820".parse().expect("mesh endpoint")],
+            wireguard_public_key: test_wireguard_public_key(&machine_id("core_1")),
+        })
+        .await
+        .expect("staged identity survives completed evidence");
+    repository
+        .record_machine_join_completed(
+            &RawJoinToken::try_new(accepted.join_token.as_str()).expect("join token valid"),
+        )
+        .await
+        .expect("completion records before activation");
+
+    let activated = api
+        .init_first_machine_activate(&InitFirstMachineActivateRequest {
+            machine_id: machine_id("core_1"),
+            roles: InstallRolePolicy::install_all().without_gateway(),
+            public_url_mode: PublicUrlMode::None,
+        })
+        .await
+        .expect("first-machine activation repairs completed operation");
+    assert_eq!(activated.operation_id, operation_id("op_init_core_1"));
+    assert_eq!(activated.machine_id, machine_id("core_1"));
+    let listed = api
+        .machine_list(&MachineListRequest {})
+        .await
+        .expect("machine list succeeds");
+    let [active] = listed.machines.as_slice() else {
+        panic!("expected repaired active machine");
+    };
+    assert_eq!(active.active.machine_id, machine_id("core_1"));
+    assert_eq!(
+        secret_row_count(&nats, "machine_add_submissions", "op_init_core_1"),
+        0
+    );
+    let lease_intent = ployzd::intent::lease_intent::LeaseIntentStore::new(
+        CoreStore::open(config.core_db_path.clone())
+            .await
+            .expect("core store opens"),
+    );
+    assert_eq!(
+        lease_intent.load().await.expect("public URL mode loads"),
+        ManagedLeaseIntent::None
     );
 
     runtime

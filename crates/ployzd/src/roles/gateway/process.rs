@@ -883,8 +883,9 @@ async fn run_gateway_health_checks(
 pub async fn run_gateway_until_shutdown(
     config: &GatewayProcessConfig,
 ) -> Result<(), GatewayProcessError> {
+    let shutdown = shutdown_signal().map_err(GatewayProcessError::ShutdownSignal)?;
     let runtime = start_gateway_process(config).await?;
-    shutdown_signal()
+    shutdown
         .await
         .map_err(GatewayProcessError::ShutdownSignal)?;
     runtime

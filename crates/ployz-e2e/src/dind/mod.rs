@@ -102,9 +102,9 @@ pub enum DindError {
     /// The requested cluster shape is invalid (e.g. zero or two cores).
     #[error("invalid DinD cluster shape: {detail}")]
     ClusterShape { detail: String },
-    /// Could not pre-reserve a loopback port for publishing.
-    #[error("failed to reserve loopback port: {message}")]
-    PortReservation { message: String },
+    /// Docker did not report a usable published loopback port.
+    #[error("machine container has no published {container_port}/tcp port: {detail}")]
+    PublishedPortUnavailable { container_port: u16, detail: String },
     /// A machine container exited before it became ready.
     #[error("machine container {machine} exited before readiness")]
     MachineExited { machine: String },

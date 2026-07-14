@@ -293,13 +293,7 @@ workflow is added here in the same change:
   after accepted review fixes, after merging current main, and after local
   gates. During diagnosis, use the affected scenario or a deterministic focused
   test; do not repeatedly run the complete suite while the candidate changes.
-  Report `DIND_READY`; the dispatcher grants the single cluster slot. Do not
-  launch lock-waiting wrappers. Once final DinD begins, the dispatcher holds the
-  landing lane so another local PR cannot move main before merge.
-- When the dispatcher grants DinD, acquire the cluster with
-  `mkdir /tmp/ployz-dind-e2e.lock`; if it is unavailable, return to
-  `DIND_READY`. Always `rmdir` the lock afterwards, including on failure. Run
-  every scenario and rebuild product binaries (no `PLOYZ_DIND_SKIP_BUILD`).
+  Run every scenario and rebuild product binaries (no `PLOYZ_DIND_SKIP_BUILD`).
   Each worktree sets its own `PLOYZ_DIND_TARGET_DIR` — every worktree mounts as
   `/work`, so the shared default target dir serves another branch's binaries as
   fresh. On failure, read the evidence directory the harness prints before

@@ -229,7 +229,7 @@ export function acmeChallengeValue(value: string): AcmeChallengeValue {
 export function certBundleRef(value: string): CertBundleRef {
   const visible = visibleAscii(value, "cert bundle reference");
   const match = visible.match(/^sha256:([A-Fa-f0-9]{64}):(\/.+)$/);
-  if (match === null || match[2].endsWith("/") || match[2].includes("//")) {
+  if (match === null || match[2] === undefined || match[2].endsWith("/") || match[2].includes("//")) {
     throw new RangeError("cert bundle reference is invalid");
   }
 

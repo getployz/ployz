@@ -12,7 +12,7 @@ use bollard::models::{
 };
 use bollard::query_parameters::{CreateContainerOptionsBuilder, InspectContainerOptions};
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -48,9 +48,7 @@ pub struct MachineSpec {
 
 /// Host-side `127.0.0.1` ports published into the machine.
 ///
-/// Ports are pre-reserved explicitly (bind-then-close) and pinned in the
-/// container's port bindings, because Docker re-randomizes auto-published
-/// ports across container restarts.
+/// Docker allocates these ports atomically when it creates the container.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PublishedPorts {
     /// Maps to [`MACHINE_NATS_PORT`] inside the machine.
@@ -59,39 +57,6 @@ pub struct PublishedPorts {
     pub gateway: SocketAddr,
     /// Maps to [`MACHINE_GATEWAY_TLS_PORT`] inside the machine.
     pub gateway_tls: SocketAddr,
-}
-
-impl PublishedPorts {
-    pub(super) fn reserve() -> Result<Self, DindError> {
-        let nats_listener = bind_loopback()?;
-        let gateway_listener = bind_loopback()?;
-        let gateway_tls_listener = bind_loopback()?;
-        let nats = local_addr(&nats_listener)?;
-        let gateway = local_addr(&gateway_listener)?;
-        let gateway_tls = local_addr(&gateway_tls_listener)?;
-        drop(nats_listener);
-        drop(gateway_listener);
-        drop(gateway_tls_listener);
-        Ok(Self {
-            nats,
-            gateway,
-            gateway_tls,
-        })
-    }
-}
-
-fn bind_loopback() -> Result<TcpListener, DindError> {
-    TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(|source| DindError::PortReservation {
-        message: source.to_string(),
-    })
-}
-
-fn local_addr(listener: &TcpListener) -> Result<SocketAddr, DindError> {
-    listener
-        .local_addr()
-        .map_err(|source| DindError::PortReservation {
-            message: source.to_string(),
-        })
 }
 
 /// One running machine container.
@@ -113,9 +78,8 @@ pub(super) async fn provision_machine(
 ) -> Result<DindMachine, DindError> {
     // Role only drives naming, which the cluster already resolved into `name`.
     let MachineSpec { role: _, image } = spec;
-    let published = PublishedPorts::reserve()?;
     let options = CreateContainerOptionsBuilder::new().name(&name).build();
-    let body = machine_create_body(run_id, network_name, artifact_dir, image, &name, published);
+    let body = machine_create_body(run_id, network_name, artifact_dir, image, &name);
     let created = docker
         .create_container(Some(options), body)
         .await
@@ -124,6 +88,7 @@ pub(super) async fn provision_machine(
         .start_container(&created.id, None)
         .await
         .map_err(docker_api_error("start machine container"))?;
+    let published = published_ports(docker, &created.id).await?;
     wait_for_machine_ready(docker, &name, &created.id).await?;
     let bridge_ip = wait_for_bridge_ip(docker, &created.id, network_name, &name).await?;
     Ok(DindMachine {
@@ -140,29 +105,20 @@ fn machine_create_body(
     artifact_dir: &Path,
     image: &str,
     name: &str,
-    published: PublishedPorts,
 ) -> ContainerCreateBody {
     let nats_port_key = format!("{MACHINE_NATS_PORT}/tcp");
     let gateway_port_key = format!("{MACHINE_GATEWAY_PORT}/tcp");
     let gateway_tls_port_key = format!("{MACHINE_GATEWAY_TLS_PORT}/tcp");
     let port_bindings: PortMap = HashMap::from([
-        (
-            nats_port_key.clone(),
-            Some(vec![loopback_binding(published.nats)]),
-        ),
-        (
-            gateway_port_key.clone(),
-            Some(vec![loopback_binding(published.gateway)]),
-        ),
-        (
-            gateway_tls_port_key.clone(),
-            Some(vec![loopback_binding(published.gateway_tls)]),
-        ),
+        (nats_port_key.clone(), Some(vec![loopback_binding()])),
+        (gateway_port_key.clone(), Some(vec![loopback_binding()])),
+        (gateway_tls_port_key.clone(), Some(vec![loopback_binding()])),
     ]);
     ContainerCreateBody {
         hostname: Some(name.to_owned()),
         image: Some(image.to_owned()),
         cmd: Some(vec!["/sbin/init".to_owned()]),
+        tty: Some(true),
         labels: Some(HashMap::from([
             (MANAGED_LABEL.to_owned(), MANAGED_LABEL_VALUE.to_owned()),
             (RUN_LABEL.to_owned(), run_id.as_str().to_owned()),
@@ -188,10 +144,55 @@ fn machine_create_body(
     }
 }
 
-fn loopback_binding(address: SocketAddr) -> PortBinding {
+fn loopback_binding() -> PortBinding {
     PortBinding {
-        host_ip: Some(address.ip().to_string()),
-        host_port: Some(address.port().to_string()),
+        host_ip: Some(Ipv4Addr::LOCALHOST.to_string()),
+        host_port: None,
+    }
+}
+
+async fn published_ports(docker: &Docker, container_id: &str) -> Result<PublishedPorts, DindError> {
+    let inspected = docker
+        .inspect_container(container_id, None::<InspectContainerOptions>)
+        .await
+        .map_err(docker_api_error("inspect published machine ports"))?;
+    let ports = inspected
+        .network_settings
+        .and_then(|settings| settings.ports)
+        .ok_or_else(|| published_port_error(MACHINE_NATS_PORT, "Docker reported no port map"))?;
+    Ok(PublishedPorts {
+        nats: published_port(&ports, MACHINE_NATS_PORT)?,
+        gateway: published_port(&ports, MACHINE_GATEWAY_PORT)?,
+        gateway_tls: published_port(&ports, MACHINE_GATEWAY_TLS_PORT)?,
+    })
+}
+
+fn published_port(ports: &PortMap, container_port: u16) -> Result<SocketAddr, DindError> {
+    let key = format!("{container_port}/tcp");
+    let binding = ports
+        .get(&key)
+        .and_then(Option::as_ref)
+        .and_then(|bindings| bindings.first())
+        .ok_or_else(|| published_port_error(container_port, "Docker reported no binding"))?;
+    let host = binding
+        .host_ip
+        .as_deref()
+        .unwrap_or("127.0.0.1")
+        .parse::<IpAddr>()
+        .map_err(|error| published_port_error(container_port, &error.to_string()))?;
+    let port = binding
+        .host_port
+        .as_deref()
+        .ok_or_else(|| published_port_error(container_port, "Docker reported no host port"))?
+        .parse::<u16>()
+        .map_err(|error| published_port_error(container_port, &error.to_string()))?;
+    Ok(SocketAddr::new(host, port))
+}
+
+fn published_port_error(container_port: u16, detail: &str) -> DindError {
+    DindError::PublishedPortUnavailable {
+        container_port,
+        detail: detail.to_owned(),
     }
 }
 
@@ -296,5 +297,33 @@ async fn wait_for_bridge_ip(
             });
         }
         tokio::time::sleep(BRIDGE_IP_DELAY).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn machine_body_attaches_console_and_uses_docker_ports() {
+        let body = machine_create_body(
+            &DindRunId::generate(),
+            "ployz-test-network",
+            Path::new("/tmp/ployz-artifacts"),
+            "ployz-dind-machine:test",
+            "ployz-test-machine",
+        );
+
+        assert_eq!(body.tty, Some(true));
+        assert!(
+            body.host_config
+                .expect("host config")
+                .port_bindings
+                .expect("port bindings")
+                .values()
+                .flatten()
+                .flatten()
+                .all(|binding| binding.host_port.is_none())
+        );
     }
 }

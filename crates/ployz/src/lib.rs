@@ -12,6 +12,7 @@ mod confirmation;
 pub mod deploy_history;
 pub mod host_runner_install;
 pub mod image_push;
+pub mod local_release;
 mod registry_auth;
 pub mod remote_machine_runtime;
 pub mod runtime;
