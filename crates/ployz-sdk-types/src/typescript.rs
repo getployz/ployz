@@ -104,7 +104,9 @@ use crate::{
     WireGuardStatus, WrappedCaKey, WrappedCoreSeeds,
 };
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
-use ployz_core::subjects::OperationApiEndpointExecution;
+use ployz_core::subjects::{
+    OperationApiEndpointExecution, RUNTIME_SNAPSHOT_SEED, RUNTIME_SNAPSHOT_STREAM,
+};
 use serde::Serialize;
 use serde_json::{Value, json};
 use ts_rs::{Config, TS};
@@ -126,6 +128,12 @@ pub fn generated_typescript() -> String {
     ));
     output.push_str(&format!(
         "export const CLOUD_BOOTSTRAP_PROTOCOL_VERSION = {CLOUD_BOOTSTRAP_PROTOCOL_VERSION} as const;\n\n"
+    ));
+    output.push_str(&format!(
+        "export const RUNTIME_SNAPSHOT_SEED = {RUNTIME_SNAPSHOT_SEED:?} as const;\n\n"
+    ));
+    output.push_str(&format!(
+        "export const RUNTIME_SNAPSHOT_STREAM = {RUNTIME_SNAPSHOT_STREAM:?} as const;\n\n"
     ));
     push_contract_decls(&mut output, &config);
     push_operation_api_contracts(&mut output, &config);

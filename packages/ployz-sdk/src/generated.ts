@@ -10,6 +10,10 @@ export const MAX_LOGS_TAIL_LINES = 1000 as const;
 
 export const CLOUD_BOOTSTRAP_PROTOCOL_VERSION = 1 as const;
 
+export const RUNTIME_SNAPSHOT_SEED = "plz.v1.rpc.operator.query.runtime.snapshot.seed" as const;
+
+export const RUNTIME_SNAPSHOT_STREAM = "plz.v1.projection.runtime.snapshot" as const;
+
 export type OperationId = Brand<string, "OperationId">;
 
 export type OperationIdempotencyKey = Brand<string, "OperationIdempotencyKey">;

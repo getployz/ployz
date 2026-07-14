@@ -7,9 +7,9 @@ use ployz_core::subjects::{
     MACHINE_RPC_COMMAND_SCOPE, MACHINE_RPC_QUERY_SCOPE, MachineServiceEndpoint,
     OPERATION_PROGRESS_SCOPE, OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE,
     OPERATOR_MACHINE_IMAGE_QUERY_SCOPE, OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE,
-    OPERATOR_RUNTIME_SNAPSHOT, PENDING_MACHINE_JOINS_CHANGED, RUNTIME_SNAPSHOT_STREAM,
-    gateway_status, gateway_status_scope, machine_container_facts, machine_facts,
-    machine_facts_scope, machine_service, machine_service_command_scope,
+    OPERATOR_RUNTIME_SNAPSHOT, PENDING_MACHINE_JOINS_CHANGED, RUNTIME_SNAPSHOT_SEED,
+    RUNTIME_SNAPSHOT_STREAM, gateway_status, gateway_status_scope, machine_container_facts,
+    machine_facts, machine_facts_scope, machine_service, machine_service_command_scope,
     machine_service_query_scope,
 };
 use ployz_test_support::ids::machine_id;
@@ -190,6 +190,31 @@ fn runtime_snapshot_stream_is_controller_published_and_operator_subscribed() {
             .allowed_subjects()
             .contains(&INTENT_CHANGED.to_owned())
     );
+}
+
+#[test]
+fn runtime_snapshot_seed_is_an_operator_query_served_by_controller() {
+    assert_eq!(
+        RUNTIME_SNAPSHOT_SEED,
+        "plz.v1.rpc.operator.query.runtime.snapshot.seed"
+    );
+    let operator = NatsPermissionProfile::render(NatsPrincipal::Operator);
+    let controller = NatsPermissionProfile::render(NatsPrincipal::Controller);
+
+    assert!(RUNTIME_SNAPSHOT_SEED.starts_with(OPERATOR_RPC_QUERY_SCOPE.trim_end_matches('>')));
+    assert!(
+        operator
+            .publish
+            .allowed_subjects()
+            .contains(&OPERATOR_RPC_QUERY_SCOPE.to_owned())
+    );
+    assert!(
+        controller
+            .subscribe
+            .allowed_subjects()
+            .contains(&OPERATOR_RPC_QUERY_SCOPE.to_owned())
+    );
+    assert_eq!(controller.allow_responses, ResponsePermission::Allowed);
 }
 
 #[test]

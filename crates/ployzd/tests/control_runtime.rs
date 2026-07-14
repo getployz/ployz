@@ -27,8 +27,9 @@ use ployz_core::state::{
     RouteBindingState, VolumePinState,
 };
 use ployz_core::subjects::{
-    INTENT_CHANGED, MachineServiceEndpoint, OperationApiEndpoint, RUNTIME_SNAPSHOT_STREAM,
-    gateway_status, machine_facts as machine_facts_subject, machine_service,
+    INTENT_CHANGED, MachineServiceEndpoint, OperationApiEndpoint, RUNTIME_SNAPSHOT_SEED,
+    RUNTIME_SNAPSHOT_STREAM, gateway_status, machine_facts as machine_facts_subject,
+    machine_service,
 };
 use ployz_nats::connect::connect_authenticated;
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
@@ -536,6 +537,20 @@ async fn secured_operator_receives_passive_runtime_snapshot_replacements() {
     })
     .await;
     assert!(initial.containers.is_empty());
+    let seeded = request_json::<_, RuntimeSnapshot>(
+        &nats.connected.user,
+        RUNTIME_SNAPSHOT_SEED.to_owned(),
+        &serde_json::json!({}),
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("operator seeds from passive runtime projection");
+    assert_eq!(seeded, initial);
+    let health = runtime.runtime_projection_health();
+    assert_eq!(health.projection.consecutive_failures, 0);
+    assert_eq!(health.publisher.consecutive_failures, 0);
+    assert_eq!(health.seed.endpoint_tasks_started, 1);
+    assert_eq!(health.seed.endpoint_tasks_finished, 0);
 
     machine_roster
         .replace_active_machine(&active_machine("machine_a"))

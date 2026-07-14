@@ -32,7 +32,9 @@ use crate::roles::machine::client::{
     NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
 };
 use crate::roles::machine::intent_mirror::{MachineIntentMirror, MachinePendingJoinMirror};
-use crate::runtime_projection::{RunningRuntimeProjection, start_runtime_projection};
+use crate::runtime_projection::{
+    RunningRuntimeProjection, RuntimeProjectionHealthState, start_runtime_projection,
+};
 use crate::seed::{SeedCoreError, seed_core_from_snapshot};
 use crate::tasks::TaskRegistry;
 use ployz_core::state::{ControlPlaneEpoch, PendingMachineJoinRecovery};
@@ -73,9 +75,14 @@ impl RunningControlProcess {
         self.certificate_renewal_health.snapshot()
     }
 
+    #[must_use]
+    pub fn runtime_projection_health(&self) -> RuntimeProjectionHealthState {
+        self.runtime_projection.health()
+    }
+
     pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
         self.operation_api.shutdown().await?;
-        self.runtime_projection.shutdown().await;
+        self.runtime_projection.shutdown().await?;
         self.intent.shutdown().await?;
         self.credential_grant_tasks.abort_all();
         self.deploy_tasks.abort_all();

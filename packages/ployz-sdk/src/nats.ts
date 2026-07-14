@@ -3,7 +3,11 @@ import {
   type NodeConnectionOptions,
 } from "@nats-io/transport-node";
 
-import { OPERATION_API_CONTRACTS } from "./generated.ts";
+import {
+  OPERATION_API_CONTRACTS,
+  RUNTIME_SNAPSHOT_SEED,
+  RUNTIME_SNAPSHOT_STREAM,
+} from "./generated.ts";
 import type {
   OperationApiRequestByEndpoint,
   OperationApiResponseByEndpoint,
@@ -14,7 +18,8 @@ import type {
 const DEFAULT_NATS_REQUEST_TIMEOUT_MS = 10_000;
 const NATS_SERVICE_ERROR_HEADER = "Nats-Service-Error";
 const NATS_SERVICE_ERROR_CODE_HEADER = "Nats-Service-Error-Code";
-const RUNTIME_SNAPSHOT_PROJECTION_SUBJECT = "plz.v1.projection.runtime.snapshot";
+const RUNTIME_SNAPSHOT_RETRY_INITIAL_MS = 100;
+const RUNTIME_SNAPSHOT_RETRY_MAX_MS = 5_000;
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -124,104 +129,210 @@ export class PloyzNatsTransport {
     }
   }
 
-  async *watchRuntime(): AsyncIterable<RuntimeSnapshot> {
-    const subscription = this.#connection.subscribe(RUNTIME_SNAPSHOT_PROJECTION_SUBJECT);
-    const statusIterator = this.#connection.status()[Symbol.asyncIterator]();
-    let latest: RuntimeSnapshot | undefined;
-    const terminal: { value?: { error?: unknown } } = {};
-    let cancelled = false;
-    let wake: (() => void) | undefined;
+  watchRuntime(): AsyncIterable<RuntimeSnapshot> {
+    const connection = this.#connection;
+    const requestTimeoutMs = this.#requestTimeoutMs;
+    const cancellation = {
+      cancelled: false,
+      wake: () => undefined,
+      cancel(): void {
+        this.cancelled = true;
+        this.wake();
+      },
+    };
+    const seedInterrupted = Symbol("runtime seed interrupted");
+    const iterator = (async function* (): AsyncGenerator<RuntimeSnapshot> {
+      const subscription = connection.subscribe(RUNTIME_SNAPSHOT_STREAM);
+      const statusIterator = connection.status()[Symbol.asyncIterator]();
+      let latest: RuntimeSnapshot | undefined;
+      const terminal: { value?: { error?: unknown } } = {};
+      let wake: (() => void) | undefined;
+      let retryWake: (() => void) | undefined;
+      let requestWake: (() => void) | undefined;
+      let initialReady = false;
+      cancellation.wake = () => {
+        wake?.();
+        retryWake?.();
+        requestWake?.();
+      };
 
-    const signal = (): void => {
-      wake?.();
-      wake = undefined;
-    };
-    const publish = (snapshot: RuntimeSnapshot): void => {
-      if (cancelled || terminal.value) return;
-      latest = snapshot;
-      signal();
-    };
-    const finish = (error?: unknown): void => {
-      if (cancelled || terminal.value) return;
-      terminal.value = { error };
-      signal();
-    };
-    const seed = async (): Promise<RuntimeSnapshot> => {
-      const response = await this.request("runtime.snapshot", {});
-      if (response.status === "domain_error") {
-        throw new Error("runtime.snapshot returned a domain error");
-      }
-      return response.value.snapshot;
-    };
-
-    void (async () => {
-      try {
-        for await (const message of subscription) {
-          try {
-            publish(JSON.parse(textDecoder.decode(message.data)) as RuntimeSnapshot);
-          } catch (error) {
-            finish(PloyzNatsTransportError.decodeFailed("runtime.snapshot", error));
-          }
+      const signal = (): void => {
+        wake?.();
+        wake = undefined;
+      };
+      const publish = (snapshot: RuntimeSnapshot): void => {
+        if (cancellation.cancelled || terminal.value) return;
+        latest = snapshot;
+        signal();
+        retryWake?.();
+      };
+      const finish = (error?: unknown): void => {
+        if (cancellation.cancelled || terminal.value) return;
+        terminal.value = { error };
+        signal();
+        retryWake?.();
+        requestWake?.();
+      };
+      const requestSeed = async (): Promise<RuntimeSnapshot> => {
+        let resolveInterrupted: () => void = () => undefined;
+        const interrupted = new Promise<{ kind: "interrupted" }>((resolve) => {
+          resolveInterrupted = () => resolve({ kind: "interrupted" });
+          requestWake = resolveInterrupted;
+        });
+        const result = await Promise.race([
+          connection
+            .request(RUNTIME_SNAPSHOT_SEED, textEncoder.encode(JSON.stringify({})), {
+              timeout: requestTimeoutMs,
+            })
+            .then(
+              (response) => ({ kind: "response" as const, response }),
+              (error: unknown) => ({ kind: "error" as const, error }),
+            ),
+          interrupted,
+        ]);
+        if (requestWake === resolveInterrupted) requestWake = undefined;
+        if (result.kind === "interrupted") throw seedInterrupted;
+        if (result.kind === "error") {
+          throw PloyzNatsTransportError.requestFailed("runtime.snapshot", result.error);
         }
-        finish();
-      } catch (error) {
-        finish(error);
-      }
-    })();
-    void (async () => {
-      try {
-        while (true) {
-          const status = await statusIterator.next();
-          if (status.done) return;
-          if (status.value.type === "reconnect") {
-            try {
-              publish(await seed());
-            } catch (error) {
-              if (
-                error instanceof PloyzNatsTransportError &&
-                error.failure.kind === "request_failed"
-              ) {
-                continue;
-              }
+        const response: PloyzNatsResponseMessage = result.response;
+        const serviceError = decodeNatsServiceError("runtime.snapshot", response.headers);
+        if (serviceError) {
+          throw PloyzNatsTransportError.serviceError("runtime.snapshot", serviceError);
+        }
+        try {
+          return JSON.parse(textDecoder.decode(response.data)) as RuntimeSnapshot;
+        } catch (error) {
+          throw PloyzNatsTransportError.decodeFailed("runtime.snapshot", error);
+        }
+      };
+      const waitForRetry = (delayMs?: number): { promise: Promise<void>; cancel: () => void } => {
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        let resolveWait: () => void = () => undefined;
+        const promise = new Promise<void>((resolve) => {
+          resolveWait = resolve;
+          retryWake = resolve;
+          if (delayMs !== undefined) timeout = setTimeout(resolve, delayMs);
+        });
+        return {
+          promise,
+          cancel: () => {
+            if (timeout !== undefined) clearTimeout(timeout);
+            if (retryWake === resolveWait) retryWake = undefined;
+          },
+        };
+      };
+      const seedUntilSnapshot = async (): Promise<RuntimeSnapshot | undefined> => {
+        let delayMs = RUNTIME_SNAPSHOT_RETRY_INITIAL_MS;
+        while (!cancellation.cancelled && !terminal.value) {
+          try {
+            const snapshot = await requestSeed();
+            latest = undefined;
+            return snapshot;
+          } catch (error) {
+            if (error === seedInterrupted) return undefined;
+            if (
+              !(error instanceof PloyzNatsTransportError) ||
+              (error.failure.kind !== "request_failed" &&
+                !(
+                  error.failure.kind === "service_error" &&
+                  (error.failure.code === 500 ||
+                    error.failure.code === 503 ||
+                    error.failure.code === 504)
+                ))
+            ) {
               throw error;
             }
           }
-          if (status.value.type === "error") finish(status.value.error);
+          if (latest !== undefined) return undefined;
+          const retry = waitForRetry(delayMs);
+          await retry.promise;
+          retry.cancel();
+          if (latest !== undefined) return undefined;
+          delayMs = Math.min(delayMs * 2, RUNTIME_SNAPSHOT_RETRY_MAX_MS);
         }
-      } catch (error) {
-        finish(error);
+        return undefined;
+      };
+
+      void (async () => {
+        try {
+          for await (const message of subscription) {
+            try {
+              publish(JSON.parse(textDecoder.decode(message.data)) as RuntimeSnapshot);
+            } catch (error) {
+              finish(PloyzNatsTransportError.decodeFailed("runtime.snapshot", error));
+            }
+          }
+          finish();
+        } catch (error) {
+          finish(error);
+        }
+      })();
+      void (async () => {
+        try {
+          while (!cancellation.cancelled) {
+            const status = await statusIterator.next();
+            if (status.done) return;
+            if (status.value.type === "reconnect" && initialReady) {
+              const snapshot = await seedUntilSnapshot();
+              if (snapshot !== undefined) publish(snapshot);
+            }
+            if (status.value.type === "error") finish(status.value.error);
+          }
+        } catch (error) {
+          finish(error);
+        }
+      })();
+      void connection.closed().then((error) => {
+        if (error instanceof Error) finish(error);
+        else finish();
+      }, finish);
+
+      try {
+        const initial = await seedUntilSnapshot();
+        if (terminal.value?.error !== undefined) throw terminal.value.error;
+        if (terminal.value) return;
+        if (cancellation.cancelled) return;
+        initialReady = true;
+        if (initial !== undefined) yield initial;
+
+        while (!cancellation.cancelled) {
+          if (latest !== undefined) {
+            const value = latest;
+            latest = undefined;
+            yield value;
+            continue;
+          }
+          const outcome = terminal.value as { error?: unknown } | undefined;
+          if (outcome?.error !== undefined) throw outcome.error;
+          if (outcome) return;
+          await new Promise<void>((resolve) => {
+            wake = resolve;
+          });
+        }
+      } finally {
+        cancellation.cancelled = true;
+        retryWake?.();
+        subscription.unsubscribe();
+        await statusIterator.return?.();
       }
     })();
-    void this.#connection.closed().then((error) => {
-      if (error instanceof Error) finish(error);
-      else finish();
-    }, finish);
 
-    try {
-      const initial = await seed();
-      if (terminal.value?.error !== undefined) throw terminal.value.error;
-      if (terminal.value) return;
-      yield initial;
-
-      while (true) {
-        if (latest !== undefined) {
-          const value = latest;
-          latest = undefined;
-          yield value;
-          continue;
-        }
-        const outcome = terminal.value as { error?: unknown } | undefined;
-        if (outcome?.error !== undefined) throw outcome.error;
-        if (outcome) return;
-        await new Promise<void>((resolve) => {
-          wake = resolve;
-        });
-      }
-    } finally {
-      cancelled = true;
-      subscription.unsubscribe();
-      await statusIterator.return?.();
-    }
+    const wrapped: AsyncIterableIterator<RuntimeSnapshot> = {
+      next: () => iterator.next(),
+      return: async () => {
+        cancellation.cancel();
+        return iterator.return(undefined);
+      },
+      throw: async (error?: unknown) => {
+        cancellation.cancel();
+        return iterator.throw(error);
+      },
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+    };
+    return wrapped;
   }
 }
 
