@@ -6,13 +6,14 @@ use super::machine::{DindMachine, DindMachineRole, MachineSpec, provision_machin
 use super::{DindError, MANAGED_LABEL, MANAGED_LABEL_VALUE, RUN_LABEL, docker_api_error};
 use bollard::Docker;
 use bollard::errors::Error as BollardError;
-use bollard::models::NetworkCreateRequest;
+use bollard::models::{Ipam, IpamConfig, NetworkCreateRequest};
 use bollard::query_parameters::{
     ListContainersOptionsBuilder, ListNetworksOptionsBuilder, ListVolumesOptionsBuilder,
     RemoveContainerOptionsBuilder, RemoveVolumeOptionsBuilder,
 };
 use std::collections::HashMap;
 use std::fmt;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -219,6 +220,16 @@ async fn create_cluster_network(
     let request = NetworkCreateRequest {
         name: network_name.to_owned(),
         driver: Some("bridge".to_owned()),
+        // The managed-DNS path publishes only globally routable gateway
+        // testimony. An isolated routable-looking subnet lets the harness
+        // exercise that classification while Docker keeps all traffic local.
+        ipam: Some(Ipam {
+            config: Some(vec![IpamConfig {
+                subnet: Some(cluster_subnet(run_id)),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }),
         labels: Some(HashMap::from([
             (MANAGED_LABEL.to_owned(), MANAGED_LABEL_VALUE.to_owned()),
             (RUN_LABEL.to_owned(), run_id.as_str().to_owned()),
@@ -230,6 +241,16 @@ async fn create_cluster_network(
         .await
         .map_err(docker_api_error("create cluster network"))?;
     Ok(())
+}
+
+fn cluster_subnet(run_id: &DindRunId) -> String {
+    let mut hasher = DefaultHasher::new();
+    run_id.hash(&mut hasher);
+    let value = hasher.finish();
+    let second = (value >> 12) & 0xff;
+    let third = (value >> 4) & 0xff;
+    let fourth = (value & 0x0f) << 4;
+    format!("11.{second}.{third}.{fourth}/28")
 }
 
 /// Removes every container, network, and volume carrying the
