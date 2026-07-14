@@ -303,7 +303,7 @@ test("domain errors are decoded once by the client", async () => {
 test("accepted operation uses Rust wire field names", () => {
   const accepted = acceptedOperation("op_123");
 
-  assert.deepEqual(JSON.parse(JSON.stringify(accepted)), {
+  assert.deepEqual(structuredClone(accepted), {
     operation_id: "op_123",
     watch_subject: "plz.v1.progress.namespace.default.operation.op_123.>",
     start_sequence: "11",

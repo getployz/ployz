@@ -33,8 +33,10 @@ test("NATS transport sends JSON requests to contract subjects", async () => {
   const response = await transport.request("deploy.submit", deploySubmitRequest());
 
   assert.deepEqual(response, { status: "ok", value: acceptedOperation("op_123") });
-  assert.equal(nats.requests[0].subject, "plz.v1.rpc.operator.command.deploy.submit");
-  const payload = nats.requests[0].payload;
+  const [request] = nats.requests;
+  assert.ok(request);
+  assert.equal(request.subject, "plz.v1.rpc.operator.command.deploy.submit");
+  const payload = request.payload;
   assert.ok(payload instanceof Uint8Array);
   assert.deepEqual(JSON.parse(new TextDecoder().decode(payload)), {
     idempotency_key: "idem_deploy_123",
@@ -57,7 +59,7 @@ test("NATS transport sends JSON requests to contract subjects", async () => {
       ],
     },
   });
-  assert.deepEqual(nats.requests[0].options, { timeout: 1234 });
+  assert.deepEqual(request.options, { timeout: 1234 });
 });
 
 test("NATS transport surfaces service error headers before response decoding", async () => {
@@ -132,7 +134,9 @@ test("NATS transport covers internal machine join report endpoint", async () => 
       outcome: { outcome: "completed" },
     },
   });
-  assert.equal(nats.requests[0].subject, "plz.v1.rpc.join.command.machine.report");
+  const [recordedRequest] = nats.requests;
+  assert.ok(recordedRequest);
+  assert.equal(recordedRequest.subject, "plz.v1.rpc.join.command.machine.report");
 });
 
 test("NATS transport exposes connection close and drain lifecycle", async () => {

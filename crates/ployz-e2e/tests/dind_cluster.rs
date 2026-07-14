@@ -497,19 +497,35 @@ async fn scenario_namespace_manifest_convergence_sweeps_failed_retry() {
     with_evidence(&core.cluster, async {
         wait_for_machine_observations(&core, &machine_id("core_1")).await;
 
+        let mut failed_target = convergence_deploy_target("sleep 600");
+        let [failed_service] = failed_target.services.as_mut_slice() else {
+            panic!("convergence target has one service");
+        };
+        failed_service.runtime.healthcheck = Some(always_failing_healthcheck());
+        let failed_reservation = core
+            .api
+            .deploy_reserve(&DeployReserveRequest {
+                namespace_id: failed_target.namespace_id.clone(),
+            })
+            .await
+            .expect("failed deploy reservation is issued");
+        let pushed = prepare_deploy_images(&core.api, &mut failed_target.services, false)
+            .await
+            .expect("convergence image pushes before deploy submit");
+        assert_eq!(pushed.len(), 1, "one convergence image must be pushed");
+        let [failed_service] = failed_target.services.as_slice() else {
+            panic!("convergence target has one service");
+        };
+        let mut retry_service = failed_service.clone();
+        retry_service.runtime.healthcheck = None;
         let failed = core
             .api
-            .deploy_submit(
-                &reserved_deploy_request(
-                    &core,
-                    "idem_dind_convergence_failed",
-                    // The 0.4s outlives at least one 100ms health poll (so the
-                    // container is sampled running) yet exits inside the 1.5s
-                    // running-confirmation window, exercising the fast-exit race.
-                    convergence_deploy_target("sleep 0.4; exit 42"),
-                )
-                .await,
-            )
+            .deploy_submit(&DeploySubmitRequest {
+                registry_credentials: std::collections::BTreeMap::new(),
+                idempotency_key: idempotency_key("idem_dind_convergence_failed"),
+                reservation_id: failed_reservation.reservation_id,
+                target: failed_target,
+            })
             .await
             .expect("failing deploy submits");
         let failed_operation = failed.operation_id;
@@ -531,7 +547,8 @@ async fn scenario_namespace_manifest_convergence_sweeps_failed_retry() {
                 .iter()
                 .filter(|artifact| artifact.is_container())
                 .count(),
-            1
+            1,
+            "failed deploy must retain its container: {failed_failure:?}"
         );
 
         let retained = namespace_managed_containers(&core, "converge").await;
@@ -543,15 +560,15 @@ async fn scenario_namespace_manifest_convergence_sweeps_failed_retry() {
             "failed attempt container must be retained before retry: {retained:?}"
         );
 
+        let retry_target = DeployRequest {
+            namespace_id: namespace_id("converge"),
+            origin: None,
+            services: vec![retry_service],
+        };
         let retry = core
             .api
             .deploy_submit(
-                &reserved_deploy_request(
-                    &core,
-                    "idem_dind_convergence_retry",
-                    convergence_deploy_target("sleep 600"),
-                )
-                .await,
+                &reserved_deploy_request(&core, "idem_dind_convergence_retry", retry_target).await,
             )
             .await
             .expect("retry deploy submits");
@@ -1046,14 +1063,26 @@ async fn scenario_machine_add_rejects_unreachable_overlay_peer() {
             );
             tokio::time::sleep(Duration::from_millis(500)).await;
         };
-        assert!(matches!(
-            evidence.reason,
+        let (
             DataplaneProjectionAdmissionFailure::PeerHandshakeNever { peer_machine_id }
-                | DataplaneProjectionAdmissionFailure::PeerHandshakeStale {
-                    peer_machine_id,
-                    ..
-                } if peer_machine_id == machine_id("core_1")
-        ));
+            | DataplaneProjectionAdmissionFailure::PeerHandshakeStale {
+                peer_machine_id,
+                ..
+            }
+        ) = &evidence.reason
+        else {
+            panic!(
+                "unexpected projection admission failure: {:?}",
+                evidence.reason
+            );
+        };
+        let core_machine_id = machine_id("core_1");
+        let edge_machine_id = machine_id("edge_2");
+        assert!(
+            (evidence.machine_id == core_machine_id && peer_machine_id == &edge_machine_id)
+                || (evidence.machine_id == edge_machine_id && peer_machine_id == &core_machine_id),
+            "unexpected unreachable peer evidence: {evidence:?}"
+        );
     })
     .await;
 
@@ -2464,15 +2493,7 @@ fn failing_healthcheck_deploy_target(workload_image: &ImageReference) -> DeployR
         ])
         .expect("valid runtime command"),
     );
-    runtime.healthcheck = Some(ContainerHealthcheck {
-        test: ContainerHealthcheckTest::Shell(
-            HealthcheckShellCommand::try_new("exit 1").expect("valid healthcheck"),
-        ),
-        interval: Some(HealthcheckDurationNanos::try_new(1_000_000_000).expect("duration")),
-        timeout: Some(HealthcheckDurationNanos::try_new(1_000_000_000).expect("duration")),
-        retries: Some(HealthcheckRetries::try_new(1).expect("retries")),
-        start_period: Some(HealthcheckDurationNanos::try_new(1_000_000_000).expect("duration")),
-    });
+    runtime.healthcheck = Some(always_failing_healthcheck());
     DeployRequest {
         namespace_id: namespace_id("bad_health"),
         origin: None,
@@ -2486,6 +2507,18 @@ fn failing_healthcheck_deploy_target(workload_image: &ImageReference) -> DeployR
             depends_on: Vec::new(),
             routes: Vec::new(),
         }],
+    }
+}
+
+fn always_failing_healthcheck() -> ContainerHealthcheck {
+    ContainerHealthcheck {
+        test: ContainerHealthcheckTest::Shell(
+            HealthcheckShellCommand::try_new("exit 1").expect("valid healthcheck"),
+        ),
+        interval: Some(HealthcheckDurationNanos::try_new(1_000_000_000).expect("duration")),
+        timeout: Some(HealthcheckDurationNanos::try_new(1_000_000_000).expect("duration")),
+        retries: Some(HealthcheckRetries::try_new(1).expect("retries")),
+        start_period: Some(HealthcheckDurationNanos::try_new(1_000_000_000).expect("duration")),
     }
 }
 

@@ -22,8 +22,8 @@ use crate::remote_machine_runtime::{
 use ployz_core::ids::OperationId;
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::ops::{
-    EventSequence, OperationEventReplayCursor, OperationEventReplayRequest, OperationOutcome,
-    ReplayedOperationEvent,
+    EventSequence, MachineAddOperationStateName, OperationEventReplayCursor,
+    OperationEventReplayRequest, OperationOutcome, ReplayedOperationEvent,
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{
@@ -879,7 +879,11 @@ impl PloyzctlExecutionError {
                 ..
             } | OperationApiClientError::Domain {
                 error: InitFirstMachineActivateError::JoinRedeem {
-                    failure: MachineJoinRedeemError::UnknownJoinToken,
+                    failure: MachineJoinRedeemError::UnknownJoinToken
+                        | MachineJoinRedeemError::OperationNotPending {
+                            current: MachineAddOperationStateName::Completed,
+                            ..
+                        },
                 },
                 ..
             }
@@ -1016,6 +1020,24 @@ mod tests {
                 endpoint: ployz_core::subjects::OperationApiEndpoint::InitFirstMachineActivate,
                 error: InitFirstMachineActivateError::JoinRedeem {
                     failure: MachineJoinRedeemError::UnknownJoinToken,
+                },
+            },
+        };
+
+        assert!(error.is_first_machine_activation_retryable());
+    }
+
+    #[test]
+    fn first_machine_activation_retries_completed_operation_replay() {
+        let error = PloyzctlExecutionError::FirstMachineActivateApi {
+            source: OperationApiClientError::Domain {
+                endpoint: ployz_core::subjects::OperationApiEndpoint::InitFirstMachineActivate,
+                error: InitFirstMachineActivateError::JoinRedeem {
+                    failure: MachineJoinRedeemError::OperationNotPending {
+                        operation_id: OperationId::try_new("op_init_core_1")
+                            .expect("valid operation id"),
+                        current: MachineAddOperationStateName::Completed,
+                    },
                 },
             },
         };
