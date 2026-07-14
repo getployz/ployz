@@ -520,9 +520,26 @@ fn ssh_failures_carry_phase_and_stderr() {
     let client = SshClient::with_program(script, ssh_timeout());
     let target = SshTarget::parse("root@203.0.113.10").expect("target parses");
 
-    let error = client
-        .read_remote_hostname(&target)
-        .expect_err("refused connection fails");
+    let error = (0..10)
+        .find_map(|_| {
+            let error = client
+                .read_remote_hostname(&target)
+                .expect_err("refused connection fails");
+            match error.as_ref() {
+                SshCommandError::Spawn { message, .. } if message.contains("Text file busy") => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    None
+                }
+                SshCommandError::Spawn { .. }
+                | SshCommandError::CaptureSetup { .. }
+                | SshCommandError::Wait { .. }
+                | SshCommandError::StdinWrite { .. }
+                | SshCommandError::Timeout { .. }
+                | SshCommandError::Failed { .. }
+                | SshCommandError::EmptyRemoteHostname { .. } => Some(error),
+            }
+        })
+        .expect("fake ssh becomes executable");
 
     let SshCommandError::Failed { phase, .. } = error.as_ref() else {
         panic!("expected failed command error, got {error:?}");

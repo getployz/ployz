@@ -28,6 +28,7 @@ use ployz_core::dataplane::{
     WireGuardPublicKey, WireGuardReady,
 };
 use ployz_core::ids::MachineId;
+use ployz_core::state::MachineEndpointObservation;
 use ployz_core::subjects::MachineServiceEndpoint;
 use ployz_nats::service_runtime::{
     EndpointExecutionPolicy, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
@@ -71,6 +72,54 @@ where
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
+    start_machine_role_runtime_with_endpoint_cache(
+        client,
+        machine_id,
+        runner,
+        preparer,
+        log_reader,
+        MachineEndpointCache::default(),
+    )
+    .await
+}
+
+pub async fn start_machine_role_runtime_with_endpoint_observation<R, P, L>(
+    client: ployz_nats::service_runtime::NatsClient,
+    machine_id: MachineId,
+    runner: R,
+    preparer: P,
+    log_reader: L,
+    endpoint_observation: MachineEndpointObservation,
+) -> Result<RunningMachineRoleRuntime, MachineServiceError>
+where
+    R: Clone + MachineContainerRunner + Send + Sync + 'static,
+    P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
+    L: Clone + MachineLogReader + Send + Sync + 'static,
+{
+    start_machine_role_runtime_with_endpoint_cache(
+        client,
+        machine_id,
+        runner,
+        preparer,
+        log_reader,
+        MachineEndpointCache::with_observation(endpoint_observation),
+    )
+    .await
+}
+
+async fn start_machine_role_runtime_with_endpoint_cache<R, P, L>(
+    client: ployz_nats::service_runtime::NatsClient,
+    machine_id: MachineId,
+    runner: R,
+    preparer: P,
+    log_reader: L,
+    endpoint_cache: MachineEndpointCache,
+) -> Result<RunningMachineRoleRuntime, MachineServiceError>
+where
+    R: Clone + MachineContainerRunner + Send + Sync + 'static,
+    P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
+    L: Clone + MachineLogReader + Send + Sync + 'static,
+{
     let projection_state = MachineProjectionState::new();
     let service = start_machine_role_service_with_endpoint_cache_and_image(
         client.clone(),
@@ -78,7 +127,7 @@ where
         runner.clone(),
         preparer.clone(),
         log_reader,
-        MachineEndpointCache::default(),
+        endpoint_cache,
         MachineRoleProjectionServices {
             image_state: None,
             projection_state: projection_state.clone(),
