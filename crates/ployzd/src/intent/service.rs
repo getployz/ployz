@@ -7,7 +7,7 @@ use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::intent::nats_authorizations::NatsAuthorizationStore;
 use crate::operations::log::OperationRepository;
 use crate::service_catalog::{intent_get_endpoint_spec, intent_service};
-use ployz_core::cert::{AutoLeaseState, ManagedLeaseIntent};
+use ployz_core::cert::{AutoLeaseState, ManagedLeaseIntent, PublicUrlMode};
 use ployz_core::dataplane::{DataplaneProjection, DataplaneProjectionMember};
 use ployz_core::ids::MachineId;
 use ployz_core::state::{
@@ -257,6 +257,11 @@ async fn load_intent(
         .duration_since(UNIX_EPOCH)
         .map_err(|error| error.to_string())?
         .as_secs();
+    let public_url_mode = match &managed_lease_intent {
+        ManagedLeaseIntent::Auto { .. } => PublicUrlMode::Auto,
+        ManagedLeaseIntent::BringYourOwn => PublicUrlMode::BringYourOwn,
+        ManagedLeaseIntent::None => PublicUrlMode::None,
+    };
     let managed_lease = project_managed_lease(managed_lease_intent, now_seconds);
     let custom_certificates = sources
         .certificate_intent
@@ -278,6 +283,7 @@ async fn load_intent(
         serving_target_entries: namespace_intent.serving_target_entries,
         volume_pins: namespace_intent.volume_pins,
         nats_authorizations,
+        public_url_mode,
         managed_lease,
         custom_certificates,
         acme_http01_challenges,

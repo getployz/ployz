@@ -6,7 +6,10 @@
 //! `machine_add_mint.rs`; the shared fixture lives in `support::control`.
 
 use futures_util::StreamExt;
-use ployz_core::cert::{ManagedLeaseIntent, PublicUrlMode};
+use ployz_core::cert::{
+    LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, ManagedLeaseIntent, ManagedLeaseName,
+    ManagedLeaseRecord, PublicUrlMode,
+};
 use ployz_core::deploy::{
     DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageReference,
     RegistryCredential, ReplicaCount, VolumeName,
@@ -40,14 +43,16 @@ use ployz_sdk_types::{
     DeployReserveRequest, DeploySubmitRequest, InitFirstMachineActivateRequest, MachineAddError,
     MachineAddRequest, MachineInspectRequest, MachineJoinReportOutcome, MachineJoinReportRequest,
     MachineListRequest, MachineTestimony, MachineUpdateError, MachineUpdateRequest,
-    OpsWatchRequest, RuntimeDerivedCollectionStatus, RuntimeSnapshot, RuntimeSnapshotRequest,
-    ServiceInspectRequest, ServiceListRequest, VolumeListRequest, VolumeStatus,
+    OpsWatchRequest, RuntimeDerivedCollectionStatus, RuntimePublicUrl, RuntimeSnapshot,
+    RuntimeSnapshotRequest, ServiceInspectRequest, ServiceListRequest, VolumeListRequest,
+    VolumeStatus,
 };
 use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::certificate::task::{CertificateRenewalAttempt, CertificateRenewalOutcome};
 use ployzd::intent::lease_intent::LeaseIntentStore;
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
+use ployzd::lease::LeaseWorkerUrl;
 use ployzd::operation_api::admission::MachineAddBootstrapConfig;
 use ployzd::roles::gateway::process::start_gateway_process_with_client;
 use ployzd::roles::machine::protocol::{
@@ -438,7 +443,9 @@ async fn control_runtime_serves_active_service_queries() {
 #[tokio::test]
 async fn control_runtime_serves_runtime_snapshot_projection() {
     let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
-    let config = nats.control_config();
+    let config = nats.control_config().with_lease_worker_url(
+        LeaseWorkerUrl::try_new("http://127.0.0.1:9").expect("lease worker URL"),
+    );
     let namespace_intent = NamespaceIntentStore::new(
         ployzd::core_store::CoreStore::open(config.core_db_path.clone())
             .await
@@ -503,6 +510,7 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
     );
     assert_eq!(snapshot.releases.len(), 1);
     assert_eq!(snapshot.instances.len(), 1);
+    assert_eq!(snapshot.public_url, RuntimePublicUrl::Auto { domain: None });
     assert_eq!(
         snapshot.projection_sources.revisions.status,
         RuntimeDerivedCollectionStatus::Complete
@@ -517,7 +525,14 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
 #[tokio::test]
 async fn secured_operator_receives_passive_runtime_snapshot_replacements() {
     let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
-    let config = nats.control_config();
+    let config = nats.control_config().with_lease_worker_url(
+        LeaseWorkerUrl::try_new("http://127.0.0.1:9").expect("lease worker URL"),
+    );
+    let lease_intent = LeaseIntentStore::new(
+        ployzd::core_store::CoreStore::open(config.core_db_path.clone())
+            .await
+            .expect("open core store"),
+    );
     let machine_roster = machine_roster(&config).await;
     let mut snapshots = nats
         .connected
@@ -537,6 +552,7 @@ async fn secured_operator_receives_passive_runtime_snapshot_replacements() {
     })
     .await;
     assert!(initial.containers.is_empty());
+    assert_eq!(initial.public_url, RuntimePublicUrl::Auto { domain: None });
     let seeded = request_json::<_, RuntimeSnapshot>(
         &nats.connected.user,
         RUNTIME_SNAPSHOT_SEED.to_owned(),
@@ -551,6 +567,28 @@ async fn secured_operator_receives_passive_runtime_snapshot_replacements() {
     assert_eq!(health.publisher.consecutive_failures, 0);
     assert_eq!(health.seed.endpoint_tasks_started, 1);
     assert_eq!(health.seed.endpoint_tasks_finished, 0);
+
+    lease_intent
+        .store_lease(managed_lease_record(), None)
+        .await
+        .expect("managed lease stores");
+    nats.connected
+        .controller
+        .publish(INTENT_CHANGED, Vec::new().into())
+        .await
+        .expect("intent invalidation publishes");
+    nats.connected
+        .controller
+        .flush()
+        .await
+        .expect("intent flushes");
+    next_runtime_snapshot(&mut snapshots, "managed public URL", |snapshot| {
+        snapshot.public_url
+            == RuntimePublicUrl::Auto {
+                domain: Some("brisk-river-x7f3.up.ployz.app".to_owned()),
+            }
+    })
+    .await;
 
     machine_roster
         .replace_active_machine(&active_machine("machine_a"))
@@ -634,6 +672,16 @@ async fn next_runtime_snapshot(
     })
     .await
     .unwrap_or_else(|_| panic!("{expected} runtime snapshot arrives"))
+}
+
+fn managed_lease_record() -> ManagedLeaseRecord {
+    ManagedLeaseRecord::try_new(
+        ManagedLeaseName::try_new("brisk-river-x7f3").expect("lease name"),
+        LeaseBearerToken::try_new("lease-token").expect("lease token"),
+        LeaseIssuedAt::try_new(1).expect("issued at"),
+        LeaseExpiresAt::try_new(4_102_444_800).expect("expires at"),
+    )
+    .expect("managed lease record")
 }
 
 #[tokio::test]

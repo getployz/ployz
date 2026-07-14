@@ -133,11 +133,13 @@ async fn run_loop(
                 MANAGED_LEASE_CONFIGURATION_POLL_INTERVAL
             }
             Ok(
-                ManagedLeaseTaskOutcome::NoAction
-                | ManagedLeaseTaskOutcome::Acquired { .. }
-                | ManagedLeaseTaskOutcome::BundleDownloaded { .. }
-                | ManagedLeaseTaskOutcome::Renewed { .. },
+                ManagedLeaseTaskOutcome::Acquired { .. }
+                | ManagedLeaseTaskOutcome::BundleDownloaded { .. },
             ) => {
+                consecutive_failures = 0;
+                MANAGED_LEASE_CONFIGURATION_POLL_INTERVAL
+            }
+            Ok(ManagedLeaseTaskOutcome::NoAction | ManagedLeaseTaskOutcome::Renewed { .. }) => {
                 consecutive_failures = 0;
                 MANAGED_LEASE_TICK_INTERVAL
             }
@@ -191,6 +193,29 @@ async fn run_once_with_roster(
     facts_reader: &NatsMachineFactsReader,
     roster: &MachineRosterStore,
 ) -> Result<ManagedLeaseTaskOutcome, ManagedLeaseTaskError> {
+    let Some(intent) = lease_intent.load_if_configured().await? else {
+        return Ok(ManagedLeaseTaskOutcome::AwaitingConfiguration);
+    };
+    match intent {
+        ManagedLeaseIntent::Auto { state }
+            if matches!(state.as_ref(), AutoLeaseState::Unacquired) =>
+        {
+            return run_once_with_addresses(
+                lease_intent,
+                repository,
+                client,
+                ManagedLeaseAcquireRequest {
+                    ipv4: Vec::new(),
+                    ipv6: Vec::new(),
+                },
+            )
+            .await;
+        }
+        ManagedLeaseIntent::BringYourOwn | ManagedLeaseIntent::None => {
+            return Ok(ManagedLeaseTaskOutcome::NoAction);
+        }
+        ManagedLeaseIntent::Auto { .. } => {}
+    }
     let gateway_ids = roster
         .active_machines()
         .await?
@@ -204,7 +229,22 @@ async fn run_once_with_roster(
         .map(|machine| machine.machine_id)
         .collect();
     let acquisition = gateway_addresses_from_facts(facts_reader, &gateway_ids).await;
-    if !acquisition.missing.is_empty() {
+    if !acquisition.missing.is_empty()
+        || (acquisition.request.ipv4.is_empty() && acquisition.request.ipv6.is_empty())
+    {
+        let certificate_outcome = run_once_with_addresses(
+            lease_intent,
+            repository,
+            client,
+            ManagedLeaseAcquireRequest {
+                ipv4: Vec::new(),
+                ipv6: Vec::new(),
+            },
+        )
+        .await?;
+        if !matches!(certificate_outcome, ManagedLeaseTaskOutcome::NoAction) {
+            return Ok(certificate_outcome);
+        }
         return Ok(ManagedLeaseTaskOutcome::AwaitingGatewayTestimony {
             missing: acquisition.missing,
         });
@@ -251,10 +291,13 @@ async fn run_once_with_addresses(
                 lease_intent,
                 repository,
                 ManagedLeaseSubject::Acquire,
-                Some(addresses),
+                None,
                 || async {
                     client
-                        .acquire(acquisition)
+                        .acquire(ManagedLeaseAcquireRequest {
+                            ipv4: Vec::new(),
+                            ipv6: Vec::new(),
+                        })
                         .await
                         .map(|acquired| (acquired.lease, acquired.bundle))
                 },
@@ -263,7 +306,9 @@ async fn run_once_with_addresses(
             .await
         }
         AutoLeaseState::RecordOnly { lease } => {
-            if lease_intent.applied_address_set_differs(&addresses).await? {
+            if has_addresses(&addresses)
+                && lease_intent.applied_address_set_differs(&addresses).await?
+            {
                 return run_renew_step(
                     lease_intent,
                     repository,
@@ -277,24 +322,29 @@ async fn run_once_with_addresses(
             run_download_step(lease_intent, repository, client, lease).await
         }
         AutoLeaseState::Ready { lease, bundle: _ } => {
-            let addresses_differ = lease_intent.applied_address_set_differs(&addresses).await?;
-            if needs_certificate_refresh && !needs_lease_renewal && !addresses_differ {
+            let addresses_differ = has_addresses(&addresses)
+                && lease_intent.applied_address_set_differs(&addresses).await?;
+            if addresses_differ || (needs_lease_renewal && has_addresses(&addresses)) {
+                return run_renew_step(
+                    lease_intent,
+                    repository,
+                    client,
+                    lease,
+                    acquisition,
+                    addresses,
+                )
+                .await;
+            }
+            if needs_certificate_refresh {
                 return run_download_step(lease_intent, repository, client, lease).await;
             }
-            if !needs_lease_renewal && !addresses_differ {
-                return Ok(ManagedLeaseTaskOutcome::NoAction);
-            }
-            run_renew_step(
-                lease_intent,
-                repository,
-                client,
-                lease,
-                acquisition,
-                addresses,
-            )
-            .await
+            Ok(ManagedLeaseTaskOutcome::NoAction)
         }
     }
+}
+
+fn has_addresses(addresses: &ManagedLeaseAddressSet) -> bool {
+    !addresses.ipv4().is_empty() || !addresses.ipv6().is_empty()
 }
 
 async fn run_renew_step(

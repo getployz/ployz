@@ -87,7 +87,7 @@ pub use ployz_core::ops::{
     ControlPlaneCommitScope, CoreReplaceFailure, CoreReplaceOperationState, DeployCleanupFailure,
     DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, DeployPhaseNumber,
     DeployPhaseNumberError, DeployPhaseOutcome, DeployRunningStage, DeployServiceResult,
-    PreStartHookFailure,
+    ManagedPublicUrlPending, ManagedPublicUrlPendingStage, PreStartHookFailure,
 };
 pub use ployz_core::roles::{GatewayRole, InstallRolePolicy};
 pub use ployz_core::security::NatsPrincipal;

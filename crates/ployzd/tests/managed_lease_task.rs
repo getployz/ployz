@@ -87,9 +87,14 @@ async fn due_lease_renews_and_completes_operation() {
         .await
         .expect("download bundle");
 
-    let outcome = run_once(&intent, &repository, &client, empty_request())
-        .await
-        .expect("renewal tick");
+    let outcome = run_once(
+        &intent,
+        &repository,
+        &client,
+        gateway_request(&["203.0.113.8"], &[]),
+    )
+    .await
+    .expect("renewal tick");
     let ManagedLeaseTaskOutcome::Renewed { operation_id } = outcome else {
         panic!("expected renewed outcome");
     };
@@ -486,11 +491,9 @@ async fn failed_address_change_renewal_preserves_lease_and_applied_addresses() {
 }
 
 #[tokio::test]
-async fn successful_acquisition_addresses_survive_core_restart() {
+async fn acquisition_does_not_mark_gateway_addresses_applied() {
     let nats = ployz_test_support::nats::TestNats::start().await;
-    let directory = tempfile::tempdir().expect("temp dir");
-    let path = directory.path().join("ployz-core.db");
-    let core_store = CoreStore::open(path.clone()).await.expect("core store");
+    let core_store = CoreStore::open_in_memory().await.expect("core store");
     let intent = LeaseIntentStore::new(core_store.clone());
     intent
         .set_mode(PublicUrlMode::Auto)
@@ -505,16 +508,24 @@ async fn successful_acquisition_addresses_survive_core_restart() {
         .expect("acquisition tick");
 
     assert!(matches!(outcome, ManagedLeaseTaskOutcome::Acquired { .. }));
-    drop(repository);
-    drop(intent);
-    drop(core_store);
-    let reopened = LeaseIntentStore::new(CoreStore::open(path).await.expect("reopen core store"));
-
-    assert!(
-        !reopened
-            .applied_address_set_differs(&address_set(&request))
+    assert_eq!(
+        intent
+            .applied_address_set()
             .await
-            .expect("restart evidence")
+            .expect("applied-address evidence"),
+        None
+    );
+
+    let follow_up = run_once(&intent, &repository, &client, request.clone())
+        .await
+        .expect("post-acquisition address publication tick");
+    assert!(matches!(follow_up, ManagedLeaseTaskOutcome::Renewed { .. }));
+    assert_eq!(
+        intent
+            .applied_address_set()
+            .await
+            .expect("applied-address evidence"),
+        Some(address_set(&request))
     );
     server.abort();
 }

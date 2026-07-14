@@ -7,11 +7,11 @@ use crate::lease::{BundleDownloadOutcome, LeaseClient};
 use crate::operations::log::OperationRepository;
 use crate::roles::machine::client::{NatsMachineFactsReader, read_machine_placement_facts};
 use crate::roles::machine::convergence::gather_dataplane_statuses;
-use ployz_core::cert::ManagedCertificateIssuanceFailureKind;
+use ployz_core::cert::{AutoLeaseState, ManagedLeaseIntent, PublicUrlMode};
 use ployz_core::dataplane::{DataplaneMember, DataplaneProjection};
 use ployz_core::deploy::{DeployRequest, DeployRouteTarget};
 use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::ops::DeployEvidence;
+use ployz_core::ops::{DeployEvidence, ManagedPublicUrlPending, ManagedPublicUrlPendingStage};
 use ployz_core::state::{ActiveMachineState, IntentSnapshot, MachineLifecycle};
 use std::time::Duration;
 
@@ -71,17 +71,15 @@ pub async fn load_deploy_execution_facts_from_nats(
     .await
 }
 
-pub(super) async fn ensure_managed_certificate_for_deploy(
+pub(super) async fn ensure_managed_public_url_for_deploy(
     request: &DeployRequest,
     operation_id: &OperationId,
-    intent_reader: &NatsIntentReader,
     context: ManagedCertificateWaitContext<'_>,
 ) -> Result<(), DeployFactLoadError> {
     if !requests_auto_hostname(request) {
         return Ok(());
     }
-    let intent = read_intent(intent_reader).await?;
-    ensure_managed_certificate(operation_id, &intent.managed_lease, context).await
+    wait_for_managed_public_url(operation_id, context).await
 }
 
 fn requests_auto_hostname(request: &DeployRequest) -> bool {
@@ -173,90 +171,122 @@ async fn deploy_execution_facts(
     })
 }
 
-async fn ensure_managed_certificate(
+async fn wait_for_managed_public_url(
     operation_id: &OperationId,
-    projection: &ployz_core::state::ManagedLeaseProjection,
-    context: ManagedCertificateWaitContext<'_>,
-) -> Result<(), DeployFactLoadError> {
-    match projection {
-        ployz_core::state::ManagedLeaseProjection::Ready { .. }
-        | ployz_core::state::ManagedLeaseProjection::Unacquired => Ok(()),
-        ployz_core::state::ManagedLeaseProjection::RecordOnly { lease } => {
-            wait_for_managed_certificate(operation_id, lease, context).await
-        }
-    }
-}
-
-async fn wait_for_managed_certificate(
-    operation_id: &OperationId,
-    lease: &ployz_core::cert::ManagedLeaseRecord,
     context: ManagedCertificateWaitContext<'_>,
 ) -> Result<(), DeployFactLoadError> {
     let deadline = tokio::time::Instant::now() + context.policy.overall_timeout;
-    let mut latest_last_error = None;
-    let mut waiting_recorded = false;
+    let mut lease_wait_recorded = false;
+    let mut certificate_wait_recorded = false;
+    let mut gateway_addresses_wait_recorded = false;
+    let mut latest_certificate_error = None;
 
     loop {
-        let download = tokio::time::timeout_at(
-            deadline,
-            context
-                .lease_client
-                .download_bundle(lease.name.clone(), lease.token.clone()),
-        )
-        .await;
-        match download {
-            Err(_) => {
-                return Err(certificate_pending(latest_last_error));
-            }
-            Ok(Err(source)) => {
-                return Err(DeployFactLoadError::ManagedCertificateWorker {
-                    message: source.to_string(),
+        let intent = context
+            .lease_intent
+            .load_if_configured()
+            .await
+            .map_err(|source| DeployFactLoadError::ManagedPublicUrlStore {
+                message: source.to_string(),
+            })?;
+        let pending = match intent {
+            Some(ManagedLeaseIntent::BringYourOwn) => {
+                return Err(DeployFactLoadError::ManagedPublicUrlDisabled {
+                    mode: PublicUrlMode::BringYourOwn,
                 });
             }
-            Ok(Ok(BundleDownloadOutcome::Ready(bundle))) => {
-                return match context
-                    .lease_intent
-                    .store_lease(lease.clone(), Some(bundle))
-                    .await
-                    .map_err(|source| DeployFactLoadError::ManagedCertificateStore {
-                        message: source.to_string(),
-                    })? {
-                    StoreLeaseOutcome::Stored => Ok(()),
-                    StoreLeaseOutcome::Superseded => {
-                        Err(DeployFactLoadError::ManagedCertificateSuperseded)
+            Some(ManagedLeaseIntent::None) => {
+                return Err(DeployFactLoadError::ManagedPublicUrlDisabled {
+                    mode: PublicUrlMode::None,
+                });
+            }
+            None => ManagedPublicUrlPending::Lease,
+            Some(ManagedLeaseIntent::Auto { state }) => match *state {
+                AutoLeaseState::Unacquired => ManagedPublicUrlPending::Lease,
+                AutoLeaseState::RecordOnly { lease } => {
+                    let download = tokio::time::timeout_at(
+                        deadline,
+                        context
+                            .lease_client
+                            .download_bundle(lease.name.clone(), lease.token.clone()),
+                    )
+                    .await;
+                    match download {
+                        Err(_) => {
+                            return Err(DeployFactLoadError::ManagedPublicUrlPending {
+                                pending: ManagedPublicUrlPending::Certificate {
+                                    last_error: latest_certificate_error,
+                                },
+                            });
+                        }
+                        Ok(Err(source)) => {
+                            return Err(DeployFactLoadError::ManagedCertificateWorker {
+                                message: source.to_string(),
+                            });
+                        }
+                        Ok(Ok(BundleDownloadOutcome::Ready(bundle))) => {
+                            match context
+                                .lease_intent
+                                .store_lease(lease, Some(bundle))
+                                .await
+                                .map_err(|source| DeployFactLoadError::ManagedPublicUrlStore {
+                                    message: source.to_string(),
+                                })? {
+                                StoreLeaseOutcome::Stored => continue,
+                                StoreLeaseOutcome::Superseded => {
+                                    return Err(DeployFactLoadError::ManagedCertificateSuperseded);
+                                }
+                            }
+                        }
+                        Ok(Ok(BundleDownloadOutcome::Pending { last_error })) => {
+                            latest_certificate_error = last_error;
+                            ManagedPublicUrlPending::Certificate { last_error }
+                        }
                     }
-                };
-            }
-            Ok(Ok(BundleDownloadOutcome::Pending { last_error })) => {
-                latest_last_error = last_error;
-                if !waiting_recorded {
-                    context
-                        .repository
-                        .record_deploy_evidence(
-                            operation_id,
-                            DeployEvidence::WaitingForManagedCertificate,
-                        )
-                        .await
-                        .map_err(|source| DeployFactLoadError::ManagedCertificateProgress {
-                            message: source.to_string(),
-                        })?;
-                    waiting_recorded = true;
                 }
-            }
+                AutoLeaseState::Ready { .. } => {
+                    let applied =
+                        context
+                            .lease_intent
+                            .applied_address_set()
+                            .await
+                            .map_err(|source| DeployFactLoadError::ManagedPublicUrlStore {
+                                message: source.to_string(),
+                            })?;
+                    if applied.is_some() {
+                        return Ok(());
+                    }
+                    ManagedPublicUrlPending::GatewayAddresses
+                }
+            },
+        };
+
+        let stage = pending.stage();
+        let wait_recorded = match stage {
+            ManagedPublicUrlPendingStage::Lease => &mut lease_wait_recorded,
+            ManagedPublicUrlPendingStage::Certificate => &mut certificate_wait_recorded,
+            ManagedPublicUrlPendingStage::GatewayAddresses => &mut gateway_addresses_wait_recorded,
+        };
+        if !*wait_recorded {
+            context
+                .repository
+                .record_deploy_evidence(
+                    operation_id,
+                    DeployEvidence::WaitingForManagedPublicUrl { stage },
+                )
+                .await
+                .map_err(|source| DeployFactLoadError::ManagedPublicUrlProgress {
+                    message: source.to_string(),
+                })?;
+            *wait_recorded = true;
         }
 
         let next_poll = (tokio::time::Instant::now() + context.policy.poll_interval).min(deadline);
         tokio::time::sleep_until(next_poll).await;
         if tokio::time::Instant::now() >= deadline {
-            return Err(certificate_pending(latest_last_error));
+            return Err(DeployFactLoadError::ManagedPublicUrlPending { pending });
         }
     }
-}
-
-fn certificate_pending(
-    last_error: Option<ManagedCertificateIssuanceFailureKind>,
-) -> DeployFactLoadError {
-    DeployFactLoadError::CertificatePending { last_error }
 }
 
 fn operation_dataplane_members(
@@ -297,16 +327,16 @@ fn load_machine_lifecycles(intent: &IntentSnapshot) -> Vec<(MachineId, MachineLi
 pub enum DeployFactLoadError {
     #[error("intent could not be read: {message}")]
     IntentRead { message: String },
-    #[error("managed certificate is still pending")]
-    CertificatePending {
-        last_error: Option<ManagedCertificateIssuanceFailureKind>,
-    },
+    #[error("managed public URL is still pending at {pending:?}")]
+    ManagedPublicUrlPending { pending: ManagedPublicUrlPending },
+    #[error("automatic public URLs are disabled by mode {mode:?}")]
+    ManagedPublicUrlDisabled { mode: PublicUrlMode },
     #[error("managed certificate worker failed: {message}")]
     ManagedCertificateWorker { message: String },
-    #[error("managed certificate could not be stored: {message}")]
-    ManagedCertificateStore { message: String },
+    #[error("managed public URL state could not be read or stored: {message}")]
+    ManagedPublicUrlStore { message: String },
     #[error("managed certificate result was superseded by a public URL mode change")]
     ManagedCertificateSuperseded,
-    #[error("managed certificate wait progress could not be recorded: {message}")]
-    ManagedCertificateProgress { message: String },
+    #[error("managed public URL wait progress could not be recorded: {message}")]
+    ManagedPublicUrlProgress { message: String },
 }

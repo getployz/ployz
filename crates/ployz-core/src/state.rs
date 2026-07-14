@@ -2,7 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cert::{AcmeHttp01Challenge, ActiveCertState, ManagedCertBundle, ManagedLeaseRecord};
+use crate::cert::{
+    AcmeHttp01Challenge, ActiveCertState, ManagedCertBundle, ManagedLeaseRecord, PublicUrlMode,
+};
 use crate::dataplane::{DataplaneProjection, MachineEndpointSubnet, WireGuardPublicKey};
 use crate::deploy::{ImageReference, ReplicaCount, VolumeName};
 use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
@@ -154,6 +156,8 @@ pub struct IntentSnapshot {
     #[serde(default)]
     pub volume_pins: Vec<VolumePinState>,
     pub nats_authorizations: Vec<NatsAuthorizationGrant>,
+    #[serde(default = "PublicUrlMode::default_mode")]
+    pub public_url_mode: PublicUrlMode,
     #[serde(default)]
     pub managed_lease: ManagedLeaseProjection,
     #[serde(default)]
@@ -181,6 +185,8 @@ struct IntentSnapshotWire {
     #[serde(default)]
     volume_pins: Vec<VolumePinState>,
     nats_authorizations: Vec<NatsAuthorizationGrant>,
+    #[serde(default = "PublicUrlMode::default_mode")]
+    public_url_mode: PublicUrlMode,
     #[serde(default)]
     managed_lease: Option<ManagedLeaseProjectionWire>,
     #[serde(default)]
@@ -226,6 +232,7 @@ impl<'de> Deserialize<'de> for IntentSnapshot {
             serving_target_entries: wire.serving_target_entries,
             volume_pins: wire.volume_pins,
             nats_authorizations: wire.nats_authorizations,
+            public_url_mode: wire.public_url_mode,
             managed_lease,
             custom_certificates: wire.custom_certificates,
             acme_http01_challenges: wire.acme_http01_challenges,
@@ -424,6 +431,39 @@ mod tests {
         assert_eq!(decoded, snapshot);
     }
 
+    #[test]
+    fn legacy_intent_snapshot_defaults_public_url_mode_to_auto() {
+        let mut value = serde_json::to_value(ready_snapshot()).expect("serialize snapshot");
+        value
+            .as_object_mut()
+            .expect("snapshot object")
+            .remove("public_url_mode");
+
+        let decoded =
+            serde_json::from_value::<IntentSnapshot>(value).expect("deserialize snapshot");
+
+        assert_eq!(decoded.public_url_mode, PublicUrlMode::Auto);
+    }
+
+    #[test]
+    fn intent_snapshot_round_trips_each_public_url_mode() {
+        for public_url_mode in [
+            PublicUrlMode::Auto,
+            PublicUrlMode::BringYourOwn,
+            PublicUrlMode::None,
+        ] {
+            let mut snapshot = ready_snapshot();
+            snapshot.public_url_mode = public_url_mode;
+
+            let decoded = serde_json::from_value::<IntentSnapshot>(
+                serde_json::to_value(snapshot).expect("serialize snapshot"),
+            )
+            .expect("deserialize snapshot");
+
+            assert_eq!(decoded.public_url_mode, public_url_mode);
+        }
+    }
+
     fn ready_snapshot() -> IntentSnapshot {
         let name = ManagedLeaseName::try_new("lease").expect("lease name");
         let issued_at = LeaseIssuedAt::try_new(1).expect("issued");
@@ -454,6 +494,7 @@ mod tests {
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),
             nats_authorizations: Vec::new(),
+            public_url_mode: PublicUrlMode::Auto,
             managed_lease: ManagedLeaseProjection::Ready { lease, bundle },
             custom_certificates: Vec::new(),
             acme_http01_challenges: Vec::new(),

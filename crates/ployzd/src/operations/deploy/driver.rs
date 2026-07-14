@@ -34,7 +34,7 @@ use ployz_core::ops::{
 use ployz_core::subjects::INTENT_CHANGED;
 use std::time::Duration;
 
-use super::facts::{ManagedCertificateWaitContext, ensure_managed_certificate_for_deploy};
+use super::facts::{ManagedCertificateWaitContext, ensure_managed_public_url_for_deploy};
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// A container without a Docker healthcheck must stay running this long
@@ -81,10 +81,9 @@ where
     let request = accepted.target.clone();
 
     let facts = match async {
-        ensure_managed_certificate_for_deploy(
+        ensure_managed_public_url_for_deploy(
             &request,
             &accepted.operation_id,
-            intent_reader,
             ManagedCertificateWaitContext {
                 lease_intent: &stores.lease_intent,
                 lease_client: &stores.lease_client,
@@ -100,6 +99,8 @@ where
     {
         Ok(facts) => facts,
         Err(source) => {
+            let auto_dns_disabled =
+                matches!(source, DeployFactLoadError::ManagedPublicUrlDisabled { .. });
             let failure_record_error = record_operation_failure(
                 &stores.controllers,
                 &accepted,
@@ -107,6 +108,11 @@ where
             )
             .await
             .err();
+            if auto_dns_disabled {
+                return Err(DeployOperationRunError::AutoDnsWithoutLease {
+                    failure_record_error,
+                });
+            }
             return Err(DeployOperationRunError::LoadFacts {
                 source,
                 failure_record_error,
@@ -184,16 +190,39 @@ fn fact_load_failure(
     source: &DeployFactLoadError,
 ) -> DeployOperationFailure {
     match source {
-        DeployFactLoadError::CertificatePending { last_error } => {
-            DeployOperationFailure::CertificatePending {
-                last_error: *last_error,
+        DeployFactLoadError::ManagedPublicUrlPending { pending } => {
+            DeployOperationFailure::ManagedPublicUrlPending {
+                pending: pending.clone(),
+            }
+        }
+        DeployFactLoadError::ManagedPublicUrlDisabled { mode } => {
+            let service_id = request
+                .services
+                .iter()
+                .find(|service| {
+                    service
+                        .routes
+                        .iter()
+                        .any(|route| matches!(route.target, DeployRouteTarget::AutoHostname { .. }))
+                })
+                .map_or_else(
+                    || request.status_service_id(),
+                    |service| service.service_id.clone(),
+                );
+            DeployOperationFailure::AutoDnsWithoutLease {
+                service_id,
+                namespace_revision_id: request.namespace_revision_id(),
+                message: FailureMessage::try_new(format!(
+                    "an auto public URL was requested but the cluster public URL mode is {mode:?}"
+                ))
+                .expect("generated auto DNS mode guidance is non-empty"),
             }
         }
         DeployFactLoadError::IntentRead { .. }
         | DeployFactLoadError::ManagedCertificateWorker { .. }
-        | DeployFactLoadError::ManagedCertificateStore { .. }
+        | DeployFactLoadError::ManagedPublicUrlStore { .. }
         | DeployFactLoadError::ManagedCertificateSuperseded
-        | DeployFactLoadError::ManagedCertificateProgress { .. } => {
+        | DeployFactLoadError::ManagedPublicUrlProgress { .. } => {
             DeployOperationFailure::PlanningFailed {
                 service_id: request.status_service_id(),
                 namespace_revision_id: request.namespace_revision_id(),

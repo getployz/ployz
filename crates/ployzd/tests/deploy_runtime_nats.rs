@@ -7,6 +7,7 @@ mod support;
 
 use fixtures::*;
 use futures_util::StreamExt;
+use ployz_core::cert::PublicUrlMode;
 use ployz_core::deploy::{
     DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, ReplicaCount,
 };
@@ -285,8 +286,17 @@ async fn health_failure_records_failed_operation_without_committing_active_state
 }
 
 #[tokio::test]
-async fn auto_dns_without_lease_fails_before_runtime_work_with_guidance() {
+async fn auto_dns_rejects_disabled_modes_before_runtime_work_with_guidance() {
+    assert_auto_dns_mode_rejected(PublicUrlMode::None).await;
+    assert_auto_dns_mode_rejected(PublicUrlMode::BringYourOwn).await;
+}
+
+async fn assert_auto_dns_mode_rejected(mode: PublicUrlMode) {
     let nats = test_nats().await;
+    nats.lease_intent
+        .set_mode(mode)
+        .await
+        .expect("disable managed public URLs");
     let _facts = start_facts_subscription(
         nats.machine_a.clone(),
         nats.client.clone(),
@@ -321,7 +331,10 @@ async fn auto_dns_without_lease_fails_before_runtime_work_with_guidance() {
             namespace_intent: nats.namespace_intent.clone(),
             lease_intent: nats.lease_intent.clone(),
             lease_client: LeaseClient::new(LeaseWorkerUrl::default_worker()),
-            managed_certificate_wait: ManagedCertificateWaitPolicy::production(),
+            managed_certificate_wait: ManagedCertificateWaitPolicy::new(
+                Duration::from_millis(80),
+                Duration::from_millis(5),
+            ),
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
@@ -355,7 +368,7 @@ async fn auto_dns_without_lease_fails_before_runtime_work_with_guidance() {
                 failure: DeployOperationFailure::AutoDnsWithoutLease { message, .. },
             },
             ..
-        }) if message.as_str().contains("re-run init with --public-url auto")
+        }) if message.as_str().contains(&format!("{mode:?}"))
     ));
 }
 

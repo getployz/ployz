@@ -21,6 +21,12 @@ pub struct RuntimeSnapshotResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeSnapshot {
+    #[serde(default)]
+    pub public_url: RuntimePublicUrl,
+    /// TLS status for custom (bring-your-own) hostnames. Managed auto hostnames
+    /// are covered by the wildcard lease cert and are not listed here.
+    #[serde(default)]
+    pub certificate_statuses: Vec<RouteCertStatus>,
     pub machines: Vec<MachineSnapshot>,
     pub services: Vec<ServiceSnapshot>,
     pub routes: Vec<RouteBindingState>,
@@ -30,6 +36,34 @@ pub struct RuntimeSnapshot {
     pub instances: Vec<RuntimeServiceInstance>,
     pub projection_sources: RuntimeProjectionSources,
     pub updated_at_unix_seconds: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RuntimePublicUrl {
+    Auto {
+        domain: Option<String>,
+    },
+    BringYourOwn,
+    #[default]
+    None,
+}
+
+/// TLS lifecycle for a single custom hostname.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RouteCertStatus {
+    pub hostname: RouteHostname,
+    pub status: RouteCertLifecycle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteCertLifecycle {
+    /// A usable certificate is issued for this hostname.
+    Verified,
+    /// An ACME challenge is in flight; DNS resolves but the cert is not ready.
+    Pending,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -99,4 +133,33 @@ pub enum RuntimeDerivedCollectionStatus {
 pub enum RuntimeSnapshotError {
     #[error("runtime snapshot unavailable: {message}")]
     Unavailable { message: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_snapshot_defaults_missing_public_url_to_none() {
+        let snapshot = serde_json::from_value::<RuntimeSnapshot>(serde_json::json!({
+            "machines": [],
+            "services": [],
+            "routes": [],
+            "containers": [],
+            "revisions": [],
+            "releases": [],
+            "instances": [],
+            "projection_sources": {
+                "intent": { "read_at_unix_seconds": 1 },
+                "facts": { "read_at_unix_seconds": 1 },
+                "revisions": { "status": "complete", "source_count": 0, "missing_link_count": 0 },
+                "releases": { "status": "complete", "source_count": 0, "missing_link_count": 0 },
+                "instances": { "status": "complete", "source_count": 0, "missing_link_count": 0 }
+            },
+            "updated_at_unix_seconds": 1
+        }))
+        .expect("legacy runtime snapshot decodes");
+
+        assert_eq!(snapshot.public_url, RuntimePublicUrl::None);
+    }
 }

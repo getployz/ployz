@@ -74,6 +74,19 @@ impl LeaseIntentStore {
             .map_err(store_error)
     }
 
+    pub async fn applied_address_set(
+        &self,
+    ) -> Result<Option<ManagedLeaseAddressSet>, LeaseIntentStoreError> {
+        self.store
+            .call(|conn| {
+                Ok(load_applied_addresses(conn)?.filter(|addresses| {
+                    !addresses.ipv4().is_empty() || !addresses.ipv6().is_empty()
+                }))
+            })
+            .await
+            .map_err(store_error)
+    }
+
     pub async fn store_successful_lease_application(
         &self,
         record: ManagedLeaseRecord,
