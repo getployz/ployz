@@ -15,7 +15,9 @@ impl OperationStatus {
             | Self::CredentialGrant { id, .. }
             | Self::NetworkRepair { id, .. }
             | Self::ServiceRestart { id, .. }
-            | Self::ManagedLease { id, .. }
+            | Self::ManagedDnsReconcile { id, .. }
+            | Self::IngressConfigure { id, .. }
+            | Self::IngressRefresh { id, .. }
             | Self::NamespaceRemove { id, .. } => id,
             Self::VolumeRemove { id, .. } => id,
         }
@@ -33,7 +35,9 @@ impl OperationStatus {
             Self::CredentialGrant { .. } => OperationKind::CredentialGrant,
             Self::NetworkRepair { .. } => OperationKind::NetworkRepair,
             Self::ServiceRestart { .. } => OperationKind::ServiceRestart,
-            Self::ManagedLease { .. } => OperationKind::ManagedLease,
+            Self::ManagedDnsReconcile { .. } => OperationKind::ManagedDnsReconcile,
+            Self::IngressConfigure { .. } => OperationKind::IngressConfigure,
+            Self::IngressRefresh { .. } => OperationKind::IngressRefresh,
             Self::NamespaceRemove { .. } => OperationKind::NamespaceRemove,
             Self::VolumeRemove { .. } => OperationKind::VolumeRemove,
         }
@@ -55,7 +59,10 @@ impl OperationStatus {
             Self::Cert { .. }
             | Self::CredentialGrant { .. }
             | Self::NetworkRepair { .. }
-            | Self::ManagedLease { .. } => OperationProgressScope::Cluster,
+            | Self::ManagedDnsReconcile { .. } => OperationProgressScope::Cluster,
+            Self::IngressConfigure { .. } | Self::IngressRefresh { .. } => {
+                OperationProgressScope::Cluster
+            }
             Self::MachineAdd { machine_id, .. }
             | Self::MachineUpdate { machine_id, .. }
             | Self::MachineLifecycle { machine_id, .. }
@@ -100,7 +107,15 @@ impl OperationStatus {
                 last_event_sequence,
                 ..
             }
-            | Self::ManagedLease {
+            | Self::ManagedDnsReconcile {
+                last_event_sequence,
+                ..
+            }
+            | Self::IngressConfigure {
+                last_event_sequence,
+                ..
+            }
+            | Self::IngressRefresh {
                 last_event_sequence,
                 ..
             }

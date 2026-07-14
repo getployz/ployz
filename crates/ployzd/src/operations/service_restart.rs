@@ -319,7 +319,12 @@ impl ServiceRestartOperation {
             ) => Err(error),
             Err(
                 error @ RecordOperationEventError::ProjectStatus(
-                    StatusProjectionError::ManagedLeaseCancellationUnsupported { .. },
+                    StatusProjectionError::ManagedDnsReconcileCancellationUnsupported { .. },
+                ),
+            ) => Err(error),
+            Err(
+                error @ RecordOperationEventError::ProjectStatus(
+                    StatusProjectionError::IngressConfigurationMismatch { .. },
                 ),
             ) => Err(error),
         }

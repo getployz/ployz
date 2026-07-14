@@ -25,10 +25,12 @@ mod core_replace;
 mod credential_grant;
 mod dataplane_staging;
 mod deploy;
+mod ingress_configure;
+mod ingress_refresh;
 mod machine_add;
 mod machine_lifecycle;
 mod machine_update;
-mod managed_lease;
+mod managed_dns_reconcile;
 mod namespace_remove;
 mod network_repair;
 mod operation;
@@ -49,6 +51,11 @@ impl OperationRepository {
     #[must_use]
     pub fn open(store: CoreStore, progress: async_nats::Client) -> Self {
         Self { store, progress }
+    }
+
+    #[must_use]
+    pub(crate) const fn core_store(&self) -> &CoreStore {
+        &self.store
     }
 
     async fn submit_operation<K: OperationAction>(

@@ -5,6 +5,7 @@ mod volume;
 
 pub use volume::VolumeQueryService;
 
+use crate::core_store::CoreStore;
 use crate::fact_cache::FactCache;
 use crate::intent::service::NatsIntentReader;
 use crate::operation_api::admission::OperationControllers;
@@ -13,7 +14,9 @@ use crate::roles::machine::client::{
     read_available_machine_facts, read_available_machine_facts_by_id,
 };
 use crate::roles::machine::protocol::MachineLogsTailRpcRequest;
-use crate::runtime_snapshot::{from_sources as runtime_snapshot_from_sources, service_snapshot};
+use crate::runtime_snapshot::{
+    from_sources as runtime_snapshot_from_sources, load_ingress_sources, service_snapshot,
+};
 use ployz_core::ids::{ContainerId, MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::machine_runtime::ManagedContainerKind;
 use ployz_core::nats_config::NatsAuthorizationGrant;
@@ -79,19 +82,22 @@ pub struct RuntimeSnapshotQueryService {
     intent_reader: NatsIntentReader,
     facts: FactCache,
     facts_reader: NatsMachineFactsReader,
+    core_store: CoreStore,
 }
 
 impl RuntimeSnapshotQueryService {
     #[must_use]
-    pub(crate) const fn new(
+    pub(crate) fn new(
         intent_reader: NatsIntentReader,
         facts: FactCache,
         facts_reader: NatsMachineFactsReader,
+        core_store: CoreStore,
     ) -> Self {
         Self {
             intent_reader,
             facts,
             facts_reader,
+            core_store,
         }
     }
 
@@ -114,12 +120,16 @@ impl RuntimeSnapshotQueryService {
             .into_iter()
             .map(|status| (status.machine_id.clone(), status))
             .collect();
+        let ingress = load_ingress_sources(&self.core_store)
+            .await
+            .map_err(|message| RuntimeSnapshotError::Unavailable { message })?;
 
         Ok(RuntimeSnapshotResult {
             snapshot: runtime_snapshot_from_sources(
                 intent,
                 &facts,
                 &gateway_statuses,
+                ingress,
                 read_at_unix_seconds,
             ),
         })
@@ -902,13 +912,15 @@ mod tests {
             },
         };
         let dangling_route = RouteBindingState {
+            id: ployz_core::ids::RouteBindingId::try_new("route_team_b")
+                .expect("valid route binding id"),
             namespace_id: namespace_id("team-b"),
             target: RouteTarget::new(
                 RouteHostname::try_new("b.example.com").expect("valid route hostname"),
-                RoutePort::try_new(443).expect("valid route port"),
             ),
             endpoint_port: RoutePort::try_new(8080).expect("valid route port"),
             service_id: service_id("web"),
+            origin: ployz_core::ingress::RouteBindingOrigin::Declared,
         };
 
         assert_eq!(missing_links(&[serving], &[dangling_route], &[]), 1);
@@ -929,13 +941,15 @@ mod tests {
             },
         };
         let route = RouteBindingState {
+            id: ployz_core::ids::RouteBindingId::try_new("route_team_b")
+                .expect("valid route binding id"),
             namespace_id: namespace_id("team-b"),
             target: RouteTarget::new(
                 RouteHostname::try_new("b.example.com").expect("valid route hostname"),
-                RoutePort::try_new(443).expect("valid route port"),
             ),
             endpoint_port: RoutePort::try_new(8080).expect("valid route port"),
             service_id: service_id("web"),
+            origin: ployz_core::ingress::RouteBindingOrigin::Declared,
         };
 
         let releases = derive_releases(

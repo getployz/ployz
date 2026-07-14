@@ -3,12 +3,13 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cert::{AcmeHttp01Challenge, ActiveCertState};
+use crate::cert::AcmeHttp01Challenge;
 use crate::deploy::{
     DeployCleanupContainer, DeployPlan, DeployRequest, DeployReservationId, VolumeName,
 };
 use crate::ids::{CertId, ContainerId, MachineId, NamespaceId, OperationId, ServiceId};
 use crate::image::OciDigest;
+use crate::ingress::{ActiveCertificateMetadata, IngressConfiguration};
 use crate::install::{InstallArtifactVersion, MachineJoinRuntimeNatsUrl};
 use crate::machine::{
     IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineCredentialProvisioningStep,
@@ -17,16 +18,18 @@ use crate::machine::{
 use crate::roles::InstallRolePolicy;
 use crate::state::MachineLifecycle;
 
-use super::cert::{CertEvent, CertTransition};
+use super::cert::{CertEvent, CertTransition, CertificateProvisionWarning};
 use super::core_replace::{CoreReplaceEvent, CoreReplaceFailure, CoreReplaceTransition};
 use super::credential_grant::{
     CredentialGrantAction, CredentialGrantEvent, CredentialGrantFailure, CredentialGrantTransition,
 };
 use super::deploy::{DeployEvent, DeployEvidence, DeployTransition};
+use super::ingress_configure::{IngressConfigureEvent, IngressConfigureTransition};
+use super::ingress_refresh::{IngressRefreshEvent, IngressRefreshTransition};
 use super::machine_add::MachineAddEvent;
 use super::machine_lifecycle::{MachineLifecycleEvent, MachineLifecycleTransition};
 use super::machine_update::{MachineUpdateEvent, MachineUpdateTransition};
-use super::managed_lease::{ManagedLeaseEvent, ManagedLeaseTransition};
+use super::managed_dns_reconcile::{ManagedDnsReconcileEvent, ManagedDnsReconcileTransition};
 use super::namespace_remove::{NamespaceRemoveEvent, NamespaceRemoveTransition};
 use super::network_repair::{NetworkRepairEvent, NetworkRepairEvidence, NetworkRepairTransition};
 use super::service_restart::{ServiceRestartEvent, ServiceRestartTransition};
@@ -66,9 +69,11 @@ pub enum OperationSubject {
     ServiceRestart {
         service_id: ServiceId,
     },
-    ManagedLease {
-        subject: super::ManagedLeaseSubject,
+    ManagedDnsReconcile {
+        subject: super::ManagedDnsReconcileSubject,
     },
+    IngressConfigure,
+    IngressRefresh,
     NamespaceRemove {
         namespace_id: NamespaceId,
     },
@@ -94,10 +99,6 @@ pub enum OperationEvent {
     },
     DeployPlanningStarted {
         operation_id: OperationId,
-    },
-    DeployWaitingForManagedPublicUrl {
-        operation_id: OperationId,
-        stage: super::ManagedPublicUrlPendingStage,
     },
     DeployImageResolved {
         operation_id: OperationId,
@@ -166,9 +167,14 @@ pub enum OperationEvent {
         operation_id: OperationId,
         cert_id: CertId,
     },
+    CertWarning {
+        operation_id: OperationId,
+        cert_id: CertId,
+        warning: CertificateProvisionWarning,
+    },
     CertCompleted {
         operation_id: OperationId,
-        active_cert: ActiveCertState,
+        certificate: ActiveCertificateMetadata,
     },
     CertFailed {
         operation_id: OperationId,
@@ -310,18 +316,40 @@ pub enum OperationEvent {
         operation_id: OperationId,
         failure: ServiceRestartFailure,
     },
-    ManagedLeaseSubmitted {
+    ManagedDnsReconcileSubmitted {
         operation_id: OperationId,
-        subject: super::ManagedLeaseSubject,
+        subject: super::ManagedDnsReconcileSubject,
     },
-    ManagedLeaseCompleted {
+    ManagedDnsReconcileCompleted {
         operation_id: OperationId,
-        subject: super::ManagedLeaseSubject,
+        subject: super::ManagedDnsReconcileSubject,
     },
-    ManagedLeaseFailed {
+    ManagedDnsReconcileFailed {
         operation_id: OperationId,
-        subject: super::ManagedLeaseSubject,
-        failure: super::ManagedLeaseOperationFailure,
+        subject: super::ManagedDnsReconcileSubject,
+        failure: super::ManagedDnsReconcileFailure,
+    },
+    IngressRefreshSubmitted {
+        operation_id: OperationId,
+    },
+    IngressRefreshCompleted {
+        operation_id: OperationId,
+        evidence: super::IngressRefreshEvidence,
+    },
+    IngressRefreshFailed {
+        operation_id: OperationId,
+        failure: super::IngressRefreshFailure,
+    },
+    IngressConfigureSubmitted {
+        operation_id: OperationId,
+        configuration: IngressConfiguration,
+    },
+    IngressConfigureCompleted {
+        operation_id: OperationId,
+    },
+    IngressConfigureFailed {
+        operation_id: OperationId,
+        failure: super::IngressConfigureFailure,
     },
     NamespaceRemoveSubmitted {
         operation_id: OperationId,
@@ -376,7 +404,6 @@ impl OperationEvent {
         match self {
             Self::DeploySubmitted { operation_id, .. }
             | Self::DeployPlanningStarted { operation_id }
-            | Self::DeployWaitingForManagedPublicUrl { operation_id, .. }
             | Self::DeployImageResolved { operation_id, .. }
             | Self::DeployPlanCreated { operation_id, .. }
             | Self::DeployRunning { operation_id, .. }
@@ -391,6 +418,7 @@ impl OperationEvent {
             | Self::CertProvisionSubmitted { operation_id, .. }
             | Self::CertChallengePublished { operation_id, .. }
             | Self::CertValidationStarted { operation_id, .. }
+            | Self::CertWarning { operation_id, .. }
             | Self::CertCompleted { operation_id, .. }
             | Self::CertFailed { operation_id, .. }
             | Self::MachineAddSubmitted { operation_id, .. }
@@ -423,9 +451,15 @@ impl OperationEvent {
             | Self::ServiceRestartContainerRestarted { operation_id, .. }
             | Self::ServiceRestartCompleted { operation_id }
             | Self::ServiceRestartFailed { operation_id, .. }
-            | Self::ManagedLeaseSubmitted { operation_id, .. }
-            | Self::ManagedLeaseCompleted { operation_id, .. }
-            | Self::ManagedLeaseFailed { operation_id, .. }
+            | Self::ManagedDnsReconcileSubmitted { operation_id, .. }
+            | Self::ManagedDnsReconcileCompleted { operation_id, .. }
+            | Self::ManagedDnsReconcileFailed { operation_id, .. }
+            | Self::IngressRefreshSubmitted { operation_id }
+            | Self::IngressRefreshCompleted { operation_id, .. }
+            | Self::IngressRefreshFailed { operation_id, .. }
+            | Self::IngressConfigureSubmitted { operation_id, .. }
+            | Self::IngressConfigureCompleted { operation_id }
+            | Self::IngressConfigureFailed { operation_id, .. }
             | Self::NamespaceRemoveSubmitted { operation_id, .. }
             | Self::NamespaceRemoveRunning { operation_id, .. }
             | Self::NamespaceRemoveRouteBindingRemoved { operation_id, .. }
@@ -447,7 +481,6 @@ impl OperationEvent {
     #[must_use]
     pub fn singleton_subject(&self) -> Option<&'static str> {
         match self {
-            Self::DeployWaitingForManagedPublicUrl { .. } => None,
             Self::DeployPlanCreated { .. } => Some("deploy.plan.created"),
             Self::NetworkRepairDataplaneConverged { .. } => {
                 Some("network.repair.dataplane.converged")
@@ -473,6 +506,7 @@ impl OperationEvent {
             | Self::CertProvisionSubmitted { .. }
             | Self::CertChallengePublished { .. }
             | Self::CertValidationStarted { .. }
+            | Self::CertWarning { .. }
             | Self::CertCompleted { .. }
             | Self::CertFailed { .. }
             | Self::MachineAddSubmitted { .. }
@@ -502,9 +536,15 @@ impl OperationEvent {
             | Self::ServiceRestartContainerRestarted { .. }
             | Self::ServiceRestartCompleted { .. }
             | Self::ServiceRestartFailed { .. }
-            | Self::ManagedLeaseSubmitted { .. }
-            | Self::ManagedLeaseCompleted { .. }
-            | Self::ManagedLeaseFailed { .. }
+            | Self::ManagedDnsReconcileSubmitted { .. }
+            | Self::ManagedDnsReconcileCompleted { .. }
+            | Self::ManagedDnsReconcileFailed { .. }
+            | Self::IngressRefreshSubmitted { .. }
+            | Self::IngressRefreshCompleted { .. }
+            | Self::IngressRefreshFailed { .. }
+            | Self::IngressConfigureSubmitted { .. }
+            | Self::IngressConfigureCompleted { .. }
+            | Self::IngressConfigureFailed { .. }
             | Self::NamespaceRemoveSubmitted { .. }
             | Self::NamespaceRemoveRunning { .. }
             | Self::NamespaceRemoveRouteBindingRemoved { .. }
@@ -524,9 +564,6 @@ impl OperationEvent {
     #[must_use]
     pub fn deploy_evidence(&self) -> Option<DeployEvidence> {
         match self {
-            Self::DeployWaitingForManagedPublicUrl { stage, .. } => {
-                Some(DeployEvidence::WaitingForManagedPublicUrl { stage: *stage })
-            }
             Self::DeployImageResolved {
                 service_id,
                 machine_id,
@@ -593,6 +630,7 @@ impl OperationEvent {
             | Self::CertProvisionSubmitted { .. }
             | Self::CertChallengePublished { .. }
             | Self::CertValidationStarted { .. }
+            | Self::CertWarning { .. }
             | Self::CertCompleted { .. }
             | Self::CertFailed { .. }
             | Self::MachineAddSubmitted { .. }
@@ -625,9 +663,15 @@ impl OperationEvent {
             | Self::ServiceRestartContainerRestarted { .. }
             | Self::ServiceRestartCompleted { .. }
             | Self::ServiceRestartFailed { .. }
-            | Self::ManagedLeaseSubmitted { .. }
-            | Self::ManagedLeaseCompleted { .. }
-            | Self::ManagedLeaseFailed { .. }
+            | Self::ManagedDnsReconcileSubmitted { .. }
+            | Self::ManagedDnsReconcileCompleted { .. }
+            | Self::ManagedDnsReconcileFailed { .. }
+            | Self::IngressRefreshSubmitted { .. }
+            | Self::IngressRefreshCompleted { .. }
+            | Self::IngressRefreshFailed { .. }
+            | Self::IngressConfigureSubmitted { .. }
+            | Self::IngressConfigureCompleted { .. }
+            | Self::IngressConfigureFailed { .. }
             | Self::NamespaceRemoveSubmitted { .. }
             | Self::NamespaceRemoveRunning { .. }
             | Self::NamespaceRemoveRouteBindingRemoved { .. }
@@ -654,7 +698,9 @@ pub enum OperationSubjectRef {
     MachineLifecycle(MachineId),
     CoreReplace(MachineId),
     CredentialGrant,
-    ManagedLease(super::ManagedLeaseSubject),
+    ManagedDnsReconcile(super::ManagedDnsReconcileSubject),
+    IngressConfigure,
+    IngressRefresh,
 }
 
 pub(super) enum ClassifiedOperationEvent {
@@ -694,9 +740,17 @@ pub(super) enum ClassifiedOperationEvent {
         operation_id: OperationId,
         event: ServiceRestartEvent,
     },
-    ManagedLease {
+    ManagedDnsReconcile {
         operation_id: OperationId,
-        event: ManagedLeaseEvent,
+        event: ManagedDnsReconcileEvent,
+    },
+    IngressConfigure {
+        operation_id: OperationId,
+        event: IngressConfigureEvent,
+    },
+    IngressRefresh {
+        operation_id: OperationId,
+        event: IngressRefreshEvent,
     },
     NamespaceRemove {
         operation_id: OperationId,
@@ -720,7 +774,9 @@ impl ClassifiedOperationEvent {
             | Self::CredentialGrant { operation_id, .. }
             | Self::NetworkRepair { operation_id, .. }
             | Self::ServiceRestart { operation_id, .. }
-            | Self::ManagedLease { operation_id, .. }
+            | Self::ManagedDnsReconcile { operation_id, .. }
+            | Self::IngressConfigure { operation_id, .. }
+            | Self::IngressRefresh { operation_id, .. }
             | Self::NamespaceRemove { operation_id, .. } => operation_id,
             Self::VolumeRemove { operation_id, .. } => operation_id,
         }
@@ -737,13 +793,6 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
             OperationEvent::DeployPlanningStarted { operation_id } => Self::Deploy {
                 operation_id,
                 event: DeployEvent::Transition(DeployTransition::Planning),
-            },
-            OperationEvent::DeployWaitingForManagedPublicUrl {
-                operation_id,
-                stage,
-            } => Self::Deploy {
-                operation_id,
-                event: DeployEvent::Evidence(DeployEvidence::WaitingForManagedPublicUrl { stage }),
             },
             OperationEvent::DeployImageResolved {
                 operation_id,
@@ -878,13 +927,21 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                     }),
                 },
             },
+            OperationEvent::CertWarning {
+                operation_id,
+                cert_id,
+                warning,
+            } => Self::Cert {
+                operation_id,
+                event: CertEvent::Warning { cert_id, warning },
+            },
             OperationEvent::CertCompleted {
                 operation_id,
-                active_cert,
+                certificate,
             } => Self::Cert {
                 operation_id,
                 event: CertEvent::Transition {
-                    cert_id: active_cert.cert_id.clone(),
+                    cert_id: certificate.active.cert_id.clone(),
                     transition: Box::new(CertTransition::Completed),
                 },
             },
@@ -1160,33 +1217,75 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                     failure,
                 }),
             },
-            OperationEvent::ManagedLeaseSubmitted {
+            OperationEvent::ManagedDnsReconcileSubmitted {
                 operation_id,
                 subject,
-            } => Self::ManagedLease {
+            } => Self::ManagedDnsReconcile {
                 operation_id,
-                event: ManagedLeaseEvent::Submitted { subject },
+                event: ManagedDnsReconcileEvent::Submitted { subject },
             },
-            OperationEvent::ManagedLeaseCompleted {
+            OperationEvent::ManagedDnsReconcileCompleted {
                 operation_id,
                 subject,
-            } => Self::ManagedLease {
+            } => Self::ManagedDnsReconcile {
                 operation_id,
-                event: ManagedLeaseEvent::Transition {
+                event: ManagedDnsReconcileEvent::Transition {
                     subject,
-                    transition: ManagedLeaseTransition::Completed,
+                    transition: ManagedDnsReconcileTransition::Completed,
                 },
             },
-            OperationEvent::ManagedLeaseFailed {
+            OperationEvent::ManagedDnsReconcileFailed {
                 operation_id,
                 subject,
                 failure,
-            } => Self::ManagedLease {
+            } => Self::ManagedDnsReconcile {
                 operation_id,
-                event: ManagedLeaseEvent::Transition {
+                event: ManagedDnsReconcileEvent::Transition {
                     subject,
-                    transition: ManagedLeaseTransition::Failed { failure },
+                    transition: ManagedDnsReconcileTransition::Failed { failure },
                 },
+            },
+            OperationEvent::IngressRefreshSubmitted { operation_id } => Self::IngressRefresh {
+                operation_id,
+                event: IngressRefreshEvent::Submitted,
+            },
+            OperationEvent::IngressRefreshCompleted {
+                operation_id,
+                evidence,
+            } => Self::IngressRefresh {
+                operation_id,
+                event: IngressRefreshEvent::Transition(IngressRefreshTransition::Completed {
+                    evidence,
+                }),
+            },
+            OperationEvent::IngressRefreshFailed {
+                operation_id,
+                failure,
+            } => Self::IngressRefresh {
+                operation_id,
+                event: IngressRefreshEvent::Transition(IngressRefreshTransition::Failed {
+                    failure,
+                }),
+            },
+            OperationEvent::IngressConfigureSubmitted {
+                operation_id,
+                configuration,
+            } => Self::IngressConfigure {
+                operation_id,
+                event: IngressConfigureEvent::Submitted { configuration },
+            },
+            OperationEvent::IngressConfigureCompleted { operation_id } => Self::IngressConfigure {
+                operation_id,
+                event: IngressConfigureEvent::Transition(IngressConfigureTransition::Completed),
+            },
+            OperationEvent::IngressConfigureFailed {
+                operation_id,
+                failure,
+            } => Self::IngressConfigure {
+                operation_id,
+                event: IngressConfigureEvent::Transition(IngressConfigureTransition::Failed {
+                    failure,
+                }),
             },
             OperationEvent::NamespaceRemoveSubmitted {
                 operation_id,
@@ -1309,9 +1408,17 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                         reason,
                     }),
                 },
-                OperationKind::ManagedLease => Self::ManagedLease {
+                OperationKind::ManagedDnsReconcile => Self::ManagedDnsReconcile {
                     operation_id,
-                    event: ManagedLeaseEvent::UnsupportedCancellation,
+                    event: ManagedDnsReconcileEvent::UnsupportedCancellation,
+                },
+                OperationKind::IngressRefresh => Self::IngressRefresh {
+                    operation_id,
+                    event: IngressRefreshEvent::UnsupportedCancellation,
+                },
+                OperationKind::IngressConfigure => Self::IngressConfigure {
+                    operation_id,
+                    event: IngressConfigureEvent::UnsupportedCancellation,
                 },
                 OperationKind::NamespaceRemove => Self::NamespaceRemove {
                     operation_id,

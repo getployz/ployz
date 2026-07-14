@@ -3,7 +3,8 @@ use ployz_core::cert::{
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, CustomCertBundle,
     custom_bundle_digest,
 };
-use ployz_core::ids::CertId;
+use ployz_core::ids::{CertId, RouteBindingId};
+use ployz_core::ingress::{CertificateOwner, RouteBindingOrigin};
 use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
     ManagedContainerObservation,
@@ -15,10 +16,11 @@ use ployz_test_support::ids::{
     route_port, service_id,
 };
 use ployzd::roles::gateway::projection::{
-    GatewayCertificateMaterialFailure, GatewayProjectedRoute, GatewayProjection,
-    GatewayProjectionError, GatewayProjectionInput, GatewayProjectionState,
-    GatewayProjectionUpdate, GatewayRoute, GatewayServingEntry, GatewayUnroutableContainer,
-    GatewayUpstream, apply_gateway_update, project_gateway,
+    GatewayCertificateBundle, GatewayCertificateFailureAvailability,
+    GatewayCertificateMaterialFailure, GatewayCertificateMaterialFailureKind,
+    GatewayProjectedRoute, GatewayProjection, GatewayProjectionError, GatewayProjectionInput,
+    GatewayProjectionState, GatewayProjectionUpdate, GatewayRoute, GatewayServingEntry,
+    GatewayUnroutableContainer, GatewayUpstream, apply_gateway_update, project_gateway,
 };
 use std::net::SocketAddr;
 
@@ -34,9 +36,8 @@ fn gateway_projection_carries_http01_challenges_without_routes() {
     .expect("valid challenge");
 
     let projection = project_gateway(GatewayProjectionInput {
-        managed_cert_bundle: None,
-        custom_cert_bundles: Vec::new(),
-        custom_cert_failures: Vec::new(),
+        certificate_bundles: Vec::new(),
+        certificate_failures: Vec::new(),
         challenges: vec![challenge.clone()],
         routes: Vec::new(),
         serving: Vec::new(),
@@ -53,13 +54,16 @@ fn failed_custom_material_retains_prior_tls_and_applies_unrelated_updates() {
     let prior_bundle = custom_bundle(hostname.as_str());
     let challenge = http01_challenge(hostname.as_str());
     let failure = GatewayCertificateMaterialFailure {
-        hostname: hostname.clone(),
+        owner: route_owner(hostname.as_str()),
+        kind: GatewayCertificateMaterialFailureKind::MissingOrInvalid,
         message: "local bundle is corrupt".to_owned(),
     };
     let previous = GatewayProjectionState {
         last_good: Some(GatewayProjection {
-            managed_cert_bundle: None,
-            custom_cert_bundles: vec![prior_bundle.clone()],
+            certificate_bundles: vec![route_certificate_bundle(
+                hostname.as_str(),
+                prior_bundle.clone(),
+            )],
             challenges: Vec::new(),
             routes: Vec::new(),
         }),
@@ -69,9 +73,8 @@ fn failed_custom_material_retains_prior_tls_and_applies_unrelated_updates() {
     let state = apply_gateway_update(
         previous,
         GatewayProjectionUpdate::SourceAvailable(Box::new(GatewayProjectionInput {
-            managed_cert_bundle: None,
-            custom_cert_bundles: Vec::new(),
-            custom_cert_failures: vec![failure.clone()],
+            certificate_bundles: Vec::new(),
+            certificate_failures: vec![failure.clone()],
             challenges: vec![challenge.clone()],
             routes: vec![
                 gateway_route("broken.example.com", "svc_broken"),
@@ -85,7 +88,7 @@ fn failed_custom_material_retains_prior_tls_and_applies_unrelated_updates() {
     let projection = state.last_good.expect("degraded source still applies");
     assert_eq!(
         (
-            projection.custom_cert_bundles,
+            projection.certificate_bundles,
             projection.challenges,
             projection
                 .routes
@@ -95,7 +98,7 @@ fn failed_custom_material_retains_prior_tls_and_applies_unrelated_updates() {
             state.last_error,
         ),
         (
-            vec![prior_bundle],
+            vec![route_certificate_bundle(hostname.as_str(), prior_bundle)],
             vec![challenge],
             vec![
                 route_target("broken.example.com", 443),
@@ -103,6 +106,7 @@ fn failed_custom_material_retains_prior_tls_and_applies_unrelated_updates() {
             ],
             Some(GatewayProjectionError::CertificateMaterial {
                 failures: vec![failure],
+                availability: GatewayCertificateFailureAvailability::ServingLastKnownGood,
             }),
         )
     );
@@ -111,18 +115,14 @@ fn failed_custom_material_retains_prior_tls_and_applies_unrelated_updates() {
 #[test]
 fn failed_custom_material_on_cold_start_suppresses_only_affected_https_route() {
     let projection = project_gateway(GatewayProjectionInput {
-        managed_cert_bundle: None,
-        custom_cert_bundles: Vec::new(),
-        custom_cert_failures: vec![GatewayCertificateMaterialFailure {
-            hostname: route_hostname("broken.example.com"),
+        certificate_bundles: Vec::new(),
+        certificate_failures: vec![GatewayCertificateMaterialFailure {
+            owner: route_owner("broken.example.com"),
+            kind: GatewayCertificateMaterialFailureKind::MissingOrInvalid,
             message: "local bundle is missing".to_owned(),
         }],
         challenges: vec![http01_challenge("broken.example.com")],
         routes: vec![
-            GatewayRoute {
-                target: route_target("broken.example.com", 80),
-                ..gateway_route("broken.example.com", "svc_broken")
-            },
             gateway_route("broken.example.com", "svc_broken"),
             gateway_route("healthy.example.com", "svc_healthy"),
         ],
@@ -137,19 +137,15 @@ fn failed_custom_material_on_cold_start_suppresses_only_affected_https_route() {
             .into_iter()
             .map(|route| route.target)
             .collect::<Vec<_>>(),
-        vec![
-            route_target("broken.example.com", 80),
-            route_target("healthy.example.com", 443),
-        ]
+        vec![route_target("healthy.example.com", 443)]
     );
 }
 
 #[test]
 fn gateway_serves_every_observed_machine_and_filters_non_running_upstreams() {
     let projection = project_gateway(GatewayProjectionInput {
-        managed_cert_bundle: None,
-        custom_cert_bundles: Vec::new(),
-        custom_cert_failures: Vec::new(),
+        certificate_bundles: Vec::new(),
+        certificate_failures: Vec::new(),
         challenges: Vec::new(),
         routes: vec![
             gateway_route("WWW.example.com", "svc_web"),
@@ -194,11 +190,12 @@ fn gateway_serves_every_observed_machine_and_filters_non_running_upstreams() {
     assert_eq!(
         projection,
         GatewayProjection {
-            managed_cert_bundle: None,
-            custom_cert_bundles: Vec::new(),
+            certificate_bundles: Vec::new(),
             challenges: Vec::new(),
             routes: vec![
                 GatewayProjectedRoute {
+                    id: route_binding_id("api.example.com"),
+                    origin: RouteBindingOrigin::Declared,
                     target: route_target("api.example.com", 443),
                     upstreams: vec![
                         GatewayUpstream {
@@ -215,6 +212,8 @@ fn gateway_serves_every_observed_machine_and_filters_non_running_upstreams() {
                     unroutable_containers: vec![],
                 },
                 GatewayProjectedRoute {
+                    id: route_binding_id("www.example.com"),
+                    origin: RouteBindingOrigin::Declared,
                     target: route_target("www.example.com", 443),
                     upstreams: vec![GatewayUpstream {
                         machine_id: machine_id("machine_1"),
@@ -231,9 +230,8 @@ fn gateway_serves_every_observed_machine_and_filters_non_running_upstreams() {
 #[test]
 fn gateway_filters_running_containers_without_endpoint_evidence() {
     let projection = project_gateway(GatewayProjectionInput {
-        managed_cert_bundle: None,
-        custom_cert_bundles: Vec::new(),
-        custom_cert_failures: Vec::new(),
+        certificate_bundles: Vec::new(),
+        certificate_failures: Vec::new(),
         challenges: Vec::new(),
         routes: vec![gateway_route("api.example.com", "svc_api")],
         serving: vec![serving_entry("svc_api", "entry_2")],
@@ -253,10 +251,11 @@ fn gateway_filters_running_containers_without_endpoint_evidence() {
     assert_eq!(
         projection,
         GatewayProjection {
-            managed_cert_bundle: None,
-            custom_cert_bundles: Vec::new(),
+            certificate_bundles: Vec::new(),
             challenges: Vec::new(),
             routes: vec![GatewayProjectedRoute {
+                id: route_binding_id("api.example.com"),
+                origin: RouteBindingOrigin::Declared,
                 target: route_target("api.example.com", 443),
                 upstreams: vec![],
                 unroutable_containers: vec![GatewayUnroutableContainer {
@@ -274,9 +273,8 @@ fn gateway_dials_matching_containers_on_the_route_endpoint_port() {
     // every serving-entry container is dialed on the route's endpoint port
     // (ADR 0023), so an endpoint reroute needs no container replacement.
     let projection = project_gateway(GatewayProjectionInput {
-        managed_cert_bundle: None,
-        custom_cert_bundles: Vec::new(),
-        custom_cert_failures: Vec::new(),
+        certificate_bundles: Vec::new(),
+        certificate_failures: Vec::new(),
         challenges: Vec::new(),
         routes: vec![gateway_route("api.example.com", "svc_api")],
         serving: vec![serving_entry("svc_api", "entry_2")],
@@ -305,10 +303,11 @@ fn gateway_dials_matching_containers_on_the_route_endpoint_port() {
     assert_eq!(
         projection,
         GatewayProjection {
-            managed_cert_bundle: None,
-            custom_cert_bundles: Vec::new(),
+            certificate_bundles: Vec::new(),
             challenges: Vec::new(),
             routes: vec![GatewayProjectedRoute {
+                id: route_binding_id("api.example.com"),
+                origin: RouteBindingOrigin::Declared,
                 target: route_target("api.example.com", 443),
                 upstreams: vec![
                     GatewayUpstream {
@@ -333,9 +332,8 @@ fn gateway_keeps_route_with_no_upstreams_when_service_is_not_serving() {
     // A binding whose service is absent from the serving target stays
     // attached and unavailable instead of becoming invalid state (ADR 0024).
     let projection = project_gateway(GatewayProjectionInput {
-        managed_cert_bundle: None,
-        custom_cert_bundles: Vec::new(),
-        custom_cert_failures: Vec::new(),
+        certificate_bundles: Vec::new(),
+        certificate_failures: Vec::new(),
         challenges: Vec::new(),
         routes: vec![gateway_route("api.example.com", "svc_api")],
         serving: vec![],
@@ -355,10 +353,11 @@ fn gateway_keeps_route_with_no_upstreams_when_service_is_not_serving() {
     assert_eq!(
         projection,
         GatewayProjection {
-            managed_cert_bundle: None,
-            custom_cert_bundles: Vec::new(),
+            certificate_bundles: Vec::new(),
             challenges: Vec::new(),
             routes: vec![GatewayProjectedRoute {
+                id: route_binding_id("api.example.com"),
+                origin: RouteBindingOrigin::Declared,
                 target: route_target("api.example.com", 443),
                 upstreams: vec![],
                 unroutable_containers: vec![],
@@ -370,9 +369,8 @@ fn gateway_keeps_route_with_no_upstreams_when_service_is_not_serving() {
 #[test]
 fn gateway_ignores_containers_with_a_different_entry_identity() {
     let projection = project_gateway(GatewayProjectionInput {
-        managed_cert_bundle: None,
-        custom_cert_bundles: Vec::new(),
-        custom_cert_failures: Vec::new(),
+        certificate_bundles: Vec::new(),
+        certificate_failures: Vec::new(),
         challenges: Vec::new(),
         routes: vec![gateway_route("api.example.com", "svc_api")],
         serving: vec![serving_entry("svc_api", "entry_2")],
@@ -392,10 +390,11 @@ fn gateway_ignores_containers_with_a_different_entry_identity() {
     assert_eq!(
         projection,
         GatewayProjection {
-            managed_cert_bundle: None,
-            custom_cert_bundles: Vec::new(),
+            certificate_bundles: Vec::new(),
             challenges: Vec::new(),
             routes: vec![GatewayProjectedRoute {
+                id: route_binding_id("api.example.com"),
+                origin: RouteBindingOrigin::Declared,
                 target: route_target("api.example.com", 443),
                 upstreams: vec![],
                 unroutable_containers: vec![],
@@ -433,18 +432,23 @@ fn gateway_rejects_duplicate_route_targets() {
     let target = route_target("api.example.com", 443);
     assert_eq!(
         project_gateway(GatewayProjectionInput {
-            managed_cert_bundle: None,
-            custom_cert_bundles: Vec::new(),
-            custom_cert_failures: Vec::new(),
+            certificate_bundles: Vec::new(),
+            certificate_failures: Vec::new(),
             challenges: Vec::new(),
             routes: vec![
                 GatewayRoute {
+                    id: route_binding_id("API.example.com"),
+                    origin: RouteBindingOrigin::Declared,
+                    certificate_owner: route_owner("API.example.com"),
                     namespace_id: namespace_id("default"),
                     target: route_target("API.example.com", 443),
                     endpoint_port: route_port(8080),
                     service_id: service_id("svc_api"),
                 },
                 GatewayRoute {
+                    id: route_binding_id("api.example.com"),
+                    origin: RouteBindingOrigin::Declared,
+                    certificate_owner: route_owner("api.example.com"),
                     namespace_id: namespace_id("default"),
                     target: target.clone(),
                     endpoint_port: route_port(8080),
@@ -463,18 +467,23 @@ fn gateway_retains_last_good_projection_when_source_is_invalid() {
     let target = route_target("api.example.com", 443);
     let last_good = single_route_projection();
     let update = GatewayProjectionUpdate::SourceAvailable(Box::new(GatewayProjectionInput {
-        managed_cert_bundle: None,
-        custom_cert_bundles: Vec::new(),
-        custom_cert_failures: Vec::new(),
+        certificate_bundles: Vec::new(),
+        certificate_failures: Vec::new(),
         challenges: Vec::new(),
         routes: vec![
             GatewayRoute {
+                id: route_binding_id("api.example.com"),
+                origin: RouteBindingOrigin::Declared,
+                certificate_owner: route_owner("api.example.com"),
                 namespace_id: namespace_id("default"),
                 target: target.clone(),
                 endpoint_port: route_port(8080),
                 service_id: service_id("svc_api"),
             },
             GatewayRoute {
+                id: route_binding_id("api.example.com"),
+                origin: RouteBindingOrigin::Declared,
+                certificate_owner: route_owner("api.example.com"),
                 namespace_id: namespace_id("default"),
                 target: target.clone(),
                 endpoint_port: route_port(8080),
@@ -533,10 +542,11 @@ fn gateway_keeps_failure_evidence_when_invalid_source_then_disappears() {
 
 fn single_route_projection() -> GatewayProjection {
     GatewayProjection {
-        managed_cert_bundle: None,
-        custom_cert_bundles: Vec::new(),
+        certificate_bundles: Vec::new(),
         challenges: Vec::new(),
         routes: vec![GatewayProjectedRoute {
+            id: route_binding_id("api.example.com"),
+            origin: RouteBindingOrigin::Declared,
             target: route_target("api.example.com", 443),
             upstreams: vec![GatewayUpstream {
                 machine_id: machine_id("machine_1"),
@@ -558,6 +568,9 @@ fn observed_machine(
 
 fn gateway_route(hostname: &str, service_id_value: &str) -> GatewayRoute {
     GatewayRoute {
+        id: route_binding_id(hostname),
+        origin: RouteBindingOrigin::Declared,
+        certificate_owner: route_owner(hostname),
         namespace_id: namespace_id("default"),
         target: route_target(hostname, 443),
         endpoint_port: route_port(8080),
@@ -613,8 +626,29 @@ fn managed_container(
         .build()
 }
 
-fn route_target(hostname: &str, port: u16) -> RouteTarget {
-    RouteTarget::new(route_hostname(hostname), route_port(port))
+fn route_target(hostname: &str, _port: u16) -> RouteTarget {
+    RouteTarget::new(route_hostname(hostname))
+}
+
+fn route_binding_id(hostname: &str) -> RouteBindingId {
+    RouteBindingId::try_new(format!(
+        "route_{}",
+        hostname.to_ascii_lowercase().replace('.', "_")
+    ))
+    .expect("valid route binding id")
+}
+
+fn route_owner(hostname: &str) -> CertificateOwner {
+    CertificateOwner::RouteBinding {
+        route_binding_id: route_binding_id(hostname),
+    }
+}
+
+fn route_certificate_bundle(hostname: &str, bundle: CustomCertBundle) -> GatewayCertificateBundle {
+    GatewayCertificateBundle {
+        owner: route_owner(hostname),
+        bundle,
+    }
 }
 
 fn custom_bundle(hostname: &str) -> CustomCertBundle {

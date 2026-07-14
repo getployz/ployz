@@ -483,7 +483,6 @@ mod tests {
     use ployz_core::roles::InstallRolePolicy;
     use ployz_core::state::{
         ActiveMachineState, ControlPlaneEpoch, IntentSnapshot, MachineLifecycle,
-        ManagedLeaseProjection,
     };
     use ployz_test_support::fixtures::serving_target_entry;
     use ployz_test_support::ids::{machine_id, machine_name, operation_id};
@@ -804,11 +803,10 @@ mod tests {
             serving_target_entries: vec![serving_target_entry("db", entry)],
             volume_pins: Vec::new(),
             nats_authorizations: Vec::new(),
-            public_url: ployz_core::state::IntentPublicUrl::Auto(Box::new(
-                ManagedLeaseProjection::Unacquired,
-            )),
-            custom_certificates: Vec::new(),
-            acme_http01_challenges: Vec::new(),
+            automatic_hostname_configuration:
+                ployz_core::ingress::AutomaticHostnameConfiguration::Ployz,
+            ployz_dns_target: ployz_core::ingress::PloyzDnsTargetIntent::Enabled,
+            active_certificates: Vec::new(),
         }
     }
 }

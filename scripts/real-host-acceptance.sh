@@ -82,7 +82,7 @@ log "version: $(core 'grep -h PLOYZ_VERSION /etc/ployz/release.env')"
 
 log "machine init (amd64 Rocky core)"
 t0=$(ts)
-core "timeout 15m ployz machine init root@${CORE} --name ployz-core --public-ip ${CORE} --public-url auto"
+core "timeout 15m ployz machine init root@${CORE} --name ployz-core --public-ip ${CORE}"
 log "TIMING machine-init=$(( $(ts)-t0 ))s"
 
 core_key=$(core 'cat ~/.ssh/id_ed25519.pub')
@@ -112,7 +112,7 @@ services:
     deploy:
       replicas: 2
     x-ports:
-      - 80
+      - auto:web:80
 YAML'
 t0=$(ts)
 deploy_output=$(core 'timeout 15m ployz deploy -f /tmp/ployz-acceptance.yml')

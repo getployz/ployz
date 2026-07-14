@@ -1,30 +1,71 @@
 //! Canonical assembly of complete runtime snapshots from intent and testimony.
 
 use ployz_core::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, ServiceId};
+use ployz_core::ingress::{
+    CertificateOwner, IngressEndpointProjection, PloyzDnsTargetIntent, RouteBindingOrigin,
+};
 use ployz_core::machine_runtime::{
     MachineFactsSnapshot, ManagedContainerKind, ManagedContainerObservation,
 };
 use ployz_core::state::{
-    ActiveMachineState, GatewayStatusObservation, IntentPublicUrl, IntentSnapshot,
-    RouteBindingState, ServingTargetEntry,
+    ActiveMachineState, GatewayStatusObservation, IntentSnapshot, RouteBindingState,
+    ServingTargetEntry,
 };
 use ployz_sdk_types::{
-    MachineSnapshot, MachineTestimony, RouteCertLifecycle, RouteCertStatus,
-    RuntimeDerivedCollectionSource, RuntimeDerivedCollectionStatus, RuntimeProjectionSource,
-    RuntimeProjectionSources, RuntimePublicUrl, RuntimeServiceInstance, RuntimeServiceRelease,
+    MachineSnapshot, MachineTestimony, RouteTlsAvailability, RouteTlsStatus,
+    RuntimeDerivedCollectionSource, RuntimeDerivedCollectionStatus, RuntimePloyzDnsTarget,
+    RuntimePloyzDnsTargetAllocation, RuntimePloyzDnsTargetPublication, RuntimeProjectionSource,
+    RuntimeProjectionSources, RuntimeServiceInstance, RuntimeServiceRelease,
     RuntimeServiceRevision, RuntimeSnapshot, ServiceContainerMembership, ServiceContainerTestimony,
     ServiceMachineTestimony, ServiceSnapshot, ServiceTestimony,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::core_store::CoreStore;
+use crate::intent::ingress_intent::{
+    IngressProjectionStore, ManagedDnsCheckpoint, PloyzDnsTargetAllocation, PloyzDnsTargetStore,
+};
+
+#[derive(Debug, Clone)]
+pub(crate) struct RuntimeIngressSources {
+    pub(crate) ployz_dns_target_allocation: Option<PloyzDnsTargetAllocation>,
+    pub(crate) ployz_dns_target_checkpoint: Option<ManagedDnsCheckpoint>,
+    pub(crate) ingress_endpoint_projection: IngressEndpointProjection,
+}
+
+pub(crate) async fn load_ingress_sources(
+    store: &CoreStore,
+) -> Result<RuntimeIngressSources, String> {
+    let target = PloyzDnsTargetStore::new(store.clone());
+    let (allocation, checkpoint) = target
+        .load_state()
+        .await
+        .map_err(|error| error.to_string())?;
+    let projection = IngressProjectionStore::new(store.clone())
+        .load()
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "ingress endpoint projection is not initialized".to_owned())?;
+    Ok(RuntimeIngressSources {
+        ployz_dns_target_allocation: allocation,
+        ployz_dns_target_checkpoint: checkpoint,
+        ingress_endpoint_projection: projection.projection,
+    })
+}
+
 pub(crate) fn from_sources(
     intent: IntentSnapshot,
     facts: &BTreeMap<MachineId, MachineFactsSnapshot>,
     gateway_statuses: &BTreeMap<MachineId, GatewayStatusObservation>,
+    ingress: RuntimeIngressSources,
     read_at_unix_seconds: u64,
 ) -> RuntimeSnapshot {
-    let public_url = runtime_public_url(&intent.public_url);
-    let certificate_statuses = route_certificate_statuses(&intent, read_at_unix_seconds);
+    let ployz_dns_target = runtime_ployz_dns_target(
+        intent.ployz_dns_target,
+        ingress.ployz_dns_target_allocation,
+        ingress.ployz_dns_target_checkpoint,
+    );
+    let route_tls = route_tls_statuses(&intent, read_at_unix_seconds);
     let machine_ids = intent
         .active_machines
         .iter()
@@ -52,8 +93,11 @@ pub(crate) fn from_sources(
     let missing_link_count = missing_links(&services, &routes, &containers);
 
     RuntimeSnapshot {
-        public_url,
-        certificate_statuses,
+        automatic_hostname_configuration: intent.automatic_hostname_configuration,
+        ployz_dns_target,
+        ingress_endpoint_projection: ingress.ingress_endpoint_projection,
+        active_certificates: intent.active_certificates,
+        route_tls,
         machines,
         services,
         routes,
@@ -76,45 +120,87 @@ pub(crate) fn from_sources(
     }
 }
 
-fn runtime_public_url(public_url: &IntentPublicUrl) -> RuntimePublicUrl {
-    match public_url {
-        IntentPublicUrl::Unconfigured => RuntimePublicUrl::Unconfigured,
-        IntentPublicUrl::Auto(managed_lease) => RuntimePublicUrl::Auto {
-            domain: match managed_lease.as_ref() {
-                ployz_core::state::ManagedLeaseProjection::Unacquired => None,
-                ployz_core::state::ManagedLeaseProjection::RecordOnly { lease }
-                | ployz_core::state::ManagedLeaseProjection::Ready { lease, .. } => {
-                    Some(lease.name.hostname_suffix())
-                }
-            },
+fn runtime_ployz_dns_target(
+    intent: PloyzDnsTargetIntent,
+    allocation: Option<PloyzDnsTargetAllocation>,
+    checkpoint: Option<ManagedDnsCheckpoint>,
+) -> RuntimePloyzDnsTarget {
+    let allocation = match allocation {
+        Some(PloyzDnsTargetAllocation::Allocated { lease }) => {
+            RuntimePloyzDnsTargetAllocation::Allocated {
+                hostname: ployz_core::ops::RouteHostname::try_new(lease.name.hostname_suffix())
+                    .expect("managed lease names always form valid route hostnames"),
+                issued_at_unix_seconds: lease.issued_at.unix_seconds(),
+                expires_at_unix_seconds: lease.expires_at.unix_seconds(),
+            }
+        }
+        Some(PloyzDnsTargetAllocation::Unacquired { .. }) | None => {
+            RuntimePloyzDnsTargetAllocation::Unacquired
+        }
+    };
+    let publication = match checkpoint {
+        Some(ManagedDnsCheckpoint::Applied {
+            last_applied_identity,
+            ..
+        }) => RuntimePloyzDnsTargetPublication::Applied {
+            ingress_projection: last_applied_identity,
         },
-        IntentPublicUrl::BringYourOwn => RuntimePublicUrl::BringYourOwn,
-        IntentPublicUrl::None => RuntimePublicUrl::None,
+        Some(ManagedDnsCheckpoint::Withdrawn) => RuntimePloyzDnsTargetPublication::Withdrawn,
+        None => RuntimePloyzDnsTargetPublication::Unpublished,
+    };
+    RuntimePloyzDnsTarget {
+        intent,
+        allocation,
+        publication,
     }
 }
 
-fn route_certificate_statuses(
-    intent: &IntentSnapshot,
-    read_at_unix_seconds: u64,
-) -> Vec<RouteCertStatus> {
-    let mut certificate_status_by_host = BTreeMap::new();
-    for cert in &intent.custom_certificates {
-        let lifecycle = if cert.is_usable_at(read_at_unix_seconds) {
-            RouteCertLifecycle::Verified
-        } else {
-            RouteCertLifecycle::Pending
-        };
-        certificate_status_by_host.insert(cert.hostname.clone(), lifecycle);
-    }
-    for challenge in &intent.acme_http01_challenges {
-        certificate_status_by_host
-            .entry(challenge.hostname().clone())
-            .or_insert(RouteCertLifecycle::Pending);
-    }
-    certificate_status_by_host
-        .into_iter()
-        .map(|(hostname, status)| RouteCertStatus { hostname, status })
+fn route_tls_statuses(intent: &IntentSnapshot, read_at_unix_seconds: u64) -> Vec<RouteTlsStatus> {
+    intent
+        .route_bindings
+        .iter()
+        .map(|route| {
+            let owner = CertificateOwner::RouteBinding {
+                route_binding_id: route.id.clone(),
+            };
+            let certificate_id =
+                usable_certificate(intent, &owner, read_at_unix_seconds).or_else(|| {
+                    (route.origin == RouteBindingOrigin::Automatic
+                        && intent.automatic_hostname_configuration
+                            == ployz_core::ingress::AutomaticHostnameConfiguration::Ployz)
+                        .then(|| {
+                            usable_certificate(
+                                intent,
+                                &CertificateOwner::PloyzAutomaticNamespace,
+                                read_at_unix_seconds,
+                            )
+                        })
+                        .flatten()
+                });
+            RouteTlsStatus {
+                route_binding_id: route.id.clone(),
+                availability: certificate_id.map_or(RouteTlsAvailability::Unavailable, |id| {
+                    RouteTlsAvailability::Available {
+                        certificate_id: id.clone(),
+                    }
+                }),
+            }
+        })
         .collect()
+}
+
+fn usable_certificate<'a>(
+    intent: &'a IntentSnapshot,
+    owner: &CertificateOwner,
+    read_at_unix_seconds: u64,
+) -> Option<&'a ployz_core::ids::CertId> {
+    intent
+        .active_certificates
+        .iter()
+        .find(|certificate| {
+            &certificate.owner == owner && certificate.active.is_usable_at(read_at_unix_seconds)
+        })
+        .map(|certificate| &certificate.active.cert_id)
 }
 
 fn machine_snapshot(
@@ -357,152 +443,100 @@ fn derived_source(
 mod tests {
     use super::*;
     use ployz_core::cert::{
-        AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
         ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, LeaseBearerToken,
-        LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle, ManagedLeaseName, ManagedLeaseRecord,
+        LeaseExpiresAt, LeaseIssuedAt, ManagedLeaseName, ManagedLeaseRecord,
     };
     use ployz_core::dataplane::DataplaneProjection;
-    use ployz_core::ids::CertId;
-    use ployz_core::ops::RouteHostname;
-    use ployz_core::state::{ControlPlaneEpoch, IntentPublicUrl, ManagedLeaseProjection};
-    use ployz_sdk_types::{RouteCertLifecycle, RouteCertStatus, RuntimePublicUrl};
+    use ployz_core::ids::{CertId, RouteBindingId};
+    use ployz_core::ingress::{
+        ActiveCertificateMetadata, AutomaticHostnameConfiguration, IngressEndpointProjectionState,
+    };
+    use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
+    use ployz_core::state::ControlPlaneEpoch;
 
     #[test]
-    fn public_url_reports_auto_without_inventing_a_domain_before_acquisition() {
-        let snapshot = from_sources(
-            intent(IntentPublicUrl::Auto(Box::new(
-                ManagedLeaseProjection::Unacquired,
-            ))),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            1,
-        );
-
-        assert_eq!(snapshot.public_url, RuntimePublicUrl::Auto { domain: None });
-    }
-
-    #[test]
-    fn public_url_reports_the_canonical_domain_for_each_acquired_auto_state() {
+    fn runtime_ingress_exposes_only_non_secret_current_state() {
         let lease = lease_record();
-        let record_only = from_sources(
-            intent(IntentPublicUrl::Auto(Box::new(
-                ManagedLeaseProjection::RecordOnly {
-                    lease: lease.clone(),
-                },
-            ))),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            1,
-        );
-        let ready = from_sources(
-            intent(IntentPublicUrl::Auto(Box::new(
-                ManagedLeaseProjection::Ready {
-                    lease: lease.clone(),
-                    bundle: bundle(&lease),
-                },
-            ))),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            1,
-        );
-
-        let expected = RuntimePublicUrl::Auto {
-            domain: Some("brisk-river-x7f3.up.ployz.app".to_owned()),
-        };
-        assert_eq!(record_only.public_url, expected.clone());
-        assert_eq!(ready.public_url, expected);
-    }
-
-    #[test]
-    fn public_url_reports_bring_your_own_without_managed_domain_data() {
         let snapshot = from_sources(
-            intent(IntentPublicUrl::BringYourOwn),
+            intent(Vec::new()),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            ingress(Some(PloyzDnsTargetAllocation::Allocated {
+                lease: lease.clone(),
+            })),
             1,
         );
 
-        assert_eq!(snapshot.public_url, RuntimePublicUrl::BringYourOwn);
+        assert_eq!(
+            snapshot.ployz_dns_target,
+            RuntimePloyzDnsTarget {
+                intent: PloyzDnsTargetIntent::Enabled,
+                allocation: RuntimePloyzDnsTargetAllocation::Allocated {
+                    hostname: route_hostname("brisk-river-x7f3.up.ployz.app"),
+                    issued_at_unix_seconds: 1,
+                    expires_at_unix_seconds: 100,
+                },
+                publication: RuntimePloyzDnsTargetPublication::Unpublished,
+            }
+        );
+        let json = serde_json::to_string(&snapshot).expect("runtime JSON");
+        assert!(!json.contains("lease-token"));
     }
 
     #[test]
-    fn public_url_reports_none_without_managed_domain_data() {
+    fn route_tls_uses_explicit_owner_and_validity() {
+        let route = route("route_app", RouteBindingOrigin::Declared);
+        let cert = active_certificate(CertificateOwner::RouteBinding {
+            route_binding_id: route.id.clone(),
+        });
         let snapshot = from_sources(
-            intent(IntentPublicUrl::None),
+            intent(vec![(route.clone(), cert)]),
             &BTreeMap::new(),
             &BTreeMap::new(),
-            1,
+            ingress(None),
+            50,
         );
-
-        assert_eq!(snapshot.public_url, RuntimePublicUrl::None);
-    }
-
-    #[test]
-    fn certificate_status_reports_a_usable_custom_certificate_as_verified() {
-        let hostname = route_hostname("app.example.com");
-        let mut source = intent(IntentPublicUrl::BringYourOwn);
-        source.custom_certificates = vec![active_certificate(hostname.clone(), 1, 100)];
-
-        let snapshot = from_sources(source, &BTreeMap::new(), &BTreeMap::new(), 50);
-
         assert_eq!(
-            snapshot.certificate_statuses,
-            vec![RouteCertStatus {
-                hostname,
-                status: RouteCertLifecycle::Verified,
+            snapshot.route_tls,
+            vec![RouteTlsStatus {
+                route_binding_id: route.id,
+                availability: RouteTlsAvailability::Available {
+                    certificate_id: CertId::try_new("cert_app_example_com")
+                        .expect("certificate id"),
+                },
             }]
         );
     }
 
-    #[test]
-    fn certificate_status_reports_an_acme_challenge_as_pending() {
-        let hostname = route_hostname("app.example.com");
-        let mut source = intent(IntentPublicUrl::BringYourOwn);
-        source.acme_http01_challenges = vec![challenge(hostname.clone())];
-
-        let snapshot = from_sources(source, &BTreeMap::new(), &BTreeMap::new(), 50);
-
-        assert_eq!(
-            snapshot.certificate_statuses,
-            vec![RouteCertStatus {
-                hostname,
-                status: RouteCertLifecycle::Pending,
-            }]
-        );
-    }
-
-    #[test]
-    fn verified_certificate_wins_when_the_same_hostname_has_a_pending_challenge() {
-        let hostname = route_hostname("app.example.com");
-        let mut source = intent(IntentPublicUrl::BringYourOwn);
-        source.custom_certificates = vec![active_certificate(hostname.clone(), 1, 100)];
-        source.acme_http01_challenges = vec![challenge(hostname.clone())];
-
-        let snapshot = from_sources(source, &BTreeMap::new(), &BTreeMap::new(), 50);
-
-        assert_eq!(
-            snapshot.certificate_statuses,
-            vec![RouteCertStatus {
-                hostname,
-                status: RouteCertLifecycle::Verified,
-            }]
-        );
-    }
-
-    fn intent(public_url: IntentPublicUrl) -> IntentSnapshot {
+    fn intent(
+        routes_and_certificates: Vec<(RouteBindingState, ActiveCertificateMetadata)>,
+    ) -> IntentSnapshot {
+        let (route_bindings, active_certificates) = routes_and_certificates.into_iter().unzip();
         IntentSnapshot {
             epoch: ControlPlaneEpoch::initial(),
             core_machine_id: MachineId::try_new("core").expect("machine id"),
             active_machines: Vec::new(),
             dataplane_projection: DataplaneProjection::try_new(Vec::new(), None)
                 .expect("dataplane projection"),
-            route_bindings: Vec::new(),
+            route_bindings,
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),
             nats_authorizations: Vec::new(),
-            public_url,
-            custom_certificates: Vec::new(),
-            acme_http01_challenges: Vec::new(),
+            automatic_hostname_configuration: AutomaticHostnameConfiguration::Ployz,
+            ployz_dns_target: PloyzDnsTargetIntent::Enabled,
+            active_certificates,
+        }
+    }
+
+    fn ingress(allocation: Option<PloyzDnsTargetAllocation>) -> RuntimeIngressSources {
+        RuntimeIngressSources {
+            ployz_dns_target_allocation: allocation,
+            ployz_dns_target_checkpoint: None,
+            ingress_endpoint_projection: IngressEndpointProjection {
+                control_plane_epoch: ControlPlaneEpoch::initial(),
+                revision: 0,
+                state: IngressEndpointProjectionState::Pending,
+            },
         }
     }
 
@@ -516,50 +550,38 @@ mod tests {
         .expect("lease record")
     }
 
-    fn bundle(lease: &ManagedLeaseRecord) -> ManagedCertBundle {
-        ManagedCertBundle::try_new(
-            lease.name.clone(),
-            lease.name.wildcard_and_apex(),
-            "certificate".to_owned(),
-            "private-key".to_owned(),
-            LeaseIssuedAt::try_new(1).expect("issued at"),
-            LeaseExpiresAt::try_new(100).expect("expires at"),
-        )
-        .expect("certificate bundle")
-    }
-
     fn route_hostname(value: &str) -> RouteHostname {
         RouteHostname::try_new(value).expect("route hostname")
     }
 
-    fn active_certificate(
-        hostname: RouteHostname,
-        not_before: u64,
-        not_after: u64,
-    ) -> ActiveCertState {
-        ActiveCertState {
-            cert_id: CertId::try_new("cert_app_example_com").expect("certificate id"),
-            hostname,
-            bundle_ref: CertBundleRef::try_new(format!(
-                "sha256:{}:/var/lib/ployz/certificates/cert_app_example_com.bundle",
-                "a".repeat(64)
-            ))
-            .expect("bundle reference"),
-            validity: CertValidityWindow::try_new(
-                CertValidAt::try_new(not_before).expect("not before"),
-                CertValidAt::try_new(not_after).expect("not after"),
-            )
-            .expect("validity window"),
+    fn route(id: &str, origin: RouteBindingOrigin) -> RouteBindingState {
+        RouteBindingState {
+            id: RouteBindingId::try_new(id).expect("route id"),
+            namespace_id: NamespaceId::try_new("ns_app").expect("namespace id"),
+            target: RouteTarget::new(route_hostname("app.example.com")),
+            endpoint_port: RoutePort::try_new(8080).expect("port"),
+            service_id: ServiceId::try_new("svc_app").expect("service id"),
+            origin,
         }
     }
 
-    fn challenge(hostname: RouteHostname) -> AcmeHttp01Challenge {
-        AcmeHttp01Challenge::try_new(
-            hostname,
-            AcmeChallengeToken::try_new("token").expect("challenge token"),
-            AcmeChallengeValue::try_new("token.account-thumbprint").expect("challenge value"),
-            AcmeChallengeTtlSeconds::try_new(900).expect("challenge ttl"),
-        )
-        .expect("challenge")
+    fn active_certificate(owner: CertificateOwner) -> ActiveCertificateMetadata {
+        ActiveCertificateMetadata {
+            owner,
+            active: ActiveCertState {
+                cert_id: CertId::try_new("cert_app_example_com").expect("certificate id"),
+                hostname: route_hostname("app.example.com"),
+                bundle_ref: CertBundleRef::try_new(format!(
+                    "sha256:{}:/var/lib/ployz/certificates/cert_app_example_com.bundle",
+                    "a".repeat(64)
+                ))
+                .expect("bundle reference"),
+                validity: CertValidityWindow::try_new(
+                    CertValidAt::try_new(1).expect("not before"),
+                    CertValidAt::try_new(100).expect("not after"),
+                )
+                .expect("validity window"),
+            },
+        }
     }
 }

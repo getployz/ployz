@@ -3,8 +3,12 @@
 use crate::fact_cache::FactCache;
 use crate::intent::service::{IntentReadError, NatsIntentReader};
 use crate::roles::gateway::projection::{
-    GatewayCertificateMaterialFailure, GatewayProjectionError, GatewayProjectionInput,
+    GatewayCertificateBundle, GatewayCertificateMaterialFailure,
+    GatewayCertificateMaterialFailureKind, GatewayProjectionError, GatewayProjectionInput,
     GatewayProjectionUpdate, GatewayRoute, GatewayServingEntry,
+};
+use ployz_core::ingress::{
+    ActiveCertificateMetadata, AutomaticHostnameConfiguration, CertificateOwner, RouteBindingOrigin,
 };
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
@@ -47,56 +51,78 @@ pub async fn load_gateway_projection_input_from_nats(
     let intent = intent.await?;
     let observed_machines = facts.machine_container_snapshots();
 
-    let (custom_cert_bundles, custom_cert_failures) = load_routed_custom_certificates(
-        &intent.custom_certificates,
+    let (certificate_bundles, certificate_failures) = load_routed_certificates(
+        &intent.active_certificates,
         &intent.route_bindings,
+        &intent.automatic_hostname_configuration,
         certificate_store,
     );
 
     Ok(gateway_projection_input_from_state(
-        match intent.public_url {
-            ployz_core::state::IntentPublicUrl::Auto(managed_lease) => match *managed_lease {
-                ployz_core::state::ManagedLeaseProjection::Ready { bundle, .. } => Some(bundle),
-                ployz_core::state::ManagedLeaseProjection::Unacquired
-                | ployz_core::state::ManagedLeaseProjection::RecordOnly { .. } => None,
-            },
-            ployz_core::state::IntentPublicUrl::Unconfigured
-            | ployz_core::state::IntentPublicUrl::BringYourOwn
-            | ployz_core::state::IntentPublicUrl::None => None,
-        },
-        custom_cert_bundles,
-        custom_cert_failures,
-        intent.acme_http01_challenges,
+        certificate_bundles,
+        certificate_failures,
         intent.route_bindings,
+        intent.automatic_hostname_configuration,
         intent.serving_target_entries,
         observed_machines,
     ))
 }
 
-fn load_routed_custom_certificates(
-    active_certificates: &[ployz_core::cert::ActiveCertState],
+fn load_routed_certificates(
+    active_certificates: &[ActiveCertificateMetadata],
     routes: &[RouteBindingState],
+    automatic_hostnames: &AutomaticHostnameConfiguration,
     certificate_store: &GatewayCertificateStore,
 ) -> (
-    Vec<ployz_core::cert::CustomCertBundle>,
+    Vec<GatewayCertificateBundle>,
     Vec<GatewayCertificateMaterialFailure>,
 ) {
     let mut bundles = Vec::new();
     let mut failures = Vec::new();
-    for active in active_certificates.iter().filter(|active| {
-        routes
-            .iter()
-            .any(|route| route.target.port.get() == 443 && route.target.hostname == active.hostname)
-    }) {
-        match certificate_store.load(active) {
-            Ok(bundle) => bundles.push(bundle),
-            Err(error) => failures.push(GatewayCertificateMaterialFailure {
-                hostname: active.hostname.clone(),
-                message: error.to_string(),
+    for metadata in active_certificates
+        .iter()
+        .filter(|metadata| certificate_is_referenced(&metadata.owner, routes, automatic_hostnames))
+    {
+        match certificate_store.load_at(&metadata.active, current_unix_seconds()) {
+            Ok(bundle) => bundles.push(GatewayCertificateBundle {
+                owner: metadata.owner.clone(),
+                bundle,
             }),
+            Err(error) => {
+                let kind = if matches!(error, GatewayCertificateStoreError::NotUsable { .. }) {
+                    GatewayCertificateMaterialFailureKind::Unusable
+                } else {
+                    GatewayCertificateMaterialFailureKind::MissingOrInvalid
+                };
+                failures.push(GatewayCertificateMaterialFailure {
+                    owner: metadata.owner.clone(),
+                    kind,
+                    message: error.to_string(),
+                });
+            }
         }
     }
     (bundles, failures)
+}
+
+fn certificate_is_referenced(
+    owner: &CertificateOwner,
+    routes: &[RouteBindingState],
+    automatic_hostnames: &AutomaticHostnameConfiguration,
+) -> bool {
+    routes.iter().any(|route| match owner {
+        CertificateOwner::PloyzAutomaticNamespace => {
+            matches!(automatic_hostnames, AutomaticHostnameConfiguration::Ployz)
+                && route.origin == RouteBindingOrigin::Automatic
+        }
+        CertificateOwner::RouteBinding { route_binding_id } => &route.id == route_binding_id,
+    })
+}
+
+fn current_unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -116,20 +142,21 @@ impl From<IntentReadError> for GatewaySourceError {
 }
 
 fn gateway_projection_input_from_state(
-    managed_cert_bundle: Option<ployz_core::cert::ManagedCertBundle>,
-    custom_cert_bundles: Vec<ployz_core::cert::CustomCertBundle>,
-    custom_cert_failures: Vec<GatewayCertificateMaterialFailure>,
-    challenges: Vec<ployz_core::cert::AcmeHttp01Challenge>,
+    certificate_bundles: Vec<GatewayCertificateBundle>,
+    certificate_failures: Vec<GatewayCertificateMaterialFailure>,
     routes: Vec<RouteBindingState>,
+    automatic_hostnames: AutomaticHostnameConfiguration,
     serving: Vec<ServingTargetEntry>,
     observed_machines: Vec<MachineContainerObservationSnapshot>,
 ) -> GatewayProjectionInput {
     GatewayProjectionInput {
-        managed_cert_bundle,
-        custom_cert_bundles,
-        custom_cert_failures,
-        challenges,
-        routes: routes.into_iter().map(gateway_route_from_state).collect(),
+        certificate_bundles,
+        certificate_failures,
+        challenges: Vec::new(),
+        routes: routes
+            .into_iter()
+            .map(|state| gateway_route_from_state(state, &automatic_hostnames))
+            .collect(),
         serving: serving
             .into_iter()
             .map(|state| GatewayServingEntry {
@@ -142,8 +169,24 @@ fn gateway_projection_input_from_state(
     }
 }
 
-fn gateway_route_from_state(state: RouteBindingState) -> GatewayRoute {
+fn gateway_route_from_state(
+    state: RouteBindingState,
+    automatic_hostnames: &AutomaticHostnameConfiguration,
+) -> GatewayRoute {
+    let certificate_owner = match (&state.origin, automatic_hostnames) {
+        (RouteBindingOrigin::Automatic, AutomaticHostnameConfiguration::Ployz) => {
+            CertificateOwner::PloyzAutomaticNamespace
+        }
+        (RouteBindingOrigin::Declared | RouteBindingOrigin::Automatic, _) => {
+            CertificateOwner::RouteBinding {
+                route_binding_id: state.id.clone(),
+            }
+        }
+    };
     GatewayRoute {
+        id: state.id,
+        origin: state.origin,
+        certificate_owner,
         target: state.target,
         endpoint_port: state.endpoint_port,
         namespace_id: state.namespace_id,
@@ -155,7 +198,8 @@ fn gateway_route_from_state(state: RouteBindingState) -> GatewayRoute {
 mod tests {
     use super::*;
     use ployz_core::cert::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
-    use ployz_core::ids::CertId;
+    use ployz_core::ids::{CertId, RouteBindingId};
+    use ployz_core::ingress::{ActiveCertificateMetadata, CertificateOwner};
     use ployz_core::ops::RouteTarget;
     use ployz_test_support::ids::{namespace_id, route_hostname, route_port, service_id};
 
@@ -164,9 +208,10 @@ mod tests {
         let state = tempfile::tempdir().expect("gateway state");
 
         assert!(
-            load_routed_custom_certificates(
+            load_routed_certificates(
                 &[active_certificate("app.example.com")],
                 &[],
+                &AutomaticHostnameConfiguration::Disabled,
                 &GatewayCertificateStore::new(state.path().to_path_buf()),
             )
             .0
@@ -175,68 +220,81 @@ mod tests {
     }
 
     #[test]
-    fn routed_certificate_without_local_material_is_reported_per_hostname() {
+    fn routed_certificate_without_local_material_is_reported_per_owner() {
         let state = tempfile::tempdir().expect("gateway state");
 
         assert!(matches!(
-            load_routed_custom_certificates(
+            load_routed_certificates(
                 &[active_certificate("app.example.com")],
                 &[route("app.example.com", 443)],
+                &AutomaticHostnameConfiguration::Disabled,
                 &GatewayCertificateStore::new(state.path().to_path_buf()),
             )
             .1
             .as_slice(),
-            [GatewayCertificateMaterialFailure { hostname, .. }]
-                if hostname == &route_hostname("app.example.com")
+            [GatewayCertificateMaterialFailure { owner, .. }]
+                if owner == &route_owner()
         ));
     }
 
     #[test]
-    fn routed_certificate_with_invalid_local_material_is_reported_per_hostname() {
+    fn routed_certificate_with_invalid_local_material_is_reported_per_owner() {
         let state = tempfile::tempdir().expect("gateway state");
         let store = GatewayCertificateStore::new(state.path().to_path_buf());
         let active = active_certificate("app.example.com");
-        let artifact = store.artifact_path(&active).expect("artifact path");
+        let artifact = store.artifact_path(&active.active).expect("artifact path");
         std::fs::create_dir_all(artifact.parent().expect("artifact directory"))
             .expect("create artifact directory");
         std::fs::write(artifact, b"invalid material").expect("write invalid artifact");
 
         assert!(matches!(
-            load_routed_custom_certificates(
+            load_routed_certificates(
                 &[active],
                 &[route("app.example.com", 443)],
+                &AutomaticHostnameConfiguration::Disabled,
                 &store,
             )
             .1
             .as_slice(),
-            [GatewayCertificateMaterialFailure { hostname, .. }]
-                if hostname == &route_hostname("app.example.com")
+            [GatewayCertificateMaterialFailure { owner, .. }]
+                if owner == &route_owner()
         ));
     }
 
-    fn active_certificate(hostname: &str) -> ActiveCertState {
-        ActiveCertState {
-            cert_id: CertId::try_new("cert_app").expect("cert id"),
-            hostname: route_hostname(hostname),
-            bundle_ref: CertBundleRef::try_new(format!(
-                "sha256:{}:/core/owned.bundle",
-                "a".repeat(64)
-            ))
-            .expect("bundle ref"),
-            validity: CertValidityWindow::try_new(
-                CertValidAt::try_new(1_000).expect("not before"),
-                CertValidAt::try_new(2_000).expect("not after"),
-            )
-            .expect("validity"),
+    fn active_certificate(hostname: &str) -> ActiveCertificateMetadata {
+        ActiveCertificateMetadata {
+            owner: route_owner(),
+            active: ActiveCertState {
+                cert_id: CertId::try_new("cert_app").expect("cert id"),
+                hostname: route_hostname(hostname),
+                bundle_ref: CertBundleRef::try_new(format!(
+                    "sha256:{}:/core/owned.bundle",
+                    "a".repeat(64)
+                ))
+                .expect("bundle ref"),
+                validity: CertValidityWindow::try_new(
+                    CertValidAt::try_new(1_000).expect("not before"),
+                    CertValidAt::try_new(2_000).expect("not after"),
+                )
+                .expect("validity"),
+            },
         }
     }
 
-    fn route(hostname: &str, port: u16) -> RouteBindingState {
+    fn route_owner() -> CertificateOwner {
+        CertificateOwner::RouteBinding {
+            route_binding_id: RouteBindingId::try_new("route_app").expect("route binding id"),
+        }
+    }
+
+    fn route(hostname: &str, _port: u16) -> RouteBindingState {
         RouteBindingState {
+            id: RouteBindingId::try_new("route_app").expect("route binding id"),
             namespace_id: namespace_id("default"),
-            target: RouteTarget::new(route_hostname(hostname), route_port(port)),
+            target: RouteTarget::new(route_hostname(hostname)),
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
+            origin: RouteBindingOrigin::Declared,
         }
     }
 }

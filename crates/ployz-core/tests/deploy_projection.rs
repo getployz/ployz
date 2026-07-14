@@ -6,9 +6,8 @@ use ployz_core::deploy::{
 };
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, DeployRunningStage, DeployTransition,
-    ManagedPublicUrlPendingStage, OperationEvent, OperationProjection, OperationStatus,
-    ProjectionOperationState, StatusProjectionError, project_deploy_transition,
-    project_operation_event,
+    OperationEvent, OperationProjection, OperationStatus, ProjectionOperationState,
+    StatusProjectionError, project_deploy_transition, project_operation_event,
 };
 use ployz_test_support::ids::{
     container_id, event_sequence, machine_id, namespace_id, namespace_revision_id, operation_id,
@@ -468,39 +467,6 @@ fn plan_created_event_records_without_changing_status() {
 
     assert_eq!(
         project_operation_event(&planning, plan_created_event(), event_sequence(3)),
-        Ok(OperationProjection::StatusChanged {
-            status: Box::new(OperationStatus::Deploy {
-                id: operation_id("op_123"),
-                namespace_id: namespace_id("default"),
-                service_id: service_id("svc_api"),
-                origin: None,
-                state: DeployOperationState::Planning,
-                last_event_sequence: event_sequence(3),
-            }),
-        })
-    );
-}
-
-#[test]
-fn waiting_for_managed_certificate_records_without_changing_planning_status() {
-    let planning = OperationStatus::Deploy {
-        id: operation_id("op_123"),
-        namespace_id: namespace_id("default"),
-        service_id: service_id("svc_api"),
-        origin: None,
-        state: DeployOperationState::Planning,
-        last_event_sequence: event_sequence(2),
-    };
-
-    assert_eq!(
-        project_operation_event(
-            &planning,
-            OperationEvent::DeployWaitingForManagedPublicUrl {
-                operation_id: operation_id("op_123"),
-                stage: ManagedPublicUrlPendingStage::Certificate,
-            },
-            event_sequence(3),
-        ),
         Ok(OperationProjection::StatusChanged {
             status: Box::new(OperationStatus::Deploy {
                 id: operation_id("op_123"),

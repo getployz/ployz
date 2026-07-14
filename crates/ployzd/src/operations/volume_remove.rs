@@ -261,11 +261,10 @@ mod tests {
                 machine_id: machine_id("machine_a"),
             }],
             nats_authorizations: Vec::new(),
-            public_url: ployz_core::state::IntentPublicUrl::Auto(Box::new(
-                ployz_core::state::ManagedLeaseProjection::Unacquired,
-            )),
-            custom_certificates: Vec::new(),
-            acme_http01_challenges: Vec::new(),
+            automatic_hostname_configuration:
+                ployz_core::ingress::AutomaticHostnameConfiguration::Ployz,
+            ployz_dns_target: ployz_core::ingress::PloyzDnsTargetIntent::Enabled,
+            active_certificates: Vec::new(),
         };
 
         assert_eq!(

@@ -152,7 +152,6 @@ fn cli_dispatches_deploy_request_with_route() {
         vec![DeployRoute {
             target: DeployRouteTarget::Hostname {
                 hostname: RouteHostname::try_new("api.example.com").expect("valid route hostname"),
-                port: RoutePort::try_new(443).expect("valid route port"),
             },
             endpoint_port: RoutePort::try_new(8080).expect("valid endpoint port"),
         }]
@@ -160,7 +159,7 @@ fn cli_dispatches_deploy_request_with_route() {
 }
 
 #[test]
-fn cli_requires_route_port_when_deploy_route_hostname_is_set() {
+fn cli_requires_endpoint_port_when_deploy_route_hostname_is_set() {
     let args = deploy_arg_refs()
         .chain(["--route-hostname", "api.example.com"])
         .map(str::to_owned);
@@ -169,9 +168,9 @@ fn cli_requires_route_port_when_deploy_route_hostname_is_set() {
 }
 
 #[test]
-fn cli_requires_endpoint_port_when_deploy_route_is_set() {
+fn cli_requires_route_hostname_when_endpoint_port_is_set() {
     let args = deploy_arg_refs()
-        .chain(["--route-hostname", "api.example.com", "--route-port", "443"])
+        .chain(["--endpoint-port", "8080"])
         .map(str::to_owned);
 
     assert!(parse_command(args).is_err());
@@ -228,7 +227,6 @@ fn cli_deploy_shorthand_derives_full_request() {
         vec![DeployRoute {
             target: DeployRouteTarget::Hostname {
                 hostname: RouteHostname::try_new("app.example.com").expect("valid route hostname"),
-                port: RoutePort::try_new(80).expect("valid route port"),
             },
             endpoint_port: RoutePort::try_new(8000).expect("valid endpoint port"),
         }]
@@ -277,8 +275,6 @@ fn cli_deploy_shorthand_route_conflicts_with_explicit_route_flags() {
             [
                 "--route-hostname",
                 "api.example.com",
-                "--route-port",
-                "443",
                 "--endpoint-port",
                 "8080",
             ]
@@ -634,8 +630,6 @@ fn deploy_args_with_route() -> impl Iterator<Item = String> {
         .chain([
             "--route-hostname",
             "api.example.com",
-            "--route-port",
-            "443",
             "--endpoint-port",
             "8080",
         ])

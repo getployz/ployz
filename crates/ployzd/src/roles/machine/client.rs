@@ -191,14 +191,14 @@ pub enum MachineVolumeRemoveError {
 
 /// Outcome of one machine RPC round trip: either the machine answered with a typed
 /// domain error, or the call never produced a usable answer.
-pub(super) enum MachineCallError<E> {
+pub(crate) enum MachineCallError<E> {
     Unavailable(MachineRuntimeUnavailableReason),
     Domain(E),
 }
 
 /// One machine RPC round trip: encode the request, map transport failures, and
 /// reject answers from the wrong machine — exactly once for every endpoint.
-pub(super) async fn call_machine<T, E>(
+pub(crate) async fn call_machine<T, E>(
     client: &async_nats::Client,
     request_timeout: Duration,
     machine_id: &MachineId,

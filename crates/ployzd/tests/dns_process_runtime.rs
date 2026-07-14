@@ -213,10 +213,16 @@ impl TestNats {
     async fn commit_route(&self, hostname: &str) {
         self.namespace_intent
             .replace_route_binding(RouteBindingState {
+                id: ployz_core::ids::RouteBindingId::try_new(format!(
+                    "route_{}",
+                    hostname.replace('.', "_")
+                ))
+                .expect("valid route binding id"),
                 namespace_id: namespace_id("default"),
-                target: RouteTarget::new(route_hostname(hostname), route_port(443)),
+                target: RouteTarget::new(route_hostname(hostname)),
                 endpoint_port: route_port(8080),
                 service_id: service_id("svc_api"),
+                origin: ployz_core::ingress::RouteBindingOrigin::Declared,
             })
             .await
             .expect("route stores");

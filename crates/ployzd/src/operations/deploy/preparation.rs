@@ -1,19 +1,18 @@
 //! Convert current cluster facts into a deploy execution command.
 
-use ployz_core::cert::ManagedLeaseName;
 use ployz_core::dataplane::DataplaneMember;
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployPreparationInput, DeployRequest, RegistryCredential,
     auto_hostname_route_binding_commits, namespace_route_binding_removals,
     namespace_serving_target_removals, prepare_deploy,
 };
-use ployz_core::ids::{MachineId, OperationId, ServiceId};
+use ployz_core::ids::{MachineId, OperationId, RouteBindingId, ServiceId};
 use ployz_core::image::OciPlatform;
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
-use ployz_core::ops::RouteHostname;
+use ployz_core::ops::{RouteHostname, RouteTarget};
 use ployz_core::state::VolumePinState;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use crate::certificate::GatewayCertificateTarget;
@@ -31,8 +30,10 @@ pub struct DeployExecutionFacts {
     pub observed_machines: Vec<MachineContainerObservationSnapshot>,
     pub machine_platforms: BTreeMap<MachineId, OciPlatform>,
     pub namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
-    pub managed_lease: Option<ManagedLeaseName>,
+    pub automatic_hostname_suffix: Option<RouteHostname>,
+    pub ployz_automatic_hostnames: bool,
     pub gateway_certificate_targets: Vec<GatewayCertificateTarget>,
+    pub ployz_gateway_certificate_targets: Vec<GatewayCertificateTarget>,
     pub step_timeout: Duration,
 }
 
@@ -96,9 +97,11 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
     for service_request in mint_requests {
         let commits = auto_hostname_route_binding_commits(
             service_request,
-            facts.managed_lease.as_ref(),
+            facts.automatic_hostname_suffix.as_ref(),
             &occupied_bindings,
-        );
+            route_binding_id_for_target,
+        )
+        .expect("route bindings were validated while loading deploy facts");
         occupied_bindings.extend(commits.iter().cloned());
         declared_auto_bindings.extend(commits);
     }
@@ -146,12 +149,18 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         .collect::<Vec<_>>();
     let mut services = Vec::new();
     for service_request in service_requests {
-        let mut prepared = prepare_deploy(DeployPreparationInput {
-            request: service_request,
-            eligible_machines: facts.eligible_machines.clone(),
-            draining_machines: draining_machines.clone(),
-            observed_machines: facts.observed_machines.clone(),
-        });
+        let mut prepared = prepare_deploy(
+            DeployPreparationInput {
+                request: service_request,
+                occupied_route_bindings: occupied_bindings.clone(),
+                eligible_machines: facts.eligible_machines.clone(),
+                draining_machines: draining_machines.clone(),
+                observed_machines: facts.observed_machines.clone(),
+            },
+            route_binding_id_for_target,
+        )
+        .expect("route bindings were validated while loading deploy facts");
+        occupied_bindings.extend(prepared.route_commits.iter().cloned());
         let is_promoted = facts.namespace_serving_entries.iter().any(|entry| {
             entry.namespace_id == prepared.request.namespace_id
                 && entry.service_id == prepared.request.service_id
@@ -179,8 +188,8 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
             cleanup_candidates: prepared.cleanup_candidates,
         });
     }
-    let custom_certificate_hostnames =
-        custom_certificate_hostnames(&services, facts.managed_lease.as_ref());
+    let exact_certificate_routes =
+        exact_certificate_routes(&services, facts.ployz_automatic_hostnames);
 
     // Manifest omission removes a service: its containers are cleanup
     // candidates on every deploy, not only when the manifest is empty.
@@ -200,38 +209,39 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         namespace_cleanup_candidates,
         machine_platforms: facts.machine_platforms,
         dataplane_members: facts.dataplane_members,
-        custom_certificate_hostnames,
+        exact_certificate_routes,
+        ployz_automatic_hostnames: facts.ployz_automatic_hostnames,
         gateway_certificate_targets: facts.gateway_certificate_targets,
+        ployz_gateway_certificate_targets: facts.ployz_gateway_certificate_targets,
         unusable_machines: facts.unusable_machines,
         step_timeout: facts.step_timeout,
     }
 }
 
-fn custom_certificate_hostnames(
+fn exact_certificate_routes(
     services: &[DeployServiceExecutionCommand],
-    managed_lease: Option<&ManagedLeaseName>,
-) -> Vec<RouteHostname> {
-    services
+    ployz_automatic_hostnames: bool,
+) -> Vec<RouteBindingState> {
+    let mut routes = services
         .iter()
         .flat_map(DeployServiceExecutionCommand::route_binding_states)
-        .filter(|binding| binding.target.port.get() == 443)
-        .map(|binding| &binding.target.hostname)
-        .filter(|hostname| {
-            !managed_lease.is_some_and(|lease| managed_bundle_covers(lease, hostname))
+        .filter(|binding| {
+            !ployz_automatic_hostnames
+                || binding.origin != ployz_core::ingress::RouteBindingOrigin::Automatic
         })
         .cloned()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
+        .collect::<Vec<_>>();
+    routes.sort_by(|left, right| left.id.cmp(&right.id));
+    routes.dedup_by(|left, right| left.id == right.id);
+    routes
 }
 
-fn managed_bundle_covers(lease: &ManagedLeaseName, hostname: &RouteHostname) -> bool {
-    let suffix = lease.hostname_suffix();
-    hostname.as_str() == suffix
-        || hostname
-            .as_str()
-            .strip_suffix(&format!(".{suffix}"))
-            .is_some_and(|label| !label.is_empty() && !label.contains('.'))
+pub(super) fn route_binding_id_for_target(target: &RouteTarget) -> RouteBindingId {
+    use sha2::{Digest, Sha256};
+
+    let digest = Sha256::digest(target.hostname.as_str().as_bytes());
+    RouteBindingId::try_new(format!("route_{digest:x}"))
+        .expect("SHA-256 route binding id is a valid subject token")
 }
 
 pub fn namespace_cleanup_candidates(

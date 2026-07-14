@@ -12,7 +12,7 @@ services:
     volumes:
       - data:/data
     x-ports:
-      - 8080
+      - auto:web:8080
     profiles:
       - prod
     mystery_option: true

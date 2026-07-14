@@ -1,13 +1,17 @@
 //! Controller-owned passive runtime projection fanout.
 
+use crate::core_store::CoreStore;
 use crate::fact_cache::FactCache;
-use crate::intent::service::{IntentReadError, NatsIntentReader};
+use crate::intent::service::NatsIntentReader;
 use crate::process_support::BackoffSchedule;
-use crate::runtime_snapshot::from_sources as runtime_snapshot_from_sources;
+use crate::runtime_snapshot::{
+    RuntimeIngressSources, from_sources as runtime_snapshot_from_sources, load_ingress_sources,
+};
 use crate::service_catalog::{runtime_projection_service, runtime_snapshot_seed_endpoint_spec};
 use futures_util::StreamExt;
 use ployz_core::state::IntentSnapshot;
-use ployz_core::subjects::{INTENT_CHANGED, RUNTIME_SNAPSHOT_STREAM};
+use ployz_core::subjects::{INGRESS_ENDPOINT_CHANGED, INTENT_CHANGED, RUNTIME_SNAPSHOT_STREAM};
+use ployz_nats::service_protocol::NatsServiceError;
 use ployz_nats::service_runtime::{
     NatsServiceHealth, NatsServiceResponse, NatsServiceShutdownError, RunningNatsService,
     decode_json_request, start_nats_service,
@@ -161,18 +165,19 @@ impl RuntimeProjectionHealth {
 struct RuntimeSnapshotSeedRequest {}
 
 struct PassiveRuntimeProjection {
-    intent: IntentSnapshot,
+    intent: Option<IntentSnapshot>,
+    ingress: Option<RuntimeIngressSources>,
     facts: FactCache,
-    snapshots: watch::Sender<RuntimeSnapshot>,
+    snapshots: watch::Sender<Option<RuntimeSnapshot>>,
 }
 
 impl PassiveRuntimeProjection {
-    fn new(intent: IntentSnapshot, facts: FactCache) -> (Self, watch::Receiver<RuntimeSnapshot>) {
-        let snapshot = assemble_snapshot(intent.clone(), &facts);
-        let (snapshots, receiver) = watch::channel(snapshot);
+    fn new(facts: FactCache) -> (Self, watch::Receiver<Option<RuntimeSnapshot>>) {
+        let (snapshots, receiver) = watch::channel(None);
         (
             Self {
-                intent,
+                intent: None,
+                ingress: None,
                 facts,
                 snapshots,
             },
@@ -180,14 +185,21 @@ impl PassiveRuntimeProjection {
         )
     }
 
-    fn replace_intent(&mut self, intent: IntentSnapshot) {
-        self.intent = intent;
+    fn replace_sources(&mut self, intent: IntentSnapshot, ingress: RuntimeIngressSources) {
+        self.intent = Some(intent);
+        self.ingress = Some(ingress);
         self.refresh();
     }
 
     fn refresh(&self) {
-        self.snapshots
-            .send_replace(assemble_snapshot(self.intent.clone(), &self.facts));
+        let (Some(intent), Some(ingress)) = (&self.intent, &self.ingress) else {
+            return;
+        };
+        self.snapshots.send_replace(Some(assemble_snapshot(
+            intent.clone(),
+            ingress.clone(),
+            &self.facts,
+        )));
     }
 }
 
@@ -195,16 +207,16 @@ pub(crate) async fn start_runtime_projection(
     client: async_nats::Client,
     intent_reader: NatsIntentReader,
     facts: FactCache,
+    core_store: CoreStore,
 ) -> Result<RunningRuntimeProjection, RuntimeProjectionStartError> {
-    let intent_changes = subscribe_intent(&client)
+    let intent_changes = subscribe(&client, INTENT_CHANGED)
         .await
         .map_err(|message| RuntimeProjectionStartError::SubscribeIntent { message })?;
-    let initial_intent = intent_reader
-        .intent()
+    let ingress_changes = subscribe(&client, INGRESS_ENDPOINT_CHANGED)
         .await
-        .map_err(RuntimeProjectionStartError::LoadInitialIntent)?;
+        .map_err(|message| RuntimeProjectionStartError::SubscribeIngress { message })?;
     let fact_changes = facts.subscribe_changes();
-    let (projection, snapshots) = PassiveRuntimeProjection::new(initial_intent, facts);
+    let (projection, snapshots) = PassiveRuntimeProjection::new(facts);
     let seed_snapshots = snapshots.clone();
     let mut seed_service = start_nats_service(client.clone(), &runtime_projection_service())
         .await
@@ -216,7 +228,12 @@ pub(crate) async fn start_runtime_projection(
                 if let Err(response) = decode_json_request::<RuntimeSnapshotSeedRequest>(&request) {
                     return response;
                 }
-                NatsServiceResponse::json_ok(&snapshots.borrow().clone())
+                let Some(snapshot) = snapshots.borrow().clone() else {
+                    return NatsServiceResponse::transport_error(NatsServiceError::unavailable(
+                        "runtime snapshot is not initialized",
+                    ));
+                };
+                NatsServiceResponse::json_ok(&snapshot)
             }
         })
         .await
@@ -230,7 +247,9 @@ pub(crate) async fn start_runtime_projection(
         client.clone(),
         intent_reader,
         intent_changes,
+        ingress_changes,
         fact_changes,
+        core_store,
         health.clone(),
     ));
     let publisher_task = tokio::spawn(publish_snapshots(client, snapshots, health.clone()));
@@ -248,9 +267,14 @@ async fn run_projection(
     client: async_nats::Client,
     intent_reader: NatsIntentReader,
     mut intent_changes: async_nats::Subscriber,
+    mut ingress_changes: async_nats::Subscriber,
     mut fact_changes: watch::Receiver<u64>,
+    core_store: CoreStore,
     health: RuntimeProjectionHealth,
 ) {
+    let intent = retry_intent_read(&intent_reader, &health).await;
+    let ingress = retry_ingress_read(&core_store, &health).await;
+    projection.replace_sources(intent, ingress);
     loop {
         tokio::select! {
             result = fact_changes.changed() => {
@@ -263,11 +287,22 @@ async fn run_projection(
             message = intent_changes.next() => {
                 if message.is_none() {
                     health.projection_failed();
-                    intent_changes = retry_intent_subscription(&client, &health).await;
+                    intent_changes = retry_subscription(&client, INTENT_CHANGED, &health).await;
                     continue;
                 }
                 let intent = retry_intent_read(&intent_reader, &health).await;
-                projection.replace_intent(intent);
+                let ingress = retry_ingress_read(&core_store, &health).await;
+                projection.replace_sources(intent, ingress);
+            }
+            message = ingress_changes.next() => {
+                if message.is_none() {
+                    health.projection_failed();
+                    ingress_changes = retry_subscription(&client, INGRESS_ENDPOINT_CHANGED, &health).await;
+                    continue;
+                }
+                let ingress = retry_ingress_read(&core_store, &health).await;
+                projection.ingress = Some(ingress);
+                projection.refresh();
             }
         }
     }
@@ -282,7 +317,7 @@ mod tests {
     use ployz_core::roles::InstallRolePolicy;
     use ployz_core::state::{
         ActiveMachineState, ControlPlaneEpoch, GatewayServingStatus, GatewayStatusObservation,
-        MachineLifecycle, ManagedLeaseProjection,
+        MachineLifecycle,
     };
     use ployz_sdk_types::{MachineTestimony, RuntimeDerivedCollectionStatus};
     use ployz_test_support::containers;
@@ -290,14 +325,23 @@ mod tests {
     use ployz_test_support::ids::{machine_id, operation_id};
 
     #[test]
+    fn unconfigured_projection_withholds_a_runtime_snapshot() {
+        let (_projection, snapshots) = PassiveRuntimeProjection::new(FactCache::default());
+
+        assert!(snapshots.borrow().is_none());
+    }
+
+    #[test]
     fn initial_passive_projection_is_complete() {
         let facts = FactCache::default();
         facts.record_machine_facts(machine_facts("machine_a", "ctr_initial"));
-        let (_projection, snapshots) = PassiveRuntimeProjection::new(
+        let (mut projection, snapshots) = PassiveRuntimeProjection::new(facts);
+        projection.replace_sources(
             intent(vec![serving_target_entry("svc_api", "entry_2")]),
-            facts,
+            ingress(),
         );
         let snapshot = snapshots.borrow();
+        let snapshot = snapshot.as_ref().expect("initialized snapshot");
 
         assert_eq!(snapshot.machines.len(), 1);
         let [container] = snapshot.containers.as_slice() else {
@@ -314,18 +358,31 @@ mod tests {
     async fn intent_machine_and_gateway_replacements_emit_full_snapshots() {
         let facts = FactCache::default();
         facts.record_machine_facts(machine_facts("machine_a", "ctr_initial"));
-        let (mut projection, mut snapshots) =
-            PassiveRuntimeProjection::new(intent(Vec::new()), facts.clone());
+        let (mut projection, mut snapshots) = PassiveRuntimeProjection::new(facts.clone());
+        projection.replace_sources(intent(Vec::new()), ingress());
+        let _ = snapshots.borrow_and_update();
 
-        projection.replace_intent(intent(vec![serving_target_entry("svc_api", "entry_2")]));
+        projection.replace_sources(
+            intent(vec![serving_target_entry("svc_api", "entry_2")]),
+            ingress(),
+        );
         snapshots.changed().await.expect("intent replacement");
-        assert_eq!(snapshots.borrow_and_update().services.len(), 1);
+        assert_eq!(
+            snapshots
+                .borrow_and_update()
+                .as_ref()
+                .expect("initialized snapshot")
+                .services
+                .len(),
+            1
+        );
 
         facts.record_machine_facts(machine_facts("machine_a", "ctr_replacement"));
         projection.refresh();
         snapshots.changed().await.expect("machine replacement");
         {
             let replacement = snapshots.borrow_and_update();
+            let replacement = replacement.as_ref().expect("initialized snapshot");
             let [container] = replacement.containers.as_slice() else {
                 panic!("one replacement container");
             };
@@ -341,6 +398,7 @@ mod tests {
         projection.refresh();
         snapshots.changed().await.expect("gateway replacement");
         let replacement = snapshots.borrow_and_update();
+        let replacement = replacement.as_ref().expect("initialized snapshot");
         let [machine] = replacement.machines.as_slice() else {
             panic!("one projected machine");
         };
@@ -382,11 +440,22 @@ mod tests {
             serving_target_entries,
             volume_pins: Vec::new(),
             nats_authorizations: Vec::new(),
-            public_url: ployz_core::state::IntentPublicUrl::Auto(Box::new(
-                ManagedLeaseProjection::Unacquired,
-            )),
-            custom_certificates: Vec::new(),
-            acme_http01_challenges: Vec::new(),
+            automatic_hostname_configuration:
+                ployz_core::ingress::AutomaticHostnameConfiguration::Ployz,
+            ployz_dns_target: ployz_core::ingress::PloyzDnsTargetIntent::Enabled,
+            active_certificates: Vec::new(),
+        }
+    }
+
+    fn ingress() -> RuntimeIngressSources {
+        RuntimeIngressSources {
+            ployz_dns_target_allocation: None,
+            ployz_dns_target_checkpoint: None,
+            ingress_endpoint_projection: ployz_core::ingress::IngressEndpointProjection {
+                control_plane_epoch: ControlPlaneEpoch::initial(),
+                revision: 0,
+                state: ployz_core::ingress::IngressEndpointProjectionState::Pending,
+            },
         }
     }
 
@@ -427,12 +496,19 @@ mod tests {
 
 async fn publish_snapshots(
     client: async_nats::Client,
-    mut snapshots: watch::Receiver<RuntimeSnapshot>,
+    mut snapshots: watch::Receiver<Option<RuntimeSnapshot>>,
     health: RuntimeProjectionHealth,
 ) {
     let mut retry_delay = RETRY_SCHEDULE.interval;
     loop {
-        let snapshot = snapshots.borrow_and_update().clone();
+        let snapshot = { snapshots.borrow_and_update().clone() };
+        let Some(snapshot) = snapshot else {
+            if snapshots.changed().await.is_err() {
+                health.publisher_stopped();
+                return;
+            }
+            continue;
+        };
         let payload = match serde_json::to_vec(&snapshot) {
             Ok(payload) => payload,
             Err(error) => {
@@ -486,7 +562,7 @@ async fn publish_snapshots(
 
 async fn wait_for_retry_or_replacement(
     delay: std::time::Duration,
-    snapshots: &mut watch::Receiver<RuntimeSnapshot>,
+    snapshots: &mut watch::Receiver<Option<RuntimeSnapshot>>,
 ) -> bool {
     tokio::select! {
         () = tokio::time::sleep(delay) => false,
@@ -494,8 +570,11 @@ async fn wait_for_retry_or_replacement(
     }
 }
 
-async fn subscribe_intent(client: &async_nats::Client) -> Result<async_nats::Subscriber, String> {
-    let subscription = timeout(NATS_IO_TIMEOUT, client.subscribe(INTENT_CHANGED))
+async fn subscribe(
+    client: &async_nats::Client,
+    subject: &'static str,
+) -> Result<async_nats::Subscriber, String> {
+    let subscription = timeout(NATS_IO_TIMEOUT, client.subscribe(subject))
         .await
         .map_err(|error| error.to_string())?
         .map_err(|error| error.to_string())?;
@@ -506,17 +585,18 @@ async fn subscribe_intent(client: &async_nats::Client) -> Result<async_nats::Sub
     Ok(subscription)
 }
 
-async fn retry_intent_subscription(
+async fn retry_subscription(
     client: &async_nats::Client,
+    subject: &'static str,
     health: &RuntimeProjectionHealth,
 ) -> async_nats::Subscriber {
     let mut delay = RETRY_SCHEDULE.interval;
     loop {
-        match subscribe_intent(client).await {
+        match subscribe(client, subject).await {
             Ok(subscription) => return subscription,
             Err(error) => {
                 health.projection_failed();
-                warn_failure("subscribe-intent", health, &error);
+                warn_failure("subscribe", health, &error);
                 tokio::time::sleep(delay).await;
                 delay = RETRY_SCHEDULE.next_after_failure(delay);
             }
@@ -545,12 +625,38 @@ async fn retry_intent_read(
     }
 }
 
-fn assemble_snapshot(intent: IntentSnapshot, facts: &FactCache) -> RuntimeSnapshot {
+async fn retry_ingress_read(
+    store: &CoreStore,
+    health: &RuntimeProjectionHealth,
+) -> RuntimeIngressSources {
+    let mut delay = RETRY_SCHEDULE.interval;
+    loop {
+        match load_ingress_sources(store).await {
+            Ok(ingress) => {
+                health.projection_succeeded();
+                return ingress;
+            }
+            Err(error) => {
+                health.projection_failed();
+                warn_failure("load-ingress", health, &error);
+                tokio::time::sleep(delay).await;
+                delay = RETRY_SCHEDULE.next_after_failure(delay);
+            }
+        }
+    }
+}
+
+fn assemble_snapshot(
+    intent: IntentSnapshot,
+    ingress: RuntimeIngressSources,
+    facts: &FactCache,
+) -> RuntimeSnapshot {
     let (machine_facts, gateway_statuses) = facts.runtime_projection_facts();
     runtime_snapshot_from_sources(
         intent,
         &machine_facts,
         &gateway_statuses,
+        ingress,
         current_unix_seconds(),
     )
 }
@@ -574,8 +680,8 @@ fn warn_failure(phase: &str, health: &RuntimeProjectionHealth, error: &impl std:
 pub(crate) enum RuntimeProjectionStartError {
     #[error("failed to subscribe to intent changes: {message}")]
     SubscribeIntent { message: String },
-    #[error("failed to load initial intent: {0}")]
-    LoadInitialIntent(IntentReadError),
+    #[error("failed to subscribe to ingress endpoint changes: {message}")]
+    SubscribeIngress { message: String },
     #[error("failed to start runtime snapshot seed service: {0}")]
     StartSeedService(ployz_nats::service_runtime::NatsServiceRuntimeError),
 }

@@ -8,9 +8,7 @@ use ployz_core::ids::{
     StepId,
 };
 use ployz_core::image::OciPlatform;
-use ployz_core::ops::{
-    DeployCompletionOutcome, FailureMessage, OperatorHint, RetainedArtifact, RouteHostname,
-};
+use ployz_core::ops::{DeployCompletionOutcome, FailureMessage, OperatorHint, RetainedArtifact};
 use ployz_core::state::VolumePinState;
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
 use std::collections::BTreeMap;
@@ -30,8 +28,10 @@ pub struct DeployExecutionCommand {
     pub(super) namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
     pub(super) machine_platforms: BTreeMap<MachineId, OciPlatform>,
     pub(super) dataplane_members: Vec<DataplaneMember>,
-    pub(super) custom_certificate_hostnames: Vec<RouteHostname>,
+    pub(super) exact_certificate_routes: Vec<RouteBindingState>,
+    pub(super) ployz_automatic_hostnames: bool,
     pub(super) gateway_certificate_targets: Vec<GatewayCertificateTarget>,
+    pub(super) ployz_gateway_certificate_targets: Vec<GatewayCertificateTarget>,
     pub(super) unusable_machines: Vec<ployz_core::ops::UnusableMachine>,
     pub(super) step_timeout: Duration,
 }
@@ -92,13 +92,23 @@ impl DeployExecutionCommand {
     }
 
     #[must_use]
-    pub fn custom_certificate_hostnames(&self) -> &[RouteHostname] {
-        &self.custom_certificate_hostnames
+    pub fn exact_certificate_routes(&self) -> &[RouteBindingState] {
+        &self.exact_certificate_routes
+    }
+
+    #[must_use]
+    pub const fn ployz_automatic_hostnames(&self) -> bool {
+        self.ployz_automatic_hostnames
     }
 
     #[must_use]
     pub fn gateway_certificate_targets(&self) -> &[GatewayCertificateTarget] {
         &self.gateway_certificate_targets
+    }
+
+    #[must_use]
+    pub fn ployz_gateway_certificate_targets(&self) -> &[GatewayCertificateTarget] {
+        &self.ployz_gateway_certificate_targets
     }
 
     #[must_use]

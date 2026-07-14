@@ -1,3 +1,5 @@
+use ployz_core::ids::RouteBindingId;
+use ployz_core::ingress::RouteBindingOrigin;
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{
@@ -174,10 +176,13 @@ async fn test_nats() -> TestNats {
 
 fn active_route_state(hostname: &str, public_port: u16, endpoint_port: u16) -> RouteBindingState {
     RouteBindingState {
+        id: RouteBindingId::try_new(format!("route_{}", hostname.replace('.', "_")))
+            .expect("valid route binding id"),
         namespace_id: namespace_id("default"),
         target: route_target(hostname, public_port),
         endpoint_port: route_port(endpoint_port),
         service_id: service_id("svc_api"),
+        origin: RouteBindingOrigin::Declared,
     }
 }
 
@@ -227,6 +232,6 @@ fn dns_record<const N: usize>(hostname: &str, answers: [DnsAnswer; N]) -> DnsRec
     }
 }
 
-fn route_target(hostname: &str, port: u16) -> RouteTarget {
-    RouteTarget::new(route_hostname(hostname), route_port(port))
+fn route_target(hostname: &str, _port: u16) -> RouteTarget {
+    RouteTarget::new(route_hostname(hostname))
 }

@@ -15,7 +15,6 @@ use crate::compose::UnsupportedFieldMode;
 
 /// Public port the `--route HOST:PORT` shorthand listens on: alpha route
 /// shorthand is plain HTTP (KTD8).
-const ROUTE_SHORTHAND_PUBLIC_HTTP_PORT: u16 = 80;
 /// Replica count when `--replicas` is omitted (R10).
 const DEFAULT_REPLICA_COUNT: u16 = 1;
 
@@ -187,7 +186,6 @@ fn deploy_submit_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCli
         replicas,
         route,
         route_hostname,
-        route_port,
         endpoint_port,
         allow_unsupported,
         detach,
@@ -205,7 +203,6 @@ fn deploy_submit_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCli
             || replicas.is_some()
             || !route.is_empty()
             || route_hostname.is_some()
-            || route_port.is_some()
             || endpoint_port.is_some()
         {
             return Err(cli_error(
@@ -269,9 +266,6 @@ fn deploy_submit_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCli
                 .map(RouteHostname::try_new)
                 .transpose()
                 .map_err(|error| invalid_value("--route-hostname", error))?,
-            route_port
-                .map(|value| parse_port(value, "--route-port"))
-                .transpose()?,
             endpoint_port
                 .map(|value| parse_port(value, "--endpoint-port"))
                 .transpose()?,
@@ -327,19 +321,17 @@ pub(crate) struct DeployCli {
     /// Resolve the image from its registry even when it exists in local Docker.
     #[arg(long)]
     from_registry: bool,
-    /// Route HOST on public HTTP port 80 to container endpoint PORT.
+    /// Route HOST on the fixed ingress listeners to container endpoint PORT.
     /// Repeat to bind multiple hostnames to the same service.
     #[arg(
         long,
         value_name = "HOST:PORT",
-        conflicts_with_all = ["route_hostname", "route_port", "endpoint_port"]
+        conflicts_with_all = ["route_hostname", "endpoint_port"]
     )]
     route: Vec<String>,
-    #[arg(long, requires_all = ["route_port", "endpoint_port"])]
+    #[arg(long, requires = "endpoint_port")]
     route_hostname: Option<String>,
-    #[arg(long, requires_all = ["route_hostname", "endpoint_port"])]
-    route_port: Option<String>,
-    #[arg(long, requires_all = ["route_hostname", "route_port"])]
+    #[arg(long, requires = "route_hostname")]
     endpoint_port: Option<String>,
     #[arg(long)]
     allow_unsupported: bool,
@@ -384,8 +376,8 @@ fn derive_service_id(image: &ImageReference) -> Result<ServiceId, PloyzctlCliErr
     })
 }
 
-/// Parses the `--route HOST:PORT` shorthand (KTD8): HOST becomes the public
-/// route hostname on HTTP port 80 and PORT is the container endpoint port.
+/// Parses `--route HOST:PORT`: HOST is the declared route hostname and PORT is
+/// the container endpoint port. Ingress owns the fixed public listeners.
 pub(crate) fn parse_route_shorthand(value: &str) -> Result<DeployRoute, PloyzctlCliError> {
     let Some((host, port)) = value.rsplit_once(':') else {
         return Err(PloyzctlCliError::InvalidValue {
@@ -405,11 +397,7 @@ pub(crate) fn parse_route_shorthand(value: &str) -> Result<DeployRoute, Ployzctl
     let endpoint_port =
         RoutePort::try_new(endpoint_port).map_err(|error| invalid_value("--route", error))?;
     Ok(DeployRoute {
-        target: DeployRouteTarget::Hostname {
-            hostname,
-            port: RoutePort::try_new(ROUTE_SHORTHAND_PUBLIC_HTTP_PORT)
-                .expect("80 is a valid route port"),
-        },
+        target: DeployRouteTarget::Hostname { hostname },
         endpoint_port,
     })
 }
@@ -436,22 +424,16 @@ fn parse_port(value: String, flag: &'static str) -> Result<RoutePort, PloyzctlCl
 
 fn parse_deploy_route(
     hostname: Option<RouteHostname>,
-    port: Option<RoutePort>,
     endpoint_port: Option<RoutePort>,
 ) -> Result<Option<DeployRoute>, PloyzctlCliError> {
-    match (hostname, port, endpoint_port) {
-        (Some(hostname), Some(port), Some(endpoint_port)) => Ok(Some(DeployRoute {
-            target: DeployRouteTarget::Hostname { hostname, port },
+    match (hostname, endpoint_port) {
+        (Some(hostname), Some(endpoint_port)) => Ok(Some(DeployRoute {
+            target: DeployRouteTarget::Hostname { hostname },
             endpoint_port,
         })),
-        (None, None, None) => Ok(None),
-        (Some(_), Some(_), None)
-        | (None, None, Some(_))
-        | (Some(_), None, Some(_))
-        | (Some(_), None, None)
-        | (None, Some(_), Some(_))
-        | (None, Some(_), None) => Err(cli_error(
-            "--route-hostname, --route-port, and --endpoint-port must be provided together",
+        (None, None) => Ok(None),
+        (Some(_), None) | (None, Some(_)) => Err(cli_error(
+            "--route-hostname and --endpoint-port must be provided together",
         )),
     }
 }

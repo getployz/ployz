@@ -2,7 +2,7 @@ use ployz_core::ids::{CertId, MachineId, OperationId, SubjectTokenError};
 use ployz_core::machine::MachineAddFailure;
 use ployz_core::ops::{
     CancellationReason, DeployCompletionOutcome, DeployRunningStage, MachineSubstrateVersions,
-    ManagedPublicUrlPendingStage, OperationEvent,
+    OperationEvent,
 };
 use ployz_core::state::MachineLifecycle;
 use ployz_core::subjects::{
@@ -27,10 +27,6 @@ fn operation_event_subjects_are_pinned() {
     assert_eq!(
         planning_started(&op_id).subject(&deploy_scope),
         "plz.v1.progress.namespace.default.operation.op_123.deploy.planning.started"
-    );
-    assert_eq!(
-        waiting_for_managed_public_url(&op_id).subject(&deploy_scope),
-        "plz.v1.progress.namespace.default.operation.op_123.deploy.managed_public_url.waiting.certificate"
     );
     assert_eq!(
         deploy_running(&op_id, DeployRunningStage::ServingTargetCommit).subject(&deploy_scope),
@@ -208,13 +204,6 @@ fn ids_use_positive_ascii_token_grammar() {
 fn planning_started(operation_id: &OperationId) -> OperationEvent {
     OperationEvent::DeployPlanningStarted {
         operation_id: operation_id.clone(),
-    }
-}
-
-fn waiting_for_managed_public_url(operation_id: &OperationId) -> OperationEvent {
-    OperationEvent::DeployWaitingForManagedPublicUrl {
-        operation_id: operation_id.clone(),
-        stage: ManagedPublicUrlPendingStage::Certificate,
     }
 }
 

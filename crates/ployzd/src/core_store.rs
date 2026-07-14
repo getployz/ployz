@@ -16,13 +16,9 @@ use rusqlite::{Connection, OptionalExtension};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
-/// Ordered schema migrations. Each entry is applied once, in order; the applied
-/// count is stored in `PRAGMA user_version`. Append new statements, never edit
-/// or reorder existing ones.
-const MIGRATIONS: &[&str] = &[
-    // v1 — the full core schema. Event and status payloads are JSON columns:
-    // the operation models stay enum-shaped in Rust and are persisted whole.
-    "
+const CURRENT_SCHEMA_VERSION: i64 = 13;
+
+const CURRENT_SCHEMA: &str = "
     CREATE TABLE operations (
         operation_id TEXT PRIMARY KEY,
         status_json  TEXT NOT NULL
@@ -31,9 +27,12 @@ const MIGRATIONS: &[&str] = &[
         operation_id TEXT    NOT NULL,
         sequence     INTEGER NOT NULL,
         event_json   TEXT    NOT NULL,
+        subject      TEXT,
         PRIMARY KEY (operation_id, sequence)
     );
-    CREATE TABLE deploy_claims (key TEXT PRIMARY KEY, json TEXT NOT NULL);
+    CREATE UNIQUE INDEX operation_events_subject
+        ON operation_events(operation_id, subject)
+        WHERE subject IS NOT NULL;
     CREATE TABLE machine_add_idempotency (
         idempotency_key TEXT PRIMARY KEY,
         operation_id    TEXT NOT NULL UNIQUE
@@ -69,10 +68,9 @@ const MIGRATIONS: &[&str] = &[
         mint_claim_json TEXT NOT NULL
     );
     CREATE TABLE route_bindings (
-        hostname TEXT    NOT NULL,
-        port     INTEGER NOT NULL,
-        json     TEXT    NOT NULL,
-        PRIMARY KEY (hostname, port)
+        hostname         TEXT PRIMARY KEY,
+        route_binding_id TEXT NOT NULL UNIQUE,
+        json             TEXT NOT NULL
     );
     CREATE TABLE serving_targets (
         namespace_id TEXT NOT NULL,
@@ -84,44 +82,20 @@ const MIGRATIONS: &[&str] = &[
         machine_id TEXT PRIMARY KEY,
         json       TEXT NOT NULL
     );
-    ",
-    "
-    ALTER TABLE operation_events ADD COLUMN subject TEXT;
-    CREATE UNIQUE INDEX operation_events_subject
-        ON operation_events(operation_id, subject)
-        WHERE subject IS NOT NULL;
-    ",
-    "
     CREATE TABLE control_plane (
         id   INTEGER PRIMARY KEY CHECK (id = 0),
         json TEXT NOT NULL
     );
-    ",
-    // Authorized-users grants: the durable source of truth that
-    // `authorized-users.conf` is now a rendered projection of. One row per grant,
-    // keyed by its `authority_record_key` so operator and Cloud Operator grants coexist.
-    "
     CREATE TABLE nats_authorizations (
         authority_key TEXT PRIMARY KEY,
         json          TEXT NOT NULL
     );
-    ",
-    "
     CREATE TABLE volume_pins (
         namespace_id TEXT NOT NULL,
         volume_name  TEXT NOT NULL,
         json         TEXT NOT NULL,
         PRIMARY KEY (namespace_id, volume_name)
     );
-    ",
-    "
-    CREATE TABLE managed_lease_intent (
-        id   INTEGER PRIMARY KEY CHECK (id = 1),
-        json TEXT NOT NULL
-    );
-    ",
-    "
-    DELETE FROM deploy_claims;
     CREATE TABLE deploy_reservations (
         namespace_id                  TEXT PRIMARY KEY,
         last_issued                   TEXT NOT NULL,
@@ -131,12 +105,6 @@ const MIGRATIONS: &[&str] = &[
             (last_committed IS NULL AND committed_owner_operation_id IS NULL)
             OR (last_committed IS NOT NULL AND committed_owner_operation_id IS NOT NULL)
         )
-    );
-    ",
-    "
-    CREATE TABLE custom_certificate_intent (
-        hostname TEXT PRIMARY KEY,
-        json     TEXT NOT NULL
     );
     CREATE TABLE acme_http01_challenges (
         hostname TEXT NOT NULL,
@@ -148,60 +116,37 @@ const MIGRATIONS: &[&str] = &[
         directory_url    TEXT PRIMARY KEY,
         credentials_json TEXT NOT NULL
     );
-    ",
-    // Version 8 existed with either the certificate tables or the managed-lease
-    // address table, so this entry reconciles both lineages before advancing.
-    "
-    CREATE TABLE IF NOT EXISTS custom_certificate_intent (
-        hostname TEXT PRIMARY KEY,
-        json     TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS acme_http01_challenges (
-        hostname TEXT NOT NULL,
-        token    TEXT NOT NULL,
-        json     TEXT NOT NULL,
-        PRIMARY KEY (hostname, token)
-    );
-    CREATE TABLE IF NOT EXISTS acme_accounts (
-        directory_url    TEXT PRIMARY KEY,
-        credentials_json TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS managed_lease_applied_addresses (
-        id   INTEGER PRIMARY KEY CHECK (id = 1),
-        json TEXT NOT NULL
-    );
-    ",
-    // Machine-add submissions written before endpoint-subnet admission cannot
-    // recover the authoritative fallback assignment. Reset their bootstrap
-    // working records so the operator can submit a fresh machine-add.
-    "
-    CREATE TEMP TABLE legacy_machine_adds AS
-        SELECT idempotency_key, operation_id
-        FROM machine_add_submissions
-        WHERE json_type(submission_json, '$.identity.endpoint_subnet') IS NULL;
-    DELETE FROM machine_add_secret_deliveries
-        WHERE idempotency_key IN (SELECT idempotency_key FROM legacy_machine_adds);
-    DELETE FROM machine_add_mint_claims
-        WHERE idempotency_key IN (SELECT idempotency_key FROM legacy_machine_adds);
-    DELETE FROM machine_add_join_tokens
-        WHERE idempotency_key IN (SELECT idempotency_key FROM legacy_machine_adds);
-    DELETE FROM machine_add_claims
-        WHERE idempotency_key IN (SELECT idempotency_key FROM legacy_machine_adds);
-    DELETE FROM machine_add_idempotency
-        WHERE idempotency_key IN (SELECT idempotency_key FROM legacy_machine_adds);
-    DELETE FROM machine_add_submissions
-        WHERE idempotency_key IN (SELECT idempotency_key FROM legacy_machine_adds);
-    DROP TABLE legacy_machine_adds;
-    ",
-    "
     CREATE TABLE machine_dataplane_staging (
         id           INTEGER PRIMARY KEY CHECK (id = 1),
         operation_id TEXT NOT NULL UNIQUE,
         machine_id   TEXT NOT NULL UNIQUE,
         json         TEXT NOT NULL
     );
-    ",
-];
+    CREATE TABLE automatic_hostname_intent (
+        id   INTEGER PRIMARY KEY CHECK (id = 1),
+        json TEXT NOT NULL
+    );
+    CREATE TABLE ployz_dns_target_intent (
+        id   INTEGER PRIMARY KEY CHECK (id = 1),
+        json TEXT NOT NULL
+    );
+    CREATE TABLE ployz_dns_target_allocation (
+        id   INTEGER PRIMARY KEY CHECK (id = 1),
+        json TEXT NOT NULL
+    );
+    CREATE TABLE managed_dns_checkpoint (
+        id   INTEGER PRIMARY KEY CHECK (id = 1),
+        json TEXT NOT NULL
+    );
+    CREATE TABLE ingress_endpoint_projection (
+        id   INTEGER PRIMARY KEY CHECK (id = 1),
+        json TEXT NOT NULL
+    );
+    CREATE TABLE active_certificate_metadata (
+        owner_key TEXT PRIMARY KEY,
+        json      TEXT NOT NULL
+    );
+    ";
 
 /// A cloneable handle to the core database. Clones share one connection and one
 /// lock, so writes serialize the same way the file stores' mutex did.
@@ -218,14 +163,14 @@ impl std::fmt::Debug for CoreStore {
 
 impl CoreStore {
     /// Open (creating if absent) the database at `path`, enable WAL durability,
-    /// and apply any pending migrations.
+    /// and verify or initialize the current schema.
     pub async fn open(path: PathBuf) -> Result<Self, CoreStoreError> {
         Self::open_blocking(move || {
             let conn = Connection::open(&path).map_err(CoreStoreError::Open)?;
             restrict_core_store_permissions(&path)?;
             // WAL + NORMAL: crash-atomic commits without an fsync per statement,
             // the durability the tmpfile+rename file stores gave. journal_mode
-            // must be set outside a transaction, so this runs before migrate.
+            // must be set outside a transaction, so this runs before schema setup.
             conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")
                 .map_err(CoreStoreError::Open)?;
             Ok(conn)
@@ -241,7 +186,7 @@ impl CoreStore {
     }
 
     /// Run `open_connection` on the blocking pool, then apply foreign-key
-    /// enforcement, migrations, and wrap the connection in the shared handle.
+    /// enforcement, initialize or verify the schema, and wrap the connection.
     async fn open_blocking(
         open_connection: impl FnOnce() -> Result<Connection, CoreStoreError> + Send + 'static,
     ) -> Result<Self, CoreStoreError> {
@@ -249,7 +194,7 @@ impl CoreStore {
             let mut conn = open_connection()?;
             conn.execute_batch("PRAGMA foreign_keys = ON;")
                 .map_err(CoreStoreError::Open)?;
-            migrate(&mut conn).map_err(CoreStoreError::Migrate)?;
+            initialize_schema(&mut conn).map_err(CoreStoreError::Schema)?;
             Ok::<_, CoreStoreError>(conn)
         })
         .await
@@ -366,24 +311,49 @@ fn restrict_core_store_permissions(_path: &std::path::Path) -> Result<(), CoreSt
     Ok(())
 }
 
-fn migrate(conn: &mut Connection) -> Result<(), rusqlite::Error> {
+fn initialize_schema(conn: &mut Connection) -> Result<(), rusqlite::Error> {
     let applied: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    let applied = usize::try_from(applied).unwrap_or(0);
-    let transaction = conn.transaction()?;
-    for migration in MIGRATIONS.iter().skip(applied) {
-        transaction.execute_batch(migration)?;
+    if applied == CURRENT_SCHEMA_VERSION {
+        return Ok(());
     }
-    // PRAGMA user_version takes no bind parameters; the count is our own usize.
-    transaction.execute_batch(&format!("PRAGMA user_version = {}", MIGRATIONS.len()))?;
+    if applied != 0 {
+        return Err(incompatible_schema(applied));
+    }
+    let existing_tables: u64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master
+         WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        [],
+        |row| row.get(0),
+    )?;
+    if existing_tables != 0 {
+        return Err(incompatible_schema(applied));
+    }
+    let transaction = conn.transaction()?;
+    transaction.execute_batch(CURRENT_SCHEMA)?;
+    transaction.execute_batch(&format!("PRAGMA user_version = {CURRENT_SCHEMA_VERSION}"))?;
     transaction.commit()
+}
+
+fn incompatible_schema(actual: i64) -> rusqlite::Error {
+    rusqlite::Error::ToSqlConversionFailure(Box::new(IncompatibleSchemaVersion {
+        actual,
+        expected: CURRENT_SCHEMA_VERSION,
+    }))
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("incompatible core schema version {actual}; expected {expected} or an empty database")]
+struct IncompatibleSchemaVersion {
+    actual: i64,
+    expected: i64,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum CoreStoreError {
     #[error("open core database: {0}")]
     Open(rusqlite::Error),
-    #[error("migrate core database: {0}")]
-    Migrate(rusqlite::Error),
+    #[error("initialize core database schema: {0}")]
+    Schema(rusqlite::Error),
     #[error("core database query: {0}")]
     Sqlite(rusqlite::Error),
     #[error("core database task: {0}")]
@@ -464,118 +434,90 @@ mod tests {
             .await
             .expect("read tables");
 
-        for expected in [
-            "control_plane",
-            "custom_certificate_intent",
-            "acme_accounts",
-            "acme_http01_challenges",
-            "machines",
-            "managed_lease_intent",
-            "managed_lease_applied_addresses",
-            "machine_dataplane_staging",
-            "operation_events",
-            "operations",
-            "deploy_reservations",
-            "route_bindings",
-            "serving_targets",
-            "volume_pins",
-        ] {
-            assert!(tables.contains(&expected.to_owned()), "missing {expected}");
-        }
+        assert_eq!(
+            tables,
+            [
+                "acme_accounts",
+                "acme_http01_challenges",
+                "active_certificate_metadata",
+                "automatic_hostname_intent",
+                "control_plane",
+                "deploy_reservations",
+                "ingress_endpoint_projection",
+                "machine_add_claims",
+                "machine_add_idempotency",
+                "machine_add_join_tokens",
+                "machine_add_mint_claims",
+                "machine_add_secret_deliveries",
+                "machine_add_submissions",
+                "machine_dataplane_staging",
+                "machines",
+                "managed_dns_checkpoint",
+                "nats_authorizations",
+                "operation_events",
+                "operations",
+                "ployz_dns_target_allocation",
+                "ployz_dns_target_intent",
+                "route_bindings",
+                "serving_targets",
+                "volume_pins",
+            ]
+            .map(str::to_owned)
+        );
 
-        // Reopening applies no migration twice and leaves user_version pinned.
+        // Reopening accepts the current schema without rewriting it.
         drop(store);
         let reopened = CoreStore::open(path).await.expect("reopen");
         let version: i64 = reopened
             .call(|conn| conn.query_row("PRAGMA user_version", [], |row| row.get(0)))
             .await
             .expect("read user_version");
-        assert_eq!(version, MIGRATIONS.len() as i64);
-    }
-
-    #[tokio::test]
-    async fn legacy_machine_add_without_endpoint_subnet_is_reset_for_rebootstrap() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("ployz-core.db");
-        let conn = Connection::open(&path).expect("open legacy db");
-        let Some(legacy_migrations) = MIGRATIONS.get(..MIGRATIONS.len() - 2) else {
-            panic!("endpoint-subnet migration must follow an existing schema");
-        };
-        for migration in legacy_migrations {
-            conn.execute_batch(migration)
-                .expect("apply legacy migration");
-        }
-        conn.execute(
-            "INSERT INTO machine_add_submissions
-             (idempotency_key, operation_id, machine_id, raw_join_token, submission_json)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            (
-                "idem_legacy",
-                "op_legacy",
-                "machine_255",
-                "join_legacy",
-                r#"{"operation_id":"op_legacy","identity":{"machine_id":"machine_255"}}"#,
-            ),
-        )
-        .expect("insert legacy submission");
-        conn.execute_batch(&format!("PRAGMA user_version = {}", MIGRATIONS.len() - 2))
-            .expect("set legacy version");
-        drop(conn);
-
-        let store = CoreStore::open(path).await.expect("migrate legacy db");
-        let remaining: u64 = store
-            .call(|conn| {
-                conn.query_row("SELECT COUNT(*) FROM machine_add_submissions", [], |row| {
-                    row.get(0)
-                })
-            })
-            .await
-            .expect("count submissions");
-
-        assert_eq!(remaining, 0);
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
     }
 
     #[test]
-    fn version_eight_lineages_reconcile_to_the_current_schema() {
-        let Some(certificate_schema) = MIGRATIONS.get(7) else {
-            panic!("missing version eight certificate migration");
-        };
-        for schema in [
-            "
-            CREATE TABLE managed_lease_applied_addresses (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                json TEXT NOT NULL
+    fn previous_schema_is_rejected_without_mutation() {
+        let mut conn = Connection::open_in_memory().expect("open previous database");
+        conn.execute_batch(
+            "CREATE TABLE previous_schema (
+                id INTEGER PRIMARY KEY,
+                value TEXT NOT NULL
             );
-            ",
-            *certificate_schema,
-        ] {
-            let mut conn = Connection::open_in_memory().expect("open version eight database");
-            for migration in MIGRATIONS.iter().take(7) {
-                conn.execute_batch(migration).expect("seed shared schema");
-            }
-            conn.execute_batch(schema)
-                .expect("seed version eight schema");
-            conn.pragma_update(None, "user_version", 8)
-                .expect("stamp version eight schema");
-            migrate(&mut conn).expect("migrate lineage");
+            INSERT INTO previous_schema (id, value) VALUES (1, 'untouched');
+            PRAGMA user_version = 12;",
+        )
+        .expect("seed previous schema");
 
-            let table_count: usize = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN (
-                        'custom_certificate_intent',
-                        'acme_http01_challenges',
-                        'acme_accounts',
-                        'managed_lease_applied_addresses',
-                        'operations',
-                        'machines',
-                        'managed_lease_intent'
-                    )",
-                    [],
-                    |row| row.get(0),
-                )
-                .expect("read reconciled schema");
-            assert_eq!(table_count, 7);
-        }
+        let error = initialize_schema(&mut conn).expect_err("previous schema is incompatible");
+        let stored: String = conn
+            .query_row(
+                "SELECT value FROM previous_schema WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("previous row remains untouched");
+
+        assert!(
+            error
+                .to_string()
+                .contains("incompatible core schema version 12")
+                && stored == "untouched"
+        );
+    }
+
+    #[test]
+    fn unversioned_nonempty_database_is_rejected() {
+        let mut conn = Connection::open_in_memory().expect("open unversioned database");
+        conn.execute("CREATE TABLE unknown_state (json TEXT NOT NULL)", [])
+            .expect("seed unknown schema");
+
+        let error = initialize_schema(&mut conn).expect_err("nonempty database is incompatible");
+
+        assert!(
+            error
+                .to_string()
+                .contains("incompatible core schema version 0")
+        );
     }
 
     #[tokio::test]

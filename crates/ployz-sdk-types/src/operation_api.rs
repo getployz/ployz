@@ -5,21 +5,21 @@ use crate::{
     CoreReplaceReported, CoreReplaceRequest, CredentialAddError, CredentialAddRequest,
     CredentialListError, CredentialListRequest, CredentialListResult, CredentialRemoveError,
     CredentialRemoveRequest, DeployReserveError, DeployReserveRequest, DeployReserved,
-    DeploySubmitError, DeploySubmitRequest, InitFirstMachineActivateError,
-    InitFirstMachineActivateRequest, InitFirstMachineActivated, LogsTailError, LogsTailRequest,
-    LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest, MachineInspectError,
-    MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
-    MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError,
-    MachineLifecycleRequest, MachineListError, MachineListRequest, MachineListResult,
-    MachineSnapshot, MachineUpdateError, MachineUpdateRequest, NamespaceRemoveError,
-    NamespaceRemoveRequest, NetworkRepairError, NetworkRepairRequest, NetworkResolveError,
-    NetworkResolveRequest, NetworkResolveResult, NetworkStatusError, NetworkStatusRequest,
-    NetworkStatusResult, OperationStatusSnapshot, OpsListError, OpsListRequest, OpsListResult,
-    OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest, RuntimeSnapshotError,
-    RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceInspectError, ServiceInspectRequest,
-    ServiceListError, ServiceListRequest, ServiceListResult, ServiceRestartError,
-    ServiceRestartRequest, ServiceSnapshot, VolumeListError, VolumeListRequest, VolumeListResult,
-    VolumeRemoveError, VolumeRemoveRequest,
+    DeploySubmitError, DeploySubmitRequest, IngressConfigureError, IngressConfigureRequest,
+    InitFirstMachineActivateError, InitFirstMachineActivateRequest, InitFirstMachineActivated,
+    LogsTailError, LogsTailRequest, LogsTailResult, MachineAddAccepted, MachineAddError,
+    MachineAddRequest, MachineInspectError, MachineInspectRequest, MachineJoinRedeemError,
+    MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
+    MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError, MachineLifecycleRequest,
+    MachineListError, MachineListRequest, MachineListResult, MachineSnapshot, MachineUpdateError,
+    MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest, NetworkRepairError,
+    NetworkRepairRequest, NetworkResolveError, NetworkResolveRequest, NetworkResolveResult,
+    NetworkStatusError, NetworkStatusRequest, NetworkStatusResult, OperationStatusSnapshot,
+    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest, OpsWatchError,
+    OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult,
+    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
+    ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
+    VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
 };
 use ployz_core::ops::OperationEventReplayPage;
 use ployz_core::subjects::OperationApiEndpoint;
@@ -53,6 +53,7 @@ macro_rules! operation_api_contracts {
             $crate::operation_api::CredentialAddApi,
             $crate::operation_api::CredentialListApi,
             $crate::operation_api::CredentialRemoveApi,
+            $crate::operation_api::IngressConfigureApi,
             $crate::operation_api::MachineListApi,
             $crate::operation_api::MachineInspectApi,
             $crate::operation_api::NetworkStatusApi,
@@ -202,6 +203,18 @@ impl OperationApiContract for CredentialRemoveApi {
 
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::CredentialRemove;
     const RESPONSE_ALIAS: &'static str = "CredentialRemoveResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IngressConfigureApi;
+
+impl OperationApiContract for IngressConfigureApi {
+    type Request = IngressConfigureRequest;
+    type Success = AcceptedOperation;
+    type Error = IngressConfigureError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::IngressConfigure;
+    const RESPONSE_ALIAS: &'static str = "IngressConfigureResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

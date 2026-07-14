@@ -10,8 +10,7 @@ use ployz_core::machine_runtime::{
 };
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{
-    ControlPlaneEpoch, GatewayServingStatus, IntentSnapshot, ManagedLeaseProjection,
-    RouteBindingState,
+    ControlPlaneEpoch, GatewayServingStatus, IntentSnapshot, RouteBindingState,
 };
 use ployz_core::subjects::{
     INTENT_GET, MachineServiceEndpoint, gateway_status, machine_facts, machine_service,
@@ -86,10 +85,12 @@ async fn gateway_process_serves_http_from_nats_projection() {
         .expect("serving target entry stores");
     nats.namespace_intent
         .replace_route_binding(RouteBindingState {
+            id: route_binding_id("api.example.com"),
             namespace_id: namespace_id("default"),
             target: route_target("api.example.com", runtime.listen_addr().port()),
             endpoint_port: route_port(upstream.port()),
             service_id: service_id("svc_api"),
+            origin: ployz_core::ingress::RouteBindingOrigin::Declared,
         })
         .await
         .expect("route stores");
@@ -290,10 +291,12 @@ async fn gateway_process_applies_route_changes_on_next_poll() {
         .expect("serving target entry stores");
     nats.namespace_intent
         .replace_route_binding(RouteBindingState {
+            id: route_binding_id("api.example.com"),
             namespace_id: namespace_id("default"),
             target: route_target("api.example.com", 443),
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
+            origin: ployz_core::ingress::RouteBindingOrigin::Declared,
         })
         .await
         .expect("route stores");
@@ -443,7 +446,7 @@ impl TestNats {
         .expect("intent runtime starts")
     }
 
-    async fn start_static_intent(&self, challenge: AcmeHttp01Challenge) -> RunningNatsService {
+    async fn start_static_intent(&self, _challenge: AcmeHttp01Challenge) -> RunningNatsService {
         let mut service = start_nats_service(self.client.clone(), &intent_service())
             .await
             .expect("intent service starts");
@@ -462,11 +465,10 @@ impl TestNats {
                     serving_target_entries: Vec::new(),
                     volume_pins: Vec::new(),
                     nats_authorizations: Vec::new(),
-                    public_url: ployz_core::state::IntentPublicUrl::Auto(Box::new(
-                        ManagedLeaseProjection::Unacquired,
-                    )),
-                    custom_certificates: Vec::new(),
-                    acme_http01_challenges: vec![challenge.clone()],
+                    automatic_hostname_configuration:
+                        ployz_core::ingress::AutomaticHostnameConfiguration::Ployz,
+                    ployz_dns_target: ployz_core::ingress::PloyzDnsTargetIntent::Enabled,
+                    active_certificates: Vec::new(),
                 };
                 async move { NatsServiceResponse::json_ok(&snapshot) }
             })
@@ -547,8 +549,13 @@ fn managed_observation_with_endpoint(
         .build()
 }
 
-fn route_target(hostname: &str, port: u16) -> RouteTarget {
-    RouteTarget::new(route_hostname(hostname), route_port(port))
+fn route_target(hostname: &str, _port: u16) -> RouteTarget {
+    RouteTarget::new(route_hostname(hostname))
+}
+
+fn route_binding_id(hostname: &str) -> ployz_core::ids::RouteBindingId {
+    ployz_core::ids::RouteBindingId::try_new(format!("route_{}", hostname.replace('.', "_")))
+        .expect("valid route binding id")
 }
 
 fn socket_addr(value: &str) -> std::net::SocketAddr {

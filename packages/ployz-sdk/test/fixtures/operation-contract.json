@@ -125,8 +125,11 @@
     }
   },
   "init_first_machine_activate_request": {
+    "automatic_hostname_configuration": {
+      "mode": "ployz"
+    },
     "machine_id": "core_1",
-    "public_url_mode": "auto",
+    "ployz_dns_target": "enabled",
     "roles": {
       "gateway": "skip"
     }

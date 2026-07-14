@@ -1,11 +1,13 @@
 use super::{
     CertOperationPayload, CertOperationSubmission, CoreReplaceOperationSubmission,
     CoreReplacePayload, CredentialGrantOperationSubmission, DeployOperationPayload,
-    DeployOperationSubmission, MachineLifecycleOperationSubmission, MachineLifecyclePayload,
-    MachineUpdateOperationSubmission, MachineUpdatePayload, ManagedLeaseOperationSubmission,
-    ManagedLeasePayload, NamespaceRemoveOperationSubmission, NamespaceRemovePayload,
-    NetworkRepairOperationSubmission, NetworkRepairPayload, ServiceRestartOperationSubmission,
-    ServiceRestartPayload, VolumeRemoveOperationSubmission, VolumeRemovePayload,
+    DeployOperationSubmission, IngressConfigureOperationSubmission,
+    IngressRefreshOperationSubmission, IngressRefreshPayload, MachineLifecycleOperationSubmission,
+    MachineLifecyclePayload, MachineUpdateOperationSubmission, MachineUpdatePayload,
+    ManagedDnsReconcileOperationSubmission, ManagedDnsReconcilePayload,
+    NamespaceRemoveOperationSubmission, NamespaceRemovePayload, NetworkRepairOperationSubmission,
+    NetworkRepairPayload, ServiceRestartOperationSubmission, ServiceRestartPayload,
+    VolumeRemoveOperationSubmission, VolumeRemovePayload,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{
@@ -97,6 +99,37 @@ impl OperationAction for CredentialGrantOperationSubmission {
         sequence: EventSequence,
     ) -> OperationStatus {
         OperationStatus::credential_grant_accepted(operation_id, action.clone(), sequence)
+    }
+}
+
+impl OperationAction for IngressConfigureOperationSubmission {
+    type Payload = ployz_core::ingress::IngressConfiguration;
+    const KIND: OperationKind = OperationKind::IngressConfigure;
+
+    fn submitted_event(operation_id: OperationId, configuration: Self::Payload) -> OperationEvent {
+        OperationEvent::IngressConfigureSubmitted {
+            operation_id,
+            configuration,
+        }
+    }
+
+    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
+        let OperationEvent::IngressConfigureSubmitted {
+            operation_id,
+            configuration,
+        } = event
+        else {
+            return None;
+        };
+        Some((operation_id, configuration))
+    }
+
+    fn accepted_status(
+        operation_id: OperationId,
+        configuration: &Self::Payload,
+        sequence: EventSequence,
+    ) -> OperationStatus {
+        OperationStatus::ingress_configure_accepted(operation_id, configuration.clone(), sequence)
     }
 }
 
@@ -416,26 +449,26 @@ impl OperationAction for VolumeRemoveOperationSubmission {
     }
 }
 
-impl OperationAction for ManagedLeaseOperationSubmission {
-    type Payload = ManagedLeasePayload;
-    const KIND: OperationKind = OperationKind::ManagedLease;
+impl OperationAction for ManagedDnsReconcileOperationSubmission {
+    type Payload = ManagedDnsReconcilePayload;
+    const KIND: OperationKind = OperationKind::ManagedDnsReconcile;
 
     fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEvent {
-        OperationEvent::ManagedLeaseSubmitted {
+        OperationEvent::ManagedDnsReconcileSubmitted {
             operation_id,
             subject: payload.subject,
         }
     }
 
     fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
-        let OperationEvent::ManagedLeaseSubmitted {
+        let OperationEvent::ManagedDnsReconcileSubmitted {
             operation_id,
             subject,
         } = event
         else {
             return None;
         };
-        Some((operation_id, ManagedLeasePayload { subject }))
+        Some((operation_id, ManagedDnsReconcilePayload { subject }))
     }
 
     fn accepted_status(
@@ -443,6 +476,34 @@ impl OperationAction for ManagedLeaseOperationSubmission {
         payload: &Self::Payload,
         sequence: EventSequence,
     ) -> OperationStatus {
-        OperationStatus::managed_lease_accepted(operation_id, payload.subject.clone(), sequence)
+        OperationStatus::managed_dns_reconcile_accepted(
+            operation_id,
+            payload.subject.clone(),
+            sequence,
+        )
+    }
+}
+
+impl OperationAction for IngressRefreshOperationSubmission {
+    type Payload = IngressRefreshPayload;
+    const KIND: OperationKind = OperationKind::IngressRefresh;
+
+    fn submitted_event(operation_id: OperationId, _: Self::Payload) -> OperationEvent {
+        OperationEvent::IngressRefreshSubmitted { operation_id }
+    }
+
+    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
+        let OperationEvent::IngressRefreshSubmitted { operation_id } = event else {
+            return None;
+        };
+        Some((operation_id, IngressRefreshPayload))
+    }
+
+    fn accepted_status(
+        operation_id: OperationId,
+        _: &Self::Payload,
+        sequence: EventSequence,
+    ) -> OperationStatus {
+        OperationStatus::ingress_refresh_accepted(operation_id, sequence)
     }
 }

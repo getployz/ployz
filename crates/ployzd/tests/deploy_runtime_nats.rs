@@ -1,16 +1,11 @@
 #[allow(dead_code)]
 #[path = "deploy_operation/fixtures.rs"]
 mod fixtures;
-#[path = "deploy_runtime_nats/managed_certificate.rs"]
-mod managed_certificate;
 mod support;
 
 use fixtures::*;
 use futures_util::StreamExt;
-use ployz_core::cert::PublicUrlMode;
-use ployz_core::deploy::{
-    DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, ReplicaCount,
-};
+use ployz_core::deploy::{DeployRequest, DeployServiceSpec, ReplicaCount};
 use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::machine::MachineName;
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
@@ -23,14 +18,13 @@ use ployz_test_support::ids::idempotency_key;
 use ployzd::certificate::{CertificateManager, CertificateManagerConfig};
 use ployzd::config::DEFAULT_MACHINE_BOOTSTRAP_URL;
 use ployzd::core_store::CoreStore;
-use ployzd::intent::lease_intent::LeaseIntentStore;
+use ployzd::intent::ingress_intent::PloyzDnsTargetStore;
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
 use ployzd::operation_api::admission::{
     DeploySubmitCommand, MachineAddBootstrapConfig, OperationControllers, SubmitCommandError,
 };
-use ployzd::operations::deploy::ManagedPublicUrlWaitPolicy;
 use ployzd::operations::deploy::driver::{
     DeployOperationDriver, DeployOperationPorts, DeployOperationRunError, DeployOperationStores,
     run_deploy_operation,
@@ -80,8 +74,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
-            lease_intent: nats.lease_intent.clone(),
-            managed_public_url_wait: ManagedPublicUrlWaitPolicy::production(),
+            ployz_dns_target: nats.ployz_dns_target.clone(),
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
@@ -168,8 +161,7 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
-            lease_intent: nats.lease_intent.clone(),
-            managed_public_url_wait: ManagedPublicUrlWaitPolicy::production(),
+            ployz_dns_target: nats.ployz_dns_target.clone(),
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
@@ -235,8 +227,7 @@ async fn health_failure_records_failed_operation_without_committing_active_state
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
-            lease_intent: nats.lease_intent.clone(),
-            managed_public_url_wait: ManagedPublicUrlWaitPolicy::production(),
+            ployz_dns_target: nats.ployz_dns_target.clone(),
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
@@ -282,92 +273,6 @@ async fn health_failure_records_failed_operation_without_committing_active_state
 }
 
 #[tokio::test]
-async fn auto_dns_rejects_disabled_modes_before_runtime_work_with_guidance() {
-    assert_auto_dns_mode_rejected(PublicUrlMode::None).await;
-    assert_auto_dns_mode_rejected(PublicUrlMode::BringYourOwn).await;
-}
-
-async fn assert_auto_dns_mode_rejected(mode: PublicUrlMode) {
-    let nats = test_nats().await;
-    nats.lease_intent
-        .set_mode(mode)
-        .await
-        .expect("disable managed public URLs");
-    let _facts = start_facts_subscription(
-        nats.machine_a.clone(),
-        nats.client.clone(),
-        machine_id("machine_a"),
-    )
-    .await;
-    let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
-    let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
-    let controllers = operation_controllers(nats.client.clone()).await;
-    let mut request = deploy_request(1);
-    let [service] = request.services.as_mut_slice() else {
-        panic!("fixture has one service");
-    };
-    service.routes.push(DeployRoute {
-        target: DeployRouteTarget::AutoHostname {
-            port: route_port(443),
-        },
-        endpoint_port: route_port(8080),
-    });
-    let accepted = controllers
-        .submit_deploy(deploy_submit_command(&controllers, request).await)
-        .await
-        .expect("deploy operation accepted");
-    let mut runtime = RecordingRuntime::with_containers(["ctr_should_not_start"]);
-    let mut health = RecordingHealth::healthy();
-    let mut certificates = RecordingCertificates::successful();
-
-    let error = run_deploy_operation(
-        accepted,
-        DeployOperationStores {
-            intent_change_client: nats.client.clone(),
-            namespace_intent: nats.namespace_intent.clone(),
-            lease_intent: nats.lease_intent.clone(),
-            managed_public_url_wait: ManagedPublicUrlWaitPolicy::new(
-                Duration::from_millis(80),
-                Duration::from_millis(5),
-            ),
-            controllers: controllers.clone(),
-        },
-        DeployOperationPorts {
-            facts_reader: &facts_reader,
-            intent_reader: &intent_reader,
-            machine_runtime: &mut runtime,
-            health_checker: &mut health,
-            certificate_provisioner: &mut certificates,
-        },
-        Duration::from_secs(5),
-    )
-    .await
-    .expect_err("lease-less auto DNS deploy fails");
-    let status = controllers
-        .repository()
-        .get(&operation_id("op_123"))
-        .await
-        .expect("status reads");
-
-    assert!(matches!(
-        error,
-        DeployOperationRunError::AutoDnsWithoutLease {
-            failure_record_error: None
-        }
-    ));
-    assert!(runtime.requests.is_empty());
-    assert!(matches!(
-        status,
-        Some(OperationStatus::Deploy {
-            state: DeployOperationState::Failed {
-                failure: DeployOperationFailure::AutoDnsWithoutLease { message, .. },
-            },
-            ..
-        }) if message.as_str().contains(&format!("{mode:?}"))
-    ));
-}
-
-#[tokio::test]
 async fn duplicate_driver_execution_does_not_release_the_original_namespace_lock() {
     let nats = test_nats().await;
     let controllers = operation_controllers(nats.client.clone()).await;
@@ -387,8 +292,7 @@ async fn duplicate_driver_execution_does_not_release_the_original_namespace_lock
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
-            lease_intent: nats.lease_intent.clone(),
-            managed_public_url_wait: ManagedPublicUrlWaitPolicy::production(),
+            ployz_dns_target: nats.ployz_dns_target.clone(),
             controllers: controllers.clone(),
         },
         CertificateManager::new(
@@ -445,8 +349,7 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
-            lease_intent: nats.lease_intent.clone(),
-            managed_public_url_wait: ManagedPublicUrlWaitPolicy::production(),
+            ployz_dns_target: nats.ployz_dns_target.clone(),
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
@@ -531,8 +434,7 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
-            lease_intent: nats.lease_intent.clone(),
-            managed_public_url_wait: ManagedPublicUrlWaitPolicy::production(),
+            ployz_dns_target: nats.ployz_dns_target.clone(),
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
@@ -706,7 +608,7 @@ struct TestNats {
     _intent: RunningIntentService,
     _intent_dir: tempfile::TempDir,
     namespace_intent: NamespaceIntentStore,
-    lease_intent: LeaseIntentStore,
+    ployz_dns_target: PloyzDnsTargetStore,
     /// Controller principal: the deploy-runtime side.
     client: async_nats::Client,
     /// Machine principal for facts in normal deploy tests.
@@ -742,11 +644,7 @@ async fn test_nats() -> TestNats {
         .replace_active_machine(&active_machine("machine_slow", "10.198.2.0/24"))
         .await
         .expect("slow machine enters roster");
-    let lease_intent = LeaseIntentStore::new(intent_core_store.clone());
-    lease_intent
-        .set_mode(PublicUrlMode::Auto)
-        .await
-        .expect("managed public URL mode configures");
+    let ployz_dns_target = PloyzDnsTargetStore::new(intent_core_store.clone());
     let intent = start_intent_service(
         client.clone(),
         machine_id("machine_a"),
@@ -762,7 +660,7 @@ async fn test_nats() -> TestNats {
         _intent: intent,
         _intent_dir: lifecycle_dir,
         namespace_intent,
-        lease_intent,
+        ployz_dns_target,
         client,
         machine_a,
         machine_slow,

@@ -15,16 +15,14 @@
         {
           "target": {
             "kind": "hostname",
-            "hostname": "app.example.com",
-            "port": 443
+            "hostname": "app.example.com"
           },
           "endpoint_port": 8080
         },
         {
           "target": {
             "kind": "hostname",
-            "hostname": "plain.example.com",
-            "port": 80
+            "hostname": "plain.example.com"
           },
           "endpoint_port": 8081
         }

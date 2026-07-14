@@ -371,12 +371,7 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
     let request = reserved_deploy_request(
         &api,
         "idem_e2e_route",
-        deploy_target_with_route(
-            "svc_api",
-            "api.example.com",
-            gateway_runtime.listen_addr().port(),
-            upstream.port(),
-        ),
+        deploy_target_with_route("svc_api", "api.example.com", upstream.port()),
     )
     .await?;
 
@@ -464,12 +459,7 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
     let request = reserved_deploy_request(
         &api,
         "idem_e2e_machine_runtime_down_route",
-        deploy_target_with_route(
-            "svc_api",
-            "machine-down.local",
-            route_port.get(),
-            upstream.port(),
-        ),
+        deploy_target_with_route("svc_api", "machine-down.local", upstream.port()),
     )
     .await?;
 
@@ -573,12 +563,7 @@ async fn e2e_gateway_keeps_serving_last_projection_after_control_shutdown()
     let request = reserved_deploy_request(
         &api,
         "idem_e2e_control_down_route",
-        deploy_target_with_route(
-            "svc_api",
-            route_hostname.as_str(),
-            route_port.get(),
-            first_upstream_port,
-        ),
+        deploy_target_with_route("svc_api", route_hostname.as_str(), first_upstream_port),
     )
     .await?;
 
@@ -694,7 +679,7 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
     let request = reserved_deploy_request(
         &api,
         "idem_e2e_two_machine_route",
-        deploy_target_with_route("svc_api", "smoke.local", route_port, upstream.port()),
+        deploy_target_with_route("svc_api", "smoke.local", upstream.port()),
     )
     .await?;
 
@@ -829,12 +814,7 @@ fn deploy_target(service_id: &str) -> DeployRequest {
     }
 }
 
-fn deploy_target_with_route(
-    service_id: &str,
-    hostname: &str,
-    route_port: u16,
-    endpoint_port: u16,
-) -> DeployRequest {
+fn deploy_target_with_route(service_id: &str, hostname: &str, endpoint_port: u16) -> DeployRequest {
     let mut target = deploy_target(service_id);
     let [service] = target.services.as_mut_slice() else {
         panic!("deploy target has one service");
@@ -842,7 +822,6 @@ fn deploy_target_with_route(
     service.routes = vec![DeployRoute {
         target: DeployRouteTarget::Hostname {
             hostname: route_hostname(hostname),
-            port: self::route_port(route_port),
         },
         endpoint_port: self::route_port(endpoint_port),
     }];

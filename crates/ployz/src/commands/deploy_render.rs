@@ -90,16 +90,6 @@ impl DeployTree {
                 ));
             }
             OperationEvent::DeployPlanningStarted { operation_id: _ } => {}
-            OperationEvent::DeployWaitingForManagedPublicUrl {
-                operation_id,
-                stage,
-            } => {
-                self.plain_lines.push(format!(
-                    "deploy {}: waiting for managed public URL ({})",
-                    operation_id.as_str(),
-                    stage.as_str()
-                ));
-            }
             OperationEvent::DeployImageResolved {
                 operation_id,
                 service_id,
@@ -311,7 +301,9 @@ impl DeployTree {
                     }
                 }
                 OperationKind::Cert
-                | OperationKind::ManagedLease
+                | OperationKind::IngressConfigure
+                | OperationKind::IngressRefresh
+                | OperationKind::ManagedDnsReconcile
                 | OperationKind::MachineAdd
                 | OperationKind::MachineUpdate
                 | OperationKind::MachineLifecycle
@@ -322,14 +314,21 @@ impl DeployTree {
                 | OperationKind::NamespaceRemove
                 | OperationKind::VolumeRemove => {}
             },
-            OperationEvent::ManagedLeaseSubmitted { .. }
-            | OperationEvent::ManagedLeaseCompleted { .. }
-            | OperationEvent::ManagedLeaseFailed { .. }
+            OperationEvent::ManagedDnsReconcileSubmitted { .. }
+            | OperationEvent::ManagedDnsReconcileCompleted { .. }
+            | OperationEvent::ManagedDnsReconcileFailed { .. }
             | OperationEvent::CertProvisionSubmitted { .. }
             | OperationEvent::CertChallengePublished { .. }
             | OperationEvent::CertValidationStarted { .. }
+            | OperationEvent::CertWarning { .. }
             | OperationEvent::CertCompleted { .. }
             | OperationEvent::CertFailed { .. }
+            | OperationEvent::IngressRefreshSubmitted { .. }
+            | OperationEvent::IngressRefreshCompleted { .. }
+            | OperationEvent::IngressRefreshFailed { .. }
+            | OperationEvent::IngressConfigureSubmitted { .. }
+            | OperationEvent::IngressConfigureCompleted { .. }
+            | OperationEvent::IngressConfigureFailed { .. }
             | OperationEvent::MachineAddSubmitted { .. }
             | OperationEvent::MachineAddJoined { .. }
             | OperationEvent::MachineAddCredentialProvisioned { .. }
@@ -749,16 +748,16 @@ fn deploy_routes(target: &DeployRequest) -> impl Iterator<Item = (&str, &DeployR
 
 fn route_text(service_id: &str, route: &DeployRoute) -> String {
     match &route.target {
-        DeployRouteTarget::Hostname { hostname, port: _ } => format!(
+        DeployRouteTarget::Hostname { hostname } => format!(
             "{} → {}:{}",
             hostname.as_str(),
             service_id,
             route.endpoint_port.get()
         ),
-        DeployRouteTarget::AutoHostname { port: _ } => {
+        DeployRouteTarget::AutoHostname { label } => {
             // Auto-hostname declarations carry no minted hostname. The renderer
             // can name it when operation evidence carries the bound route.
-            format!("{service_id} → public URL (auto)")
+            format!("{service_id} → public URL (auto:{})", label.as_str())
         }
     }
 }
@@ -793,8 +792,6 @@ fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine
                         }
                         DeployOperationFailure::NoUsableMachines { .. }
                         | DeployOperationFailure::PlanningFailed { .. }
-                        | DeployOperationFailure::AutoDnsWithoutLease { .. }
-                        | DeployOperationFailure::ManagedPublicUrlPending { .. }
                         | DeployOperationFailure::RuntimeUnavailable { .. }
                         | DeployOperationFailure::ContainerStartFailed { .. }
                         | DeployOperationFailure::PreStartHookFailed { .. }

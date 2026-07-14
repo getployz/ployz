@@ -1,20 +1,19 @@
-use ployz_core::cert::ManagedCertificateIssuanceFailureKind;
 use ployz_core::deploy::{
     DependencyCondition, DeployOrigin, DeployOriginError, DeployRequest, ServiceDependency,
 };
 use ployz_core::ops::{
     ArtifactUnavailableReason, ControlPlaneCommitScope, DeployFailureClass, DeployOperationFailure,
     DeployOperationState, DeployRunningStage, EventSequence, HealthCheckFailure,
-    MAX_OPERATION_EVENT_REPLAY_LIMIT, ManagedPublicUrlPending, ManagedPublicUrlPendingStage,
-    OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
-    OperationEventReplayPage, OperationEventReplayRequest, OperationKind, OperationStatus,
-    OperatorHint, ReplayedOperationEvent, RetainedArtifact, RouteCutoverFailureReason, RouteTarget,
+    MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEvent, OperationEventReplayCursor,
+    OperationEventReplayLimit, OperationEventReplayPage, OperationEventReplayRequest,
+    OperationKind, OperationStatus, OperatorHint, ReplayedOperationEvent, RetainedArtifact,
+    RouteCutoverFailureReason, RouteTarget,
 };
 use ployz_core::state::MachineUsabilityReason;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
     cancellation_reason, container_id, event_replay_limit, event_sequence, failure_message,
-    machine_id, namespace_id, operation_id, route_hostname, route_port, service_id,
+    machine_id, namespace_id, operation_id, route_hostname, service_id,
 };
 
 #[test]
@@ -27,34 +26,6 @@ fn operation_state_serializes_with_stable_wire_names() {
         serde_json::to_string(&state).expect("state serializes"),
         r#"{"state":"running","stage":"serving_target_commit"}"#
     );
-}
-
-#[test]
-fn waiting_for_managed_public_url_event_has_stable_wire_shape() {
-    let event = OperationEvent::DeployWaitingForManagedPublicUrl {
-        operation_id: operation_id("op_123"),
-        stage: ManagedPublicUrlPendingStage::Certificate,
-    };
-
-    assert_eq!(
-        serde_json::to_string(&event).expect("event serializes"),
-        r#"{"event":"deploy_waiting_for_managed_public_url","operation_id":"op_123","stage":"certificate"}"#
-    );
-}
-
-#[test]
-fn managed_public_url_pending_failure_carries_the_latest_worker_error() {
-    let failure = DeployOperationFailure::ManagedPublicUrlPending {
-        pending: ManagedPublicUrlPending::Certificate {
-            last_error: Some(ManagedCertificateIssuanceFailureKind::ValidationTimeout),
-        },
-    };
-
-    assert_eq!(
-        serde_json::to_string(&failure).expect("failure serializes"),
-        r#"{"kind":"managed_public_url_pending","pending":{"stage":"certificate","last_error":"validation_timeout"}}"#
-    );
-    assert_eq!(failure.failure_class(), DeployFailureClass::Timeout);
 }
 
 #[test]
@@ -254,7 +225,7 @@ fn deploy_failures_map_to_closed_failure_classes() {
         ),
         (
             DeployOperationFailure::RouteCutoverFailed {
-                route: route_target("api.example.com", 443),
+                route: route_target("api.example.com"),
                 reason: RouteCutoverFailureReason::GatewayUnavailable {
                     machine_id: machine_id("machine_7"),
                 },
@@ -264,7 +235,7 @@ fn deploy_failures_map_to_closed_failure_classes() {
         ),
         (
             DeployOperationFailure::RouteCutoverFailed {
-                route: route_target("api.example.com", 443),
+                route: route_target("api.example.com"),
                 reason: RouteCutoverFailureReason::RouteRejected {
                     message: failure_message("route rejected"),
                 },
@@ -274,7 +245,7 @@ fn deploy_failures_map_to_closed_failure_classes() {
         ),
         (
             DeployOperationFailure::RouteCutoverFailed {
-                route: route_target("api.example.com", 443),
+                route: route_target("api.example.com"),
                 reason: RouteCutoverFailureReason::StateStoreFailed {
                     message: failure_message("state store failed"),
                 },
@@ -284,7 +255,7 @@ fn deploy_failures_map_to_closed_failure_classes() {
         ),
         (
             DeployOperationFailure::RouteCutoverFailed {
-                route: route_target("api.example.com", 443),
+                route: route_target("api.example.com"),
                 reason: RouteCutoverFailureReason::TimedOut {
                     timeout_seconds: 30,
                 },
@@ -305,7 +276,7 @@ fn terminal_operation_state_is_explicit() {
     assert!(
         DeployOperationState::Failed {
             failure: DeployOperationFailure::RouteCutoverFailed {
-                route: route_target("api.example.com", 443),
+                route: route_target("api.example.com"),
                 reason: RouteCutoverFailureReason::RouteRejected {
                     message: failure_message("route rejected"),
                 },
@@ -560,7 +531,7 @@ fn failure_payloads_reject_empty_operator_text() {
 #[test]
 fn route_cutover_failures_use_structured_route_targets() {
     let failure = DeployOperationFailure::RouteCutoverFailed {
-        route: route_target("api.example.com", 443),
+        route: route_target("api.example.com"),
         reason: RouteCutoverFailureReason::RouteRejected {
             message: failure_message("route rejected"),
         },
@@ -569,26 +540,26 @@ fn route_cutover_failures_use_structured_route_targets() {
 
     assert_eq!(
         serde_json::to_string(&failure).expect("failure serializes"),
-        r#"{"kind":"route_cutover_failed","route":{"hostname":"api.example.com","port":443},"reason":{"reason":"route_rejected","message":"route rejected"},"retained_artifacts":[]}"#
+        r#"{"kind":"route_cutover_failed","route":{"hostname":"api.example.com"},"reason":{"reason":"route_rejected","message":"route rejected"},"retained_artifacts":[]}"#
     );
 
     let invalid_hostname = r#"{
         "kind": "route_cutover_failed",
-        "route": { "hostname": "-api.example.com", "port": 443 },
+        "route": { "hostname": "-api.example.com" },
         "reason": { "reason": "route_rejected", "message": "route rejected" },
         "retained_artifacts": []
     }"#;
 
     assert!(serde_json::from_str::<DeployOperationFailure>(invalid_hostname).is_err());
 
-    let invalid_port = r#"{
+    let legacy_public_port = r#"{
         "kind": "route_cutover_failed",
-        "route": { "hostname": "api.example.com", "port": 0 },
+        "route": { "hostname": "api.example.com", "port": 443 },
         "reason": { "reason": "route_rejected", "message": "route rejected" },
         "retained_artifacts": []
     }"#;
 
-    assert!(serde_json::from_str::<DeployOperationFailure>(invalid_port).is_err());
+    assert!(serde_json::from_str::<DeployOperationFailure>(legacy_public_port).is_err());
 }
 
 #[test]
@@ -698,8 +669,8 @@ fn operator_hint(value: &str) -> OperatorHint {
     OperatorHint::try_new(value).expect("valid operator hint")
 }
 
-fn route_target(hostname: &str, port: u16) -> RouteTarget {
-    RouteTarget::new(route_hostname(hostname), route_port(port))
+fn route_target(hostname: &str) -> RouteTarget {
+    RouteTarget::new(route_hostname(hostname))
 }
 
 #[test]

@@ -45,6 +45,7 @@ subject_token_id! { pub struct NamespaceRevisionId; ts_brand: "Brand<string, \"N
 subject_token_id! { pub struct NamespaceRevisionEntryId; ts_brand: "Brand<string, \"NamespaceRevisionEntryId\">"; }
 subject_token_id! { pub struct ContainerId; ts_brand: "Brand<string, \"ContainerId\">"; }
 subject_token_id! { pub struct CertId; ts_brand: "Brand<string, \"CertId\">"; }
+subject_token_id! { pub struct RouteBindingId; ts_brand: "Brand<string, \"RouteBindingId\">"; }
 subject_token_id! { pub struct StepId; ts_brand: "Brand<string, \"StepId\">"; }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

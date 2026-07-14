@@ -25,7 +25,7 @@ use ployz_core::ops::{
 
 pub use crate::machine_runtime::MachineRuntimeUnavailableReason;
 pub use facts::{
-    DeployFactLoadError, ManagedPublicUrlWaitPolicy, load_deploy_execution_facts_from_nats,
+    DeployFactLoadError, load_deploy_execution_facts_from_nats, validate_deploy_route_admission,
 };
 pub use failure::{
     DeployExecutionError, DeployHealthCheckError, MachineContainerRuntimeError,

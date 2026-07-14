@@ -1,3 +1,5 @@
+use ployz_core::ids::RouteBindingId;
+use ployz_core::ingress::{CertificateOwner, RouteBindingOrigin};
 use ployz_core::machine_runtime::{
     MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
@@ -28,8 +30,7 @@ fn gateway_runtime_serves_new_projection_from_available_source() {
     assert_eq!(
         tick.state,
         current_state(GatewayProjection {
-            managed_cert_bundle: None,
-            custom_cert_bundles: Vec::new(),
+            certificate_bundles: Vec::new(),
             challenges: Vec::new(),
             routes: vec![api.clone()],
         })
@@ -53,8 +54,7 @@ fn gateway_runtime_keeps_serving_last_good_routes_when_source_disappears() {
         tick.state,
         failed_state(
             GatewayProjection {
-                managed_cert_bundle: None,
-                custom_cert_bundles: Vec::new(),
+                certificate_bundles: Vec::new(),
                 challenges: Vec::new(),
                 routes: vec![api.clone()],
             },
@@ -79,8 +79,7 @@ fn gateway_runtime_keeps_serving_last_good_routes_when_source_is_invalid() {
         tick.state,
         failed_state(
             GatewayProjection {
-                managed_cert_bundle: None,
-                custom_cert_bundles: Vec::new(),
+                certificate_bundles: Vec::new(),
                 challenges: Vec::new(),
                 routes: vec![api.clone()],
             },
@@ -108,8 +107,7 @@ fn gateway_runtime_applies_later_route_changes_after_outage() {
     assert_eq!(
         tick.state,
         current_state(GatewayProjection {
-            managed_cert_bundle: None,
-            custom_cert_bundles: Vec::new(),
+            certificate_bundles: Vec::new(),
             challenges: Vec::new(),
             routes: vec![api_v2.clone()],
         })
@@ -182,6 +180,8 @@ fn route_table_reports_missing_route() {
 #[test]
 fn route_table_reports_route_without_upstreams() {
     let table = route_table([GatewayProjectedRoute {
+        id: route_binding_id(),
+        origin: RouteBindingOrigin::Declared,
         target: route_target("api.example.com", 443),
         upstreams: Vec::new(),
         unroutable_containers: vec![],
@@ -203,11 +203,15 @@ fn source_input(
     container_id_value: &str,
 ) -> GatewayProjectionInput {
     GatewayProjectionInput {
-        managed_cert_bundle: None,
-        custom_cert_bundles: Vec::new(),
-        custom_cert_failures: Vec::new(),
+        certificate_bundles: Vec::new(),
+        certificate_failures: Vec::new(),
         challenges: Vec::new(),
         routes: vec![GatewayRoute {
+            id: route_binding_id(),
+            origin: RouteBindingOrigin::Declared,
+            certificate_owner: CertificateOwner::RouteBinding {
+                route_binding_id: route_binding_id(),
+            },
             namespace_id: namespace_id("default"),
             target: route_target(hostname, 443),
             endpoint_port: route_port(8080),
@@ -249,6 +253,8 @@ fn projected_route(
     container_id_value: &str,
 ) -> GatewayProjectedRoute {
     GatewayProjectedRoute {
+        id: route_binding_id(),
+        origin: RouteBindingOrigin::Declared,
         target: route_target(hostname, 443),
         upstreams: vec![GatewayUpstream {
             machine_id: machine_id(machine_id_value),
@@ -264,6 +270,8 @@ fn projected_route_with_upstreams(
     upstreams: impl IntoIterator<Item = GatewayUpstream>,
 ) -> GatewayProjectedRoute {
     GatewayProjectedRoute {
+        id: route_binding_id(),
+        origin: RouteBindingOrigin::Declared,
         target: route_target(hostname, 443),
         upstreams: upstreams.into_iter().collect(),
         unroutable_containers: vec![],
@@ -272,8 +280,7 @@ fn projected_route_with_upstreams(
 
 fn route_table(routes: impl IntoIterator<Item = GatewayProjectedRoute>) -> GatewayRouteTable {
     GatewayRouteTable::from_projection(GatewayProjection {
-        managed_cert_bundle: None,
-        custom_cert_bundles: Vec::new(),
+        certificate_bundles: Vec::new(),
         challenges: Vec::new(),
         routes: routes.into_iter().collect(),
     })
@@ -287,8 +294,12 @@ fn upstream(machine_id_value: &str, container_id_value: &str) -> GatewayUpstream
     }
 }
 
-fn route_target(hostname: &str, port: u16) -> RouteTarget {
-    RouteTarget::new(route_hostname(hostname), route_port(port))
+fn route_target(hostname: &str, _port: u16) -> RouteTarget {
+    RouteTarget::new(route_hostname(hostname))
+}
+
+fn route_binding_id() -> RouteBindingId {
+    RouteBindingId::try_new("route_api").expect("valid route binding id")
 }
 
 fn endpoint_ip(ip: &str) -> std::net::IpAddr {

@@ -29,6 +29,7 @@ pub mod roles {
         pub mod source;
     }
     pub mod gateway {
+        pub mod client;
         pub mod pingora;
         pub mod process;
         pub mod projection;
@@ -42,6 +43,7 @@ pub mod operations {
     pub mod credential_grant;
     pub mod dataplane_projection_admission;
     pub mod deploy;
+    pub mod ingress_configure;
     pub mod log;
     pub mod machine_lifecycle;
     pub mod machine_update;
@@ -53,6 +55,7 @@ pub mod operations {
 pub mod core_store;
 pub mod dispatch;
 pub mod fact_cache;
+pub mod ingress_endpoint;
 pub mod intent;
 pub mod lease;
 pub(crate) mod machine_runtime;

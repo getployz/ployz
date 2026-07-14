@@ -48,7 +48,7 @@ use ployz_core::ops::{
     DeployOperationState, NamespaceRemoveOperationState, OperationEvent, OperationStatus,
     PreStartHookFailure, VolumeRemoveOperationState,
 };
-use ployz_core::ops::{MachineAddOperationState, ManagedLeaseOperationState};
+use ployz_core::ops::{MachineAddOperationState, ManagedDnsReconcileOperationState};
 use ployz_core::permissions::inbox_subscribe_scope;
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{MachineServiceEndpoint, OPERATOR_RUNTIME_SNAPSHOT, machine_service};
@@ -80,7 +80,7 @@ use std::time::{Duration, Instant};
 use support::dind::assert::{
     ManagedWorkloadContainer, all_managed_workload_containers, assert_deploy_event_sequence,
     assert_machine_add_event_sequence, assert_unit_active, connect_with_event_capture,
-    decode_base64, gateway_http_get, gateway_https_get, managed_workload_containers,
+    decode_base64, gateway_http_get, gateway_https_get_unverified, managed_workload_containers,
     next_permission_violation, operation_events, operation_status, terminal_operation_events,
     wait_for_inspect, wait_for_machine_observations, wait_for_terminal_deploy_status,
 };
@@ -275,8 +275,8 @@ async fn assert_init_and_activate_first_machine(core: &CoreContext) {
             if last_operations.iter().any(|snapshot| {
                 matches!(
                     &snapshot.status,
-                    OperationStatus::ManagedLease {
-                        state: ManagedLeaseOperationState::Completed,
+                    OperationStatus::ManagedDnsReconcile {
+                        state: ManagedDnsReconcileOperationState::Completed,
                         ..
                     }
                 )
@@ -333,17 +333,12 @@ async fn assert_auto_hostname_https_survives_core_stop(core: &CoreContext) {
             .find(|binding| binding.namespace_id == namespace_id("auto_https"))
             .expect("auto hostname binding committed");
         let hostname = binding.target.hostname.as_str().to_owned();
-        let ployz_core::state::IntentPublicUrl::Auto(managed_lease) = intent.public_url else {
-            panic!("managed lease is ready");
-        };
-        let ployz_core::state::ManagedLeaseProjection::Ready { lease, bundle } = *managed_lease
-        else {
-            panic!("managed lease is ready");
-        };
         assert_eq!(
-            hostname,
-            "svc-auto.demo.up.ployz.app".replace("demo", lease.name.as_str())
+            intent.automatic_hostname_configuration,
+            ployz_core::ingress::AutomaticHostnameConfiguration::Ployz
         );
+        assert!(hostname.starts_with("svc-auto."));
+        assert!(hostname.ends_with(".up.ployz.app"));
 
         let second = core
             .api
@@ -374,23 +369,23 @@ async fn assert_auto_hostname_https_survives_core_stop(core: &CoreContext) {
         }));
 
         let machine = core.cluster.core();
-        let response = gateway_https_get(
-            machine.published.gateway_tls,
-            &hostname,
-            &bundle.certificate_chain_pem,
-        )
-        .await
-        .expect("managed HTTPS route answers");
+        let response = gateway_https_get_unverified(machine.published.gateway_tls, &hostname)
+            .await
+            .expect("managed HTTPS route answers");
         assert!(response.contains("Welcome to nginx"), "{response}");
         let redirect = gateway_http_get(machine.published.gateway, &hostname)
             .await
             .expect("managed HTTP route redirects");
         assert!(redirect.starts_with("HTTP/1.1 301"), "{redirect}");
         assert!(
-            gateway_https_get(
+            gateway_https_get_unverified(
                 machine.published.gateway_tls,
-                &format!("unrouted.{}", bundle.lease.hostname_suffix()),
-                &bundle.certificate_chain_pem,
+                &format!(
+                    "unrouted.{}",
+                    hostname
+                        .strip_prefix("svc-auto.")
+                        .expect("automatic label prefix")
+                ),
             )
             .await
             .is_err(),
@@ -401,13 +396,9 @@ async fn assert_auto_hostname_https_survives_core_stop(core: &CoreContext) {
             .exec_on(machine, &["systemctl", "stop", "ployzd-control"])
             .await;
         assert!(stopped.success(), "stop core control: {stopped:?}");
-        let response = gateway_https_get(
-            machine.published.gateway_tls,
-            &hostname,
-            &bundle.certificate_chain_pem,
-        )
-        .await
-        .expect("last-known-good HTTPS survives core stop");
+        let response = gateway_https_get_unverified(machine.published.gateway_tls, &hostname)
+            .await
+            .expect("last-known-good HTTPS survives core stop");
         assert!(response.contains("Welcome to nginx"), "{response}");
         let started = core
             .exec_on(machine, &["systemctl", "start", "ployzd-control"])
@@ -2249,7 +2240,6 @@ fn smoke_deploy_target() -> DeployRequest {
             routes: vec![DeployRoute {
                 target: DeployRouteTarget::Hostname {
                     hostname: route_hostname(ROUTE_HOSTNAME),
-                    port: route_port(dind::MACHINE_GATEWAY_PORT),
                 },
                 endpoint_port: route_port(WORKLOAD_ENDPOINT_PORT),
             }],
@@ -2271,7 +2261,8 @@ fn auto_hostname_deploy_target() -> DeployRequest {
             depends_on: Vec::new(),
             routes: vec![DeployRoute {
                 target: DeployRouteTarget::AutoHostname {
-                    port: route_port(dind::MACHINE_GATEWAY_TLS_PORT),
+                    label: ployz_core::ingress::AutomaticHostnameLabel::try_new("svc-auto")
+                        .expect("valid automatic hostname label"),
                 },
                 endpoint_port: route_port(WORKLOAD_ENDPOINT_PORT),
             }],

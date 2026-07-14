@@ -4,4 +4,4 @@ services:
     image: nginx
     x-ports:
       - 8080
-      - 8081/https
+      - auto:admin:8081/https

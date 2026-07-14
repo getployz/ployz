@@ -2,10 +2,15 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cert::{AcmeHttp01Challenge, ActiveCertState, ManagedCertBundle, ManagedLeaseRecord};
 use crate::dataplane::{DataplaneProjection, MachineEndpointSubnet, WireGuardPublicKey};
 use crate::deploy::{ImageReference, ReplicaCount, VolumeName};
-use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
+use crate::ids::{
+    MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, RouteBindingId, ServiceId,
+};
+use crate::ingress::{
+    ActiveCertificateMetadata, AutomaticHostnameConfiguration, PloyzDnsTargetIntent,
+    RouteBindingOrigin,
+};
 use crate::machine::{IssuedJoinToken, MachineName};
 use crate::nats_config::NatsAuthorizationGrant;
 use crate::ops::{RoutePort, RouteTarget};
@@ -31,10 +36,12 @@ pub struct ServingTargetEntry {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct RouteBindingState {
+    pub id: RouteBindingId,
     pub namespace_id: NamespaceId,
     pub target: RouteTarget,
     pub endpoint_port: RoutePort,
     pub service_id: ServiceId,
+    pub origin: RouteBindingOrigin,
 }
 
 /// Core-owned named-volume placement intent.
@@ -154,40 +161,9 @@ pub struct IntentSnapshot {
     #[serde(default)]
     pub volume_pins: Vec<VolumePinState>,
     pub nats_authorizations: Vec<NatsAuthorizationGrant>,
-    pub public_url: IntentPublicUrl,
-    #[serde(default)]
-    pub custom_certificates: Vec<ActiveCertState>,
-    #[serde(default)]
-    pub acme_http01_challenges: Vec<AcmeHttp01Challenge>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(
-    tag = "mode",
-    content = "managed_lease",
-    rename_all = "snake_case",
-    deny_unknown_fields
-)]
-pub enum IntentPublicUrl {
-    Unconfigured,
-    Auto(Box<ManagedLeaseProjection>),
-    BringYourOwn,
-    None,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ManagedLeaseProjection {
-    Unacquired,
-    RecordOnly {
-        lease: ManagedLeaseRecord,
-    },
-    Ready {
-        lease: ManagedLeaseRecord,
-        bundle: ManagedCertBundle,
-    },
+    pub automatic_hostname_configuration: AutomaticHostnameConfiguration,
+    pub ployz_dns_target: PloyzDnsTargetIntent,
+    pub active_certificates: Vec<ActiveCertificateMetadata>,
 }
 
 impl IntentSnapshot {
@@ -297,10 +273,6 @@ pub enum GatewayServingStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cert::{
-        LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle, ManagedLeaseName,
-        ManagedLeaseRecord,
-    };
     use crate::nats_config::{
         CredentialGrant, CredentialName, CredentialRole, NatsAuthorizationGrant, NatsUserPublicKey,
     };
@@ -336,55 +308,36 @@ mod tests {
     }
 
     #[test]
-    fn intent_snapshot_requires_public_url() {
+    fn intent_snapshot_requires_ingress_configuration() {
         let mut value = serde_json::to_value(ready_snapshot()).expect("serialize snapshot");
         value
             .as_object_mut()
             .expect("snapshot object")
-            .remove("public_url");
+            .remove("automatic_hostname_configuration");
 
         assert!(serde_json::from_value::<IntentSnapshot>(value).is_err());
     }
 
     #[test]
-    fn intent_snapshot_round_trips_each_public_url_mode() {
-        for public_url in [
-            IntentPublicUrl::Auto(Box::new(ManagedLeaseProjection::Unacquired)),
-            IntentPublicUrl::BringYourOwn,
-            IntentPublicUrl::None,
+    fn intent_snapshot_round_trips_each_automatic_hostname_configuration() {
+        for configuration in [
+            AutomaticHostnameConfiguration::Disabled,
+            AutomaticHostnameConfiguration::Ployz,
+            AutomaticHostnameConfiguration::custom("apps.example.com").expect("custom suffix"),
         ] {
             let mut snapshot = ready_snapshot();
-            snapshot.public_url = public_url.clone();
+            snapshot.automatic_hostname_configuration = configuration.clone();
 
             let decoded = serde_json::from_value::<IntentSnapshot>(
                 serde_json::to_value(snapshot).expect("serialize snapshot"),
             )
             .expect("deserialize snapshot");
 
-            assert_eq!(decoded.public_url, public_url);
+            assert_eq!(decoded.automatic_hostname_configuration, configuration);
         }
     }
 
     fn ready_snapshot() -> IntentSnapshot {
-        let name = ManagedLeaseName::try_new("lease").expect("lease name");
-        let issued_at = LeaseIssuedAt::try_new(1).expect("issued");
-        let expires_at = LeaseExpiresAt::try_new(2).expect("expires");
-        let lease = ManagedLeaseRecord::try_new(
-            name.clone(),
-            LeaseBearerToken::try_new("token").expect("token"),
-            issued_at,
-            expires_at,
-        )
-        .expect("lease");
-        let bundle = ManagedCertBundle::try_new(
-            name.clone(),
-            name.wildcard_and_apex(),
-            "certificate".to_owned(),
-            "private-key".to_owned(),
-            issued_at,
-            expires_at,
-        )
-        .expect("bundle");
         IntentSnapshot {
             epoch: ControlPlaneEpoch::initial(),
             core_machine_id: MachineId::try_new("core").expect("machine id"),
@@ -395,12 +348,9 @@ mod tests {
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),
             nats_authorizations: Vec::new(),
-            public_url: IntentPublicUrl::Auto(Box::new(ManagedLeaseProjection::Ready {
-                lease,
-                bundle,
-            })),
-            custom_certificates: Vec::new(),
-            acme_http01_challenges: Vec::new(),
+            automatic_hostname_configuration: AutomaticHostnameConfiguration::Ployz,
+            ployz_dns_target: PloyzDnsTargetIntent::Enabled,
+            active_certificates: Vec::new(),
         }
     }
 }

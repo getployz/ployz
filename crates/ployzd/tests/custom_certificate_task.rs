@@ -13,7 +13,8 @@ use ployz_core::cert::{
     CertificateChallengeApplicationStatus, CertificateChallengeStatusOk,
     CertificateChallengeStatusRequest, CertificateChallengeStatusResponse,
 };
-use ployz_core::ids::MachineId;
+use ployz_core::ids::{MachineId, RouteBindingId};
+use ployz_core::ingress::{ActiveCertificateMetadata, CertificateOwner};
 use ployz_core::install::{AbsoluteInstallPath, InstallSha256Digest};
 use ployz_core::machine_rpc::MachineRpcResponse;
 use ployz_core::ops::{
@@ -60,6 +61,7 @@ async fn failed_due_renewal_keeps_the_active_certificate_and_records_terminal_ev
     let original = manager
         .ensure(
             &operation_id("op_deploy_initial"),
+            route_owner(),
             &hostname,
             &gateway_targets(),
         )
@@ -72,6 +74,7 @@ async fn failed_due_renewal_keeps_the_active_certificate_and_records_terminal_ev
     let retained = manager
         .ensure(
             &operation_id("op_deploy_retained"),
+            route_owner(),
             &hostname,
             &gateway_targets(),
         )
@@ -114,6 +117,7 @@ async fn renewal_dns_failure_records_terminal_evidence_with_retained_metadata() 
     let active = manager
         .ensure(
             &operation_id("op_deploy_initial"),
+            route_owner(),
             &hostname,
             &gateway_targets(),
         )
@@ -175,6 +179,7 @@ async fn cancelled_waiter_leaves_cleanup_and_terminal_evidence_to_the_owned_task
         waiter_manager
             .ensure(
                 &operation_id("op_deploy_cancelled"),
+                route_owner(),
                 &hostname,
                 &gateway_targets(),
             )
@@ -202,13 +207,6 @@ async fn cancelled_waiter_leaves_cleanup_and_terminal_evidence_to_the_owned_task
     })
     .await
     .expect("issuance reaches terminal state");
-    assert!(
-        CertificateIntentStore::new(core_store)
-            .challenges()
-            .await
-            .expect("challenge intent")
-            .is_empty()
-    );
 }
 
 #[tokio::test]
@@ -229,8 +227,8 @@ async fn concurrent_ensure_calls_share_one_certificate_issuance() {
     let second_operation_id = operation_id("op_deploy_second");
 
     let (first, second) = tokio::join!(
-        manager.ensure(&first_operation_id, &hostname, &targets),
-        manager.ensure(&second_operation_id, &hostname, &targets)
+        manager.ensure(&first_operation_id, route_owner(), &hostname, &targets),
+        manager.ensure(&second_operation_id, route_owner(), &hostname, &targets)
     );
 
     assert!(first.is_ok());
@@ -272,6 +270,7 @@ async fn expired_active_certificate_is_reissued() {
     manager
         .ensure(
             &operation_id("op_deploy_initial"),
+            route_owner(),
             &hostname,
             &gateway_targets(),
         )
@@ -282,6 +281,7 @@ async fn expired_active_certificate_is_reissued() {
     manager
         .ensure(
             &operation_id("op_deploy_reissue"),
+            route_owner(),
             &hostname,
             &gateway_targets(),
         )
@@ -308,6 +308,7 @@ async fn certificate_for_another_hostname_is_rejected_before_commit() {
     let error = manager
         .ensure(
             &operation_id("op_deploy_mismatch"),
+            route_owner(),
             &route_hostname("localhost"),
             &gateway_targets(),
         )
@@ -348,6 +349,7 @@ async fn future_dated_certificate_is_rejected_before_commit() {
     let error = manager
         .ensure(
             &operation_id("op_deploy_future_cert"),
+            route_owner(),
             &route_hostname("localhost"),
             &gateway_targets(),
         )
@@ -368,18 +370,12 @@ async fn future_dated_certificate_is_rejected_before_commit() {
 }
 
 #[tokio::test]
-async fn startup_recovery_clears_stale_challenges_and_fails_unfinished_operations() {
+async fn startup_recovery_fails_unfinished_operations() {
     let nats = ployz_test_support::nats::TestNats::start().await;
     let core_store = CoreStore::open_in_memory().await.expect("core store");
     let state_dir = tempfile::tempdir().expect("certificate state");
-    let hostname = route_hostname("localhost");
     let cert_id = cert_id("cert_localhost");
     let operation_id = operation_id("op_cert_recovery");
-    let intent = CertificateIntentStore::new(core_store.clone());
-    intent
-        .store_challenge(challenge(hostname))
-        .await
-        .expect("store stale challenge");
     let repository = OperationRepository::open(core_store.clone(), nats.controller.clone());
     repository
         .submit_cert(CertOperationSubmission {
@@ -399,13 +395,6 @@ async fn startup_recovery_clears_stale_challenges_and_fails_unfinished_operation
         .await
         .expect("recover unfinished certificate operation");
 
-    assert!(
-        intent
-            .challenges()
-            .await
-            .expect("challenge intent")
-            .is_empty()
-    );
     let statuses = repository
         .operation_statuses()
         .await
@@ -447,6 +436,7 @@ async fn cached_certificate_still_requires_dns_preflight() {
     manager
         .ensure(
             &operation_id("op_deploy_initial"),
+            route_owner(),
             &hostname,
             &gateway_targets(),
         )
@@ -456,6 +446,7 @@ async fn cached_certificate_still_requires_dns_preflight() {
     let error = manager
         .ensure(
             &operation_id("op_deploy_wrong_dns"),
+            route_owner(),
             &hostname,
             &[GatewayCertificateTarget {
                 machine_id: gateway_machine_id(),
@@ -489,7 +480,7 @@ async fn failed_completion_projection_cannot_leave_active_metadata() {
     repository
         .activate_cert(
             &operation_id,
-            active_cert("cert_other", "other.example.com"),
+            active_metadata(active_cert("cert_other", "other.example.com")),
         )
         .await
         .expect_err("mismatched completion is rejected");
@@ -518,7 +509,7 @@ async fn atomic_activation_cannot_be_rewritten_as_failed() {
         .await
         .expect("submit certificate operation");
     repository
-        .activate_cert(&operation_id, active.clone())
+        .activate_cert(&operation_id, active_metadata(active.clone()))
         .await
         .expect("activate certificate");
     let failure = CertOperationFailure::try_new(
@@ -537,10 +528,10 @@ async fn atomic_activation_cannot_be_rewritten_as_failed() {
 
     assert_eq!(
         CertificateIntentStore::new(core_store.clone())
-            .active_for_hostname(&active.hostname)
+            .active_for_owner(&route_owner())
             .await
             .expect("active metadata"),
-        Some(active)
+        Some(active_metadata(active))
     );
     assert!(matches!(
         repository.get(&operation_id).await.expect("status"),
@@ -610,6 +601,7 @@ async fn acme_validation_waits_for_exact_gateway_challenge_application() {
         manager
             .ensure(
                 &operation_id("op_deploy_readiness"),
+                route_owner(),
                 &route_hostname("localhost"),
                 &gateway_targets(),
             )
@@ -760,6 +752,20 @@ fn loopback_ips() -> [IpAddr; 2] {
 
 fn gateway_machine_id() -> MachineId {
     MachineId::try_new("machine_gateway").expect("gateway machine id")
+}
+
+fn route_owner() -> CertificateOwner {
+    CertificateOwner::RouteBinding {
+        route_binding_id: RouteBindingId::try_new("route_localhost")
+            .expect("valid route binding id"),
+    }
+}
+
+fn active_metadata(active: ActiveCertState) -> ActiveCertificateMetadata {
+    ActiveCertificateMetadata {
+        owner: route_owner(),
+        active,
+    }
 }
 
 fn gateway_targets() -> Vec<GatewayCertificateTarget> {

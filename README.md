@@ -31,7 +31,7 @@ agent can call with the same guarantees.
    ployz machine add root@another-server-ip
    ```
 
-3. Deploy from a Compose file (routes are declared in the file via `x-route`):
+3. Deploy from a Compose file (routes are declared in the file via Uncloud-compatible `x-ports`):
 
    ```bash
    ployz deploy -f compose.yaml -n myapp

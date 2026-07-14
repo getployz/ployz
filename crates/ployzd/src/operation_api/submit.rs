@@ -4,10 +4,10 @@
 use crate::adapters::nats_authorization::MintRequest;
 use crate::operation_api::admission::{
     CoreReplaceSubmitCommand, CredentialGrantSubmitCommand, DeploySubmitCommand,
-    MachineAddBootstrapMaterial, MachineAddBootstrapMaterialError, MachineAddSubmitCommand,
-    MachineLifecycleSubmitCommand, MachineUpdateSubmitCommand, NamespaceRemoveSubmitCommand,
-    NetworkRepairSubmitCommand, OperationControllers, ServiceRestartSubmitCommand,
-    VolumeRemoveSubmitCommand,
+    IngressConfigureSubmitCommand, IngressConfigureSubmitError, MachineAddBootstrapMaterial,
+    MachineAddBootstrapMaterialError, MachineAddSubmitCommand, MachineLifecycleSubmitCommand,
+    MachineUpdateSubmitCommand, NamespaceRemoveSubmitCommand, NetworkRepairSubmitCommand,
+    OperationControllers, ServiceRestartSubmitCommand, VolumeRemoveSubmitCommand,
 };
 use ployz_core::deploy::ImageSource;
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
@@ -19,10 +19,11 @@ use ployz_sdk_types::{
     AcceptedOperation, CoreReplaceError, CoreReplaceRequest, CredentialAddError,
     CredentialAddRequest, CredentialRemoveError, CredentialRemoveRequest, DeployReserveError,
     DeployReserveRequest, DeployReserved, DeploySubmitError, DeploySubmitRequest,
-    MachineAddAccepted, MachineAddError, MachineAddRequest, MachineJoinToken,
-    MachineLifecycleError, MachineLifecycleRequest, MachineUpdateError, MachineUpdateRequest,
-    NamespaceRemoveError, NamespaceRemoveRequest, NetworkRepairError, NetworkRepairRequest,
-    ServiceRestartError, ServiceRestartRequest, VolumeRemoveError, VolumeRemoveRequest,
+    IngressConfigureError, IngressConfigureRequest, MachineAddAccepted, MachineAddError,
+    MachineAddRequest, MachineJoinToken, MachineLifecycleError, MachineLifecycleRequest,
+    MachineUpdateError, MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest,
+    NetworkRepairError, NetworkRepairRequest, ServiceRestartError, ServiceRestartRequest,
+    VolumeRemoveError, VolumeRemoveRequest,
 };
 
 use super::OperationApiHandlers;
@@ -125,6 +126,75 @@ pub async fn credential_remove(
     );
     handlers.credential_grant().start(accepted);
     Ok(operation)
+}
+
+pub async fn ingress_configure(
+    handlers: &OperationApiHandlers,
+    request: IngressConfigureRequest,
+) -> Result<AcceptedOperation, IngressConfigureError> {
+    request.configuration.validate().map_err(|error| {
+        IngressConfigureError::InvalidConfiguration {
+            message: error.to_string(),
+        }
+    })?;
+    let operation_id = request.operation_id.clone();
+    let accepted = handlers
+        .controllers()
+        .submit_ingress_configure(
+            IngressConfigureSubmitCommand {
+                operation_id: request.operation_id,
+                configuration: request.configuration,
+            },
+            handlers.ingress_intent(),
+        )
+        .await
+        .map_err(|error| ingress_configure_submit_error(operation_id.clone(), error))?;
+    let operation = owned_operation(
+        accepted.operation_id.clone(),
+        OperationProgressScope::Cluster,
+        accepted.start_sequence,
+    );
+    handlers.ingress_configure().start(accepted);
+    Ok(operation)
+}
+
+fn ingress_configure_submit_error(
+    operation_id: OperationId,
+    error: IngressConfigureSubmitError,
+) -> IngressConfigureError {
+    match error {
+        IngressConfigureSubmitError::Busy { owner } => {
+            IngressConfigureError::ResourceBusy { owner }
+        }
+        IngressConfigureSubmitError::InvalidConfiguration { message } => {
+            IngressConfigureError::InvalidConfiguration { message }
+        }
+        IngressConfigureSubmitError::Unavailable { message } => {
+            IngressConfigureError::Unavailable {
+                operation_id,
+                message,
+            }
+        }
+        IngressConfigureSubmitError::Submit(error) => {
+            match super::error_map::unfenced_submit_failure(
+                "ingress configure",
+                crate::operation_api::admission::SubmitCommandError::Submit(error),
+            ) {
+                super::error_map::UnfencedSubmitFailure::Unavailable { message } => {
+                    IngressConfigureError::Unavailable {
+                        operation_id,
+                        message,
+                    }
+                }
+                super::error_map::UnfencedSubmitFailure::DuplicateSequenceMismatch { sequence } => {
+                    IngressConfigureError::DuplicateSequenceMismatch {
+                        operation_id,
+                        sequence,
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn credential_add_submit_error(

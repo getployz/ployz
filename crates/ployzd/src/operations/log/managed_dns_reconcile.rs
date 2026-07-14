@@ -1,14 +1,16 @@
 use super::{
-    AcceptedManagedLeaseSubmission, ManagedLeaseOperationSubmission, ManagedLeasePayload,
-    OperationRepository, OperationStatusWrite, RecordManagedLeaseTransitionError,
-    RecordOperationEventOutcome, SubmitOperationError,
+    AcceptedManagedDnsReconcileSubmission, ManagedDnsReconcileOperationSubmission,
+    ManagedDnsReconcilePayload, OperationRepository, OperationStatusWrite,
+    RecordManagedDnsReconcileTransitionError, RecordOperationEventOutcome, SubmitOperationError,
 };
 use ployz_core::ids::OperationId;
-use ployz_core::ops::{ManagedLeaseOperationState, OperationStatus};
-use ployz_core::ops::{ManagedLeaseSubject, ManagedLeaseTransition};
+use ployz_core::ops::{
+    ManagedDnsReconcileOperationState, ManagedDnsReconcileSubject, ManagedDnsReconcileTransition,
+    OperationStatus,
+};
 
 impl OperationRepository {
-    pub async fn accepted_managed_lease_operations(
+    pub async fn accepted_managed_dns_reconcile_operations(
         &self,
     ) -> Result<Vec<OperationStatus>, super::OperationStatusStoreError> {
         self.store
@@ -22,8 +24,8 @@ impl OperationRepository {
                     .filter(|status| {
                         matches!(
                             status,
-                            OperationStatus::ManagedLease {
-                                state: ManagedLeaseOperationState::Accepted,
+                            OperationStatus::ManagedDnsReconcile {
+                                state: ManagedDnsReconcileOperationState::Accepted,
                                 ..
                             }
                         )
@@ -34,29 +36,29 @@ impl OperationRepository {
             .map_err(|error| super::index_error(&error))
     }
 
-    pub async fn submit_managed_lease(
+    pub async fn submit_managed_dns_reconcile(
         &self,
-        submission: ManagedLeaseOperationSubmission,
-    ) -> Result<AcceptedManagedLeaseSubmission, SubmitOperationError> {
+        submission: ManagedDnsReconcileOperationSubmission,
+    ) -> Result<AcceptedManagedDnsReconcileSubmission, SubmitOperationError> {
         let submitted = self
-            .submit_operation::<ManagedLeaseOperationSubmission>(
+            .submit_operation::<ManagedDnsReconcileOperationSubmission>(
                 submission.operation_id,
-                ManagedLeasePayload {
+                ManagedDnsReconcilePayload {
                     subject: submission.subject,
                 },
             )
             .await?;
-        Ok(AcceptedManagedLeaseSubmission {
+        Ok(AcceptedManagedDnsReconcileSubmission {
             operation_id: submitted.operation_id,
         })
     }
 
-    pub async fn record_managed_lease_transition(
+    pub async fn record_managed_dns_reconcile_transition(
         &self,
         operation_id: &OperationId,
-        subject: &ManagedLeaseSubject,
-        transition: ManagedLeaseTransition,
-    ) -> Result<OperationStatusWrite, RecordManagedLeaseTransitionError> {
+        subject: &ManagedDnsReconcileSubject,
+        transition: ManagedDnsReconcileTransition,
+    ) -> Result<OperationStatusWrite, RecordManagedDnsReconcileTransitionError> {
         self.record_operation_event(operation_id, transition.event(operation_id, subject))
             .await
             .map(RecordOperationEventOutcome::into_status_write)

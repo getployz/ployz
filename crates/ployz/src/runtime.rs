@@ -263,6 +263,14 @@ pub async fn execute_command(
         PloyzctlCommand::InitJoinTemplate(command) => {
             Ok(PloyzctlExecutionOutput::stdout(command.render_json()))
         }
+        PloyzctlCommand::IngressConfigure(command) => {
+            let api = operation_api_client(config).await?;
+            let accepted = api
+                .ingress_configure(&command.into_request())
+                .await
+                .map_err(api_error)?;
+            watch_accepted_operation(&api, accepted.operation_id, config).await
+        }
         PloyzctlCommand::MachineInit(command) => execute_machine_init(command, config).await,
         PloyzctlCommand::MachineAddRemote(command) => {
             execute_machine_add_remote(command, config).await

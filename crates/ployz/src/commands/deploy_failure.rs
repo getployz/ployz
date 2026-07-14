@@ -2,8 +2,8 @@ use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{ContainerId, MachineId, NamespaceRevisionId, ServiceId};
 use ployz_core::ops::{
     ArtifactUnavailableReason, CertificateProvisionFailure, ControlPlaneCommitScope,
-    DeployOperationFailure, HealthCheckFailure, ManagedPublicUrlPending, PreStartHookFailure,
-    RetainedArtifact, RouteCutoverFailureReason, RouteHostname, RouteTarget,
+    DeployOperationFailure, HealthCheckFailure, PreStartHookFailure, RetainedArtifact,
+    RouteCutoverFailureReason, RouteHostname, RouteTarget,
 };
 use ployz_core::state::MachineUsabilityReason;
 
@@ -92,8 +92,6 @@ impl<'a> DeployFailureView<'a> {
                 | RouteCutoverFailureReason::TimedOut { .. } => {}
             },
             DeployOperationFailure::PlanningFailed { .. }
-            | DeployOperationFailure::AutoDnsWithoutLease { .. }
-            | DeployOperationFailure::ManagedPublicUrlPending { .. }
             | DeployOperationFailure::ArtifactUnavailable {
                 reason:
                     ArtifactUnavailableReason::BundleMissing
@@ -204,8 +202,6 @@ impl<'a> DeployFailureView<'a> {
         match self.failure {
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
-            | DeployOperationFailure::AutoDnsWithoutLease { .. }
-            | DeployOperationFailure::ManagedPublicUrlPending { .. }
             | DeployOperationFailure::ImageResolutionFailed { .. }
             | DeployOperationFailure::ArtifactUnavailable { .. }
             | DeployOperationFailure::ImageMissingOnSeed { .. }
@@ -239,8 +235,6 @@ impl<'a> DeployFailureView<'a> {
             }
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
-            | DeployOperationFailure::AutoDnsWithoutLease { .. }
-            | DeployOperationFailure::ManagedPublicUrlPending { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
@@ -257,8 +251,6 @@ impl<'a> DeployFailureView<'a> {
             DeployOperationFailure::RouteCutoverFailed { route, .. } => Some(route),
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
-            | DeployOperationFailure::AutoDnsWithoutLease { .. }
-            | DeployOperationFailure::ManagedPublicUrlPending { .. }
             | DeployOperationFailure::ImageResolutionFailed { .. }
             | DeployOperationFailure::ArtifactUnavailable { .. }
             | DeployOperationFailure::ImageMissingOnSeed { .. }
@@ -277,9 +269,6 @@ impl<'a> DeployFailureView<'a> {
 
     pub(crate) fn guidance(&self) -> Option<String> {
         match self.failure {
-            DeployOperationFailure::AutoDnsWithoutLease { message, .. } => {
-                Some(message.as_str().to_owned())
-            }
             DeployOperationFailure::CertificateProvisionFailed {
                 hostname,
                 namespace_revision_id,
@@ -302,7 +291,6 @@ impl<'a> DeployFailureView<'a> {
             )),
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
-            | DeployOperationFailure::ManagedPublicUrlPending { .. }
             | DeployOperationFailure::ImageResolutionFailed { .. }
             | DeployOperationFailure::ArtifactUnavailable { .. }
             | DeployOperationFailure::ImageMissingOnSeed { .. }
@@ -321,7 +309,6 @@ impl<'a> DeployFailureView<'a> {
     fn service_id(&self) -> Option<&'a ServiceId> {
         match self.failure {
             DeployOperationFailure::PlanningFailed { service_id, .. }
-            | DeployOperationFailure::AutoDnsWithoutLease { service_id, .. }
             | DeployOperationFailure::ImageResolutionFailed { service_id, .. }
             | DeployOperationFailure::ArtifactUnavailable { service_id, .. }
             | DeployOperationFailure::ImageMissingOnSeed { service_id, .. }
@@ -337,7 +324,6 @@ impl<'a> DeployFailureView<'a> {
                 | ControlPlaneCommitScope::VolumePin { .. } => None,
             },
             DeployOperationFailure::NoUsableMachines { .. }
-            | DeployOperationFailure::ManagedPublicUrlPending { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
@@ -403,21 +389,6 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
         DeployOperationFailure::PlanningFailed { message, .. } => {
             format!("deploy planning failed: {}", message.as_str())
         }
-        DeployOperationFailure::AutoDnsWithoutLease { message, .. } => message.as_str().to_owned(),
-        DeployOperationFailure::ManagedPublicUrlPending { pending } => match pending {
-            ManagedPublicUrlPending::Lease => {
-                "managed public URL lease is still pending".to_owned()
-            }
-            ManagedPublicUrlPending::Certificate { last_error } => last_error.map_or_else(
-                || "managed public URL certificate is still pending".to_owned(),
-                |last_error| {
-                    format!("managed public URL certificate is still pending: {last_error:?}")
-                },
-            ),
-            ManagedPublicUrlPending::GatewayAddresses => {
-                "managed public URL gateway addresses are still pending".to_owned()
-            }
-        },
         DeployOperationFailure::ImageResolutionFailed {
             image,
             machine_id,
@@ -544,7 +515,7 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
             format!("could not commit {scope}: {}", message.as_str())
         }
         DeployOperationFailure::RouteCutoverFailed { route, reason, .. } => {
-            let target = format!("{}:{}", route.hostname.as_str(), route.port.get());
+            let target = route.hostname.as_str();
             match reason {
                 RouteCutoverFailureReason::GatewayUnavailable { machine_id } => format!(
                     "route {target} gateway unavailable on {}",

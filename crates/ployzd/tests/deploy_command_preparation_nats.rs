@@ -331,10 +331,20 @@ async fn prepare_command_from_nats(
     facts_reader: &NatsMachineFactsReader,
     step_timeout: Duration,
 ) -> ployzd::operations::deploy::DeployExecutionCommand {
-    let facts =
-        load_deploy_execution_facts_from_nats(&request, intent_reader, facts_reader, step_timeout)
+    let ployz_dns_target = ployzd::intent::ingress_intent::PloyzDnsTargetStore::new(
+        ployzd::core_store::CoreStore::open_in_memory()
             .await
-            .expect("deploy facts load from nats");
+            .expect("open ingress store"),
+    );
+    let facts = load_deploy_execution_facts_from_nats(
+        &request,
+        intent_reader,
+        facts_reader,
+        &ployz_dns_target,
+        step_timeout,
+    )
+    .await
+    .expect("deploy facts load from nats");
     prepare_deploy_execution_command(operation_id, request, facts)
 }
 
@@ -664,7 +674,6 @@ fn routed_deploy_request() -> DeployRequest {
     service.routes = vec![DeployRoute {
         target: DeployRouteTarget::Hostname {
             hostname: RouteHostname::try_new("smoke.local").expect("valid route hostname"),
-            port: route_port(8080),
         },
         endpoint_port: route_port(80),
     }];

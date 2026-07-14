@@ -512,18 +512,21 @@ test("sdk maps raw first-machine activation input to the wire request", () => {
   assert.deepEqual(initFirstMachineActivateRequest({ machineId: "core_1", roles: installAllRoles() }), {
     machine_id: "core_1",
     roles: installAllRoles(),
-    public_url_mode: "auto",
+    automatic_hostname_configuration: { mode: "ployz" },
+    ployz_dns_target: "enabled",
   });
   assert.deepEqual(
     initFirstMachineActivateRequest({
       machineId: "core_1",
       roles: installAllRoles(),
-      publicUrlMode: "none",
+      automaticHostnameConfiguration: { mode: "disabled" },
+      ployzDnsTarget: "disabled",
     }),
     {
       machine_id: "core_1",
       roles: installAllRoles(),
-      public_url_mode: "none",
+      automatic_hostname_configuration: { mode: "disabled" },
+      ployz_dns_target: "disabled",
     },
   );
   assert.throws(
@@ -1103,8 +1106,19 @@ function defaultFixture(): OperationFixture {
       },
     ],
     runtime_snapshot: {
-      public_url: { mode: "none" as const },
-      certificate_statuses: [],
+      automatic_hostname_configuration: { mode: "disabled" as const },
+      ployz_dns_target: {
+        intent: "disabled" as const,
+        allocation: { status: "unacquired" as const },
+        publication: { status: "unpublished" as const },
+      },
+      ingress_endpoint_projection: {
+        control_plane_epoch: 1,
+        revision: 0,
+        state: { status: "pending" as const },
+      },
+      active_certificates: [],
+      route_tls: [],
       machines: [
         {
           active: {

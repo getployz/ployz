@@ -234,7 +234,9 @@ fn machine_init_command(target: &str) -> MachineInitCommand {
         installer_script: None,
         local_release: None,
         public_ip: None,
-        public_url_mode: ployz_core::cert::PublicUrlMode::Auto,
+        automatic_hostname_configuration:
+            ployz_core::ingress::AutomaticHostnameConfiguration::Ployz,
+        ployz_dns_target: ployz_core::ingress::PloyzDnsTargetIntent::Enabled,
         host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
     }
 }

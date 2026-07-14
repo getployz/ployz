@@ -1,8 +1,9 @@
 //! Gateway serving route-table state.
 
 use crate::roles::gateway::projection::{
-    GatewayProjectedRoute, GatewayProjection, GatewayProjectionError, GatewayProjectionState,
-    GatewayProjectionUpdate, GatewayUpstream, apply_gateway_update,
+    GatewayCertificateFailureAvailability, GatewayProjectedRoute, GatewayProjection,
+    GatewayProjectionError, GatewayProjectionState, GatewayProjectionUpdate, GatewayUpstream,
+    apply_gateway_update,
 };
 use ployz_core::ops::RouteTarget;
 
@@ -152,6 +153,17 @@ fn serving_state_from_projection_state(state: &GatewayProjectionState) -> Gatewa
         (Some(projection), None) => GatewayServingState::Current {
             route_count: projection.routes.len(),
         },
+        (
+            Some(_),
+            Some(
+                error @ GatewayProjectionError::CertificateMaterial {
+                    availability: GatewayCertificateFailureAvailability::Unavailable,
+                    ..
+                },
+            ),
+        ) => GatewayServingState::Unavailable {
+            error: Some(error.clone()),
+        },
         (Some(projection), Some(error)) => GatewayServingState::LastKnownGood {
             route_count: projection.routes.len(),
             error: error.clone(),
@@ -160,5 +172,65 @@ fn serving_state_from_projection_state(state: &GatewayProjectionState) -> Gatewa
             error: Some(error.clone()),
         },
         (None, None) => GatewayServingState::Unavailable { error: None },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ployz_core::ids::RouteBindingId;
+    use ployz_core::ingress::CertificateOwner;
+
+    use super::*;
+    use crate::roles::gateway::projection::{
+        GatewayCertificateMaterialFailure, GatewayCertificateMaterialFailureKind,
+        GatewayProjectionInput,
+    };
+
+    #[test]
+    fn missing_material_is_unavailable_until_a_complete_projection_has_served() {
+        let mut projector = GatewayProjector::new();
+        let failure = GatewayCertificateMaterialFailure {
+            owner: CertificateOwner::RouteBinding {
+                route_binding_id: RouteBindingId::try_new("route_app").expect("route id"),
+            },
+            kind: GatewayCertificateMaterialFailureKind::MissingOrInvalid,
+            message: "certificate artifact missing".to_owned(),
+        };
+
+        let cold = projector.apply_source_update(update(vec![failure.clone()]));
+        assert!(matches!(
+            cold.serving,
+            GatewayServingState::Unavailable { .. }
+        ));
+        let repeated = projector.apply_source_update(update(vec![failure.clone()]));
+        assert!(matches!(
+            repeated.serving,
+            GatewayServingState::Unavailable { .. }
+        ));
+
+        let current = projector.apply_source_update(update(Vec::new()));
+        assert!(matches!(
+            current.serving,
+            GatewayServingState::Current { .. }
+        ));
+
+        let retained = projector.apply_source_update(update(vec![failure]));
+        assert!(matches!(
+            retained.serving,
+            GatewayServingState::LastKnownGood { .. }
+        ));
+    }
+
+    fn update(
+        certificate_failures: Vec<GatewayCertificateMaterialFailure>,
+    ) -> GatewayProjectionUpdate {
+        GatewayProjectionUpdate::SourceAvailable(Box::new(GatewayProjectionInput {
+            certificate_bundles: Vec::new(),
+            certificate_failures,
+            challenges: Vec::new(),
+            routes: Vec::new(),
+            serving: Vec::new(),
+            observed_machines: Vec::new(),
+        }))
     }
 }

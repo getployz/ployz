@@ -1,9 +1,9 @@
-use ployz_core::cert::ManagedLeaseName;
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec,
     ImageReference, ReplicaCount,
 };
-use ployz_core::ids::NamespaceRevisionEntryId;
+use ployz_core::ids::{NamespaceRevisionEntryId, RouteBindingId};
+use ployz_core::ingress::{AutomaticHostnameLabel, RouteBindingOrigin};
 use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
@@ -48,8 +48,10 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
             .expect("valid machine observation snapshot"),
         ],
         namespace_cleanup_candidates: Vec::new(),
-        managed_lease: None,
+        automatic_hostname_suffix: None,
+        ployz_automatic_hostnames: false,
         gateway_certificate_targets: Vec::new(),
+        ployz_gateway_certificate_targets: Vec::new(),
         step_timeout: Duration::from_secs(5),
     };
 
@@ -89,8 +91,10 @@ async fn does_not_reuse_an_unpromoted_running_target_entry() {
             .expect("valid machine observation snapshot"),
         ],
         namespace_cleanup_candidates: Vec::new(),
-        managed_lease: None,
+        automatic_hostname_suffix: None,
+        ployz_automatic_hostnames: false,
         gateway_certificate_targets: Vec::new(),
+        ployz_gateway_certificate_targets: Vec::new(),
         step_timeout: Duration::from_secs(5),
     };
 
@@ -133,8 +137,10 @@ async fn reuses_a_matching_running_promoted_target_entry() {
             .expect("valid machine observation snapshot"),
         ],
         namespace_cleanup_candidates: Vec::new(),
-        managed_lease: None,
+        automatic_hostname_suffix: None,
+        ployz_automatic_hostnames: false,
         gateway_certificate_targets: Vec::new(),
+        ployz_gateway_certificate_targets: Vec::new(),
         step_timeout: Duration::from_secs(5),
     };
 
@@ -155,7 +161,6 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
     let request = deploy_request();
     let omitted_target = RouteTarget::new(
         RouteHostname::try_new("worker.example.com").expect("valid route hostname"),
-        RoutePort::try_new(443).expect("valid route port"),
     );
     let omitted_container = MachineContainerObservationSnapshot::try_new(
         machine_id("machine_a"),
@@ -171,10 +176,12 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
         machine_platforms: std::collections::BTreeMap::new(),
         unusable_machines: Vec::new(),
         namespace_route_bindings: vec![RouteBindingState {
+            id: RouteBindingId::try_new("route_worker").expect("valid route binding id"),
             namespace_id: namespace_id("default"),
             target: omitted_target.clone(),
             endpoint_port: RoutePort::try_new(8080).expect("valid route port"),
             service_id: service_id("svc_worker"),
+            origin: RouteBindingOrigin::Declared,
         }],
         namespace_serving_entries: vec![
             serving_target_entry("svc_api", "entry_api"),
@@ -188,8 +195,10 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
             &namespace_id("default"),
             &[omitted_container],
         ),
-        managed_lease: None,
+        automatic_hostname_suffix: None,
+        ployz_automatic_hostnames: false,
         gateway_certificate_targets: Vec::new(),
+        ployz_gateway_certificate_targets: Vec::new(),
         step_timeout: Duration::from_secs(5),
     };
 
@@ -225,8 +234,10 @@ async fn empty_manifest_prepares_no_services() {
         dataplane_members: Vec::new(),
         observed_machines: Vec::new(),
         namespace_cleanup_candidates: Vec::new(),
-        managed_lease: None,
+        automatic_hostname_suffix: None,
+        ployz_automatic_hostnames: false,
         gateway_certificate_targets: Vec::new(),
+        ployz_gateway_certificate_targets: Vec::new(),
         step_timeout: Duration::from_secs(5),
     };
     let command = prepare_deploy_execution_command(
@@ -250,29 +261,32 @@ fn auto_hostname_is_stable_and_collision_safe() {
     };
     service.routes = vec![DeployRoute {
         target: DeployRouteTarget::AutoHostname {
-            port: RoutePort::try_new(443).expect("valid route port"),
+            label: AutomaticHostnameLabel::try_new("svc-api-2")
+                .expect("valid automatic hostname label"),
         },
         endpoint_port: RoutePort::try_new(8080).expect("valid endpoint port"),
     }];
     let existing = RouteBindingState {
+        id: RouteBindingId::try_new("route_existing").expect("valid route binding id"),
         namespace_id: namespace_id("default"),
         target: RouteTarget::new(
             RouteHostname::try_new("svc-api-2.demo.up.ployz.app").expect("valid hostname"),
-            RoutePort::try_new(443).expect("valid route port"),
         ),
         endpoint_port: RoutePort::try_new(8080).expect("valid endpoint port"),
         service_id: service_id("svc_api"),
+        origin: RouteBindingOrigin::Automatic,
     };
     let facts = DeployExecutionFacts {
         namespace_route_bindings: vec![
             RouteBindingState {
+                id: RouteBindingId::try_new("route_other").expect("valid route binding id"),
                 namespace_id: namespace_id("other"),
                 service_id: service_id("svc_other"),
                 target: RouteTarget::new(
                     RouteHostname::try_new("svc-api.demo.up.ployz.app").expect("valid hostname"),
-                    RoutePort::try_new(443).expect("valid route port"),
                 ),
                 endpoint_port: existing.endpoint_port,
+                origin: RouteBindingOrigin::Automatic,
             },
             existing.clone(),
         ],
@@ -284,8 +298,12 @@ fn auto_hostname_is_stable_and_collision_safe() {
         observed_machines: Vec::new(),
         machine_platforms: std::collections::BTreeMap::new(),
         namespace_cleanup_candidates: Vec::new(),
-        managed_lease: Some(ManagedLeaseName::try_new("demo").expect("valid lease")),
+        automatic_hostname_suffix: Some(
+            RouteHostname::try_new("demo.up.ployz.app").expect("valid automatic hostname suffix"),
+        ),
+        ployz_automatic_hostnames: true,
         gateway_certificate_targets: Vec::new(),
+        ployz_gateway_certificate_targets: Vec::new(),
         step_timeout: Duration::from_secs(5),
     };
 

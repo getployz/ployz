@@ -1,7 +1,7 @@
 use ployz_core::ops::{
     NamespaceRemoveOperationState, NamespaceRemoveRunningStage, NamespaceRemoveTransition,
     OperationEvent, OperationProjection, OperationStatus, ProjectionOperationState, RouteHostname,
-    RoutePort, RouteTarget, ServiceRestartOperationState, ServiceRestartRunningStage,
+    RouteTarget, ServiceRestartOperationState, ServiceRestartRunningStage,
     ServiceRestartTransition, StatusProjectionError, project_namespace_remove_transition,
     project_operation_event, project_service_restart_transition,
 };
@@ -125,7 +125,7 @@ fn namespace_remove_route_event_advances_running_status_sequence() {
             &running,
             OperationEvent::NamespaceRemoveRouteBindingRemoved {
                 operation_id: operation_id("op_namespace_rm_default"),
-                target: route_target("api.example.com", 443),
+                target: route_target("api.example.com"),
             },
             event_sequence(4),
         )
@@ -143,9 +143,6 @@ fn namespace_remove_route_event_advances_running_status_sequence() {
     );
 }
 
-fn route_target(hostname: &str, port: u16) -> RouteTarget {
-    RouteTarget {
-        hostname: RouteHostname::try_new(hostname).expect("valid hostname"),
-        port: RoutePort::try_new(port).expect("valid route port"),
-    }
+fn route_target(hostname: &str) -> RouteTarget {
+    RouteTarget::new(RouteHostname::try_new(hostname).expect("valid hostname"))
 }
