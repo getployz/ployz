@@ -90,10 +90,14 @@ impl DeployTree {
                 ));
             }
             OperationEvent::DeployPlanningStarted { operation_id: _ } => {}
-            OperationEvent::DeployWaitingForManagedCertificate { operation_id } => {
+            OperationEvent::DeployWaitingForManagedPublicUrl {
+                operation_id,
+                stage,
+            } => {
                 self.plain_lines.push(format!(
-                    "deploy {}: waiting for managed certificate",
-                    operation_id.as_str()
+                    "deploy {}: waiting for managed public URL ({})",
+                    operation_id.as_str(),
+                    stage.as_str()
                 ));
             }
             OperationEvent::DeployImageResolved {
@@ -790,7 +794,7 @@ fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine
                         DeployOperationFailure::NoUsableMachines { .. }
                         | DeployOperationFailure::PlanningFailed { .. }
                         | DeployOperationFailure::AutoDnsWithoutLease { .. }
-                        | DeployOperationFailure::CertificatePending { .. }
+                        | DeployOperationFailure::ManagedPublicUrlPending { .. }
                         | DeployOperationFailure::RuntimeUnavailable { .. }
                         | DeployOperationFailure::ContainerStartFailed { .. }
                         | DeployOperationFailure::PreStartHookFailed { .. }

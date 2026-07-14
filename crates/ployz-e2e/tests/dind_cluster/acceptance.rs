@@ -219,12 +219,19 @@ async fn step_2_deploy_real_application(
         .hostname
         .as_str()
         .to_owned();
-    let certificate_chain = match &intent.managed_lease {
-        ployz_core::state::ManagedLeaseProjection::Ready { bundle, .. } => {
-            bundle.certificate_chain_pem.clone()
-        }
-        other @ (ployz_core::state::ManagedLeaseProjection::Unacquired
-        | ployz_core::state::ManagedLeaseProjection::RecordOnly { .. }) => {
+    let certificate_chain = match &intent.public_url {
+        ployz_core::state::IntentPublicUrl::Auto(managed_lease) => match managed_lease.as_ref() {
+            ployz_core::state::ManagedLeaseProjection::Ready { bundle, .. } => {
+                bundle.certificate_chain_pem.clone()
+            }
+            state @ (ployz_core::state::ManagedLeaseProjection::Unacquired
+            | ployz_core::state::ManagedLeaseProjection::RecordOnly { .. }) => {
+                panic!("managed HTTPS lease must be ready: {state:?}")
+            }
+        },
+        other @ (ployz_core::state::IntentPublicUrl::Unconfigured
+        | ployz_core::state::IntentPublicUrl::BringYourOwn
+        | ployz_core::state::IntentPublicUrl::None) => {
             panic!("managed HTTPS lease must be ready: {other:?}")
         }
     };

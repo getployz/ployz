@@ -22,7 +22,7 @@ use crate::operation_api::admission::OperationControllers;
 use crate::operation_api::service::{ApiServiceError, start_operation_api_service_with_handlers};
 use crate::operation_api::{OperationApiHandlers, OperationWorkers};
 use crate::operations::credential_grant::CredentialGrantOperation;
-use crate::operations::deploy::ManagedCertificateWaitPolicy;
+use crate::operations::deploy::ManagedPublicUrlWaitPolicy;
 use crate::operations::deploy::driver::{DeployOperationDriver, DeployOperationStores};
 use crate::operations::log::OperationRepository;
 use crate::operations::machine_lifecycle::MachineLifecycleOperation;
@@ -239,8 +239,7 @@ pub async fn start_control_process_with_client_and_reload(
             intent_change_client: client.clone(),
             namespace_intent: namespace_intent.clone(),
             lease_intent: lease_intent.clone(),
-            lease_client: lease_client.clone(),
-            managed_certificate_wait: ManagedCertificateWaitPolicy::production(),
+            managed_public_url_wait: ManagedPublicUrlWaitPolicy::production(),
             controllers: controllers.clone(),
         },
         certificate_manager.clone(),
@@ -591,7 +590,9 @@ mod tests {
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),
             nats_authorizations: Vec::new(),
-            managed_lease: ployz_core::state::ManagedLeaseProjection::Unacquired,
+            public_url: ployz_core::state::IntentPublicUrl::Auto(Box::new(
+                ployz_core::state::ManagedLeaseProjection::Unacquired,
+            )),
             custom_certificates: Vec::new(),
             acme_http01_challenges: Vec::new(),
         }

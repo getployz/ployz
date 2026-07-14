@@ -48,6 +48,48 @@ pub enum DeployCompletionOutcome {
     PartiallyCompletedWithWarnings,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedPublicUrlPendingStage {
+    Lease,
+    Certificate,
+    GatewayAddresses,
+}
+
+impl ManagedPublicUrlPendingStage {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Lease => "lease",
+            Self::Certificate => "certificate",
+            Self::GatewayAddresses => "gateway_addresses",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "stage", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ManagedPublicUrlPending {
+    Lease,
+    Certificate {
+        last_error: Option<ManagedCertificateIssuanceFailureKind>,
+    },
+    GatewayAddresses,
+}
+
+impl ManagedPublicUrlPending {
+    #[must_use]
+    pub const fn stage(&self) -> ManagedPublicUrlPendingStage {
+        match self {
+            Self::Lease => ManagedPublicUrlPendingStage::Lease,
+            Self::Certificate { .. } => ManagedPublicUrlPendingStage::Certificate,
+            Self::GatewayAddresses => ManagedPublicUrlPendingStage::GatewayAddresses,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "result", rename_all = "snake_case", deny_unknown_fields)]
@@ -260,8 +302,8 @@ pub enum DeployOperationFailure {
         namespace_revision_id: NamespaceRevisionId,
         message: FailureMessage,
     },
-    CertificatePending {
-        last_error: Option<ManagedCertificateIssuanceFailureKind>,
+    ManagedPublicUrlPending {
+        pending: ManagedPublicUrlPending,
     },
     ArtifactUnavailable {
         service_id: ServiceId,
@@ -395,7 +437,7 @@ impl DeployOperationFailure {
             Self::PlanningFailed { .. } | Self::AutoDnsWithoutLease { .. } => {
                 DeployFailureClass::PreconditionRejected
             }
-            Self::CertificatePending { .. } => DeployFailureClass::Timeout,
+            Self::ManagedPublicUrlPending { .. } => DeployFailureClass::Timeout,
             Self::ArtifactUnavailable { .. }
             | Self::ImageResolutionFailed { .. }
             | Self::ImageMissingOnSeed { .. }
@@ -459,7 +501,7 @@ impl DeployOperationFailure {
             Self::NoUsableMachines { .. }
             | Self::PlanningFailed { .. }
             | Self::AutoDnsWithoutLease { .. }
-            | Self::CertificatePending { .. }
+            | Self::ManagedPublicUrlPending { .. }
             | Self::ImageResolutionFailed { .. }
             | Self::ArtifactUnavailable { .. }
             | Self::ImageMissingOnSeed { .. }
@@ -628,7 +670,9 @@ impl DeployTransition {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployEvidence {
-    WaitingForManagedCertificate,
+    WaitingForManagedPublicUrl {
+        stage: ManagedPublicUrlPendingStage,
+    },
     ImageResolved {
         service_id: ServiceId,
         machine_id: MachineId,
@@ -668,9 +712,10 @@ impl DeployEvidence {
     #[must_use]
     pub fn event(&self, operation_id: &OperationId) -> OperationEvent {
         match self {
-            Self::WaitingForManagedCertificate => {
-                OperationEvent::DeployWaitingForManagedCertificate {
+            Self::WaitingForManagedPublicUrl { stage } => {
+                OperationEvent::DeployWaitingForManagedPublicUrl {
                     operation_id: operation_id.clone(),
+                    stage: *stage,
                 }
             }
             Self::ImageResolved {
@@ -756,7 +801,7 @@ enum EvidenceRequirement {
 
 const fn evidence_requirement(evidence: &DeployEvidence) -> EvidenceRequirement {
     match evidence {
-        DeployEvidence::WaitingForManagedCertificate
+        DeployEvidence::WaitingForManagedPublicUrl { .. }
         | DeployEvidence::ImageResolved { .. }
         | DeployEvidence::PlanCreated { .. } => EvidenceRequirement::Planning,
         DeployEvidence::ImageAvailabilityVerified { .. } => {

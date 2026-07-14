@@ -4,14 +4,13 @@ use crate::certificate::{CertificateManager, GatewayCertificateTarget};
 use crate::intent::lease_intent::LeaseIntentStore;
 use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::intent::service::NatsIntentReader;
-use crate::lease::LeaseClient;
 use crate::operation_api::admission::{AcceptedDeployExecution, OperationControllers};
 use crate::operations::deploy::{
     CertificateProvisioner, DeployContainer, DeployExecutionError, DeployExecutionInput,
     DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError, DeployHealthCheckError,
-    DeployHealthChecker, DeployPhasePromotion, MachineContainerRuntime,
-    ManagedCertificateWaitPolicy, NamespaceCommitError, NamespaceStateCommitter,
-    execute_deploy_operation, load_deploy_execution_facts_from_nats,
+    DeployHealthChecker, DeployPhasePromotion, MachineContainerRuntime, ManagedPublicUrlWaitPolicy,
+    NamespaceCommitError, NamespaceStateCommitter, execute_deploy_operation,
+    load_deploy_execution_facts_from_nats,
 };
 use crate::operations::log::{
     AcceptedDeploySubmission, OperationStatusWrite, RecordDeployTransitionError,
@@ -25,7 +24,6 @@ use crate::roles::machine::protocol::{
 };
 use crate::tasks::TaskRegistry;
 use ployz_core::cert::ActiveCertState;
-use ployz_core::deploy::DeployRouteTarget;
 use ployz_core::machine_runtime::{ContainerHealth, ContainerRuntimeState};
 use ployz_core::ops::{
     CertificateProvisionFailure, DeployOperationFailure, DeployTransition, FailureMessage,
@@ -34,7 +32,9 @@ use ployz_core::ops::{
 use ployz_core::subjects::INTENT_CHANGED;
 use std::time::Duration;
 
-use super::facts::{ManagedCertificateWaitContext, ensure_managed_certificate_for_deploy};
+use super::facts::{
+    ManagedPublicUrlWaitContext, auto_hostname_service, ensure_managed_public_url_for_deploy,
+};
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// A container without a Docker healthcheck must stay running this long
@@ -81,15 +81,13 @@ where
     let request = accepted.target.clone();
 
     let facts = match async {
-        ensure_managed_certificate_for_deploy(
+        ensure_managed_public_url_for_deploy(
             &request,
             &accepted.operation_id,
-            intent_reader,
-            ManagedCertificateWaitContext {
+            ManagedPublicUrlWaitContext {
                 lease_intent: &stores.lease_intent,
-                lease_client: &stores.lease_client,
                 repository: stores.controllers.repository(),
-                policy: stores.managed_certificate_wait,
+                policy: stores.managed_public_url_wait,
             },
         )
         .await?;
@@ -100,6 +98,8 @@ where
     {
         Ok(facts) => facts,
         Err(source) => {
+            let auto_dns_disabled =
+                matches!(source, DeployFactLoadError::ManagedPublicUrlDisabled { .. });
             let failure_record_error = record_operation_failure(
                 &stores.controllers,
                 &accepted,
@@ -107,6 +107,11 @@ where
             )
             .await
             .err();
+            if auto_dns_disabled {
+                return Err(DeployOperationRunError::AutoDnsWithoutLease {
+                    failure_record_error,
+                });
+            }
             return Err(DeployOperationRunError::LoadFacts {
                 source,
                 failure_record_error,
@@ -117,34 +122,9 @@ where
         intent_change_client,
         namespace_intent,
         lease_intent: _,
-        lease_client: _,
-        managed_certificate_wait: _,
+        managed_public_url_wait: _,
         controllers,
     } = stores;
-    if facts.managed_lease.is_none()
-        && let Some(service) = request.services.iter().find(|service| {
-            service
-                .routes
-                .iter()
-                .any(|route| matches!(route.target, DeployRouteTarget::AutoHostname { .. }))
-        })
-    {
-        let failure = DeployOperationFailure::AutoDnsWithoutLease {
-            service_id: service.service_id.clone(),
-            namespace_revision_id: request.namespace_revision_id(),
-            message: FailureMessage::try_new(format!(
-                "service {} requests an auto public URL but this cluster has no managed DNS lease; re-run init with --public-url auto or use a custom domain",
-                service.service_id.as_str()
-            ))
-            .expect("generated auto DNS lease guidance is non-empty"),
-        };
-        let failure_record_error = record_operation_failure(&controllers, &accepted, failure)
-            .await
-            .err();
-        return Err(DeployOperationRunError::AutoDnsWithoutLease {
-            failure_record_error,
-        });
-    }
     let input = DeployExecutionInput::new(
         accepted.operation_id.clone(),
         request,
@@ -184,16 +164,29 @@ fn fact_load_failure(
     source: &DeployFactLoadError,
 ) -> DeployOperationFailure {
     match source {
-        DeployFactLoadError::CertificatePending { last_error } => {
-            DeployOperationFailure::CertificatePending {
-                last_error: *last_error,
+        DeployFactLoadError::ManagedPublicUrlPending { pending } => {
+            DeployOperationFailure::ManagedPublicUrlPending {
+                pending: pending.clone(),
+            }
+        }
+        DeployFactLoadError::ManagedPublicUrlDisabled { mode } => {
+            let service_id = auto_hostname_service(request).map_or_else(
+                || request.status_service_id(),
+                |service| service.service_id.clone(),
+            );
+            DeployOperationFailure::AutoDnsWithoutLease {
+                service_id,
+                namespace_revision_id: request.namespace_revision_id(),
+                message: FailureMessage::try_new(format!(
+                    "an auto public URL was requested but the cluster public URL mode is {mode:?}"
+                ))
+                .expect("generated auto DNS mode guidance is non-empty"),
             }
         }
         DeployFactLoadError::IntentRead { .. }
-        | DeployFactLoadError::ManagedCertificateWorker { .. }
-        | DeployFactLoadError::ManagedCertificateStore { .. }
-        | DeployFactLoadError::ManagedCertificateSuperseded
-        | DeployFactLoadError::ManagedCertificateProgress { .. } => {
+        | DeployFactLoadError::ManagedPublicUrlStore { .. }
+        | DeployFactLoadError::ManagedPublicUrlClock { .. }
+        | DeployFactLoadError::ManagedPublicUrlProgress { .. } => {
             DeployOperationFailure::PlanningFailed {
                 service_id: request.status_service_id(),
                 namespace_revision_id: request.namespace_revision_id(),
@@ -209,8 +202,7 @@ pub struct DeployOperationStores {
     pub intent_change_client: async_nats::Client,
     pub namespace_intent: NamespaceIntentStore,
     pub lease_intent: LeaseIntentStore,
-    pub lease_client: LeaseClient,
-    pub managed_certificate_wait: ManagedCertificateWaitPolicy,
+    pub managed_public_url_wait: ManagedPublicUrlWaitPolicy,
     pub controllers: OperationControllers,
 }
 

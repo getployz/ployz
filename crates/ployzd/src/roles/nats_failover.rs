@@ -343,7 +343,9 @@ mod tests {
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),
             nats_authorizations: Vec::new(),
-            managed_lease: ployz_core::state::ManagedLeaseProjection::Unacquired,
+            public_url: ployz_core::state::IntentPublicUrl::Auto(Box::new(
+                ployz_core::state::ManagedLeaseProjection::Unacquired,
+            )),
             custom_certificates: Vec::new(),
             acme_http01_challenges: Vec::new(),
         }

@@ -333,8 +333,10 @@ async fn assert_auto_hostname_https_survives_core_stop(core: &CoreContext) {
             .find(|binding| binding.namespace_id == namespace_id("auto_https"))
             .expect("auto hostname binding committed");
         let hostname = binding.target.hostname.as_str().to_owned();
-        let ployz_core::state::ManagedLeaseProjection::Ready { lease, bundle } =
-            intent.managed_lease
+        let ployz_core::state::IntentPublicUrl::Auto(managed_lease) = intent.public_url else {
+            panic!("managed lease is ready");
+        };
+        let ployz_core::state::ManagedLeaseProjection::Ready { lease, bundle } = *managed_lease
         else {
             panic!("managed lease is ready");
         };

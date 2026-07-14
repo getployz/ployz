@@ -1,9 +1,10 @@
 use crate::core_store::{CoreStore, CoreStoreError, query_json, to_json};
 use ployz_core::cert::{
-    AutoLeaseState, ManagedCertBundle, ManagedLeaseAddressSet, ManagedLeaseIntent,
-    ManagedLeaseRecord, PublicUrlMode,
+    AutoLeaseState, LeaseBearerToken, ManagedCertBundle, ManagedLeaseAcquisitionId,
+    ManagedLeaseAddressSet, ManagedLeaseIntent, ManagedLeaseRecord, PublicUrlMode,
 };
 use rusqlite::{Connection, params};
+use std::fmt::Write;
 
 const LEASE_INTENT_ID: &str = "1";
 
@@ -21,7 +22,14 @@ impl LeaseIntentStore {
     pub async fn set_mode(&self, mode: PublicUrlMode) -> Result<(), LeaseIntentStoreError> {
         self.store
             .call(move |conn| {
-                replace_intent(conn, &ManagedLeaseIntent::empty(mode))?;
+                let current = load_intent_if_configured(conn)?;
+                if current
+                    .as_ref()
+                    .is_some_and(|intent| intent_has_mode(intent, mode))
+                {
+                    return Ok(());
+                }
+                replace_intent(conn, &new_intent(mode)?)?;
                 clear_applied_addresses(conn)
             })
             .await
@@ -36,7 +44,7 @@ impl LeaseIntentStore {
             .call(move |conn| {
                 let configured = load_intent_if_configured(conn)?;
                 if configured.is_none() {
-                    replace_intent(conn, &ManagedLeaseIntent::empty(mode))?;
+                    replace_intent(conn, &new_intent(mode)?)?;
                 }
                 Ok(())
             })
@@ -70,6 +78,19 @@ impl LeaseIntentStore {
         let addresses = addresses.clone();
         self.store
             .call(move |conn| Ok(load_applied_addresses(conn)?.as_ref() != Some(&addresses)))
+            .await
+            .map_err(store_error)
+    }
+
+    pub async fn applied_address_set(
+        &self,
+    ) -> Result<Option<ManagedLeaseAddressSet>, LeaseIntentStoreError> {
+        self.store
+            .call(|conn| {
+                Ok(load_applied_addresses(conn)?.filter(|addresses| {
+                    !addresses.ipv4().is_empty() || !addresses.ipv6().is_empty()
+                }))
+            })
             .await
             .map_err(store_error)
     }
@@ -137,6 +158,18 @@ impl LeaseIntentStore {
     }
 }
 
+fn intent_has_mode(intent: &ManagedLeaseIntent, mode: PublicUrlMode) -> bool {
+    matches!(
+        (intent, mode),
+        (ManagedLeaseIntent::Auto { .. }, PublicUrlMode::Auto)
+            | (
+                ManagedLeaseIntent::BringYourOwn,
+                PublicUrlMode::BringYourOwn
+            )
+            | (ManagedLeaseIntent::None, PublicUrlMode::None)
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreLeaseOutcome {
     Stored,
@@ -154,8 +187,32 @@ fn load_intent_if_configured(
 }
 
 fn load_intent(conn: &mut Connection) -> Result<ManagedLeaseIntent, rusqlite::Error> {
-    Ok(load_intent_if_configured(conn)?
-        .unwrap_or_else(|| ManagedLeaseIntent::empty(PublicUrlMode::Auto)))
+    load_intent_if_configured(conn)?.ok_or(rusqlite::Error::QueryReturnedNoRows)
+}
+
+fn new_intent(mode: PublicUrlMode) -> Result<ManagedLeaseIntent, rusqlite::Error> {
+    match mode {
+        PublicUrlMode::Auto => Ok(ManagedLeaseIntent::unacquired(
+            ManagedLeaseAcquisitionId::try_new(random_hex::<16>()?)
+                .expect("random hexadecimal acquisition id is valid"),
+            LeaseBearerToken::try_new(random_hex::<32>()?)
+                .expect("random hexadecimal bearer token is valid"),
+        )),
+        PublicUrlMode::BringYourOwn => Ok(ManagedLeaseIntent::BringYourOwn),
+        PublicUrlMode::None => Ok(ManagedLeaseIntent::None),
+    }
+}
+
+fn random_hex<const N: usize>() -> Result<String, rusqlite::Error> {
+    let mut bytes = [0_u8; N];
+    getrandom::fill(&mut bytes).map_err(|error| {
+        rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(error.to_string())))
+    })?;
+    let mut value = String::with_capacity(N * 2);
+    for byte in bytes {
+        write!(value, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    Ok(value)
 }
 
 fn load_applied_addresses(
@@ -214,7 +271,7 @@ fn updated_intent(
     let state = match (bundle, *state) {
         (
             Some(bundle),
-            AutoLeaseState::Unacquired
+            AutoLeaseState::Unacquired { .. }
             | AutoLeaseState::RecordOnly { .. }
             | AutoLeaseState::Ready { .. },
         ) => AutoLeaseState::Ready {
@@ -234,7 +291,7 @@ fn updated_intent(
         }
         (
             None,
-            AutoLeaseState::Unacquired
+            AutoLeaseState::Unacquired { .. }
             | AutoLeaseState::RecordOnly { .. }
             | AutoLeaseState::Ready { .. },
         ) => AutoLeaseState::RecordOnly { lease: record },
@@ -281,9 +338,17 @@ mod tests {
         .expect("record")
     }
 
+    async fn configure_auto(store: &LeaseIntentStore) {
+        store
+            .set_mode(PublicUrlMode::Auto)
+            .await
+            .expect("configure auto mode");
+    }
+
     #[tokio::test]
     async fn successful_lease_application_records_addresses_but_generic_lease_store_does_not() {
         let store = LeaseIntentStore::new(CoreStore::open_in_memory().await.expect("core store"));
+        configure_auto(&store).await;
         let addresses = addresses();
 
         store
@@ -315,6 +380,7 @@ mod tests {
         let path = dir.path().join("ployz-core.db");
         let addresses = addresses();
         let store = LeaseIntentStore::new(CoreStore::open(path.clone()).await.expect("core store"));
+        configure_auto(&store).await;
         store
             .store_successful_lease_application(record(), None, addresses.clone())
             .await
@@ -332,12 +398,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn absent_row_loads_auto_without_lease() {
+    async fn absent_row_does_not_fabricate_acquisition_credentials() {
         let store = LeaseIntentStore::new(CoreStore::open_in_memory().await.expect("core store"));
 
-        let intent = store.load().await.expect("load default intent");
-
-        assert_eq!(intent, ManagedLeaseIntent::empty(PublicUrlMode::Auto));
+        assert!(store.load().await.is_err());
         assert!(
             store
                 .load_if_configured()
@@ -348,8 +412,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn auto_configuration_persists_strong_stable_acquisition_credentials() {
+        let store = LeaseIntentStore::new(CoreStore::open_in_memory().await.expect("core store"));
+        store
+            .set_mode(PublicUrlMode::Auto)
+            .await
+            .expect("set auto mode");
+        let first = store.load().await.expect("first auto intent");
+        store
+            .set_mode(PublicUrlMode::Auto)
+            .await
+            .expect("repeat auto mode");
+        let second = store.load().await.expect("second auto intent");
+
+        assert_eq!(first, second);
+        let ManagedLeaseIntent::Auto { state } = first else {
+            panic!("auto intent");
+        };
+        let AutoLeaseState::Unacquired {
+            acquisition_id,
+            token,
+        } = *state
+        else {
+            panic!("unacquired auto intent");
+        };
+        assert_eq!(acquisition_id.as_str().len(), 32);
+        assert_eq!(token.as_str().len(), 64);
+        assert!(
+            acquisition_id
+                .as_str()
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        );
+        assert!(token.as_str().bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
+
+    #[tokio::test]
+    async fn entering_auto_from_another_mode_mints_new_credentials() {
+        let store = LeaseIntentStore::new(CoreStore::open_in_memory().await.expect("core store"));
+        configure_auto(&store).await;
+        let first = store.load().await.expect("first auto intent");
+        store
+            .set_mode(PublicUrlMode::None)
+            .await
+            .expect("none mode");
+        configure_auto(&store).await;
+
+        assert_ne!(store.load().await.expect("second auto intent"), first);
+    }
+
+    #[tokio::test]
     async fn non_auto_mode_clears_managed_lease_evidence() {
         let store = LeaseIntentStore::new(CoreStore::open_in_memory().await.expect("core store"));
+        configure_auto(&store).await;
         let name = ManagedLeaseName::try_new("cluster-one").expect("lease name");
         let issued_at = LeaseIssuedAt::try_new(1_700_000_000).expect("issued at");
         let expires_at =
@@ -378,7 +493,7 @@ mod tests {
         store.set_mode(PublicUrlMode::None).await.expect("set mode");
         let intent = store.load().await.expect("load intent");
 
-        assert_eq!(intent, ManagedLeaseIntent::empty(PublicUrlMode::None));
+        assert_eq!(intent, ManagedLeaseIntent::None);
 
         assert_eq!(
             store
@@ -389,13 +504,14 @@ mod tests {
         );
         assert_eq!(
             store.load().await.expect("load cleared intent"),
-            ManagedLeaseIntent::empty(PublicUrlMode::None)
+            ManagedLeaseIntent::None
         );
     }
 
     #[tokio::test]
     async fn pending_bundle_stores_record_only() {
         let store = LeaseIntentStore::new(CoreStore::open_in_memory().await.expect("core store"));
+        configure_auto(&store).await;
         let record = ManagedLeaseRecord::try_new(
             ManagedLeaseName::try_new("cluster-one").expect("lease name"),
             LeaseBearerToken::try_new("lease-token").expect("token"),
@@ -420,6 +536,7 @@ mod tests {
     #[tokio::test]
     async fn pending_renewal_preserves_ready_bundle() {
         let store = LeaseIntentStore::new(CoreStore::open_in_memory().await.expect("core store"));
+        configure_auto(&store).await;
         let name = ManagedLeaseName::try_new("cluster-one").expect("lease name");
         let issued_at = LeaseIssuedAt::try_new(1_700_000_000).expect("issued at");
         let expires_at = LeaseExpiresAt::try_new(1_700_000_060).expect("expires at");
@@ -470,6 +587,7 @@ mod tests {
     #[tokio::test]
     async fn pending_renewal_drops_bundle_expired_at_renewal_issue_time() {
         let store = LeaseIntentStore::new(CoreStore::open_in_memory().await.expect("core store"));
+        configure_auto(&store).await;
         let name = ManagedLeaseName::try_new("cluster-one").expect("lease name");
         let issued_at = LeaseIssuedAt::try_new(1_700_000_000).expect("issued at");
         let expires_at = LeaseExpiresAt::try_new(1_700_000_060).expect("expires at");
@@ -517,6 +635,8 @@ mod tests {
     #[tokio::test]
     async fn bundle_for_different_lease_is_rejected_without_storing_invalid_ready_state() {
         let store = LeaseIntentStore::new(CoreStore::open_in_memory().await.expect("core store"));
+        configure_auto(&store).await;
+        let initial = store.load().await.expect("initial auto intent");
         let record_name = ManagedLeaseName::try_new("cluster-one").expect("record lease name");
         let bundle_name = ManagedLeaseName::try_new("cluster-two").expect("bundle lease name");
         let issued_at = LeaseIssuedAt::try_new(1_700_000_000).expect("issued at");
@@ -541,11 +661,6 @@ mod tests {
         let result = store.store_lease(record, Some(bundle)).await;
 
         assert!(result.is_err());
-        assert_eq!(
-            store.load().await.expect("load intent"),
-            ManagedLeaseIntent::Auto {
-                state: Box::new(AutoLeaseState::Unacquired)
-            }
-        );
+        assert_eq!(store.load().await.expect("load intent"), initial);
     }
 }

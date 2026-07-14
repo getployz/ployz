@@ -273,6 +273,8 @@ class PushSource<T> implements AsyncIterable<T>, AsyncIterator<T> {
 
 function snapshot(updatedAt: number): RuntimeSnapshot {
   return {
+    public_url: { mode: "none" },
+    certificate_statuses: [],
     machines: [],
     services: [],
     routes: [],

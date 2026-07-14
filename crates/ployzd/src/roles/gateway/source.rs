@@ -54,10 +54,15 @@ pub async fn load_gateway_projection_input_from_nats(
     );
 
     Ok(gateway_projection_input_from_state(
-        match intent.managed_lease {
-            ployz_core::state::ManagedLeaseProjection::Ready { bundle, .. } => Some(bundle),
-            ployz_core::state::ManagedLeaseProjection::Unacquired
-            | ployz_core::state::ManagedLeaseProjection::RecordOnly { .. } => None,
+        match intent.public_url {
+            ployz_core::state::IntentPublicUrl::Auto(managed_lease) => match *managed_lease {
+                ployz_core::state::ManagedLeaseProjection::Ready { bundle, .. } => Some(bundle),
+                ployz_core::state::ManagedLeaseProjection::Unacquired
+                | ployz_core::state::ManagedLeaseProjection::RecordOnly { .. } => None,
+            },
+            ployz_core::state::IntentPublicUrl::Unconfigured
+            | ployz_core::state::IntentPublicUrl::BringYourOwn
+            | ployz_core::state::IntentPublicUrl::None => None,
         },
         custom_cert_bundles,
         custom_cert_failures,

@@ -120,6 +120,10 @@ mod tests {
             "route_bindings": [],
             "serving_target_entries": [],
             "nats_authorizations": [],
+            "public_url": {
+                "mode": "auto",
+                "managed_lease": { "state": "unacquired" }
+            },
             "custom_certificates": [],
             "acme_http01_challenges": [],
         }))

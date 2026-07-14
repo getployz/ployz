@@ -22,7 +22,7 @@ async fn http_worker_returns_pending_once_before_bundle_ready() {
         "POST",
         "/v1/leases",
         &[],
-        r#"{"ipv4":["203.0.113.8"],"ipv6":["2001:db8::8"]}"#,
+        r#"{"acquisition_id":"a1","token":"client-token","ipv4":[],"ipv6":[]}"#,
     )
     .await
     .expect("lease acquired");
@@ -123,7 +123,7 @@ async fn http_worker_renew_returns_no_bundle_while_issuance_is_pending() {
         "POST",
         "/v1/leases",
         &[],
-        r#"{"ipv4":["203.0.113.8"],"ipv6":[]}"#,
+        r#"{"acquisition_id":"a2","token":"client-token","ipv4":[],"ipv6":[]}"#,
     )
     .await
     .expect("lease acquired");

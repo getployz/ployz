@@ -1103,6 +1103,8 @@ function defaultFixture(): OperationFixture {
       },
     ],
     runtime_snapshot: {
+      public_url: { mode: "none" as const },
+      certificate_statuses: [],
       machines: [
         {
           active: {

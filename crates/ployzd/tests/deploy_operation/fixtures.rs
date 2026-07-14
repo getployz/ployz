@@ -138,7 +138,7 @@ impl DeployOperationRecorder for RecordingOperations {
     ) -> Result<(), DeployOperationRecordError> {
         assert_eq!(recorded_operation_id, &operation_id("op_123"));
         match evidence {
-            DeployEvidence::WaitingForManagedCertificate => {}
+            DeployEvidence::WaitingForManagedPublicUrl { .. } => {}
             DeployEvidence::ImageResolved { .. } => {}
             DeployEvidence::PlanCreated { plan } => {
                 self.records.push(RecordedOperation::PlanCreated {

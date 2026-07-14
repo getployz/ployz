@@ -14,7 +14,7 @@ use crate::intent::lease_intent::{LeaseIntentStore, LeaseIntentStoreError};
 use crate::intent::machine_roster::{MachineRosterStore, MachineRosterStoreError};
 use crate::intent::namespace_intent::{NamespaceIntentStore, NamespaceIntentStoreError};
 use crate::intent::nats_authorizations::{NatsAuthorizationStore, NatsAuthorizationStoreError};
-use ployz_core::state::IntentSnapshot;
+use ployz_core::state::{IntentPublicUrl, IntentSnapshot};
 use std::path::Path;
 
 #[derive(Debug, thiserror::Error)]
@@ -78,16 +78,34 @@ pub async fn seed_core_from_snapshot(
         namespace.replace_volume_pin(pin.clone()).await?;
     }
     let lease_store = LeaseIntentStore::new(core_store.clone());
-    match &snapshot.managed_lease {
-        ployz_core::state::ManagedLeaseProjection::Ready { lease, bundle } => {
+    match &snapshot.public_url {
+        IntentPublicUrl::Unconfigured => {}
+        IntentPublicUrl::Auto(managed_lease) => {
             lease_store
-                .store_lease(lease.clone(), Some(bundle.clone()))
+                .set_mode(ployz_core::cert::PublicUrlMode::Auto)
+                .await?;
+            match managed_lease.as_ref() {
+                ployz_core::state::ManagedLeaseProjection::Ready { lease, bundle } => {
+                    lease_store
+                        .store_lease(lease.clone(), Some(bundle.clone()))
+                        .await?;
+                }
+                ployz_core::state::ManagedLeaseProjection::RecordOnly { lease } => {
+                    lease_store.restore_lease_record(lease.clone()).await?;
+                }
+                ployz_core::state::ManagedLeaseProjection::Unacquired => {}
+            }
+        }
+        IntentPublicUrl::BringYourOwn => {
+            lease_store
+                .set_mode(ployz_core::cert::PublicUrlMode::BringYourOwn)
                 .await?;
         }
-        ployz_core::state::ManagedLeaseProjection::RecordOnly { lease } => {
-            lease_store.restore_lease_record(lease.clone()).await?
+        IntentPublicUrl::None => {
+            lease_store
+                .set_mode(ployz_core::cert::PublicUrlMode::None)
+                .await?;
         }
-        ployz_core::state::ManagedLeaseProjection::Unacquired => {}
     }
     let certificate_store = CertificateIntentStore::new(core_store.clone());
     for active_cert in &snapshot.custom_certificates {
@@ -117,7 +135,8 @@ mod tests {
     use super::*;
     use ployz_core::cert::{
         ActiveCertState, AutoLeaseState, CertBundleRef, CertValidAt, CertValidityWindow,
-        ManagedLeaseAcquireRequest, ManagedLeaseIntent,
+        LeaseBearerToken, ManagedLeaseAcquireRequest, ManagedLeaseAcquisitionId,
+        ManagedLeaseIntent,
     };
     use ployz_core::state::{ActiveMachineState, ControlPlaneEpoch, MachineLifecycle};
     use ployz_lease_worker::{LeaseWorkerRequest, LeaseWorkerResponse, StubLeaseWorker};
@@ -161,7 +180,9 @@ mod tests {
                     .expect("credential name"),
                 role: CredentialRole::Operator,
             })],
-            managed_lease: ployz_core::state::ManagedLeaseProjection::Unacquired,
+            public_url: IntentPublicUrl::Auto(Box::new(
+                ployz_core::state::ManagedLeaseProjection::Unacquired,
+            )),
             custom_certificates: Vec::new(),
             acme_http01_challenges: Vec::new(),
         }
@@ -194,6 +215,8 @@ mod tests {
         let mut worker = StubLeaseWorker::new();
         let LeaseWorkerResponse::LeaseAcquired(acquired) = worker
             .handle(LeaseWorkerRequest::Acquire(ManagedLeaseAcquireRequest {
+                acquisition_id: ManagedLeaseAcquisitionId::try_new("a1").expect("acquisition id"),
+                token: LeaseBearerToken::try_new("client-token").expect("token"),
                 ipv4: Vec::new(),
                 ipv6: Vec::new(),
             }))
@@ -218,10 +241,11 @@ mod tests {
             panic!("bundle ready");
         };
         let mut snapshot = snapshot_at_epoch(ControlPlaneEpoch::initial());
-        snapshot.managed_lease = ployz_core::state::ManagedLeaseProjection::Ready {
-            lease: acquired.lease.clone(),
-            bundle: bundle.clone(),
-        };
+        snapshot.public_url =
+            IntentPublicUrl::Auto(Box::new(ployz_core::state::ManagedLeaseProjection::Ready {
+                lease: acquired.lease.clone(),
+                bundle: bundle.clone(),
+            }));
 
         let certificates = tempfile::tempdir().expect("certificate state");
         seed_core_from_snapshot(&store, &snapshot, certificates.path())

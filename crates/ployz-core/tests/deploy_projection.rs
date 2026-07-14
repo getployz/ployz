@@ -6,8 +6,9 @@ use ployz_core::deploy::{
 };
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, DeployRunningStage, DeployTransition,
-    OperationEvent, OperationProjection, OperationStatus, ProjectionOperationState,
-    StatusProjectionError, project_deploy_transition, project_operation_event,
+    ManagedPublicUrlPendingStage, OperationEvent, OperationProjection, OperationStatus,
+    ProjectionOperationState, StatusProjectionError, project_deploy_transition,
+    project_operation_event,
 };
 use ployz_test_support::ids::{
     container_id, event_sequence, machine_id, namespace_id, namespace_revision_id, operation_id,
@@ -494,8 +495,9 @@ fn waiting_for_managed_certificate_records_without_changing_planning_status() {
     assert_eq!(
         project_operation_event(
             &planning,
-            OperationEvent::DeployWaitingForManagedCertificate {
+            OperationEvent::DeployWaitingForManagedPublicUrl {
                 operation_id: operation_id("op_123"),
+                stage: ManagedPublicUrlPendingStage::Certificate,
             },
             event_sequence(3),
         ),

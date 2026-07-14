@@ -21,6 +21,10 @@ pub struct RuntimeSnapshotResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeSnapshot {
+    pub public_url: RuntimePublicUrl,
+    /// TLS status for custom (bring-your-own) hostnames. Managed auto hostnames
+    /// are covered by the wildcard lease cert and are not listed here.
+    pub certificate_statuses: Vec<RouteCertStatus>,
     pub machines: Vec<MachineSnapshot>,
     pub services: Vec<ServiceSnapshot>,
     pub routes: Vec<RouteBindingState>,
@@ -30,6 +34,33 @@ pub struct RuntimeSnapshot {
     pub instances: Vec<RuntimeServiceInstance>,
     pub projection_sources: RuntimeProjectionSources,
     pub updated_at_unix_seconds: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RuntimePublicUrl {
+    Unconfigured,
+    Auto { domain: Option<String> },
+    BringYourOwn,
+    None,
+}
+
+/// TLS lifecycle for a single custom hostname.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RouteCertStatus {
+    pub hostname: RouteHostname,
+    pub status: RouteCertLifecycle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteCertLifecycle {
+    /// A usable certificate is issued for this hostname.
+    Verified,
+    /// No usable custom certificate is currently available. Issuance or renewal
+    /// may be pending.
+    Pending,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

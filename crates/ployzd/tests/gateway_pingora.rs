@@ -2,8 +2,8 @@ use pingora::protocols::l4::socket::SocketAddr as PingoraSocketAddr;
 use ployz_core::cert::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
-    CertificateChallengeApplicationStatus, CustomCertBundle, ManagedLeaseAcquireRequest,
-    custom_bundle_digest,
+    CertificateChallengeApplicationStatus, CustomCertBundle, LeaseBearerToken,
+    ManagedLeaseAcquireRequest, ManagedLeaseAcquisitionId, custom_bundle_digest,
 };
 use ployz_core::cert::{LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle, ManagedLeaseName};
 use ployz_core::ops::{RouteHostnameError, RouteTarget};
@@ -334,6 +334,8 @@ fn valid_bundle() -> ManagedCertBundle {
     let mut worker = StubLeaseWorker::new();
     let LeaseWorkerResponse::LeaseAcquired(acquired) = worker
         .handle(LeaseWorkerRequest::Acquire(ManagedLeaseAcquireRequest {
+            acquisition_id: ManagedLeaseAcquisitionId::try_new("a1").expect("acquisition id"),
+            token: LeaseBearerToken::try_new("client-token").expect("token"),
             ipv4: Vec::new(),
             ipv6: Vec::new(),
         }))

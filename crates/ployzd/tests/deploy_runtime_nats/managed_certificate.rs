@@ -1,74 +1,71 @@
 use super::*;
 use ployz_core::cert::{
-    AutoLeaseState, LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt,
-    ManagedCertificateIssuanceFailureKind, ManagedLeaseAcquireRequest, ManagedLeaseIntent,
-    ManagedLeaseName, ManagedLeaseRecord,
+    AutoLeaseState, LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle,
+    ManagedLeaseAddressSet, ManagedLeaseIntent, ManagedLeaseName, ManagedLeaseRecord,
 };
 use ployz_core::ops::{
-    EventSequence, OperationEvent, OperationEventReplayLimit, OperationEventReplayRequest,
+    EventSequence, ManagedPublicUrlPending, ManagedPublicUrlPendingStage, OperationEvent,
+    OperationEventReplayLimit, OperationEventReplayRequest,
 };
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use std::net::Ipv4Addr;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[tokio::test]
-async fn auto_hostname_deploy_waits_for_managed_certificate_and_stores_ready_bundle() {
+async fn auto_hostname_deploy_observes_managed_public_url_becoming_ready() {
     let nats = test_nats().await;
+    let lease = valid_lease_record();
+    nats.lease_intent
+        .store_successful_lease_application(lease.clone(), None, gateway_address_set())
+        .await
+        .expect("record-only lease stored");
     let _facts = start_facts_subscription(
         nats.machine_a.clone(),
         nats.client.clone(),
         machine_id("machine_a"),
     )
     .await;
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind lease worker");
-    let address = listener.local_addr().expect("lease worker address");
-    let worker = tokio::spawn(ployz_lease_worker::serve(
-        listener,
-        Arc::new(tokio::sync::Mutex::new(
-            ployz_lease_worker::StubLeaseWorker::new(),
-        )),
-    ));
-    let lease_client = LeaseClient::new(
-        LeaseWorkerUrl::try_new(format!("http://{address}")).expect("lease worker URL"),
-    );
-    let acquired = lease_client
-        .acquire(ManagedLeaseAcquireRequest {
-            ipv4: Vec::new(),
-            ipv6: Vec::new(),
-        })
-        .await
-        .expect("lease acquired");
-    nats.lease_intent
-        .store_lease(acquired.lease.clone(), acquired.bundle)
-        .await
-        .expect("record-only lease stored");
-    let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
-    let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     let controllers = operation_controllers(nats.client.clone()).await;
     let accepted = controllers
         .submit_deploy(deploy_submit_command(&controllers, auto_hostname_deploy_request()).await)
         .await
         .expect("deploy operation accepted");
+    let lease_intent = nats.lease_intent.clone();
+    let readiness_controllers = controllers.clone();
+    let readiness = tokio::spawn(async move {
+        loop {
+            if waiting_for_managed_public_url_event_count(
+                &readiness_controllers,
+                ManagedPublicUrlPendingStage::Certificate,
+            )
+            .await
+                == 1
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        lease_intent
+            .store_successful_lease_application(
+                lease.clone(),
+                Some(valid_bundle(&lease)),
+                gateway_address_set(),
+            )
+            .await
+            .expect("ready lease stored");
+    });
+
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
     let mut certificates = RecordingCertificates::successful();
-
+    let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
+    let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     run_deploy_operation(
         accepted,
-        DeployOperationStores {
-            intent_change_client: nats.client.clone(),
-            namespace_intent: nats.namespace_intent.clone(),
-            lease_intent: nats.lease_intent.clone(),
-            lease_client,
-            managed_certificate_wait: ManagedCertificateWaitPolicy::new(
-                Duration::from_secs(1),
-                Duration::from_millis(5),
-            ),
-            controllers: controllers.clone(),
-        },
+        deploy_stores(
+            &nats,
+            controllers.clone(),
+            ManagedPublicUrlWaitPolicy::new(Duration::from_secs(1), Duration::from_millis(5)),
+        ),
         DeployOperationPorts {
             facts_reader: &facts_reader,
             intent_reader: &intent_reader,
@@ -79,98 +76,136 @@ async fn auto_hostname_deploy_waits_for_managed_certificate_and_stores_ready_bun
         Duration::from_secs(5),
     )
     .await
-    .expect("deploy waits for ready certificate and runs");
+    .expect("deploy observes ready managed public URL");
 
-    assert_eq!(runtime.requests.len(), 1);
+    readiness.await.expect("readiness task completes");
     assert!(matches!(
         nats.lease_intent.load().await.expect("lease intent reads"),
         ManagedLeaseIntent::Auto { state }
             if matches!(*state, AutoLeaseState::Ready { .. })
     ));
     assert_eq!(
-        waiting_for_managed_certificate_event_count(&controllers).await,
+        waiting_for_managed_public_url_event_count(
+            &controllers,
+            ManagedPublicUrlPendingStage::Certificate,
+        )
+        .await,
         1
     );
-    worker.abort();
 }
 
 #[tokio::test]
 async fn auto_hostname_deploy_fails_typed_when_certificate_stays_pending() {
     let nats = test_nats().await;
-    let _facts = start_facts_subscription(
-        nats.machine_a.clone(),
-        nats.client.clone(),
-        machine_id("machine_a"),
-    )
-    .await;
-    let (lease_client, request_count, server) = always_pending_lease_client().await;
     nats.lease_intent
-        .store_lease(pending_lease_record(), None)
+        .store_successful_lease_application(valid_lease_record(), None, gateway_address_set())
         .await
         .expect("record-only lease stored");
-    let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
-    let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
-    let controllers = operation_controllers(nats.client.clone()).await;
-    let accepted = controllers
-        .submit_deploy(deploy_submit_command(&controllers, auto_hostname_deploy_request()).await)
-        .await
-        .expect("deploy operation accepted");
-    let mut runtime = RecordingRuntime::with_containers(["ctr_should_not_start"]);
-    let mut health = RecordingHealth::healthy();
-    let mut certificates = RecordingCertificates::successful();
 
-    let error = run_deploy_operation(
-        accepted,
-        DeployOperationStores {
-            intent_change_client: nats.client.clone(),
-            namespace_intent: nats.namespace_intent.clone(),
-            lease_intent: nats.lease_intent.clone(),
-            lease_client,
-            managed_certificate_wait: ManagedCertificateWaitPolicy::new(
-                Duration::from_millis(80),
-                Duration::from_millis(5),
-            ),
-            controllers: controllers.clone(),
-        },
-        DeployOperationPorts {
-            facts_reader: &facts_reader,
-            intent_reader: &intent_reader,
-            machine_runtime: &mut runtime,
-            health_checker: &mut health,
-            certificate_provisioner: &mut certificates,
-        },
-        Duration::from_secs(5),
+    let run = run_auto_hostname_deploy(
+        &nats,
+        ManagedPublicUrlWaitPolicy::new(Duration::from_millis(40), Duration::from_millis(5)),
     )
-    .await
-    .expect_err("pending certificate fails deploy at the deadline");
+    .await;
+    let error = run
+        .result
+        .expect_err("pending certificate reaches the deadline");
 
     assert!(matches!(error, DeployOperationRunError::LoadFacts { .. }));
-    assert!(runtime.requests.is_empty());
-    assert!(request_count.load(Ordering::SeqCst) >= 2);
-    assert!(matches!(
-        controllers
-            .repository()
-            .get(&operation_id("op_123"))
-            .await
-            .expect("status reads"),
-        Some(OperationStatus::Deploy {
-            state: DeployOperationState::Failed {
-                failure: DeployOperationFailure::CertificatePending {
-                    last_error: Some(ManagedCertificateIssuanceFailureKind::ValidationTimeout),
-                },
-            },
-            ..
-        })
-    ));
-    assert_eq!(
-        waiting_for_managed_certificate_event_count(&controllers).await,
-        1
-    );
-    server.abort();
+    assert_pending_failure(
+        &run.controllers,
+        ManagedPublicUrlPending::Certificate { last_error: None },
+    )
+    .await;
 }
 
 #[tokio::test]
-async fn deploy_without_auto_hostname_does_not_poll_record_only_lease() {
+async fn auto_hostname_deploy_treats_expired_lease_as_lease_pending() {
+    let nats = test_nats().await;
+    let lease = expired_lease_record();
+    nats.lease_intent
+        .store_successful_lease_application(
+            lease.clone(),
+            Some(expired_bundle(&lease)),
+            gateway_address_set(),
+        )
+        .await
+        .expect("expired lease stored");
+
+    let run = run_auto_hostname_deploy(
+        &nats,
+        ManagedPublicUrlWaitPolicy::new(Duration::from_millis(40), Duration::from_millis(5)),
+    )
+    .await;
+    run.result.expect_err("expired lease reaches the deadline");
+
+    assert_pending_failure(&run.controllers, ManagedPublicUrlPending::Lease).await;
+}
+
+#[tokio::test]
+async fn auto_hostname_deploy_treats_expired_bundle_as_certificate_pending() {
+    let nats = test_nats().await;
+    let lease = valid_lease_record();
+    nats.lease_intent
+        .store_successful_lease_application(
+            lease.clone(),
+            Some(expired_bundle(&lease)),
+            gateway_address_set(),
+        )
+        .await
+        .expect("expired bundle stored");
+
+    let run = run_auto_hostname_deploy(
+        &nats,
+        ManagedPublicUrlWaitPolicy::new(Duration::from_millis(40), Duration::from_millis(5)),
+    )
+    .await;
+    run.result.expect_err("expired bundle reaches the deadline");
+
+    assert_pending_failure(
+        &run.controllers,
+        ManagedPublicUrlPending::Certificate { last_error: None },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn auto_hostname_deploy_waits_boundedly_for_unacquired_lease() {
+    let nats = test_nats().await;
+
+    let run = run_auto_hostname_deploy(
+        &nats,
+        ManagedPublicUrlWaitPolicy::new(Duration::from_millis(40), Duration::from_millis(5)),
+    )
+    .await;
+    run.result
+        .expect_err("unacquired lease reaches the deadline");
+
+    assert_pending_failure(&run.controllers, ManagedPublicUrlPending::Lease).await;
+}
+
+#[tokio::test]
+async fn auto_hostname_deploy_waits_for_applied_gateway_addresses() {
+    let nats = test_nats().await;
+    let lease = valid_lease_record();
+    nats.lease_intent
+        .store_lease(lease.clone(), Some(valid_bundle(&lease)))
+        .await
+        .expect("ready lease stored");
+
+    let run = run_auto_hostname_deploy(
+        &nats,
+        ManagedPublicUrlWaitPolicy::new(Duration::from_millis(40), Duration::from_millis(5)),
+    )
+    .await;
+    run.result
+        .expect_err("missing applied gateway addresses reaches the deadline");
+
+    assert_pending_failure(&run.controllers, ManagedPublicUrlPending::GatewayAddresses).await;
+}
+
+#[tokio::test]
+async fn deploy_without_auto_hostname_ignores_pending_managed_public_url() {
     let nats = test_nats().await;
     let _facts = start_facts_subscription(
         nats.machine_a.clone(),
@@ -178,13 +213,10 @@ async fn deploy_without_auto_hostname_does_not_poll_record_only_lease() {
         machine_id("machine_a"),
     )
     .await;
-    let (lease_client, request_count, server) = always_pending_lease_client().await;
     nats.lease_intent
-        .store_lease(pending_lease_record(), None)
+        .store_lease(valid_lease_record(), None)
         .await
         .expect("record-only lease stored");
-    let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
-    let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
     let controllers = operation_controllers(nats.client.clone()).await;
     let accepted = controllers
         .submit_deploy(deploy_submit_command(&controllers, deploy_request(1)).await)
@@ -196,20 +228,14 @@ async fn deploy_without_auto_hostname_does_not_poll_record_only_lease() {
 
     run_deploy_operation(
         accepted,
-        DeployOperationStores {
-            intent_change_client: nats.client.clone(),
-            namespace_intent: nats.namespace_intent.clone(),
-            lease_intent: nats.lease_intent.clone(),
-            lease_client,
-            managed_certificate_wait: ManagedCertificateWaitPolicy::new(
-                Duration::from_millis(80),
-                Duration::from_millis(5),
-            ),
-            controllers: controllers.clone(),
-        },
+        deploy_stores(
+            &nats,
+            controllers,
+            ManagedPublicUrlWaitPolicy::new(Duration::from_millis(40), Duration::from_millis(5)),
+        ),
         DeployOperationPorts {
-            facts_reader: &facts_reader,
-            intent_reader: &intent_reader,
+            facts_reader: &facts_reader(&nats.client, Duration::from_secs(5)),
+            intent_reader: &intent_reader(&nats.client, Duration::from_secs(5)),
             machine_runtime: &mut runtime,
             health_checker: &mut health,
             certificate_provisioner: &mut certificates,
@@ -220,11 +246,94 @@ async fn deploy_without_auto_hostname_does_not_poll_record_only_lease() {
     .expect("deploy without auto hostname runs immediately");
 
     assert_eq!(runtime.requests.len(), 1);
-    assert_eq!(request_count.load(Ordering::SeqCst), 0);
-    server.abort();
 }
 
-async fn waiting_for_managed_certificate_event_count(controllers: &OperationControllers) -> usize {
+async fn run_auto_hostname_deploy(
+    nats: &TestNats,
+    policy: ManagedPublicUrlWaitPolicy,
+) -> AutoDeployRun {
+    let _facts = start_facts_subscription(
+        nats.machine_a.clone(),
+        nats.client.clone(),
+        machine_id("machine_a"),
+    )
+    .await;
+    let controllers = operation_controllers(nats.client.clone()).await;
+    let accepted = controllers
+        .submit_deploy(deploy_submit_command(&controllers, auto_hostname_deploy_request()).await)
+        .await
+        .expect("deploy operation accepted");
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
+    let mut health = RecordingHealth::healthy();
+    let mut certificates = RecordingCertificates::successful();
+    let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
+    let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
+    let result = run_deploy_operation(
+        accepted,
+        deploy_stores(nats, controllers.clone(), policy),
+        DeployOperationPorts {
+            facts_reader: &facts_reader,
+            intent_reader: &intent_reader,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut certificates,
+        },
+        Duration::from_secs(5),
+    )
+    .await
+    .map(|_| ());
+    AutoDeployRun {
+        result,
+        controllers,
+    }
+}
+
+struct AutoDeployRun {
+    result: Result<(), DeployOperationRunError>,
+    controllers: OperationControllers,
+}
+
+fn deploy_stores(
+    nats: &TestNats,
+    controllers: OperationControllers,
+    policy: ManagedPublicUrlWaitPolicy,
+) -> DeployOperationStores {
+    DeployOperationStores {
+        intent_change_client: nats.client.clone(),
+        namespace_intent: nats.namespace_intent.clone(),
+        lease_intent: nats.lease_intent.clone(),
+        managed_public_url_wait: policy,
+        controllers,
+    }
+}
+
+async fn assert_pending_failure(
+    controllers: &OperationControllers,
+    expected: ManagedPublicUrlPending,
+) {
+    assert!(matches!(
+        controllers
+            .repository()
+            .get(&operation_id("op_123"))
+            .await
+            .expect("status reads"),
+        Some(OperationStatus::Deploy {
+            state: DeployOperationState::Failed {
+                failure: DeployOperationFailure::ManagedPublicUrlPending { pending },
+            },
+            ..
+        }) if pending == expected
+    ));
+    assert_eq!(
+        waiting_for_managed_public_url_event_count(controllers, expected.stage()).await,
+        1
+    );
+}
+
+async fn waiting_for_managed_public_url_event_count(
+    controllers: &OperationControllers,
+    expected_stage: ManagedPublicUrlPendingStage,
+) -> usize {
     controllers
         .repository()
         .replay_operation_events(OperationEventReplayRequest {
@@ -239,55 +348,63 @@ async fn waiting_for_managed_certificate_event_count(controllers: &OperationCont
         .filter(|event| {
             matches!(
                 event.event,
-                OperationEvent::DeployWaitingForManagedCertificate { .. }
+                OperationEvent::DeployWaitingForManagedPublicUrl { stage, .. }
+                    if stage == expected_stage
             )
         })
         .count()
 }
 
-async fn always_pending_lease_client()
--> (LeaseClient, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind pending lease worker");
-    let address = listener.local_addr().expect("pending worker address");
-    let request_count = Arc::new(AtomicUsize::new(0));
-    let server_count = Arc::clone(&request_count);
-    let server = tokio::spawn(async move {
-        loop {
-            let (mut stream, _) = listener.accept().await.expect("accept bundle request");
-            let mut request = [0_u8; 2048];
-            let read = stream
-                .read(&mut request)
-                .await
-                .expect("read bundle request");
-            assert!(read > 0, "bundle request is not empty");
-            server_count.fetch_add(1, Ordering::SeqCst);
-            let body = r#"{"status":"pending","last_error":"validation_timeout"}"#;
-            let response = format!(
-                "HTTP/1.1 202 Accepted\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            stream
-                .write_all(response.as_bytes())
-                .await
-                .expect("write pending response");
-        }
-    });
-    let client = LeaseClient::new(
-        LeaseWorkerUrl::try_new(format!("http://{address}")).expect("pending worker URL"),
-    );
-    (client, request_count, server)
+fn gateway_address_set() -> ManagedLeaseAddressSet {
+    ManagedLeaseAddressSet::new(
+        vec!["203.0.113.8".parse::<Ipv4Addr>().expect("IPv4")],
+        Vec::new(),
+    )
 }
 
-fn pending_lease_record() -> ManagedLeaseRecord {
+fn now_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock is after Unix epoch")
+        .as_secs()
+}
+
+fn valid_lease_record() -> ManagedLeaseRecord {
+    lease_record(now_seconds() - 60, now_seconds() + 3_600)
+}
+
+fn expired_lease_record() -> ManagedLeaseRecord {
+    lease_record(now_seconds() - 120, now_seconds() - 60)
+}
+
+fn lease_record(issued_at: u64, expires_at: u64) -> ManagedLeaseRecord {
     ManagedLeaseRecord::try_new(
         ManagedLeaseName::try_new("cluster-one").expect("lease name"),
         LeaseBearerToken::try_new("lease-token").expect("lease token"),
-        LeaseIssuedAt::try_new(1_700_000_000).expect("issued at"),
-        LeaseExpiresAt::try_new(1_707_776_000).expect("expires at"),
+        LeaseIssuedAt::try_new(issued_at).expect("issued at"),
+        LeaseExpiresAt::try_new(expires_at).expect("expires at"),
     )
     .expect("lease record")
+}
+
+fn valid_bundle(lease: &ManagedLeaseRecord) -> ManagedCertBundle {
+    bundle(lease, now_seconds() - 60, now_seconds() + 3_600)
+}
+
+fn expired_bundle(lease: &ManagedLeaseRecord) -> ManagedCertBundle {
+    bundle(lease, now_seconds() - 120, now_seconds() - 60)
+}
+
+fn bundle(lease: &ManagedLeaseRecord, issued_at: u64, expires_at: u64) -> ManagedCertBundle {
+    ManagedCertBundle::try_new(
+        lease.name.clone(),
+        lease.name.wildcard_and_apex(),
+        "certificate".to_owned(),
+        "private-key".to_owned(),
+        LeaseIssuedAt::try_new(issued_at).expect("issued at"),
+        LeaseExpiresAt::try_new(expires_at).expect("expires at"),
+    )
+    .expect("certificate bundle")
 }
 
 fn auto_hostname_deploy_request() -> DeployRequest {

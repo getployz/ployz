@@ -2,8 +2,8 @@ use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{ContainerId, MachineId, NamespaceRevisionId, ServiceId};
 use ployz_core::ops::{
     ArtifactUnavailableReason, CertificateProvisionFailure, ControlPlaneCommitScope,
-    DeployOperationFailure, HealthCheckFailure, PreStartHookFailure, RetainedArtifact,
-    RouteCutoverFailureReason, RouteHostname, RouteTarget,
+    DeployOperationFailure, HealthCheckFailure, ManagedPublicUrlPending, PreStartHookFailure,
+    RetainedArtifact, RouteCutoverFailureReason, RouteHostname, RouteTarget,
 };
 use ployz_core::state::MachineUsabilityReason;
 
@@ -93,7 +93,7 @@ impl<'a> DeployFailureView<'a> {
             },
             DeployOperationFailure::PlanningFailed { .. }
             | DeployOperationFailure::AutoDnsWithoutLease { .. }
-            | DeployOperationFailure::CertificatePending { .. }
+            | DeployOperationFailure::ManagedPublicUrlPending { .. }
             | DeployOperationFailure::ArtifactUnavailable {
                 reason:
                     ArtifactUnavailableReason::BundleMissing
@@ -205,7 +205,7 @@ impl<'a> DeployFailureView<'a> {
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
             | DeployOperationFailure::AutoDnsWithoutLease { .. }
-            | DeployOperationFailure::CertificatePending { .. }
+            | DeployOperationFailure::ManagedPublicUrlPending { .. }
             | DeployOperationFailure::ImageResolutionFailed { .. }
             | DeployOperationFailure::ArtifactUnavailable { .. }
             | DeployOperationFailure::ImageMissingOnSeed { .. }
@@ -240,7 +240,7 @@ impl<'a> DeployFailureView<'a> {
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
             | DeployOperationFailure::AutoDnsWithoutLease { .. }
-            | DeployOperationFailure::CertificatePending { .. }
+            | DeployOperationFailure::ManagedPublicUrlPending { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
@@ -258,7 +258,7 @@ impl<'a> DeployFailureView<'a> {
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
             | DeployOperationFailure::AutoDnsWithoutLease { .. }
-            | DeployOperationFailure::CertificatePending { .. }
+            | DeployOperationFailure::ManagedPublicUrlPending { .. }
             | DeployOperationFailure::ImageResolutionFailed { .. }
             | DeployOperationFailure::ArtifactUnavailable { .. }
             | DeployOperationFailure::ImageMissingOnSeed { .. }
@@ -302,7 +302,7 @@ impl<'a> DeployFailureView<'a> {
             )),
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
-            | DeployOperationFailure::CertificatePending { .. }
+            | DeployOperationFailure::ManagedPublicUrlPending { .. }
             | DeployOperationFailure::ImageResolutionFailed { .. }
             | DeployOperationFailure::ArtifactUnavailable { .. }
             | DeployOperationFailure::ImageMissingOnSeed { .. }
@@ -337,7 +337,7 @@ impl<'a> DeployFailureView<'a> {
                 | ControlPlaneCommitScope::VolumePin { .. } => None,
             },
             DeployOperationFailure::NoUsableMachines { .. }
-            | DeployOperationFailure::CertificatePending { .. }
+            | DeployOperationFailure::ManagedPublicUrlPending { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
@@ -404,10 +404,20 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
             format!("deploy planning failed: {}", message.as_str())
         }
         DeployOperationFailure::AutoDnsWithoutLease { message, .. } => message.as_str().to_owned(),
-        DeployOperationFailure::CertificatePending { last_error } => last_error.map_or_else(
-            || "managed certificate is still pending".to_owned(),
-            |last_error| format!("managed certificate is still pending: {last_error:?}"),
-        ),
+        DeployOperationFailure::ManagedPublicUrlPending { pending } => match pending {
+            ManagedPublicUrlPending::Lease => {
+                "managed public URL lease is still pending".to_owned()
+            }
+            ManagedPublicUrlPending::Certificate { last_error } => last_error.map_or_else(
+                || "managed public URL certificate is still pending".to_owned(),
+                |last_error| {
+                    format!("managed public URL certificate is still pending: {last_error:?}")
+                },
+            ),
+            ManagedPublicUrlPending::GatewayAddresses => {
+                "managed public URL gateway addresses are still pending".to_owned()
+            }
+        },
         DeployOperationFailure::ImageResolutionFailed {
             image,
             machine_id,

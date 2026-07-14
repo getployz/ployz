@@ -5,10 +5,10 @@ use ployz_core::deploy::{
 use ployz_core::ops::{
     ArtifactUnavailableReason, ControlPlaneCommitScope, DeployFailureClass, DeployOperationFailure,
     DeployOperationState, DeployRunningStage, EventSequence, HealthCheckFailure,
-    MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEvent, OperationEventReplayCursor,
-    OperationEventReplayLimit, OperationEventReplayPage, OperationEventReplayRequest,
-    OperationKind, OperationStatus, OperatorHint, ReplayedOperationEvent, RetainedArtifact,
-    RouteCutoverFailureReason, RouteTarget,
+    MAX_OPERATION_EVENT_REPLAY_LIMIT, ManagedPublicUrlPending, ManagedPublicUrlPendingStage,
+    OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
+    OperationEventReplayPage, OperationEventReplayRequest, OperationKind, OperationStatus,
+    OperatorHint, ReplayedOperationEvent, RetainedArtifact, RouteCutoverFailureReason, RouteTarget,
 };
 use ployz_core::state::MachineUsabilityReason;
 use ployz_test_support::containers;
@@ -30,26 +30,29 @@ fn operation_state_serializes_with_stable_wire_names() {
 }
 
 #[test]
-fn waiting_for_managed_certificate_event_has_stable_wire_shape() {
-    let event = OperationEvent::DeployWaitingForManagedCertificate {
+fn waiting_for_managed_public_url_event_has_stable_wire_shape() {
+    let event = OperationEvent::DeployWaitingForManagedPublicUrl {
         operation_id: operation_id("op_123"),
+        stage: ManagedPublicUrlPendingStage::Certificate,
     };
 
     assert_eq!(
         serde_json::to_string(&event).expect("event serializes"),
-        r#"{"event":"deploy_waiting_for_managed_certificate","operation_id":"op_123"}"#
+        r#"{"event":"deploy_waiting_for_managed_public_url","operation_id":"op_123","stage":"certificate"}"#
     );
 }
 
 #[test]
-fn certificate_pending_failure_carries_the_latest_worker_error() {
-    let failure = DeployOperationFailure::CertificatePending {
-        last_error: Some(ManagedCertificateIssuanceFailureKind::ValidationTimeout),
+fn managed_public_url_pending_failure_carries_the_latest_worker_error() {
+    let failure = DeployOperationFailure::ManagedPublicUrlPending {
+        pending: ManagedPublicUrlPending::Certificate {
+            last_error: Some(ManagedCertificateIssuanceFailureKind::ValidationTimeout),
+        },
     };
 
     assert_eq!(
         serde_json::to_string(&failure).expect("failure serializes"),
-        r#"{"kind":"certificate_pending","last_error":"validation_timeout"}"#
+        r#"{"kind":"managed_public_url_pending","pending":{"stage":"certificate","last_error":"validation_timeout"}}"#
     );
     assert_eq!(failure.failure_class(), DeployFailureClass::Timeout);
 }

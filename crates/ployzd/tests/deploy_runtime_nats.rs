@@ -7,6 +7,7 @@ mod support;
 
 use fixtures::*;
 use futures_util::StreamExt;
+use ployz_core::cert::PublicUrlMode;
 use ployz_core::deploy::{
     DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, ReplicaCount,
 };
@@ -26,11 +27,10 @@ use ployzd::intent::lease_intent::LeaseIntentStore;
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
-use ployzd::lease::{LeaseClient, LeaseWorkerUrl};
 use ployzd::operation_api::admission::{
     DeploySubmitCommand, MachineAddBootstrapConfig, OperationControllers, SubmitCommandError,
 };
-use ployzd::operations::deploy::ManagedCertificateWaitPolicy;
+use ployzd::operations::deploy::ManagedPublicUrlWaitPolicy;
 use ployzd::operations::deploy::driver::{
     DeployOperationDriver, DeployOperationPorts, DeployOperationRunError, DeployOperationStores,
     run_deploy_operation,
@@ -81,8 +81,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
             lease_intent: nats.lease_intent.clone(),
-            lease_client: LeaseClient::new(LeaseWorkerUrl::default_worker()),
-            managed_certificate_wait: ManagedCertificateWaitPolicy::production(),
+            managed_public_url_wait: ManagedPublicUrlWaitPolicy::production(),
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
@@ -170,8 +169,7 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
             lease_intent: nats.lease_intent.clone(),
-            lease_client: LeaseClient::new(LeaseWorkerUrl::default_worker()),
-            managed_certificate_wait: ManagedCertificateWaitPolicy::production(),
+            managed_public_url_wait: ManagedPublicUrlWaitPolicy::production(),
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
@@ -238,8 +236,7 @@ async fn health_failure_records_failed_operation_without_committing_active_state
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
             lease_intent: nats.lease_intent.clone(),
-            lease_client: LeaseClient::new(LeaseWorkerUrl::default_worker()),
-            managed_certificate_wait: ManagedCertificateWaitPolicy::production(),
+            managed_public_url_wait: ManagedPublicUrlWaitPolicy::production(),
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
@@ -285,8 +282,17 @@ async fn health_failure_records_failed_operation_without_committing_active_state
 }
 
 #[tokio::test]
-async fn auto_dns_without_lease_fails_before_runtime_work_with_guidance() {
+async fn auto_dns_rejects_disabled_modes_before_runtime_work_with_guidance() {
+    assert_auto_dns_mode_rejected(PublicUrlMode::None).await;
+    assert_auto_dns_mode_rejected(PublicUrlMode::BringYourOwn).await;
+}
+
+async fn assert_auto_dns_mode_rejected(mode: PublicUrlMode) {
     let nats = test_nats().await;
+    nats.lease_intent
+        .set_mode(mode)
+        .await
+        .expect("disable managed public URLs");
     let _facts = start_facts_subscription(
         nats.machine_a.clone(),
         nats.client.clone(),
@@ -320,8 +326,10 @@ async fn auto_dns_without_lease_fails_before_runtime_work_with_guidance() {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
             lease_intent: nats.lease_intent.clone(),
-            lease_client: LeaseClient::new(LeaseWorkerUrl::default_worker()),
-            managed_certificate_wait: ManagedCertificateWaitPolicy::production(),
+            managed_public_url_wait: ManagedPublicUrlWaitPolicy::new(
+                Duration::from_millis(80),
+                Duration::from_millis(5),
+            ),
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
@@ -355,7 +363,7 @@ async fn auto_dns_without_lease_fails_before_runtime_work_with_guidance() {
                 failure: DeployOperationFailure::AutoDnsWithoutLease { message, .. },
             },
             ..
-        }) if message.as_str().contains("re-run init with --public-url auto")
+        }) if message.as_str().contains(&format!("{mode:?}"))
     ));
 }
 
@@ -380,8 +388,7 @@ async fn duplicate_driver_execution_does_not_release_the_original_namespace_lock
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
             lease_intent: nats.lease_intent.clone(),
-            lease_client: LeaseClient::new(LeaseWorkerUrl::default_worker()),
-            managed_certificate_wait: ManagedCertificateWaitPolicy::production(),
+            managed_public_url_wait: ManagedPublicUrlWaitPolicy::production(),
             controllers: controllers.clone(),
         },
         CertificateManager::new(
@@ -439,8 +446,7 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
             lease_intent: nats.lease_intent.clone(),
-            lease_client: LeaseClient::new(LeaseWorkerUrl::default_worker()),
-            managed_certificate_wait: ManagedCertificateWaitPolicy::production(),
+            managed_public_url_wait: ManagedPublicUrlWaitPolicy::production(),
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
@@ -526,8 +532,7 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
             lease_intent: nats.lease_intent.clone(),
-            lease_client: LeaseClient::new(LeaseWorkerUrl::default_worker()),
-            managed_certificate_wait: ManagedCertificateWaitPolicy::production(),
+            managed_public_url_wait: ManagedPublicUrlWaitPolicy::production(),
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
@@ -738,6 +743,10 @@ async fn test_nats() -> TestNats {
         .await
         .expect("slow machine enters roster");
     let lease_intent = LeaseIntentStore::new(intent_core_store.clone());
+    lease_intent
+        .set_mode(PublicUrlMode::Auto)
+        .await
+        .expect("managed public URL mode configures");
     let intent = start_intent_service(
         client.clone(),
         machine_id("machine_a"),

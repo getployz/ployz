@@ -51,19 +51,18 @@ impl PublicUrlMode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ManagedLeaseIntent {
-    Auto {
-        #[serde(default)]
-        state: Box<AutoLeaseState>,
-    },
+    Auto { state: Box<AutoLeaseState> },
     BringYourOwn,
     None,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AutoLeaseState {
-    #[default]
-    Unacquired,
+    Unacquired {
+        acquisition_id: ManagedLeaseAcquisitionId,
+        token: LeaseBearerToken,
+    },
     RecordOnly {
         lease: ManagedLeaseRecord,
     },
@@ -75,13 +74,12 @@ pub enum AutoLeaseState {
 
 impl ManagedLeaseIntent {
     #[must_use]
-    pub fn empty(mode: PublicUrlMode) -> Self {
-        match mode {
-            PublicUrlMode::Auto => Self::Auto {
-                state: Box::new(AutoLeaseState::Unacquired),
-            },
-            PublicUrlMode::BringYourOwn => Self::BringYourOwn,
-            PublicUrlMode::None => Self::None,
+    pub fn unacquired(acquisition_id: ManagedLeaseAcquisitionId, token: LeaseBearerToken) -> Self {
+        Self::Auto {
+            state: Box::new(AutoLeaseState::Unacquired {
+                acquisition_id,
+                token,
+            }),
         }
     }
 
@@ -120,6 +118,16 @@ impl ManagedLeaseIntent {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ManagedLeaseAcquireRequest {
+    pub acquisition_id: ManagedLeaseAcquisitionId,
+    pub token: LeaseBearerToken,
+    pub ipv4: Vec<Ipv4Addr>,
+    pub ipv6: Vec<Ipv6Addr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct ManagedLeaseRenewRequest {
     pub ipv4: Vec<Ipv4Addr>,
     pub ipv6: Vec<Ipv6Addr>,
 }
@@ -227,6 +235,11 @@ impl ManagedLeaseRecord {
             expires_at,
         })
     }
+
+    #[must_use]
+    pub const fn is_valid_at(&self, now_seconds: u64) -> bool {
+        self.issued_at.unix_seconds() <= now_seconds && now_seconds < self.expires_at.unix_seconds()
+    }
 }
 
 impl TryFrom<ManagedLeaseRecordWire> for ManagedLeaseRecord {
@@ -315,6 +328,47 @@ impl TryFrom<String> for ManagedLeaseName {
 
 impl From<ManagedLeaseName> for String {
     fn from(value: ManagedLeaseName) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(type = "Brand<string, \"ManagedLeaseAcquisitionId\">")
+)]
+#[serde(try_from = "String", into = "String")]
+pub struct ManagedLeaseAcquisitionId(String);
+
+impl ManagedLeaseAcquisitionId {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, ManagedLeaseError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(ManagedLeaseError::EmptyAcquisitionId);
+        }
+        if !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(ManagedLeaseError::InvalidAcquisitionId { value });
+        }
+        Ok(Self(value.to_ascii_lowercase()))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for ManagedLeaseAcquisitionId {
+    type Error = ManagedLeaseError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<ManagedLeaseAcquisitionId> for String {
+    fn from(value: ManagedLeaseAcquisitionId) -> Self {
         value.0
     }
 }
@@ -508,6 +562,10 @@ pub enum ManagedLeaseError {
     EmptyLeaseName,
     #[error("managed lease name is invalid: {value}")]
     InvalidLeaseName { value: String },
+    #[error("managed lease acquisition id is empty")]
+    EmptyAcquisitionId,
+    #[error("managed lease acquisition id is malformed: {value}")]
+    InvalidAcquisitionId { value: String },
     #[error("lease bearer token is empty")]
     EmptyBearerToken,
     #[error("lease bearer token is malformed")]
@@ -960,19 +1018,26 @@ mod managed_lease_intent_tests {
 
     #[test]
     fn auto_without_lease_needs_acquisition() {
-        let ManagedLeaseIntent::Auto { state } = ManagedLeaseIntent::empty(PublicUrlMode::Auto)
+        let acquisition_id =
+            ManagedLeaseAcquisitionId::try_new("0123456789abcdef").expect("acquisition id");
+        let token = LeaseBearerToken::try_new("lease-token").expect("token");
+        let ManagedLeaseIntent::Auto { state } =
+            ManagedLeaseIntent::unacquired(acquisition_id.clone(), token.clone())
         else {
             panic!("auto mode");
         };
-        assert!(matches!(*state, AutoLeaseState::Unacquired));
+        assert_eq!(
+            *state,
+            AutoLeaseState::Unacquired {
+                acquisition_id,
+                token
+            }
+        );
     }
 
     #[test]
     fn non_auto_without_lease_does_not_need_acquisition() {
-        assert!(matches!(
-            ManagedLeaseIntent::empty(PublicUrlMode::BringYourOwn),
-            ManagedLeaseIntent::BringYourOwn
-        ));
+        assert!(!ManagedLeaseIntent::BringYourOwn.needs_lease_renewal(1));
     }
 
     #[test]
@@ -985,6 +1050,10 @@ mod managed_lease_intent_tests {
             LeaseExpiresAt::try_new(1_200).expect("expires"),
         )
         .expect("lease");
+        assert!(!lease.is_valid_at(999));
+        assert!(lease.is_valid_at(1_000));
+        assert!(lease.is_valid_at(1_199));
+        assert!(!lease.is_valid_at(1_200));
         let bundle = ManagedCertBundle::try_new(
             name.clone(),
             name.wildcard_and_apex(),

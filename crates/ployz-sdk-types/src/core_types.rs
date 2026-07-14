@@ -4,8 +4,9 @@ pub use ployz_core::cert::{
     CertValidAt, CertValidAtError, CertValidityError, CertValidityWindow,
     CertificateProvisionFailure, LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt,
     LeaseTimestampError, ManagedCertBundle, ManagedCertificateIssuanceFailureKind,
-    ManagedLeaseAcquireRequest, ManagedLeaseAcquired, ManagedLeaseAddressSet, ManagedLeaseError,
-    ManagedLeaseName, ManagedLeaseRecord, ManagedLeaseRenewed, PublicUrlMode,
+    ManagedLeaseAcquireRequest, ManagedLeaseAcquired, ManagedLeaseAcquisitionId,
+    ManagedLeaseAddressSet, ManagedLeaseError, ManagedLeaseName, ManagedLeaseRecord,
+    ManagedLeaseRenewRequest, ManagedLeaseRenewed, PublicUrlMode,
 };
 pub use ployz_core::dataplane::{
     DataplaneMember, DataplaneProjection, DataplaneProjectionComponent, DataplaneProjectionFailure,
@@ -87,7 +88,7 @@ pub use ployz_core::ops::{
     ControlPlaneCommitScope, CoreReplaceFailure, CoreReplaceOperationState, DeployCleanupFailure,
     DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, DeployPhaseNumber,
     DeployPhaseNumberError, DeployPhaseOutcome, DeployRunningStage, DeployServiceResult,
-    PreStartHookFailure,
+    ManagedPublicUrlPending, ManagedPublicUrlPendingStage, PreStartHookFailure,
 };
 pub use ployz_core::roles::{GatewayRole, InstallRolePolicy};
 pub use ployz_core::security::NatsPrincipal;
