@@ -1649,6 +1649,15 @@ pub fn validate_deploy_route_bindings(
     let mut commits = Vec::new();
     let mut services = request.service_requests();
     services.sort_by(|left, right| left.service_id.cmp(&right.service_id));
+    let duplicate_service_id = services.windows(2).find_map(|pair| {
+        let [first, second] = pair else {
+            return None;
+        };
+        (first.service_id == second.service_id).then(|| first.service_id.clone())
+    });
+    if let Some(service_id) = duplicate_service_id {
+        return Err(DeployRouteBindingValidationError::DuplicateServiceId { service_id });
+    }
     for service in services {
         let automatic = auto_hostname_route_binding_commits(
             &service,
@@ -1668,6 +1677,8 @@ pub fn validate_deploy_route_bindings(
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DeployRouteBindingValidationError {
+    #[error("service {} is declared more than once", .service_id.as_str())]
+    DuplicateServiceId { service_id: ServiceId },
     #[error(transparent)]
     Automatic(#[from] AutoHostnameRouteBindingError),
     #[error(transparent)]
