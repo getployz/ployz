@@ -3,14 +3,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ployz_core::cert::{
-    AutoLeaseState, LeaseBearerToken, ManagedLeaseAcquireRequest, ManagedLeaseAddressSet,
-    ManagedLeaseIntent, ManagedLeaseName, PublicUrlMode,
+    AutoLeaseState, LeaseBearerToken, ManagedLeaseAcquireRequest, ManagedLeaseAcquisitionId,
+    ManagedLeaseAddressSet, ManagedLeaseIntent, ManagedLeaseName, ManagedLeaseRenewRequest,
+    PublicUrlMode,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{
     ManagedLeaseFailureClass, ManagedLeaseOperationState, ManagedLeaseSubject, OperationStatus,
 };
-use ployz_lease_worker::{Clock, ClockError, StubLeaseWorker, serve};
+use ployz_lease_worker::{
+    Clock, ClockError, LeaseWorkerRequest, LeaseWorkerResponse, StubLeaseWorker, serve,
+};
 use ployzd::core_store::CoreStore;
 use ployzd::intent::lease_intent::LeaseIntentStore;
 use ployzd::lease::task::{ManagedLeaseTaskOutcome, run_once};
@@ -65,6 +68,73 @@ async fn auto_acquires_lease_record_and_completes_operation() {
 }
 
 #[tokio::test]
+async fn failed_acquisition_retries_with_the_same_identity_after_a_lost_response() {
+    let nats = ployz_test_support::nats::TestNats::start().await;
+    let core_store = CoreStore::open_in_memory().await.expect("core store");
+    let intent = LeaseIntentStore::new(core_store.clone());
+    intent
+        .set_mode(PublicUrlMode::Auto)
+        .await
+        .expect("set auto mode");
+    let repository = OperationRepository::open(core_store, nats.controller.clone());
+    let unavailable = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("reserve unavailable address");
+    let unavailable_address = unavailable.local_addr().expect("unavailable address");
+    drop(unavailable);
+    let unavailable_client = LeaseClient::new(
+        LeaseWorkerUrl::try_new(format!("http://{unavailable_address}"))
+            .expect("unavailable worker URL"),
+    );
+
+    assert!(matches!(
+        run_once(&intent, &repository, &unavailable_client, empty_request())
+            .await
+            .expect("failed acquisition operation"),
+        ManagedLeaseTaskOutcome::Failed { .. }
+    ));
+    let ManagedLeaseIntent::Auto { state } = intent.load().await.expect("persisted intent") else {
+        panic!("auto intent");
+    };
+    let AutoLeaseState::Unacquired {
+        acquisition_id,
+        token,
+    } = *state
+    else {
+        panic!("unacquired intent");
+    };
+    let request = ManagedLeaseAcquireRequest {
+        acquisition_id,
+        token,
+        ipv4: Vec::new(),
+        ipv6: Vec::new(),
+    };
+    let mut worker = StubLeaseWorker::new();
+    let LeaseWorkerResponse::LeaseAcquired(processed) = worker
+        .handle(LeaseWorkerRequest::Acquire(request))
+        .expect("worker processed request before response was lost")
+    else {
+        panic!("lease acquired");
+    };
+    let (client, server) = stub_client(worker).await;
+
+    assert!(matches!(
+        run_once(&intent, &repository, &client, empty_request())
+            .await
+            .expect("retry acquisition"),
+        ManagedLeaseTaskOutcome::Acquired { .. }
+    ));
+    let ManagedLeaseIntent::Auto { state } = intent.load().await.expect("stored lease") else {
+        panic!("auto intent");
+    };
+    let AutoLeaseState::RecordOnly { lease } = *state else {
+        panic!("record-only intent");
+    };
+    assert_eq!(lease, processed.lease);
+    server.abort();
+}
+
+#[tokio::test]
 async fn due_lease_renews_and_completes_operation() {
     let nats = ployz_test_support::nats::TestNats::start().await;
     let core_store = CoreStore::open_in_memory().await.expect("core store");
@@ -82,7 +152,7 @@ async fn due_lease_renews_and_completes_operation() {
     let pending = run_once(&intent, &repository, &client, empty_request())
         .await
         .expect("pending bundle tick");
-    assert_eq!(pending, ManagedLeaseTaskOutcome::NoAction);
+    assert_eq!(pending, ManagedLeaseTaskOutcome::AwaitingCertificate);
     run_once(&intent, &repository, &client, empty_request())
         .await
         .expect("download bundle");
@@ -184,14 +254,11 @@ async fn mirrored_lease_downloads_missing_local_bundle() {
     let repository = OperationRepository::open(core_store, nats.controller.clone());
     let (client, server) = stub_client(StubLeaseWorker::new()).await;
     let acquired = client
-        .acquire(ManagedLeaseAcquireRequest {
-            ipv4: Vec::new(),
-            ipv6: Vec::new(),
-        })
+        .acquire(acquire_request("a1"))
         .await
         .expect("seed lease in worker");
     intent
-        .store_successful_lease_application(acquired.lease, None, empty_address_set())
+        .restore_lease_record(acquired.lease)
         .await
         .expect("store mirrored lease record");
 
@@ -199,7 +266,7 @@ async fn mirrored_lease_downloads_missing_local_bundle() {
         .await
         .expect("pending bundle recovery tick");
 
-    assert_eq!(pending, ManagedLeaseTaskOutcome::NoAction);
+    assert_eq!(pending, ManagedLeaseTaskOutcome::AwaitingCertificate);
     assert!(matches!(
         intent.load().await.expect("record-only intent"),
         ManagedLeaseIntent::Auto { state }
@@ -226,6 +293,10 @@ async fn ready_refresh_pending_preserves_ready_state() {
     let nats = ployz_test_support::nats::TestNats::start().await;
     let core_store = CoreStore::open_in_memory().await.expect("core store");
     let intent = LeaseIntentStore::new(core_store.clone());
+    intent
+        .set_mode(PublicUrlMode::Auto)
+        .await
+        .expect("set auto mode");
     let repository = OperationRepository::open(core_store, nats.controller.clone());
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -233,10 +304,7 @@ async fn ready_refresh_pending_preserves_ready_state() {
         .as_secs();
     let (client, server) = stub_client(StubLeaseWorker::with_clock(ManualClock::new(now))).await;
     let acquired = client
-        .acquire(ManagedLeaseAcquireRequest {
-            ipv4: Vec::new(),
-            ipv6: Vec::new(),
-        })
+        .acquire(acquire_request("a2"))
         .await
         .expect("seed lease in worker");
     let bundle = ployz_core::cert::ManagedCertBundle::try_new(
@@ -261,7 +329,7 @@ async fn ready_refresh_pending_preserves_ready_state() {
         .await
         .expect("pending refresh tick");
 
-    assert_eq!(outcome, ManagedLeaseTaskOutcome::NoAction);
+    assert_eq!(outcome, ManagedLeaseTaskOutcome::AwaitingCertificate);
     assert_eq!(
         intent.load().await.expect("ready intent"),
         ManagedLeaseIntent::Auto {
@@ -324,7 +392,10 @@ async fn changed_gateway_addresses_renew_record_only_lease_with_canonical_payloa
     let (client, worker, server) =
         stub_client_with_worker(StubLeaseWorker::with_clock(ManualClock::new(now))).await;
     let initial = gateway_request(&["203.0.113.8"], &[]);
-    let acquired = client.acquire(initial.clone()).await.expect("seed lease");
+    let acquired = client
+        .acquire(acquire_request("b1"))
+        .await
+        .expect("seed lease");
     intent
         .store_successful_lease_application(acquired.lease.clone(), None, address_set(&initial))
         .await
@@ -373,7 +444,7 @@ async fn changed_gateway_addresses_renew_record_only_lease_with_canonical_payloa
         run_once(&intent, &repository, &client, expected_request)
             .await
             .expect("same-address tick"),
-        ManagedLeaseTaskOutcome::NoAction
+        ManagedLeaseTaskOutcome::AwaitingCertificate
     );
     server.abort();
 }
@@ -394,7 +465,10 @@ async fn changed_gateway_addresses_renew_ready_lease_before_normal_due_time() {
         .as_secs();
     let (client, server) = stub_client(StubLeaseWorker::with_clock(ManualClock::new(now))).await;
     let initial = gateway_request(&["203.0.113.8"], &[]);
-    let acquired = client.acquire(initial.clone()).await.expect("seed lease");
+    let acquired = client
+        .acquire(acquire_request("b2"))
+        .await
+        .expect("seed lease");
     let _ = client
         .download_bundle(acquired.lease.name.clone(), acquired.lease.token.clone())
         .await
@@ -436,7 +510,10 @@ async fn failed_address_change_renewal_preserves_lease_and_applied_addresses() {
     let repository = OperationRepository::open(core_store, nats.controller.clone());
     let (client, server) = stub_client(StubLeaseWorker::new()).await;
     let initial = gateway_request(&["203.0.113.8"], &[]);
-    let acquired = client.acquire(initial.clone()).await.expect("seed lease");
+    let acquired = client
+        .acquire(acquire_request("b3"))
+        .await
+        .expect("seed lease");
     let mut prior_lease = acquired.lease;
     prior_lease.token = LeaseBearerToken::try_new("wrong-token").expect("token");
     intent
@@ -598,8 +675,17 @@ async fn stub_client_with_worker<C: Clock + Send + 'static>(
     (client, worker, server)
 }
 
-fn empty_request() -> ManagedLeaseAcquireRequest {
+fn acquire_request(id: &str) -> ManagedLeaseAcquireRequest {
     ManagedLeaseAcquireRequest {
+        acquisition_id: ManagedLeaseAcquisitionId::try_new(id).expect("acquisition id"),
+        token: LeaseBearerToken::try_new("client-token").expect("token"),
+        ipv4: Vec::new(),
+        ipv6: Vec::new(),
+    }
+}
+
+fn empty_request() -> ManagedLeaseRenewRequest {
+    ManagedLeaseRenewRequest {
         ipv4: Vec::new(),
         ipv6: Vec::new(),
     }
@@ -609,8 +695,8 @@ fn empty_address_set() -> ManagedLeaseAddressSet {
     address_set(&empty_request())
 }
 
-fn gateway_request(ipv4: &[&str], ipv6: &[&str]) -> ManagedLeaseAcquireRequest {
-    ManagedLeaseAcquireRequest {
+fn gateway_request(ipv4: &[&str], ipv6: &[&str]) -> ManagedLeaseRenewRequest {
+    ManagedLeaseRenewRequest {
         ipv4: ipv4
             .iter()
             .map(|address| address.parse::<Ipv4Addr>().expect("IPv4"))
@@ -622,7 +708,7 @@ fn gateway_request(ipv4: &[&str], ipv6: &[&str]) -> ManagedLeaseAcquireRequest {
     }
 }
 
-fn address_set(request: &ManagedLeaseAcquireRequest) -> ManagedLeaseAddressSet {
+fn address_set(request: &ManagedLeaseRenewRequest) -> ManagedLeaseAddressSet {
     ManagedLeaseAddressSet::new(request.ipv4.clone(), request.ipv6.clone())
 }
 

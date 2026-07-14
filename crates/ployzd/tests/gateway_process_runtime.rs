@@ -462,8 +462,9 @@ impl TestNats {
                     serving_target_entries: Vec::new(),
                     volume_pins: Vec::new(),
                     nats_authorizations: Vec::new(),
-                    public_url_mode: ployz_core::cert::PublicUrlMode::Auto,
-                    managed_lease: ManagedLeaseProjection::Unacquired,
+                    public_url: ployz_core::state::IntentPublicUrl::Auto(Box::new(
+                        ManagedLeaseProjection::Unacquired,
+                    )),
                     custom_certificates: Vec::new(),
                     acme_http01_challenges: vec![challenge.clone()],
                 };

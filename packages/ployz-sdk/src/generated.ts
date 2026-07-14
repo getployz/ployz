@@ -450,6 +450,8 @@ export type CertBundleRef = Brand<string, "CertBundleRef">;
 
 export type ManagedLeaseName = Brand<string, "ManagedLeaseName">;
 
+export type ManagedLeaseAcquisitionId = Brand<string, "ManagedLeaseAcquisitionId">;
+
 export type LeaseBearerToken = Brand<string, "LeaseBearerToken">;
 
 export type LeaseIssuedAt = Brand<string, "LeaseIssuedAt">;
@@ -468,7 +470,9 @@ export type ManagedPublicUrlPending = { "stage": "lease" } | { "stage": "certifi
 
 export type ManagedLeaseAddressSet = { ipv4: Array<string>, ipv6: Array<string>, };
 
-export type ManagedLeaseAcquireRequest = { ipv4: Array<string>, ipv6: Array<string>, };
+export type ManagedLeaseAcquireRequest = { acquisition_id: ManagedLeaseAcquisitionId, token: LeaseBearerToken, ipv4: Array<string>, ipv6: Array<string>, };
+
+export type ManagedLeaseRenewRequest = { ipv4: Array<string>, ipv6: Array<string>, };
 
 export type ManagedLeaseAcquired = { lease: ManagedLeaseRecord, bundle: ManagedCertBundle | null, };
 
@@ -634,7 +638,7 @@ export type RuntimeSnapshot = { public_url: RuntimePublicUrl,
  */
 certificate_statuses: Array<RouteCertStatus>, machines: Array<MachineSnapshot>, services: Array<ServiceSnapshot>, routes: Array<RouteBindingState>, containers: Array<ManagedContainerObservation>, revisions: Array<RuntimeServiceRevision>, releases: Array<RuntimeServiceRelease>, instances: Array<RuntimeServiceInstance>, projection_sources: RuntimeProjectionSources, updated_at_unix_seconds: number, };
 
-export type RuntimePublicUrl = { "mode": "auto", domain: string | null, } | { "mode": "bring_your_own" } | { "mode": "none" };
+export type RuntimePublicUrl = { "mode": "unconfigured" } | { "mode": "auto", domain: string | null, } | { "mode": "bring_your_own" } | { "mode": "none" };
 
 export type RouteCertStatus = { hostname: RouteHostname, status: RouteCertLifecycle, };
 

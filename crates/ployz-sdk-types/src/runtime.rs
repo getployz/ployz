@@ -21,11 +21,9 @@ pub struct RuntimeSnapshotResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeSnapshot {
-    #[serde(default)]
     pub public_url: RuntimePublicUrl,
     /// TLS status for custom (bring-your-own) hostnames. Managed auto hostnames
     /// are covered by the wildcard lease cert and are not listed here.
-    #[serde(default)]
     pub certificate_statuses: Vec<RouteCertStatus>,
     pub machines: Vec<MachineSnapshot>,
     pub services: Vec<ServiceSnapshot>,
@@ -38,14 +36,12 @@ pub struct RuntimeSnapshot {
     pub updated_at_unix_seconds: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RuntimePublicUrl {
-    Auto {
-        domain: Option<String>,
-    },
+    Unconfigured,
+    Auto { domain: Option<String> },
     BringYourOwn,
-    #[default]
     None,
 }
 
@@ -62,7 +58,8 @@ pub struct RouteCertStatus {
 pub enum RouteCertLifecycle {
     /// A usable certificate is issued for this hostname.
     Verified,
-    /// An ACME challenge is in flight; DNS resolves but the cert is not ready.
+    /// No usable custom certificate is currently available. Issuance or renewal
+    /// may be pending.
     Pending,
 }
 
@@ -133,33 +130,4 @@ pub enum RuntimeDerivedCollectionStatus {
 pub enum RuntimeSnapshotError {
     #[error("runtime snapshot unavailable: {message}")]
     Unavailable { message: String },
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn runtime_snapshot_defaults_missing_public_url_to_none() {
-        let snapshot = serde_json::from_value::<RuntimeSnapshot>(serde_json::json!({
-            "machines": [],
-            "services": [],
-            "routes": [],
-            "containers": [],
-            "revisions": [],
-            "releases": [],
-            "instances": [],
-            "projection_sources": {
-                "intent": { "read_at_unix_seconds": 1 },
-                "facts": { "read_at_unix_seconds": 1 },
-                "revisions": { "status": "complete", "source_count": 0, "missing_link_count": 0 },
-                "releases": { "status": "complete", "source_count": 0, "missing_link_count": 0 },
-                "instances": { "status": "complete", "source_count": 0, "missing_link_count": 0 }
-            },
-            "updated_at_unix_seconds": 1
-        }))
-        .expect("legacy runtime snapshot decodes");
-
-        assert_eq!(snapshot.public_url, RuntimePublicUrl::None);
-    }
 }

@@ -2,9 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cert::{
-    AcmeHttp01Challenge, ActiveCertState, ManagedCertBundle, ManagedLeaseRecord, PublicUrlMode,
-};
+use crate::cert::{AcmeHttp01Challenge, ActiveCertState, ManagedCertBundle, ManagedLeaseRecord};
 use crate::dataplane::{DataplaneProjection, MachineEndpointSubnet, WireGuardPublicKey};
 use crate::deploy::{ImageReference, ReplicaCount, VolumeName};
 use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
@@ -143,7 +141,7 @@ impl ControlPlaneEpoch {
 /// Full operator intent visible to readers, stamped with the epoch it reflects.
 /// The NATS authorization grant set rides here too (ADR 0031): a promoted core
 /// reuses it verbatim rather than re-deriving authority from the roster.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct IntentSnapshot {
@@ -156,95 +154,32 @@ pub struct IntentSnapshot {
     #[serde(default)]
     pub volume_pins: Vec<VolumePinState>,
     pub nats_authorizations: Vec<NatsAuthorizationGrant>,
-    #[serde(default = "PublicUrlMode::default_mode")]
-    pub public_url_mode: PublicUrlMode,
-    #[serde(default)]
-    pub managed_lease: ManagedLeaseProjection,
+    pub public_url: IntentPublicUrl,
     #[serde(default)]
     pub custom_certificates: Vec<ActiveCertState>,
     #[serde(default)]
     pub acme_http01_challenges: Vec<AcmeHttp01Challenge>,
 }
 
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum ManagedLeaseProjectionWire {
-    Projection(ManagedLeaseProjection),
-    Legacy(ManagedLeaseRecord),
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(
+    tag = "mode",
+    content = "managed_lease",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum IntentPublicUrl {
+    Unconfigured,
+    Auto(Box<ManagedLeaseProjection>),
+    BringYourOwn,
+    None,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct IntentSnapshotWire {
-    epoch: ControlPlaneEpoch,
-    core_machine_id: MachineId,
-    active_machines: Vec<ActiveMachineState>,
-    dataplane_projection: DataplaneProjection,
-    route_bindings: Vec<RouteBindingState>,
-    serving_target_entries: Vec<ServingTargetEntry>,
-    #[serde(default)]
-    volume_pins: Vec<VolumePinState>,
-    nats_authorizations: Vec<NatsAuthorizationGrant>,
-    #[serde(default = "PublicUrlMode::default_mode")]
-    public_url_mode: PublicUrlMode,
-    #[serde(default)]
-    managed_lease: Option<ManagedLeaseProjectionWire>,
-    #[serde(default)]
-    managed_cert_bundle: Option<ManagedCertBundle>,
-    #[serde(default)]
-    custom_certificates: Vec<ActiveCertState>,
-    #[serde(default)]
-    acme_http01_challenges: Vec<AcmeHttp01Challenge>,
-}
-
-impl<'de> Deserialize<'de> for IntentSnapshot {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let wire = IntentSnapshotWire::deserialize(deserializer)?;
-        let managed_lease = match (wire.managed_lease, wire.managed_cert_bundle) {
-            (Some(ManagedLeaseProjectionWire::Projection(projection)), None) => projection,
-            (Some(ManagedLeaseProjectionWire::Projection(_)), Some(_)) => {
-                return Err(serde::de::Error::custom(
-                    "typed managed lease projection conflicts with legacy certificate bundle",
-                ));
-            }
-            (Some(ManagedLeaseProjectionWire::Legacy(lease)), Some(bundle)) => {
-                ManagedLeaseProjection::Ready { lease, bundle }
-            }
-            (Some(ManagedLeaseProjectionWire::Legacy(lease)), None) => {
-                ManagedLeaseProjection::RecordOnly { lease }
-            }
-            (None, None) => ManagedLeaseProjection::Unacquired,
-            (None, Some(_)) => {
-                return Err(serde::de::Error::custom(
-                    "legacy certificate bundle requires a managed lease record",
-                ));
-            }
-        };
-        Ok(Self {
-            epoch: wire.epoch,
-            core_machine_id: wire.core_machine_id,
-            active_machines: wire.active_machines,
-            dataplane_projection: wire.dataplane_projection,
-            route_bindings: wire.route_bindings,
-            serving_target_entries: wire.serving_target_entries,
-            volume_pins: wire.volume_pins,
-            nats_authorizations: wire.nats_authorizations,
-            public_url_mode: wire.public_url_mode,
-            managed_lease,
-            custom_certificates: wire.custom_certificates,
-            acme_http01_challenges: wire.acme_http01_challenges,
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ManagedLeaseProjection {
-    #[default]
     Unacquired,
     RecordOnly {
         lease: ManagedLeaseRecord,
@@ -380,37 +315,6 @@ mod tests {
     }
 
     #[test]
-    fn intent_snapshot_rejects_typed_projection_with_legacy_bundle() {
-        let mut value = serde_json::to_value(ready_snapshot()).expect("serialize snapshot");
-        let bundle = value
-            .get("managed_lease")
-            .and_then(|lease| lease.get("bundle"))
-            .cloned()
-            .expect("bundle");
-        value
-            .as_object_mut()
-            .expect("snapshot object")
-            .insert("managed_cert_bundle".to_owned(), bundle);
-
-        assert!(serde_json::from_value::<IntentSnapshot>(value).is_err());
-    }
-
-    #[test]
-    fn intent_snapshot_rejects_orphaned_legacy_bundle() {
-        let mut value = serde_json::to_value(ready_snapshot()).expect("serialize snapshot");
-        let bundle = value
-            .get("managed_lease")
-            .and_then(|lease| lease.get("bundle"))
-            .cloned()
-            .expect("bundle");
-        let object = value.as_object_mut().expect("snapshot object");
-        object.remove("managed_lease");
-        object.insert("managed_cert_bundle".to_owned(), bundle);
-
-        assert!(serde_json::from_value::<IntentSnapshot>(value).is_err());
-    }
-
-    #[test]
     fn intent_snapshot_round_trips_named_credential_grants() {
         let mut snapshot = ready_snapshot();
         snapshot
@@ -432,35 +336,32 @@ mod tests {
     }
 
     #[test]
-    fn legacy_intent_snapshot_defaults_public_url_mode_to_auto() {
+    fn intent_snapshot_requires_public_url() {
         let mut value = serde_json::to_value(ready_snapshot()).expect("serialize snapshot");
         value
             .as_object_mut()
             .expect("snapshot object")
-            .remove("public_url_mode");
+            .remove("public_url");
 
-        let decoded =
-            serde_json::from_value::<IntentSnapshot>(value).expect("deserialize snapshot");
-
-        assert_eq!(decoded.public_url_mode, PublicUrlMode::Auto);
+        assert!(serde_json::from_value::<IntentSnapshot>(value).is_err());
     }
 
     #[test]
     fn intent_snapshot_round_trips_each_public_url_mode() {
-        for public_url_mode in [
-            PublicUrlMode::Auto,
-            PublicUrlMode::BringYourOwn,
-            PublicUrlMode::None,
+        for public_url in [
+            IntentPublicUrl::Auto(Box::new(ManagedLeaseProjection::Unacquired)),
+            IntentPublicUrl::BringYourOwn,
+            IntentPublicUrl::None,
         ] {
             let mut snapshot = ready_snapshot();
-            snapshot.public_url_mode = public_url_mode;
+            snapshot.public_url = public_url.clone();
 
             let decoded = serde_json::from_value::<IntentSnapshot>(
                 serde_json::to_value(snapshot).expect("serialize snapshot"),
             )
             .expect("deserialize snapshot");
 
-            assert_eq!(decoded.public_url_mode, public_url_mode);
+            assert_eq!(decoded.public_url, public_url);
         }
     }
 
@@ -494,8 +395,10 @@ mod tests {
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),
             nats_authorizations: Vec::new(),
-            public_url_mode: PublicUrlMode::Auto,
-            managed_lease: ManagedLeaseProjection::Ready { lease, bundle },
+            public_url: IntentPublicUrl::Auto(Box::new(ManagedLeaseProjection::Ready {
+                lease,
+                bundle,
+            })),
             custom_certificates: Vec::new(),
             acme_http01_challenges: Vec::new(),
         }

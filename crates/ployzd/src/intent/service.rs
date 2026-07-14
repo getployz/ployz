@@ -7,11 +7,11 @@ use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::intent::nats_authorizations::NatsAuthorizationStore;
 use crate::operations::log::OperationRepository;
 use crate::service_catalog::{intent_get_endpoint_spec, intent_service};
-use ployz_core::cert::{AutoLeaseState, ManagedLeaseIntent, PublicUrlMode};
+use ployz_core::cert::{AutoLeaseState, ManagedLeaseIntent};
 use ployz_core::dataplane::{DataplaneProjection, DataplaneProjectionMember};
 use ployz_core::ids::MachineId;
 use ployz_core::state::{
-    IntentSnapshot, ManagedLeaseProjection, PendingMachineJoinRecoverySnapshot,
+    IntentPublicUrl, IntentSnapshot, ManagedLeaseProjection, PendingMachineJoinRecoverySnapshot,
 };
 use ployz_core::subjects::{INTENT_CHANGED, INTENT_GET, PENDING_MACHINE_JOINS_CHANGED};
 use ployz_nats::service_protocol::NatsServiceError;
@@ -250,19 +250,14 @@ async fn load_intent(
         .map_err(|error| error.to_string())?;
     let managed_lease_intent = sources
         .lease_intent
-        .load()
+        .load_if_configured()
         .await
         .map_err(|error| error.to_string())?;
     let now_seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| error.to_string())?
         .as_secs();
-    let public_url_mode = match &managed_lease_intent {
-        ManagedLeaseIntent::Auto { .. } => PublicUrlMode::Auto,
-        ManagedLeaseIntent::BringYourOwn => PublicUrlMode::BringYourOwn,
-        ManagedLeaseIntent::None => PublicUrlMode::None,
-    };
-    let managed_lease = project_managed_lease(managed_lease_intent, now_seconds);
+    let public_url = project_public_url(managed_lease_intent, now_seconds);
     let custom_certificates = sources
         .certificate_intent
         .active_certificates()
@@ -283,26 +278,25 @@ async fn load_intent(
         serving_target_entries: namespace_intent.serving_target_entries,
         volume_pins: namespace_intent.volume_pins,
         nats_authorizations,
-        public_url_mode,
-        managed_lease,
+        public_url,
         custom_certificates,
         acme_http01_challenges,
     })
 }
 
-fn project_managed_lease(intent: ManagedLeaseIntent, now_seconds: u64) -> ManagedLeaseProjection {
+fn project_public_url(intent: Option<ManagedLeaseIntent>, now_seconds: u64) -> IntentPublicUrl {
     match intent {
-        ManagedLeaseIntent::Auto { state } => match *state {
+        None => IntentPublicUrl::Unconfigured,
+        Some(ManagedLeaseIntent::Auto { state }) => IntentPublicUrl::Auto(Box::new(match *state {
             AutoLeaseState::RecordOnly { lease } => ManagedLeaseProjection::RecordOnly { lease },
             AutoLeaseState::Ready { lease, bundle } if bundle.is_valid_at(now_seconds) => {
                 ManagedLeaseProjection::Ready { lease, bundle }
             }
             AutoLeaseState::Ready { lease, .. } => ManagedLeaseProjection::RecordOnly { lease },
-            AutoLeaseState::Unacquired => ManagedLeaseProjection::Unacquired,
-        },
-        ManagedLeaseIntent::BringYourOwn | ManagedLeaseIntent::None => {
-            ManagedLeaseProjection::Unacquired
-        }
+            AutoLeaseState::Unacquired { .. } => ManagedLeaseProjection::Unacquired,
+        })),
+        Some(ManagedLeaseIntent::BringYourOwn) => IntentPublicUrl::BringYourOwn,
+        Some(ManagedLeaseIntent::None) => IntentPublicUrl::None,
     }
 }
 
@@ -343,8 +337,8 @@ fn warn_publisher_failure(
 mod tests {
     use super::*;
     use ployz_core::cert::{
-        LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle, ManagedLeaseName,
-        ManagedLeaseRecord,
+        LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle,
+        ManagedLeaseAcquisitionId, ManagedLeaseName, ManagedLeaseRecord,
     };
 
     #[test]
@@ -374,28 +368,51 @@ mod tests {
         };
 
         assert_eq!(
-            project_managed_lease(ready(), 99),
-            ManagedLeaseProjection::RecordOnly {
+            project_public_url(Some(ready()), 99),
+            IntentPublicUrl::Auto(Box::new(ManagedLeaseProjection::RecordOnly {
                 lease: lease.clone()
-            }
+            }))
         );
         assert_eq!(
-            project_managed_lease(ready(), 100),
-            ManagedLeaseProjection::Ready {
+            project_public_url(Some(ready()), 100),
+            IntentPublicUrl::Auto(Box::new(ManagedLeaseProjection::Ready {
                 lease: lease.clone(),
                 bundle: bundle.clone(),
-            }
+            }))
         );
         assert_eq!(
-            project_managed_lease(ready(), 199),
-            ManagedLeaseProjection::Ready {
+            project_public_url(Some(ready()), 199),
+            IntentPublicUrl::Auto(Box::new(ManagedLeaseProjection::Ready {
                 lease: lease.clone(),
                 bundle: bundle.clone(),
-            }
+            }))
         );
         assert_eq!(
-            project_managed_lease(ready(), 200),
-            ManagedLeaseProjection::RecordOnly { lease }
+            project_public_url(Some(ready()), 200),
+            IntentPublicUrl::Auto(Box::new(ManagedLeaseProjection::RecordOnly { lease }))
         );
+    }
+
+    #[test]
+    fn unacquired_projection_redacts_acquisition_credentials() {
+        let projected = project_public_url(
+            Some(ManagedLeaseIntent::unacquired(
+                ManagedLeaseAcquisitionId::try_new("0123456789abcdef").expect("acquisition id"),
+                LeaseBearerToken::try_new("private-token").expect("token"),
+            )),
+            1,
+        );
+
+        assert_eq!(
+            projected,
+            IntentPublicUrl::Auto(Box::new(ManagedLeaseProjection::Unacquired))
+        );
+        let json = serde_json::to_string(&projected).expect("serialize projection");
+        assert!(!json.contains("0123456789abcdef") && !json.contains("private-token"));
+    }
+
+    #[test]
+    fn absent_intent_projects_as_unconfigured() {
+        assert_eq!(project_public_url(None, 1), IntentPublicUrl::Unconfigured);
     }
 }

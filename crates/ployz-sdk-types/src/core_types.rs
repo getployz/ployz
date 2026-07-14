@@ -4,8 +4,9 @@ pub use ployz_core::cert::{
     CertValidAt, CertValidAtError, CertValidityError, CertValidityWindow,
     CertificateProvisionFailure, LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt,
     LeaseTimestampError, ManagedCertBundle, ManagedCertificateIssuanceFailureKind,
-    ManagedLeaseAcquireRequest, ManagedLeaseAcquired, ManagedLeaseAddressSet, ManagedLeaseError,
-    ManagedLeaseName, ManagedLeaseRecord, ManagedLeaseRenewed, PublicUrlMode,
+    ManagedLeaseAcquireRequest, ManagedLeaseAcquired, ManagedLeaseAcquisitionId,
+    ManagedLeaseAddressSet, ManagedLeaseError, ManagedLeaseName, ManagedLeaseRecord,
+    ManagedLeaseRenewRequest, ManagedLeaseRenewed, PublicUrlMode,
 };
 pub use ployz_core::dataplane::{
     DataplaneMember, DataplaneProjection, DataplaneProjectionComponent, DataplaneProjectionFailure,

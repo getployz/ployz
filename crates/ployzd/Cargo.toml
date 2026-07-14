@@ -15,6 +15,7 @@ clap.workspace = true
 defguard_wireguard_rs.workspace = true
 futures-util.workspace = true
 getifs.workspace = true
+getrandom.workspace = true
 local-ip-address.workspace = true
 public-ip-address.workspace = true
 rustix = { version = "1.1.4", features = ["fs"] }

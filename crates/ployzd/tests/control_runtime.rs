@@ -510,7 +510,7 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
     );
     assert_eq!(snapshot.releases.len(), 1);
     assert_eq!(snapshot.instances.len(), 1);
-    assert_eq!(snapshot.public_url, RuntimePublicUrl::Auto { domain: None });
+    assert_eq!(snapshot.public_url, RuntimePublicUrl::Unconfigured);
     assert_eq!(
         snapshot.projection_sources.revisions.status,
         RuntimeDerivedCollectionStatus::Complete
@@ -552,7 +552,7 @@ async fn secured_operator_receives_passive_runtime_snapshot_replacements() {
     })
     .await;
     assert!(initial.containers.is_empty());
-    assert_eq!(initial.public_url, RuntimePublicUrl::Auto { domain: None });
+    assert_eq!(initial.public_url, RuntimePublicUrl::Unconfigured);
     let seeded = request_json::<_, RuntimeSnapshot>(
         &nats.connected.user,
         RUNTIME_SNAPSHOT_SEED.to_owned(),
@@ -568,6 +568,10 @@ async fn secured_operator_receives_passive_runtime_snapshot_replacements() {
     assert_eq!(health.seed.endpoint_tasks_started, 1);
     assert_eq!(health.seed.endpoint_tasks_finished, 0);
 
+    lease_intent
+        .set_mode(ployz_core::cert::PublicUrlMode::Auto)
+        .await
+        .expect("managed public URL mode configures");
     lease_intent
         .store_lease(managed_lease_record(), None)
         .await

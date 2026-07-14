@@ -5,8 +5,8 @@ use ployz_core::machine_runtime::{
     MachineFactsSnapshot, ManagedContainerKind, ManagedContainerObservation,
 };
 use ployz_core::state::{
-    ActiveMachineState, GatewayStatusObservation, IntentSnapshot, RouteBindingState,
-    ServingTargetEntry,
+    ActiveMachineState, GatewayStatusObservation, IntentPublicUrl, IntentSnapshot,
+    RouteBindingState, ServingTargetEntry,
 };
 use ployz_sdk_types::{
     MachineSnapshot, MachineTestimony, RouteCertLifecycle, RouteCertStatus,
@@ -23,39 +23,8 @@ pub(crate) fn from_sources(
     gateway_statuses: &BTreeMap<MachineId, GatewayStatusObservation>,
     read_at_unix_seconds: u64,
 ) -> RuntimeSnapshot {
-    let public_url = match intent.public_url_mode {
-        ployz_core::cert::PublicUrlMode::Auto => RuntimePublicUrl::Auto {
-            domain: match &intent.managed_lease {
-                ployz_core::state::ManagedLeaseProjection::Unacquired => None,
-                ployz_core::state::ManagedLeaseProjection::RecordOnly { lease }
-                | ployz_core::state::ManagedLeaseProjection::Ready { lease, .. } => {
-                    Some(lease.name.hostname_suffix())
-                }
-            },
-        },
-        ployz_core::cert::PublicUrlMode::BringYourOwn => RuntimePublicUrl::BringYourOwn,
-        ployz_core::cert::PublicUrlMode::None => RuntimePublicUrl::None,
-    };
-    // Per-custom-hostname TLS status. A usable custom certificate is Verified; an
-    // in-flight ACME challenge is Pending. Verified wins if both exist for a host.
-    let mut certificate_status_by_host = BTreeMap::new();
-    for cert in &intent.custom_certificates {
-        let lifecycle = if cert.is_usable_at(read_at_unix_seconds) {
-            RouteCertLifecycle::Verified
-        } else {
-            RouteCertLifecycle::Pending
-        };
-        certificate_status_by_host.insert(cert.hostname.clone(), lifecycle);
-    }
-    for challenge in &intent.acme_http01_challenges {
-        certificate_status_by_host
-            .entry(challenge.hostname().clone())
-            .or_insert(RouteCertLifecycle::Pending);
-    }
-    let certificate_statuses = certificate_status_by_host
-        .into_iter()
-        .map(|(hostname, status)| RouteCertStatus { hostname, status })
-        .collect::<Vec<_>>();
+    let public_url = runtime_public_url(&intent.public_url);
+    let certificate_statuses = route_certificate_statuses(&intent, read_at_unix_seconds);
     let machine_ids = intent
         .active_machines
         .iter()
@@ -105,6 +74,47 @@ pub(crate) fn from_sources(
         instances,
         updated_at_unix_seconds: read_at_unix_seconds,
     }
+}
+
+fn runtime_public_url(public_url: &IntentPublicUrl) -> RuntimePublicUrl {
+    match public_url {
+        IntentPublicUrl::Unconfigured => RuntimePublicUrl::Unconfigured,
+        IntentPublicUrl::Auto(managed_lease) => RuntimePublicUrl::Auto {
+            domain: match managed_lease.as_ref() {
+                ployz_core::state::ManagedLeaseProjection::Unacquired => None,
+                ployz_core::state::ManagedLeaseProjection::RecordOnly { lease }
+                | ployz_core::state::ManagedLeaseProjection::Ready { lease, .. } => {
+                    Some(lease.name.hostname_suffix())
+                }
+            },
+        },
+        IntentPublicUrl::BringYourOwn => RuntimePublicUrl::BringYourOwn,
+        IntentPublicUrl::None => RuntimePublicUrl::None,
+    }
+}
+
+fn route_certificate_statuses(
+    intent: &IntentSnapshot,
+    read_at_unix_seconds: u64,
+) -> Vec<RouteCertStatus> {
+    let mut certificate_status_by_host = BTreeMap::new();
+    for cert in &intent.custom_certificates {
+        let lifecycle = if cert.is_usable_at(read_at_unix_seconds) {
+            RouteCertLifecycle::Verified
+        } else {
+            RouteCertLifecycle::Pending
+        };
+        certificate_status_by_host.insert(cert.hostname.clone(), lifecycle);
+    }
+    for challenge in &intent.acme_http01_challenges {
+        certificate_status_by_host
+            .entry(challenge.hostname().clone())
+            .or_insert(RouteCertLifecycle::Pending);
+    }
+    certificate_status_by_host
+        .into_iter()
+        .map(|(hostname, status)| RouteCertStatus { hostname, status })
+        .collect()
 }
 
 fn machine_snapshot(
@@ -350,18 +360,19 @@ mod tests {
         AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
         ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, LeaseBearerToken,
         LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle, ManagedLeaseName, ManagedLeaseRecord,
-        PublicUrlMode,
     };
     use ployz_core::dataplane::DataplaneProjection;
     use ployz_core::ids::CertId;
     use ployz_core::ops::RouteHostname;
-    use ployz_core::state::{ControlPlaneEpoch, ManagedLeaseProjection};
+    use ployz_core::state::{ControlPlaneEpoch, IntentPublicUrl, ManagedLeaseProjection};
     use ployz_sdk_types::{RouteCertLifecycle, RouteCertStatus, RuntimePublicUrl};
 
     #[test]
     fn public_url_reports_auto_without_inventing_a_domain_before_acquisition() {
         let snapshot = from_sources(
-            intent(PublicUrlMode::Auto, ManagedLeaseProjection::Unacquired),
+            intent(IntentPublicUrl::Auto(Box::new(
+                ManagedLeaseProjection::Unacquired,
+            ))),
             &BTreeMap::new(),
             &BTreeMap::new(),
             1,
@@ -374,24 +385,22 @@ mod tests {
     fn public_url_reports_the_canonical_domain_for_each_acquired_auto_state() {
         let lease = lease_record();
         let record_only = from_sources(
-            intent(
-                PublicUrlMode::Auto,
+            intent(IntentPublicUrl::Auto(Box::new(
                 ManagedLeaseProjection::RecordOnly {
                     lease: lease.clone(),
                 },
-            ),
+            ))),
             &BTreeMap::new(),
             &BTreeMap::new(),
             1,
         );
         let ready = from_sources(
-            intent(
-                PublicUrlMode::Auto,
+            intent(IntentPublicUrl::Auto(Box::new(
                 ManagedLeaseProjection::Ready {
                     lease: lease.clone(),
                     bundle: bundle(&lease),
                 },
-            ),
+            ))),
             &BTreeMap::new(),
             &BTreeMap::new(),
             1,
@@ -407,12 +416,7 @@ mod tests {
     #[test]
     fn public_url_reports_bring_your_own_without_managed_domain_data() {
         let snapshot = from_sources(
-            intent(
-                PublicUrlMode::BringYourOwn,
-                ManagedLeaseProjection::RecordOnly {
-                    lease: lease_record(),
-                },
-            ),
+            intent(IntentPublicUrl::BringYourOwn),
             &BTreeMap::new(),
             &BTreeMap::new(),
             1,
@@ -424,12 +428,7 @@ mod tests {
     #[test]
     fn public_url_reports_none_without_managed_domain_data() {
         let snapshot = from_sources(
-            intent(
-                PublicUrlMode::None,
-                ManagedLeaseProjection::RecordOnly {
-                    lease: lease_record(),
-                },
-            ),
+            intent(IntentPublicUrl::None),
             &BTreeMap::new(),
             &BTreeMap::new(),
             1,
@@ -441,10 +440,7 @@ mod tests {
     #[test]
     fn certificate_status_reports_a_usable_custom_certificate_as_verified() {
         let hostname = route_hostname("app.example.com");
-        let mut source = intent(
-            PublicUrlMode::BringYourOwn,
-            ManagedLeaseProjection::Unacquired,
-        );
+        let mut source = intent(IntentPublicUrl::BringYourOwn);
         source.custom_certificates = vec![active_certificate(hostname.clone(), 1, 100)];
 
         let snapshot = from_sources(source, &BTreeMap::new(), &BTreeMap::new(), 50);
@@ -461,10 +457,7 @@ mod tests {
     #[test]
     fn certificate_status_reports_an_acme_challenge_as_pending() {
         let hostname = route_hostname("app.example.com");
-        let mut source = intent(
-            PublicUrlMode::BringYourOwn,
-            ManagedLeaseProjection::Unacquired,
-        );
+        let mut source = intent(IntentPublicUrl::BringYourOwn);
         source.acme_http01_challenges = vec![challenge(hostname.clone())];
 
         let snapshot = from_sources(source, &BTreeMap::new(), &BTreeMap::new(), 50);
@@ -481,10 +474,7 @@ mod tests {
     #[test]
     fn verified_certificate_wins_when_the_same_hostname_has_a_pending_challenge() {
         let hostname = route_hostname("app.example.com");
-        let mut source = intent(
-            PublicUrlMode::BringYourOwn,
-            ManagedLeaseProjection::Unacquired,
-        );
+        let mut source = intent(IntentPublicUrl::BringYourOwn);
         source.custom_certificates = vec![active_certificate(hostname.clone(), 1, 100)];
         source.acme_http01_challenges = vec![challenge(hostname.clone())];
 
@@ -499,10 +489,7 @@ mod tests {
         );
     }
 
-    fn intent(
-        public_url_mode: PublicUrlMode,
-        managed_lease: ManagedLeaseProjection,
-    ) -> IntentSnapshot {
+    fn intent(public_url: IntentPublicUrl) -> IntentSnapshot {
         IntentSnapshot {
             epoch: ControlPlaneEpoch::initial(),
             core_machine_id: MachineId::try_new("core").expect("machine id"),
@@ -513,8 +500,7 @@ mod tests {
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),
             nats_authorizations: Vec::new(),
-            public_url_mode,
-            managed_lease,
+            public_url,
             custom_certificates: Vec::new(),
             acme_http01_challenges: Vec::new(),
         }
