@@ -3,9 +3,7 @@
 //! truth (record-then-activate).
 
 use crate::adapters::nats_authorization::MintRequest;
-use crate::operations::log::{
-    MachineJoinRedemption, RecordMachineJoinReportError, RedeemMachineJoinTokenError,
-};
+use crate::operations::log::{MachineJoinRedemption, RedeemMachineJoinTokenError};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::{
     DataplaneProjectionAdmissionEvidence, MachineAddFailure, MachineName, RawJoinToken,
@@ -83,7 +81,7 @@ pub async fn machine_join_report(
 ) -> Result<MachineJoinReported, MachineJoinReportError> {
     let raw_token = RawJoinToken::try_new(request.join_token.as_str())
         .map_err(|_| MachineJoinReportError::InvalidJoinToken)?;
-    handlers
+    let target = handlers
         .controllers
         .repository()
         .machine_join_report_target(&raw_token)
@@ -167,7 +165,11 @@ pub async fn machine_join_report(
     let reported = match result {
         Ok(reported) => reported,
         Err(error) if matches!(outcome, MachineJoinReportedOutcome::Completed) => {
-            if let Some(reported) = repair_completed_machine_join_report(handlers, &error).await? {
+            if completed_machine_add_operation_id(&error).as_ref() == Some(&target.operation_id)
+                && let Some(reported) =
+                    repair_completed_machine_add(handlers, &target.operation_id, &target.machine_id)
+                        .await?
+            {
                 return Ok(reported);
             }
             return Err(machine_join_report_error(error));
@@ -266,25 +268,21 @@ fn dataplane_admission_unavailable_message(message: String) -> ployz_core::ops::
         })
 }
 
-async fn repair_completed_machine_join_report(
+pub(super) async fn repair_completed_machine_add(
     handlers: &OperationApiHandlers,
-    error: &RecordMachineJoinReportError,
+    operation_id: &OperationId,
+    expected_machine_id: &MachineId,
 ) -> Result<Option<MachineJoinReported>, MachineJoinReportError> {
-    let Some(operation_id) = completed_machine_add_operation_id(error) else {
-        return Ok(None);
-    };
     let Some(status) = handlers
         .controllers
         .repository()
-        .get(&operation_id)
+        .get(operation_id)
         .await
         .map_err(|error| MachineJoinReportError::Unavailable {
             message: error.to_string(),
         })?
     else {
-        return Err(MachineJoinReportError::Unavailable {
-            message: corrupt("missing completed machine-add operation"),
-        });
+        return Ok(None);
     };
     let OperationStatus::MachineAdd {
         id,
@@ -297,6 +295,9 @@ async fn repair_completed_machine_join_report(
     else {
         return Ok(None);
     };
+    if &machine_id != expected_machine_id {
+        return Ok(None);
+    }
 
     activate_reported_machine(handlers, &id, &machine_id, &name).await?;
     scrub_completed_machine_add_secrets(handlers, &id).await?;

@@ -13,7 +13,7 @@ use ployz_sdk_types::{
 };
 
 use super::OperationApiHandlers;
-use super::machine_join::{machine_join_redeem, machine_join_report};
+use super::machine_join::{machine_join_redeem, machine_join_report, repair_completed_machine_add};
 use super::submit::machine_add;
 
 const FIRST_MACHINE_MATERIAL_WAIT_ATTEMPTS: u32 = 120;
@@ -34,6 +34,17 @@ pub async fn init_first_machine_activate(
         return Ok(InitFirstMachineActivated {
             operation_id: active.activated_by,
             machine_id: active.machine_id,
+        });
+    }
+    if let Some(repaired) =
+        repair_completed_machine_add(handlers, &plan.operation_id, &request.machine_id)
+            .await
+            .map_err(|failure| InitFirstMachineActivateError::JoinReport { failure })?
+    {
+        set_public_url_mode(handlers, public_url_mode).await?;
+        return Ok(InitFirstMachineActivated {
+            operation_id: repaired.operation_id,
+            machine_id: repaired.machine_id,
         });
     }
     let accepted = machine_add(

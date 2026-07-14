@@ -411,6 +411,7 @@ async fn assert_auto_hostname_https_survives_core_stop(core: &CoreContext) {
             .exec_on(machine, &["systemctl", "start", "ployzd-control"])
             .await;
         assert!(started.success(), "restart core control: {started:?}");
+        wait_for_machine_observations(core, &machine_id("core_1")).await;
     })
     .await;
 }

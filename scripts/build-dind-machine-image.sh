@@ -47,35 +47,51 @@ if [ "$#" -gt 1 ]; then
   exit 1
 fi
 
+command -v docker >/dev/null 2>&1 || {
+  echo "docker is required by this build script" >&2
+  exit 1
+}
+
+image_digest() {
+  docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$1"
+}
+
 machine_fingerprint() {
-  local platform
+  local platform digest_dir workload_pid registry_pid umami_pid postgres_pid
   platform="$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")"
+  digest_dir="$(mktemp -d "${TMPDIR:-/tmp}/ployz-dind-fingerprint.XXXXXX")"
+  image_digest "${WORKLOAD_IMAGE}" > "${digest_dir}/workload" & workload_pid=$!
+  image_digest "${REGISTRY_IMAGE}" > "${digest_dir}/registry" & registry_pid=$!
+  image_digest "${UMAMI_IMAGE}" > "${digest_dir}/umami" & umami_pid=$!
+  image_digest "${POSTGRES_IMAGE}" > "${digest_dir}/postgres" & postgres_pid=$!
+  wait "${workload_pid}"
+  wait "${registry_pid}"
+  wait "${umami_pid}"
+  wait "${postgres_pid}"
   {
     printf '%s\0' \
       "platform=${platform}" \
       "nats=${NATS_SERVER_VERSION}" \
-      "workload=${WORKLOAD_IMAGE}" \
-      "registry=${REGISTRY_IMAGE}" \
-      "umami=${UMAMI_IMAGE}" \
-      "postgres=${POSTGRES_IMAGE}"
+      "workload=${WORKLOAD_IMAGE}@$(<"${digest_dir}/workload")" \
+      "registry=${REGISTRY_IMAGE}@$(<"${digest_dir}/registry")" \
+      "umami=${UMAMI_IMAGE}@$(<"${digest_dir}/umami")" \
+      "postgres=${POSTGRES_IMAGE}@$(<"${digest_dir}/postgres")"
     local file
     for file in Dockerfile daemon.json ployz-dind-images.service; do
       printf '%s\0' "${file}"
       cat "${CONTEXT_DIR}/${file}"
       printf '\0'
     done
+    printf '%s\0' build-script
+    cat "${BASH_SOURCE[0]}"
   } | sha256_stdin
+  rm -rf "${digest_dir}"
 }
 
 if [ "${mode}" = "fingerprint" ]; then
   machine_fingerprint
   exit 0
 fi
-
-command -v docker >/dev/null 2>&1 || {
-  echo "docker is required by this build script" >&2
-  exit 1
-}
 
 ensure_builder_image() {
   local want_platform existing_arch
@@ -152,22 +168,26 @@ install -m 0644 "${bytecode}" /target/release/ployz-ebpf-tc'
 }
 
 bake_workload_tarball() {
-  local platform name image tar stamp image_id stamp_value temp_tar temp_stamp
+  local platform name image save_image tar stamp image_id stamp_value temp_tar temp_stamp
   platform="$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")"
   mkdir -p "${WORKLOAD_STAMP_DIR}"
   while read -r name image; do
     docker pull --platform "${platform}" "${image}"
+    save_image="${image%@*}"
+    if [ "${save_image}" != "${image}" ]; then
+      docker tag "${image}" "${save_image}"
+    fi
     tar="${CONTEXT_DIR}/${name}.tar"
     stamp="${WORKLOAD_STAMP_DIR}/${name}.stamp"
-    image_id="$(docker image inspect --format '{{.Id}}' "${image}")"
-    stamp_value="${platform} ${image_id}"
+    image_id="$(docker image inspect --format '{{.Id}}' "${save_image}")"
+    stamp_value="${platform} ${image} ${image_id}"
     if [ -f "${tar}" ] && [ "$(cat "${stamp}" 2>/dev/null || true)" = "${stamp_value}" ]; then
       continue
     fi
 
     temp_tar="${tar}.tmp.$$"
     temp_stamp="${stamp}.tmp.$$"
-    if ! docker save -o "${temp_tar}" "${image}"; then
+    if ! docker save -o "${temp_tar}" "${save_image}"; then
       rm -f "${temp_tar}" "${temp_stamp}"
       return 1
     fi
