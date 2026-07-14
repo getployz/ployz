@@ -34,9 +34,10 @@ pub async fn init_first_machine_activate(
     .map_err(|_| InitFirstMachineActivateError::InvalidPlan)?;
     let plan = plan_first_machine_activation(&request.machine_id)
         .map_err(|_| InitFirstMachineActivateError::InvalidPlan)?;
+    // Founder dataplane admission reads the complete intent snapshot.
+    set_ingress_configuration_if_unconfigured(handlers.ingress_intent(), ingress_configuration)
+        .await?;
     if let Some(active) = first_machine_active_machine(handlers, &request.machine_id).await? {
-        set_ingress_configuration_if_unconfigured(handlers.ingress_intent(), ingress_configuration)
-            .await?;
         return Ok(InitFirstMachineActivated {
             operation_id: active.activated_by,
             machine_id: active.machine_id,
@@ -47,7 +48,6 @@ pub async fn init_first_machine_activate(
             .await
             .map_err(|failure| InitFirstMachineActivateError::JoinReport { failure })?
     {
-        set_ingress_configuration(handlers.ingress_intent(), ingress_configuration).await?;
         return Ok(InitFirstMachineActivated {
             operation_id: repaired.operation_id,
             machine_id: repaired.machine_id,
@@ -67,7 +67,6 @@ pub async fn init_first_machine_activate(
     .await
     .map_err(|failure| InitFirstMachineActivateError::MachineAdd { failure })?;
     let reported = redeem_seed_and_report(handlers, accepted.join_token).await?;
-    set_ingress_configuration(handlers.ingress_intent(), ingress_configuration).await?;
 
     Ok(InitFirstMachineActivated {
         operation_id: reported.operation_id,
