@@ -29,7 +29,7 @@ use super::{
 /// Placement uses durable intent plus fresh machine testimony, fixes its peer
 /// validation set for one pass, and does not require RTT.
 #[tokio::test]
-async fn scenario_intent_driven_placement_peer_health() {
+async fn group_placement_peer_health() {
     if !dind::e2e_enabled() {
         return;
     }
@@ -45,6 +45,11 @@ async fn scenario_intent_driven_placement_peer_health() {
         for machine in ["core_1", "edge_2", "edge_3"] {
             wait_for_machine_observations(&core, &machine_id(machine)).await;
         }
+        super::timed(
+            "direct_push_multi_machine",
+            super::assert_direct_push_multi_machine_deploy(&core),
+        )
+        .await;
 
         let controller = connect_core_client(
             &core,

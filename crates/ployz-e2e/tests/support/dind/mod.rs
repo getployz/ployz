@@ -9,7 +9,7 @@ pub mod join;
 
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::FutureExt as _;
 use ployz_e2e::dind::DindCluster;
@@ -31,13 +31,47 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// whole-cluster evidence before resuming the panic. This makes every plain
 /// `assert!`/`panic!`/`.expect` in the body an evidence-capturing failure.
 pub async fn with_evidence<T>(cluster: &DindCluster, scenario: impl Future<Output = T>) -> T {
+    let started = Instant::now();
+    let thread = std::thread::current();
+    let name = thread.name().unwrap_or("unknown");
+
     match AssertUnwindSafe(scenario).catch_unwind().await {
-        Ok(value) => value,
+        Ok(value) => {
+            eprintln!(
+                "DIND_TIMING name={name} status=passed elapsed_ms={}",
+                started.elapsed().as_millis()
+            );
+            value
+        }
         Err(panic) => {
+            eprintln!(
+                "DIND_TIMING name={name} status=failed elapsed_ms={}",
+                started.elapsed().as_millis()
+            );
             match cluster.capture_evidence().await {
                 Ok(dir) => eprintln!("scenario failed; evidence: {}", dir.display()),
                 Err(error) => eprintln!("scenario failed; evidence capture also failed: {error}"),
             }
+            std::panic::resume_unwind(panic)
+        }
+    }
+}
+
+pub async fn timed<T>(name: &str, scenario: impl Future<Output = T>) -> T {
+    let started = Instant::now();
+    match AssertUnwindSafe(scenario).catch_unwind().await {
+        Ok(value) => {
+            eprintln!(
+                "DIND_TIMING name={name} status=passed elapsed_ms={}",
+                started.elapsed().as_millis()
+            );
+            value
+        }
+        Err(panic) => {
+            eprintln!(
+                "DIND_TIMING name={name} status=failed elapsed_ms={}",
+                started.elapsed().as_millis()
+            );
             std::panic::resume_unwind(panic)
         }
     }

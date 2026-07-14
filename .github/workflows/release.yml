@@ -7,6 +7,8 @@ name: release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "v*"
   release:
@@ -17,15 +19,51 @@ permissions:
   contents: read
 
 jobs:
+  warm-linux-cache:
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux/amd64
+            slug: linux-amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+            slug: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Restore Linux build cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            /tmp/ployz-dind-machine-target
+            /tmp/ployz-dind-ebpf-target
+            /tmp/ployz-dind-cargo-registry
+            /tmp/ployz-dind-cargo-git
+          key: ployz-release-${{ matrix.slug }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs', 'ebpf/**/Cargo.lock', 'ebpf/**/Cargo.toml', 'ebpf/**/*.rs', 'scripts/build-dind-machine-image.sh', 'scripts/build-ebpf-bytecode.sh', 'scripts/lib.sh') }}
+          restore-keys: ployz-release-${{ matrix.slug }}-
+      - name: Warm release build cache
+        env:
+          PLOYZ_DIND_PLATFORM: ${{ matrix.platform }}
+        run: bash scripts/build-dind-machine-image.sh artifacts-only
+      - name: Repair Linux cache ownership
+        if: always()
+        run: |
+          for path in /tmp/ployz-dind-{machine-target,ebpf-target,cargo-registry,cargo-git}; do
+            [ ! -e "${path}" ] || sudo chown -R "$(id -u):$(id -g)" "${path}"
+          done
+
   precheck-sdk-publish:
-    if: github.event_name == 'push'
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: read
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "24"
           registry-url: https://registry.npmjs.org
@@ -49,7 +87,7 @@ jobs:
           npm publish --dry-run --access public --tag alpha
 
   package:
-    if: github.event_name == 'push'
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: read
       id-token: write
@@ -74,21 +112,22 @@ jobs:
             runner: macos-14
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Restore Linux build cache
         if: startsWith(matrix.platform, 'linux/')
-        uses: actions/cache@v4
+        id: linux-cache
+        uses: actions/cache@v5
         with:
           path: |
             /tmp/ployz-dind-machine-target
             /tmp/ployz-dind-ebpf-target
             /tmp/ployz-dind-cargo-registry
             /tmp/ployz-dind-cargo-git
-          key: ployz-release-${{ matrix.slug }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs', 'ebpf/**/Cargo.toml', 'ebpf/**/*.rs') }}
+          key: ployz-release-${{ matrix.slug }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs', 'ebpf/**/Cargo.lock', 'ebpf/**/Cargo.toml', 'ebpf/**/*.rs', 'scripts/build-dind-machine-image.sh', 'scripts/build-ebpf-bytecode.sh', 'scripts/lib.sh') }}
           restore-keys: ployz-release-${{ matrix.slug }}-
       - name: Restore macOS build cache
         if: startsWith(matrix.platform, 'darwin/')
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             target
@@ -98,6 +137,7 @@ jobs:
           restore-keys: ployz-release-${{ matrix.slug }}-
       - name: Package release assets
         env:
+          PLOYZ_RELEASE_SKIP_BUILD: ${{ steps.linux-cache.outputs.cache-hit == 'true' && '1' || '0' }}
           PLOYZ_RELEASE_VERSION: ${{ github.ref_name }}
           PLOYZ_RELEASE_PLATFORM: ${{ matrix.platform }}
           PLOYZ_NATS_SERVER_VERSION: 2.14.2
@@ -114,14 +154,14 @@ jobs:
         uses: actions/attest@v4
         with:
           subject-path: dist/releases/${{ github.ref_name }}/*
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: release-${{ matrix.slug }}
           path: dist/releases/${{ github.ref_name }}/*
           if-no-files-found: error
 
   publish:
-    if: github.event_name == 'push'
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     needs:
@@ -129,7 +169,7 @@ jobs:
       - package
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           path: dist/assets
           merge-multiple: true
@@ -152,11 +192,11 @@ jobs:
       id-token: write
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.release.tag_name }}
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "24"
           registry-url: https://registry.npmjs.org
