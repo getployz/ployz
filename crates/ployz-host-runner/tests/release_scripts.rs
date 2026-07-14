@@ -486,6 +486,7 @@ printf '%s\n' "$*" >> "${PLOYZ_FAKE_LOG}"
 if [ "${0##*/}" = cargo ]; then exit 0; fi
 case "${1:-}" in
   info) printf 'amd64\n' ;;
+  buildx) printf 'sha256:%s\n' "${6}" ;;
   image) case "${4:-}" in
     *dev.ployz.dind.fingerprint*) printf '%s\n' "${PLOYZ_FAKE_MACHINE_IDENTITY:-}" ;;
     *Architecture*) printf 'linux/amd64\n' ;;
@@ -572,7 +573,7 @@ fn seed_workload_tars(fake: &FakeDocker) {
             .expect("workload tar can be written");
         fs::write(
             stamps.join(format!("{name}.stamp")),
-            format!("linux/amd64 sha256:{image}\n"),
+            format!("linux/amd64 {image} sha256:{image}\n"),
         )
         .expect("workload stamp can be written");
     }
