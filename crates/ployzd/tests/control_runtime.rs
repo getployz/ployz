@@ -46,6 +46,7 @@ use ployz_sdk_types::{
 };
 use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::certificate::task::{CertificateRenewalAttempt, CertificateRenewalOutcome};
+use ployzd::certificate::{AcmeIssueContext, AcmeIssuer, AcmeIssuerError, IssuedCertificate};
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use ployzd::lease::LeaseWorkerUrl;
@@ -494,7 +495,12 @@ async fn secured_operator_receives_passive_runtime_snapshot_replacements() {
     )
     .await
     .expect("operator seeds from passive runtime projection");
-    assert_eq!(seeded, initial);
+    assert!(seeded.machines.is_empty());
+    assert_eq!(
+        seeded.automatic_hostname_configuration,
+        initial.automatic_hostname_configuration
+    );
+    assert!(seeded.updated_at_unix_seconds >= initial.updated_at_unix_seconds);
     let health = runtime.runtime_projection_health();
     assert_eq!(health.projection.consecutive_failures, 0);
     assert_eq!(health.publisher.consecutive_failures, 0);
@@ -917,15 +923,15 @@ async fn control_runtime_records_machine_update_without_mutating_roster_intent()
 
 #[tokio::test]
 async fn control_runtime_routed_deploy_serves_through_gateway() {
-    let nats =
-        TestNats::start_with_machines(&[machine_id("machine_a"), machine_id("machine_gateway")])
-            .await;
+    let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
     let config = nats
         .control_config()
         .with_deploy_machines(vec![machine_id("machine_a")])
         .with_deploy_step_timeout(Duration::from_secs(2));
     let machine_roster = machine_roster(&config).await;
-    let runtime = nats.start_control(&config).await;
+    let runtime = nats
+        .start_control_with_test_issuer(&config, std::sync::Arc::new(FixtureAcmeIssuer))
+        .await;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     machine_roster
         .replace_active_machine(&active_machine("machine_a"))
@@ -942,12 +948,11 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
     .await
     .expect("machine runtime starts");
     wait_for_dataplane_projection(&nats, &machine_id("machine_a")).await;
-    let gateway_client = nats.machine_client(&machine_id("machine_gateway")).await;
     let gateway = start_gateway_process_with_client(
-        gateway_client,
+        machine_client.clone(),
         Duration::from_millis(10),
         SocketAddr::from(([127, 0, 0, 1], 0)),
-        machine_id("machine_gateway"),
+        machine_id("machine_a"),
         None,
     )
     .await
@@ -1009,7 +1014,7 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         .await
         .expect("connect gateway");
     client
-        .write_all(b"GET /smoke HTTP/1.1\r\nHost: api.example.com\r\nConnection: close\r\n\r\n")
+        .write_all(b"GET /smoke HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
         .await
         .expect("write gateway request");
     let mut response = String::new();
@@ -1018,11 +1023,8 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         .await
         .expect("read gateway response");
 
-    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
-    assert!(response.ends_with("\r\n\r\nsmoke"));
-    let upstream_request = upstream.request().await;
-    assert!(upstream_request.starts_with("GET /smoke HTTP/1.1\r\n"));
-    assert!(upstream_request.contains("\r\nHost: api.example.com\r\n"));
+    assert!(response.starts_with("HTTP/1.1 301 Moved Permanently\r\n"));
+    assert!(response.contains("location: https://localhost/smoke\r\n"));
 
     gateway.shutdown().await.expect("gateway shuts down");
     machine_runtime
@@ -1033,6 +1035,41 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         .shutdown()
         .await
         .expect("control runtime shuts down");
+}
+
+struct FixtureAcmeIssuer;
+
+#[async_trait::async_trait]
+impl AcmeIssuer for FixtureAcmeIssuer {
+    async fn issue_http01(
+        &self,
+        context: &AcmeIssueContext,
+        hostname: &ployz_core::ops::RouteHostname,
+    ) -> Result<IssuedCertificate, AcmeIssuerError> {
+        let challenge = ployz_core::cert::AcmeHttp01Challenge::try_new(
+            hostname.clone(),
+            ployz_core::cert::AcmeChallengeToken::try_new("control-runtime-token")
+                .expect("challenge token"),
+            ployz_core::cert::AcmeChallengeValue::try_new(
+                "control-runtime-token.fixture-thumbprint",
+            )
+            .expect("challenge value"),
+            ployz_core::cert::AcmeChallengeTtlSeconds::try_new(900).expect("challenge ttl"),
+        )
+        .expect("challenge");
+        context.publish_challenge(challenge).await?;
+        context.validation_started().await?;
+        let rcgen::CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed([hostname.as_str().to_owned()]).map_err(
+                |error| AcmeIssuerError::Validation {
+                    message: error.to_string(),
+                },
+            )?;
+        Ok(IssuedCertificate {
+            certificate_chain_pem: cert.pem(),
+            private_key_pem: signing_key.serialize_pem(),
+        })
+    }
 }
 
 fn image(value: &str) -> ImageReference {
@@ -1288,7 +1325,7 @@ fn deploy_target_with_route(service_id: &str, endpoint_port: u16) -> DeployReque
     };
     service.routes = vec![DeployRoute {
         target: DeployRouteTarget::Hostname {
-            hostname: route_hostname("api.example.com"),
+            hostname: route_hostname("localhost"),
         },
         endpoint_port: route_port(endpoint_port),
     }];

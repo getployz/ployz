@@ -15,6 +15,7 @@ use ployzd::adapters::nats_authorization::{
     NatsReloadEvidence, NatsReloadOutcome, NatsReloadRunner, SignalNatsReloadRunner,
 };
 use ployzd::adapters::nats_server::NatsServerLaunch;
+use ployzd::certificate::AcmeIssuer;
 use ployzd::config::{ControlNatsAuthorizationConfig, ControlProcessConfig};
 use ployzd::operation_api::admission::MachineAddBootstrapConfig;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -106,6 +107,7 @@ impl TestNats {
         config: &ControlProcessConfig,
         reload: RecordingReload,
     ) -> ployzd::roles::control::RunningControlProcess {
+        initialize_ingress(config).await;
         ployzd::roles::control::start_control_process_with_client_and_reload(
             self.connected.controller.clone(),
             config,
@@ -118,6 +120,51 @@ impl TestNats {
         .await
         .expect("control runtime starts")
     }
+
+    pub async fn start_control_with_test_issuer(
+        &self,
+        config: &ControlProcessConfig,
+        issuer: Arc<dyn AcmeIssuer>,
+    ) -> ployzd::roles::control::RunningControlProcess {
+        initialize_ingress(config).await;
+        ployzd::roles::control::start_control_process_with_client_and_test_issuer(
+            self.connected.controller.clone(),
+            config,
+            StartupThenReload {
+                startup_pending: AtomicBool::new(true),
+                server_pid: self.server().server_pid(),
+                mutation: self.reload_runner(),
+            },
+            issuer,
+        )
+        .await
+        .expect("control runtime starts")
+    }
+}
+
+async fn initialize_ingress(config: &ControlProcessConfig) {
+    let store = ployzd::core_store::CoreStore::open(config.core_db_path.clone())
+        .await
+        .expect("test core store opens");
+    let ingress = ployzd::intent::ingress_intent::IngressIntentStore::new(store);
+    if ingress
+        .load()
+        .await
+        .expect("ingress intent loads")
+        .is_some()
+    {
+        return;
+    }
+    ingress
+        .replace(
+            ployz_core::ingress::IngressConfiguration::try_new(
+                ployz_core::ingress::AutomaticHostnameConfiguration::Disabled,
+                ployz_core::ingress::PloyzDnsTargetIntent::Disabled,
+            )
+            .expect("valid test ingress configuration"),
+        )
+        .await
+        .expect("test ingress intent initializes");
 }
 
 struct StartupThenReload {
