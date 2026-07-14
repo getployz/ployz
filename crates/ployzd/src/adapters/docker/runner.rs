@@ -41,12 +41,15 @@ use ployz_core::machine_runtime::{
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 const DEFAULT_LOG_TAIL_LINES: u16 = 200;
 const MAX_LOG_TAIL_LINES: u16 = 1_000;
 const MAX_LOG_TAIL_BYTES: usize = 64 * 1024;
+const REGISTRY_RESOLVE_RETRY_DELAYS: [Duration; 2] =
+    [Duration::from_millis(250), Duration::from_secs(1)];
 
 #[derive(Debug, Clone)]
 pub struct DockerManagedContainerRunner {
@@ -242,15 +245,30 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
                 .map_err(|error| MachineContainerRunnerError::ImagePull {
                     message: error.to_string(),
                 })?;
-        let inspected = docker
-            .inspect_registry_image(reference.as_str(), docker_credentials(credential))
-            .await
-            .map_err(|error| MachineContainerRunnerError::ImagePull {
-                message: redact_registry_credential(
-                    format!("resolve Docker image {}: {error}", reference.as_str()),
-                    credential,
-                ),
-            })?;
+        let failure = |error: BollardError| MachineContainerRunnerError::ImagePull {
+            message: redact_registry_credential(
+                format!("resolve Docker image {}: {error}", reference.as_str()),
+                credential,
+            ),
+        };
+        let mut retry_delays = REGISTRY_RESOLVE_RETRY_DELAYS.into_iter();
+        let inspected = loop {
+            match docker
+                .inspect_registry_image(reference.as_str(), docker_credentials(credential))
+                .await
+            {
+                Ok(inspected) => break inspected,
+                Err(error) => {
+                    if retryable_registry_resolution(&error)
+                        && let Some(delay) = retry_delays.next()
+                    {
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    return Err(failure(error));
+                }
+            }
+        };
         let Some(digest) = inspected.descriptor.digest else {
             return Err(MachineContainerRunnerError::ImagePull {
                 message: format!("registry returned no digest for {}", reference.as_str()),
@@ -512,6 +530,19 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
             }),
         }
     }
+}
+
+fn retryable_registry_resolution(error: &BollardError) -> bool {
+    if let BollardError::DockerResponseServerError { status_code, .. } = error {
+        return *status_code == 429 || *status_code >= 500;
+    }
+    matches!(
+        error,
+        BollardError::RequestTimeoutError
+            | BollardError::HyperResponseError { .. }
+            | BollardError::HyperLegacyError { .. }
+            | BollardError::IOError { .. }
+    )
 }
 
 impl MachineLogReader for DockerManagedContainerRunner {
@@ -1023,8 +1054,145 @@ mod tests {
     };
     use ployz_core::ids::{NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
     use ployz_core::machine_runtime::{ManagedContainerIdentity, ManagedContainerKind};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::UnixListener;
 
     const TEST_ENDPOINT_SUBNET: &str = "10.42.7.0/24";
+
+    #[tokio::test]
+    async fn registry_resolution_retries_transient_server_failures() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let success = format!(r#"{{"Descriptor":{{"digest":"{digest}"}},"Platforms":[]}}"#);
+        let (runner, attempts, _socket_dir) = registry_runner_with_responses(vec![
+            (429, r#"{"message":"rate limited"}"#.to_owned()),
+            (500, r#"{"message":"registry unavailable"}"#.to_owned()),
+            (200, success),
+        ])
+        .await;
+
+        let resolved = runner
+            .resolve_registry_image(&image("nginx:1.27-alpine"), None)
+            .await
+            .expect("third registry inspection succeeds");
+
+        assert_eq!(resolved, OciDigest::try_new(digest).expect("valid digest"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn registry_resolution_does_not_retry_terminal_client_failures() {
+        let digest = format!("sha256:{}", "b".repeat(64));
+        let (runner, attempts, _socket_dir) = registry_runner_with_responses(vec![
+            (404, r#"{"message":"manifest unknown"}"#.to_owned()),
+            (
+                200,
+                format!(r#"{{"Descriptor":{{"digest":"{digest}"}},"Platforms":[]}}"#),
+            ),
+        ])
+        .await;
+
+        let error = runner
+            .resolve_registry_image(&image("nginx:missing"), None)
+            .await
+            .expect_err("missing manifest is terminal");
+
+        let MachineContainerRunnerError::ImagePull { message } = error else {
+            panic!("expected image pull failure");
+        };
+        assert!(message.contains("status code 404"), "{message}");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn registry_resolution_stops_after_three_transient_server_failures() {
+        let digest = format!("sha256:{}", "c".repeat(64));
+        let (runner, attempts, _socket_dir) = registry_runner_with_responses(vec![
+            (500, r#"{"message":"first failure"}"#.to_owned()),
+            (500, r#"{"message":"second failure"}"#.to_owned()),
+            (500, r#"{"message":"final failure"}"#.to_owned()),
+            (
+                200,
+                format!(r#"{{"Descriptor":{{"digest":"{digest}"}},"Platforms":[]}}"#),
+            ),
+        ])
+        .await;
+
+        let error = runner
+            .resolve_registry_image(&image("nginx:1.27-alpine"), None)
+            .await
+            .expect_err("three transient failures exhaust retries");
+
+        let MachineContainerRunnerError::ImagePull { message } = error else {
+            panic!("expected image pull failure");
+        };
+        assert!(message.contains("final failure"), "{message}");
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    async fn registry_runner_with_responses(
+        responses: Vec<(u16, String)>,
+    ) -> (
+        DockerManagedContainerRunner,
+        Arc<AtomicUsize>,
+        tempfile::TempDir,
+    ) {
+        let socket_dir = tempfile::TempDir::new().expect("Docker API stub directory");
+        let socket_path = socket_dir.path().join("docker.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind Docker API stub");
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let server_attempts = attempts.clone();
+        tokio::spawn(async move {
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().await.expect("accept Docker API request");
+                let mut request = Vec::new();
+                let mut buffer = [0; 512];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream
+                        .read(&mut buffer)
+                        .await
+                        .expect("read Docker API request");
+                    assert_ne!(read, 0, "Docker API request ended before its headers");
+                    request.extend_from_slice(
+                        buffer
+                            .get(..read)
+                            .expect("read length is bounded by buffer"),
+                    );
+                }
+                server_attempts.fetch_add(1, Ordering::SeqCst);
+                let reason = if status == 200 {
+                    "OK"
+                } else {
+                    "Internal Server Error"
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write Docker API response");
+            }
+        });
+        let docker = Docker::connect_with_socket(
+            socket_path.to_str().expect("UTF-8 Docker API socket path"),
+            5,
+            bollard::API_DEFAULT_VERSION,
+        )
+        .expect("connect Docker API stub");
+        (
+            DockerManagedContainerRunner {
+                docker: DockerHandle::Connected(docker),
+                endpoint_network_subnet: TEST_ENDPOINT_SUBNET.to_owned(),
+                endpoint_bridge_ifname: "br-test".to_owned(),
+                endpoint_wg_ifname: "wg-test".to_owned(),
+                endpoint_mtu_policy: WireGuardMtuPolicy::Fixed(1_420),
+            },
+            attempts,
+            socket_dir,
+        )
+    }
 
     #[test]
     fn list_options_filter_to_managed_containers() {
