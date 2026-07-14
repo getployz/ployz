@@ -444,10 +444,9 @@ fn dns_attempt_from_tick(tick: DnsProjectorTick) -> DnsProcessAttempt {
 }
 
 pub async fn run_dns_until_shutdown(config: &DnsProcessConfig) -> Result<(), DnsProcessError> {
+    let shutdown = shutdown_signal().map_err(DnsProcessError::ShutdownSignal)?;
     let runtime = start_dns_process(config).await?;
-    shutdown_signal()
-        .await
-        .map_err(DnsProcessError::ShutdownSignal)?;
+    shutdown.await.map_err(DnsProcessError::ShutdownSignal)?;
     runtime
         .shutdown()
         .await

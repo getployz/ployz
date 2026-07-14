@@ -452,8 +452,9 @@ impl MachineObservationPublisher {
 pub async fn run_machine_until_shutdown(
     config: &MachineProcessConfig,
 ) -> Result<(), MachineProcessError> {
+    let shutdown = shutdown_signal().map_err(MachineProcessError::ShutdownSignal)?;
     let runtime = start_machine_process(config).await?;
-    shutdown_signal()
+    shutdown
         .await
         .map_err(MachineProcessError::ShutdownSignal)?;
     runtime

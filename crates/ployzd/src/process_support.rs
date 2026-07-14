@@ -31,20 +31,25 @@ pub async fn bounded_role_shutdown(
     }
 }
 
-/// Resolves when the process receives a shutdown signal.
-pub async fn shutdown_signal() -> Result<(), std::io::Error> {
+/// Registers shutdown handlers immediately and returns their waiter.
+pub fn shutdown_signal() -> Result<impl Future<Output = Result<(), std::io::Error>>, std::io::Error>
+{
     #[cfg(unix)]
     {
+        let mut interrupt =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
         let mut terminate =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-        tokio::select! {
-            result = tokio::signal::ctrl_c() => result,
-            _ = terminate.recv() => Ok(()),
-        }
+        Ok(async move {
+            tokio::select! {
+                _ = interrupt.recv() => Ok(()),
+                _ = terminate.recv() => Ok(()),
+            }
+        })
     }
     #[cfg(not(unix))]
     {
-        tokio::signal::ctrl_c().await
+        Ok(async { tokio::signal::ctrl_c().await })
     }
 }
 

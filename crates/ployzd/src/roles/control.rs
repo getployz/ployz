@@ -392,8 +392,9 @@ pub async fn start_control_process_with_client_and_reload(
 pub async fn run_control_until_shutdown(
     config: &ControlProcessConfig,
 ) -> Result<(), ControlProcessError> {
+    let shutdown = shutdown_signal().map_err(ControlProcessError::ShutdownSignal)?;
     let runtime = start_control_process(config).await?;
-    shutdown_signal()
+    shutdown
         .await
         .map_err(ControlProcessError::ShutdownSignal)?;
     runtime
