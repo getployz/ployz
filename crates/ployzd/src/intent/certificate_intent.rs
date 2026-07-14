@@ -1,34 +1,31 @@
-use ployz_core::cert::{AcmeHttp01Challenge, ActiveCertState};
 use ployz_core::ids::CertId;
-use ployz_core::ops::RouteHostname;
-use rusqlite::{OptionalExtension, Transaction, params};
+use ployz_core::ingress::{ActiveCertificateMetadata, CertificateOwner};
+use rusqlite::{OptionalExtension, params};
 
-use crate::core_store::{CoreStore, CoreStoreError, query_json, query_json_list, to_json};
+use crate::core_store::{CoreStore, CoreStoreError};
+use crate::intent::ingress_intent::ActiveCertificateMetadataStore;
 
 #[derive(Debug, Clone)]
 pub struct CertificateIntentStore {
     store: CoreStore,
+    active: ActiveCertificateMetadataStore,
 }
 
 impl CertificateIntentStore {
     #[must_use]
     pub fn new(store: CoreStore) -> Self {
-        Self { store }
+        Self {
+            active: ActiveCertificateMetadataStore::new(store.clone()),
+            store,
+        }
     }
 
-    pub async fn active_for_hostname(
+    pub async fn active_for_owner(
         &self,
-        hostname: &RouteHostname,
-    ) -> Result<Option<ActiveCertState>, CertificateIntentStoreError> {
-        let hostname = hostname.as_str().to_owned();
-        self.store
-            .call(move |conn| {
-                query_json(
-                    conn,
-                    "SELECT json FROM custom_certificate_intent WHERE hostname = ?1",
-                    &hostname,
-                )
-            })
+        owner: &CertificateOwner,
+    ) -> Result<Option<ActiveCertificateMetadata>, CertificateIntentStoreError> {
+        self.active
+            .active_for_owner(owner)
             .await
             .map_err(store_error)
     }
@@ -36,112 +33,21 @@ impl CertificateIntentStore {
     pub async fn active_for_cert_id(
         &self,
         cert_id: &CertId,
-    ) -> Result<Option<ActiveCertState>, CertificateIntentStoreError> {
-        let cert_id = cert_id.clone();
-        self.store
-            .call(move |conn| {
-                let active_certificates: Vec<ActiveCertState> = query_json_list(
-                    conn,
-                    "SELECT json FROM custom_certificate_intent ORDER BY hostname",
-                )?;
-                Ok(active_certificates
-                    .into_iter()
-                    .find(|active| active.cert_id == cert_id))
-            })
+    ) -> Result<Option<ActiveCertificateMetadata>, CertificateIntentStoreError> {
+        let active = self
+            .active
+            .active_certificates()
             .await
-            .map_err(store_error)
+            .map_err(store_error)?;
+        Ok(active
+            .into_iter()
+            .find(|metadata| metadata.active.cert_id == *cert_id))
     }
 
     pub async fn active_certificates(
         &self,
-    ) -> Result<Vec<ActiveCertState>, CertificateIntentStoreError> {
-        self.store
-            .call(|conn| {
-                query_json_list(
-                    conn,
-                    "SELECT json FROM custom_certificate_intent ORDER BY hostname",
-                )
-            })
-            .await
-            .map_err(store_error)
-    }
-
-    pub(crate) async fn seed_active_metadata(
-        &self,
-        active_cert: ActiveCertState,
-    ) -> Result<(), CertificateIntentStoreError> {
-        self.store
-            .call(move |conn| {
-                let transaction = conn.transaction()?;
-                upsert_active_metadata(&transaction, &active_cert)?;
-                transaction.commit()?;
-                Ok(())
-            })
-            .await
-            .map_err(store_error)
-    }
-
-    pub async fn store_challenge(
-        &self,
-        challenge: AcmeHttp01Challenge,
-    ) -> Result<(), CertificateIntentStoreError> {
-        self.store
-            .call(move |conn| {
-                conn.execute(
-                    "INSERT INTO acme_http01_challenges (hostname, token, json)
-                     VALUES (?1, ?2, ?3)
-                     ON CONFLICT(hostname, token) DO UPDATE SET json = excluded.json",
-                    params![
-                        challenge.hostname().as_str(),
-                        challenge.token().as_str(),
-                        to_json(&challenge)?,
-                    ],
-                )?;
-                Ok(())
-            })
-            .await
-            .map_err(store_error)
-    }
-
-    pub async fn challenges(
-        &self,
-    ) -> Result<Vec<AcmeHttp01Challenge>, CertificateIntentStoreError> {
-        self.store
-            .call(|conn| {
-                query_json_list(
-                    conn,
-                    "SELECT json FROM acme_http01_challenges ORDER BY hostname, token",
-                )
-            })
-            .await
-            .map_err(store_error)
-    }
-
-    pub async fn remove_challenges_for_hostname(
-        &self,
-        hostname: &RouteHostname,
-    ) -> Result<(), CertificateIntentStoreError> {
-        let hostname = hostname.as_str().to_owned();
-        self.store
-            .call(move |conn| {
-                conn.execute(
-                    "DELETE FROM acme_http01_challenges WHERE hostname = ?1",
-                    [hostname],
-                )?;
-                Ok(())
-            })
-            .await
-            .map_err(store_error)
-    }
-
-    pub async fn remove_all_challenges(&self) -> Result<(), CertificateIntentStoreError> {
-        self.store
-            .call(|conn| {
-                conn.execute("DELETE FROM acme_http01_challenges", [])?;
-                Ok(())
-            })
-            .await
-            .map_err(store_error)
+    ) -> Result<Vec<ActiveCertificateMetadata>, CertificateIntentStoreError> {
+        self.active.active_certificates().await.map_err(store_error)
     }
 
     pub async fn account_credentials(
@@ -181,18 +87,6 @@ impl CertificateIntentStore {
     }
 }
 
-pub(crate) fn upsert_active_metadata(
-    transaction: &Transaction<'_>,
-    active_cert: &ActiveCertState,
-) -> Result<(), rusqlite::Error> {
-    transaction.execute(
-        "INSERT INTO custom_certificate_intent (hostname, json) VALUES (?1, ?2)
-         ON CONFLICT(hostname) DO UPDATE SET json = excluded.json",
-        params![active_cert.hostname.as_str(), to_json(active_cert)?],
-    )?;
-    Ok(())
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum CertificateIntentStoreError {
     #[error("certificate intent store: {message}")]
@@ -207,65 +101,34 @@ fn store_error(error: CoreStoreError) -> CertificateIntentStoreError {
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::cert::{
-        AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
-        CertBundleRef, CertValidAt, CertValidityWindow,
-    };
+    use ployz_core::cert::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
+    use ployz_core::ids::RouteBindingId;
     use ployz_test_support::ids::{cert_id, route_hostname};
 
     use super::*;
 
     #[tokio::test]
     async fn active_metadata_round_trips_without_material_configuration() {
-        let store =
-            CertificateIntentStore::new(CoreStore::open_in_memory().await.expect("core store"));
-        let active = active_certificate();
-        store
-            .seed_active_metadata(active.clone())
+        let core = CoreStore::open_in_memory().await.expect("core store");
+        let store = CertificateIntentStore::new(core.clone());
+        let metadata = ActiveCertificateMetadata {
+            owner: CertificateOwner::RouteBinding {
+                route_binding_id: RouteBindingId::try_new("route_app").expect("route id"),
+            },
+            active: active_certificate(),
+        };
+        ActiveCertificateMetadataStore::new(core)
+            .replace(metadata.clone())
             .await
             .expect("store metadata");
 
         assert_eq!(
             store
-                .active_for_hostname(&active.hostname)
+                .active_for_owner(&metadata.owner)
                 .await
                 .expect("load metadata"),
-            Some(active)
+            Some(metadata)
         );
-    }
-
-    #[tokio::test]
-    async fn challenge_removal_clears_the_published_challenge() {
-        let store =
-            CertificateIntentStore::new(CoreStore::open_in_memory().await.expect("core store"));
-        let hostname = route_hostname("app.example.com");
-        store
-            .store_challenge(challenge(hostname.clone()))
-            .await
-            .expect("publish challenge");
-
-        store
-            .remove_challenges_for_hostname(&hostname)
-            .await
-            .expect("remove challenge");
-
-        assert!(
-            store
-                .challenges()
-                .await
-                .expect("list challenges")
-                .is_empty()
-        );
-    }
-
-    fn challenge(hostname: RouteHostname) -> AcmeHttp01Challenge {
-        AcmeHttp01Challenge::try_new(
-            hostname,
-            AcmeChallengeToken::try_new("token").expect("token"),
-            AcmeChallengeValue::try_new("token.account-thumbprint").expect("value"),
-            AcmeChallengeTtlSeconds::try_new(900).expect("ttl"),
-        )
-        .expect("challenge")
     }
 
     fn active_certificate() -> ActiveCertState {

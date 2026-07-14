@@ -2,10 +2,10 @@
 
 use crate::operation_api::{
     OperationApiHandlers, core_replace, core_replace_report, credential_add, credential_list,
-    credential_remove, deploy_reserve, deploy_submit, init_first_machine_activate, machine_add,
-    machine_drain, machine_join_redeem, machine_join_report, machine_resume, machine_update,
-    namespace_remove, network_repair, ops_list, ops_status, ops_watch, service_restart,
-    volume_remove,
+    credential_remove, deploy_reserve, deploy_submit, ingress_configure,
+    init_first_machine_activate, machine_add, machine_drain, machine_join_redeem,
+    machine_join_report, machine_resume, machine_update, namespace_remove, network_repair,
+    ops_list, ops_status, ops_watch, service_restart, volume_remove,
 };
 use crate::service_catalog::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
 use ployz_core::subjects::OperationApiEndpoint;
@@ -17,12 +17,13 @@ use ployz_sdk_types::{
     OperationApiResponse,
     operation_api::{
         CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi, CredentialListApi,
-        CredentialRemoveApi, DeployReserveApi, DeploySubmitApi, InitFirstMachineActivateApi,
-        LogsTailApi, MachineAddApi, MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi,
-        MachineJoinReportApi, MachineListApi, MachineResumeApi, MachineUpdateApi,
-        NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, NetworkStatusApi,
-        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
-        ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
+        CredentialRemoveApi, DeployReserveApi, DeploySubmitApi, IngressConfigureApi,
+        InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineDrainApi,
+        MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
+        MachineResumeApi, MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi,
+        NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi,
+        OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi,
+        VolumeListApi, VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -86,6 +87,14 @@ async fn bind_operation_endpoint(
                 runtime,
                 handlers,
                 |handlers, request| async move { credential_remove(&handlers, request).await },
+            )
+            .await
+        }
+        OperationApiEndpoint::IngressConfigure => {
+            bind_operation_contract::<IngressConfigureApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move { ingress_configure(&handlers, request).await },
             )
             .await
         }

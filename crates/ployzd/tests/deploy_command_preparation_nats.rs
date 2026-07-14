@@ -331,10 +331,21 @@ async fn prepare_command_from_nats(
     facts_reader: &NatsMachineFactsReader,
     step_timeout: Duration,
 ) -> ployzd::operations::deploy::DeployExecutionCommand {
-    let facts =
-        load_deploy_execution_facts_from_nats(&request, intent_reader, facts_reader, step_timeout)
-            .await
-            .expect("deploy facts load from nats");
+    let store = ployzd::core_store::CoreStore::open_in_memory()
+        .await
+        .expect("open ingress store");
+    let ployz_dns_target = ployzd::intent::ingress_intent::PloyzDnsTargetStore::new(store.clone());
+    let ingress_projection = ployzd::intent::ingress_intent::IngressProjectionStore::new(store);
+    let facts = load_deploy_execution_facts_from_nats(
+        &request,
+        intent_reader,
+        facts_reader,
+        &ployz_dns_target,
+        &ingress_projection,
+        step_timeout,
+    )
+    .await
+    .expect("deploy facts load from nats");
     prepare_deploy_execution_command(operation_id, request, facts)
 }
 
@@ -617,6 +628,7 @@ async fn test_nats() -> TestNats {
     let core_store = ployzd::core_store::CoreStore::open_in_memory()
         .await
         .expect("open core store");
+    support::intent::initialize_disabled_ingress(&core_store).await;
     let namespace_intent = NamespaceIntentStore::new(core_store.clone());
     let machine_roster = MachineRosterStore::new(core_store.clone());
     let intent = start_intent_service(
@@ -664,7 +676,6 @@ fn routed_deploy_request() -> DeployRequest {
     service.routes = vec![DeployRoute {
         target: DeployRouteTarget::Hostname {
             hostname: RouteHostname::try_new("smoke.local").expect("valid route hostname"),
-            port: route_port(8080),
         },
         endpoint_port: route_port(80),
     }];

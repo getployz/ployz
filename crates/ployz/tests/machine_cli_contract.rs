@@ -599,8 +599,12 @@ fn machine_init_parses_target_with_default_roles_and_release() {
     assert_eq!(command.cluster_name.as_str(), "ployz");
     assert_eq!(command.installer_script, None);
     assert_eq!(
-        command.public_url_mode,
-        ployz_core::cert::PublicUrlMode::Auto
+        command.automatic_hostname_configuration,
+        ployz_core::ingress::AutomaticHostnameConfiguration::Ployz
+    );
+    assert_eq!(
+        command.ployz_dns_target,
+        ployz_core::ingress::PloyzDnsTargetIntent::Enabled
     );
     assert_eq!(
         command.installer(),
@@ -612,44 +616,64 @@ fn machine_init_parses_target_with_default_roles_and_release() {
 }
 
 #[test]
-fn machine_init_parses_explicit_no_public_url_mode() {
+fn machine_init_accepts_explicit_ingress_configuration() {
     let PloyzctlCommand::MachineInit(command) = parse(&[
         "machine",
         "init",
         "root@203.0.113.10",
-        "--public-url",
-        "none",
+        "--dns-target",
+        "disabled",
+        "--automatic-hostnames",
+        "custom:apps.example.com",
     ]) else {
         panic!("expected machine init command");
     };
 
     assert_eq!(
-        command.public_url_mode,
-        ployz_core::cert::PublicUrlMode::None
+        command.automatic_hostname_configuration,
+        ployz_core::ingress::AutomaticHostnameConfiguration::custom("apps.example.com")
+            .expect("valid suffix")
+    );
+    assert_eq!(
+        command.ployz_dns_target,
+        ployz_core::ingress::PloyzDnsTargetIntent::Disabled
     );
 }
 
 #[test]
-fn machine_init_rejects_unknown_public_url_mode() {
-    let error = parse_command(
-        [
-            "machine",
-            "init",
-            "root@203.0.113.10",
-            "--public-url",
-            "managed-ish",
-        ]
-        .map(str::to_owned),
-    )
-    .expect_err("unknown public URL mode fails");
+fn machine_init_rejects_ployz_hostnames_without_dns_target() {
+    assert!(
+        parse_command(
+            [
+                "machine",
+                "init",
+                "root@203.0.113.10",
+                "--dns-target",
+                "disabled",
+                "--automatic-hostnames",
+                "ployz",
+            ]
+            .map(str::to_owned),
+        )
+        .is_err()
+    );
+}
 
-    assert!(matches!(
-        error,
-        ployz::commands::PloyzctlCliError::InvalidValue {
-            flag: "--public-url",
-            ..
-        }
-    ));
+#[test]
+fn machine_init_rejects_removed_public_url_flag() {
+    assert!(
+        parse_command(
+            [
+                "machine",
+                "init",
+                "root@203.0.113.10",
+                "--public-url",
+                "none",
+            ]
+            .map(str::to_owned),
+        )
+        .is_err()
+    );
 }
 
 #[test]

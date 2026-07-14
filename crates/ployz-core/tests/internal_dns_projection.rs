@@ -3,6 +3,7 @@ use std::net::{IpAddr, Ipv4Addr};
 
 use ployz_core::dataplane::MachineEndpointSubnet;
 use ployz_core::ids::{MachineId, NamespaceId, ServiceId};
+use ployz_core::ingress::{AutomaticHostnameConfiguration, PloyzDnsTargetIntent};
 use ployz_core::internal_dns::{InternalServiceName, internal_dns_records};
 use ployz_core::machine::MachineName;
 use ployz_core::machine_runtime::{
@@ -10,9 +11,7 @@ use ployz_core::machine_runtime::{
     ManagedContainerKind,
 };
 use ployz_core::roles::InstallRolePolicy;
-use ployz_core::state::{
-    ActiveMachineState, ControlPlaneEpoch, IntentSnapshot, MachineLifecycle, ManagedLeaseProjection,
-};
+use ployz_core::state::{ActiveMachineState, ControlPlaneEpoch, IntentSnapshot, MachineLifecycle};
 use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{machine_id, operation_id};
 use ployz_test_support::{containers, fixtures};
@@ -159,11 +158,9 @@ fn intent<const N: usize>(machines: [&str; N], entry: &str) -> IntentSnapshot {
         serving_target_entries: vec![serving_target_entry("db", entry)],
         volume_pins: Vec::new(),
         nats_authorizations: Vec::new(),
-        public_url: ployz_core::state::IntentPublicUrl::Auto(Box::new(
-            ManagedLeaseProjection::Unacquired,
-        )),
-        custom_certificates: Vec::new(),
-        acme_http01_challenges: Vec::new(),
+        automatic_hostname_configuration: AutomaticHostnameConfiguration::Ployz,
+        ployz_dns_target: PloyzDnsTargetIntent::Enabled,
+        active_certificates: Vec::new(),
     }
 }
 

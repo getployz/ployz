@@ -24,18 +24,7 @@ impl NamespaceIntentStore {
         state: RouteBindingState,
     ) -> Result<(), NamespaceIntentStoreError> {
         self.store
-            .call(move |conn| {
-                conn.execute(
-                    "INSERT INTO route_bindings (hostname, port, json) VALUES (?1, ?2, ?3)
-                     ON CONFLICT(hostname, port) DO UPDATE SET json = excluded.json",
-                    params![
-                        state.target.hostname.as_str(),
-                        state.target.port.get(),
-                        to_json(&state)?
-                    ],
-                )?;
-                Ok(())
-            })
+            .call(move |conn| upsert_route_binding(conn, &state))
             .await
             .map_err(store_error)
     }
@@ -52,20 +41,12 @@ impl NamespaceIntentStore {
             .call(move |conn| {
                 let transaction = conn.transaction()?;
                 for state in route_bindings {
-                    transaction.execute(
-                        "INSERT INTO route_bindings (hostname, port, json) VALUES (?1, ?2, ?3)
-                         ON CONFLICT(hostname, port) DO UPDATE SET json = excluded.json",
-                        params![
-                            state.target.hostname.as_str(),
-                            state.target.port.get(),
-                            to_json(&state)?
-                        ],
-                    )?;
+                    upsert_route_binding(&transaction, &state)?;
                 }
                 for target in route_binding_removals {
                     transaction.execute(
-                        "DELETE FROM route_bindings WHERE hostname = ?1 AND port = ?2",
-                        params![target.hostname.as_str(), target.port.get()],
+                        "DELETE FROM route_bindings WHERE hostname = ?1",
+                        [target.hostname.as_str()],
                     )?;
                 }
                 for state in serving_target_entries {
@@ -93,8 +74,8 @@ impl NamespaceIntentStore {
         self.store
             .call(move |conn| {
                 conn.execute(
-                    "DELETE FROM route_bindings WHERE hostname = ?1 AND port = ?2",
-                    params![target.hostname.as_str(), target.port.get()],
+                    "DELETE FROM route_bindings WHERE hostname = ?1",
+                    [target.hostname.as_str()],
                 )?;
                 Ok(())
             })
@@ -185,12 +166,34 @@ impl NamespaceIntentStore {
     }
 }
 
+fn upsert_route_binding(
+    conn: &Connection,
+    state: &RouteBindingState,
+) -> Result<(), rusqlite::Error> {
+    let changed = conn.execute(
+        "INSERT INTO route_bindings (hostname, route_binding_id, json) VALUES (?1, ?2, ?3)
+         ON CONFLICT(hostname) DO UPDATE SET json = excluded.json
+         WHERE route_bindings.route_binding_id = excluded.route_binding_id",
+        params![
+            state.target.hostname.as_str(),
+            state.id.as_str(),
+            to_json(state)?
+        ],
+    )?;
+    if changed == 0 {
+        return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
+            std::io::Error::other(format!(
+                "route binding hostname {} already belongs to another identity",
+                state.target.hostname.as_str()
+            )),
+        )));
+    }
+    Ok(())
+}
+
 fn load_evidence(conn: &mut Connection) -> Result<NamespaceIntentEvidence, rusqlite::Error> {
     Ok(NamespaceIntentEvidence {
-        route_bindings: query_json_list(
-            conn,
-            "SELECT json FROM route_bindings ORDER BY hostname, port",
-        )?,
+        route_bindings: query_json_list(conn, "SELECT json FROM route_bindings ORDER BY hostname")?,
         serving_target_entries: query_json_list(
             conn,
             "SELECT json FROM serving_targets ORDER BY namespace_id, service_id",
@@ -220,5 +223,130 @@ pub struct NamespaceIntentStoreError {
 fn store_error(error: CoreStoreError) -> NamespaceIntentStoreError {
     NamespaceIntentStoreError {
         message: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ployz_core::deploy::{ImageReference, ReplicaCount};
+    use ployz_core::ids::{NamespaceRevisionEntryId, RouteBindingId, ServiceId};
+    use ployz_core::ingress::RouteBindingOrigin;
+    use ployz_core::ops::{RouteHostname, RoutePort};
+
+    #[tokio::test]
+    async fn same_hostname_reuses_its_route_binding_identity() {
+        let store = NamespaceIntentStore::new(CoreStore::open_in_memory().await.expect("store"));
+        let first = route("route_1", "service_a");
+        store
+            .replace_route_binding(first.clone())
+            .await
+            .expect("insert route");
+        let updated = RouteBindingState {
+            service_id: service_id("service_b"),
+            ..first.clone()
+        };
+        store
+            .replace_route_binding(updated.clone())
+            .await
+            .expect("update route");
+
+        assert_eq!(
+            store.load().await.expect("load").route_bindings.as_slice(),
+            std::slice::from_ref(&updated)
+        );
+        assert!(
+            store
+                .replace_route_binding(route("route_2", "service_c"))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            store.load().await.expect("reload").route_bindings,
+            [updated]
+        );
+    }
+
+    #[tokio::test]
+    async fn detached_hostname_accepts_a_fresh_route_binding_identity() {
+        let store = NamespaceIntentStore::new(CoreStore::open_in_memory().await.expect("store"));
+        let first = route("route_1", "service_a");
+        store
+            .replace_route_binding(first.clone())
+            .await
+            .expect("insert route");
+        store
+            .remove_route_binding(&first.target)
+            .await
+            .expect("detach route");
+
+        let recreated = route("route_2", "service_a");
+        store
+            .replace_route_binding(recreated.clone())
+            .await
+            .expect("recreate route");
+
+        assert_eq!(
+            store.load().await.expect("load").route_bindings,
+            [recreated]
+        );
+    }
+
+    #[tokio::test]
+    async fn route_identity_conflict_rolls_back_the_phase_commit() {
+        let store = NamespaceIntentStore::new(CoreStore::open_in_memory().await.expect("store"));
+        let existing = route("route_1", "service_a");
+        store
+            .replace_route_binding(existing.clone())
+            .await
+            .expect("insert route");
+
+        assert!(
+            store
+                .commit_deploy_phase(
+                    vec![
+                        route_at("route_3", "other.example.com", "service_b"),
+                        route("route_2", "service_b"),
+                    ],
+                    Vec::new(),
+                    vec![serving_entry()],
+                )
+                .await
+                .is_err()
+        );
+        let evidence = store.load().await.expect("load");
+        assert_eq!(evidence.route_bindings, [existing]);
+        assert!(evidence.serving_target_entries.is_empty());
+    }
+
+    fn route(id: &str, service: &str) -> RouteBindingState {
+        route_at(id, "app.example.com", service)
+    }
+
+    fn route_at(id: &str, hostname: &str, service: &str) -> RouteBindingState {
+        RouteBindingState {
+            id: RouteBindingId::try_new(id).expect("route binding id"),
+            namespace_id: NamespaceId::try_new("default").expect("namespace id"),
+            target: RouteTarget::new(RouteHostname::try_new(hostname).expect("hostname")),
+            endpoint_port: RoutePort::try_new(8080).expect("endpoint port"),
+            service_id: service_id(service),
+            origin: RouteBindingOrigin::Declared,
+        }
+    }
+
+    fn serving_entry() -> ServingTargetEntry {
+        ServingTargetEntry {
+            namespace_id: NamespaceId::try_new("default").expect("namespace id"),
+            service_id: service_id("service_b"),
+            namespace_revision_entry_id: NamespaceRevisionEntryId::try_new("revision_entry_b")
+                .expect("revision entry id"),
+            image: ImageReference::try_new("nginx:latest").expect("image"),
+            desired_replicas: ReplicaCount::try_new(1).expect("replicas"),
+            volume_names: Vec::new(),
+        }
+    }
+
+    fn service_id(value: &str) -> ServiceId {
+        ServiceId::try_new(value).expect("service id")
     }
 }

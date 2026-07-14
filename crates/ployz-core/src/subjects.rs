@@ -18,6 +18,8 @@ pub const OPERATOR_MACHINE_IMAGE_QUERY_SCOPE: &str = "plz.v1.rpc.machine.query.*
 pub const OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE: &str = "plz.v1.rpc.machine.command.*.image.>";
 pub const INTENT_GET: &str = "plz.v1.rpc.core.query.intent.get";
 pub const INTENT_CHANGED: &str = "plz.v1.signal.intent.changed";
+pub const INGRESS_ENDPOINT_GET: &str = "plz.v1.rpc.core.query.ingress.endpoint.get";
+pub const INGRESS_ENDPOINT_CHANGED: &str = "plz.v1.signal.ingress.endpoint.changed";
 pub const PENDING_MACHINE_JOINS_CHANGED: &str = "plz.v1.signal.machine.join.pending";
 pub const RUNTIME_SNAPSHOT_STREAM: &str = "plz.v1.projection.runtime.snapshot";
 pub const RUNTIME_SNAPSHOT_SEED: &str = "plz.v1.rpc.operator.query.runtime.snapshot.seed";
@@ -53,6 +55,7 @@ pub const OPERATOR_CORE_REPLACE_REPORT: &str = "plz.v1.rpc.operator.command.core
 pub const OPERATOR_CREDENTIAL_ADD: &str = "plz.v1.rpc.operator.command.credential.add";
 pub const OPERATOR_CREDENTIAL_LIST: &str = "plz.v1.rpc.operator.query.credential.list";
 pub const OPERATOR_CREDENTIAL_REMOVE: &str = "plz.v1.rpc.operator.command.credential.remove";
+pub const OPERATOR_INGRESS_CONFIGURE: &str = "plz.v1.rpc.operator.command.ingress.configure";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApiEndpoint {
     DeployReserve,
@@ -85,6 +88,7 @@ pub enum OperationApiEndpoint {
     CredentialAdd,
     CredentialList,
     CredentialRemove,
+    IngressConfigure,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,6 +132,7 @@ impl OperationApiEndpoint {
             Self::CredentialAdd => "credential.add",
             Self::CredentialList => "credential.list",
             Self::CredentialRemove => "credential.remove",
+            Self::IngressConfigure => "ingress.configure",
         }
     }
 
@@ -164,6 +169,7 @@ impl OperationApiEndpoint {
             Self::CredentialAdd => OPERATOR_CREDENTIAL_ADD,
             Self::CredentialList => OPERATOR_CREDENTIAL_LIST,
             Self::CredentialRemove => OPERATOR_CREDENTIAL_REMOVE,
+            Self::IngressConfigure => OPERATOR_INGRESS_CONFIGURE,
         }
     }
 
@@ -182,6 +188,7 @@ impl OperationApiEndpoint {
             | Self::CoreReplace
             | Self::CredentialAdd
             | Self::CredentialRemove => OperationApiEndpointExecution::AcceptsOperation,
+            Self::IngressConfigure => OperationApiEndpointExecution::AcceptsOperation,
             Self::DeployReserve
             | Self::InitFirstMachineActivate
             | Self::MachineJoinRedeem
@@ -379,7 +386,11 @@ pub enum MachineServiceEndpoint {
     ImageManifestPush,
     ImageEnsure,
     CertificateArtifactPush,
+    CertificateArtifactRemove,
+    CertificateChallengeApply,
+    CertificateChallengeRemove,
     CertificateChallengeStatus,
+    GatewayStatusGet,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -419,7 +430,11 @@ impl MachineServiceEndpoint {
             // three staging endpoints above stay operator-reachable.
             Self::ImageEnsure => "container.ensure_image",
             Self::CertificateArtifactPush => "certificate.artifact.push",
+            Self::CertificateArtifactRemove => "certificate.artifact.remove",
+            Self::CertificateChallengeApply => "certificate.challenge.apply",
+            Self::CertificateChallengeRemove => "certificate.challenge.remove",
             Self::CertificateChallengeStatus => "certificate.challenge.status",
+            Self::GatewayStatusGet => "gateway.status.get",
         }
     }
 
@@ -437,7 +452,8 @@ impl MachineServiceEndpoint {
             | Self::DataplaneStatus
             | Self::LogsTail
             | Self::ImageBlobCheck
-            | Self::CertificateChallengeStatus => MachineServiceEndpointExecution::Query,
+            | Self::CertificateChallengeStatus
+            | Self::GatewayStatusGet => MachineServiceEndpointExecution::Query,
             Self::FactsRefresh
             | Self::ContainerRun
             | Self::ContainerRunHook
@@ -449,7 +465,10 @@ impl MachineServiceEndpoint {
             | Self::ImageBlobPush
             | Self::ImageManifestPush
             | Self::ImageEnsure
-            | Self::CertificateArtifactPush => MachineServiceEndpointExecution::Command,
+            | Self::CertificateArtifactPush
+            | Self::CertificateArtifactRemove
+            | Self::CertificateChallengeApply
+            | Self::CertificateChallengeRemove => MachineServiceEndpointExecution::Command,
         }
     }
 }
@@ -472,6 +491,22 @@ mod tests {
                 MachineServiceEndpoint::CertificateChallengeStatus,
             ),
             "plz.v1.rpc.machine.query.machine_7.certificate.challenge.status"
+        );
+        assert_eq!(
+            machine_service(&machine_id, MachineServiceEndpoint::GatewayStatusGet),
+            "plz.v1.rpc.machine.query.machine_7.gateway.status.get"
+        );
+    }
+
+    #[test]
+    fn ingress_endpoint_projection_subjects_are_exact() {
+        assert_eq!(
+            INGRESS_ENDPOINT_GET,
+            "plz.v1.rpc.core.query.ingress.endpoint.get"
+        );
+        assert_eq!(
+            INGRESS_ENDPOINT_CHANGED,
+            "plz.v1.signal.ingress.endpoint.changed"
         );
     }
 }

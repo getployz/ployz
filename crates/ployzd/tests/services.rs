@@ -1,8 +1,8 @@
 use ployz_core::subjects::{
-    INTENT_GET, JOIN_MACHINE_REPORT, OPERATOR_DEPLOY_RESERVE, OPERATOR_DEPLOY_SUBMIT,
-    OPERATOR_MACHINE_ADD, OPERATOR_MACHINE_INSPECT, OPERATOR_MACHINE_LIST, OPERATOR_OPS_STATUS,
-    OPERATOR_OPS_WATCH, OPERATOR_SERVICE_INSPECT, OPERATOR_SERVICE_LIST, OperationProgressScope,
-    RUNTIME_SNAPSHOT_SEED,
+    INGRESS_ENDPOINT_GET, INTENT_GET, JOIN_MACHINE_REPORT, OPERATOR_DEPLOY_RESERVE,
+    OPERATOR_DEPLOY_SUBMIT, OPERATOR_MACHINE_ADD, OPERATOR_MACHINE_INSPECT, OPERATOR_MACHINE_LIST,
+    OPERATOR_OPS_STATUS, OPERATOR_OPS_WATCH, OPERATOR_SERVICE_INSPECT, OPERATOR_SERVICE_LIST,
+    OperationProgressScope, RUNTIME_SNAPSHOT_SEED,
 };
 use ployz_nats::services::{EndpointExecution, ServiceDiscoveryQuery};
 use ployz_sdk_types::OpsStatusError;
@@ -23,7 +23,7 @@ fn control_catalog_supports_srv_ping_discovery() {
 
     let pings = catalog.discover(ServiceDiscoveryQuery::All);
 
-    assert_eq!(pings.len(), 3);
+    assert_eq!(pings.len(), 4);
     assert!(
         pings
             .iter()
@@ -39,6 +39,7 @@ fn control_catalog_supports_srv_ping_discovery() {
     assert!(catalog.has_endpoint_subject(OPERATOR_SERVICE_LIST));
     assert!(catalog.has_endpoint_subject(OPERATOR_SERVICE_INSPECT));
     assert!(catalog.has_endpoint_subject(INTENT_GET));
+    assert!(catalog.has_endpoint_subject(INGRESS_ENDPOINT_GET));
     assert!(catalog.has_endpoint_subject(RUNTIME_SNAPSHOT_SEED));
     assert!(!catalog.has_endpoint_subject("plz.v1.rpc.machine.query.machine_7.inspect"));
 
@@ -56,7 +57,12 @@ fn service_catalogs_keep_control_and_machine_surfaces_separate() {
 
     assert_eq!(
         service_names(&control),
-        vec!["plz-api", "plz-intent", "plz-runtime-projection"]
+        vec![
+            "plz-api",
+            "plz-intent",
+            "plz-ingress-endpoint",
+            "plz-runtime-projection",
+        ]
     );
     assert_eq!(service_names(&machine), vec!["plz-machine"]);
 

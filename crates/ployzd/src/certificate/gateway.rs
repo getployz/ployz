@@ -1,11 +1,11 @@
 use std::time::Duration;
 
 use futures_util::future::join_all;
-use futures_util::stream::{FuturesUnordered, StreamExt};
 use ployz_core::cert::{
     AcmeHttp01Challenge, CertificateArtifactPushRequest, CertificateArtifactPushResponse,
-    CertificateChallengeApplicationStatus, CertificateChallengeStatusRequest,
-    CertificateChallengeStatusResponse, CertificateProvisionFailure, CustomCertBundle,
+    CertificateChallengeApplyRequest, CertificateChallengeApplyResponse,
+    CertificateChallengeRemoveRequest, CertificateChallengeRemoveResponse,
+    CertificateProvisionFailure, CustomCertBundle,
 };
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine_rpc::MachineRpcResponse;
@@ -14,7 +14,6 @@ use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_runtime::request_json;
 
 const GATEWAY_RPC_TIMEOUT: Duration = Duration::from_secs(2);
-const CHALLENGE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone)]
 pub(super) struct GatewayCertificateClient {
@@ -104,75 +103,77 @@ impl GatewayCertificateClient {
         Ok(())
     }
 
-    pub(super) async fn wait_until_challenge_applied(
+    pub(super) async fn apply_challenge(
         &self,
+        operation_id: &OperationId,
         challenge: &AcmeHttp01Challenge,
         machine_ids: &[MachineId],
-        timeout: Duration,
     ) -> Result<(), GatewayChallengeReadinessError> {
-        let request = CertificateChallengeStatusRequest {
+        let request = CertificateChallengeApplyRequest {
+            operation_id: operation_id.clone(),
             challenge: challenge.clone(),
         };
-        let mut missing = machine_ids.to_vec();
-        let wait = async {
-            loop {
-                missing = machine_ids.to_vec();
-                let mut requests = machine_ids
-                    .iter()
-                    .map(|machine_id| {
-                        let request = &request;
-                        async move {
-                            (
-                                machine_id,
-                                self.challenge_is_applied(machine_id, request).await,
-                            )
-                        }
-                    })
-                    .collect::<FuturesUnordered<_>>();
-                while let Some((machine_id, applied)) = requests.next().await {
-                    if applied {
-                        missing.retain(|missing_id| missing_id != machine_id);
-                    }
-                }
-                if missing.is_empty() {
-                    return;
-                }
-                tokio::time::sleep(CHALLENGE_POLL_INTERVAL).await;
-            }
-        };
-        if tokio::time::timeout(timeout, wait).await.is_err() {
-            return Err(GatewayChallengeReadinessError {
-                missing_machine_ids: missing,
+        let missing_machine_ids = join_all(machine_ids.iter().map(|machine_id| async {
+            let subject = machine_service(
+                machine_id,
+                MachineServiceEndpoint::CertificateChallengeApply,
+            );
+            let applied = request_json::<_, CertificateChallengeApplyResponse>(
+                &self.client,
+                subject,
+                &request,
+                GATEWAY_RPC_TIMEOUT,
+            )
+            .await
+            .is_ok_and(|response| {
+                matches!(response, MachineRpcResponse::Ok(ok) if ok.machine_id == *machine_id)
             });
+            (!applied).then(|| machine_id.clone())
+        }))
+        .await
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        if missing_machine_ids.is_empty() {
+            Ok(())
+        } else {
+            Err(GatewayChallengeReadinessError {
+                missing_machine_ids,
+            })
         }
-        Ok(())
     }
 
-    async fn challenge_is_applied(
+    pub(super) async fn remove_challenge(
         &self,
-        machine_id: &MachineId,
-        request: &CertificateChallengeStatusRequest,
-    ) -> bool {
-        let subject = machine_service(
-            machine_id,
-            MachineServiceEndpoint::CertificateChallengeStatus,
-        );
-        let Ok(response) = request_json::<_, CertificateChallengeStatusResponse>(
-            &self.client,
-            subject,
-            request,
-            GATEWAY_RPC_TIMEOUT,
-        )
-        .await
-        else {
-            return false;
+        operation_id: &OperationId,
+        challenge: &AcmeHttp01Challenge,
+        machine_ids: &[MachineId],
+    ) -> Vec<MachineId> {
+        let request = CertificateChallengeRemoveRequest {
+            operation_id: operation_id.clone(),
+            challenge: challenge.clone(),
         };
-        matches!(
-            response,
-            MachineRpcResponse::Ok(ok)
-                if ok.machine_id == *machine_id
-                    && ok.application == CertificateChallengeApplicationStatus::Applied
-        )
+        join_all(machine_ids.iter().map(|machine_id| async {
+            let subject = machine_service(
+                machine_id,
+                MachineServiceEndpoint::CertificateChallengeRemove,
+            );
+            let removed = request_json::<_, CertificateChallengeRemoveResponse>(
+                &self.client,
+                subject,
+                &request,
+                GATEWAY_RPC_TIMEOUT,
+            )
+            .await
+            .is_ok_and(|response| {
+                matches!(response, MachineRpcResponse::Ok(ok) if ok.machine_id == *machine_id)
+            });
+            (!removed).then(|| machine_id.clone())
+        }))
+        .await
+        .into_iter()
+        .flatten()
+        .collect()
     }
 }
 
@@ -204,10 +205,8 @@ fn failure_message(message: impl Into<String>) -> FailureMessage {
 mod tests {
     use super::*;
     use ployz_core::cert::{
-        AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, ActiveCertState,
-        CertBundleRef, CertValidAt, CertValidityWindow, CertificateArtifactPushOk,
-        CertificateChallengeStatusOk, CustomCertBundle, GatewayCertificateRpcError,
-        custom_bundle_digest,
+        ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, CertificateArtifactPushOk,
+        CustomCertBundle, GatewayCertificateRpcError, custom_bundle_digest,
     };
     use ployz_core::ops::RouteHostname;
     use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
@@ -215,87 +214,6 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use crate::service_catalog::{gateway_role_service, machine_endpoint_spec};
-
-    #[tokio::test]
-    async fn silence_keeps_the_known_gateway_in_the_readiness_failure() {
-        let nats = ployz_test_support::nats::TestNats::start().await;
-        let client = GatewayCertificateClient::new(nats.controller);
-        let machine_id = MachineId::try_new("machine_silent").expect("machine id");
-        let challenge = AcmeHttp01Challenge::try_new(
-            RouteHostname::try_new("example.com").expect("hostname"),
-            AcmeChallengeToken::try_new("token").expect("token"),
-            AcmeChallengeValue::try_new("token.thumbprint").expect("value"),
-            AcmeChallengeTtlSeconds::try_new(300).expect("ttl"),
-        )
-        .expect("challenge");
-
-        let error = client
-            .wait_until_challenge_applied(
-                &challenge,
-                std::slice::from_ref(&machine_id),
-                Duration::from_millis(10),
-            )
-            .await
-            .expect_err("silent gateway is not ready");
-
-        assert_eq!(
-            error,
-            GatewayChallengeReadinessError {
-                missing_machine_ids: vec![machine_id],
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn readiness_gather_reports_only_silent_gateways_when_other_responses_arrive() {
-        let ready_id = MachineId::try_new("machine_ready").expect("machine id");
-        let silent_id = MachineId::try_new("machine_silent").expect("machine id");
-        let nats = ployz_test_support::nats::TestNats::start_with_machines(std::slice::from_ref(
-            &ready_id,
-        ))
-        .await;
-        let mut service = start_nats_service(
-            nats.machine_client(&ready_id).await,
-            &gateway_role_service(&ready_id),
-        )
-        .await
-        .expect("gateway service");
-        service
-            .bind_endpoint(
-                &machine_endpoint_spec(
-                    &ready_id,
-                    MachineServiceEndpoint::CertificateChallengeStatus,
-                ),
-                {
-                    let ready_id = ready_id.clone();
-                    move |_| {
-                        let ready_id = ready_id.clone();
-                        async move {
-                            NatsServiceResponse::json_ok(&CertificateChallengeStatusResponse::Ok(
-                                CertificateChallengeStatusOk {
-                                    machine_id: ready_id,
-                                    application: CertificateChallengeApplicationStatus::Applied,
-                                },
-                            ))
-                        }
-                    }
-                },
-            )
-            .await
-            .expect("challenge endpoint");
-
-        let error = GatewayCertificateClient::new(nats.controller)
-            .wait_until_challenge_applied(
-                &challenge(),
-                &[silent_id.clone(), ready_id],
-                Duration::from_millis(100),
-            )
-            .await
-            .expect_err("silent gateway prevents readiness");
-
-        assert_eq!(error.missing_machine_ids, vec![silent_id]);
-        service.shutdown().await.expect("service shutdown");
-    }
 
     #[tokio::test]
     async fn artifact_push_attempts_every_known_gateway_before_returning_failure() {
@@ -395,16 +313,6 @@ mod tests {
         ));
         rejected.shutdown().await.expect("service shutdown");
         accepted.shutdown().await.expect("service shutdown");
-    }
-
-    fn challenge() -> AcmeHttp01Challenge {
-        AcmeHttp01Challenge::try_new(
-            RouteHostname::try_new("example.com").expect("hostname"),
-            AcmeChallengeToken::try_new("token").expect("token"),
-            AcmeChallengeValue::try_new("token.thumbprint").expect("value"),
-            AcmeChallengeTtlSeconds::try_new(300).expect("ttl"),
-        )
-        .expect("challenge")
     }
 
     fn custom_bundle() -> CustomCertBundle {

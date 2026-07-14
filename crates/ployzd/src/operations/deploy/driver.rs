@@ -1,16 +1,15 @@
 //! Owned deploy execution started by the control service.
 
 use crate::certificate::{CertificateManager, GatewayCertificateTarget};
-use crate::intent::lease_intent::LeaseIntentStore;
+use crate::intent::ingress_intent::{IngressProjectionStore, PloyzDnsTargetStore};
 use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::intent::service::NatsIntentReader;
 use crate::operation_api::admission::{AcceptedDeployExecution, OperationControllers};
 use crate::operations::deploy::{
     CertificateProvisioner, DeployContainer, DeployExecutionError, DeployExecutionInput,
     DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError, DeployHealthCheckError,
-    DeployHealthChecker, DeployPhasePromotion, MachineContainerRuntime, ManagedPublicUrlWaitPolicy,
-    NamespaceCommitError, NamespaceStateCommitter, execute_deploy_operation,
-    load_deploy_execution_facts_from_nats,
+    DeployHealthChecker, DeployPhasePromotion, MachineContainerRuntime, NamespaceCommitError,
+    NamespaceStateCommitter, execute_deploy_operation, load_deploy_execution_facts_from_nats,
 };
 use crate::operations::log::{
     AcceptedDeploySubmission, OperationStatusWrite, RecordDeployTransitionError,
@@ -24,6 +23,7 @@ use crate::roles::machine::protocol::{
 };
 use crate::tasks::TaskRegistry;
 use ployz_core::cert::ActiveCertState;
+use ployz_core::ingress::CertificateOwner;
 use ployz_core::machine_runtime::{ContainerHealth, ContainerRuntimeState};
 use ployz_core::ops::{
     CertificateProvisionFailure, DeployOperationFailure, DeployTransition, FailureMessage,
@@ -31,10 +31,6 @@ use ployz_core::ops::{
 };
 use ployz_core::subjects::INTENT_CHANGED;
 use std::time::Duration;
-
-use super::facts::{
-    ManagedPublicUrlWaitContext, auto_hostname_service, ensure_managed_public_url_for_deploy,
-};
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// A container without a Docker healthcheck must stay running this long
@@ -46,10 +42,18 @@ impl CertificateProvisioner for CertificateManager {
     async fn ensure(
         &mut self,
         owner_operation_id: &ployz_core::ids::OperationId,
+        owner: CertificateOwner,
         hostname: &RouteHostname,
         targets: &[GatewayCertificateTarget],
     ) -> Result<ActiveCertState, CertificateProvisionFailure> {
-        CertificateManager::ensure(self, owner_operation_id, hostname, targets).await
+        CertificateManager::ensure(self, owner_operation_id, owner, hostname, targets).await
+    }
+
+    async fn ensure_ployz_wildcard(
+        &mut self,
+        targets: &[GatewayCertificateTarget],
+    ) -> Result<ActiveCertState, CertificateProvisionFailure> {
+        CertificateManager::ensure_ployz_wildcard(self, targets).await
     }
 }
 
@@ -67,6 +71,7 @@ where
     let AcceptedDeployExecution {
         submission: accepted,
         registry_credentials,
+        ingress_fence_owner: _,
     } = accepted_execution;
     if !claim_deploy_execution(&stores.controllers, &accepted.operation_id).await? {
         return Err(DeployOperationRunError::AlreadyStarted);
@@ -80,26 +85,18 @@ where
     } = ports;
     let request = accepted.target.clone();
 
-    let facts = match async {
-        ensure_managed_public_url_for_deploy(
-            &request,
-            &accepted.operation_id,
-            ManagedPublicUrlWaitContext {
-                lease_intent: &stores.lease_intent,
-                repository: stores.controllers.repository(),
-                policy: stores.managed_public_url_wait,
-            },
-        )
-        .await?;
-        load_deploy_execution_facts_from_nats(&request, intent_reader, facts_reader, step_timeout)
-            .await
-    }
+    let facts = match load_deploy_execution_facts_from_nats(
+        &request,
+        intent_reader,
+        facts_reader,
+        &stores.ployz_dns_target,
+        &stores.ingress_projection,
+        step_timeout,
+    )
     .await
     {
         Ok(facts) => facts,
         Err(source) => {
-            let auto_dns_disabled =
-                matches!(source, DeployFactLoadError::ManagedPublicUrlDisabled { .. });
             let failure_record_error = record_operation_failure(
                 &stores.controllers,
                 &accepted,
@@ -107,11 +104,6 @@ where
             )
             .await
             .err();
-            if auto_dns_disabled {
-                return Err(DeployOperationRunError::AutoDnsWithoutLease {
-                    failure_record_error,
-                });
-            }
             return Err(DeployOperationRunError::LoadFacts {
                 source,
                 failure_record_error,
@@ -121,8 +113,8 @@ where
     let DeployOperationStores {
         intent_change_client,
         namespace_intent,
-        lease_intent: _,
-        managed_public_url_wait: _,
+        ployz_dns_target: _,
+        ingress_projection: _,
         controllers,
     } = stores;
     let input = DeployExecutionInput::new(
@@ -164,29 +156,10 @@ fn fact_load_failure(
     source: &DeployFactLoadError,
 ) -> DeployOperationFailure {
     match source {
-        DeployFactLoadError::ManagedPublicUrlPending { pending } => {
-            DeployOperationFailure::ManagedPublicUrlPending {
-                pending: pending.clone(),
-            }
-        }
-        DeployFactLoadError::ManagedPublicUrlDisabled { mode } => {
-            let service_id = auto_hostname_service(request).map_or_else(
-                || request.status_service_id(),
-                |service| service.service_id.clone(),
-            );
-            DeployOperationFailure::AutoDnsWithoutLease {
-                service_id,
-                namespace_revision_id: request.namespace_revision_id(),
-                message: FailureMessage::try_new(format!(
-                    "an auto public URL was requested but the cluster public URL mode is {mode:?}"
-                ))
-                .expect("generated auto DNS mode guidance is non-empty"),
-            }
-        }
         DeployFactLoadError::IntentRead { .. }
-        | DeployFactLoadError::ManagedPublicUrlStore { .. }
-        | DeployFactLoadError::ManagedPublicUrlClock { .. }
-        | DeployFactLoadError::ManagedPublicUrlProgress { .. } => {
+        | DeployFactLoadError::InvalidRouteBindings { .. }
+        | DeployFactLoadError::IngressState { .. }
+        | DeployFactLoadError::IngressUnavailable { .. } => {
             DeployOperationFailure::PlanningFailed {
                 service_id: request.status_service_id(),
                 namespace_revision_id: request.namespace_revision_id(),
@@ -201,8 +174,8 @@ fn fact_load_failure(
 pub struct DeployOperationStores {
     pub intent_change_client: async_nats::Client,
     pub namespace_intent: NamespaceIntentStore,
-    pub lease_intent: LeaseIntentStore,
-    pub managed_public_url_wait: ManagedPublicUrlWaitPolicy,
+    pub ployz_dns_target: PloyzDnsTargetStore,
+    pub ingress_projection: IngressProjectionStore,
     pub controllers: OperationControllers,
 }
 
@@ -326,9 +299,6 @@ pub enum DeployOperationRunError {
         source: DeployFactLoadError,
         failure_record_error: Option<RecordDeployTransitionError>,
     },
-    AutoDnsWithoutLease {
-        failure_record_error: Option<RecordDeployTransitionError>,
-    },
     Execute(DeployExecutionError),
 }
 
@@ -385,6 +355,7 @@ impl DeployOperationDriver {
 
         let namespace_id = accepted.submission.target.namespace_id.clone();
         let operation_id = accepted.submission.operation_id.clone();
+        let ingress_fence_owner = accepted.ingress_fence_owner.clone();
         let controllers = self.stores.controllers.clone();
         let result = run_deploy_operation(
             accepted,
@@ -403,6 +374,9 @@ impl DeployOperationDriver {
             controllers
                 .release_namespace(&namespace_id, &operation_id)
                 .await;
+            if let Some(owner) = ingress_fence_owner {
+                controllers.release_ingress(&owner).await;
+            }
         }
         result
     }

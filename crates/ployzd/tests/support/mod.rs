@@ -2,6 +2,7 @@
 
 pub mod control;
 pub mod dataplane;
+pub mod intent;
 pub mod machine_runtime;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

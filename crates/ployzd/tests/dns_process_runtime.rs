@@ -15,6 +15,8 @@ use ployzd::roles::dns::projection::DnsAnswer;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
+mod support;
+
 #[tokio::test]
 async fn dns_process_fails_fast_before_projection_sources_exist() {
     let nats = TestNats::start().await;
@@ -196,13 +198,15 @@ impl TestNats {
     }
 
     async fn start_intent_with_interval(&self, publish_interval: Duration) -> RunningIntentService {
+        let core_store = ployzd::core_store::CoreStore::open_in_memory()
+            .await
+            .expect("core store opens");
+        support::intent::initialize_disabled_ingress(&core_store).await;
         start_intent_service(
             self.connected.controller.clone(),
             machine_id("machine_a"),
             self.namespace_intent.clone(),
-            ployzd::core_store::CoreStore::open_in_memory()
-                .await
-                .expect("core store opens"),
+            core_store,
             publish_interval,
         )
         .await
@@ -213,10 +217,16 @@ impl TestNats {
     async fn commit_route(&self, hostname: &str) {
         self.namespace_intent
             .replace_route_binding(RouteBindingState {
+                id: ployz_core::ids::RouteBindingId::try_new(format!(
+                    "route_{}",
+                    hostname.replace('.', "_")
+                ))
+                .expect("valid route binding id"),
                 namespace_id: namespace_id("default"),
-                target: RouteTarget::new(route_hostname(hostname), route_port(443)),
+                target: RouteTarget::new(route_hostname(hostname)),
                 endpoint_port: route_port(8080),
                 service_id: service_id("svc_api"),
+                origin: ployz_core::ingress::RouteBindingOrigin::Declared,
             })
             .await
             .expect("route stores");

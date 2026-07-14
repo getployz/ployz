@@ -123,7 +123,7 @@ pub fn deploy_target(service: &str) -> DeployRequest {
 pub fn deploy_target_with_route(
     service: &str,
     hostname: &str,
-    gateway_port: u16,
+    _gateway_port: u16,
     endpoint_port: u16,
 ) -> DeployRequest {
     let mut request = deploy_target(service);
@@ -133,7 +133,6 @@ pub fn deploy_target_with_route(
     service_spec.routes.push(DeployRoute {
         target: DeployRouteTarget::Hostname {
             hostname: route_hostname(hostname),
-            port: route_port(gateway_port),
         },
         endpoint_port: route_port(endpoint_port),
     });

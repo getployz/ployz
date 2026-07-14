@@ -1,15 +1,21 @@
 //! Gateway projection read-model.
 
-use ployz_core::cert::{AcmeHttp01Challenge, CustomCertBundle, ManagedCertBundle};
-use ployz_core::ids::{ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, ServiceId};
+use ployz_core::cert::{AcmeHttp01Challenge, CustomCertBundle};
+use ployz_core::ids::{
+    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, RouteBindingId, ServiceId,
+};
+use ployz_core::ingress::{CertificateOwner, RouteBindingOrigin};
 use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
-use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
+use ployz_core::ops::{RoutePort, RouteTarget};
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayRoute {
+    pub id: RouteBindingId,
+    pub origin: RouteBindingOrigin,
+    pub certificate_owner: CertificateOwner,
     pub target: RouteTarget,
     pub endpoint_port: RoutePort,
     pub namespace_id: NamespaceId,
@@ -27,9 +33,8 @@ pub struct GatewayServingEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayProjectionInput {
-    pub managed_cert_bundle: Option<ManagedCertBundle>,
-    pub custom_cert_bundles: Vec<CustomCertBundle>,
-    pub custom_cert_failures: Vec<GatewayCertificateMaterialFailure>,
+    pub certificate_bundles: Vec<GatewayCertificateBundle>,
+    pub certificate_failures: Vec<GatewayCertificateMaterialFailure>,
     pub challenges: Vec<AcmeHttp01Challenge>,
     pub routes: Vec<GatewayRoute>,
     pub serving: Vec<GatewayServingEntry>,
@@ -43,20 +48,34 @@ pub struct GatewayProjectionInput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayCertificateMaterialFailure {
-    pub hostname: RouteHostname,
+    pub owner: CertificateOwner,
+    pub kind: GatewayCertificateMaterialFailureKind,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GatewayCertificateMaterialFailureKind {
+    MissingOrInvalid,
+    Unusable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatewayCertificateBundle {
+    pub owner: CertificateOwner,
+    pub bundle: CustomCertBundle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayProjection {
-    pub managed_cert_bundle: Option<ManagedCertBundle>,
-    pub custom_cert_bundles: Vec<CustomCertBundle>,
+    pub certificate_bundles: Vec<GatewayCertificateBundle>,
     pub challenges: Vec<AcmeHttp01Challenge>,
     pub routes: Vec<GatewayProjectedRoute>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayProjectedRoute {
+    pub id: RouteBindingId,
+    pub origin: RouteBindingOrigin,
     pub target: RouteTarget,
     pub upstreams: Vec<GatewayUpstream>,
     pub unroutable_containers: Vec<GatewayUnroutableContainer>,
@@ -131,6 +150,7 @@ pub enum GatewayProjectionError {
     },
     CertificateMaterial {
         failures: Vec<GatewayCertificateMaterialFailure>,
+        availability: GatewayCertificateFailureAvailability,
     },
     InvalidSource {
         message: String,
@@ -138,6 +158,12 @@ pub enum GatewayProjectionError {
     SourceUnavailable {
         message: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GatewayCertificateFailureAvailability {
+    Unavailable,
+    ServingLastKnownGood,
 }
 
 #[must_use]
@@ -148,30 +174,49 @@ pub fn apply_gateway_update(
     match update {
         GatewayProjectionUpdate::SourceAvailable(input) => {
             let mut input = *input;
-            let failures = input.custom_cert_failures.clone();
+            let failures = input.certificate_failures.clone();
+            let had_complete_projection = previous.last_good.is_some()
+                && !matches!(
+                    &previous.last_error,
+                    Some(GatewayProjectionError::CertificateMaterial {
+                        availability: GatewayCertificateFailureAvailability::Unavailable,
+                        ..
+                    })
+                );
             if let Some(last_good) = previous.last_good.as_ref() {
                 for failure in &failures {
+                    if failure.kind == GatewayCertificateMaterialFailureKind::Unusable {
+                        continue;
+                    }
                     if input
-                        .custom_cert_bundles
+                        .certificate_bundles
                         .iter()
-                        .any(|bundle| bundle.active_cert().hostname == failure.hostname)
+                        .any(|bundle| bundle.owner == failure.owner)
                     {
                         continue;
                     }
                     if let Some(bundle) = last_good
-                        .custom_cert_bundles
+                        .certificate_bundles
                         .iter()
-                        .find(|bundle| bundle.active_cert().hostname == failure.hostname)
+                        .find(|bundle| bundle.owner == failure.owner)
                     {
-                        input.custom_cert_bundles.push(bundle.clone());
+                        input.certificate_bundles.push(bundle.clone());
                     }
                 }
             }
             match project_gateway(input) {
                 Ok(projection) => GatewayProjectionState {
                     last_good: Some(projection),
-                    last_error: (!failures.is_empty())
-                        .then_some(GatewayProjectionError::CertificateMaterial { failures }),
+                    last_error: (!failures.is_empty()).then_some(
+                        GatewayProjectionError::CertificateMaterial {
+                            failures,
+                            availability: if had_complete_projection {
+                                GatewayCertificateFailureAvailability::ServingLastKnownGood
+                            } else {
+                                GatewayCertificateFailureAvailability::Unavailable
+                            },
+                        },
+                    ),
                 },
                 Err(error) => GatewayProjectionState {
                     last_error: Some(error),
@@ -199,9 +244,8 @@ pub fn apply_gateway_update(
 pub fn project_gateway(
     input: GatewayProjectionInput,
 ) -> Result<GatewayProjection, GatewayProjectionError> {
-    let managed_cert_bundle = input.managed_cert_bundle;
-    let custom_cert_bundles = input.custom_cert_bundles;
-    let custom_cert_failures = input.custom_cert_failures;
+    let certificate_bundles = input.certificate_bundles;
+    let certificate_failures = input.certificate_failures;
     let challenges = input.challenges;
     let mut input_routes = input.routes;
     input_routes.sort_by(|left, right| left.target.cmp(&right.target));
@@ -229,13 +273,13 @@ pub fn project_gateway(
     let indexed_containers = index_running_containers(&input.observed_machines);
     let mut routes = Vec::with_capacity(input_routes.len());
     for route in input_routes {
-        if route.target.port.get() == 443
-            && custom_cert_failures
+        let certificate_owner = route.certificate_owner.clone();
+        if certificate_failures
+            .iter()
+            .any(|failure| failure.owner == certificate_owner)
+            && !certificate_bundles
                 .iter()
-                .any(|failure| failure.hostname == route.target.hostname)
-            && !custom_cert_bundles
-                .iter()
-                .any(|bundle| bundle.active_cert().hostname == route.target.hostname)
+                .any(|bundle| bundle.owner == certificate_owner)
         {
             continue;
         }
@@ -246,6 +290,8 @@ pub fn project_gateway(
             serving_by_service.get(&(route.namespace_id.clone(), route.service_id.clone()))
         else {
             routes.push(GatewayProjectedRoute {
+                id: route.id,
+                origin: route.origin,
                 target: route.target,
                 upstreams: Vec::new(),
                 unroutable_containers: Vec::new(),
@@ -273,6 +319,8 @@ pub fn project_gateway(
             .cloned()
             .unwrap_or_default();
         routes.push(GatewayProjectedRoute {
+            id: route.id,
+            origin: route.origin,
             target: route.target,
             upstreams,
             unroutable_containers,
@@ -280,8 +328,7 @@ pub fn project_gateway(
     }
 
     Ok(GatewayProjection {
-        managed_cert_bundle,
-        custom_cert_bundles,
+        certificate_bundles,
         challenges,
         routes,
     })

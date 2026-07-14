@@ -3,11 +3,14 @@
 use std::path::PathBuf;
 
 use crate::certificate::material::{
-    CertificateMaterialError, custom_certificate_material_path, load_custom_certificate,
-    validate_custom_certificate, validate_custom_certificate_for_activation,
-    write_custom_certificate,
+    CertificateMaterialError, certificate_material_path_for_digest,
+    custom_certificate_material_path, load_custom_certificate, validate_custom_certificate,
+    validate_custom_certificate_for_activation, write_custom_certificate,
 };
-use ployz_core::cert::{ActiveCertState, CertificateArtifactPushRequest, CustomCertBundle};
+use ployz_core::cert::{
+    ActiveCertState, CertificateArtifactPushRequest, CertificateArtifactRemoveRequest,
+    CustomCertBundle,
+};
 use ployz_core::install::InstallSha256Digest;
 
 #[derive(Debug, Clone)]
@@ -64,6 +67,36 @@ impl GatewayCertificateStore {
         active: &ActiveCertState,
     ) -> Result<CustomCertBundle, GatewayCertificateStoreError> {
         load_custom_certificate(&self.state_dir, active).map_err(store_error)
+    }
+
+    pub fn load_at(
+        &self,
+        active: &ActiveCertState,
+        now_seconds: u64,
+    ) -> Result<CustomCertBundle, GatewayCertificateStoreError> {
+        validate_custom_certificate_for_activation(active, now_seconds).map_err(store_error)?;
+        self.load(active)
+    }
+
+    /// Removes exactly the artifact named by certificate id and digest.
+    /// Missing artifacts are already converged and succeed.
+    pub fn remove(
+        &self,
+        request: &CertificateArtifactRemoveRequest,
+    ) -> Result<(), GatewayCertificateStoreError> {
+        let path = certificate_material_path_for_digest(
+            &self.state_dir,
+            &request.cert_id,
+            &request.digest,
+        );
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(GatewayCertificateStoreError::ArtifactFile {
+                path,
+                message: error.to_string(),
+            }),
+        }
     }
 
     pub fn artifact_path(
@@ -134,4 +167,38 @@ pub enum GatewayCertificateStoreError {
     },
     #[error("certificate artifact file {}: {message}", path.display())]
     ArtifactFile { path: PathBuf, message: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ployz_core::ids::{CertId, OperationId};
+
+    #[test]
+    fn remove_is_exact_and_idempotent() {
+        let state = tempfile::tempdir().expect("gateway state");
+        let store = GatewayCertificateStore::new(state.path().to_path_buf());
+        let request = CertificateArtifactRemoveRequest {
+            operation_id: OperationId::try_new("op_remove_cert").expect("operation id"),
+            cert_id: CertId::try_new("cert_example").expect("cert id"),
+            digest: InstallSha256Digest::try_new("a".repeat(64)).expect("digest"),
+        };
+        let retained = certificate_material_path_for_digest(
+            state.path(),
+            &request.cert_id,
+            &InstallSha256Digest::try_new("b".repeat(64)).expect("retained digest"),
+        );
+        let removed =
+            certificate_material_path_for_digest(state.path(), &request.cert_id, &request.digest);
+        std::fs::create_dir_all(removed.parent().expect("bundle directory"))
+            .expect("create bundle directory");
+        std::fs::write(&removed, b"old").expect("write removed artifact");
+        std::fs::write(&retained, b"new").expect("write retained artifact");
+
+        store.remove(&request).expect("remove artifact");
+        store.remove(&request).expect("repeat removal");
+
+        assert!(!removed.exists());
+        assert!(retained.exists());
+    }
 }

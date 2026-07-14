@@ -1,6 +1,7 @@
 use ployz_core::cert::ActiveCertState;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::image::{ImageEnsureOk, ImageEnsureRequest};
+use ployz_core::ingress::CertificateOwner;
 use ployz_core::ops::ControlPlaneCommitScope;
 use ployz_core::ops::{
     CertificateProvisionFailure, DeployEvidence, DeployTransition, RouteHostname, RouteTarget,
@@ -98,7 +99,13 @@ pub trait CertificateProvisioner {
     fn ensure(
         &mut self,
         owner_operation_id: &OperationId,
+        owner: CertificateOwner,
         hostname: &RouteHostname,
+        targets: &[GatewayCertificateTarget],
+    ) -> impl Future<Output = Result<ActiveCertState, CertificateProvisionFailure>> + Send;
+
+    fn ensure_ployz_wildcard(
+        &mut self,
         targets: &[GatewayCertificateTarget],
     ) -> impl Future<Output = Result<ActiveCertState, CertificateProvisionFailure>> + Send;
 }

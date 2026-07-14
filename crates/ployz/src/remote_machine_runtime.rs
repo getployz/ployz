@@ -698,8 +698,12 @@ pub(crate) async fn execute_machine_init(
 
     let activate_config = config.clone().with_cluster_context(Some(context.clone()));
     let activation = activate_first_machine(
-        &FirstMachineActivateCommand::new(identity.machine_id.clone(), command.roles)
-            .with_public_url_mode(command.public_url_mode),
+        &FirstMachineActivateCommand {
+            machine_id: identity.machine_id.clone(),
+            roles: command.roles,
+            automatic_hostname_configuration: command.automatic_hostname_configuration.clone(),
+            ployz_dns_target: command.ployz_dns_target,
+        },
         &activate_config,
     )
     .await?;

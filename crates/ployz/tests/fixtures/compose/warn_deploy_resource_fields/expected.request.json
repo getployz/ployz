@@ -1,5 +1,5 @@
 {
-  "namespace_id": "uncloud_deploy",
+  "namespace_id": "deploy_resource_fields",
   "services": [
     {
       "service_id": "both",

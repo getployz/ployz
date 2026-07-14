@@ -393,7 +393,18 @@ where
                 .any(|planned| planned.service_id == service.request.service_id)
         })
         .collect::<Vec<_>>();
-    if !command.custom_certificate_hostnames().is_empty() {
+    let ployz_automatic_route = command
+        .ployz_automatic_hostnames()
+        .then_some(())
+        .and_then(|()| {
+            phase_services
+                .iter()
+                .flat_map(|service| service.route_binding_states())
+                .find(|binding| {
+                    binding.origin == ployz_core::ingress::RouteBindingOrigin::Automatic
+                })
+        });
+    if !command.exact_certificate_routes().is_empty() || ployz_automatic_route.is_some() {
         coarse_progress
             .record(
                 command,
@@ -403,18 +414,37 @@ where
             .await
             .map_err(|source| run.fail(source))?;
     }
-    for hostname in command
-        .custom_certificate_hostnames()
-        .iter()
-        .filter(|hostname| {
-            phase_services.iter().any(|service| {
-                service
-                    .route_binding_states()
-                    .iter()
-                    .any(|binding| &binding.target.hostname == *hostname)
-            })
+    if let Some(binding) = ployz_automatic_route {
+        let hostname = &binding.target.hostname;
+        with_step_timeout(
+            command,
+            DeployExecutionStep::EnsureCertificate {
+                hostname: hostname.clone(),
+            },
+            async {
+                ports
+                    .certificate_provisioner
+                    .ensure_ployz_wildcard(command.ployz_gateway_certificate_targets())
+                    .await
+                    .map(|_| ())
+                    .map_err(|failure| DeployExecutionError::ProvisionCertificate {
+                        hostname: hostname.clone(),
+                        failure: Box::new(failure),
+                    })
+            },
+        )
+        .await
+        .map_err(|source| run.fail(source))?;
+    }
+    for binding in command.exact_certificate_routes().iter().filter(|binding| {
+        phase_services.iter().any(|service| {
+            service
+                .route_binding_states()
+                .iter()
+                .any(|route| route.id == binding.id)
         })
-    {
+    }) {
+        let hostname = &binding.target.hostname;
         with_step_timeout(
             command,
             DeployExecutionStep::EnsureCertificate {
@@ -425,6 +455,9 @@ where
                     .certificate_provisioner
                     .ensure(
                         command.operation_id(),
+                        ployz_core::ingress::CertificateOwner::RouteBinding {
+                            route_binding_id: binding.id.clone(),
+                        },
                         hostname,
                         command.gateway_certificate_targets(),
                     )

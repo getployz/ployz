@@ -273,8 +273,19 @@ class PushSource<T> implements AsyncIterable<T>, AsyncIterator<T> {
 
 function snapshot(updatedAt: number): RuntimeSnapshot {
   return {
-    public_url: { mode: "none" },
-    certificate_statuses: [],
+    automatic_hostname_configuration: { mode: "disabled" },
+    ployz_dns_target: {
+      intent: "disabled",
+      allocation: { status: "unacquired" },
+      publication: { status: "unpublished" },
+    },
+    ingress_endpoint_projection: {
+      control_plane_epoch: 1,
+      revision: 0,
+      state: { status: "pending" },
+    },
+    active_certificates: [],
+    route_tls: [],
     machines: [],
     services: [],
     routes: [],

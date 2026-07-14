@@ -1,747 +1,722 @@
-use std::collections::BTreeSet;
+//! Optional Ployz DNS Target projection consumer.
+
 use std::future::Future;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ployz_core::cert::{
-    AutoLeaseState, ManagedCertBundle, ManagedLeaseAcquireRequest, ManagedLeaseAddressSet,
-    ManagedLeaseIntent, ManagedLeaseRecord, ManagedLeaseRenewRequest,
+use futures_util::{FutureExt, StreamExt};
+use ployz_core::cert::{ManagedLeaseAcquireRequest, ManagedLeaseRecord, ManagedLeaseRenewRequest};
+use ployz_core::ids::OperationId;
+use ployz_core::ingress::{
+    IngressEndpointProjection, IngressEndpointProjectionIdentity, IngressEndpointProjectionState,
+    IngressEndpointSet, PloyzDnsTargetIntent,
 };
-use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::ops::{
-    FailureMessage, ManagedLeaseFailureClass, ManagedLeaseOperationFailure, ManagedLeaseSubject,
-    ManagedLeaseTransition, OperationStatus,
+    FailureMessage, ManagedDnsReconcileFailure, ManagedDnsReconcileFailureClass,
+    ManagedDnsReconcileSubject, ManagedDnsReconcileTransition, ManagedDnsWithdrawAuthorization,
+    OperationStatus,
 };
+use ployz_core::subjects::{INGRESS_ENDPOINT_CHANGED, INGRESS_ENDPOINT_GET};
+use ployz_nats::service_runtime::{NatsJsonServiceRequestError, request_json};
+use serde::Serialize;
 
-use crate::intent::lease_intent::{LeaseIntentStore, LeaseIntentStoreError, StoreLeaseOutcome};
-use crate::intent::machine_roster::{MachineRosterStore, MachineRosterStoreError};
+use crate::intent::ingress_intent::{
+    IngressIntentStore, ManagedDnsCheckpoint, ManagedDnsEndpointSet, PloyzDnsTargetAllocation,
+    PloyzDnsTargetStore, PloyzDnsTargetWrite,
+};
 use crate::lease::{LeaseClient, LeaseClientError};
 use crate::operations::log::{
-    ManagedLeaseOperationSubmission, OperationRepository, RecordManagedLeaseTransitionError,
+    ManagedDnsReconcileOperationSubmission, OperationRepository,
+    RecordManagedDnsReconcileTransitionError,
 };
-use crate::roles::machine::client::{NatsMachineFactsReader, read_available_machine_facts};
 use crate::tasks::TaskRegistry;
 
-use super::client::BundleDownloadOutcome;
+pub const MANAGED_DNS_TICK_INTERVAL: Duration = Duration::from_secs(60);
+const PROJECTION_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+const SUCCESS_FOLLOW_UP_INTERVAL: Duration = Duration::from_millis(250);
+const FAILURE_BACKOFF_BASE: Duration = Duration::from_secs(5);
+const FAILURE_BACKOFF_CAP: Duration = Duration::from_secs(60 * 60);
 
-pub const MANAGED_LEASE_TICK_INTERVAL: Duration = Duration::from_secs(60);
-const MANAGED_LEASE_CONFIGURATION_POLL_INTERVAL: Duration = Duration::from_millis(250);
-const MANAGED_LEASE_CERTIFICATE_POLL_INTERVAL: Duration = Duration::from_secs(5);
-const MANAGED_LEASE_FAILURE_BACKOFF_BASE: Duration = Duration::from_secs(5);
-const MANAGED_LEASE_FAILURE_BACKOFF_CAP: Duration = Duration::from_secs(60 * 60);
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(deny_unknown_fields)]
+struct IngressEndpointGetRequest {}
 
-pub fn start_managed_lease_task(
+pub fn start_managed_dns_task(
     registry: &TaskRegistry,
-    lease_intent: LeaseIntentStore,
+    client: async_nats::Client,
+    ingress_intent: IngressIntentStore,
+    target: PloyzDnsTargetStore,
     repository: OperationRepository,
-    client: LeaseClient,
-    facts_reader: NatsMachineFactsReader,
-    roster: MachineRosterStore,
+    worker: LeaseClient,
+    certificate_wake: tokio::sync::mpsc::Sender<()>,
 ) {
     registry.spawn(run_loop(
-        lease_intent,
-        repository,
         client,
-        facts_reader,
-        roster,
+        ingress_intent,
+        target,
+        repository,
+        worker,
+        certificate_wake,
     ));
 }
 
 async fn run_loop(
-    lease_intent: LeaseIntentStore,
+    client: async_nats::Client,
+    ingress_intent: IngressIntentStore,
+    target: PloyzDnsTargetStore,
     repository: OperationRepository,
-    client: LeaseClient,
-    facts_reader: NatsMachineFactsReader,
-    roster: MachineRosterStore,
+    worker: LeaseClient,
+    certificate_wake: tokio::sync::mpsc::Sender<()>,
 ) {
     if let Err(error) = recover_accepted_operations(&repository).await {
-        eprintln!("ployzd managed lease recovery warning: {error}");
+        eprintln!("ployzd managed DNS recovery warning: {error}");
     }
     let mut consecutive_failures = 0;
-    let mut reported_missing_gateways: Option<Vec<MachineId>> = None;
-    let mut pending_gateway_testimony: Option<PendingGatewayTestimony> = None;
     loop {
-        let mut outcome = match record_pending_gateway_testimony(
-            &repository,
-            &mut pending_gateway_testimony,
-            &mut reported_missing_gateways,
-        )
-        .await
-        {
-            Ok(()) => {
-                run_once_with_roster(&lease_intent, &repository, &client, &facts_reader, &roster)
-                    .await
-            }
-            Err(error) => Err(error),
-        };
-        match &outcome {
-            Ok(ManagedLeaseTaskOutcome::AwaitingGatewayTestimony { missing })
-                if reported_missing_gateways.as_deref() != Some(missing) =>
-            {
-                let missing = missing.clone();
-                match submit_gateway_testimony_unavailable(&repository, &missing).await {
-                    Ok(pending) => {
-                        pending_gateway_testimony = Some(pending);
-                        outcome = record_pending_gateway_testimony(
-                            &repository,
-                            &mut pending_gateway_testimony,
-                            &mut reported_missing_gateways,
-                        )
-                        .await
-                        .map(|()| ManagedLeaseTaskOutcome::AwaitingGatewayTestimony { missing });
-                    }
-                    Err(error) => outcome = Err(error),
-                }
-            }
-            Ok(ManagedLeaseTaskOutcome::AwaitingGatewayTestimony { .. }) | Err(_) => {}
-            Ok(_) => reported_missing_gateways = None,
-        }
-        let delay = match outcome {
-            Ok(ManagedLeaseTaskOutcome::AwaitingConfiguration) => {
-                consecutive_failures = 0;
-                MANAGED_LEASE_CONFIGURATION_POLL_INTERVAL
-            }
-            Ok(ManagedLeaseTaskOutcome::AwaitingGatewayTestimony { missing }) => {
-                eprintln!(
-                    "ployzd managed lease waiting for gateway endpoint testimony: {}",
-                    missing
-                        .iter()
-                        .map(MachineId::as_str)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-                consecutive_failures = 0;
-                MANAGED_LEASE_CONFIGURATION_POLL_INTERVAL
-            }
-            Ok(ManagedLeaseTaskOutcome::AwaitingCertificate) => {
-                consecutive_failures = 0;
-                MANAGED_LEASE_CERTIFICATE_POLL_INTERVAL
-            }
-            Ok(
-                ManagedLeaseTaskOutcome::Acquired { .. }
-                | ManagedLeaseTaskOutcome::BundleDownloaded { .. },
-            ) => {
-                consecutive_failures = 0;
-                MANAGED_LEASE_CONFIGURATION_POLL_INTERVAL
-            }
-            Ok(ManagedLeaseTaskOutcome::NoAction | ManagedLeaseTaskOutcome::Renewed { .. }) => {
-                consecutive_failures = 0;
-                MANAGED_LEASE_TICK_INTERVAL
-            }
-            Ok(ManagedLeaseTaskOutcome::Failed { operation_id }) => {
-                eprintln!(
-                    "ployzd managed lease warning: operation {} failed",
-                    operation_id.as_str()
-                );
-                consecutive_failures += 1;
-                failure_delay(consecutive_failures)
-            }
+        let mut changed = match client.subscribe(INGRESS_ENDPOINT_CHANGED).await {
+            Ok(changed) => changed,
             Err(error) => {
-                eprintln!("ployzd managed lease warning: {error}");
-                if pending_gateway_testimony.is_none()
-                    && let Err(recovery_error) = recover_accepted_operations(&repository).await
-                {
-                    eprintln!("ployzd managed lease recovery warning: {recovery_error}");
-                }
                 consecutive_failures += 1;
-                failure_delay(consecutive_failures)
+                eprintln!("ployzd managed DNS subscribe warning: {error}");
+                tokio::time::sleep(failure_delay(consecutive_failures)).await;
+                continue;
             }
         };
-        tokio::time::sleep(delay).await;
+
+        loop {
+            let projection = match projection(&client).await {
+                Ok(projection) => Some(projection),
+                Err(error) => {
+                    eprintln!("ployzd managed DNS projection warning: {error}");
+                    None
+                }
+            };
+            let outcome = reconcile_once(
+                &ingress_intent,
+                &target,
+                &repository,
+                &worker,
+                projection.as_ref(),
+                match now_seconds() {
+                    Ok(now) => now,
+                    Err(error) => {
+                        eprintln!("ployzd managed DNS clock warning: {error}");
+                        tokio::time::sleep(failure_delay(consecutive_failures + 1)).await;
+                        continue;
+                    }
+                },
+            )
+            .await;
+
+            let delay = match outcome {
+                Ok(ManagedDnsTaskOutcome::Failed { operation_id }) => {
+                    consecutive_failures += 1;
+                    eprintln!(
+                        "ployzd managed DNS warning: operation {} failed",
+                        operation_id.as_str()
+                    );
+                    failure_delay(consecutive_failures)
+                }
+                Err(error) => {
+                    consecutive_failures += 1;
+                    eprintln!("ployzd managed DNS warning: {error}");
+                    if let Err(recovery_error) = recover_accepted_operations(&repository).await {
+                        eprintln!("ployzd managed DNS recovery warning: {recovery_error}");
+                    }
+                    failure_delay(consecutive_failures)
+                }
+                Ok(ManagedDnsTaskOutcome::Reconciled { .. }) => {
+                    let _ = certificate_wake.try_send(());
+                    consecutive_failures = 0;
+                    SUCCESS_FOLLOW_UP_INTERVAL
+                }
+                Ok(_) => {
+                    consecutive_failures = 0;
+                    MANAGED_DNS_TICK_INTERVAL
+                }
+            };
+
+            tokio::select! {
+                _ = tokio::time::sleep(delay) => {}
+                message = changed.next() => {
+                    if message.is_none() {
+                        break;
+                    }
+                    while changed.next().now_or_never().flatten().is_some() {}
+                }
+            }
+        }
     }
 }
 
-fn failure_delay(consecutive_failures: u32) -> Duration {
-    MANAGED_LEASE_FAILURE_BACKOFF_BASE
-        .saturating_mul(2_u32.saturating_pow(consecutive_failures.saturating_sub(1)))
-        .min(MANAGED_LEASE_FAILURE_BACKOFF_CAP)
+async fn projection(
+    client: &async_nats::Client,
+) -> Result<IngressEndpointProjection, NatsJsonServiceRequestError> {
+    request_json(
+        client,
+        INGRESS_ENDPOINT_GET.to_owned(),
+        &IngressEndpointGetRequest {},
+        PROJECTION_REQUEST_TIMEOUT,
+    )
+    .await
 }
 
-pub async fn run_once(
-    lease_intent: &LeaseIntentStore,
+pub async fn reconcile_once(
+    ingress_intent: &IngressIntentStore,
+    target: &PloyzDnsTargetStore,
     repository: &OperationRepository,
-    client: &LeaseClient,
-    renewal: ManagedLeaseRenewRequest,
-) -> Result<ManagedLeaseTaskOutcome, ManagedLeaseTaskError> {
-    let Some(intent) = lease_intent.load_if_configured().await? else {
-        return Ok(ManagedLeaseTaskOutcome::AwaitingConfiguration);
+    worker: &LeaseClient,
+    projection: Option<&IngressEndpointProjection>,
+    now_seconds: u64,
+) -> Result<ManagedDnsTaskOutcome, ManagedDnsTaskError> {
+    let Some(configuration) = ingress_intent.load().await? else {
+        return Ok(ManagedDnsTaskOutcome::AwaitingConfiguration);
     };
-    run_once_for_intent(lease_intent, repository, client, intent, renewal).await
+    match configuration.ployz_dns_target() {
+        PloyzDnsTargetIntent::Disabled => reconcile_disabled(target, repository, worker).await,
+        PloyzDnsTargetIntent::Enabled => {
+            reconcile_enabled(target, repository, worker, projection, now_seconds).await
+        }
+    }
 }
 
-async fn run_once_with_roster(
-    lease_intent: &LeaseIntentStore,
+async fn reconcile_enabled(
+    target: &PloyzDnsTargetStore,
     repository: &OperationRepository,
-    client: &LeaseClient,
-    facts_reader: &NatsMachineFactsReader,
-    roster: &MachineRosterStore,
-) -> Result<ManagedLeaseTaskOutcome, ManagedLeaseTaskError> {
-    let Some(intent) = lease_intent.load_if_configured().await? else {
-        return Ok(ManagedLeaseTaskOutcome::AwaitingConfiguration);
+    worker: &LeaseClient,
+    projection: Option<&IngressEndpointProjection>,
+    now_seconds: u64,
+) -> Result<ManagedDnsTaskOutcome, ManagedDnsTaskError> {
+    let Some(allocation) = target.ensure_acquisition().await? else {
+        return Ok(ManagedDnsTaskOutcome::NoAction);
     };
-    match &intent {
-        ManagedLeaseIntent::Auto { state }
-            if matches!(state.as_ref(), AutoLeaseState::Unacquired { .. }) =>
-        {
-            return run_once_for_intent(
-                lease_intent,
-                repository,
-                client,
-                intent,
+    match allocation {
+        PloyzDnsTargetAllocation::Unacquired {
+            acquisition_id,
+            token,
+        } => {
+            let subject = ManagedDnsReconcileSubject::Acquire;
+            run_worker_step(repository, subject, || async move {
+                let acquired = worker
+                    .acquire(ManagedLeaseAcquireRequest {
+                        acquisition_id: acquisition_id.clone(),
+                        token,
+                        ipv4: Vec::new(),
+                        ipv6: Vec::new(),
+                    })
+                    .await?;
+                match target
+                    .store_acquired(acquisition_id, acquired.lease)
+                    .await?
+                {
+                    PloyzDnsTargetWrite::Stored => Ok(()),
+                    PloyzDnsTargetWrite::Superseded => Err(StepError::Superseded),
+                }
+            })
+            .await
+        }
+        PloyzDnsTargetAllocation::Allocated { lease } => {
+            let checkpoint = target.load_checkpoint().await?;
+            let Some(action) = next_action(projection, checkpoint.as_ref(), &lease, now_seconds)
+            else {
+                return Ok(if projection.is_some() {
+                    ManagedDnsTaskOutcome::NoAction
+                } else {
+                    ManagedDnsTaskOutcome::AwaitingProjection
+                });
+            };
+            reconcile_allocation(target, repository, worker, lease, action).await
+        }
+    }
+}
+
+async fn reconcile_disabled(
+    target: &PloyzDnsTargetStore,
+    repository: &OperationRepository,
+    worker: &LeaseClient,
+) -> Result<ManagedDnsTaskOutcome, ManagedDnsTaskError> {
+    let Some(PloyzDnsTargetAllocation::Allocated { lease }) = target.load_allocation().await?
+    else {
+        return Ok(ManagedDnsTaskOutcome::NoAction);
+    };
+    if matches!(
+        target.load_checkpoint().await?,
+        Some(ManagedDnsCheckpoint::Withdrawn)
+    ) {
+        return Ok(ManagedDnsTaskOutcome::NoAction);
+    }
+    let subject = ManagedDnsReconcileSubject::AuthorizedWithdraw {
+        lease: lease.name.clone(),
+        authorization: ManagedDnsWithdrawAuthorization::TargetDisabled,
+    };
+    run_worker_step(repository, subject, || async move {
+        let renewed = worker
+            .renew(
+                lease.name,
+                lease.token,
                 ManagedLeaseRenewRequest {
                     ipv4: Vec::new(),
                     ipv6: Vec::new(),
                 },
             )
-            .await;
-        }
-        ManagedLeaseIntent::BringYourOwn | ManagedLeaseIntent::None => {
-            return Ok(ManagedLeaseTaskOutcome::NoAction);
-        }
-        ManagedLeaseIntent::Auto { .. } => {}
-    }
-    let gateway_ids = roster
-        .active_machines()
-        .await?
-        .into_iter()
-        .filter(|machine| {
-            matches!(
-                machine.roles.gateway,
-                ployz_core::roles::GatewayRole::Install
-            )
-        })
-        .map(|machine| machine.machine_id)
-        .collect();
-    let candidates = gateway_addresses_from_facts(facts_reader, &gateway_ids).await;
-    if !candidates.missing.is_empty()
-        || (candidates.request.ipv4.is_empty() && candidates.request.ipv6.is_empty())
-    {
-        let certificate_outcome = run_once_for_intent(
-            lease_intent,
-            repository,
-            client,
-            intent,
-            ManagedLeaseRenewRequest {
-                ipv4: Vec::new(),
-                ipv6: Vec::new(),
-            },
-        )
-        .await?;
-        if !matches!(certificate_outcome, ManagedLeaseTaskOutcome::NoAction) {
-            return Ok(certificate_outcome);
-        }
-        return Ok(ManagedLeaseTaskOutcome::AwaitingGatewayTestimony {
-            missing: candidates.missing,
-        });
-    }
-    run_once_for_intent(lease_intent, repository, client, intent, candidates.request).await
-}
-
-async fn run_once_for_intent(
-    lease_intent: &LeaseIntentStore,
-    repository: &OperationRepository,
-    client: &LeaseClient,
-    intent: ManagedLeaseIntent,
-    renewal: ManagedLeaseRenewRequest,
-) -> Result<ManagedLeaseTaskOutcome, ManagedLeaseTaskError> {
-    let addresses = ManagedLeaseAddressSet::new(renewal.ipv4, renewal.ipv6);
-    let renewal = ManagedLeaseRenewRequest {
-        ipv4: addresses.ipv4().iter().copied().collect(),
-        ipv6: addresses.ipv6().iter().copied().collect(),
-    };
-    let (needs_lease_renewal, needs_certificate_refresh) = match &intent {
-        ManagedLeaseIntent::Auto { state }
-            if matches!(state.as_ref(), AutoLeaseState::Ready { .. }) =>
-        {
-            let now = now_seconds()?;
-            (
-                intent.needs_lease_renewal(now),
-                intent.needs_certificate_refresh(now),
-            )
-        }
-        ManagedLeaseIntent::Auto { .. }
-        | ManagedLeaseIntent::BringYourOwn
-        | ManagedLeaseIntent::None => (false, false),
-    };
-
-    let ManagedLeaseIntent::Auto { state } = intent else {
-        return Ok(ManagedLeaseTaskOutcome::NoAction);
-    };
-
-    match *state {
-        AutoLeaseState::Unacquired {
-            acquisition_id,
-            token,
-        } => {
-            run_step(
-                lease_intent,
-                repository,
-                ManagedLeaseSubject::Acquire,
-                None,
-                || async {
-                    client
-                        .acquire(ManagedLeaseAcquireRequest {
-                            acquisition_id,
-                            token,
-                            ipv4: Vec::new(),
-                            ipv6: Vec::new(),
-                        })
-                        .await
-                        .map(|acquired| (acquired.lease, acquired.bundle))
-                },
-                |operation_id| ManagedLeaseTaskOutcome::Acquired { operation_id },
-            )
-            .await
-        }
-        AutoLeaseState::RecordOnly { lease } => {
-            if has_addresses(&addresses)
-                && lease_intent.applied_address_set_differs(&addresses).await?
-            {
-                return run_renew_step(lease_intent, repository, client, lease, renewal, addresses)
-                    .await;
-            }
-            run_download_step(lease_intent, repository, client, lease).await
-        }
-        AutoLeaseState::Ready { lease, bundle: _ } => {
-            let addresses_differ = has_addresses(&addresses)
-                && lease_intent.applied_address_set_differs(&addresses).await?;
-            if addresses_differ || (needs_lease_renewal && has_addresses(&addresses)) {
-                return run_renew_step(lease_intent, repository, client, lease, renewal, addresses)
-                    .await;
-            }
-            if needs_certificate_refresh {
-                return run_download_step(lease_intent, repository, client, lease).await;
-            }
-            Ok(ManagedLeaseTaskOutcome::NoAction)
-        }
-    }
-}
-
-fn has_addresses(addresses: &ManagedLeaseAddressSet) -> bool {
-    !addresses.ipv4().is_empty() || !addresses.ipv6().is_empty()
-}
-
-async fn run_renew_step(
-    lease_intent: &LeaseIntentStore,
-    repository: &OperationRepository,
-    client: &LeaseClient,
-    lease: ManagedLeaseRecord,
-    renewal: ManagedLeaseRenewRequest,
-    addresses: ManagedLeaseAddressSet,
-) -> Result<ManagedLeaseTaskOutcome, ManagedLeaseTaskError> {
-    let subject = ManagedLeaseSubject::Renew {
-        lease: lease.name.clone(),
-        addresses: Box::new(addresses.clone()),
-    };
-    run_step(
-        lease_intent,
-        repository,
-        subject,
-        Some(addresses),
-        || async {
-            client
-                .renew(lease.name, lease.token, renewal)
-                .await
-                .map(|renewed| (renewed.lease, renewed.bundle))
-        },
-        |operation_id| ManagedLeaseTaskOutcome::Renewed { operation_id },
-    )
-    .await
-}
-
-async fn run_download_step(
-    lease_intent: &LeaseIntentStore,
-    repository: &OperationRepository,
-    client: &LeaseClient,
-    lease: ManagedLeaseRecord,
-) -> Result<ManagedLeaseTaskOutcome, ManagedLeaseTaskError> {
-    let subject = ManagedLeaseSubject::DownloadBundle {
-        lease: lease.name.clone(),
-    };
-    let result = match client
-        .download_bundle(lease.name.clone(), lease.token.clone())
-        .await
-    {
-        Ok(BundleDownloadOutcome::Pending { .. }) => {
-            return Ok(ManagedLeaseTaskOutcome::AwaitingCertificate);
-        }
-        Ok(BundleDownloadOutcome::Ready(bundle)) => Ok((lease, Some(bundle))),
-        Err(error) => Err(error),
-    };
-    run_step(
-        lease_intent,
-        repository,
-        subject,
-        None,
-        || async { result },
-        |operation_id| ManagedLeaseTaskOutcome::BundleDownloaded { operation_id },
-    )
-    .await
-}
-
-struct GatewayAddressCandidates {
-    request: ManagedLeaseRenewRequest,
-    missing: Vec<MachineId>,
-}
-
-async fn gateway_addresses_from_facts(
-    facts_reader: &NatsMachineFactsReader,
-    gateways: &BTreeSet<ployz_core::ids::MachineId>,
-) -> GatewayAddressCandidates {
-    let endpoints = read_available_machine_facts(facts_reader, gateways.iter().cloned())
-        .await
-        .into_iter()
-        .filter_map(|facts| facts.endpoints().cloned())
-        .collect();
-    known_gateway_addresses_from_ids(gateways, endpoints)
-}
-
-fn known_gateway_addresses_from_ids(
-    gateways: &BTreeSet<ployz_core::ids::MachineId>,
-    endpoints: Vec<ployz_core::state::MachineEndpointObservation>,
-) -> GatewayAddressCandidates {
-    let answering = endpoints
-        .iter()
-        .map(|endpoint| endpoint.machine_id.clone())
-        .collect::<std::collections::BTreeSet<_>>();
-    let missing = gateways.difference(&answering).cloned().collect();
-    let mut ipv4 = Vec::new();
-    let mut ipv6 = Vec::new();
-    for endpoint in endpoints {
-        if !gateways.contains(&endpoint.machine_id) {
-            continue;
-        }
-        for address in endpoint.control_endpoints {
-            match address {
-                std::net::IpAddr::V4(address) => ipv4.push(address),
-                std::net::IpAddr::V6(address) => ipv6.push(address),
-            }
-        }
-    }
-    ipv4.sort_unstable();
-    ipv4.dedup();
-    ipv6.sort_unstable();
-    ipv6.dedup();
-    GatewayAddressCandidates {
-        request: ManagedLeaseRenewRequest { ipv4, ipv6 },
-        missing,
-    }
-}
-
-async fn run_step<Worker, WorkerFuture, Success>(
-    lease_intent: &LeaseIntentStore,
-    repository: &OperationRepository,
-    subject: ManagedLeaseSubject,
-    applied_addresses: Option<ManagedLeaseAddressSet>,
-    worker: Worker,
-    success: Success,
-) -> Result<ManagedLeaseTaskOutcome, ManagedLeaseTaskError>
-where
-    Worker: FnOnce() -> WorkerFuture,
-    WorkerFuture:
-        Future<Output = Result<(ManagedLeaseRecord, Option<ManagedCertBundle>), LeaseClientError>>,
-    Success: FnOnce(OperationId) -> ManagedLeaseTaskOutcome,
-{
-    let operation_id = submit_operation(repository, subject.clone()).await?;
-    let (record, bundle) = match worker().await {
-        Ok(result) => result,
-        Err(error) => {
-            record_failed(
-                repository,
-                &operation_id,
-                &subject,
-                lease_client_failure_class(&error),
-                &error,
-            )
             .await?;
-            return Ok(ManagedLeaseTaskOutcome::Failed { operation_id });
+        match target.store_successful_withdraw(renewed.lease).await? {
+            PloyzDnsTargetWrite::Stored => Ok(()),
+            PloyzDnsTargetWrite::Superseded => Err(StepError::Superseded),
         }
-    };
-    let storage = match applied_addresses {
-        Some(addresses) => {
-            lease_intent
-                .store_successful_lease_application(record, bundle, addresses)
-                .await
-        }
-        None => lease_intent.store_lease(record, bundle).await,
-    };
-    match storage {
-        Ok(StoreLeaseOutcome::Stored) => {
-            record_completed(repository, &operation_id, &subject).await?;
-            Ok(success(operation_id))
-        }
-        Ok(StoreLeaseOutcome::Superseded) => {
-            record_failed(
-                repository,
-                &operation_id,
-                &subject,
-                ManagedLeaseFailureClass::Superseded,
-                &"managed lease result was superseded by a public URL mode change",
-            )
-            .await?;
-            Ok(ManagedLeaseTaskOutcome::Failed { operation_id })
-        }
-        Err(error) => {
-            record_failed(
-                repository,
-                &operation_id,
-                &subject,
-                ManagedLeaseFailureClass::Storage,
-                &error,
-            )
-            .await?;
-            Ok(ManagedLeaseTaskOutcome::Failed { operation_id })
-        }
-    }
-}
-
-pub async fn recover_accepted_operations(
-    repository: &OperationRepository,
-) -> Result<(), ManagedLeaseTaskError> {
-    for status in repository.accepted_managed_lease_operations().await? {
-        let OperationStatus::ManagedLease { id, subject, .. } = status else {
-            continue;
-        };
-        record_failed(
-            repository,
-            &id,
-            &subject,
-            ManagedLeaseFailureClass::Interrupted,
-            &"managed lease task resumed without terminal evidence",
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-async fn submit_operation(
-    repository: &OperationRepository,
-    subject: ManagedLeaseSubject,
-) -> Result<OperationId, ManagedLeaseTaskError> {
-    let operation_id = OperationId::try_new(format!("op_managed_lease_{}", nuid::next()))
-        .map_err(|error| ManagedLeaseTaskError::OperationId(error.to_string()))?;
-    let accepted = repository
-        .submit_managed_lease(ManagedLeaseOperationSubmission {
-            operation_id,
-            subject,
-        })
-        .await
-        .map_err(|error| ManagedLeaseTaskError::Submit(format!("{error:?}")))?;
-    Ok(accepted.operation_id)
-}
-
-async fn record_completed(
-    repository: &OperationRepository,
-    operation_id: &OperationId,
-    subject: &ManagedLeaseSubject,
-) -> Result<(), ManagedLeaseTaskError> {
-    repository
-        .record_managed_lease_transition(operation_id, subject, ManagedLeaseTransition::Completed)
-        .await?;
-    Ok(())
-}
-
-async fn submit_gateway_testimony_unavailable(
-    repository: &OperationRepository,
-    missing: &[MachineId],
-) -> Result<PendingGatewayTestimony, ManagedLeaseTaskError> {
-    let subject = ManagedLeaseSubject::GatewayTestimony {
-        missing: missing.to_vec(),
-    };
-    Ok(PendingGatewayTestimony {
-        operation_id: submit_operation(repository, subject).await?,
-        missing: missing.to_vec(),
     })
+    .await
 }
 
-struct PendingGatewayTestimony {
-    operation_id: OperationId,
-    missing: Vec<MachineId>,
-}
-
-async fn record_pending_gateway_testimony(
+async fn reconcile_allocation(
+    target: &PloyzDnsTargetStore,
     repository: &OperationRepository,
-    pending: &mut Option<PendingGatewayTestimony>,
-    reported: &mut Option<Vec<MachineId>>,
-) -> Result<(), ManagedLeaseTaskError> {
-    let Some(testimony) = pending.as_ref() else {
-        return Ok(());
-    };
-    let subject = ManagedLeaseSubject::GatewayTestimony {
-        missing: testimony.missing.clone(),
-    };
-    let result = record_failed(
-        repository,
-        &testimony.operation_id,
-        &subject,
-        ManagedLeaseFailureClass::GatewayTestimonyUnavailable,
-        &"gateway endpoint testimony unavailable",
-    )
-    .await;
-    finish_gateway_testimony_transition(pending, reported, result)
-}
-
-fn finish_gateway_testimony_transition(
-    pending: &mut Option<PendingGatewayTestimony>,
-    reported: &mut Option<Vec<MachineId>>,
-    result: Result<(), ManagedLeaseTaskError>,
-) -> Result<(), ManagedLeaseTaskError> {
-    result?;
-    let Some(testimony) = pending.take() else {
-        return Ok(());
-    };
-    *reported = Some(testimony.missing);
-    Ok(())
-}
-
-async fn record_failed(
-    repository: &OperationRepository,
-    operation_id: &OperationId,
-    subject: &ManagedLeaseSubject,
-    class: ManagedLeaseFailureClass,
-    error: &impl std::fmt::Display,
-) -> Result<(), ManagedLeaseTaskError> {
-    let message = match FailureMessage::try_new(error.to_string()) {
-        Ok(message) => message,
-        Err(_) => FailureMessage::try_new("managed lease request failed")
-            .expect("static managed lease failure message is non-empty"),
-    };
-    repository
-        .record_managed_lease_transition(
-            operation_id,
-            subject,
-            ManagedLeaseTransition::Failed {
-                failure: ManagedLeaseOperationFailure { class, message },
+    worker: &LeaseClient,
+    lease: ManagedLeaseRecord,
+    action: ReconcileAction,
+) -> Result<ManagedDnsTaskOutcome, ManagedDnsTaskError> {
+    let (subject, identity, endpoints) = match action {
+        ReconcileAction::ProjectionApply {
+            identity,
+            endpoints,
+        } => (
+            ManagedDnsReconcileSubject::ProjectionApply {
+                lease: lease.name.clone(),
+                projection: identity,
             },
-        )
-        .await?;
-    Ok(())
-}
-
-const fn lease_client_failure_class(error: &LeaseClientError) -> ManagedLeaseFailureClass {
-    match error {
-        LeaseClientError::Unauthorized => ManagedLeaseFailureClass::WorkerUnauthorized,
-        LeaseClientError::LeaseNotFound => ManagedLeaseFailureClass::LeaseNotFound,
-        LeaseClientError::Http { .. } => ManagedLeaseFailureClass::WorkerHttp,
-        LeaseClientError::Transport { .. } => ManagedLeaseFailureClass::Transport,
-        LeaseClientError::Decode { .. } => ManagedLeaseFailureClass::Decode,
-    }
-}
-
-fn now_seconds() -> Result<u64, ManagedLeaseTaskError> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .map_err(|_| ManagedLeaseTaskError::ClockBeforeUnixEpoch)
+            Some(identity),
+            endpoints,
+        ),
+        ReconcileAction::ProjectionWithdraw { identity } => (
+            ManagedDnsReconcileSubject::AuthorizedWithdraw {
+                lease: lease.name.clone(),
+                authorization: ManagedDnsWithdrawAuthorization::ProjectionUnavailable {
+                    projection: identity,
+                },
+            },
+            Some(identity),
+            empty_managed_dns_endpoint_set(),
+        ),
+        ReconcileAction::LeaseRenewal {
+            identity,
+            endpoints,
+        } => (
+            ManagedDnsReconcileSubject::LeaseRenewal {
+                lease: lease.name.clone(),
+                projection: identity,
+            },
+            identity,
+            endpoints,
+        ),
+    };
+    run_worker_step(repository, subject, || async move {
+        let renewed = worker
+            .renew(
+                lease.name,
+                lease.token,
+                ManagedLeaseRenewRequest {
+                    ipv4: endpoints.ipv4().iter().copied().collect(),
+                    ipv6: endpoints.ipv6().iter().copied().collect(),
+                },
+            )
+            .await?;
+        let checkpoint = ManagedDnsCheckpoint::Applied {
+            last_applied_identity: identity,
+            last_applied_endpoints: endpoints,
+        };
+        match target
+            .store_successful_reconcile(renewed.lease, checkpoint)
+            .await?
+        {
+            PloyzDnsTargetWrite::Stored => Ok(()),
+            PloyzDnsTargetWrite::Superseded => Err(StepError::Superseded),
+        }
+    })
+    .await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ManagedLeaseTaskOutcome {
-    AwaitingConfiguration,
-    AwaitingCertificate,
-    AwaitingGatewayTestimony {
-        missing: Vec<ployz_core::ids::MachineId>,
+enum ReconcileAction {
+    ProjectionApply {
+        identity: IngressEndpointProjectionIdentity,
+        endpoints: ManagedDnsEndpointSet,
     },
-    NoAction,
-    Acquired {
-        operation_id: OperationId,
+    ProjectionWithdraw {
+        identity: IngressEndpointProjectionIdentity,
     },
-    BundleDownloaded {
-        operation_id: OperationId,
-    },
-    Renewed {
-        operation_id: OperationId,
-    },
-    Failed {
-        operation_id: OperationId,
+    LeaseRenewal {
+        identity: Option<IngressEndpointProjectionIdentity>,
+        endpoints: ManagedDnsEndpointSet,
     },
 }
 
+fn next_action(
+    projection: Option<&IngressEndpointProjection>,
+    checkpoint: Option<&ManagedDnsCheckpoint>,
+    lease: &ManagedLeaseRecord,
+    now_seconds: u64,
+) -> Option<ReconcileAction> {
+    if let Some(projection) = projection {
+        match &projection.state {
+            IngressEndpointProjectionState::Current { endpoints }
+            | IngressEndpointProjectionState::Retained { endpoints } => {
+                let endpoints = managed_dns_endpoint_set(endpoints);
+                if !checkpoint_matches(checkpoint, Some(projection.identity()), &endpoints) {
+                    return Some(ReconcileAction::ProjectionApply {
+                        identity: projection.identity(),
+                        endpoints,
+                    });
+                }
+            }
+            IngressEndpointProjectionState::Unavailable { .. } => {
+                let endpoints = empty_managed_dns_endpoint_set();
+                if !checkpoint_matches(checkpoint, Some(projection.identity()), &endpoints) {
+                    return Some(ReconcileAction::ProjectionWithdraw {
+                        identity: projection.identity(),
+                    });
+                }
+            }
+            IngressEndpointProjectionState::Pending => {}
+        }
+    }
+
+    if renewal_due(lease, now_seconds)
+        && let Some(ManagedDnsCheckpoint::Applied {
+            last_applied_identity,
+            last_applied_endpoints,
+        }) = checkpoint
+    {
+        return Some(ReconcileAction::LeaseRenewal {
+            identity: *last_applied_identity,
+            endpoints: last_applied_endpoints.clone(),
+        });
+    }
+    if renewal_due(lease, now_seconds)
+        && matches!(checkpoint, Some(ManagedDnsCheckpoint::Withdrawn))
+    {
+        return Some(ReconcileAction::LeaseRenewal {
+            identity: None,
+            endpoints: empty_managed_dns_endpoint_set(),
+        });
+    }
+    None
+}
+
+fn managed_dns_endpoint_set(endpoints: &IngressEndpointSet) -> ManagedDnsEndpointSet {
+    ManagedDnsEndpointSet::new(
+        endpoints.ipv4().iter().copied().collect(),
+        endpoints.ipv6().iter().copied().collect(),
+    )
+}
+
+fn empty_managed_dns_endpoint_set() -> ManagedDnsEndpointSet {
+    ManagedDnsEndpointSet::new(Vec::new(), Vec::new())
+}
+
+fn checkpoint_matches(
+    checkpoint: Option<&ManagedDnsCheckpoint>,
+    identity: Option<IngressEndpointProjectionIdentity>,
+    endpoints: &ManagedDnsEndpointSet,
+) -> bool {
+    matches!(
+        checkpoint,
+        Some(ManagedDnsCheckpoint::Applied {
+            last_applied_identity,
+            last_applied_endpoints,
+        }) if *last_applied_identity == identity && last_applied_endpoints == endpoints
+    )
+}
+
+fn renewal_due(lease: &ManagedLeaseRecord, now_seconds: u64) -> bool {
+    let issued_at = lease.issued_at.unix_seconds();
+    let lifetime = lease.expires_at.unix_seconds().saturating_sub(issued_at);
+    now_seconds >= issued_at.saturating_add(lifetime.saturating_mul(2) / 3)
+}
+
+async fn run_worker_step<Run, Fut>(
+    repository: &OperationRepository,
+    subject: ManagedDnsReconcileSubject,
+    run: Run,
+) -> Result<ManagedDnsTaskOutcome, ManagedDnsTaskError>
+where
+    Run: FnOnce() -> Fut,
+    Fut: Future<Output = Result<(), StepError>>,
+{
+    let operation_id = OperationId::try_new(format!("op_managed_dns_{}", nuid::next()))
+        .expect("NUID operation id is valid");
+    repository
+        .submit_managed_dns_reconcile(ManagedDnsReconcileOperationSubmission {
+            operation_id: operation_id.clone(),
+            subject: subject.clone(),
+        })
+        .await?;
+    let result = run().await;
+    let transition = match &result {
+        Ok(()) => ManagedDnsReconcileTransition::Completed,
+        Err(error) => ManagedDnsReconcileTransition::Failed {
+            failure: error.operation_failure(),
+        },
+    };
+    repository
+        .record_managed_dns_reconcile_transition(&operation_id, &subject, transition)
+        .await?;
+    Ok(match result {
+        Ok(()) => ManagedDnsTaskOutcome::Reconciled { operation_id },
+        Err(_) => ManagedDnsTaskOutcome::Failed { operation_id },
+    })
+}
+
+async fn recover_accepted_operations(
+    repository: &OperationRepository,
+) -> Result<(), ManagedDnsTaskError> {
+    for status in repository
+        .accepted_managed_dns_reconcile_operations()
+        .await?
+    {
+        let OperationStatus::ManagedDnsReconcile {
+            id,
+            subject,
+            state: _,
+            last_event_sequence: _,
+        } = status
+        else {
+            continue;
+        };
+        repository
+            .record_managed_dns_reconcile_transition(
+                &id,
+                &subject,
+                ManagedDnsReconcileTransition::Failed {
+                    failure: ManagedDnsReconcileFailure {
+                        class: ManagedDnsReconcileFailureClass::Interrupted,
+                        message: failure_message(
+                            "core stopped before the managed DNS call completed",
+                        ),
+                    },
+                },
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+fn failure_delay(consecutive_failures: u32) -> Duration {
+    FAILURE_BACKOFF_BASE
+        .saturating_mul(2_u32.saturating_pow(consecutive_failures.saturating_sub(1)))
+        .min(FAILURE_BACKOFF_CAP)
+}
+
+fn now_seconds() -> Result<u64, ManagedDnsTaskError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|error| ManagedDnsTaskError::Clock {
+            message: error.to_string(),
+        })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManagedDnsTaskOutcome {
+    AwaitingConfiguration,
+    AwaitingProjection,
+    NoAction,
+    Reconciled { operation_id: OperationId },
+    Failed { operation_id: OperationId },
+}
+
 #[derive(Debug, thiserror::Error)]
-pub enum ManagedLeaseTaskError {
-    #[error("{0}")]
-    Intent(#[from] LeaseIntentStoreError),
-    #[error("managed lease roster read: {0}")]
-    Roster(#[from] MachineRosterStoreError),
-    #[error("managed lease operation id: {0}")]
-    OperationId(String),
-    #[error("managed lease operation submission failed: {0}")]
-    Submit(String),
-    #[error("managed lease operation record failed: {0}")]
-    Record(#[from] RecordManagedLeaseTransitionError),
-    #[error("managed lease operation recovery failed: {0}")]
-    Recovery(#[from] crate::operations::log::OperationStatusStoreError),
-    #[error("system clock is before Unix epoch")]
-    ClockBeforeUnixEpoch,
+enum StepError {
+    #[error(transparent)]
+    Worker(#[from] LeaseClientError),
+    #[error(transparent)]
+    Store(#[from] crate::core_store::CoreStoreError),
+    #[error("managed DNS result was superseded by current intent")]
+    Superseded,
+}
+
+impl StepError {
+    fn operation_failure(&self) -> ManagedDnsReconcileFailure {
+        let class = match self {
+            Self::Worker(LeaseClientError::Unauthorized) => {
+                ManagedDnsReconcileFailureClass::WorkerUnauthorized
+            }
+            Self::Worker(LeaseClientError::LeaseNotFound) => {
+                ManagedDnsReconcileFailureClass::LeaseNotFound
+            }
+            Self::Worker(LeaseClientError::Http { .. }) => {
+                ManagedDnsReconcileFailureClass::WorkerHttp
+            }
+            Self::Worker(LeaseClientError::Transport { .. }) => {
+                ManagedDnsReconcileFailureClass::Transport
+            }
+            Self::Worker(LeaseClientError::Decode { .. }) => {
+                ManagedDnsReconcileFailureClass::Decode
+            }
+            Self::Store(_) => ManagedDnsReconcileFailureClass::Storage,
+            Self::Superseded => ManagedDnsReconcileFailureClass::Superseded,
+        };
+        ManagedDnsReconcileFailure {
+            class,
+            message: failure_message(&self.to_string()),
+        }
+    }
+}
+
+fn failure_message(message: &str) -> FailureMessage {
+    FailureMessage::try_new(message).expect("managed DNS failures are non-empty")
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ManagedDnsTaskError {
+    #[error(transparent)]
+    Intent(#[from] crate::intent::ingress_intent::IngressIntentStoreError),
+    #[error(transparent)]
+    Store(#[from] crate::core_store::CoreStoreError),
+    #[error("submit managed DNS operation: {message}")]
+    Submit { message: String },
+    #[error(transparent)]
+    Record(#[from] RecordManagedDnsReconcileTransitionError),
+    #[error(transparent)]
+    Status(#[from] crate::operations::log::OperationStatusStoreError),
+    #[error("system clock: {message}")]
+    Clock { message: String },
+}
+
+impl From<crate::operations::log::SubmitOperationError> for ManagedDnsTaskError {
+    fn from(error: crate::operations::log::SubmitOperationError) -> Self {
+        Self::Submit {
+            message: format!("{error:?}"),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::state::MachineEndpointObservation;
-    use ployz_test_support::ids::machine_id;
+    use ployz_core::cert::{LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, ManagedLeaseName};
+    use ployz_core::ingress::IngressEndpointUnavailableReason;
+    use ployz_core::state::ControlPlaneEpoch;
+
+    fn lease(issued_at: u64, expires_at: u64) -> ManagedLeaseRecord {
+        ManagedLeaseRecord::try_new(
+            ManagedLeaseName::try_new("cluster-one").expect("lease name"),
+            LeaseBearerToken::try_new("lease-token").expect("token"),
+            LeaseIssuedAt::try_new(issued_at).expect("issued at"),
+            LeaseExpiresAt::try_new(expires_at).expect("expires at"),
+        )
+        .expect("lease window")
+    }
+
+    fn projection(
+        state: IngressEndpointProjectionState,
+        revision: u64,
+    ) -> IngressEndpointProjection {
+        IngressEndpointProjection {
+            control_plane_epoch: ControlPlaneEpoch::initial().next(),
+            revision,
+            state,
+        }
+    }
+
+    fn endpoints() -> IngressEndpointSet {
+        IngressEndpointSet::try_new(
+            ["8.8.8.8".parse().expect("IPv4")],
+            ["2001:4860:4860::8888".parse().expect("IPv6")],
+        )
+        .expect("public endpoints")
+    }
 
     #[test]
-    fn failure_backoff_doubles_and_caps() {
+    fn pending_and_get_error_make_no_projection_call_before_renewal() {
+        let lease = lease(100, 190);
+        let checkpoint = ManagedDnsCheckpoint::Applied {
+            last_applied_identity: None,
+            last_applied_endpoints: empty_managed_dns_endpoint_set(),
+        };
+        let pending = projection(IngressEndpointProjectionState::Pending, 0);
+
+        assert_eq!(
+            next_action(Some(&pending), Some(&checkpoint), &lease, 159),
+            None
+        );
+        assert_eq!(next_action(None, Some(&checkpoint), &lease, 159), None);
+    }
+
+    #[test]
+    fn current_applies_once_and_retained_with_same_identity_is_stable() {
+        let lease = lease(100, 190);
+        let current = projection(
+            IngressEndpointProjectionState::Current {
+                endpoints: endpoints(),
+            },
+            4,
+        );
+        let IngressEndpointProjectionState::Current {
+            endpoints: current_endpoints,
+        } = &current.state
+        else {
+            panic!("expected current endpoint projection");
+        };
+        let expected = managed_dns_endpoint_set(current_endpoints);
+        assert!(matches!(
+            next_action(Some(&current), None, &lease, 120),
+            Some(ReconcileAction::ProjectionApply { .. })
+        ));
+        let checkpoint = ManagedDnsCheckpoint::Applied {
+            last_applied_identity: Some(current.identity()),
+            last_applied_endpoints: expected,
+        };
+        let retained = projection(
+            IngressEndpointProjectionState::Retained {
+                endpoints: endpoints(),
+            },
+            4,
+        );
+        assert_eq!(
+            next_action(Some(&retained), Some(&checkpoint), &lease, 120),
+            None
+        );
+    }
+
+    #[test]
+    fn unavailable_authorizes_empty_withdrawal() {
+        let lease = lease(100, 190);
+        let unavailable = projection(
+            IngressEndpointProjectionState::Unavailable {
+                reason: IngressEndpointUnavailableReason::NoDeclaredGateways,
+            },
+            5,
+        );
+        assert!(matches!(
+            next_action(Some(&unavailable), None, &lease, 120),
+            Some(ReconcileAction::ProjectionWithdraw { .. })
+        ));
+    }
+
+    #[test]
+    fn renewal_is_due_at_two_thirds_and_replays_last_known_good_during_uncertainty() {
+        let lease = lease(100, 190);
+        let identity = IngressEndpointProjectionIdentity {
+            control_plane_epoch: ControlPlaneEpoch::initial().next(),
+            revision: 4,
+        };
+        let checkpoint = ManagedDnsCheckpoint::Applied {
+            last_applied_identity: Some(identity),
+            last_applied_endpoints: managed_dns_endpoint_set(&endpoints()),
+        };
+        assert_eq!(next_action(None, Some(&checkpoint), &lease, 159), None);
+        assert!(matches!(
+            next_action(None, Some(&checkpoint), &lease, 160),
+            Some(ReconcileAction::LeaseRenewal {
+                identity: Some(current),
+                ..
+            }) if current == identity
+        ));
+    }
+
+    #[test]
+    fn failure_backoff_is_bounded() {
         assert_eq!(failure_delay(1), Duration::from_secs(5));
         assert_eq!(failure_delay(2), Duration::from_secs(10));
-        assert_eq!(failure_delay(11), MANAGED_LEASE_FAILURE_BACKOFF_CAP);
-    }
-
-    #[test]
-    fn acquisition_addresses_include_only_known_gateway_endpoints() {
-        let gateway = machine_id("gateway");
-        let result = known_gateway_addresses_from_ids(
-            &std::collections::BTreeSet::from([gateway.clone(), machine_id("silent")]),
-            vec![
-                MachineEndpointObservation {
-                    machine_id: gateway,
-                    control_endpoints: vec![
-                        "203.0.113.8".parse().expect("IPv4"),
-                        "2001:db8::8".parse().expect("IPv6"),
-                    ],
-                    mesh_endpoints: Vec::new(),
-                },
-                MachineEndpointObservation {
-                    machine_id: machine_id("worker"),
-                    control_endpoints: vec!["203.0.113.9".parse().expect("IPv4")],
-                    mesh_endpoints: Vec::new(),
-                },
-            ],
-        );
-
-        assert_eq!(
-            result.request.ipv4,
-            ["203.0.113.8".parse::<std::net::Ipv4Addr>().expect("IPv4")]
-        );
-        assert_eq!(
-            result.request.ipv6,
-            ["2001:db8::8".parse::<std::net::Ipv6Addr>().expect("IPv6")]
-        );
-        assert_eq!(result.missing, [machine_id("silent")]);
-    }
-
-    #[test]
-    fn failed_gateway_testimony_transition_stays_pending_for_retry() {
-        let missing = vec![machine_id("gateway")];
-        let mut pending = Some(PendingGatewayTestimony {
-            operation_id: OperationId::try_new("op_testimony").expect("operation id"),
-            missing: missing.clone(),
-        });
-        let mut reported = None;
-
-        let failure = finish_gateway_testimony_transition(
-            &mut pending,
-            &mut reported,
-            Err(ManagedLeaseTaskError::ClockBeforeUnixEpoch),
-        );
-
-        assert!(failure.is_err());
-        assert_eq!(reported, None);
-        assert!(pending.is_some(), "generic recovery must stay bypassed");
-
-        finish_gateway_testimony_transition(&mut pending, &mut reported, Ok(()))
-            .expect("retry succeeds");
-        assert!(pending.is_none());
-        assert_eq!(reported, Some(missing));
+        assert_eq!(failure_delay(99), Duration::from_secs(60 * 60));
     }
 }

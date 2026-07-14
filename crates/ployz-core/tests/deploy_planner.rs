@@ -6,11 +6,13 @@ use ployz_core::deploy::{
     DeployServiceRequest, EnvName, EnvValue, ExistingServiceReplica, HealthcheckShellCommand,
     ImageReference, ImageSource, PreStartHook, PreStartHookStep, ReplicaCount, ReplicaSlot,
     ServiceDependency, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeName,
-    namespace_revision_id_for, namespace_route_binding_removals, namespace_serving_target_removals,
-    plan_namespace_deploy, prepare_deploy,
+    auto_hostname_route_binding_commits, namespace_revision_id_for,
+    namespace_route_binding_removals, namespace_serving_target_removals, plan_namespace_deploy,
+    prepare_deploy, validate_deploy_route_bindings,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::image::OciDigest;
+use ployz_core::ingress::{AutomaticHostnameLabel, RouteBindingOrigin};
 use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
     ManagedContainerObservation,
@@ -33,7 +35,6 @@ fn namespace_revision_entry_identity_is_stable_for_same_service_shape() {
         "ghcr.io/acme/api:rev-1",
         3,
         Some(SpecRoute {
-            public_port: 443,
             endpoint_port: 8080,
         }),
     );
@@ -93,7 +94,6 @@ fn mutable_tag_repeats_as_same_namespace_revision_entry_identity() {
             "nginx:latest",
             3,
             Some(SpecRoute {
-                public_port: 443,
                 endpoint_port: 8080
             })
         )
@@ -621,48 +621,53 @@ fn service_with_volumes_on_different_pinned_machines_fails_planning() {
 
 #[test]
 fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
-    let prepared = prepare_deploy(DeployPreparationInput {
-        request: deploy_request(2),
-        eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
-        draining_machines: Vec::new(),
-        observed_machines: vec![observed_machine(
-            "machine_b",
-            [
-                observed_container(
-                    "machine_b",
-                    "ctr_target",
-                    "svc_api",
-                    "entry_1",
-                    ManagedContainerKind::Service,
-                    ContainerRuntimeState::running_unroutable(),
-                ),
-                observed_container(
-                    "machine_b",
-                    "ctr_old",
-                    "svc_api",
-                    "entry_old",
-                    ManagedContainerKind::Service,
-                    ContainerRuntimeState::running_unroutable(),
-                ),
-                observed_container(
-                    "machine_b",
-                    "ctr_job",
-                    "svc_api",
-                    "entry_1",
-                    ManagedContainerKind::Job,
-                    ContainerRuntimeState::running_unroutable(),
-                ),
-                observed_container(
-                    "machine_b",
-                    "ctr_exited",
-                    "svc_api",
-                    "entry_1",
-                    ManagedContainerKind::Service,
-                    ContainerRuntimeState::Exited,
-                ),
-            ],
-        )],
-    });
+    let prepared = prepare_deploy(
+        DeployPreparationInput {
+            request: deploy_request(2),
+            occupied_route_bindings: Vec::new(),
+            eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+            draining_machines: Vec::new(),
+            observed_machines: vec![observed_machine(
+                "machine_b",
+                [
+                    observed_container(
+                        "machine_b",
+                        "ctr_target",
+                        "svc_api",
+                        "entry_1",
+                        ManagedContainerKind::Service,
+                        ContainerRuntimeState::running_unroutable(),
+                    ),
+                    observed_container(
+                        "machine_b",
+                        "ctr_old",
+                        "svc_api",
+                        "entry_old",
+                        ManagedContainerKind::Service,
+                        ContainerRuntimeState::running_unroutable(),
+                    ),
+                    observed_container(
+                        "machine_b",
+                        "ctr_job",
+                        "svc_api",
+                        "entry_1",
+                        ManagedContainerKind::Job,
+                        ContainerRuntimeState::running_unroutable(),
+                    ),
+                    observed_container(
+                        "machine_b",
+                        "ctr_exited",
+                        "svc_api",
+                        "entry_1",
+                        ManagedContainerKind::Service,
+                        ContainerRuntimeState::Exited,
+                    ),
+                ],
+            )],
+        },
+        route_binding_id_for,
+    )
+    .expect("deploy preparation");
 
     assert_eq!(prepared.request, deploy_request(2));
     assert_eq!(
@@ -685,22 +690,27 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
 
 #[test]
 fn deploy_preparation_evacuates_draining_machine_replicas() {
-    let prepared = prepare_deploy(DeployPreparationInput {
-        request: deploy_request(1),
-        eligible_machines: vec![machine_id("machine_a")],
-        draining_machines: vec![machine_id("machine_b")],
-        observed_machines: vec![observed_machine(
-            "machine_b",
-            [observed_container(
+    let prepared = prepare_deploy(
+        DeployPreparationInput {
+            request: deploy_request(1),
+            occupied_route_bindings: Vec::new(),
+            eligible_machines: vec![machine_id("machine_a")],
+            draining_machines: vec![machine_id("machine_b")],
+            observed_machines: vec![observed_machine(
                 "machine_b",
-                "ctr_target",
-                "svc_api",
-                "entry_1",
-                ManagedContainerKind::Service,
-                ContainerRuntimeState::running_unroutable(),
+                [observed_container(
+                    "machine_b",
+                    "ctr_target",
+                    "svc_api",
+                    "entry_1",
+                    ManagedContainerKind::Service,
+                    ContainerRuntimeState::running_unroutable(),
+                )],
             )],
-        )],
-    });
+        },
+        route_binding_id_for,
+    )
+    .expect("deploy preparation");
 
     assert_eq!(prepared.existing_replicas, Vec::new());
     assert_eq!(
@@ -741,34 +751,39 @@ fn deploy_preparation_evacuates_draining_machine_replicas() {
 #[test]
 fn routed_deploy_preparation_reuses_matching_identity_regardless_of_endpoint_port() {
     let mut request = deploy_request(2);
-    request.routes = vec![deploy_route("api.example.com", 443, 8080)];
+    request.routes = vec![deploy_route("api.example.com", 8080)];
 
-    let prepared = prepare_deploy(DeployPreparationInput {
-        request,
-        eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
-        draining_machines: Vec::new(),
-        observed_machines: vec![observed_machine(
-            "machine_b",
-            [
-                observed_container(
-                    "machine_b",
-                    "ctr_wrong_port",
-                    "svc_api",
-                    "entry_1",
-                    ManagedContainerKind::Service,
-                    ContainerRuntimeState::running_at(endpoint_ip("10.0.0.2")),
-                ),
-                observed_container(
-                    "machine_b",
-                    "ctr_target",
-                    "svc_api",
-                    "entry_1",
-                    ManagedContainerKind::Service,
-                    ContainerRuntimeState::running_at(endpoint_ip("10.0.0.3")),
-                ),
-            ],
-        )],
-    });
+    let prepared = prepare_deploy(
+        DeployPreparationInput {
+            request,
+            occupied_route_bindings: Vec::new(),
+            eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+            draining_machines: Vec::new(),
+            observed_machines: vec![observed_machine(
+                "machine_b",
+                [
+                    observed_container(
+                        "machine_b",
+                        "ctr_wrong_port",
+                        "svc_api",
+                        "entry_1",
+                        ManagedContainerKind::Service,
+                        ContainerRuntimeState::running_at(endpoint_ip("10.0.0.2")),
+                    ),
+                    observed_container(
+                        "machine_b",
+                        "ctr_target",
+                        "svc_api",
+                        "entry_1",
+                        ManagedContainerKind::Service,
+                        ContainerRuntimeState::running_at(endpoint_ip("10.0.0.3")),
+                    ),
+                ],
+            )],
+        },
+        route_binding_id_for,
+    )
+    .expect("deploy preparation");
 
     assert_eq!(
         prepared.existing_replicas,
@@ -783,34 +798,103 @@ fn routed_deploy_preparation_reuses_matching_identity_regardless_of_endpoint_por
 fn deploy_preparation_commits_multiple_routes_per_service() {
     let mut request = deploy_request(1);
     request.routes = vec![
-        deploy_route("api.example.com", 443, 8080),
-        deploy_route("www.example.com", 443, 8080),
+        deploy_route("api.example.com", 8080),
+        deploy_route("www.example.com", 8080),
     ];
 
-    let prepared = prepare_deploy(DeployPreparationInput {
-        request,
-        eligible_machines: vec![machine_id("machine_a")],
-        draining_machines: Vec::new(),
-        observed_machines: Vec::new(),
-    });
+    let prepared = prepare_deploy(
+        DeployPreparationInput {
+            request,
+            occupied_route_bindings: Vec::new(),
+            eligible_machines: vec![machine_id("machine_a")],
+            draining_machines: Vec::new(),
+            observed_machines: Vec::new(),
+        },
+        route_binding_id_for,
+    )
+    .expect("deploy preparation");
 
     assert_eq!(
         prepared.route_commits,
         vec![
             RouteBindingState {
+                id: route_binding_id("route_api_example_com"),
                 namespace_id: namespace_id("default"),
-                target: route_target("api.example.com", 443),
+                target: route_target("api.example.com"),
                 endpoint_port: route_port(8080),
                 service_id: service_id("svc_api"),
+                origin: RouteBindingOrigin::Declared,
             },
             RouteBindingState {
+                id: route_binding_id("route_www_example_com"),
                 namespace_id: namespace_id("default"),
-                target: route_target("www.example.com", 443),
+                target: route_target("www.example.com"),
                 endpoint_port: route_port(8080),
                 service_id: service_id("svc_api"),
+                origin: RouteBindingOrigin::Declared,
             },
         ]
     );
+}
+
+#[test]
+fn declared_route_reroute_reuses_the_binding_identity_and_updates_endpoint_port() {
+    let mut request = deploy_request(1);
+    request.routes = vec![deploy_route("api.example.com", 9090)];
+    let mut existing = route_binding_state("api.example.com", "svc_api");
+    existing.id = route_binding_id("route_existing");
+
+    let prepared = prepare_deploy(
+        DeployPreparationInput {
+            request,
+            occupied_route_bindings: vec![existing],
+            eligible_machines: Vec::new(),
+            draining_machines: Vec::new(),
+            observed_machines: Vec::new(),
+        },
+        route_binding_id_for,
+    )
+    .expect("declared route reuse");
+    let [commit] = prepared.route_commits.as_slice() else {
+        panic!("one declared route commit")
+    };
+
+    assert_eq!(commit.id, route_binding_id("route_existing"));
+    assert_eq!(commit.endpoint_port, route_port(9090));
+}
+
+#[test]
+fn declared_route_reroute_rejects_other_owners_and_automatic_bindings() {
+    let mut request = deploy_request(1);
+    request.routes = vec![deploy_route("api.example.com", 9090)];
+
+    let mut other_service = route_binding_state("api.example.com", "svc_worker");
+    other_service.id = route_binding_id("route_other_service");
+    let mut other_namespace = route_binding_state("api.example.com", "svc_api");
+    other_namespace.id = route_binding_id("route_other_namespace");
+    other_namespace.namespace_id = namespace_id("other");
+    let mut automatic = route_binding_state("api.example.com", "svc_api");
+    automatic.id = route_binding_id("route_automatic");
+    automatic.origin = RouteBindingOrigin::Automatic;
+
+    for occupied in [other_service, other_namespace, automatic] {
+        let error = prepare_deploy(
+            DeployPreparationInput {
+                request: request.clone(),
+                occupied_route_bindings: vec![occupied],
+                eligible_machines: Vec::new(),
+                draining_machines: Vec::new(),
+                observed_machines: Vec::new(),
+            },
+            route_binding_id_for,
+        )
+        .expect_err("hostname owner must collide");
+
+        assert!(matches!(
+            error,
+            ployz_core::deploy::RouteBindingCommitError::HostnameCollision { .. }
+        ));
+    }
 }
 
 #[test]
@@ -821,8 +905,8 @@ fn namespace_route_removals_detach_undeclared_targets_including_omitted_services
     let removals = namespace_route_binding_removals(
         &namespace_id("default"),
         &[
-            route_target("api.example.com", 443),
-            route_target("www.example.com", 443),
+            route_target("api.example.com"),
+            route_target("www.example.com"),
         ],
         &[
             route_binding_state("admin.example.com", "svc_api"),
@@ -834,8 +918,8 @@ fn namespace_route_removals_detach_undeclared_targets_including_omitted_services
     assert_eq!(
         removals,
         vec![
-            route_target("admin.example.com", 443),
-            route_target("orphan.example.com", 443),
+            route_target("admin.example.com"),
+            route_target("orphan.example.com"),
         ]
     );
 }
@@ -868,22 +952,29 @@ fn namespace_serving_removals_unpublish_omitted_services_only() {
 #[test]
 fn deploy_preparation_updates_endpoint_port_without_container_plan_changes() {
     let mut request = deploy_request(1);
-    request.routes = vec![deploy_route("api.example.com", 443, 8080)];
+    request.routes = vec![deploy_route("api.example.com", 8080)];
 
-    let prepared = prepare_deploy(DeployPreparationInput {
-        request,
-        eligible_machines: Vec::new(),
-        draining_machines: Vec::new(),
-        observed_machines: Vec::new(),
-    });
+    let prepared = prepare_deploy(
+        DeployPreparationInput {
+            request,
+            occupied_route_bindings: Vec::new(),
+            eligible_machines: Vec::new(),
+            draining_machines: Vec::new(),
+            observed_machines: Vec::new(),
+        },
+        route_binding_id_for,
+    )
+    .expect("deploy preparation");
 
     assert_eq!(
         prepared.route_commits,
         vec![RouteBindingState {
+            id: route_binding_id("route_api_example_com"),
             namespace_id: namespace_id("default"),
-            target: route_target("api.example.com", 443),
+            target: route_target("api.example.com"),
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
+            origin: RouteBindingOrigin::Declared,
         }]
     );
     assert!(prepared.existing_replicas.is_empty());
@@ -897,11 +988,99 @@ fn namespace_route_removals_keep_targets_reassigned_to_another_service() {
     // namespace-level decision, so the moved target is not detached.
     let removals = namespace_route_binding_removals(
         &namespace_id("default"),
-        &[route_target("moved.example.com", 443)],
+        &[route_target("moved.example.com")],
         &[route_binding_state("moved.example.com", "svc_api")],
     );
 
     assert!(removals.is_empty());
+}
+
+#[test]
+fn automatic_route_commit_uses_the_exact_requested_label() {
+    let mut request = deploy_request(1);
+    request.routes = vec![automatic_deploy_route("api", 8080)];
+
+    let commits = auto_hostname_route_binding_commits(
+        &request,
+        Some(&route_hostname("lease.up.ployz.app")),
+        &[],
+        route_binding_id_for,
+    )
+    .expect("automatic binding");
+    let [commit] = commits.as_slice() else {
+        panic!("one automatic binding")
+    };
+
+    assert_eq!(commit.target, route_target("api.lease.up.ployz.app"));
+}
+
+#[test]
+fn identical_automatic_route_request_reuses_the_binding_identity() {
+    let mut request = deploy_request(1);
+    request.routes = vec![automatic_deploy_route("api", 8080)];
+    let mut existing = route_binding_state("api.apps.example.com", "svc_api");
+    existing.id = route_binding_id("route_existing");
+    existing.origin = RouteBindingOrigin::Automatic;
+
+    let commits = auto_hostname_route_binding_commits(
+        &request,
+        Some(&route_hostname("apps.example.com")),
+        &[existing],
+        route_binding_id_for,
+    )
+    .expect("reused binding");
+    let [commit] = commits.as_slice() else {
+        panic!("one reused binding")
+    };
+
+    assert_eq!(commit.id, route_binding_id("route_existing"));
+}
+
+#[test]
+fn automatic_route_rejects_a_declared_hostname_collision() {
+    let mut request = deploy_request(1);
+    request.routes = vec![automatic_deploy_route("api", 8080)];
+    let existing = route_binding_state("api.apps.example.com", "svc_api");
+
+    let error = auto_hostname_route_binding_commits(
+        &request,
+        Some(&route_hostname("apps.example.com")),
+        &[existing],
+        route_binding_id_for,
+    )
+    .expect_err("declared collision");
+
+    assert!(matches!(
+        error,
+        ployz_core::deploy::AutoHostnameRouteBindingError::HostnameCollision { .. }
+    ));
+}
+
+#[test]
+fn deploy_route_validation_reuses_identical_automatic_binding() {
+    let mut service = service_spec("svc_api", "registry.example/api:rev-1", 1, None);
+    service.routes = vec![automatic_deploy_route("api", 8080)];
+    let request = ployz_core::deploy::DeployRequest {
+        namespace_id: namespace_id("default"),
+        origin: None,
+        services: vec![service],
+    };
+    let mut existing = route_binding_state("api.apps.example.com", "svc_api");
+    existing.id = route_binding_id("route_existing");
+    existing.origin = RouteBindingOrigin::Automatic;
+
+    let commits = validate_deploy_route_bindings(
+        &request,
+        Some(&route_hostname("apps.example.com")),
+        &[existing],
+        route_binding_id_for,
+    )
+    .expect("identical route is valid");
+
+    let [commit] = commits.as_slice() else {
+        panic!("expected one route binding commit");
+    };
+    assert_eq!(commit.id, route_binding_id("route_existing"));
 }
 
 #[test]
@@ -932,12 +1111,17 @@ fn deploy_preparation_ignores_same_service_id_in_other_namespace() {
         ContainerRuntimeState::running_unroutable(),
     );
     foreign.identity.namespace_id = namespace_id("other");
-    let prepared = prepare_deploy(DeployPreparationInput {
-        request: deploy_request(1),
-        eligible_machines: vec![machine_id("machine_a")],
-        draining_machines: Vec::new(),
-        observed_machines: vec![observed_machine("machine_a", [foreign])],
-    });
+    let prepared = prepare_deploy(
+        DeployPreparationInput {
+            request: deploy_request(1),
+            occupied_route_bindings: Vec::new(),
+            eligible_machines: vec![machine_id("machine_a")],
+            draining_machines: Vec::new(),
+            observed_machines: vec![observed_machine("machine_a", [foreign])],
+        },
+        route_binding_id_for,
+    )
+    .expect("deploy preparation");
 
     assert!(prepared.existing_replicas.is_empty());
     assert!(prepared.cleanup_candidates.is_empty());
@@ -958,7 +1142,6 @@ fn namespace_revision_entry_id_differs_across_namespaces() {
 }
 
 struct SpecRoute {
-    public_port: u16,
     endpoint_port: u16,
 }
 
@@ -977,13 +1160,7 @@ fn service_spec(
         pre_start: None,
         depends_on: Vec::new(),
         routes: route
-            .map(|route| {
-                vec![deploy_route(
-                    "api.example.com",
-                    route.public_port,
-                    route.endpoint_port,
-                )]
-            })
+            .map(|route| vec![deploy_route("api.example.com", route.endpoint_port)])
             .unwrap_or_default(),
     }
 }
@@ -1071,10 +1248,12 @@ fn planning_input(
 
 fn route_binding_state(hostname: &str, service: &str) -> RouteBindingState {
     RouteBindingState {
+        id: route_binding_id_for(&route_target(hostname)),
         namespace_id: namespace_id("default"),
-        target: route_target(hostname, 443),
+        target: route_target(hostname),
         endpoint_port: route_port(8080),
         service_id: service_id(service),
+        origin: RouteBindingOrigin::Declared,
     }
 }
 
@@ -1154,11 +1333,19 @@ fn volume_pin(volume_name: &str, machine_id: &str) -> VolumePinState {
     }
 }
 
-fn deploy_route(hostname: &str, public_port: u16, endpoint_port: u16) -> DeployRoute {
+fn deploy_route(hostname: &str, endpoint_port: u16) -> DeployRoute {
     DeployRoute {
         target: DeployRouteTarget::Hostname {
             hostname: route_hostname(hostname),
-            port: route_port(public_port),
+        },
+        endpoint_port: route_port(endpoint_port),
+    }
+}
+
+fn automatic_deploy_route(label: &str, endpoint_port: u16) -> DeployRoute {
+    DeployRoute {
+        target: DeployRouteTarget::AutoHostname {
+            label: AutomaticHostnameLabel::try_new(label).expect("valid automatic label"),
         },
         endpoint_port: route_port(endpoint_port),
     }
@@ -1179,11 +1366,19 @@ fn run_step(machine: &str, slot: u16) -> DeployPlanStep {
     }
 }
 
-fn route_target(hostname: &str, port: u16) -> RouteTarget {
-    RouteTarget {
-        hostname: RouteHostname::try_new(hostname).expect("valid route hostname"),
-        port: route_port(port),
-    }
+fn route_target(hostname: &str) -> RouteTarget {
+    RouteTarget::new(RouteHostname::try_new(hostname).expect("valid route hostname"))
+}
+
+fn route_binding_id(value: &str) -> ployz_core::ids::RouteBindingId {
+    ployz_core::ids::RouteBindingId::try_new(value).expect("valid route binding id")
+}
+
+fn route_binding_id_for(target: &RouteTarget) -> ployz_core::ids::RouteBindingId {
+    route_binding_id(&format!(
+        "route_{}",
+        target.hostname.as_str().replace(['.', '-'], "_")
+    ))
 }
 
 fn route_port(port: u16) -> RoutePort {

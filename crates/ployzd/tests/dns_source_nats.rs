@@ -1,3 +1,5 @@
+use ployz_core::ids::RouteBindingId;
+use ployz_core::ingress::RouteBindingOrigin;
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{
@@ -13,6 +15,8 @@ use ployzd::roles::dns::projection::{
 use ployzd::roles::dns::source::load_dns_projection_update_from_nats;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
+
+mod support;
 
 #[tokio::test]
 async fn dns_source_loads_active_route_hostnames_and_serving_gateway_public_ips_from_nats() {
@@ -149,13 +153,15 @@ async fn test_nats() -> TestNats {
             .await
             .expect("open core store"),
     );
+    let intent_core_store = ployzd::core_store::CoreStore::open_in_memory()
+        .await
+        .expect("core store opens");
+    support::intent::initialize_disabled_ingress(&intent_core_store).await;
     let intent = start_intent_service(
         nats.controller.clone(),
         machine_id("machine_a"),
         namespace_intent.clone(),
-        ployzd::core_store::CoreStore::open_in_memory()
-            .await
-            .expect("core store opens"),
+        intent_core_store,
         Duration::from_secs(30),
     )
     .await
@@ -174,10 +180,13 @@ async fn test_nats() -> TestNats {
 
 fn active_route_state(hostname: &str, public_port: u16, endpoint_port: u16) -> RouteBindingState {
     RouteBindingState {
+        id: RouteBindingId::try_new(format!("route_{}", hostname.replace('.', "_")))
+            .expect("valid route binding id"),
         namespace_id: namespace_id("default"),
         target: route_target(hostname, public_port),
         endpoint_port: route_port(endpoint_port),
         service_id: service_id("svc_api"),
+        origin: RouteBindingOrigin::Declared,
     }
 }
 
@@ -227,6 +236,6 @@ fn dns_record<const N: usize>(hostname: &str, answers: [DnsAnswer; N]) -> DnsRec
     }
 }
 
-fn route_target(hostname: &str, port: u16) -> RouteTarget {
-    RouteTarget::new(route_hostname(hostname), route_port(port))
+fn route_target(hostname: &str, _port: u16) -> RouteTarget {
+    RouteTarget::new(route_hostname(hostname))
 }

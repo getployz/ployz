@@ -4,4 +4,4 @@ services:
     image: nginx
     x-ports:
       - app.example.com:8080
-      - plain.example.com:8081/http
+      - plain.example.com:8081

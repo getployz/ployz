@@ -1,9 +1,9 @@
-use ployz_core::cert::ManagedLeaseName;
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec,
     ImageReference, ReplicaCount,
 };
-use ployz_core::ids::NamespaceRevisionEntryId;
+use ployz_core::ids::{NamespaceRevisionEntryId, RouteBindingId};
+use ployz_core::ingress::{AutomaticHostnameLabel, RouteBindingOrigin};
 use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
@@ -15,8 +15,8 @@ use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id, service_id,
 };
 use ployzd::operations::deploy::{
-    DeployExecutionCommand, DeployExecutionFacts, DeployServiceExecutionCommand,
-    prepare_deploy_execution_command,
+    AutomaticHostnameMode, DeployExecutionCommand, DeployExecutionFacts,
+    DeployServiceExecutionCommand, prepare_deploy_execution_command,
 };
 use std::time::Duration;
 
@@ -48,8 +48,9 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
             .expect("valid machine observation snapshot"),
         ],
         namespace_cleanup_candidates: Vec::new(),
-        managed_lease: None,
+        automatic_hostname_mode: AutomaticHostnameMode::Disabled,
         gateway_certificate_targets: Vec::new(),
+        ployz_gateway_certificate_targets: Vec::new(),
         step_timeout: Duration::from_secs(5),
     };
 
@@ -89,8 +90,9 @@ async fn does_not_reuse_an_unpromoted_running_target_entry() {
             .expect("valid machine observation snapshot"),
         ],
         namespace_cleanup_candidates: Vec::new(),
-        managed_lease: None,
+        automatic_hostname_mode: AutomaticHostnameMode::Disabled,
         gateway_certificate_targets: Vec::new(),
+        ployz_gateway_certificate_targets: Vec::new(),
         step_timeout: Duration::from_secs(5),
     };
 
@@ -133,8 +135,9 @@ async fn reuses_a_matching_running_promoted_target_entry() {
             .expect("valid machine observation snapshot"),
         ],
         namespace_cleanup_candidates: Vec::new(),
-        managed_lease: None,
+        automatic_hostname_mode: AutomaticHostnameMode::Disabled,
         gateway_certificate_targets: Vec::new(),
+        ployz_gateway_certificate_targets: Vec::new(),
         step_timeout: Duration::from_secs(5),
     };
 
@@ -155,7 +158,6 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
     let request = deploy_request();
     let omitted_target = RouteTarget::new(
         RouteHostname::try_new("worker.example.com").expect("valid route hostname"),
-        RoutePort::try_new(443).expect("valid route port"),
     );
     let omitted_container = MachineContainerObservationSnapshot::try_new(
         machine_id("machine_a"),
@@ -171,10 +173,12 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
         machine_platforms: std::collections::BTreeMap::new(),
         unusable_machines: Vec::new(),
         namespace_route_bindings: vec![RouteBindingState {
+            id: RouteBindingId::try_new("route_worker").expect("valid route binding id"),
             namespace_id: namespace_id("default"),
             target: omitted_target.clone(),
             endpoint_port: RoutePort::try_new(8080).expect("valid route port"),
             service_id: service_id("svc_worker"),
+            origin: RouteBindingOrigin::Declared,
         }],
         namespace_serving_entries: vec![
             serving_target_entry("svc_api", "entry_api"),
@@ -188,8 +192,9 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
             &namespace_id("default"),
             &[omitted_container],
         ),
-        managed_lease: None,
+        automatic_hostname_mode: AutomaticHostnameMode::Disabled,
         gateway_certificate_targets: Vec::new(),
+        ployz_gateway_certificate_targets: Vec::new(),
         step_timeout: Duration::from_secs(5),
     };
 
@@ -225,8 +230,9 @@ async fn empty_manifest_prepares_no_services() {
         dataplane_members: Vec::new(),
         observed_machines: Vec::new(),
         namespace_cleanup_candidates: Vec::new(),
-        managed_lease: None,
+        automatic_hostname_mode: AutomaticHostnameMode::Disabled,
         gateway_certificate_targets: Vec::new(),
+        ployz_gateway_certificate_targets: Vec::new(),
         step_timeout: Duration::from_secs(5),
     };
     let command = prepare_deploy_execution_command(
@@ -250,29 +256,32 @@ fn auto_hostname_is_stable_and_collision_safe() {
     };
     service.routes = vec![DeployRoute {
         target: DeployRouteTarget::AutoHostname {
-            port: RoutePort::try_new(443).expect("valid route port"),
+            label: AutomaticHostnameLabel::try_new("svc-api-2")
+                .expect("valid automatic hostname label"),
         },
         endpoint_port: RoutePort::try_new(8080).expect("valid endpoint port"),
     }];
     let existing = RouteBindingState {
+        id: RouteBindingId::try_new("route_existing").expect("valid route binding id"),
         namespace_id: namespace_id("default"),
         target: RouteTarget::new(
             RouteHostname::try_new("svc-api-2.demo.up.ployz.app").expect("valid hostname"),
-            RoutePort::try_new(443).expect("valid route port"),
         ),
         endpoint_port: RoutePort::try_new(8080).expect("valid endpoint port"),
         service_id: service_id("svc_api"),
+        origin: RouteBindingOrigin::Automatic,
     };
     let facts = DeployExecutionFacts {
         namespace_route_bindings: vec![
             RouteBindingState {
+                id: RouteBindingId::try_new("route_other").expect("valid route binding id"),
                 namespace_id: namespace_id("other"),
                 service_id: service_id("svc_other"),
                 target: RouteTarget::new(
                     RouteHostname::try_new("svc-api.demo.up.ployz.app").expect("valid hostname"),
-                    RoutePort::try_new(443).expect("valid route port"),
                 ),
                 endpoint_port: existing.endpoint_port,
+                origin: RouteBindingOrigin::Automatic,
             },
             existing.clone(),
         ],
@@ -284,14 +293,59 @@ fn auto_hostname_is_stable_and_collision_safe() {
         observed_machines: Vec::new(),
         machine_platforms: std::collections::BTreeMap::new(),
         namespace_cleanup_candidates: Vec::new(),
-        managed_lease: Some(ManagedLeaseName::try_new("demo").expect("valid lease")),
+        automatic_hostname_mode: AutomaticHostnameMode::Ployz {
+            suffix: RouteHostname::try_new("demo.up.ployz.app")
+                .expect("valid automatic hostname suffix"),
+        },
         gateway_certificate_targets: Vec::new(),
+        ployz_gateway_certificate_targets: Vec::new(),
         step_timeout: Duration::from_secs(5),
     };
 
     let command = prepare_deploy_execution_command(operation_id("op_123"), request, facts);
 
     assert_eq!(single_service(&command).route_binding_states(), [existing]);
+}
+
+#[test]
+fn detached_hostname_recreation_mints_a_fresh_binding_identity() {
+    let mut request = deploy_request();
+    let [service] = request.services.as_mut_slice() else {
+        panic!("fixture has one service");
+    };
+    service.routes = vec![DeployRoute {
+        target: DeployRouteTarget::Hostname {
+            hostname: RouteHostname::try_new("api.example.com").expect("valid hostname"),
+        },
+        endpoint_port: RoutePort::try_new(8080).expect("valid endpoint port"),
+    }];
+    let facts = DeployExecutionFacts {
+        namespace_route_bindings: Vec::new(),
+        namespace_serving_entries: Vec::new(),
+        namespace_volume_pins: Vec::new(),
+        eligible_machines: Vec::new(),
+        unusable_machines: Vec::new(),
+        dataplane_members: Vec::new(),
+        observed_machines: Vec::new(),
+        machine_platforms: std::collections::BTreeMap::new(),
+        namespace_cleanup_candidates: Vec::new(),
+        automatic_hostname_mode: AutomaticHostnameMode::Disabled,
+        gateway_certificate_targets: Vec::new(),
+        ployz_gateway_certificate_targets: Vec::new(),
+        step_timeout: Duration::from_secs(5),
+    };
+
+    let first =
+        prepare_deploy_execution_command(operation_id("op_first"), request.clone(), facts.clone());
+    let recreated = prepare_deploy_execution_command(operation_id("op_recreated"), request, facts);
+    let [first_binding] = single_service(&first).route_binding_states() else {
+        panic!("first deploy has one route binding");
+    };
+    let [recreated_binding] = single_service(&recreated).route_binding_states() else {
+        panic!("recreated deploy has one route binding");
+    };
+
+    assert_ne!(first_binding.id, recreated_binding.id);
 }
 
 fn single_service(command: &DeployExecutionCommand) -> &DeployServiceExecutionCommand {

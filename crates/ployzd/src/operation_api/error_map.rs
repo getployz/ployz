@@ -49,6 +49,16 @@ pub(super) fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
             namespace_id,
             owner,
         },
+        SubmitCommandError::IngressBusy {
+            namespace_id,
+            owner,
+        } => SubmitFailure::ResourceBusy {
+            namespace_id,
+            owner,
+        },
+        SubmitCommandError::InvalidDeployRoutes { message } => {
+            SubmitFailure::Unavailable { message }
+        }
         SubmitCommandError::ReservationNotFound {
             namespace_id: _,
             reservation_id: _,
@@ -118,6 +128,13 @@ pub(super) fn deploy_submit_error_from_submit_error(
     operation_id: OperationId,
     error: SubmitCommandError,
 ) -> DeploySubmitError {
+    if let SubmitCommandError::InvalidDeployRoutes { message } = &error {
+        return DeploySubmitError::InvalidTarget {
+            operation_id,
+            message: FailureMessage::try_new(message.clone())
+                .expect("route validation failure message is non-empty"),
+        };
+    }
     let error = match error {
         SubmitCommandError::ReservationNotFound {
             namespace_id,
@@ -167,11 +184,15 @@ pub(super) fn deploy_submit_error_from_submit_error(
         }
         error @ SubmitCommandError::Clock { .. }
         | error @ SubmitCommandError::NamespaceBusy { .. }
+        | error @ SubmitCommandError::IngressBusy { .. }
         | error @ SubmitCommandError::Submit(SubmitOperationError::InvalidDeployTarget)
         | error @ SubmitCommandError::Submit(SubmitOperationError::StoreStatus(_))
         | error @ SubmitCommandError::Submit(SubmitOperationError::DuplicateSequenceMismatch {
             ..
         }) => error,
+        SubmitCommandError::InvalidDeployRoutes { .. } => {
+            unreachable!("route validation failure returned above")
+        }
     };
     match submit_failure(error) {
         SubmitFailure::InvalidDeployTarget => DeploySubmitError::InvalidTarget {

@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use std::num::NonZeroU16;
 
 use crate::cert::CertificateProvisionFailure;
-use crate::cert::ManagedCertificateIssuanceFailureKind;
 use crate::deploy::VolumeName;
 use crate::deploy::{DeployCleanupContainer, DeployPlan, ImageReference};
 use crate::ids::{
@@ -46,48 +45,6 @@ pub enum DeployCompletionOutcome {
     CompletedWithWarnings,
     PartiallyCompleted,
     PartiallyCompletedWithWarnings,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(rename_all = "snake_case")]
-pub enum ManagedPublicUrlPendingStage {
-    Lease,
-    Certificate,
-    GatewayAddresses,
-}
-
-impl ManagedPublicUrlPendingStage {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Lease => "lease",
-            Self::Certificate => "certificate",
-            Self::GatewayAddresses => "gateway_addresses",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(tag = "stage", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ManagedPublicUrlPending {
-    Lease,
-    Certificate {
-        last_error: Option<ManagedCertificateIssuanceFailureKind>,
-    },
-    GatewayAddresses,
-}
-
-impl ManagedPublicUrlPending {
-    #[must_use]
-    pub const fn stage(&self) -> ManagedPublicUrlPendingStage {
-        match self {
-            Self::Lease => ManagedPublicUrlPendingStage::Lease,
-            Self::Certificate { .. } => ManagedPublicUrlPendingStage::Certificate,
-            Self::GatewayAddresses => ManagedPublicUrlPendingStage::GatewayAddresses,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -297,14 +254,6 @@ pub enum DeployOperationFailure {
         image: ImageReference,
         message: FailureMessage,
     },
-    AutoDnsWithoutLease {
-        service_id: ServiceId,
-        namespace_revision_id: NamespaceRevisionId,
-        message: FailureMessage,
-    },
-    ManagedPublicUrlPending {
-        pending: ManagedPublicUrlPending,
-    },
     ArtifactUnavailable {
         service_id: ServiceId,
         namespace_revision_entry_id: NamespaceRevisionEntryId,
@@ -434,10 +383,7 @@ impl DeployOperationFailure {
                     DeployFailureClass::PreconditionRejected
                 }
             }
-            Self::PlanningFailed { .. } | Self::AutoDnsWithoutLease { .. } => {
-                DeployFailureClass::PreconditionRejected
-            }
-            Self::ManagedPublicUrlPending { .. } => DeployFailureClass::Timeout,
+            Self::PlanningFailed { .. } => DeployFailureClass::PreconditionRejected,
             Self::ArtifactUnavailable { .. }
             | Self::ImageResolutionFailed { .. }
             | Self::ImageMissingOnSeed { .. }
@@ -500,8 +446,6 @@ impl DeployOperationFailure {
             } => retained_artifacts,
             Self::NoUsableMachines { .. }
             | Self::PlanningFailed { .. }
-            | Self::AutoDnsWithoutLease { .. }
-            | Self::ManagedPublicUrlPending { .. }
             | Self::ImageResolutionFailed { .. }
             | Self::ArtifactUnavailable { .. }
             | Self::ImageMissingOnSeed { .. }
@@ -670,9 +614,6 @@ impl DeployTransition {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployEvidence {
-    WaitingForManagedPublicUrl {
-        stage: ManagedPublicUrlPendingStage,
-    },
     ImageResolved {
         service_id: ServiceId,
         machine_id: MachineId,
@@ -712,12 +653,6 @@ impl DeployEvidence {
     #[must_use]
     pub fn event(&self, operation_id: &OperationId) -> OperationEvent {
         match self {
-            Self::WaitingForManagedPublicUrl { stage } => {
-                OperationEvent::DeployWaitingForManagedPublicUrl {
-                    operation_id: operation_id.clone(),
-                    stage: *stage,
-                }
-            }
             Self::ImageResolved {
                 service_id,
                 machine_id,
@@ -801,9 +736,9 @@ enum EvidenceRequirement {
 
 const fn evidence_requirement(evidence: &DeployEvidence) -> EvidenceRequirement {
     match evidence {
-        DeployEvidence::WaitingForManagedPublicUrl { .. }
-        | DeployEvidence::ImageResolved { .. }
-        | DeployEvidence::PlanCreated { .. } => EvidenceRequirement::Planning,
+        DeployEvidence::ImageResolved { .. } | DeployEvidence::PlanCreated { .. } => {
+            EvidenceRequirement::Planning
+        }
         DeployEvidence::ImageAvailabilityVerified { .. } => {
             EvidenceRequirement::RunningStage(DeployRunningStage::EnsuringImages)
         }

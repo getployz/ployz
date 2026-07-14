@@ -57,6 +57,7 @@ const GATEWAY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(9);
 mod service;
 
 pub use service::start_gateway_certificate_service;
+use service::start_gateway_role_service;
 
 pub struct RunningGatewayProcess {
     runtime: Arc<Mutex<GatewayProjector>>,
@@ -65,7 +66,7 @@ pub struct RunningGatewayProcess {
     shutdown: broadcast::Sender<()>,
     pingora_shutdown: watch::Sender<bool>,
     facts_cache: RunningFactCache,
-    certificate_service: RunningNatsService,
+    gateway_service: RunningNatsService,
     _certificate_state_guard: Option<tempfile::TempDir>,
     tasks: Vec<JoinHandle<()>>,
 }
@@ -76,7 +77,7 @@ impl RunningGatewayProcess {
             shutdown,
             pingora_shutdown,
             facts_cache,
-            certificate_service,
+            gateway_service,
             _certificate_state_guard,
             mut tasks,
             ..
@@ -89,7 +90,7 @@ impl RunningGatewayProcess {
             .collect::<Vec<_>>();
         let cleanup = async {
             facts_cache.shutdown().await;
-            let service_shutdown = certificate_service.shutdown().await;
+            let service_shutdown = gateway_service.shutdown().await;
             for task in &mut tasks {
                 let _ = task.await;
             }
@@ -119,6 +120,11 @@ impl RunningGatewayProcess {
     #[must_use]
     pub const fn listen_addr(&self) -> SocketAddr {
         self.listen_addr
+    }
+
+    #[must_use]
+    pub fn tls_listen_addr(&self) -> SocketAddr {
+        gateway_tls_listen_addr(self.listen_addr)
     }
 }
 
@@ -213,11 +219,13 @@ async fn start_gateway_process_inner(
     let facts_cache = start_fact_cache(client.clone())
         .await
         .map_err(GatewayProcessError::StartFactsCache)?;
-    let certificate_service = match start_gateway_certificate_service(
+    let gateway_service = match start_gateway_role_service(
         client.clone(),
         machine_id.clone(),
         certificate_store.clone(),
         registry.clone(),
+        Arc::clone(&runtime),
+        listen_addr,
     )
     .await
     {
@@ -262,7 +270,7 @@ async fn start_gateway_process_inner(
     if let Err(error) = wait_for_gateway_listener_ready(listen_addr, &http_task).await {
         let _ = pingora_shutdown.send(true);
         let _ = http_task.await;
-        let _ = certificate_service.shutdown().await;
+        let _ = gateway_service.shutdown().await;
         facts_cache.shutdown().await;
         return Err(error);
     }
@@ -272,7 +280,7 @@ async fn start_gateway_process_inner(
     {
         let _ = pingora_shutdown.send(true);
         let _ = http_task.await;
-        let _ = certificate_service.shutdown().await;
+        let _ = gateway_service.shutdown().await;
         facts_cache.shutdown().await;
         return Err(error);
     }
@@ -341,7 +349,7 @@ async fn start_gateway_process_inner(
         shutdown,
         pingora_shutdown,
         facts_cache,
-        certificate_service,
+        gateway_service,
         _certificate_state_guard: certificate_state_guard,
         tasks,
     })

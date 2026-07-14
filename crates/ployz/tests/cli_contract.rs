@@ -11,7 +11,7 @@ use ployz::commands::service::{ServiceInspectOutput, ServiceListOutput};
 use ployz::commands::{
     PloyzctlCliError, PloyzctlCommand, TelemetryCommand, parse_command, parse_invocation,
 };
-use ployz_core::cert::{ManagedLeaseAddressSet, ManagedLeaseName};
+use ployz_core::cert::ManagedLeaseName;
 use ployz_core::deploy::{
     DeployOrigin, DeployRequest, DeployServiceSpec, ImageReference, ReplicaCount,
 };
@@ -19,9 +19,10 @@ use ployz_core::ids::{ContainerId, MachineId, NamespaceId, ServiceId};
 use ployz_core::machine_runtime::ManagedContainerHealthStatus;
 use ployz_core::ops::{
     DeployOperationFailure, DeployOperationState, DeployRunningStage, HealthCheckFailure,
-    MAX_OPERATION_EVENT_REPLAY_LIMIT, ManagedLeaseOperationState, ManagedLeaseSubject,
-    OperationEventReplayLimit, OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot,
-    OperatorHint, ReplayedOperationEvent, RetainedArtifact,
+    MAX_OPERATION_EVENT_REPLAY_LIMIT, ManagedDnsReconcileOperationState,
+    ManagedDnsReconcileSubject, OperationEventReplayLimit, OperationIdempotencyKey,
+    OperationStatus, OperationStatusSnapshot, OperatorHint, ReplayedOperationEvent,
+    RetainedArtifact,
 };
 use ployz_core::state::MachineLifecycle;
 use ployz_sdk_types::{
@@ -116,22 +117,19 @@ fn cli_init_activate_first_machine_is_explicit_subcommand() {
     assert_eq!(command.machine_id, machine_id("machine_1"));
     assert_eq!(command.roles, InstallRolePolicy::install_all());
     assert_eq!(
-        command.public_url_mode,
-        ployz_core::cert::PublicUrlMode::Auto
+        command.automatic_hostname_configuration,
+        ployz_core::ingress::AutomaticHostnameConfiguration::Ployz
+    );
+    assert_eq!(
+        command.ployz_dns_target,
+        ployz_core::ingress::PloyzDnsTargetIntent::Enabled
     );
 }
 
 #[test]
-fn cli_init_activate_first_machine_parses_public_url_choice() {
-    for (value, expected) in [
-        ("auto", ployz_core::cert::PublicUrlMode::Auto),
-        (
-            "bring-your-own",
-            ployz_core::cert::PublicUrlMode::BringYourOwn,
-        ),
-        ("none", ployz_core::cert::PublicUrlMode::None),
-    ] {
-        let command = parse_command(
+fn cli_init_activate_first_machine_rejects_removed_public_url_flag() {
+    assert!(
+        parse_command(
             [
                 "internal",
                 "init",
@@ -139,41 +137,12 @@ fn cli_init_activate_first_machine_parses_public_url_choice() {
                 "--machine",
                 "machine_1",
                 "--public-url",
-                value,
+                "none",
             ]
             .map(str::to_owned),
         )
-        .expect("public URL choice parses");
-        let PloyzctlCommand::InitFirstMachineActivate(command) = command else {
-            panic!("expected first-machine activation command");
-        };
-        assert_eq!(command.public_url_mode, expected);
-    }
-}
-
-#[test]
-fn cli_init_activate_first_machine_rejects_unknown_public_url_choice() {
-    let error = parse_command(
-        [
-            "internal",
-            "init",
-            "activate-first-machine",
-            "--machine",
-            "machine_1",
-            "--public-url",
-            "managed-ish",
-        ]
-        .map(str::to_owned),
-    )
-    .expect_err("unknown public URL choice fails");
-
-    assert!(matches!(
-        error,
-        ployz::commands::PloyzctlCliError::InvalidValue {
-            flag: "--public-url",
-            ..
-        }
-    ));
+        .is_err()
+    );
 }
 
 #[test]
@@ -1192,24 +1161,18 @@ fn ops_status_renders_operation_state() {
 }
 
 #[test]
-fn ops_status_renders_managed_lease_renewal_addresses() {
+fn ops_status_renders_managed_dns_projection_apply() {
     let output = StatusOutput::new(
-        OperationStatusSnapshot::new(OperationStatus::ManagedLease {
+        OperationStatusSnapshot::new(OperationStatus::ManagedDnsReconcile {
             id: operation_id("op_managed_lease"),
-            subject: ManagedLeaseSubject::Renew {
+            subject: ManagedDnsReconcileSubject::ProjectionApply {
                 lease: ManagedLeaseName::try_new("cluster-one").expect("valid lease name"),
-                addresses: Box::new(ManagedLeaseAddressSet::new(
-                    vec![
-                        "203.0.113.9".parse().expect("IPv4"),
-                        "203.0.113.8".parse().expect("IPv4"),
-                    ],
-                    vec![
-                        "2001:db8::9".parse().expect("IPv6"),
-                        "2001:db8::8".parse().expect("IPv6"),
-                    ],
-                )),
+                projection: ployz_core::ingress::IngressEndpointProjectionIdentity {
+                    control_plane_epoch: ployz_core::state::ControlPlaneEpoch::initial(),
+                    revision: 4,
+                },
             },
-            state: ManagedLeaseOperationState::Completed,
+            state: ManagedDnsReconcileOperationState::Completed,
             last_event_sequence: event_sequence(3),
         }),
         Vec::new(),
@@ -1218,21 +1181,18 @@ fn ops_status_renders_managed_lease_renewal_addresses() {
 
     assert_eq!(
         output,
-        "operation op_managed_lease\nkind managed-lease\nlease cluster-one renewal ipv4 203.0.113.8,203.0.113.9 ipv6 2001:db8::8,2001:db8::9\nstate completed\nlast-event 3\ntimeline\n"
+        "operation op_managed_lease\nkind managed-dns-reconcile\nPloyz DNS target cluster-one projection apply\nstate completed\nlast-event 3\ntimeline\n"
     );
 }
 
 #[test]
-fn ops_list_renders_empty_managed_lease_renewal_address_families_as_none() {
+fn ops_list_renders_managed_dns_acquisition() {
     let output = ListOutput::from_result(OpsListResult {
         operations: vec![OperationStatusSnapshot::new(
-            OperationStatus::ManagedLease {
+            OperationStatus::ManagedDnsReconcile {
                 id: operation_id("op_managed_lease"),
-                subject: ManagedLeaseSubject::Renew {
-                    lease: ManagedLeaseName::try_new("cluster-one").expect("valid lease name"),
-                    addresses: Box::new(ManagedLeaseAddressSet::new(Vec::new(), Vec::new())),
-                },
-                state: ManagedLeaseOperationState::Accepted,
+                subject: ManagedDnsReconcileSubject::Acquire,
+                state: ManagedDnsReconcileOperationState::Accepted,
                 last_event_sequence: event_sequence(1),
             },
         )],
@@ -1241,24 +1201,19 @@ fn ops_list_renders_empty_managed_lease_renewal_address_families_as_none() {
 
     assert_eq!(
         output,
-        "op_managed_lease managed-lease lease cluster-one renewal ipv4 none ipv6 none accepted\n"
+        "op_managed_lease managed-dns-reconcile Ployz DNS target acquisition accepted\n"
     );
 }
 
 #[test]
-fn ops_status_renders_missing_gateway_testimony() {
+fn ops_status_renders_managed_dns_failure() {
     let output = StatusOutput::new(
-        OperationStatusSnapshot::new(OperationStatus::ManagedLease {
+        OperationStatusSnapshot::new(OperationStatus::ManagedDnsReconcile {
             id: operation_id("op_managed_lease"),
-            subject: ManagedLeaseSubject::GatewayTestimony {
-                missing: vec![
-                    MachineId::try_new("gateway-one").expect("valid machine id"),
-                    MachineId::try_new("gateway-two").expect("valid machine id"),
-                ],
-            },
-            state: ManagedLeaseOperationState::Failed {
-                failure: ployz_core::ops::ManagedLeaseOperationFailure {
-                    class: ployz_core::ops::ManagedLeaseFailureClass::GatewayTestimonyUnavailable,
+            subject: ManagedDnsReconcileSubject::Acquire,
+            state: ManagedDnsReconcileOperationState::Failed {
+                failure: ployz_core::ops::ManagedDnsReconcileFailure {
+                    class: ployz_core::ops::ManagedDnsReconcileFailureClass::Transport,
                     message: ployz_core::ops::FailureMessage::try_new(
                         "gateway endpoint testimony unavailable",
                     )
@@ -1273,7 +1228,7 @@ fn ops_status_renders_missing_gateway_testimony() {
 
     assert_eq!(
         output,
-        "operation op_managed_lease\nkind managed-lease\ngateway testimony unavailable from gateway-one,gateway-two\nstate failed\nfailure gateway endpoint testimony unavailable\nlast-event 3\ntimeline\n"
+        "operation op_managed_lease\nkind managed-dns-reconcile\nPloyz DNS target acquisition\nstate failed\nfailure gateway endpoint testimony unavailable\nlast-event 3\ntimeline\n"
     );
 }
 

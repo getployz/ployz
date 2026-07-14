@@ -19,21 +19,22 @@ pub use queries::{
     VolumeQueryService, credential_list, ops_list, ops_status, ops_status_missing, ops_watch,
 };
 pub use submit::{
-    core_replace, credential_add, credential_remove, deploy_reserve, deploy_submit, machine_add,
-    machine_drain, machine_resume, machine_update, namespace_remove, network_repair,
-    owned_operation, service_restart, volume_remove,
+    core_replace, credential_add, credential_remove, deploy_reserve, deploy_submit,
+    ingress_configure, machine_add, machine_drain, machine_resume, machine_update,
+    namespace_remove, network_repair, owned_operation, service_restart, volume_remove,
 };
 
 use crate::adapters::nats_authorization::MachineCredentialMint;
 use crate::core_store::CoreStore;
 use crate::fact_cache::FactCache;
-use crate::intent::lease_intent::LeaseIntentStore;
+use crate::intent::ingress_intent::IngressIntentStore;
 use crate::intent::machine_roster::MachineRosterStore;
 use crate::intent::service::{NatsIntentReader, publish_pending_machine_joins};
 use crate::operation_api::admission::OperationControllers;
 use crate::operations::credential_grant::CredentialGrantOperation;
 use crate::operations::dataplane_projection_admission::DataplaneProjectionAdmissionOperation;
 use crate::operations::deploy::driver::DeployOperationDriver;
+use crate::operations::ingress_configure::IngressConfigureOperation;
 use crate::operations::machine_lifecycle::MachineLifecycleOperation;
 use crate::operations::machine_update::MachineUpdateOperation;
 use crate::operations::namespace_remove::NamespaceRemoveOperation;
@@ -49,6 +50,7 @@ use std::sync::Arc;
 /// another positional parameter threaded through `execute_operations`.
 pub struct OperationWorkers {
     pub credential_grant: CredentialGrantOperation,
+    pub ingress_configure: IngressConfigureOperation,
     pub deploy: DeployOperationDriver,
     pub service_restart: ServiceRestartOperation,
     pub namespace_remove: NamespaceRemoveOperation,
@@ -72,12 +74,13 @@ pub struct OperationApiHandlers {
     dataplane_projection_admission: Arc<DataplaneProjectionAdmissionOperation>,
     machine_mint: Arc<MachineCredentialMint>,
     credential_grant: Arc<CredentialGrantOperation>,
+    ingress_configure: Arc<IngressConfigureOperation>,
     dataplane_endpoint_supernet: MachineEndpointSupernet,
     core_store: CoreStore,
     local_machine_id: MachineId,
     intent_change_client: async_nats::Client,
     machine_roster: MachineRosterStore,
-    lease_intent: LeaseIntentStore,
+    ingress_intent: IngressIntentStore,
     intent_reader: NatsIntentReader,
     machine_query: Arc<MachineQueryService>,
     service_query: Arc<ServiceQueryService>,
@@ -105,6 +108,7 @@ impl OperationApiHandlers {
     ) -> Self {
         let OperationWorkers {
             credential_grant,
+            ingress_configure,
             deploy: deploy_driver,
             service_restart,
             namespace_remove,
@@ -124,9 +128,10 @@ impl OperationApiHandlers {
             intent_reader.clone(),
             facts.clone(),
             facts_reader.clone(),
+            core_store.clone(),
         );
         let logs_query = LogsQueryService::new(intent_reader.clone(), facts_reader, logs_tailer);
-        let lease_intent = LeaseIntentStore::new(core_store.clone());
+        let ingress_intent = IngressIntentStore::new(core_store.clone());
         let dataplane_projection_admission = Arc::new(DataplaneProjectionAdmissionOperation::new(
             controllers.clone(),
             intent_change_client.clone(),
@@ -144,12 +149,13 @@ impl OperationApiHandlers {
             dataplane_projection_admission,
             machine_mint: Arc::new(machine_mint),
             credential_grant: Arc::new(credential_grant),
+            ingress_configure: Arc::new(ingress_configure),
             dataplane_endpoint_supernet,
             core_store,
             local_machine_id,
             intent_change_client,
             machine_roster,
-            lease_intent,
+            ingress_intent,
             intent_reader,
             machine_query: Arc::new(machine_query),
             service_query: Arc::new(service_query),
@@ -201,6 +207,10 @@ impl OperationApiHandlers {
         &self.credential_grant
     }
 
+    pub(crate) fn ingress_configure(&self) -> &IngressConfigureOperation {
+        &self.ingress_configure
+    }
+
     pub(crate) fn service_restart(&self) -> &ServiceRestartOperation {
         &self.service_restart
     }
@@ -225,8 +235,8 @@ impl OperationApiHandlers {
         &self.local_machine_id
     }
 
-    pub(crate) fn lease_intent(&self) -> &LeaseIntentStore {
-        &self.lease_intent
+    pub(crate) fn ingress_intent(&self) -> &IngressIntentStore {
+        &self.ingress_intent
     }
 
     pub(crate) fn dataplane_endpoint_supernet(&self) -> &MachineEndpointSupernet {

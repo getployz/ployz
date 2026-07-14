@@ -1,2 +1,2 @@
-services.web.ports[0].published  invalid value  long-syntax published ports are host publishing; use x-ports without published
+services.web.ports[0].published  invalid value  long-syntax published ports are host publishing; use x-ports
 services.web.ports[1].mode  invalid value  mode: host publishes host ports; use x-ports for Ployz Route Bindings

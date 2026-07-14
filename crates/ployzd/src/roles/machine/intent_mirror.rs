@@ -120,12 +120,9 @@ mod tests {
             "route_bindings": [],
             "serving_target_entries": [],
             "nats_authorizations": [],
-            "public_url": {
-                "mode": "auto",
-                "managed_lease": { "state": "unacquired" }
-            },
-            "custom_certificates": [],
-            "acme_http01_challenges": [],
+            "automatic_hostname_configuration": { "mode": "ployz" },
+            "ployz_dns_target": "enabled",
+            "active_certificates": [],
         }))
         .expect("snapshot deserializes")
     }
@@ -168,5 +165,23 @@ mod tests {
             StoreOutcome::AcceptedHigher
         );
         assert_eq!(mirror.load().expect("loaded").epoch.get(), 3);
+    }
+
+    #[test]
+    fn legacy_ingress_projection_is_not_accepted() {
+        let legacy = serde_json::json!({
+            "epoch": 1,
+            "core_machine_id": "machine_a",
+            "active_machines": [],
+            "dataplane_projection": { "declared_members": [], "staged_member": null },
+            "route_bindings": [],
+            "serving_target_entries": [],
+            "nats_authorizations": [],
+            "public_url": { "mode": "auto", "managed_lease": { "state": "unacquired" } },
+            "custom_certificates": [],
+            "acme_http01_challenges": [],
+        });
+
+        assert!(serde_json::from_value::<IntentSnapshot>(legacy).is_err());
     }
 }

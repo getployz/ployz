@@ -10,6 +10,7 @@ pub mod core;
 pub mod deploy;
 pub(crate) mod deploy_failure;
 pub(crate) mod deploy_render;
+pub mod ingress;
 pub mod init;
 pub mod logs;
 pub mod machine;
@@ -39,6 +40,7 @@ pub enum PloyzctlCommand {
     InternalInit(Box<init::FirstMachineInitCommand>),
     InitFirstMachineActivate(init::FirstMachineActivateCommand),
     InitJoinTemplate(init::join_template::MachineJoinTemplateCommand),
+    IngressConfigure(ingress::IngressConfigureCommand),
     MachineInit(machine::MachineInitCommand),
     MachineAdd(machine::MachineAddCommand),
     MachineAddRemote(machine::MachineAddRemoteCommand),
@@ -82,6 +84,7 @@ impl PloyzctlCommand {
             Self::InternalInit(_) => Some("internal init"),
             Self::InitFirstMachineActivate(_) => Some("internal init activate-first-machine"),
             Self::InitJoinTemplate(_) => Some("internal init join-template"),
+            Self::IngressConfigure(_) => Some("ingress configure"),
             Self::MachineInit(_) => Some("init"),
             Self::MachineAdd(_) => Some("internal machine-add"),
             Self::MachineAddRemote(_) => Some("machine add"),
@@ -173,6 +176,10 @@ enum CommandCli {
         #[command(subcommand)]
         command: NetworkCli,
     },
+    Ingress {
+        #[command(subcommand)]
+        command: IngressCli,
+    },
     Service {
         #[command(subcommand)]
         command: ServiceCli,
@@ -249,6 +256,11 @@ enum NetworkCli {
     Status(network::NetworkStatusCli),
     Resolve(network::NetworkResolveCli),
     Repair(network::NetworkRepairCli),
+}
+
+#[derive(Debug, Subcommand)]
+enum IngressCli {
+    Configure(ingress::IngressConfigureCli),
 }
 
 #[derive(Debug, Subcommand)]
@@ -349,6 +361,11 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
             )),
             NetworkCli::Repair(command) => {
                 network::network_repair_command(command).map(PloyzctlCommand::NetworkRepair)
+            }
+        },
+        CommandCli::Ingress { command } => match command {
+            IngressCli::Configure(command) => {
+                ingress::ingress_configure_command(command).map(PloyzctlCommand::IngressConfigure)
             }
         },
         CommandCli::Service { command } => match command {

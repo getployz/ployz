@@ -1,6 +1,8 @@
 use std::error::Error;
+use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use ployz::api_client::OperationApiClient;
 use ployz_core::deploy::{
     DeployPlanningInput, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec,
@@ -24,6 +26,7 @@ use ployz_sdk_types::{
     DeployReserveRequest, DeploySubmitError, DeploySubmitRequest, OpsStatusRequest,
     ServiceInspectRequest,
 };
+use ployzd::certificate::{AcmeIssueContext, AcmeIssuer, AcmeIssuerError, IssuedCertificate};
 use ployzd::config::ControlProcessConfig;
 use ployzd::core_store::CoreStore;
 use ployzd::intent::machine_roster::MachineRosterStore;
@@ -51,7 +54,9 @@ use ployz_test_support::ids::{
     event_replay_limit, event_sequence, idempotency_key, machine_id, namespace_id, route_hostname,
     route_port, service_id,
 };
-use support::http::{TestUpstream, free_loopback_port, http_get_with_host};
+use support::http::{
+    TestUpstream, free_gateway_http_port, http_get_with_host, https_get_with_host,
+};
 use support::nats::TestNats;
 
 #[tokio::test]
@@ -358,10 +363,11 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
     )
     .await?;
     wait_for_dataplane_projection(&nats, &machine_id("machine_a")).await;
+    let gateway_http_port = free_gateway_http_port().await?;
     let gateway_runtime = start_gateway_process_with_client(
         machine_client.clone(),
         Duration::from_millis(10),
-        "127.0.0.1:0".parse().expect("valid gateway listen addr"),
+        format!("127.0.0.1:{gateway_http_port}").parse()?,
         machine_id("machine_a"),
         None,
     )
@@ -371,12 +377,7 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
     let request = reserved_deploy_request(
         &api,
         "idem_e2e_route",
-        deploy_target_with_route(
-            "svc_api",
-            "api.example.com",
-            gateway_runtime.listen_addr().port(),
-            upstream.port(),
-        ),
+        deploy_target_with_route("svc_api", "localhost", upstream.port()),
     )
     .await?;
 
@@ -404,12 +405,15 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
     publish_machine_facts(&machine_client, runner.snapshot(), Some(public_ip(7))).await;
     wait_for_gateway_upstream(&gateway_runtime, "127.0.0.1", upstream.port()).await;
 
+    assert_redirect_response(
+        &http_get_with_host(gateway_runtime.listen_addr(), "localhost").await?,
+    );
     assert_smoke_response(
-        &http_get_with_host(gateway_runtime.listen_addr(), "api.example.com").await?,
+        &https_get_with_host(gateway_runtime.tls_listen_addr(), "localhost").await?,
     );
     let upstream_request = upstream.request().await;
     assert!(upstream_request.starts_with("GET /smoke HTTP/1.1\r\n"));
-    assert!(upstream_request.contains("\r\nHost: api.example.com\r\n"));
+    assert!(upstream_request.contains("\r\nHost: localhost\r\n"));
 
     gateway_runtime
         .shutdown()
@@ -449,10 +453,11 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
     )
     .await?;
     wait_for_dataplane_projection(&nats, &machine_id("machine_a")).await;
+    let gateway_http_port = free_gateway_http_port().await?;
     let gateway_runtime = start_gateway_process_with_client(
         machine_client.clone(),
         Duration::from_millis(10),
-        "127.0.0.1:0".parse().expect("valid gateway listen addr"),
+        format!("127.0.0.1:{gateway_http_port}").parse()?,
         machine_id("machine_a"),
         None,
     )
@@ -460,16 +465,11 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
     let upstream = TestUpstream::start_with_expected_requests(2).await;
     let api = OperationApiClient::new(nats.user_client());
     let route_port = route_port(gateway_runtime.listen_addr().port());
-    let route_host = format!("machine-down.local:{}", route_port.get());
+    let route_host = format!("localhost:{}", route_port.get());
     let request = reserved_deploy_request(
         &api,
         "idem_e2e_machine_runtime_down_route",
-        deploy_target_with_route(
-            "svc_api",
-            "machine-down.local",
-            route_port.get(),
-            upstream.port(),
-        ),
+        deploy_target_with_route("svc_api", "localhost", upstream.port()),
     )
     .await?;
 
@@ -491,7 +491,9 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
     );
     publish_machine_facts(&machine_client, runner.snapshot(), Some(public_ip(7))).await;
     wait_for_gateway_upstream(&gateway_runtime, "127.0.0.1", upstream.port()).await;
-    assert_smoke_response(&http_get_with_host(gateway_runtime.listen_addr(), &route_host).await?);
+    assert_smoke_response(
+        &https_get_with_host(gateway_runtime.tls_listen_addr(), &route_host).await?,
+    );
 
     machine_runtime
         .shutdown()
@@ -521,7 +523,9 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
         ),
         "expected NoResponders or RequestTimedOut, got {reason:?}"
     );
-    assert_smoke_response(&http_get_with_host(gateway_runtime.listen_addr(), &route_host).await?);
+    assert_smoke_response(
+        &https_get_with_host(gateway_runtime.tls_listen_addr(), &route_host).await?,
+    );
     assert_eq!(upstream.requests().await.len(), 2);
 
     gateway_runtime
@@ -557,10 +561,11 @@ async fn e2e_gateway_keeps_serving_last_projection_after_control_shutdown()
     )
     .await?;
     wait_for_dataplane_projection(&nats, &machine_id("machine_a")).await;
+    let gateway_http_port = free_gateway_http_port().await?;
     let gateway_runtime = start_gateway_process_with_client(
         machine_client.clone(),
         Duration::from_millis(10),
-        "127.0.0.1:0".parse().expect("valid gateway listen addr"),
+        format!("127.0.0.1:{gateway_http_port}").parse()?,
         machine_id("machine_a"),
         None,
     )
@@ -568,17 +573,12 @@ async fn e2e_gateway_keeps_serving_last_projection_after_control_shutdown()
     let first_upstream = TestUpstream::start_with_expected_requests(2).await;
     let first_upstream_port = first_upstream.port();
     let api = OperationApiClient::new(nats.user_client());
-    let route_hostname = route_hostname("control-down.local");
+    let route_hostname = route_hostname("localhost");
     let route_port = route_port(gateway_runtime.listen_addr().port());
     let request = reserved_deploy_request(
         &api,
         "idem_e2e_control_down_route",
-        deploy_target_with_route(
-            "svc_api",
-            route_hostname.as_str(),
-            route_port.get(),
-            first_upstream_port,
-        ),
+        deploy_target_with_route("svc_api", route_hostname.as_str(), first_upstream_port),
     )
     .await?;
 
@@ -601,9 +601,9 @@ async fn e2e_gateway_keeps_serving_last_projection_after_control_shutdown()
     publish_machine_facts(&machine_client, runner.snapshot(), Some(public_ip(7))).await;
     wait_for_gateway_upstream(&gateway_runtime, "127.0.0.1", first_upstream_port).await;
     assert_smoke_response(
-        &http_get_with_host(
-            gateway_runtime.listen_addr(),
-            &format!("control-down.local:{}", route_port.get()),
+        &https_get_with_host(
+            gateway_runtime.tls_listen_addr(),
+            &format!("localhost:{}", route_port.get()),
         )
         .await?,
     );
@@ -613,19 +613,15 @@ async fn e2e_gateway_keeps_serving_last_projection_after_control_shutdown()
         .expect("control runtime shuts down");
 
     assert_smoke_response(
-        &http_get_with_host(
-            gateway_runtime.listen_addr(),
-            &format!("control-down.local:{}", route_port.get()),
+        &https_get_with_host(
+            gateway_runtime.tls_listen_addr(),
+            &format!("localhost:{}", route_port.get()),
         )
         .await?,
     );
     for request in first_upstream.requests().await {
         assert!(request.starts_with("GET /smoke HTTP/1.1\r\n"));
-        assert!(
-            request.contains(
-                &("Host: control-down.local:".to_owned() + &route_port.get().to_string())
-            )
-        );
+        assert!(request.contains(&("Host: localhost:".to_owned() + &route_port.get().to_string())));
     }
 
     gateway_runtime
@@ -644,7 +640,7 @@ async fn e2e_gateway_keeps_serving_last_projection_after_control_shutdown()
 async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
 -> Result<(), Box<dyn Error + Send + Sync>> {
     let nats = TestNats::start_with_machines(&[machine_id("core_1"), machine_id("edge_2")]).await;
-    let route_port = free_loopback_port().await?;
+    let route_port = free_gateway_http_port().await?;
     let config = nats
         .control_config(machine_id("core_1"))
         .with_deploy_machines(vec![machine_id("core_1"), machine_id("edge_2")])
@@ -694,7 +690,7 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
     let request = reserved_deploy_request(
         &api,
         "idem_e2e_two_machine_route",
-        deploy_target_with_route("svc_api", "smoke.local", route_port, upstream.port()),
+        deploy_target_with_route("svc_api", "localhost", upstream.port()),
     )
     .await?;
 
@@ -730,16 +726,16 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
     wait_for_gateway_upstream(&edge_gateway_runtime, "127.0.0.1", upstream.port()).await;
     assert_eq!(core_runner.snapshot().containers().len(), 1);
     assert_smoke_response(
-        &http_get_with_host(
-            core_gateway_runtime.listen_addr(),
-            &format!("smoke.local:{route_port}"),
+        &https_get_with_host(
+            core_gateway_runtime.tls_listen_addr(),
+            &format!("localhost:{route_port}"),
         )
         .await?,
     );
     assert_smoke_response(
-        &http_get_with_host(
-            edge_gateway_runtime.listen_addr(),
-            &format!("smoke.local:{route_port}"),
+        &https_get_with_host(
+            edge_gateway_runtime.tls_listen_addr(),
+            &format!("localhost:{route_port}"),
         )
         .await?,
     );
@@ -829,12 +825,7 @@ fn deploy_target(service_id: &str) -> DeployRequest {
     }
 }
 
-fn deploy_target_with_route(
-    service_id: &str,
-    hostname: &str,
-    route_port: u16,
-    endpoint_port: u16,
-) -> DeployRequest {
+fn deploy_target_with_route(service_id: &str, hostname: &str, endpoint_port: u16) -> DeployRequest {
     let mut target = deploy_target(service_id);
     let [service] = target.services.as_mut_slice() else {
         panic!("deploy target has one service");
@@ -842,7 +833,6 @@ fn deploy_target_with_route(
     service.routes = vec![DeployRoute {
         target: DeployRouteTarget::Hostname {
             hostname: route_hostname(hostname),
-            port: self::route_port(route_port),
         },
         endpoint_port: self::route_port(endpoint_port),
     }];
@@ -939,6 +929,17 @@ fn assert_smoke_response(response: &str) {
     );
 }
 
+fn assert_redirect_response(response: &str) {
+    assert!(
+        response.starts_with("HTTP/1.1 301 Moved Permanently\r\n"),
+        "unexpected redirect response: {response:?}"
+    );
+    assert!(
+        response.contains("location: https://localhost/smoke\r\n"),
+        "unexpected redirect location: {response:?}"
+    );
+}
+
 async fn start_control_with_deploy_roster(
     nats: &TestNats,
     config: &ControlProcessConfig,
@@ -966,7 +967,41 @@ async fn start_control_with_deploy_roster(
             })
             .await?;
     }
-    Ok(nats.start_control(config).await?)
+    Ok(nats
+        .start_control_with_test_issuer(config, Arc::new(FixtureAcmeIssuer))
+        .await?)
+}
+
+struct FixtureAcmeIssuer;
+
+#[async_trait]
+impl AcmeIssuer for FixtureAcmeIssuer {
+    async fn issue_http01(
+        &self,
+        context: &AcmeIssueContext,
+        hostname: &ployz_core::ops::RouteHostname,
+    ) -> Result<IssuedCertificate, AcmeIssuerError> {
+        let challenge = ployz_core::cert::AcmeHttp01Challenge::try_new(
+            hostname.clone(),
+            ployz_core::cert::AcmeChallengeToken::try_new("e2e-token").expect("challenge token"),
+            ployz_core::cert::AcmeChallengeValue::try_new("e2e-token.fixture-thumbprint")
+                .expect("challenge value"),
+            ployz_core::cert::AcmeChallengeTtlSeconds::try_new(900).expect("challenge ttl"),
+        )
+        .expect("challenge");
+        context.publish_challenge(challenge).await?;
+        context.validation_started().await?;
+        let rcgen::CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed([hostname.as_str().to_owned()]).map_err(
+                |error| AcmeIssuerError::Validation {
+                    message: error.to_string(),
+                },
+            )?;
+        Ok(IssuedCertificate {
+            certificate_chain_pem: cert.pem(),
+            private_key_pem: signing_key.serialize_pem(),
+        })
+    }
 }
 
 async fn wait_for_dataplane_projection(nats: &TestNats, machine_id: &ployz_core::ids::MachineId) {

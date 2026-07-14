@@ -11,29 +11,30 @@ use ployz_sdk_types::{
     CoreReplaceReported, CoreReplaceRequest, CredentialAddError, CredentialAddRequest,
     CredentialListError, CredentialListRequest, CredentialListResult, CredentialRemoveError,
     CredentialRemoveRequest, DeployReserveError, DeployReserveRequest, DeployReserved,
-    DeploySubmitError, DeploySubmitRequest, InitFirstMachineActivateError,
-    InitFirstMachineActivateRequest, InitFirstMachineActivated, LogsTailError, LogsTailRequest,
-    LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest, MachineInspectError,
-    MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
-    MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError,
-    MachineLifecycleRequest, MachineListError, MachineListRequest, MachineListResult,
-    MachineSnapshot, MachineUpdateError, MachineUpdateRequest, NamespaceRemoveError,
-    NamespaceRemoveRequest, NetworkRepairError, NetworkRepairRequest, NetworkResolveError,
-    NetworkResolveRequest, NetworkResolveResult, NetworkStatusError, NetworkStatusRequest,
-    NetworkStatusResult, OperationApiResponse, OpsListError, OpsListRequest, OpsListResult,
-    OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest, RuntimeSnapshotError,
-    RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceInspectError, ServiceInspectRequest,
-    ServiceListError, ServiceListRequest, ServiceListResult, ServiceRestartError,
-    ServiceRestartRequest, ServiceSnapshot, VolumeListError, VolumeListRequest, VolumeListResult,
-    VolumeRemoveError, VolumeRemoveRequest,
+    DeploySubmitError, DeploySubmitRequest, IngressConfigureError, IngressConfigureRequest,
+    InitFirstMachineActivateError, InitFirstMachineActivateRequest, InitFirstMachineActivated,
+    LogsTailError, LogsTailRequest, LogsTailResult, MachineAddAccepted, MachineAddError,
+    MachineAddRequest, MachineInspectError, MachineInspectRequest, MachineJoinRedeemError,
+    MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
+    MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError, MachineLifecycleRequest,
+    MachineListError, MachineListRequest, MachineListResult, MachineSnapshot, MachineUpdateError,
+    MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest, NetworkRepairError,
+    NetworkRepairRequest, NetworkResolveError, NetworkResolveRequest, NetworkResolveResult,
+    NetworkStatusError, NetworkStatusRequest, NetworkStatusResult, OperationApiResponse,
+    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest, OpsWatchError,
+    OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult,
+    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
+    ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
+    VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
     operation_api::{
         CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi, CredentialListApi,
-        CredentialRemoveApi, DeployReserveApi, DeploySubmitApi, InitFirstMachineActivateApi,
-        LogsTailApi, MachineAddApi, MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi,
-        MachineJoinReportApi, MachineListApi, MachineResumeApi, MachineUpdateApi,
-        NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, NetworkStatusApi,
-        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
-        ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
+        CredentialRemoveApi, DeployReserveApi, DeploySubmitApi, IngressConfigureApi,
+        InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineDrainApi,
+        MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
+        MachineResumeApi, MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi,
+        NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi,
+        OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi,
+        VolumeListApi, VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -67,6 +68,13 @@ impl OperationApiClient {
         request: &CredentialRemoveRequest,
     ) -> Result<AcceptedOperation, OperationApiClientError<CredentialRemoveError>> {
         self.request_api::<CredentialRemoveApi>(request).await
+    }
+
+    pub async fn ingress_configure(
+        &self,
+        request: &IngressConfigureRequest,
+    ) -> Result<AcceptedOperation, OperationApiClientError<IngressConfigureError>> {
+        self.request_api::<IngressConfigureApi>(request).await
     }
 
     pub async fn deploy_reserve(

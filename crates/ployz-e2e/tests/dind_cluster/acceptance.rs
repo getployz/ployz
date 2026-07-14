@@ -12,7 +12,6 @@ struct DeployedApp {
     database_deploy: DeployHistoryEntry,
     application: DeployHistoryEntry,
     hostname: String,
-    certificate_chain: String,
 }
 
 struct FailedDeploys {
@@ -219,29 +218,10 @@ async fn step_2_deploy_real_application(
         .hostname
         .as_str()
         .to_owned();
-    let certificate_chain = match &intent.public_url {
-        ployz_core::state::IntentPublicUrl::Auto(managed_lease) => match managed_lease.as_ref() {
-            ployz_core::state::ManagedLeaseProjection::Ready { bundle, .. } => {
-                bundle.certificate_chain_pem.clone()
-            }
-            state @ (ployz_core::state::ManagedLeaseProjection::Unacquired
-            | ployz_core::state::ManagedLeaseProjection::RecordOnly { .. }) => {
-                panic!("managed HTTPS lease must be ready: {state:?}")
-            }
-        },
-        other @ (ployz_core::state::IntentPublicUrl::Unconfigured
-        | ployz_core::state::IntentPublicUrl::BringYourOwn
-        | ployz_core::state::IntentPublicUrl::None) => {
-            panic!("managed HTTPS lease must be ready: {other:?}")
-        }
-    };
-    let response = gateway_https_get(
-        core.cluster.core().published.gateway_tls,
-        &hostname,
-        &certificate_chain,
-    )
-    .await
-    .expect("Umami answers through public HTTPS");
+    let response =
+        gateway_https_get_unverified(core.cluster.core().published.gateway_tls, &hostname)
+            .await
+            .expect("Umami answers through public HTTPS");
     assert!(
         response.starts_with("HTTP/1.1 200"),
         "Umami HTTPS response was not successful: {response}"
@@ -251,7 +231,6 @@ async fn step_2_deploy_real_application(
         database_deploy: database_deploy.clone(),
         application: application.clone(),
         hostname,
-        certificate_chain,
     }
 }
 
@@ -313,13 +292,10 @@ async fn step_4_keep_https_while_core_is_stopped(core: &CoreContext, app: &Deplo
         )
         .await;
     assert!(stopped.success(), "stop Control-Plane Core: {stopped:?}");
-    let response = gateway_https_get(
-        core.cluster.core().published.gateway_tls,
-        &app.hostname,
-        &app.certificate_chain,
-    )
-    .await
-    .expect("public HTTPS survives Control-Plane Core stop");
+    let response =
+        gateway_https_get_unverified(core.cluster.core().published.gateway_tls, &app.hostname)
+            .await
+            .expect("public HTTPS survives Control-Plane Core stop");
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
 
     let started = core
@@ -411,13 +387,10 @@ async fn step_5_retry_and_rollback(
         app.application.request.services
     );
 
-    let restored = gateway_https_get(
-        core.cluster.core().published.gateway_tls,
-        &app.hostname,
-        &app.certificate_chain,
-    )
-    .await
-    .expect("rolled-back Umami answers through HTTPS");
+    let restored =
+        gateway_https_get_unverified(core.cluster.core().published.gateway_tls, &app.hostname)
+            .await
+            .expect("rolled-back Umami answers through HTTPS");
     assert!(
         restored.starts_with("HTTP/1.1 200") && restored.contains("Umami"),
         "rollback did not restore Umami: {restored}"
@@ -589,7 +562,7 @@ services:
     image: {WORKLOAD_IMAGE}
     deploy:
       replicas: 2
-    x-ports: [80]
+    x-ports: [auto:bad-input:80]
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null"]
       interval: 2s

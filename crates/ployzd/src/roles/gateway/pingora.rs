@@ -22,9 +22,8 @@ use pingora::protocols::l4::socket::SocketAddr as PingoraSocketAddr;
 use pingora::protocols::tls::TlsRef;
 use pingora::proxy::{FailToProxy, ProxyHttp, Session};
 use pingora::upstreams::peer::HttpPeer;
-use ployz_core::cert::{
-    AcmeHttp01Challenge, CertificateChallengeApplicationStatus, ManagedCertBundle,
-};
+use ployz_core::cert::{AcmeHttp01Challenge, CertificateChallengeApplicationStatus};
+use ployz_core::ingress::{CertificateOwner, RouteBindingOrigin};
 use ployz_core::ops::{RouteHostname, RouteHostnameError, RoutePort, RouteTarget};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
@@ -42,7 +41,12 @@ struct PingoraGatewaySnapshot {
     routes: BTreeMap<RouteTarget, Arc<PingoraRoutePool>>,
     tls_by_hostname: BTreeMap<String, PreparedGatewayTls>,
     https_hostnames: BTreeSet<String>,
-    challenges: BTreeMap<(String, String), String>,
+    challenges: BTreeMap<(String, String), AppliedHttp01Challenge>,
+}
+
+struct AppliedHttp01Challenge {
+    value: String,
+    expires_at_unix_seconds: u64,
 }
 
 #[derive(Clone)]
@@ -68,12 +72,43 @@ impl PingoraRouteRegistry {
         &self,
         projection: &GatewayProjection,
     ) -> Result<(), PingoraRouteRegistryError> {
-        let snapshot = prepare_gateway_snapshot(projection)?;
-        *self
+        let mut snapshot = prepare_gateway_snapshot(projection)?;
+        let mut current = self
             .inner
             .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = snapshot;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        snapshot.challenges = std::mem::take(&mut current.challenges);
+        *current = snapshot;
         Ok(())
+    }
+
+    pub fn apply_challenge(&self, challenge: &AcmeHttp01Challenge) {
+        self.inner
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .challenges
+            .insert(
+                (
+                    challenge.hostname().as_str().to_owned(),
+                    challenge.token().as_str().to_owned(),
+                ),
+                AppliedHttp01Challenge {
+                    value: challenge.value().as_str().to_owned(),
+                    expires_at_unix_seconds: current_unix_seconds()
+                        .saturating_add(challenge.ttl_seconds().get()),
+                },
+            );
+    }
+
+    pub fn remove_challenge(&self, challenge: &AcmeHttp01Challenge) {
+        self.inner
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .challenges
+            .remove(&(
+                challenge.hostname().as_str().to_owned(),
+                challenge.token().as_str().to_owned(),
+            ));
     }
 
     #[must_use]
@@ -92,7 +127,8 @@ impl PingoraRouteRegistry {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .challenges
             .get(&(hostname.to_ascii_lowercase(), token.to_owned()))
-            .cloned()
+            .filter(|challenge| current_unix_seconds() < challenge.expires_at_unix_seconds)
+            .map(|challenge| challenge.value.clone())
     }
 
     #[must_use]
@@ -166,6 +202,12 @@ impl PingoraRouteRegistry {
                 .await;
         }
     }
+}
+
+fn current_unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
 }
 
 impl Default for PingoraRouteRegistry {
@@ -401,16 +443,6 @@ impl ProxyHttp for PloyzGatewayProxy {
     }
 }
 
-#[must_use]
-pub fn managed_bundle_serves_hostname(bundle: &ManagedCertBundle, hostname: &str) -> bool {
-    let hostname = hostname.to_ascii_lowercase();
-    let apex = &bundle.dns_names[1];
-    hostname == *apex
-        || hostname
-            .strip_suffix(&format!(".{apex}"))
-            .is_some_and(|label| !label.is_empty() && !label.contains('.'))
-}
-
 pub struct GatewayTlsAccept {
     snapshot: Arc<RwLock<PingoraGatewaySnapshot>>,
 }
@@ -477,44 +509,30 @@ fn prepare_gateway_snapshot(
 
     let mut tls_by_hostname = BTreeMap::new();
     let mut https_hostnames = BTreeSet::new();
-    if let Some(bundle) = projection.managed_cert_bundle.as_ref() {
-        let tls = prepare_gateway_tls(&bundle.certificate_chain_pem, &bundle.private_key_pem)?;
-        for route in &projection.routes {
-            let hostname = route.target.hostname.as_str();
-            if managed_bundle_serves_hostname(bundle, hostname) {
-                tls_by_hostname.insert(hostname.to_owned(), tls.clone());
-                if route.target.port.get() == 443 {
-                    https_hostnames.insert(hostname.to_owned());
+    for certificate in &projection.certificate_bundles {
+        let tls = prepare_gateway_tls(
+            certificate.bundle.certificate_chain_pem(),
+            certificate.bundle.private_key_pem(),
+        )?;
+        for route in projection
+            .routes
+            .iter()
+            .filter(|route| match &certificate.owner {
+                CertificateOwner::PloyzAutomaticNamespace => {
+                    route.origin == RouteBindingOrigin::Automatic
                 }
-            }
+                CertificateOwner::RouteBinding { route_binding_id } => {
+                    &route.id == route_binding_id
+                }
+            })
+        {
+            let hostname = route.target.hostname.as_str().to_owned();
+            tls_by_hostname.insert(hostname.clone(), tls.clone());
+            https_hostnames.insert(hostname);
         }
     }
 
-    for bundle in &projection.custom_cert_bundles {
-        let hostname = bundle.active_cert().hostname.as_str();
-        if !projection.routes.iter().any(|route| {
-            route.target.port.get() == 443 && route.target.hostname.as_str() == hostname
-        }) {
-            continue;
-        }
-        let tls = prepare_gateway_tls(bundle.certificate_chain_pem(), bundle.private_key_pem())?;
-        tls_by_hostname.insert(hostname.to_owned(), tls);
-        https_hostnames.insert(hostname.to_owned());
-    }
-
-    let challenges = projection
-        .challenges
-        .iter()
-        .map(|challenge| {
-            (
-                (
-                    challenge.hostname().as_str().to_owned(),
-                    challenge.token().as_str().to_owned(),
-                ),
-                challenge.value().as_str().to_owned(),
-            )
-        })
-        .collect();
+    let challenges = BTreeMap::new();
 
     Ok(PingoraGatewaySnapshot {
         routes,
@@ -601,11 +619,11 @@ pub fn route_target_from_authority(
         return Err(HttpRouteTargetError::UserInfo);
     }
 
-    let (hostname, port) = host_and_port(authority, listener_port)?;
+    let (hostname, _port) = host_and_port(authority, listener_port)?;
     let hostname = RouteHostname::try_new(hostname)
         .map_err(|source| HttpRouteTargetError::InvalidHostname { source })?;
 
-    Ok(RouteTarget::new(hostname, port))
+    Ok(RouteTarget::new(hostname))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

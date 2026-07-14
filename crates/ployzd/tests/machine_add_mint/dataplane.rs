@@ -1,6 +1,5 @@
 use super::*;
 use futures_util::StreamExt;
-use ployz_core::cert::{ManagedLeaseIntent, PublicUrlMode};
 use ployz_core::dataplane::WireGuardPublicKey;
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::nats_config::NatsUserSeed;
@@ -206,7 +205,9 @@ async fn first_machine_activation_repairs_completed_operation_without_roster() {
         .init_first_machine_activate(&InitFirstMachineActivateRequest {
             machine_id: machine_id("core_1"),
             roles: InstallRolePolicy::install_all().without_gateway(),
-            public_url_mode: PublicUrlMode::None,
+            automatic_hostname_configuration:
+                ployz_core::ingress::AutomaticHostnameConfiguration::Disabled,
+            ployz_dns_target: ployz_core::ingress::PloyzDnsTargetIntent::Disabled,
         })
         .await
         .expect("first-machine activation repairs completed operation");
@@ -224,14 +225,20 @@ async fn first_machine_activation_repairs_completed_operation_without_roster() {
         secret_row_count(&nats, "machine_add_submissions", "op_init_core_1"),
         0
     );
-    let lease_intent = ployzd::intent::lease_intent::LeaseIntentStore::new(
+    let ingress_intent = ployzd::intent::ingress_intent::IngressIntentStore::new(
         CoreStore::open(config.core_db_path.clone())
             .await
             .expect("core store opens"),
     );
     assert_eq!(
-        lease_intent.load().await.expect("public URL mode loads"),
-        ManagedLeaseIntent::None
+        ingress_intent.load().await.expect("ingress intent loads"),
+        Some(
+            ployz_core::ingress::IngressConfiguration::try_new(
+                ployz_core::ingress::AutomaticHostnameConfiguration::Disabled,
+                ployz_core::ingress::PloyzDnsTargetIntent::Disabled,
+            )
+            .expect("valid ingress configuration")
+        )
     );
 
     runtime

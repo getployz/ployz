@@ -21,11 +21,14 @@ use ployzd::operations::log::{
 };
 use std::time::Duration;
 
+mod support;
+
 #[tokio::test]
 async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
     let nats =
         ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_a")]).await;
     let core_store = CoreStore::open_in_memory().await.expect("core store opens");
+    support::intent::initialize_disabled_ingress(&core_store).await;
     let machine_roster = MachineRosterStore::new(core_store.clone());
     machine_roster
         .replace_active_machine(&ActiveMachineState {
@@ -80,13 +83,13 @@ async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
 #[tokio::test]
 async fn intent_reader_gets_current_intent() {
     let nats = ployz_test_support::nats::TestNats::start().await;
+    let core_store = CoreStore::open_in_memory().await.expect("core store opens");
+    support::intent::initialize_disabled_ingress(&core_store).await;
     let _runtime = start_intent_service(
         nats.controller.clone(),
         machine_id("machine_a"),
         temp_namespace_intent().await,
-        ployzd::core_store::CoreStore::open_in_memory()
-            .await
-            .expect("core store opens"),
+        core_store,
         Duration::from_secs(30),
     )
     .await
@@ -110,6 +113,7 @@ async fn machine_reads_core_stamped_projection_with_one_staged_joiner() {
         ployz_test_support::nats::TestNats::start_with_machines(std::slice::from_ref(&machine))
             .await;
     let core_store = CoreStore::open_in_memory().await.expect("core store");
+    support::intent::initialize_disabled_ingress(&core_store).await;
     let repository = OperationRepository::open(core_store.clone(), nats.controller.clone());
     let raw_join_token = RawJoinToken::try_new("join_machine_a").expect("join token");
     let operation = operation_id("op_add_machine_a");
@@ -201,6 +205,7 @@ async fn intent_runtime_publishes_redeemable_pending_machine_joins() {
     let nats =
         ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_a")]).await;
     let core_store = CoreStore::open_in_memory().await.expect("core store opens");
+    support::intent::initialize_disabled_ingress(&core_store).await;
     let repository = OperationRepository::open(core_store.clone(), nats.controller.clone());
     let raw_join_token = RawJoinToken::try_new("join_pending_machine_a").expect("valid token");
     let join_token = IssuedJoinToken::new(
@@ -268,6 +273,7 @@ async fn intent_runtime_publishes_redeemable_pending_machine_joins() {
 async fn intent_reader_overlays_machine_lifecycle_evidence() {
     let nats = ployz_test_support::nats::TestNats::start().await;
     let core_store = CoreStore::open_in_memory().await.expect("core store opens");
+    support::intent::initialize_disabled_ingress(&core_store).await;
     let machine_roster = MachineRosterStore::new(core_store.clone());
     machine_roster
         .replace_active_machine(&ActiveMachineState {
@@ -321,10 +327,12 @@ async fn intent_reader_gets_namespace_intent_from_file() {
         .expect("serving target stores");
     namespace_intent
         .replace_route_binding(RouteBindingState {
+            id: route_binding_id("api.example.com"),
             namespace_id: ployz_test_support::ids::namespace_id("default"),
             target: route_target("api.example.com", 443),
             endpoint_port: ployz_core::ops::RoutePort::try_new(8080).expect("valid route port"),
             service_id: service_id("svc_api"),
+            origin: ployz_core::ingress::RouteBindingOrigin::Declared,
         })
         .await
         .expect("route binding stores");
@@ -336,13 +344,13 @@ async fn intent_reader_gets_namespace_intent_from_file() {
         })
         .await
         .expect("volume pin stores");
+    let core_store = CoreStore::open_in_memory().await.expect("core store opens");
+    support::intent::initialize_disabled_ingress(&core_store).await;
     let _runtime = start_intent_service(
         nats.controller.clone(),
         machine_id("machine_a"),
         namespace_intent,
-        ployzd::core_store::CoreStore::open_in_memory()
-            .await
-            .expect("core store opens"),
+        core_store,
         Duration::from_secs(30),
     )
     .await
@@ -394,16 +402,20 @@ async fn namespace_intent_store_persists_volume_pins() {
 async fn namespace_intent_store_commits_a_deploy_phase_atomically() {
     let namespace_intent = temp_namespace_intent().await;
     let route = RouteBindingState {
+        id: route_binding_id("api.example.com"),
         namespace_id: ployz_test_support::ids::namespace_id("default"),
         target: route_target("api.example.com", 443),
         endpoint_port: ployz_core::ops::RoutePort::try_new(8080).expect("valid route port"),
         service_id: service_id("svc_api"),
+        origin: ployz_core::ingress::RouteBindingOrigin::Declared,
     };
     let old_route = RouteBindingState {
+        id: route_binding_id("old.example.com"),
         namespace_id: ployz_test_support::ids::namespace_id("default"),
         target: route_target("old.example.com", 443),
         endpoint_port: ployz_core::ops::RoutePort::try_new(8080).expect("valid route port"),
         service_id: service_id("svc_api"),
+        origin: ployz_core::ingress::RouteBindingOrigin::Declared,
     };
     let serving = serving_target_entry("svc_api", "entry_api");
 
@@ -441,11 +453,15 @@ fn wireguard_public_key(value: &str) -> ployz_core::dataplane::WireGuardPublicKe
     ployz_core::dataplane::WireGuardPublicKey::try_new(value).expect("wireguard public key")
 }
 
-fn route_target(hostname: &str, port: u16) -> ployz_core::ops::RouteTarget {
+fn route_target(hostname: &str, _port: u16) -> ployz_core::ops::RouteTarget {
     ployz_core::ops::RouteTarget::new(
         ployz_core::ops::RouteHostname::try_new(hostname).expect("valid route hostname"),
-        ployz_core::ops::RoutePort::try_new(port).expect("valid route port"),
     )
+}
+
+fn route_binding_id(hostname: &str) -> ployz_core::ids::RouteBindingId {
+    ployz_core::ids::RouteBindingId::try_new(format!("route_{}", hostname.replace('.', "_")))
+        .expect("valid route binding id")
 }
 
 fn volume_name(value: &str) -> VolumeName {

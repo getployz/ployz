@@ -25,8 +25,6 @@ pub(crate) struct ComposeService {
     pub env_file: Option<ComposeEnvFile>,
     pub deploy: Option<ComposeDeploy>,
     pub stop_grace_period: Option<Value>,
-    #[serde(rename = "x-route")]
-    pub x_route: Option<ComposeRoutes>,
     #[serde(rename = "x-ports")]
     pub x_ports: Option<Value>,
     pub build: Option<Value>,
@@ -141,21 +139,4 @@ pub(crate) enum ComposeKnownVolumeType {
     Volume,
     Bind,
     Tmpfs,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-pub(crate) enum ComposeRoutes {
-    One(String),
-    Many(Vec<String>),
-}
-
-impl ComposeRoutes {
-    #[must_use]
-    pub(crate) fn into_shorthands(self) -> Vec<String> {
-        match self {
-            Self::One(shorthand) => vec![shorthand],
-            Self::Many(shorthands) => shorthands,
-        }
-    }
 }

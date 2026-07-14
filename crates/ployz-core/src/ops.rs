@@ -22,10 +22,12 @@ mod credential_grant;
 mod deploy;
 mod event_subjects;
 mod events;
+mod ingress_configure;
+mod ingress_refresh;
 mod machine_add;
 mod machine_lifecycle;
 mod machine_update;
-mod managed_lease;
+mod managed_dns_reconcile;
 mod namespace_remove;
 mod network_repair;
 mod projection;
@@ -38,7 +40,7 @@ mod volume_remove;
 pub use accessors::NextEventSequenceError;
 pub use cert::{
     CertOperationFailure, CertOperationFailureError, CertOperationState, CertRunningStage,
-    CertTransition, CertificateProvisionFailure,
+    CertTransition, CertificateProvisionFailure, CertificateProvisionWarning,
 };
 pub use core_replace::{CoreReplaceFailure, CoreReplaceOperationState, CoreReplaceTransition};
 pub use credential_grant::{
@@ -50,11 +52,19 @@ pub use deploy::{
     DeployCompletionOutcome, DeployEvidence, DeployFailureClass, DeployOperationFailure,
     DeployOperationState, DeployPhaseNumber, DeployPhaseNumberError, DeployPhaseOutcome,
     DeployRunningStage, DeployServiceResult, DeployTransition, HealthCheckFailure,
-    ManagedPublicUrlPending, ManagedPublicUrlPendingStage, PreStartHookFailure, RetainedArtifact,
-    RouteCutoverFailureReason, UnusableMachine, project_deploy_transition,
-    validate_fresh_deploy_evidence,
+    PreStartHookFailure, RetainedArtifact, RouteCutoverFailureReason, UnusableMachine,
+    project_deploy_transition, validate_fresh_deploy_evidence,
 };
 pub use events::{OperationEvent, OperationSubject, OperationSubjectRef};
+pub use ingress_configure::{
+    IngressConfigureFailure, IngressConfigureOperationState, IngressConfigureTransition,
+};
+pub use ingress_refresh::{
+    IngressRefreshCandidateEvidence, IngressRefreshCandidatePublication, IngressRefreshEvidence,
+    IngressRefreshExclusionReason, IngressRefreshFactsOutcome, IngressRefreshFailure,
+    IngressRefreshGatewayOutcome, IngressRefreshInvalidationEvidence, IngressRefreshOperationState,
+    IngressRefreshTransition,
+};
 pub use machine_add::{MachineAddOperationState, MachineAddOperationStateName};
 pub use machine_lifecycle::{
     MachineLifecycleFailure, MachineLifecycleOperationState, MachineLifecycleTransition,
@@ -63,9 +73,9 @@ pub use machine_update::{
     MachineSubstrateVersions, MachineUpdateFailure, MachineUpdateOperationState,
     MachineUpdateTransition,
 };
-pub use managed_lease::{
-    ManagedLeaseFailureClass, ManagedLeaseOperationFailure, ManagedLeaseOperationState,
-    ManagedLeaseSubject, ManagedLeaseTransition,
+pub use managed_dns_reconcile::{
+    ManagedDnsReconcileFailure, ManagedDnsReconcileFailureClass, ManagedDnsReconcileOperationState,
+    ManagedDnsReconcileSubject, ManagedDnsReconcileTransition, ManagedDnsWithdrawAuthorization,
 };
 pub use namespace_remove::{
     NamespaceRemoveFailure, NamespaceRemoveOperationState, NamespaceRemoveRunningStage,
@@ -110,7 +120,9 @@ pub enum OperationKind {
     CredentialGrant,
     NetworkRepair,
     ServiceRestart,
-    ManagedLease,
+    ManagedDnsReconcile,
+    IngressConfigure,
+    IngressRefresh,
     NamespaceRemove,
     VolumeRemove,
 }
@@ -189,10 +201,21 @@ pub enum OperationStatus {
         state: ServiceRestartOperationState,
         last_event_sequence: EventSequence,
     },
-    ManagedLease {
+    ManagedDnsReconcile {
         id: OperationId,
-        subject: ManagedLeaseSubject,
-        state: ManagedLeaseOperationState,
+        subject: ManagedDnsReconcileSubject,
+        state: ManagedDnsReconcileOperationState,
+        last_event_sequence: EventSequence,
+    },
+    IngressConfigure {
+        id: OperationId,
+        configuration: crate::ingress::IngressConfiguration,
+        state: IngressConfigureOperationState,
+        last_event_sequence: EventSequence,
+    },
+    IngressRefresh {
+        id: OperationId,
+        state: IngressRefreshOperationState,
         last_event_sequence: EventSequence,
     },
     NamespaceRemove {
@@ -397,15 +420,38 @@ impl OperationStatus {
     }
 
     #[must_use]
-    pub fn managed_lease_accepted(
+    pub fn managed_dns_reconcile_accepted(
         id: OperationId,
-        subject: ManagedLeaseSubject,
+        subject: ManagedDnsReconcileSubject,
         event_sequence: EventSequence,
     ) -> Self {
-        Self::ManagedLease {
+        Self::ManagedDnsReconcile {
             id,
             subject,
-            state: ManagedLeaseOperationState::Accepted,
+            state: ManagedDnsReconcileOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
+    pub fn ingress_refresh_accepted(id: OperationId, event_sequence: EventSequence) -> Self {
+        Self::IngressRefresh {
+            id,
+            state: IngressRefreshOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
+    pub fn ingress_configure_accepted(
+        id: OperationId,
+        configuration: crate::ingress::IngressConfiguration,
+        event_sequence: EventSequence,
+    ) -> Self {
+        Self::IngressConfigure {
+            id,
+            configuration,
+            state: IngressConfigureOperationState::Accepted,
             last_event_sequence: event_sequence,
         }
     }
@@ -422,7 +468,9 @@ impl OperationStatus {
             Self::CredentialGrant { state, .. } => state.is_terminal(),
             Self::NetworkRepair { state, .. } => state.is_terminal(),
             Self::ServiceRestart { state, .. } => state.is_terminal(),
-            Self::ManagedLease { state, .. } => state.is_terminal(),
+            Self::ManagedDnsReconcile { state, .. } => state.is_terminal(),
+            Self::IngressConfigure { state, .. } => state.is_terminal(),
+            Self::IngressRefresh { state, .. } => state.is_terminal(),
             Self::NamespaceRemove { state, .. } => state.is_terminal(),
             Self::VolumeRemove { state, .. } => state.is_terminal(),
         }
@@ -476,8 +524,16 @@ impl OperationStatus {
                 matches!(state, ServiceRestartOperationState::Completed),
                 matches!(state, ServiceRestartOperationState::Cancelled { .. }),
             ),
-            Self::ManagedLease { state, .. } => OperationOutcome::from_terminal(
-                matches!(state, ManagedLeaseOperationState::Completed),
+            Self::ManagedDnsReconcile { state, .. } => OperationOutcome::from_terminal(
+                matches!(state, ManagedDnsReconcileOperationState::Completed),
+                false,
+            ),
+            Self::IngressConfigure { state, .. } => OperationOutcome::from_terminal(
+                matches!(state, IngressConfigureOperationState::Completed),
+                false,
+            ),
+            Self::IngressRefresh { state, .. } => OperationOutcome::from_terminal(
+                matches!(state, IngressRefreshOperationState::Completed { .. }),
                 false,
             ),
             Self::NamespaceRemove { state, .. } => OperationOutcome::from_terminal(

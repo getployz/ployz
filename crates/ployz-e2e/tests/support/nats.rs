@@ -2,13 +2,13 @@
 //! [`ployz_test_support::nats::TestNats`] with the control-process config
 //! the e2e scenarios launch ployzd with.
 
-use ployz_core::cert::PublicUrlMode;
 use ployz_core::ids::MachineId;
 use ployzd::adapters::nats_authorization::SignalNatsReloadRunner;
 use ployzd::adapters::nats_server::NatsServerLaunch;
+use ployzd::certificate::AcmeIssuer;
 use ployzd::config::{ControlNatsAuthorizationConfig, ControlProcessConfig};
 use ployzd::core_store::CoreStore;
-use ployzd::intent::lease_intent::LeaseIntentStore;
+use ployzd::intent::ingress_intent::IngressIntentStore;
 use ployzd::roles::control::{ControlProcessError, RunningControlProcess};
 
 pub struct TestNats {
@@ -70,14 +70,47 @@ impl TestNats {
         let store = CoreStore::open(config.core_db_path.clone())
             .await
             .expect("test core store opens");
-        LeaseIntentStore::new(store)
-            .set_mode_if_unconfigured(PublicUrlMode::None)
+        IngressIntentStore::new(store)
+            .replace(
+                ployz_core::ingress::IngressConfiguration::try_new(
+                    ployz_core::ingress::AutomaticHostnameConfiguration::Disabled,
+                    ployz_core::ingress::PloyzDnsTargetIntent::Disabled,
+                )
+                .expect("valid ingress configuration"),
+            )
             .await
-            .expect("test public URL intent initializes");
+            .expect("test ingress intent initializes");
         ployzd::roles::control::start_control_process_with_client_and_reload(
             self.controller_client(),
             config,
             SignalNatsReloadRunner::new(self.connected.server.server_pid()),
+        )
+        .await
+    }
+
+    pub async fn start_control_with_test_issuer(
+        &self,
+        config: &ControlProcessConfig,
+        issuer: std::sync::Arc<dyn AcmeIssuer>,
+    ) -> Result<RunningControlProcess, ControlProcessError> {
+        let store = CoreStore::open(config.core_db_path.clone())
+            .await
+            .expect("test core store opens");
+        IngressIntentStore::new(store)
+            .replace(
+                ployz_core::ingress::IngressConfiguration::try_new(
+                    ployz_core::ingress::AutomaticHostnameConfiguration::Disabled,
+                    ployz_core::ingress::PloyzDnsTargetIntent::Disabled,
+                )
+                .expect("valid ingress configuration"),
+            )
+            .await
+            .expect("test ingress intent initializes");
+        ployzd::roles::control::start_control_process_with_client_and_test_issuer(
+            self.controller_client(),
+            config,
+            SignalNatsReloadRunner::new(self.connected.server.server_pid()),
+            issuer,
         )
         .await
     }

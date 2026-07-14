@@ -6,16 +6,13 @@
 //! `machine_add_mint.rs`; the shared fixture lives in `support::control`.
 
 use futures_util::StreamExt;
-use ployz_core::cert::{
-    LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, ManagedLeaseIntent, ManagedLeaseName,
-    ManagedLeaseRecord, PublicUrlMode,
-};
 use ployz_core::deploy::{
     DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageReference,
     RegistryCredential, ReplicaCount, VolumeName,
 };
-use ployz_core::ids::MachineId;
+use ployz_core::ids::{MachineId, RouteBindingId};
 use ployz_core::image::OciDigest;
+use ployz_core::ingress::RouteBindingOrigin;
 use ployz_core::install::{InstallArtifactVersion, MachineBootstrapUrl};
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::{
@@ -40,16 +37,16 @@ use ployz_nats::service_runtime::{
     NatsServiceResponse, RunningNatsService, request_json, start_nats_service,
 };
 use ployz_sdk_types::{
-    DeployReserveRequest, DeploySubmitRequest, InitFirstMachineActivateRequest, MachineAddError,
-    MachineAddRequest, MachineInspectRequest, MachineJoinReportOutcome, MachineJoinReportRequest,
-    MachineListRequest, MachineTestimony, MachineUpdateError, MachineUpdateRequest,
-    OpsWatchRequest, RuntimeDerivedCollectionStatus, RuntimePublicUrl, RuntimeSnapshot,
-    RuntimeSnapshotRequest, ServiceInspectRequest, ServiceListRequest, VolumeListRequest,
-    VolumeStatus,
+    DeployReserveRequest, DeploySubmitRequest, MachineAddError, MachineAddRequest,
+    MachineInspectRequest, MachineJoinReportOutcome, MachineJoinReportRequest, MachineListRequest,
+    MachineTestimony, MachineUpdateError, MachineUpdateRequest, OpsWatchRequest,
+    RuntimeDerivedCollectionStatus, RuntimePloyzDnsTargetAllocation,
+    RuntimePloyzDnsTargetPublication, RuntimeSnapshot, RuntimeSnapshotRequest,
+    ServiceInspectRequest, ServiceListRequest, VolumeListRequest, VolumeStatus,
 };
 use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::certificate::task::{CertificateRenewalAttempt, CertificateRenewalOutcome};
-use ployzd::intent::lease_intent::LeaseIntentStore;
+use ployzd::certificate::{AcmeIssueContext, AcmeIssuer, AcmeIssuerError, IssuedCertificate};
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use ployzd::lease::LeaseWorkerUrl;
@@ -126,78 +123,6 @@ async fn control_runtime_does_not_mutate_machine_state_on_startup() {
             .is_empty()
     );
 
-    runtime
-        .shutdown()
-        .await
-        .expect("control runtime shuts down");
-}
-
-#[tokio::test]
-async fn first_machine_reactivation_preserves_configured_public_url_mode() {
-    let nats = TestNats::start().await;
-    let config = nats.control_config();
-    let core_store = ployzd::core_store::CoreStore::open(config.core_db_path.clone())
-        .await
-        .expect("open core store");
-    let machine_roster = MachineRosterStore::new(core_store.clone());
-    let lease_intent = LeaseIntentStore::new(core_store);
-    machine_roster
-        .replace_active_machine(&active_machine("core_1"))
-        .await
-        .expect("active first machine stores");
-    lease_intent
-        .set_mode(PublicUrlMode::None)
-        .await
-        .expect("initial public URL mode stores");
-    let runtime = nats.start_control(&config).await;
-
-    nats.api()
-        .init_first_machine_activate(&InitFirstMachineActivateRequest {
-            machine_id: machine_id("core_1"),
-            roles: InstallRolePolicy::install_all(),
-            public_url_mode: PublicUrlMode::Auto,
-        })
-        .await
-        .expect("first-machine reactivation succeeds");
-
-    assert_eq!(
-        lease_intent.load().await.expect("public URL mode loads"),
-        ManagedLeaseIntent::None
-    );
-    runtime
-        .shutdown()
-        .await
-        .expect("control runtime shuts down");
-}
-
-#[tokio::test]
-async fn first_machine_reactivation_heals_missing_public_url_mode() {
-    let nats = TestNats::start().await;
-    let config = nats.control_config();
-    let core_store = ployzd::core_store::CoreStore::open(config.core_db_path.clone())
-        .await
-        .expect("open core store");
-    let machine_roster = MachineRosterStore::new(core_store.clone());
-    let lease_intent = LeaseIntentStore::new(core_store);
-    machine_roster
-        .replace_active_machine(&active_machine("core_1"))
-        .await
-        .expect("active first machine stores");
-    let runtime = nats.start_control(&config).await;
-
-    nats.api()
-        .init_first_machine_activate(&InitFirstMachineActivateRequest {
-            machine_id: machine_id("core_1"),
-            roles: InstallRolePolicy::install_all(),
-            public_url_mode: PublicUrlMode::None,
-        })
-        .await
-        .expect("interrupted first-machine activation heals");
-
-    assert_eq!(
-        lease_intent.load().await.expect("public URL mode loads"),
-        ManagedLeaseIntent::None
-    );
     runtime
         .shutdown()
         .await
@@ -464,10 +389,12 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
         .expect("serving target entry stores");
     namespace_intent
         .replace_route_binding(RouteBindingState {
+            id: RouteBindingId::try_new("route_api").expect("valid route binding id"),
             namespace_id: namespace_id("default"),
-            target: RouteTarget::new(route_hostname("api.example.com"), route_port(443)),
+            target: RouteTarget::new(route_hostname("api.example.com")),
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
+            origin: RouteBindingOrigin::Declared,
         })
         .await
         .expect("route binding stores");
@@ -510,7 +437,18 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
     );
     assert_eq!(snapshot.releases.len(), 1);
     assert_eq!(snapshot.instances.len(), 1);
-    assert_eq!(snapshot.public_url, RuntimePublicUrl::Unconfigured);
+    assert_eq!(
+        snapshot.automatic_hostname_configuration,
+        ployz_core::ingress::AutomaticHostnameConfiguration::Disabled
+    );
+    assert_eq!(
+        snapshot.ployz_dns_target.allocation,
+        RuntimePloyzDnsTargetAllocation::Unacquired
+    );
+    assert_eq!(
+        snapshot.ployz_dns_target.publication,
+        RuntimePloyzDnsTargetPublication::Unpublished
+    );
     assert_eq!(
         snapshot.projection_sources.revisions.status,
         RuntimeDerivedCollectionStatus::Complete
@@ -525,14 +463,7 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
 #[tokio::test]
 async fn secured_operator_receives_passive_runtime_snapshot_replacements() {
     let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
-    let config = nats.control_config().with_lease_worker_url(
-        LeaseWorkerUrl::try_new("http://127.0.0.1:9").expect("lease worker URL"),
-    );
-    let lease_intent = LeaseIntentStore::new(
-        ployzd::core_store::CoreStore::open(config.core_db_path.clone())
-            .await
-            .expect("open core store"),
-    );
+    let config = nats.control_config();
     let machine_roster = machine_roster(&config).await;
     let mut snapshots = nats
         .connected
@@ -552,7 +483,10 @@ async fn secured_operator_receives_passive_runtime_snapshot_replacements() {
     })
     .await;
     assert!(initial.containers.is_empty());
-    assert_eq!(initial.public_url, RuntimePublicUrl::Unconfigured);
+    assert_eq!(
+        initial.automatic_hostname_configuration,
+        ployz_core::ingress::AutomaticHostnameConfiguration::Disabled
+    );
     let seeded = request_json::<_, RuntimeSnapshot>(
         &nats.connected.user,
         RUNTIME_SNAPSHOT_SEED.to_owned(),
@@ -561,38 +495,17 @@ async fn secured_operator_receives_passive_runtime_snapshot_replacements() {
     )
     .await
     .expect("operator seeds from passive runtime projection");
-    assert_eq!(seeded, initial);
+    assert!(seeded.machines.is_empty());
+    assert_eq!(
+        seeded.automatic_hostname_configuration,
+        initial.automatic_hostname_configuration
+    );
+    assert!(seeded.updated_at_unix_seconds >= initial.updated_at_unix_seconds);
     let health = runtime.runtime_projection_health();
     assert_eq!(health.projection.consecutive_failures, 0);
     assert_eq!(health.publisher.consecutive_failures, 0);
     assert_eq!(health.seed.endpoint_tasks_started, 1);
     assert_eq!(health.seed.endpoint_tasks_finished, 0);
-
-    lease_intent
-        .set_mode(ployz_core::cert::PublicUrlMode::Auto)
-        .await
-        .expect("managed public URL mode configures");
-    lease_intent
-        .store_lease(managed_lease_record(), None)
-        .await
-        .expect("managed lease stores");
-    nats.connected
-        .controller
-        .publish(INTENT_CHANGED, Vec::new().into())
-        .await
-        .expect("intent invalidation publishes");
-    nats.connected
-        .controller
-        .flush()
-        .await
-        .expect("intent flushes");
-    next_runtime_snapshot(&mut snapshots, "managed public URL", |snapshot| {
-        snapshot.public_url
-            == RuntimePublicUrl::Auto {
-                domain: Some("brisk-river-x7f3.up.ployz.app".to_owned()),
-            }
-    })
-    .await;
 
     machine_roster
         .replace_active_machine(&active_machine("machine_a"))
@@ -676,16 +589,6 @@ async fn next_runtime_snapshot(
     })
     .await
     .unwrap_or_else(|_| panic!("{expected} runtime snapshot arrives"))
-}
-
-fn managed_lease_record() -> ManagedLeaseRecord {
-    ManagedLeaseRecord::try_new(
-        ManagedLeaseName::try_new("brisk-river-x7f3").expect("lease name"),
-        LeaseBearerToken::try_new("lease-token").expect("lease token"),
-        LeaseIssuedAt::try_new(1).expect("issued at"),
-        LeaseExpiresAt::try_new(4_102_444_800).expect("expires at"),
-    )
-    .expect("managed lease record")
 }
 
 #[tokio::test]
@@ -1020,15 +923,15 @@ async fn control_runtime_records_machine_update_without_mutating_roster_intent()
 
 #[tokio::test]
 async fn control_runtime_routed_deploy_serves_through_gateway() {
-    let nats =
-        TestNats::start_with_machines(&[machine_id("machine_a"), machine_id("machine_gateway")])
-            .await;
+    let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
     let config = nats
         .control_config()
         .with_deploy_machines(vec![machine_id("machine_a")])
         .with_deploy_step_timeout(Duration::from_secs(2));
     let machine_roster = machine_roster(&config).await;
-    let runtime = nats.start_control(&config).await;
+    let runtime = nats
+        .start_control_with_test_issuer(&config, std::sync::Arc::new(FixtureAcmeIssuer))
+        .await;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     machine_roster
         .replace_active_machine(&active_machine("machine_a"))
@@ -1045,12 +948,11 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
     .await
     .expect("machine runtime starts");
     wait_for_dataplane_projection(&nats, &machine_id("machine_a")).await;
-    let gateway_client = nats.machine_client(&machine_id("machine_gateway")).await;
     let gateway = start_gateway_process_with_client(
-        gateway_client,
+        machine_client.clone(),
         Duration::from_millis(10),
         SocketAddr::from(([127, 0, 0, 1], 0)),
-        machine_id("machine_gateway"),
+        machine_id("machine_a"),
         None,
     )
     .await
@@ -1061,7 +963,7 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
     let request = reserved_deploy_request(
         &api,
         "idem_routed",
-        deploy_target_with_route("svc_api", gateway.listen_addr().port(), upstream.port()),
+        deploy_target_with_route("svc_api", upstream.port()),
     )
     .await;
     let accepted = api
@@ -1112,7 +1014,7 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         .await
         .expect("connect gateway");
     client
-        .write_all(b"GET /smoke HTTP/1.1\r\nHost: api.example.com\r\nConnection: close\r\n\r\n")
+        .write_all(b"GET /smoke HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
         .await
         .expect("write gateway request");
     let mut response = String::new();
@@ -1121,11 +1023,8 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         .await
         .expect("read gateway response");
 
-    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
-    assert!(response.ends_with("\r\n\r\nsmoke"));
-    let upstream_request = upstream.request().await;
-    assert!(upstream_request.starts_with("GET /smoke HTTP/1.1\r\n"));
-    assert!(upstream_request.contains("\r\nHost: api.example.com\r\n"));
+    assert!(response.starts_with("HTTP/1.1 301 Moved Permanently\r\n"));
+    assert!(response.contains("location: https://localhost/smoke\r\n"));
 
     gateway.shutdown().await.expect("gateway shuts down");
     machine_runtime
@@ -1136,6 +1035,41 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         .shutdown()
         .await
         .expect("control runtime shuts down");
+}
+
+struct FixtureAcmeIssuer;
+
+#[async_trait::async_trait]
+impl AcmeIssuer for FixtureAcmeIssuer {
+    async fn issue_http01(
+        &self,
+        context: &AcmeIssueContext,
+        hostname: &ployz_core::ops::RouteHostname,
+    ) -> Result<IssuedCertificate, AcmeIssuerError> {
+        let challenge = ployz_core::cert::AcmeHttp01Challenge::try_new(
+            hostname.clone(),
+            ployz_core::cert::AcmeChallengeToken::try_new("control-runtime-token")
+                .expect("challenge token"),
+            ployz_core::cert::AcmeChallengeValue::try_new(
+                "control-runtime-token.fixture-thumbprint",
+            )
+            .expect("challenge value"),
+            ployz_core::cert::AcmeChallengeTtlSeconds::try_new(900).expect("challenge ttl"),
+        )
+        .expect("challenge");
+        context.publish_challenge(challenge).await?;
+        context.validation_started().await?;
+        let rcgen::CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed([hostname.as_str().to_owned()]).map_err(
+                |error| AcmeIssuerError::Validation {
+                    message: error.to_string(),
+                },
+            )?;
+        Ok(IssuedCertificate {
+            certificate_chain_pem: cert.pem(),
+            private_key_pem: signing_key.serialize_pem(),
+        })
+    }
 }
 
 fn image(value: &str) -> ImageReference {
@@ -1384,19 +1318,14 @@ fn deploy_target(service_id: &str) -> DeployRequest {
     }
 }
 
-fn deploy_target_with_route(
-    service_id: &str,
-    gateway_port: u16,
-    endpoint_port: u16,
-) -> DeployRequest {
+fn deploy_target_with_route(service_id: &str, endpoint_port: u16) -> DeployRequest {
     let mut target = deploy_target(service_id);
     let [service] = target.services.as_mut_slice() else {
         panic!("deploy target fixture has one service");
     };
     service.routes = vec![DeployRoute {
         target: DeployRouteTarget::Hostname {
-            hostname: route_hostname("api.example.com"),
-            port: route_port(gateway_port),
+            hostname: route_hostname("localhost"),
         },
         endpoint_port: route_port(endpoint_port),
     }];

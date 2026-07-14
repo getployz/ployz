@@ -27,8 +27,7 @@
         {
           "target": {
             "kind": "hostname",
-            "hostname": "app.example.com",
-            "port": 80
+            "hostname": "app.example.com"
           },
           "endpoint_port": 8080
         }

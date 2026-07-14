@@ -3,8 +3,8 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 
 use clap::Args;
-use ployz_core::cert::PublicUrlMode;
 use ployz_core::ids::{MachineId, OperationId, SubjectTokenError};
+use ployz_core::ingress::{AutomaticHostnameConfiguration, PloyzDnsTargetIntent};
 use ployz_core::install::{
     HostPortAssurance, InstallArtifactVersion, MachineJoinBundle, MachineJoinClusterName,
 };
@@ -28,7 +28,7 @@ use crate::bootstrap_command::{
     DEFAULT_RELEASE_CHANNEL, JoinBootstrapCommand,
 };
 use crate::client_ids::generate_client_machine_update_id;
-use crate::commands::init::parse_public_url_mode;
+use crate::commands::ingress::{AutomaticHostnamesCli, DnsTargetCli};
 use crate::commands::role_policy::RolePolicyCli;
 use crate::commands::{PloyzctlCliError, invalid_value};
 use crate::local_release::LocalReleaseBundle;
@@ -126,7 +126,8 @@ pub struct MachineInitCommand {
     /// `--public-ip` override for the first machine's reachable address. `None`
     /// lets the machine self-discover it at install (the common cloud-VM case).
     pub public_ip: Option<IpAddr>,
-    pub public_url_mode: PublicUrlMode,
+    pub automatic_hostname_configuration: AutomaticHostnameConfiguration,
+    pub ployz_dns_target: PloyzDnsTargetIntent,
     pub host_port_assurance: HostPortAssurance,
 }
 
@@ -597,7 +598,8 @@ pub(crate) fn machine_init_command(
         installer_script,
         local_release,
         public_ip,
-        public_url,
+        dns_target,
+        automatic_hostnames,
         host_ports_assured_externally,
     } = parsed;
 
@@ -650,6 +652,13 @@ pub(crate) fn machine_init_command(
         None => None,
     };
 
+    let ingress_configuration = ployz_core::ingress::IngressConfiguration::try_new(
+        automatic_hostnames.configuration(),
+        dns_target.intent(),
+    )
+    .map_err(|error| invalid_value("ingress configuration", error))?;
+    let (automatic_hostname_configuration, ployz_dns_target) = ingress_configuration.into_parts();
+
     Ok(MachineInitCommand {
         target,
         identity_override,
@@ -662,7 +671,8 @@ pub(crate) fn machine_init_command(
         installer_script: validate_installer_script(installer_script)?,
         local_release: validate_local_release(local_release)?,
         public_ip,
-        public_url_mode: parse_public_url_mode(&public_url)?,
+        automatic_hostname_configuration,
+        ployz_dns_target,
         host_port_assurance: host_port_assurance(host_ports_assured_externally),
     })
 }
@@ -721,9 +731,14 @@ pub(crate) struct MachineInitCli {
     /// Override the first machine's public IP instead of self-discovering it.
     #[arg(long)]
     public_ip: Option<String>,
-    /// Choose managed public URLs, bring your own URLs, or no public URLs.
-    #[arg(long, default_value = "auto")]
-    public_url: String,
+    #[arg(long, default_value = "enabled")]
+    dns_target: DnsTargetCli,
+    #[arg(
+        long,
+        default_value = "ployz",
+        value_name = "disabled|ployz|custom:<suffix>"
+    )]
+    automatic_hostnames: AutomaticHostnamesCli,
     #[arg(long)]
     host_ports_assured_externally: bool,
 }

@@ -9,18 +9,27 @@ use ployz_core::cert::{
     CertificateChallengeStatusResponse, CustomCertBundle, GatewayCertificateRpcError,
     custom_bundle_digest,
 };
+use ployz_core::ids::RouteBindingId;
+use ployz_core::ingress::{CertificateOwner, RouteBindingOrigin};
 use ployz_core::install::{AbsoluteInstallPath, InstallSha256Digest};
 use ployz_core::machine_rpc::MachineRpcResponse;
 use ployz_core::ops::RouteTarget;
+use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation};
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
-use ployz_nats::service_runtime::request_json;
+use ployz_nats::service_runtime::{NatsServiceResponse, request_json, start_nats_service};
 use ployz_nats::services::EndpointExecution;
-use ployz_test_support::ids::{cert_id, machine_id, operation_id, route_hostname, route_port};
+use ployz_test_support::ids::{cert_id, machine_id, operation_id, route_hostname};
+use ployzd::operations::deploy::MachineRuntimeUnavailableReason;
+use ployzd::roles::gateway::client::{
+    GatewayStatusGetOk, GatewayStatusGetResponse, NatsGatewayStatusReader,
+};
 use ployzd::roles::gateway::pingora::PingoraRouteRegistry;
 use ployzd::roles::gateway::process::start_gateway_certificate_service;
-use ployzd::roles::gateway::projection::{GatewayProjectedRoute, GatewayProjection};
+use ployzd::roles::gateway::projection::{
+    GatewayCertificateBundle, GatewayProjectedRoute, GatewayProjection,
+};
 use ployzd::roles::gateway::source::{GatewayCertificateStore, GatewayCertificateStoreError};
-use ployzd::service_catalog::{DaemonServiceCatalog, gateway_role_service};
+use ployzd::service_catalog::{DaemonServiceCatalog, gateway_role_service, machine_endpoint_spec};
 use rcgen::{CertificateParams, KeyPair};
 use time::OffsetDateTime;
 
@@ -49,8 +58,28 @@ fn gateway_certificate_catalog_pins_names_subjects_and_execution() {
                 EndpointExecution::MachineRpc,
             ),
             (
+                "machine.certificate.artifact.remove",
+                "plz.v1.rpc.machine.command.machine_7.certificate.artifact.remove",
+                EndpointExecution::MachineRpc,
+            ),
+            (
+                "machine.certificate.challenge.apply",
+                "plz.v1.rpc.machine.command.machine_7.certificate.challenge.apply",
+                EndpointExecution::MachineRpc,
+            ),
+            (
+                "machine.certificate.challenge.remove",
+                "plz.v1.rpc.machine.command.machine_7.certificate.challenge.remove",
+                EndpointExecution::MachineRpc,
+            ),
+            (
                 "machine.certificate.challenge.status",
                 "plz.v1.rpc.machine.query.machine_7.certificate.challenge.status",
+                EndpointExecution::MachineRpc,
+            ),
+            (
+                "machine.gateway.status.get",
+                "plz.v1.rpc.machine.query.machine_7.gateway.status.get",
                 EndpointExecution::MachineRpc,
             ),
         ]
@@ -326,16 +355,21 @@ fn expired_stored_certificate_keeps_serving_with_its_renewal_challenge() {
     let registry = PingoraRouteRegistry::new();
     registry
         .replace_projection(&GatewayProjection {
-            managed_cert_bundle: None,
-            custom_cert_bundles: vec![bundle],
+            certificate_bundles: vec![GatewayCertificateBundle {
+                owner: route_owner(),
+                bundle,
+            }],
             challenges: vec![challenge.clone()],
             routes: vec![GatewayProjectedRoute {
-                target: RouteTarget::new(route_hostname("app.example.com"), route_port(443)),
+                id: route_binding_id(),
+                origin: RouteBindingOrigin::Declared,
+                target: RouteTarget::new(route_hostname("app.example.com")),
                 upstreams: Vec::new(),
                 unroutable_containers: Vec::new(),
             }],
         })
         .expect("lapsed TLS and renewal challenge apply together");
+    registry.apply_challenge(&challenge);
 
     assert_eq!(
         (
@@ -381,6 +415,85 @@ async fn artifact_push_endpoint_returns_typed_machine_ack() {
                 && ok.cert_id == cert_id("cert_app_example_com")
                 && ok.digest == expected_digest
     ));
+    service.shutdown().await.expect("service shutdown");
+}
+
+#[tokio::test]
+async fn gateway_status_endpoint_reads_fresh_process_state() {
+    let nats =
+        ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_7")]).await;
+    let state = tempfile::tempdir().expect("state directory");
+    let service = start_gateway_certificate_service(
+        nats.machine_client(&machine_id("machine_7")).await,
+        machine_id("machine_7"),
+        GatewayCertificateStore::new(state.path().to_path_buf()),
+        PingoraRouteRegistry::new(),
+    )
+    .await
+    .expect("gateway service");
+    let reader = NatsGatewayStatusReader::new(nats.controller.clone())
+        .with_request_timeout(Duration::from_secs(1));
+
+    assert_eq!(
+        reader
+            .read(&machine_id("machine_7"))
+            .await
+            .expect("gateway status"),
+        GatewayStatusObservation {
+            machine_id: machine_id("machine_7"),
+            listen_addr: "0.0.0.0:0".parse().expect("listen address"),
+            serving: GatewayServingStatus::Unavailable,
+            route_count: 0,
+        }
+    );
+    service.shutdown().await.expect("service shutdown");
+}
+
+#[tokio::test]
+async fn gateway_status_client_rejects_wrong_machine_response() {
+    let nats = ployz_test_support::nats::TestNats::start_with_machines(&[
+        machine_id("machine_a"),
+        machine_id("machine_b"),
+    ])
+    .await;
+    let requested = machine_id("machine_a");
+    let mut service = start_nats_service(
+        nats.machine_client(&requested).await,
+        &gateway_role_service(&requested),
+    )
+    .await
+    .expect("gateway service");
+    service
+        .bind_endpoint(
+            &machine_endpoint_spec(&requested, MachineServiceEndpoint::GatewayStatusGet),
+            |_request| async {
+                NatsServiceResponse::json_ok(&GatewayStatusGetResponse::Ok(GatewayStatusGetOk {
+                    observation: GatewayStatusObservation {
+                        machine_id: machine_id("machine_b"),
+                        listen_addr: "192.0.2.8:80".parse().expect("listen address"),
+                        serving: GatewayServingStatus::Current,
+                        route_count: 1,
+                    },
+                }))
+            },
+        )
+        .await
+        .expect("bind status endpoint");
+    let reader = NatsGatewayStatusReader::new(nats.controller.clone())
+        .with_request_timeout(Duration::from_secs(1));
+
+    let error = reader
+        .read(&requested)
+        .await
+        .expect_err("wrong machine response");
+
+    assert_eq!(error.machine_id, requested);
+    assert_eq!(
+        error.reason,
+        MachineRuntimeUnavailableReason::WrongResponder {
+            actual_machine_id: machine_id("machine_b"),
+        }
+    );
     service.shutdown().await.expect("service shutdown");
 }
 
@@ -442,14 +555,7 @@ async fn challenge_status_endpoint_reports_only_applied_registry_snapshot() {
         challenge_status(&nats.controller, applied_challenge.clone()).await,
         CertificateChallengeApplicationStatus::NotApplied
     );
-    registry
-        .replace_projection(&GatewayProjection {
-            managed_cert_bundle: None,
-            custom_cert_bundles: Vec::new(),
-            challenges: vec![applied_challenge.clone()],
-            routes: Vec::new(),
-        })
-        .expect("apply challenge projection");
+    registry.apply_challenge(&applied_challenge);
     assert_eq!(
         challenge_status(&nats.controller, applied_challenge).await,
         CertificateChallengeApplicationStatus::Applied
@@ -503,6 +609,16 @@ fn artifact_request(hostname: &str, core_path: &Path) -> CertificateArtifactPush
         NOT_BEFORE,
         NOT_AFTER,
     )
+}
+
+fn route_binding_id() -> RouteBindingId {
+    RouteBindingId::try_new("route_app").expect("valid route binding id")
+}
+
+fn route_owner() -> CertificateOwner {
+    CertificateOwner::RouteBinding {
+        route_binding_id: route_binding_id(),
+    }
 }
 
 fn request_from_material(

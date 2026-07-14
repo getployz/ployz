@@ -9,7 +9,7 @@ use ployz_core::ops::{
     DeployPhaseOutcome, DeployRunningStage, DeployServiceResult, DeployTransition, FailureMessage,
     PreStartHookFailure, RouteHostname, RouteTarget,
 };
-use ployz_core::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
+use ployz_core::state::{ServingTargetEntry, VolumePinState};
 use ployz_test_support::ids::{failure_message, namespace_id};
 use ployzd::operations::deploy::{
     CertificateProvisioner, DeployCleanupResult, DeployExecutionError, DeployExecutionInput,
@@ -827,7 +827,6 @@ async fn empty_deploy_removes_running_namespace_containers() {
         namespace_state.route_removals,
         vec![RouteTarget::new(
             RouteHostname::try_new("api.example.com").expect("valid route hostname"),
-            route_port(443),
         )]
     );
     assert!(runtime.requests.is_empty());
@@ -1273,14 +1272,16 @@ async fn custom_https_deploy_ensures_certificate_before_route_commit() {
     .await
     .expect("routed deploy succeeds");
 
+    let [route] = namespace_state.route_requests.as_slice() else {
+        panic!("one route is committed");
+    };
+    assert_eq!(route.namespace_id, namespace_id("default"));
+    assert_eq!(route.target, route_target("api.example.com", 443));
+    assert_eq!(route.endpoint_port, route_port(8080));
+    assert_eq!(route.service_id, service_id("svc_api"));
     assert_eq!(
-        namespace_state.route_requests,
-        vec![RouteBindingState {
-            namespace_id: namespace_id("default"),
-            target: route_target("api.example.com", 443),
-            endpoint_port: route_port(8080),
-            service_id: service_id("svc_api"),
-        }]
+        route.origin,
+        ployz_core::ingress::RouteBindingOrigin::Declared
     );
     assert_eq!(namespace_state.serving_requests.len(), 1);
     assert_eq!(
@@ -1413,15 +1414,16 @@ async fn custom_https_certificate_failure_leaves_route_uncommitted() {
 }
 
 #[tokio::test]
-async fn managed_https_and_plain_http_routes_skip_custom_certificate_provisioning() {
+async fn ployz_automatic_route_synchronizes_wildcard_before_commit() {
     let mut recorder = RecordingOperations::default();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
     let mut health = RecordingHealth::healthy();
     let mut certificates = RecordingCertificates::successful();
-    let mut namespace_state = RecordingNamespaceState::stored();
+    let mut namespace_state =
+        RecordingNamespaceState::requiring_certificate_ready(certificates.ployz_readiness());
 
     execute_deploy(
-        managed_https_and_custom_http_deploy_command(),
+        ployz_automatic_deploy_command(),
         DeployExecutionPorts {
             recorder: &mut recorder,
             machine_runtime: &mut runtime,
@@ -1433,8 +1435,42 @@ async fn managed_https_and_plain_http_routes_skip_custom_certificate_provisionin
     .await
     .expect("managed HTTPS and plain HTTP routes deploy");
 
-    assert!(certificates.requests.is_empty());
-    assert_eq!(namespace_state.route_requests.len(), 2);
+    assert_eq!(certificates.ployz_wildcard_requests, 1);
+    let [target_request] = certificates.ployz_target_requests.as_slice() else {
+        panic!("expected one Ployz target request");
+    };
+    assert_eq!(target_request.len(), 1);
+    assert_eq!(namespace_state.route_requests.len(), 1);
+}
+
+#[tokio::test]
+async fn ployz_wildcard_sync_failure_leaves_automatic_binding_unattached() {
+    let failure = CertificateProvisionFailure::GatewayArtifactPush {
+        machine_id: machine_id("gateway_a"),
+        message: FailureMessage::try_new("wildcard sync failed").expect("failure message"),
+    };
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
+    let mut health = RecordingHealth::healthy();
+    let mut certificates = RecordingCertificates::failing(failure);
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        ployz_automatic_deploy_command(),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut certificates,
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect_err("wildcard synchronization failure fails deploy");
+
+    assert_eq!(certificates.ployz_wildcard_requests, 1);
+    assert!(namespace_state.route_requests.is_empty());
+    assert!(namespace_state.serving_requests.is_empty());
 }
 
 #[tokio::test]

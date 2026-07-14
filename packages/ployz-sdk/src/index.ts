@@ -107,7 +107,8 @@ import type {
   OpsListResult,
   OpsStatusError,
   OpsWatchError,
-  PublicUrlMode,
+  AutomaticHostnameConfiguration,
+  PloyzDnsTargetIntent,
   RuntimeSnapshotError,
   RuntimeSnapshot,
   RuntimeSnapshotRequest,
@@ -170,8 +171,8 @@ export interface PloyzMachineUpdateInput {
 export interface PloyzFirstMachineActivateInput {
   machineId: string;
   roles: InstallRolePolicy;
-  /** Public-URL choice recorded at init; omitted means the daemon default, "auto". */
-  publicUrlMode?: PublicUrlMode;
+  automaticHostnameConfiguration?: AutomaticHostnameConfiguration;
+  ployzDnsTarget?: PloyzDnsTargetIntent;
 }
 
 export interface PloyzMachineJoinRedeemInput {
@@ -414,7 +415,8 @@ export function initFirstMachineActivateRequest(
   return {
     machine_id: machineId(input.machineId),
     roles: { gateway: input.roles.gateway },
-    public_url_mode: input.publicUrlMode ?? "auto",
+    automatic_hostname_configuration: input.automaticHostnameConfiguration ?? { mode: "ployz" },
+    ployz_dns_target: input.ployzDnsTarget ?? "enabled",
   };
 }
 

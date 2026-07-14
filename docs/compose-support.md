@@ -28,7 +28,7 @@ Supported and translated fields become a Ployz deploy request. Unsupported and u
 | `services.*.restart` | Translated | Maps to Docker restart policy. |
 | `services.*.depends_on` | Translated | Short form and `service_started` map to `started`; `service_healthy` maps to `healthy` and requires the target service to define an executable healthcheck. `service_completed_successfully` is rejected. |
 | `services.*.pre_start` | Translated | Runs one retry-safe hook before new containers for that service. Failed hook containers are retained as operation evidence. |
-| `services.*.x-route` | Translated | Ployz extension for route bindings; Compose `ports` do not imply routes. |
+| `services.*.x-ports` | Translated | `PORT[/https]` uses the service name as the automatic hostname label; `auto:PREFIX:PORT[/https]` selects a label; `HOST:PORT[/https]` declares a hostname. |
 | `services.*.build` | Unsupported (planned) | build images before deploy |
 | `services.*.cgroup_parent` | Unsupported (unsupported) | cgroup parent is not part of the deploy model |
 | `configs`, `services.*.configs` | Unsupported (planned) | configs are not deployed yet |
@@ -40,14 +40,14 @@ Supported and translated fields become a Ployz deploy request. Unsupported and u
 | `services.*.devices` | Unsupported (unsupported) | host capability controls are not deployed yet |
 | `services.*.dns` | Unsupported (unsupported) | custom DNS settings are not deployed yet |
 | `services.*.dns_search` | Unsupported (unsupported) | custom DNS settings are not deployed yet |
-| `services.*.expose` | Unsupported (unsupported) | use x-route for ingress in this slice |
+| `services.*.expose` | Unsupported (unsupported) | use x-ports for ingress in this slice |
 | `services.*.extra_hosts` | Unsupported (unsupported) | extra hosts are not deployed yet |
 | `services.*.init` | Unsupported (unsupported) | init process selection is not deployed yet |
 | `services.*.labels` | Unsupported (unsupported) | container labels are owned by Ployz |
 | `services.*.logging` | Unsupported (unsupported) | logging driver settings are not deployed yet |
 | `services.*.networks` | Unsupported (planned) | custom networks are not deployed yet |
 | `services.*.platform` | Unsupported (unsupported) | platform selection is not deployed yet |
-| `services.*.ports` | Unsupported (planned) | use x-route for ingress in this slice |
+| `services.*.ports` | Unsupported (planned) | use x-ports for ingress in this slice |
 | `services.*.privileged` | Unsupported (unsupported) | host capability controls are not deployed yet |
 | `services.*.profiles` | Unsupported (planned) | profile resolution is deferred |
 | `services.*.pull_policy` | Unsupported (unsupported) | pull policy is not deployed yet |

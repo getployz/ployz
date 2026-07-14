@@ -25,7 +25,7 @@ use ployz_core::ops::{
 
 pub use crate::machine_runtime::MachineRuntimeUnavailableReason;
 pub use facts::{
-    DeployFactLoadError, ManagedPublicUrlWaitPolicy, load_deploy_execution_facts_from_nats,
+    DeployFactLoadError, load_deploy_execution_facts_from_nats, validate_deploy_route_admission,
 };
 pub use failure::{
     DeployExecutionError, DeployHealthCheckError, MachineContainerRuntimeError,
@@ -39,8 +39,8 @@ pub use ports::{
     MachineContainerRuntime, NamespaceCommitError, NamespaceStateCommitter,
 };
 pub use preparation::{
-    DeployExecutionFacts, DeployExecutionInput, namespace_cleanup_candidates,
-    prepare_deploy_execution_command,
+    AutomaticHostnameMode, DeployExecutionFacts, DeployExecutionInput,
+    namespace_cleanup_candidates, prepare_deploy_execution_command,
 };
 use step::with_step_timeout;
 pub use step::{DeployExecutionStep, DeployFailureRecordError, DeployOperationRecordError};

@@ -423,6 +423,40 @@ pub async fn gateway_https_get(
     .map_err(|error| format!("HTTPS task failed: {error}"))?
 }
 
+/// One HTTPS GET with explicit SNI for certificates whose public material is
+/// intentionally absent from the operator intent projection.
+pub async fn gateway_https_get_unverified(addr: SocketAddr, host: &str) -> Result<String, String> {
+    let host = host.to_owned();
+    tokio::task::spawn_blocking(move || {
+        use std::io::{Read, Write};
+
+        let mut builder = openssl::ssl::SslConnector::builder(openssl::ssl::SslMethod::tls())
+            .map_err(|error| format!("build TLS connector: {error}"))?;
+        builder.set_verify(openssl::ssl::SslVerifyMode::NONE);
+        let stream = std::net::TcpStream::connect_timeout(&addr, HTTP_TIMEOUT)
+            .map_err(|error| format!("connect {addr}: {error}"))?;
+        stream
+            .set_read_timeout(Some(HTTP_TIMEOUT))
+            .map_err(|error| format!("set read timeout: {error}"))?;
+        let mut stream = builder
+            .build()
+            .connect(&host, stream)
+            .map_err(|error| format!("TLS handshake {addr} for {host}: {error}"))?;
+        stream
+            .write_all(
+                format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes(),
+            )
+            .map_err(|error| format!("write {addr}: {error}"))?;
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .map_err(|error| format!("read {addr}: {error}"))?;
+        Ok(response)
+    })
+    .await
+    .map_err(|error| format!("HTTPS task failed: {error}"))?
+}
+
 /// Connects with the exact product option set plus an event capture channel
 /// so the test can observe server-side permission violations.
 pub async fn connect_with_event_capture(

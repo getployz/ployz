@@ -13,13 +13,13 @@
 use crate::ids::MachineId;
 use crate::security::NatsPrincipal;
 use crate::subjects::{
-    CORE_RPC_QUERY_SCOPE, INTENT_CHANGED, INTENT_GET, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT,
-    MACHINE_RPC_COMMAND_SCOPE, MACHINE_RPC_QUERY_SCOPE, OPERATION_PROGRESS_SCOPE,
-    OPERATOR_INIT_FIRST_MACHINE_ACTIVATE, OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE,
-    OPERATOR_MACHINE_IMAGE_QUERY_SCOPE, OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE,
-    PENDING_MACHINE_JOINS_CHANGED, RUNTIME_SNAPSHOT_STREAM, gateway_status, gateway_status_scope,
-    machine_container_facts, machine_facts, machine_facts_scope, machine_service_command_scope,
-    machine_service_query_scope,
+    CORE_RPC_QUERY_SCOPE, INGRESS_ENDPOINT_CHANGED, INGRESS_ENDPOINT_GET, INTENT_CHANGED,
+    INTENT_GET, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT, MACHINE_RPC_COMMAND_SCOPE,
+    MACHINE_RPC_QUERY_SCOPE, OPERATION_PROGRESS_SCOPE, OPERATOR_INIT_FIRST_MACHINE_ACTIVATE,
+    OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE, OPERATOR_MACHINE_IMAGE_QUERY_SCOPE,
+    OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE, PENDING_MACHINE_JOINS_CHANGED,
+    RUNTIME_SNAPSHOT_STREAM, gateway_status, gateway_status_scope, machine_container_facts,
+    machine_facts, machine_facts_scope, machine_service_command_scope, machine_service_query_scope,
 };
 
 const SYSTEM_EVENTS: &str = "$SYS.>";
@@ -63,6 +63,7 @@ impl NatsPermissionProfile {
             NatsPrincipal::Machine { machine_id } => {
                 let mut publish_allow = request_reply_publications(&principal);
                 publish_allow.push(INTENT_GET.to_owned());
+                publish_allow.push(INGRESS_ENDPOINT_GET.to_owned());
                 publish_allow.push(machine_facts(machine_id));
                 publish_allow.push(machine_container_facts(machine_id));
                 publish_allow.push(gateway_status(machine_id));
@@ -84,6 +85,7 @@ impl NatsPermissionProfile {
                 publish: api_service_client_publications(),
                 subscribe: SubjectPermissions::allowing([
                     inbox_scope,
+                    INGRESS_ENDPOINT_CHANGED.to_owned(),
                     OPERATION_PROGRESS_SCOPE.to_owned(),
                     RUNTIME_SNAPSHOT_STREAM.to_owned(),
                 ]),
@@ -116,6 +118,7 @@ fn api_service_client_publications() -> SubjectPermissions {
         OPERATOR_MACHINE_IMAGE_QUERY_SCOPE.to_owned(),
         OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE.to_owned(),
         INTENT_GET.to_owned(),
+        INGRESS_ENDPOINT_GET.to_owned(),
     ])
 }
 
@@ -138,6 +141,7 @@ fn controller_subscriptions(inbox_scope: String) -> SubjectPermissions {
         MACHINE_RPC_QUERY_SCOPE.to_owned(),
         INTENT_GET.to_owned(),
         INTENT_CHANGED.to_owned(),
+        INGRESS_ENDPOINT_CHANGED.to_owned(),
         machine_facts_scope(),
         gateway_status_scope(),
         NATS_SERVICE_DISCOVERY_SCOPE.to_owned(),
@@ -154,6 +158,7 @@ fn machine_service_server_subscriptions(
         machine_service_query_scope(machine_id),
         machine_service_command_scope(machine_id),
         INTENT_CHANGED.to_owned(),
+        INGRESS_ENDPOINT_CHANGED.to_owned(),
         PENDING_MACHINE_JOINS_CHANGED.to_owned(),
         machine_facts_scope(),
         gateway_status_scope(),
@@ -171,6 +176,7 @@ fn controller_publications() -> SubjectPermissions {
         CORE_RPC_QUERY_SCOPE.to_owned(),
         OPERATION_PROGRESS_SCOPE.to_owned(),
         INTENT_CHANGED.to_owned(),
+        INGRESS_ENDPOINT_CHANGED.to_owned(),
         PENDING_MACHINE_JOINS_CHANGED.to_owned(),
         RUNTIME_SNAPSHOT_STREAM.to_owned(),
     ]);

@@ -48,7 +48,7 @@ use ployz_core::ops::{
     DeployOperationState, NamespaceRemoveOperationState, OperationEvent, OperationStatus,
     PreStartHookFailure, VolumeRemoveOperationState,
 };
-use ployz_core::ops::{MachineAddOperationState, ManagedLeaseOperationState};
+use ployz_core::ops::{MachineAddOperationState, ManagedDnsReconcileOperationState};
 use ployz_core::permissions::inbox_subscribe_scope;
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{MachineServiceEndpoint, OPERATOR_RUNTIME_SNAPSHOT, machine_service};
@@ -65,7 +65,7 @@ use ployz_sdk_types::{
     ServiceInspectRequest, VolumeListRequest, VolumeRemoveRequest, VolumeStatus,
 };
 use ployz_test_support::ids::{
-    idempotency_key, machine_id, namespace_id, operation_id, route_hostname, route_port, service_id,
+    idempotency_key, machine_id, namespace_id, operation_id, route_port, service_id,
 };
 use ployz_test_support::nats::SecuredTestNats;
 use ployz_test_support::ops::wait_for_terminal_status;
@@ -80,7 +80,7 @@ use std::time::{Duration, Instant};
 use support::dind::assert::{
     ManagedWorkloadContainer, all_managed_workload_containers, assert_deploy_event_sequence,
     assert_machine_add_event_sequence, assert_unit_active, connect_with_event_capture,
-    decode_base64, gateway_http_get, gateway_https_get, managed_workload_containers,
+    decode_base64, gateway_http_get, gateway_https_get_unverified, managed_workload_containers,
     next_permission_violation, operation_events, operation_status, terminal_operation_events,
     wait_for_inspect, wait_for_machine_observations, wait_for_terminal_deploy_status,
 };
@@ -97,8 +97,6 @@ use support::dind::{
 /// machine image; the inner Docker daemons load it at boot.
 const WORKLOAD_IMAGE: &str = "nginx:1.27-alpine";
 const REGISTRY_IMAGE: &str = "registry:2.8.3";
-/// Route hostname the smoke deploy registers on both gateways.
-const ROUTE_HOSTNAME: &str = "smoke.local";
 /// Port nginx listens on inside its workload container.
 const WORKLOAD_ENDPOINT_PORT: u16 = 80;
 /// Budget for the routed two-machine deploy to reach a terminal state
@@ -275,8 +273,8 @@ async fn assert_init_and_activate_first_machine(core: &CoreContext) {
             if last_operations.iter().any(|snapshot| {
                 matches!(
                     &snapshot.status,
-                    OperationStatus::ManagedLease {
-                        state: ManagedLeaseOperationState::Completed,
+                    OperationStatus::ManagedDnsReconcile {
+                        state: ManagedDnsReconcileOperationState::Completed,
                         ..
                     }
                 )
@@ -333,17 +331,12 @@ async fn assert_auto_hostname_https_survives_core_stop(core: &CoreContext) {
             .find(|binding| binding.namespace_id == namespace_id("auto_https"))
             .expect("auto hostname binding committed");
         let hostname = binding.target.hostname.as_str().to_owned();
-        let ployz_core::state::IntentPublicUrl::Auto(managed_lease) = intent.public_url else {
-            panic!("managed lease is ready");
-        };
-        let ployz_core::state::ManagedLeaseProjection::Ready { lease, bundle } = *managed_lease
-        else {
-            panic!("managed lease is ready");
-        };
         assert_eq!(
-            hostname,
-            "svc-auto.demo.up.ployz.app".replace("demo", lease.name.as_str())
+            intent.automatic_hostname_configuration,
+            ployz_core::ingress::AutomaticHostnameConfiguration::Ployz
         );
+        assert!(hostname.starts_with("svc-auto."));
+        assert!(hostname.ends_with(".up.ployz.app"));
 
         let second = core
             .api
@@ -374,23 +367,23 @@ async fn assert_auto_hostname_https_survives_core_stop(core: &CoreContext) {
         }));
 
         let machine = core.cluster.core();
-        let response = gateway_https_get(
-            machine.published.gateway_tls,
-            &hostname,
-            &bundle.certificate_chain_pem,
-        )
-        .await
-        .expect("managed HTTPS route answers");
+        let response = gateway_https_get_unverified(machine.published.gateway_tls, &hostname)
+            .await
+            .expect("managed HTTPS route answers");
         assert!(response.contains("Welcome to nginx"), "{response}");
         let redirect = gateway_http_get(machine.published.gateway, &hostname)
             .await
             .expect("managed HTTP route redirects");
         assert!(redirect.starts_with("HTTP/1.1 301"), "{redirect}");
         assert!(
-            gateway_https_get(
+            gateway_https_get_unverified(
                 machine.published.gateway_tls,
-                &format!("unrouted.{}", bundle.lease.hostname_suffix()),
-                &bundle.certificate_chain_pem,
+                &format!(
+                    "unrouted.{}",
+                    hostname
+                        .strip_prefix("svc-auto.")
+                        .expect("automatic label prefix")
+                ),
             )
             .await
             .is_err(),
@@ -401,13 +394,9 @@ async fn assert_auto_hostname_https_survives_core_stop(core: &CoreContext) {
             .exec_on(machine, &["systemctl", "stop", "ployzd-control"])
             .await;
         assert!(stopped.success(), "stop core control: {stopped:?}");
-        let response = gateway_https_get(
-            machine.published.gateway_tls,
-            &hostname,
-            &bundle.certificate_chain_pem,
-        )
-        .await
-        .expect("last-known-good HTTPS survives core stop");
+        let response = gateway_https_get_unverified(machine.published.gateway_tls, &hostname)
+            .await
+            .expect("last-known-good HTTPS survives core stop");
         assert!(response.contains("Welcome to nginx"), "{response}");
         let started = core
             .exec_on(machine, &["systemctl", "start", "ployzd-control"])
@@ -996,11 +985,11 @@ async fn group_unreachable_join() {
 /// - **Scenario 3 — cross-machine deploy:** the baked nginx image deploys
 ///   with a replica on each machine and a route, driven through the
 ///   host-side API client; the operation events, the inner Docker reality
-///   on both machines, and HTTP through both published gateway ports all
-///   agree.
+///   on both machines, and managed HTTPS through both published gateways all
+///   agree while HTTP redirects.
 /// - **Scenario 4 — daemon-restart invisibility:** restarting
 ///   `ployzd-control` (core) and the edge machine unit neither interrupts
-///   gateway HTTP nor replaces workload containers, and the operations API
+///   gateway serving nor replaces workload containers, and the operations API
 ///   answers afterwards with unmutated machine state.
 /// - **Scenario 5 — auth rejection:** unauthorized seeds, plaintext
 ///   clients, and over-reaching Machine/Join principals are refused by the
@@ -1028,7 +1017,7 @@ async fn serial_smoke() {
         wait_for_machine_observations(&core, &machine_id("edge_2")).await;
         wait_for_fresh_peer_handshakes(&core).await;
 
-        timed(
+        let smoke_hostname = timed(
             "cross_machine_deploy",
             scenario_cross_machine_deploy(&core, edge),
         )
@@ -1045,10 +1034,14 @@ async fn serial_smoke() {
             .image;
         timed(
             "daemon_restart_invisibility",
-            scenario_daemon_restart_invisibility(&core, edge),
+            scenario_daemon_restart_invisibility(&core, edge, &smoke_hostname),
         )
         .await;
-        timed("auth_rejection", scenario_auth_rejection(&core, edge)).await;
+        timed(
+            "auth_rejection",
+            scenario_auth_rejection(&core, edge, &smoke_hostname),
+        )
+        .await;
         timed(
             "runtime_fields_deploy",
             scenario_runtime_fields_deploy(&core, &workload_image),
@@ -1583,7 +1576,7 @@ async fn assert_internal_service_dns_reaches_cross_machine_sibling(core: &CoreCo
 
 /// Deploys the baked workload image with one replica per machine and a
 /// route, through the host-side operator API client, and asserts the
-/// committed deploy event vocabulary, Docker reality, and HTTP service.
+/// committed deploy event vocabulary, Docker reality, and managed HTTPS service.
 async fn reserved_deploy_request(
     core: &CoreContext,
     idempotency: &str,
@@ -1604,7 +1597,7 @@ async fn reserved_deploy_request(
     }
 }
 
-async fn scenario_cross_machine_deploy(core: &CoreContext, edge: &DindMachine) {
+async fn scenario_cross_machine_deploy(core: &CoreContext, edge: &DindMachine) -> String {
     let cluster = &core.cluster;
     let accepted = core
         .api
@@ -1674,10 +1667,32 @@ async fn scenario_cross_machine_deploy(core: &CoreContext, edge: &DindMachine) {
     );
     assert_unit_active(core, cluster.core(), "ployzd-control").await;
 
-    // The route serves through BOTH gateways via the published ports.
+    let client = connect_core_client(
+        core,
+        NatsPrincipal::Controller,
+        &core.material.controller_seed,
+    )
+    .await
+    .expect("connect controller for smoke route intent read");
+    let intent = NatsIntentReader::new(client)
+        .intent()
+        .await
+        .expect("read smoke route intent");
+    let hostname = intent
+        .route_bindings
+        .iter()
+        .find(|binding| binding.namespace_id == namespace_id("smoke"))
+        .expect("smoke route binding committed")
+        .target
+        .hostname
+        .as_str()
+        .to_owned();
+
+    // The managed HTTPS route serves through BOTH gateways.
     for machine in [cluster.core(), edge] {
-        wait_for_gateway_serving(machine).await;
+        wait_for_gateway_serving(machine, &hostname).await;
     }
+    hostname
 }
 
 async fn assert_smoke_workload_container(
@@ -2247,9 +2262,9 @@ fn smoke_deploy_target() -> DeployRequest {
             pre_start: None,
             depends_on: Vec::new(),
             routes: vec![DeployRoute {
-                target: DeployRouteTarget::Hostname {
-                    hostname: route_hostname(ROUTE_HOSTNAME),
-                    port: route_port(dind::MACHINE_GATEWAY_PORT),
+                target: DeployRouteTarget::AutoHostname {
+                    label: ployz_core::ingress::AutomaticHostnameLabel::try_new("smoke")
+                        .expect("valid automatic hostname label"),
                 },
                 endpoint_port: route_port(WORKLOAD_ENDPOINT_PORT),
             }],
@@ -2271,7 +2286,8 @@ fn auto_hostname_deploy_target() -> DeployRequest {
             depends_on: Vec::new(),
             routes: vec![DeployRoute {
                 target: DeployRouteTarget::AutoHostname {
-                    port: route_port(dind::MACHINE_GATEWAY_TLS_PORT),
+                    label: ployz_core::ingress::AutomaticHostnameLabel::try_new("svc-auto")
+                        .expect("valid automatic hostname label"),
                 },
                 endpoint_port: route_port(WORKLOAD_ENDPOINT_PORT),
             }],
@@ -2589,35 +2605,40 @@ async fn namespace_managed_containers(
     containers
 }
 
-/// The route host header: hostname plus the gateway's in-machine listen
-/// port (the route target port), not the published host port.
-fn route_host_header() -> String {
-    format!("{ROUTE_HOSTNAME}:{}", dind::MACHINE_GATEWAY_PORT)
-}
-
-/// Asserts the smoke route answers through one machine's published gateway
-/// port with the workload's response body.
-async fn assert_gateway_serves(machine: &DindMachine) {
-    match gateway_http_get(machine.published.gateway, &route_host_header()).await {
+/// Asserts the smoke route serves HTTPS and redirects HTTP through one
+/// machine's published gateway ports.
+async fn assert_gateway_serves(machine: &DindMachine, hostname: &str) {
+    match gateway_https_get_unverified(machine.published.gateway_tls, hostname).await {
         Ok(response) if response.contains("Welcome to nginx") => {}
         Ok(response) => panic!(
-            "gateway on {} answered without the workload body: {response}",
+            "HTTPS gateway on {} answered without the workload body: {response}",
             machine.name
         ),
-        Err(error) => panic!("gateway on {} did not answer: {error}", machine.name),
+        Err(error) => panic!("HTTPS gateway on {} did not answer: {error}", machine.name),
     }
+    let redirect = gateway_http_get(machine.published.gateway, hostname)
+        .await
+        .unwrap_or_else(|error| panic!("HTTP gateway on {} did not answer: {error}", machine.name));
+    assert!(
+        redirect.starts_with("HTTP/1.1 301"),
+        "HTTP gateway on {} did not redirect: {redirect}",
+        machine.name
+    );
 }
 
 /// Waits for the smoke route's first answer through one machine's published
 /// gateway port: the gateway converges on route intent from NATS after the
 /// deploy completes, so first-serve is eventually consistent. Once serving,
 /// assertions use the single-shot [`assert_gateway_serves`].
-async fn wait_for_gateway_serving(machine: &DindMachine) {
+async fn wait_for_gateway_serving(machine: &DindMachine, hostname: &str) {
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut last = String::from("<no attempt>");
     while Instant::now() < deadline {
-        match gateway_http_get(machine.published.gateway, &route_host_header()).await {
-            Ok(response) if response.contains("Welcome to nginx") => return,
+        match gateway_https_get_unverified(machine.published.gateway_tls, hostname).await {
+            Ok(response) if response.contains("Welcome to nginx") => {
+                assert_gateway_serves(machine, hostname).await;
+                return;
+            }
             Ok(response) => last = format!("answered without the workload body: {response}"),
             Err(error) => last = format!("did not answer: {error}"),
         }
@@ -2631,10 +2652,14 @@ async fn wait_for_gateway_serving(machine: &DindMachine) {
 // ---------------------------------------------------------------------------
 
 /// Restarts the control daemon on the core and the machine daemon on the edge
-/// while the deploy is serving: gateway HTTP must keep answering throughout,
+/// while the deploy is serving: the gateway must keep serving throughout,
 /// workload containers must be adopted (same IDs), and the operations API
 /// must answer afterwards with unmutated machine state.
-async fn scenario_daemon_restart_invisibility(core: &CoreContext, edge: &DindMachine) {
+async fn scenario_daemon_restart_invisibility(
+    core: &CoreContext,
+    edge: &DindMachine,
+    smoke_hostname: &str,
+) {
     let core_machine = core.cluster.core();
 
     let core_snapshot_before = wait_for_settled_snapshot(core, &machine_id("core_1")).await;
@@ -2667,7 +2692,7 @@ async fn scenario_daemon_restart_invisibility(core: &CoreContext, edge: &DindMac
     loop {
         let finished = restart.is_finished();
         for machine in [core_machine, edge] {
-            assert_gateway_serves(machine).await;
+            assert_gateway_serves(machine, smoke_hostname).await;
         }
         polls += 1;
         if finished {
@@ -2840,7 +2865,7 @@ fn matching_answered_testimony(current: &MachineTestimony, before: &MachineTesti
 
 /// The four committed rejections against the real cluster, plus the proof
 /// that none of them hurt the data plane.
-async fn scenario_auth_rejection(core: &CoreContext, edge: &DindMachine) {
+async fn scenario_auth_rejection(core: &CoreContext, edge: &DindMachine, smoke_hostname: &str) {
     let cluster = &core.cluster;
 
     // (a) A fresh random NKey seed with the correct cluster CA is refused.
@@ -2924,7 +2949,7 @@ async fn scenario_auth_rejection(core: &CoreContext, edge: &DindMachine) {
     // The cluster shrugged all of it off: both gateways still serve and the
     // control API still answers.
     for machine in [cluster.core(), edge] {
-        assert_gateway_serves(machine).await;
+        assert_gateway_serves(machine, smoke_hostname).await;
     }
     core.api
         .machine_list(&MachineListRequest {})

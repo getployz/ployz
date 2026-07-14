@@ -10,6 +10,7 @@ use ployz_core::ids::{
     OperationId, ServiceId,
 };
 use ployz_core::image::OciDigest;
+use ployz_core::ingress::AutomaticHostnameLabel;
 use ployz_core::ops::{
     ArtifactUnavailableReason, CertificateProvisionFailure, DeployCompletionOutcome,
     DeployOperationFailure, DeployRunningStage, EventSequence, FailureMessage, HealthCheckFailure,
@@ -67,7 +68,6 @@ fn target() -> DeployRequest {
                     target: DeployRouteTarget::Hostname {
                         hostname: RouteHostname::try_new("app.example.com")
                             .expect("valid hostname"),
-                        port: route_port(443),
                     },
                     endpoint_port: route_port(8080),
                 }],
@@ -78,7 +78,7 @@ fn target() -> DeployRequest {
                 1,
                 vec![DeployRoute {
                     target: DeployRouteTarget::AutoHostname {
-                        port: route_port(443),
+                        label: AutomaticHostnameLabel::try_new("worker").expect("valid label"),
                     },
                     endpoint_port: route_port(9000),
                 }],
@@ -270,7 +270,7 @@ fn happy_path_renders_plain_milestones_and_final_tree() {
             "deploy op_317: web — web.1 healthy on hetzner-1\n",
             "deploy op_317: web — web.2 healthy on hetzner-2\n",
             "deploy op_317: routes — app.example.com → web:8080\n",
-            "deploy op_317: routes — worker → public URL (auto)\n",
+            "deploy op_317: routes — worker → public URL (auto:worker)\n",
             "deploy op_317: succeeded\n",
         )
     );
@@ -290,7 +290,7 @@ fn happy_path_renders_plain_milestones_and_final_tree() {
             "    ✓ no changes — already at target (worker.1 on hetzner-2)\n",
             "  routes\n",
             "    ✓ app.example.com → web:8080\n",
-            "    ✓ worker → public URL (auto)\n",
+            "    ✓ worker → public URL (auto:worker)\n",
         )
     );
     assert_eq!(render_success(&tree), "Deploy succeeded.\n");
@@ -510,11 +510,9 @@ fn route_cutover_failure_makes_no_safety_claim() {
             OperationEvent::DeployFailed {
                 operation_id,
                 failure: DeployOperationFailure::RouteCutoverFailed {
-                    route: ployz_core::ops::RouteTarget {
-                        hostname: RouteHostname::try_new("app.example.com")
-                            .expect("valid hostname"),
-                        port: route_port(443),
-                    },
+                    route: ployz_core::ops::RouteTarget::new(
+                        RouteHostname::try_new("app.example.com").expect("valid hostname"),
+                    ),
                     reason: RouteCutoverFailureReason::RouteRejected {
                         message: FailureMessage::try_new("hostname already bound")
                             .expect("valid failure message"),
@@ -527,7 +525,7 @@ fn route_cutover_failure_makes_no_safety_claim() {
 
     let output = render_failure_block(&tree);
     assert!(output.starts_with("Deploy failed — route-cutover-failed, service web.\n"));
-    assert!(output.contains("  ✗ route app.example.com:443 rejected: hostname already bound\n"));
+    assert!(output.contains("  ✗ route app.example.com rejected: hostname already bound\n"));
     assert!(!output.contains("Nothing changed"));
     assert!(!output.contains("Serving is unchanged."));
     assert!(!output.contains("logs:"));
