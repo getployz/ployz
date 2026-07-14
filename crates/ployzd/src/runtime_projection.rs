@@ -244,12 +244,14 @@ pub(crate) async fn start_runtime_projection(
     let health = RuntimeProjectionHealth::default();
     let projection_task = tokio::spawn(run_projection(
         projection,
-        client.clone(),
-        intent_reader,
-        intent_changes,
-        ingress_changes,
-        fact_changes,
-        core_store,
+        RuntimeProjectionSources {
+            client: client.clone(),
+            intent_reader,
+            intent_changes,
+            ingress_changes,
+            fact_changes,
+            core_store,
+        },
         health.clone(),
     ));
     let publisher_task = tokio::spawn(publish_snapshots(client, snapshots, health.clone()));
@@ -262,16 +264,28 @@ pub(crate) async fn start_runtime_projection(
     })
 }
 
-async fn run_projection(
-    mut projection: PassiveRuntimeProjection,
+struct RuntimeProjectionSources {
     client: async_nats::Client,
     intent_reader: NatsIntentReader,
-    mut intent_changes: async_nats::Subscriber,
-    mut ingress_changes: async_nats::Subscriber,
-    mut fact_changes: watch::Receiver<u64>,
+    intent_changes: async_nats::Subscriber,
+    ingress_changes: async_nats::Subscriber,
+    fact_changes: watch::Receiver<u64>,
     core_store: CoreStore,
+}
+
+async fn run_projection(
+    mut projection: PassiveRuntimeProjection,
+    sources: RuntimeProjectionSources,
     health: RuntimeProjectionHealth,
 ) {
+    let RuntimeProjectionSources {
+        client,
+        intent_reader,
+        mut intent_changes,
+        mut ingress_changes,
+        mut fact_changes,
+        core_store,
+    } = sources;
     let intent = retry_intent_read(&intent_reader, &health).await;
     let ingress = retry_ingress_read(&core_store, &health).await;
     projection.replace_sources(intent, ingress);

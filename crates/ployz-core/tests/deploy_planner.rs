@@ -1077,7 +1077,10 @@ fn deploy_route_validation_reuses_identical_automatic_binding() {
     )
     .expect("identical route is valid");
 
-    assert_eq!(commits[0].id, route_binding_id("route_existing"));
+    let [commit] = commits.as_slice() else {
+        panic!("expected one route binding commit");
+    };
+    assert_eq!(commit.id, route_binding_id("route_existing"));
 }
 
 #[test]

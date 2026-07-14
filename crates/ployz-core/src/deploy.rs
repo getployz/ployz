@@ -1481,7 +1481,6 @@ pub enum DeployPlanError {
     },
 }
 
-#[must_use]
 pub fn prepare_deploy(
     input: DeployPreparationInput,
     mut new_route_binding_id: impl FnMut(&RouteTarget) -> RouteBindingId,

@@ -174,7 +174,25 @@ fn unfinished_refresh_ids(statuses: Vec<OperationStatus>) -> Vec<ployz_core::ids
                 state: IngressRefreshOperationState::Accepted,
                 ..
             } => Some(id),
-            _ => None,
+            OperationStatus::IngressRefresh {
+                state:
+                    IngressRefreshOperationState::Completed { .. }
+                    | IngressRefreshOperationState::Failed { .. },
+                ..
+            }
+            | OperationStatus::Deploy { .. }
+            | OperationStatus::Cert { .. }
+            | OperationStatus::MachineAdd { .. }
+            | OperationStatus::MachineUpdate { .. }
+            | OperationStatus::MachineLifecycle { .. }
+            | OperationStatus::CoreReplace { .. }
+            | OperationStatus::CredentialGrant { .. }
+            | OperationStatus::NetworkRepair { .. }
+            | OperationStatus::ServiceRestart { .. }
+            | OperationStatus::ManagedDnsReconcile { .. }
+            | OperationStatus::IngressConfigure { .. }
+            | OperationStatus::NamespaceRemove { .. }
+            | OperationStatus::VolumeRemove { .. } => None,
         })
         .collect()
 }
@@ -404,7 +422,7 @@ impl ProjectionRuntime {
                             reason: MachineRuntimeUnavailableReason::RequestTimedOut,
                         })
                     }),
-                    facts.unwrap_or_else(|| {
+                    facts.unwrap_or({
                         Err(MachineFactsReadError::Unavailable {
                             machine_id,
                             reason: MachineRuntimeUnavailableReason::RequestTimedOut,

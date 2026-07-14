@@ -252,8 +252,8 @@ mod tests {
             .expect("update route");
 
         assert_eq!(
-            store.load().await.expect("load").route_bindings,
-            [updated.clone()]
+            store.load().await.expect("load").route_bindings.as_slice(),
+            std::slice::from_ref(&updated)
         );
         assert!(
             store

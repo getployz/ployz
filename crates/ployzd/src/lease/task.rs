@@ -650,10 +650,13 @@ mod tests {
             },
             4,
         );
-        let expected = managed_dns_endpoint_set(match &current.state {
-            IngressEndpointProjectionState::Current { endpoints } => endpoints,
-            _ => unreachable!(),
-        });
+        let IngressEndpointProjectionState::Current {
+            endpoints: current_endpoints,
+        } = &current.state
+        else {
+            panic!("expected current endpoint projection");
+        };
+        let expected = managed_dns_endpoint_set(current_endpoints);
         assert!(matches!(
             next_action(Some(&current), None, &lease, 120),
             Some(ReconcileAction::ProjectionApply { .. })

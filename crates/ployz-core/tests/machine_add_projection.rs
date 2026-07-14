@@ -55,8 +55,12 @@ fn machine_add_rejects_submitted_event_for_another_machine() {
         ),
         Err(StatusProjectionError::OperationSubjectMismatch {
             operation_id: operation_id("op_machine"),
-            expected: ployz_core::ops::OperationSubjectRef::MachineAdd(machine_id("machine_2")),
-            actual: ployz_core::ops::OperationSubjectRef::MachineAdd(machine_id("machine_3")),
+            expected: Box::new(ployz_core::ops::OperationSubjectRef::MachineAdd(
+                machine_id("machine_2",)
+            )),
+            actual: Box::new(ployz_core::ops::OperationSubjectRef::MachineAdd(
+                machine_id("machine_3",)
+            )),
         })
     );
 }

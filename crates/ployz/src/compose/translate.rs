@@ -1647,7 +1647,12 @@ fn parse_x_ports(
     let path = service_path.field("x-ports");
     let entries = match value {
         Value::Sequence(entries) => entries,
-        value => vec![value],
+        value @ (Value::Null
+        | Value::Bool(_)
+        | Value::Number(_)
+        | Value::String(_)
+        | Value::Mapping(_)
+        | Value::Tagged(_)) => vec![value],
     };
     for (index, entry) in entries.into_iter().enumerate() {
         let path = path.index(index);

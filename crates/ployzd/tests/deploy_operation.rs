@@ -1436,8 +1436,10 @@ async fn ployz_automatic_route_synchronizes_wildcard_before_commit() {
     .expect("managed HTTPS and plain HTTP routes deploy");
 
     assert_eq!(certificates.ployz_wildcard_requests, 1);
-    assert_eq!(certificates.ployz_target_requests.len(), 1);
-    assert_eq!(certificates.ployz_target_requests[0].len(), 1);
+    let [target_request] = certificates.ployz_target_requests.as_slice() else {
+        panic!("expected one Ployz target request");
+    };
+    assert_eq!(target_request.len(), 1);
     assert_eq!(namespace_state.route_requests.len(), 1);
 }
 

@@ -49,8 +49,8 @@ pub enum StatusProjectionError {
     )]
     OperationSubjectMismatch {
         operation_id: OperationId,
-        expected: OperationSubjectRef,
-        actual: OperationSubjectRef,
+        expected: Box<OperationSubjectRef>,
+        actual: Box<OperationSubjectRef>,
     },
     #[error(
         "operation event mismatch: expected {}, found {}",
@@ -200,8 +200,8 @@ pub(super) fn verify_subject<Subject: Clone + PartialEq>(
 
     Err(StatusProjectionError::OperationSubjectMismatch {
         operation_id: operation_id.clone(),
-        expected: subject_ref(expected.clone()),
-        actual: subject_ref(actual.clone()),
+        expected: Box::new(subject_ref(expected.clone())),
+        actual: Box::new(subject_ref(actual.clone())),
     })
 }
 
