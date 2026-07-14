@@ -13,22 +13,26 @@ use ployz_core::state::{GatewayStatusObservation, MachineEndpointObservation};
 use ployz_core::subjects::{gateway_status_scope, machine_facts_scope};
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone)]
 pub struct FactCache {
     resolver_cache_incarnation: InternalDnsResolverCacheIncarnation,
     state: Arc<RwLock<RuntimeFactsState>>,
+    changes: watch::Sender<u64>,
 }
 
 impl Default for FactCache {
     fn default() -> Self {
+        let (changes, _) = watch::channel(0);
         Self {
             resolver_cache_incarnation: InternalDnsResolverCacheIncarnation::try_new(
                 nuid::next().to_ascii_lowercase(),
             )
             .expect("NUID is a valid resolver cache incarnation"),
             state: Arc::default(),
+            changes,
         }
     }
 }
@@ -41,72 +45,105 @@ struct RuntimeFactsState {
 }
 
 impl FactCache {
+    #[must_use]
+    pub(crate) fn subscribe_changes(&self) -> watch::Receiver<u64> {
+        self.changes.subscribe()
+    }
+
     pub fn record_machine_facts(&self, facts: MachineFactsSnapshot) {
-        let mut state = self
-            .state
-            .write()
-            .expect("runtime facts cache lock is not poisoned");
-        let machine_id = facts.machine_id().clone();
-        let observed_at_unix_ms = facts.observed_at_unix_ms();
-        state
-            .machine_fact_watermarks
-            .entry(machine_id.clone())
-            .and_modify(|watermark| {
-                watermark.observed_at_unix_ms = observed_at_unix_ms;
-                watermark.generation = watermark.generation.next();
-            })
-            .or_insert_with(|| InternalDnsFactWatermark {
-                machine_id: machine_id.clone(),
-                observed_at_unix_ms,
-                resolver_cache_incarnation: self.resolver_cache_incarnation.clone(),
-                generation: InternalDnsFactGeneration::first(),
-            });
-        state.machine_facts.insert(machine_id, facts);
+        {
+            let mut state = self
+                .state
+                .write()
+                .expect("runtime facts cache lock is not poisoned");
+            let machine_id = facts.machine_id().clone();
+            let observed_at_unix_ms = facts.observed_at_unix_ms();
+            state
+                .machine_fact_watermarks
+                .entry(machine_id.clone())
+                .and_modify(|watermark| {
+                    watermark.observed_at_unix_ms = observed_at_unix_ms;
+                    watermark.generation = watermark.generation.next();
+                })
+                .or_insert_with(|| InternalDnsFactWatermark {
+                    machine_id: machine_id.clone(),
+                    observed_at_unix_ms,
+                    resolver_cache_incarnation: self.resolver_cache_incarnation.clone(),
+                    generation: InternalDnsFactGeneration::first(),
+                });
+            state.machine_facts.insert(machine_id, facts);
+        }
+        self.notify_change();
     }
 
     pub fn record_machine_container_fact(&self, delta: MachineContainerFactDelta) {
-        let mut state = self
-            .state
-            .write()
-            .expect("runtime facts cache lock is not poisoned");
-        match delta {
-            MachineContainerFactDelta::ContainerObserved {
-                observed_at_unix_ms,
-                observation,
-            } => {
-                let observation = *observation;
-                let machine_id = observation.machine_id.clone();
-                let next = match state.machine_facts.get(&machine_id) {
-                    Some(facts) => facts.with_container_replaced(observation, observed_at_unix_ms),
-                    None => empty_machine_facts(machine_id.clone(), observed_at_unix_ms).and_then(
-                        |facts| facts.with_container_replaced(observation, observed_at_unix_ms),
-                    ),
-                };
-                if let Ok(facts) = next {
-                    state.machine_facts.insert(machine_id, facts);
+        let changed = {
+            let mut state = self
+                .state
+                .write()
+                .expect("runtime facts cache lock is not poisoned");
+            match delta {
+                MachineContainerFactDelta::ContainerObserved {
+                    observed_at_unix_ms,
+                    observation,
+                } => {
+                    let observation = *observation;
+                    let machine_id = observation.machine_id.clone();
+                    let next = match state.machine_facts.get(&machine_id) {
+                        Some(facts) => {
+                            facts.with_container_replaced(observation, observed_at_unix_ms)
+                        }
+                        None => empty_machine_facts(machine_id.clone(), observed_at_unix_ms)
+                            .and_then(|facts| {
+                                facts.with_container_replaced(observation, observed_at_unix_ms)
+                            }),
+                    };
+                    if let Ok(facts) = next {
+                        state.machine_facts.insert(machine_id, facts);
+                        true
+                    } else {
+                        false
+                    }
+                }
+                MachineContainerFactDelta::ContainerRemoved {
+                    machine_id,
+                    container_id,
+                    observed_at_unix_ms,
+                } => {
+                    let Some(facts) = state.machine_facts.get(&machine_id) else {
+                        return;
+                    };
+                    if let Ok(next) =
+                        facts.with_container_removed(&container_id, observed_at_unix_ms)
+                    {
+                        state.machine_facts.insert(machine_id, next);
+                        true
+                    } else {
+                        false
+                    }
                 }
             }
-            MachineContainerFactDelta::ContainerRemoved {
-                machine_id,
-                container_id,
-                observed_at_unix_ms,
-            } => {
-                let Some(facts) = state.machine_facts.get(&machine_id) else {
-                    return;
-                };
-                if let Ok(next) = facts.with_container_removed(&container_id, observed_at_unix_ms) {
-                    state.machine_facts.insert(machine_id, next);
-                }
-            }
+        };
+        if changed {
+            self.notify_change();
         }
     }
 
     pub fn record_gateway_status(&self, status: GatewayStatusObservation) {
-        self.state
-            .write()
-            .expect("runtime facts cache lock is not poisoned")
-            .gateway_statuses
-            .insert(status.machine_id.clone(), status);
+        {
+            self.state
+                .write()
+                .expect("runtime facts cache lock is not poisoned")
+                .gateway_statuses
+                .insert(status.machine_id.clone(), status);
+        }
+        self.notify_change();
+    }
+
+    fn notify_change(&self) {
+        self.changes.send_modify(|generation| {
+            *generation = generation.wrapping_add(1);
+        });
     }
 
     #[must_use]
@@ -186,6 +223,20 @@ impl FactCache {
             .values()
             .cloned()
             .collect()
+    }
+
+    #[must_use]
+    pub(crate) fn runtime_projection_facts(
+        &self,
+    ) -> (
+        BTreeMap<MachineId, MachineFactsSnapshot>,
+        BTreeMap<MachineId, GatewayStatusObservation>,
+    ) {
+        let state = self
+            .state
+            .read()
+            .expect("runtime facts cache lock is not poisoned");
+        (state.machine_facts.clone(), state.gateway_statuses.clone())
     }
 }
 
@@ -385,6 +436,22 @@ mod tests {
                 .containers()
                 .container(&container_id("ctr_2"))
                 .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_mutations_notify_after_replacement() {
+        let cache = FactCache::default();
+        let mut changes = cache.subscribe_changes();
+
+        cache.record_machine_facts(machine_facts("machine_a", 1, [observation("ctr_1")]));
+        changes.changed().await.expect("machine change");
+        assert_eq!(
+            cache
+                .machine_facts(&machine_id("machine_a"))
+                .expect("replacement visible before notification")
+                .observed_at_unix_ms(),
+            1
         );
     }
 

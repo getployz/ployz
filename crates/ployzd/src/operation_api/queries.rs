@@ -16,12 +16,17 @@ use crate::roles::machine::protocol::MachineLogsTailRpcRequest;
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId,
 };
-use ployz_core::machine_runtime::{ManagedContainerKind, ManagedContainerObservation};
+use ployz_core::machine_runtime::{
+    MachineFactsSnapshot, ManagedContainerKind, ManagedContainerObservation,
+};
 use ployz_core::nats_config::NatsAuthorizationGrant;
 use ployz_core::ops::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationStatusSnapshot,
 };
-use ployz_core::state::{ActiveMachineState, RouteBindingState, ServingTargetEntry};
+use ployz_core::state::{
+    ActiveMachineState, GatewayStatusObservation, IntentSnapshot, RouteBindingState,
+    ServingTargetEntry,
+};
 use ployz_sdk_types::{
     CredentialListError, CredentialListResult, LogsTailError, LogsTailRequest, LogsTailResult,
     LogsTailResultTarget, LogsTailTarget, MachineInspectError, MachineListError, MachineListResult,
@@ -107,66 +112,101 @@ impl RuntimeSnapshotQueryService {
                 message: error.to_string(),
             }
         })?;
-        let machine_query = MachineQueryService::new(
-            self.intent_reader.clone(),
-            self.facts.clone(),
-            self.facts_reader.clone(),
-        );
-        let service_query =
-            ServiceQueryService::new(self.intent_reader.clone(), self.facts_reader.clone());
-        let machines = machine_query
-            .list()
-            .await
-            .map_err(|MachineListError::Unavailable { message }| {
-                RuntimeSnapshotError::Unavailable { message }
-            })?
-            .machines;
-        let services = service_query
-            .list()
-            .await
-            .map_err(|ServiceListError::Unavailable { message }| {
-                RuntimeSnapshotError::Unavailable { message }
-            })?
-            .services;
-        let routes = intent.route_bindings;
-        let machine_ids = machines
+        let machine_ids = intent
+            .active_machines
             .iter()
-            .map(|machine| machine.active.machine_id.clone())
+            .map(|machine| machine.machine_id.clone())
             .collect::<Vec<_>>();
-        let facts = read_available_machine_facts(&self.facts_reader, machine_ids).await;
-        let containers = facts
+        let facts = read_available_machine_facts_by_id(&self.facts_reader, machine_ids).await;
+        let gateway_statuses = self
+            .facts
+            .gateway_statuses()
             .into_iter()
-            .flat_map(|facts| facts.containers().containers().to_vec())
-            .collect::<Vec<_>>();
-        let revisions = derive_runtime_revisions(&services, &containers);
-        let releases = derive_runtime_releases(&services, &routes);
-        let instances = derive_runtime_instances(&containers);
-        let missing_link_count = missing_runtime_links(&services, &routes, &containers);
+            .map(|status| (status.machine_id.clone(), status))
+            .collect();
 
         Ok(RuntimeSnapshotResult {
-            snapshot: RuntimeSnapshot {
-                machines,
-                services,
-                routes,
-                containers,
-                projection_sources: RuntimeProjectionSources {
-                    intent: RuntimeProjectionSource {
-                        read_at_unix_seconds,
-                    },
-                    facts: RuntimeProjectionSource {
-                        read_at_unix_seconds,
-                    },
-                    revisions: derived_source(revisions.len(), missing_link_count),
-                    releases: derived_source(releases.len(), missing_link_count),
-                    instances: derived_source(instances.len(), missing_link_count),
-                },
-                revisions,
-                releases,
-                instances,
-                updated_at_unix_seconds: read_at_unix_seconds,
-            },
+            snapshot: runtime_snapshot_from_sources(
+                intent,
+                &facts,
+                &gateway_statuses,
+                read_at_unix_seconds,
+            ),
         })
     }
+}
+
+pub(crate) fn runtime_snapshot_from_sources(
+    intent: IntentSnapshot,
+    facts: &BTreeMap<MachineId, MachineFactsSnapshot>,
+    gateway_statuses: &BTreeMap<MachineId, GatewayStatusObservation>,
+    read_at_unix_seconds: u64,
+) -> RuntimeSnapshot {
+    let machine_ids = intent
+        .active_machines
+        .iter()
+        .map(|machine| machine.machine_id.clone())
+        .collect::<Vec<_>>();
+    let machines = intent
+        .active_machines
+        .into_iter()
+        .map(|active| machine_snapshot_from_facts(active, facts, gateway_statuses))
+        .collect::<Vec<_>>();
+    let routes = intent.route_bindings;
+    let services = intent
+        .serving_target_entries
+        .into_iter()
+        .map(|active| service_snapshot(active, &routes, &machine_ids, facts))
+        .collect::<Vec<_>>();
+    let containers = machine_ids
+        .iter()
+        .filter_map(|machine_id| facts.get(machine_id))
+        .flat_map(|facts| facts.containers().containers().iter().cloned())
+        .collect::<Vec<_>>();
+    let revisions = derive_runtime_revisions(&services, &containers);
+    let releases = derive_runtime_releases(&services, &routes);
+    let instances = derive_runtime_instances(&containers);
+    let missing_link_count = missing_runtime_links(&services, &routes, &containers);
+
+    RuntimeSnapshot {
+        machines,
+        services,
+        routes,
+        containers,
+        projection_sources: RuntimeProjectionSources {
+            intent: RuntimeProjectionSource {
+                read_at_unix_seconds,
+            },
+            facts: RuntimeProjectionSource {
+                read_at_unix_seconds,
+            },
+            revisions: derived_source(revisions.len(), missing_link_count),
+            releases: derived_source(releases.len(), missing_link_count),
+            instances: derived_source(instances.len(), missing_link_count),
+        },
+        revisions,
+        releases,
+        instances,
+        updated_at_unix_seconds: read_at_unix_seconds,
+    }
+}
+
+fn machine_snapshot_from_facts(
+    active: ActiveMachineState,
+    facts: &BTreeMap<MachineId, MachineFactsSnapshot>,
+    gateway_statuses: &BTreeMap<MachineId, GatewayStatusObservation>,
+) -> MachineSnapshot {
+    let testimony = match facts.get(&active.machine_id) {
+        Some(facts) => MachineTestimony::Answered {
+            endpoints: facts.endpoints().cloned(),
+            gateway: gateway_statuses.get(&active.machine_id).cloned(),
+            observed_container_count: facts.containers().containers().len(),
+            disk_space: facts.disk_space(),
+            last_observed_at_unix_seconds: facts.observed_at_unix_ms() / 1_000,
+        },
+        None => MachineTestimony::NoAnswer,
+    };
+    MachineSnapshot { active, testimony }
 }
 
 impl LogsQueryService {

@@ -19,6 +19,7 @@ pub const OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE: &str = "plz.v1.rpc.machine.comma
 pub const INTENT_GET: &str = "plz.v1.rpc.core.query.intent.get";
 pub const INTENT_CHANGED: &str = "plz.v1.signal.intent.changed";
 pub const PENDING_MACHINE_JOINS_CHANGED: &str = "plz.v1.signal.machine.join.pending";
+pub const RUNTIME_SNAPSHOT_STREAM: &str = "plz.v1.projection.runtime.snapshot";
 
 pub const OPERATOR_DEPLOY_SUBMIT: &str = "plz.v1.rpc.operator.command.deploy.submit";
 pub const OPERATOR_DEPLOY_RESERVE: &str = "plz.v1.rpc.operator.command.deploy.reserve";

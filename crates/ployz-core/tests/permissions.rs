@@ -7,9 +7,10 @@ use ployz_core::subjects::{
     MACHINE_RPC_COMMAND_SCOPE, MACHINE_RPC_QUERY_SCOPE, MachineServiceEndpoint,
     OPERATION_PROGRESS_SCOPE, OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE,
     OPERATOR_MACHINE_IMAGE_QUERY_SCOPE, OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE,
-    OPERATOR_RUNTIME_SNAPSHOT, PENDING_MACHINE_JOINS_CHANGED, gateway_status, gateway_status_scope,
-    machine_container_facts, machine_facts, machine_facts_scope, machine_service,
-    machine_service_command_scope, machine_service_query_scope,
+    OPERATOR_RUNTIME_SNAPSHOT, PENDING_MACHINE_JOINS_CHANGED, RUNTIME_SNAPSHOT_STREAM,
+    gateway_status, gateway_status_scope, machine_container_facts, machine_facts,
+    machine_facts_scope, machine_service, machine_service_command_scope,
+    machine_service_query_scope,
 };
 use ployz_test_support::ids::machine_id;
 
@@ -60,6 +61,7 @@ fn controller_credential_renders_owner_machine_service_and_progress_scopes() {
             OPERATION_PROGRESS_SCOPE.to_owned(),
             ployz_core::subjects::INTENT_CHANGED.to_owned(),
             PENDING_MACHINE_JOINS_CHANGED.to_owned(),
+            RUNTIME_SNAPSHOT_STREAM.to_owned(),
         ]
     );
     assert_eq!(
@@ -72,6 +74,7 @@ fn controller_credential_renders_owner_machine_service_and_progress_scopes() {
             CORE_RPC_QUERY_SCOPE.to_owned(),
             MACHINE_RPC_QUERY_SCOPE.to_owned(),
             ployz_core::subjects::INTENT_GET.to_owned(),
+            INTENT_CHANGED.to_owned(),
             machine_facts_scope(),
             gateway_status_scope(),
             "$SRV.>".to_owned(),
@@ -100,9 +103,7 @@ fn operator_credential_renders_operator_rpc_scope_without_machine_or_join_scope(
         &[
             "_INBOX_operator.>".to_owned(),
             OPERATION_PROGRESS_SCOPE.to_owned(),
-            machine_facts_scope(),
-            gateway_status_scope(),
-            INTENT_CHANGED.to_owned(),
+            RUNTIME_SNAPSHOT_STREAM.to_owned(),
         ]
     );
     assert!(
@@ -147,6 +148,47 @@ fn runtime_snapshot_endpoint_is_inside_the_operator_query_scope() {
             OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE.to_owned(),
             INTENT_GET.to_owned(),
         ]
+    );
+}
+
+#[test]
+fn runtime_snapshot_stream_is_controller_published_and_operator_subscribed() {
+    let controller = NatsPermissionProfile::render(NatsPrincipal::Controller);
+    let operator = NatsPermissionProfile::render(NatsPrincipal::Operator);
+
+    assert_eq!(
+        RUNTIME_SNAPSHOT_STREAM,
+        "plz.v1.projection.runtime.snapshot"
+    );
+    assert!(
+        controller
+            .publish
+            .allowed_subjects()
+            .contains(&RUNTIME_SNAPSHOT_STREAM.to_owned())
+    );
+    assert!(
+        operator
+            .subscribe
+            .allowed_subjects()
+            .contains(&RUNTIME_SNAPSHOT_STREAM.to_owned())
+    );
+    assert!(
+        !operator
+            .subscribe
+            .allowed_subjects()
+            .contains(&machine_facts_scope())
+    );
+    assert!(
+        !operator
+            .subscribe
+            .allowed_subjects()
+            .contains(&gateway_status_scope())
+    );
+    assert!(
+        !operator
+            .subscribe
+            .allowed_subjects()
+            .contains(&INTENT_CHANGED.to_owned())
     );
 }
 

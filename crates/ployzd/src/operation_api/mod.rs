@@ -14,6 +14,7 @@ pub use core_replace::core_replace_report;
 pub use first_machine::init_first_machine_activate;
 pub use machine_join::{machine_join_redeem, machine_join_report};
 pub use network_query::NetworkQueryService;
+pub(crate) use queries::runtime_snapshot_from_sources;
 pub use queries::{
     LogsQueryService, MachineQueryService, RuntimeSnapshotQueryService, ServiceQueryService,
     VolumeQueryService, credential_list, ops_list, ops_status, ops_status_missing, ops_watch,

@@ -8,11 +8,13 @@ import type {
   OperationApiRequestByEndpoint,
   OperationApiResponseByEndpoint,
   PloyzApiEndpoint,
+  RuntimeSnapshot,
 } from "./generated.ts";
 
 const DEFAULT_NATS_REQUEST_TIMEOUT_MS = 10_000;
 const NATS_SERVICE_ERROR_HEADER = "Nats-Service-Error";
 const NATS_SERVICE_ERROR_CODE_HEADER = "Nats-Service-Error-Code";
+const RUNTIME_SNAPSHOT_PROJECTION_SUBJECT = "plz.v1.projection.runtime.snapshot";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -32,8 +34,24 @@ export interface PloyzNatsRequestConnection {
     payload?: Uint8Array | string,
     options?: { timeout: number },
   ): Promise<PloyzNatsResponseMessage>;
+  subscribe(subject: string): PloyzNatsSubscription;
+  status(): AsyncIterable<PloyzNatsStatus>;
+  closed(): Promise<void | Error>;
   close?(): Promise<void>;
   drain?(): Promise<void>;
+}
+
+export interface PloyzNatsMessage {
+  data: Uint8Array;
+}
+
+export interface PloyzNatsSubscription extends AsyncIterable<PloyzNatsMessage> {
+  unsubscribe(): void;
+}
+
+export interface PloyzNatsStatus {
+  type: string;
+  error?: Error;
 }
 
 export interface PloyzNatsResponseMessage {
@@ -103,6 +121,106 @@ export class PloyzNatsTransport {
       return JSON.parse(textDecoder.decode(response.data)) as OperationApiResponseByEndpoint[E];
     } catch (error) {
       throw PloyzNatsTransportError.decodeFailed(endpoint, error);
+    }
+  }
+
+  async *watchRuntime(): AsyncIterable<RuntimeSnapshot> {
+    const subscription = this.#connection.subscribe(RUNTIME_SNAPSHOT_PROJECTION_SUBJECT);
+    const statusIterator = this.#connection.status()[Symbol.asyncIterator]();
+    let latest: RuntimeSnapshot | undefined;
+    const terminal: { value?: { error?: unknown } } = {};
+    let cancelled = false;
+    let wake: (() => void) | undefined;
+
+    const signal = (): void => {
+      wake?.();
+      wake = undefined;
+    };
+    const publish = (snapshot: RuntimeSnapshot): void => {
+      if (cancelled || terminal.value) return;
+      latest = snapshot;
+      signal();
+    };
+    const finish = (error?: unknown): void => {
+      if (cancelled || terminal.value) return;
+      terminal.value = { error };
+      signal();
+    };
+    const seed = async (): Promise<RuntimeSnapshot> => {
+      const response = await this.request("runtime.snapshot", {});
+      if (response.status === "domain_error") {
+        throw new Error("runtime.snapshot returned a domain error");
+      }
+      return response.value.snapshot;
+    };
+
+    void (async () => {
+      try {
+        for await (const message of subscription) {
+          try {
+            publish(JSON.parse(textDecoder.decode(message.data)) as RuntimeSnapshot);
+          } catch (error) {
+            finish(PloyzNatsTransportError.decodeFailed("runtime.snapshot", error));
+          }
+        }
+        finish();
+      } catch (error) {
+        finish(error);
+      }
+    })();
+    void (async () => {
+      try {
+        while (true) {
+          const status = await statusIterator.next();
+          if (status.done) return;
+          if (status.value.type === "reconnect") {
+            try {
+              publish(await seed());
+            } catch (error) {
+              if (
+                error instanceof PloyzNatsTransportError &&
+                error.failure.kind === "request_failed"
+              ) {
+                continue;
+              }
+              throw error;
+            }
+          }
+          if (status.value.type === "error") finish(status.value.error);
+        }
+      } catch (error) {
+        finish(error);
+      }
+    })();
+    void this.#connection.closed().then((error) => {
+      if (error instanceof Error) finish(error);
+      else finish();
+    }, finish);
+
+    try {
+      const initial = await seed();
+      if (terminal.value?.error !== undefined) throw terminal.value.error;
+      if (terminal.value) return;
+      yield initial;
+
+      while (true) {
+        if (latest !== undefined) {
+          const value = latest;
+          latest = undefined;
+          yield value;
+          continue;
+        }
+        const outcome = terminal.value as { error?: unknown } | undefined;
+        if (outcome?.error !== undefined) throw outcome.error;
+        if (outcome) return;
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+        });
+      }
+    } finally {
+      cancelled = true;
+      subscription.unsubscribe();
+      await statusIterator.return?.();
     }
   }
 }
