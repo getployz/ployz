@@ -22,6 +22,8 @@ import type {
   MachineJoinReportRequest,
   PloyzNatsRequestConnection,
   PloyzNatsResponseMessage,
+  PloyzNatsStatus,
+  PloyzNatsSubscription,
 } from "../src/index.ts";
 
 test("NATS transport sends JSON requests to contract subjects", async () => {
@@ -178,6 +180,16 @@ class RecordingNatsConnection implements PloyzNatsRequestConnection {
 
   async drain(): Promise<void> {
     this.lifecycle.push("drain");
+  }
+
+  subscribe(): PloyzNatsSubscription {
+    throw new Error("runtime watches are not used by request tests");
+  }
+
+  async *status(): AsyncIterable<PloyzNatsStatus> {}
+
+  closed(): Promise<void | Error> {
+    return new Promise(() => undefined);
   }
 }
 

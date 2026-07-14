@@ -27,8 +27,9 @@ use ployz_core::state::{
     RouteBindingState, VolumePinState,
 };
 use ployz_core::subjects::{
-    MachineServiceEndpoint, OperationApiEndpoint, gateway_status,
-    machine_facts as machine_facts_subject, machine_service,
+    INTENT_CHANGED, MachineServiceEndpoint, OperationApiEndpoint, RUNTIME_SNAPSHOT_SEED,
+    RUNTIME_SNAPSHOT_STREAM, gateway_status, machine_facts as machine_facts_subject,
+    machine_service,
 };
 use ployz_nats::connect::connect_authenticated;
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
@@ -39,8 +40,8 @@ use ployz_sdk_types::{
     DeployReserveRequest, DeploySubmitRequest, InitFirstMachineActivateRequest, MachineAddError,
     MachineAddRequest, MachineInspectRequest, MachineJoinReportOutcome, MachineJoinReportRequest,
     MachineListRequest, MachineTestimony, MachineUpdateError, MachineUpdateRequest,
-    OpsWatchRequest, RuntimeDerivedCollectionStatus, RuntimeSnapshotRequest, ServiceInspectRequest,
-    ServiceListRequest, VolumeListRequest, VolumeStatus,
+    OpsWatchRequest, RuntimeDerivedCollectionStatus, RuntimeSnapshot, RuntimeSnapshotRequest,
+    ServiceInspectRequest, ServiceListRequest, VolumeListRequest, VolumeStatus,
 };
 use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::certificate::task::{CertificateRenewalAttempt, CertificateRenewalOutcome};
@@ -511,6 +512,128 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
         .shutdown()
         .await
         .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn secured_operator_receives_passive_runtime_snapshot_replacements() {
+    let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
+    let config = nats.control_config();
+    let machine_roster = machine_roster(&config).await;
+    let mut snapshots = nats
+        .connected
+        .user
+        .subscribe(RUNTIME_SNAPSHOT_STREAM)
+        .await
+        .expect("operator subscribes to runtime snapshots");
+    nats.connected
+        .user
+        .flush()
+        .await
+        .expect("subscription flushes");
+    let runtime = nats.start_control(&config).await;
+
+    let initial = next_runtime_snapshot(&mut snapshots, "initial", |snapshot| {
+        snapshot.machines.is_empty()
+    })
+    .await;
+    assert!(initial.containers.is_empty());
+    let seeded = request_json::<_, RuntimeSnapshot>(
+        &nats.connected.user,
+        RUNTIME_SNAPSHOT_SEED.to_owned(),
+        &serde_json::json!({}),
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("operator seeds from passive runtime projection");
+    assert_eq!(seeded, initial);
+    let health = runtime.runtime_projection_health();
+    assert_eq!(health.projection.consecutive_failures, 0);
+    assert_eq!(health.publisher.consecutive_failures, 0);
+    assert_eq!(health.seed.endpoint_tasks_started, 1);
+    assert_eq!(health.seed.endpoint_tasks_finished, 0);
+
+    machine_roster
+        .replace_active_machine(&active_machine("machine_a"))
+        .await
+        .expect("active machine stores");
+    nats.connected
+        .controller
+        .publish(INTENT_CHANGED, Vec::new().into())
+        .await
+        .expect("intent invalidation publishes");
+    nats.connected
+        .controller
+        .flush()
+        .await
+        .expect("intent flushes");
+    next_runtime_snapshot(&mut snapshots, "intent", |snapshot| {
+        snapshot.machines.len() == 1
+    })
+    .await;
+
+    let machine_client = nats.machine_client(&machine_id("machine_a")).await;
+    publish_machine_facts(
+        &machine_client,
+        containers::snapshot(
+            "machine_a",
+            [containers::observation("machine_a", "ctr_passive").running_unroutable()],
+        ),
+        None,
+    )
+    .await;
+    next_runtime_snapshot(&mut snapshots, "machine", |snapshot| {
+        snapshot
+            .containers
+            .iter()
+            .any(|container| container.container_id.as_str() == "ctr_passive")
+    })
+    .await;
+
+    publish_gateway_status(
+        &machine_client,
+        GatewayStatusObservation {
+            machine_id: machine_id("machine_a"),
+            listen_addr: "127.0.0.1:443".parse().expect("gateway address"),
+            serving: GatewayServingStatus::Current,
+            route_count: 2,
+        },
+    )
+    .await;
+    let gateway = next_runtime_snapshot(&mut snapshots, "gateway", |snapshot| {
+        matches!(
+            snapshot.machines.first().map(|machine| &machine.testimony),
+            Some(MachineTestimony::Answered {
+                gateway: Some(gateway),
+                ..
+            }) if gateway.route_count == 2
+        )
+    })
+    .await;
+    assert_eq!(gateway.machines.len(), 1);
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+async fn next_runtime_snapshot(
+    snapshots: &mut async_nats::Subscriber,
+    expected: &str,
+    accept: impl Fn(&RuntimeSnapshot) -> bool,
+) -> RuntimeSnapshot {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let message = snapshots.next().await.expect("runtime stream stays open");
+            let snapshot = serde_json::from_slice::<RuntimeSnapshot>(&message.payload)
+                .expect("runtime snapshot decodes");
+            if accept(&snapshot) {
+                return snapshot;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{expected} runtime snapshot arrives"))
 }
 
 #[tokio::test]

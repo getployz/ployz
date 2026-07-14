@@ -12,9 +12,9 @@ use ployz_core::permissions::{inbox_prefix, inbox_subscribe_scope};
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{
     INTENT_CHANGED, INTENT_GET, MachineServiceEndpoint, OPERATOR_INIT_FIRST_MACHINE_ACTIVATE,
-    PENDING_MACHINE_JOINS_CHANGED, gateway_status, gateway_status_scope, machine_container_facts,
-    machine_facts, machine_facts_scope, machine_service, machine_service_command_scope,
-    machine_service_query_scope,
+    PENDING_MACHINE_JOINS_CHANGED, RUNTIME_SNAPSHOT_SEED, RUNTIME_SNAPSHOT_STREAM, gateway_status,
+    gateway_status_scope, machine_container_facts, machine_facts, machine_facts_scope,
+    machine_service, machine_service_command_scope, machine_service_query_scope,
 };
 use ployz_nats::connect::{
     NatsClientUrl, NatsConnectConfig, authenticated_connect_options, connect_authenticated,
@@ -84,36 +84,38 @@ async fn operator_can_read_intent_and_subscribe_runtime_broadcasts_only() {
     let fixture = SecuredTestNats::start().await.expect("secured fixture");
     let (operator, mut events) = connect_with_event_capture(&fixture.user_config()).await;
 
-    let _machine_facts = operator
-        .subscribe(machine_facts_scope())
+    let _runtime_snapshots = operator
+        .subscribe(RUNTIME_SNAPSHOT_STREAM)
         .await
-        .expect("operator subscribes machine testimony");
-    let _gateway_status = operator
-        .subscribe(gateway_status_scope())
-        .await
-        .expect("operator subscribes gateway testimony");
-    let _intent_changed = operator
-        .subscribe(INTENT_CHANGED)
-        .await
-        .expect("operator subscribes intent invalidation");
+        .expect("operator subscribes runtime projection");
     operator
         .publish(INTENT_GET, "read intent".into())
         .await
         .expect("operator publishes intent read request");
+    operator
+        .publish(RUNTIME_SNAPSHOT_SEED, "{}".into())
+        .await
+        .expect("operator publishes runtime seed request");
     operator.flush().await.expect("flush allowed subjects");
     assert_no_permission_violation(&mut events).await;
 
-    let _unrelated_signal = operator
-        .subscribe(PENDING_MACHINE_JOINS_CHANGED)
-        .await
-        .expect("subscribe call is accepted client-side");
-    operator.flush().await.expect("flush denied subject");
-
-    let violation = next_permission_violation(&mut events).await;
-    assert!(
-        violation.contains("Subscription"),
-        "expected a subscription violation, got: {violation}"
-    );
+    for denied in [
+        machine_facts_scope(),
+        gateway_status_scope(),
+        INTENT_CHANGED.to_owned(),
+        PENDING_MACHINE_JOINS_CHANGED.to_owned(),
+    ] {
+        let _denied = operator
+            .subscribe(denied)
+            .await
+            .expect("subscribe call is accepted client-side");
+        operator.flush().await.expect("flush denied subject");
+        let violation = next_permission_violation(&mut events).await;
+        assert!(
+            violation.contains("Subscription"),
+            "expected a subscription violation, got: {violation}"
+        );
+    }
 }
 
 #[tokio::test]

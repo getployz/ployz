@@ -13,25 +13,20 @@ use crate::roles::machine::client::{
     read_available_machine_facts, read_available_machine_facts_by_id,
 };
 use crate::roles::machine::protocol::MachineLogsTailRpcRequest;
-use ployz_core::ids::{
-    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId,
-};
-use ployz_core::machine_runtime::{ManagedContainerKind, ManagedContainerObservation};
+use crate::runtime_snapshot::{from_sources as runtime_snapshot_from_sources, service_snapshot};
+use ployz_core::ids::{ContainerId, MachineId, NamespaceId, OperationId, ServiceId};
+use ployz_core::machine_runtime::ManagedContainerKind;
 use ployz_core::nats_config::NatsAuthorizationGrant;
 use ployz_core::ops::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationStatusSnapshot,
 };
-use ployz_core::state::{ActiveMachineState, RouteBindingState, ServingTargetEntry};
+use ployz_core::state::ActiveMachineState;
 use ployz_sdk_types::{
     CredentialListError, CredentialListResult, LogsTailError, LogsTailRequest, LogsTailResult,
     LogsTailResultTarget, LogsTailTarget, MachineInspectError, MachineListError, MachineListResult,
     MachineSnapshot, MachineTestimony, OpsListError, OpsListRequest, OpsListResult, OpsStatusError,
-    OpsWatchError, RuntimeDerivedCollectionSource, RuntimeDerivedCollectionStatus,
-    RuntimeProjectionSource, RuntimeProjectionSources, RuntimeServiceInstance,
-    RuntimeServiceRelease, RuntimeServiceRevision, RuntimeSnapshot, RuntimeSnapshotError,
-    RuntimeSnapshotResult, ServiceContainerMembership, ServiceContainerTestimony,
-    ServiceInspectError, ServiceListError, ServiceListResult, ServiceMachineTestimony,
-    ServiceSnapshot, ServiceTestimony,
+    OpsWatchError, RuntimeSnapshotError, RuntimeSnapshotResult, ServiceInspectError,
+    ServiceListError, ServiceListResult, ServiceSnapshot,
 };
 
 pub async fn credential_list(
@@ -54,7 +49,7 @@ pub async fn credential_list(
         .collect();
     Ok(CredentialListResult { credentials })
 }
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::error_map::ops_watch_error_from_replay_error;
@@ -107,64 +102,26 @@ impl RuntimeSnapshotQueryService {
                 message: error.to_string(),
             }
         })?;
-        let machine_query = MachineQueryService::new(
-            self.intent_reader.clone(),
-            self.facts.clone(),
-            self.facts_reader.clone(),
-        );
-        let service_query =
-            ServiceQueryService::new(self.intent_reader.clone(), self.facts_reader.clone());
-        let machines = machine_query
-            .list()
-            .await
-            .map_err(|MachineListError::Unavailable { message }| {
-                RuntimeSnapshotError::Unavailable { message }
-            })?
-            .machines;
-        let services = service_query
-            .list()
-            .await
-            .map_err(|ServiceListError::Unavailable { message }| {
-                RuntimeSnapshotError::Unavailable { message }
-            })?
-            .services;
-        let routes = intent.route_bindings;
-        let machine_ids = machines
+        let machine_ids = intent
+            .active_machines
             .iter()
-            .map(|machine| machine.active.machine_id.clone())
+            .map(|machine| machine.machine_id.clone())
             .collect::<Vec<_>>();
-        let facts = read_available_machine_facts(&self.facts_reader, machine_ids).await;
-        let containers = facts
+        let facts = read_available_machine_facts_by_id(&self.facts_reader, machine_ids).await;
+        let gateway_statuses = self
+            .facts
+            .gateway_statuses()
             .into_iter()
-            .flat_map(|facts| facts.containers().containers().to_vec())
-            .collect::<Vec<_>>();
-        let revisions = derive_runtime_revisions(&services, &containers);
-        let releases = derive_runtime_releases(&services, &routes);
-        let instances = derive_runtime_instances(&containers);
-        let missing_link_count = missing_runtime_links(&services, &routes, &containers);
+            .map(|status| (status.machine_id.clone(), status))
+            .collect();
 
         Ok(RuntimeSnapshotResult {
-            snapshot: RuntimeSnapshot {
-                machines,
-                services,
-                routes,
-                containers,
-                projection_sources: RuntimeProjectionSources {
-                    intent: RuntimeProjectionSource {
-                        read_at_unix_seconds,
-                    },
-                    facts: RuntimeProjectionSource {
-                        read_at_unix_seconds,
-                    },
-                    revisions: derived_source(revisions.len(), missing_link_count),
-                    releases: derived_source(releases.len(), missing_link_count),
-                    instances: derived_source(instances.len(), missing_link_count),
-                },
-                revisions,
-                releases,
-                instances,
-                updated_at_unix_seconds: read_at_unix_seconds,
-            },
+            snapshot: runtime_snapshot_from_sources(
+                intent,
+                &facts,
+                &gateway_statuses,
+                read_at_unix_seconds,
+            ),
         })
     }
 }
@@ -557,234 +514,6 @@ fn missing_machine_ids(
         .collect()
 }
 
-fn service_snapshot(
-    active: ServingTargetEntry,
-    routes: &[RouteBindingState],
-    machine_ids: &[MachineId],
-    facts: &BTreeMap<MachineId, ployz_core::machine_runtime::MachineFactsSnapshot>,
-) -> ServiceSnapshot {
-    let route_bindings = routes
-        .iter()
-        .filter(|route| {
-            route.namespace_id == active.namespace_id && route.service_id == active.service_id
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut machines = Vec::with_capacity(machine_ids.len());
-    let mut ready_container_count = 0;
-    let mut observed_container_count = 0;
-    for machine_id in machine_ids {
-        let Some(facts) = facts.get(machine_id) else {
-            machines.push(ServiceMachineTestimony::NoAnswer {
-                machine_id: machine_id.clone(),
-            });
-            continue;
-        };
-        let containers = facts
-            .containers()
-            .containers()
-            .iter()
-            .filter(|container| {
-                container.identity.kind == ManagedContainerKind::Service
-                    && container.identity.namespace_id == active.namespace_id
-                    && container.identity.service_id == active.service_id
-            })
-            .map(|container| {
-                let membership = if container.identity.namespace_revision_entry_id
-                    == active.namespace_revision_entry_id
-                {
-                    ServiceContainerMembership::ServingTargetMember
-                } else {
-                    ServiceContainerMembership::RetainedEvidence
-                };
-                ServiceContainerTestimony {
-                    observation: container.clone(),
-                    membership,
-                }
-            })
-            .collect::<Vec<_>>();
-        ready_container_count += containers
-            .iter()
-            .filter(|container| {
-                container.membership == ServiceContainerMembership::ServingTargetMember
-                    && container.observation.state.is_running()
-            })
-            .count();
-        observed_container_count += containers.len();
-        machines.push(ServiceMachineTestimony::Answered {
-            machine_id: machine_id.clone(),
-            containers,
-        });
-    }
-
-    ServiceSnapshot {
-        active,
-        route_bindings,
-        testimony: ServiceTestimony {
-            ready_container_count,
-            observed_container_count,
-            machines,
-        },
-    }
-}
-
-fn derive_runtime_revisions(
-    services: &[ServiceSnapshot],
-    containers: &[ManagedContainerObservation],
-) -> Vec<RuntimeServiceRevision> {
-    let mut revisions = BTreeSet::new();
-    for service in services {
-        revisions.insert((
-            service.active.namespace_id.clone(),
-            service.active.service_id.clone(),
-            service.active.namespace_revision_entry_id.clone(),
-        ));
-    }
-    for container in containers {
-        // Hook containers (predeploy, job) are operation evidence, not
-        // service instances; only service containers evidence a revision.
-        if container.identity.kind != ManagedContainerKind::Service {
-            continue;
-        }
-        revisions.insert((
-            container.identity.namespace_id.clone(),
-            container.identity.service_id.clone(),
-            container.identity.namespace_revision_entry_id.clone(),
-        ));
-    }
-
-    revisions
-        .into_iter()
-        .map(
-            |(namespace_id, service_id, namespace_revision_entry_id)| RuntimeServiceRevision {
-                namespace_id,
-                service_id,
-                namespace_revision_entry_id,
-            },
-        )
-        .collect()
-}
-
-fn derive_runtime_releases(
-    services: &[ServiceSnapshot],
-    routes: &[RouteBindingState],
-) -> Vec<RuntimeServiceRelease> {
-    let mut releases =
-        BTreeMap::<(NamespaceId, ServiceId, NamespaceRevisionEntryId), Vec<_>>::new();
-    let mut active_revisions = BTreeMap::new();
-    for service in services {
-        active_revisions.insert(
-            (
-                service.active.namespace_id.clone(),
-                service.active.service_id.clone(),
-            ),
-            service.active.namespace_revision_entry_id.clone(),
-        );
-        releases
-            .entry((
-                service.active.namespace_id.clone(),
-                service.active.service_id.clone(),
-                service.active.namespace_revision_entry_id.clone(),
-            ))
-            .or_default();
-    }
-    for route in routes {
-        // Route bindings are service references (ADR 0024); the served
-        // entry identity comes from the serving target, not the binding.
-        let Some(namespace_revision_entry_id) =
-            active_revisions.get(&(route.namespace_id.clone(), route.service_id.clone()))
-        else {
-            continue;
-        };
-        releases
-            .entry((
-                route.namespace_id.clone(),
-                route.service_id.clone(),
-                namespace_revision_entry_id.clone(),
-            ))
-            .or_default()
-            .push(route.target.clone());
-    }
-
-    releases
-        .into_iter()
-        .map(
-            |((namespace_id, service_id, namespace_revision_entry_id), routes)| {
-                RuntimeServiceRelease {
-                    namespace_id,
-                    service_id,
-                    namespace_revision_entry_id,
-                    routes,
-                }
-            },
-        )
-        .collect()
-}
-
-fn derive_runtime_instances(
-    containers: &[ManagedContainerObservation],
-) -> Vec<RuntimeServiceInstance> {
-    containers
-        .iter()
-        .filter(|container| container.identity.kind == ManagedContainerKind::Service)
-        .map(|container| RuntimeServiceInstance {
-            namespace_id: container.identity.namespace_id.clone(),
-            machine_id: container.machine_id.clone(),
-            container_id: container.container_id.clone(),
-            service_id: container.identity.service_id.clone(),
-            namespace_revision_entry_id: container.identity.namespace_revision_entry_id.clone(),
-            operation_id: container.identity.operation_id.clone(),
-            step_id: container.identity.step_id.clone(),
-            state: container.state.clone(),
-        })
-        .collect()
-}
-
-fn missing_runtime_links(
-    services: &[ServiceSnapshot],
-    routes: &[RouteBindingState],
-    containers: &[ManagedContainerObservation],
-) -> usize {
-    let serving = services
-        .iter()
-        .map(|service| {
-            (
-                service.active.namespace_id.clone(),
-                service.active.service_id.clone(),
-            )
-        })
-        .collect::<BTreeSet<_>>();
-
-    routes
-        .iter()
-        .filter(|route| !serving.contains(&(route.namespace_id.clone(), route.service_id.clone())))
-        .count()
-        + containers
-            .iter()
-            .filter(|container| {
-                !serving.contains(&(
-                    container.identity.namespace_id.clone(),
-                    container.identity.service_id.clone(),
-                ))
-            })
-            .count()
-}
-
-fn derived_source(
-    source_count: usize,
-    missing_link_count: usize,
-) -> RuntimeDerivedCollectionSource {
-    RuntimeDerivedCollectionSource {
-        status: if missing_link_count == 0 {
-            RuntimeDerivedCollectionStatus::Complete
-        } else {
-            RuntimeDerivedCollectionStatus::Partial
-        },
-        source_count,
-        missing_link_count,
-    }
-}
-
 fn current_unix_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -994,17 +723,18 @@ pub async fn ops_watch(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ServiceLogLine, ServiceMachineTestimony, ServiceSnapshot, ServiceTestimony,
-        derive_runtime_instances, derive_runtime_releases, derive_runtime_revisions,
-        missing_machine_ids, service_log_lines,
+    use super::{ServiceLogLine, missing_machine_ids, service_log_lines};
+    use crate::runtime_snapshot::{
+        derive_instances, derive_releases, derive_revisions, missing_links, service_snapshot,
     };
     use ployz_core::machine_runtime::{
         MachineContainerObservationSnapshot, MachineFactsSnapshot, ManagedContainerKind,
     };
     use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
     use ployz_core::state::RouteBindingState;
-    use ployz_sdk_types::ServiceContainerMembership;
+    use ployz_sdk_types::{
+        ServiceContainerMembership, ServiceMachineTestimony, ServiceSnapshot, ServiceTestimony,
+    };
     use ployz_test_support::containers;
     use ployz_test_support::fixtures::serving_target_entry_in;
     use ployz_test_support::ids::{
@@ -1030,7 +760,7 @@ mod tests {
         let machine_a_facts = machine_facts("machine_a", [observed]);
         let facts = BTreeMap::from([(machine_a_facts.machine_id().clone(), machine_a_facts)]);
 
-        let snapshot = super::service_snapshot(active, &[], &machine_ids, &facts);
+        let snapshot = service_snapshot(active, &[], &machine_ids, &facts);
 
         assert_eq!(snapshot.testimony.ready_container_count, 1);
         let [answered, no_answer] = snapshot.testimony.machines.as_slice() else {
@@ -1077,7 +807,7 @@ mod tests {
         let machine_a_facts = machine_facts("machine_a", [active_container, retained_container]);
         let facts = BTreeMap::from([(machine_a_facts.machine_id().clone(), machine_a_facts)]);
 
-        let snapshot = super::service_snapshot(active, &[], &machine_ids, &facts);
+        let snapshot = service_snapshot(active, &[], &machine_ids, &facts);
 
         assert_eq!(snapshot.testimony.ready_container_count, 1);
         assert_eq!(snapshot.testimony.observed_container_count, 2);
@@ -1132,14 +862,14 @@ mod tests {
             .running_unroutable()
             .build();
 
-        let instances = derive_runtime_instances(std::slice::from_ref(&orphan));
+        let instances = derive_instances(std::slice::from_ref(&orphan));
         let [instance] = instances.as_slice() else {
             panic!("orphaned container is projected as an instance");
         };
         assert_eq!(instance.namespace_id, namespace_id("team-a"));
         assert_eq!(instance.service_id, service_id("svc_orphan"));
 
-        let revisions = derive_runtime_revisions(&[], &[orphan]);
+        let revisions = derive_revisions(&[], &[orphan]);
         let [revision] = revisions.as_slice() else {
             panic!("orphaned container is projected as a revision");
         };
@@ -1155,7 +885,7 @@ mod tests {
             .running_unroutable()
             .build();
 
-        assert!(derive_runtime_revisions(&[], &[job]).is_empty());
+        assert!(derive_revisions(&[], &[job]).is_empty());
     }
 
     /// A route for a namespace with no serving entry is a missing link
@@ -1181,10 +911,7 @@ mod tests {
             service_id: service_id("web"),
         };
 
-        assert_eq!(
-            super::missing_runtime_links(&[serving], &[dangling_route], &[]),
-            1
-        );
+        assert_eq!(missing_links(&[serving], &[dangling_route], &[]), 1);
     }
 
     /// Two namespaces sharing a service name must not cross-attribute
@@ -1211,7 +938,7 @@ mod tests {
             service_id: service_id("web"),
         };
 
-        let releases = derive_runtime_releases(
+        let releases = derive_releases(
             &[serving("team-b", "entry_b"), serving("team-a", "entry_a")],
             &[route],
         );

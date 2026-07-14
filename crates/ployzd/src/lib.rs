@@ -59,6 +59,8 @@ pub(crate) mod machine_runtime;
 pub mod operation_api;
 pub mod process_support;
 pub mod role_cli;
+pub(crate) mod runtime_projection;
+pub(crate) mod runtime_snapshot;
 pub mod seed;
 pub mod service_catalog;
 pub mod tasks;

@@ -124,6 +124,7 @@ export interface PloyzOperationTransport {
     endpoint: E,
     request: OperationApiRequestByEndpoint[E],
   ): Promise<OperationApiResponseByEndpoint[E]>;
+  watchRuntime?(): AsyncIterable<RuntimeSnapshot>;
 }
 
 export class PloyzApiError<E> extends Error {
@@ -286,6 +287,14 @@ export class PloyzClient {
       "runtime.snapshot",
       await this.#transport.request("runtime.snapshot", runtimeSnapshotRequest()),
     ).snapshot;
+  }
+
+  watchRuntime(): AsyncIterable<RuntimeSnapshot> {
+    const watchRuntime = this.#transport.watchRuntime;
+    if (!watchRuntime) {
+      throw new Error("transport does not support runtime watches");
+    }
+    return watchRuntime.call(this.#transport);
   }
 
   async logsTail(input: string | PloyzLogsTailInput): Promise<LogsTailResult> {

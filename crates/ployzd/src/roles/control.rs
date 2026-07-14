@@ -32,6 +32,9 @@ use crate::roles::machine::client::{
     NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
 };
 use crate::roles::machine::intent_mirror::{MachineIntentMirror, MachinePendingJoinMirror};
+use crate::runtime_projection::{
+    RunningRuntimeProjection, RuntimeProjectionHealthState, start_runtime_projection,
+};
 use crate::seed::{SeedCoreError, seed_core_from_snapshot};
 use crate::tasks::TaskRegistry;
 use ployz_core::state::{ControlPlaneEpoch, PendingMachineJoinRecovery};
@@ -62,6 +65,7 @@ pub struct RunningControlProcess {
     certificate_renewal_tasks: TaskRegistry,
     certificate_renewal_health: CertificateRenewalHealth,
     facts_cache: RunningFactCache,
+    runtime_projection: RunningRuntimeProjection,
     authorization: NatsAuthorizationWriter,
 }
 
@@ -71,8 +75,14 @@ impl RunningControlProcess {
         self.certificate_renewal_health.snapshot()
     }
 
+    #[must_use]
+    pub fn runtime_projection_health(&self) -> RuntimeProjectionHealthState {
+        self.runtime_projection.health()
+    }
+
     pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
         self.operation_api.shutdown().await?;
+        self.runtime_projection.shutdown().await?;
         self.intent.shutdown().await?;
         self.credential_grant_tasks.abort_all();
         self.deploy_tasks.abort_all();
@@ -322,6 +332,12 @@ pub async fn start_control_process_with_client_and_reload(
     )
     .await
     .map_err(ControlProcessError::StartIntent)?;
+    let runtime_projection =
+        start_runtime_projection(client.clone(), intent_reader.clone(), facts.clone())
+            .await
+            .map_err(|error| ControlProcessError::StartRuntimeProjection {
+                message: error.to_string(),
+            })?;
     let machine_updater = NatsMachineSubstrateUpdater::new(client.clone());
     let machine_update = MachineUpdateOperation::new(
         controllers.clone(),
@@ -385,6 +401,7 @@ pub async fn start_control_process_with_client_and_reload(
         certificate_renewal_tasks,
         certificate_renewal_health,
         facts_cache,
+        runtime_projection,
         authorization,
     })
 }
@@ -537,6 +554,8 @@ pub enum ControlProcessError {
     ResumeMachineAddMints(MintResumeError),
     #[error("failed to start intent service: {0}")]
     StartIntent(ployz_nats::service_runtime::NatsServiceRuntimeError),
+    #[error("failed to start runtime projection: {message}")]
+    StartRuntimeProjection { message: String },
     #[error("failed to start operation API service: {0}")]
     StartOperationApi(ApiServiceError),
     #[error("failed to wait for shutdown: {0}")]

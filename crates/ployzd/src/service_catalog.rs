@@ -3,7 +3,7 @@
 use ployz_core::ids::MachineId;
 use ployz_core::subjects::{
     INTENT_GET, MachineServiceEndpoint, OperationApiEndpoint, OperationApiEndpointExecution,
-    machine_service,
+    RUNTIME_SNAPSHOT_SEED, machine_service,
 };
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceDiscoveryQuery,
@@ -23,6 +23,9 @@ pub const DNS_SERVICE_DESCRIPTION: &str = "Ployz machine-local DNS role service"
 pub const INTENT_SERVICE_NAME: &str = "plz-intent";
 pub const INTENT_SERVICE_ID: &str = "plz-intent.core";
 pub const INTENT_SERVICE_DESCRIPTION: &str = "Ployz operator intent service";
+pub const RUNTIME_PROJECTION_SERVICE_NAME: &str = "plz-runtime-projection";
+pub const RUNTIME_PROJECTION_SERVICE_ID: &str = "plz-runtime-projection.core";
+pub const RUNTIME_PROJECTION_SERVICE_DESCRIPTION: &str = "Ployz passive runtime projection";
 pub const SERVICE_VERSION: ServiceVersion = ServiceVersion::new(0, 1, 0);
 pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: &[OperationApiEndpoint] = &[
     OperationApiEndpoint::CredentialAdd,
@@ -66,7 +69,11 @@ impl DaemonServiceCatalog {
     #[must_use]
     pub fn for_control() -> Self {
         Self {
-            services: vec![api_service(), intent_service()],
+            services: vec![
+                api_service(),
+                intent_service(),
+                runtime_projection_service(),
+            ],
         }
     }
 
@@ -138,6 +145,27 @@ pub fn intent_service() -> NatsServiceSpec {
 #[must_use]
 pub fn intent_get_endpoint_spec() -> NatsServiceEndpointSpec {
     NatsServiceEndpointSpec::new("intent.get", INTENT_GET, EndpointExecution::Query)
+}
+
+#[must_use]
+pub fn runtime_projection_service() -> NatsServiceSpec {
+    NatsServiceSpec::new(
+        RUNTIME_PROJECTION_SERVICE_ID,
+        RUNTIME_PROJECTION_SERVICE_NAME,
+        SERVICE_VERSION,
+        RUNTIME_PROJECTION_SERVICE_DESCRIPTION,
+        ServiceMetadata::empty(),
+        vec![runtime_snapshot_seed_endpoint_spec()],
+    )
+}
+
+#[must_use]
+pub fn runtime_snapshot_seed_endpoint_spec() -> NatsServiceEndpointSpec {
+    NatsServiceEndpointSpec::new(
+        "runtime.snapshot.seed",
+        RUNTIME_SNAPSHOT_SEED,
+        EndpointExecution::Query,
+    )
 }
 
 #[must_use]
