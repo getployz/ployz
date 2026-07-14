@@ -15,10 +15,11 @@ use crate::security::NatsPrincipal;
 use crate::subjects::{
     CORE_RPC_QUERY_SCOPE, INTENT_CHANGED, INTENT_GET, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT,
     MACHINE_RPC_COMMAND_SCOPE, MACHINE_RPC_QUERY_SCOPE, OPERATION_PROGRESS_SCOPE,
-    OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE, OPERATOR_MACHINE_IMAGE_QUERY_SCOPE,
-    OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE, PENDING_MACHINE_JOINS_CHANGED,
-    RUNTIME_SNAPSHOT_STREAM, gateway_status, gateway_status_scope, machine_container_facts,
-    machine_facts, machine_facts_scope, machine_service_command_scope, machine_service_query_scope,
+    OPERATOR_INIT_FIRST_MACHINE_ACTIVATE, OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE,
+    OPERATOR_MACHINE_IMAGE_QUERY_SCOPE, OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE,
+    PENDING_MACHINE_JOINS_CHANGED, RUNTIME_SNAPSHOT_STREAM, gateway_status, gateway_status_scope,
+    machine_container_facts, machine_facts, machine_facts_scope, machine_service_command_scope,
+    machine_service_query_scope,
 };
 
 const SYSTEM_EVENTS: &str = "$SYS.>";
@@ -164,6 +165,7 @@ fn machine_service_server_subscriptions(
 #[must_use]
 fn controller_publications() -> SubjectPermissions {
     let mut allow = request_reply_publications(&NatsPrincipal::Controller);
+    allow.push(OPERATOR_INIT_FIRST_MACHINE_ACTIVATE.to_owned());
     allow.extend(machine_service_client_publications().into_allowed_subjects());
     allow.extend([
         CORE_RPC_QUERY_SCOPE.to_owned(),
