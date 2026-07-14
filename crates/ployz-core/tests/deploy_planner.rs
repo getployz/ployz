@@ -864,6 +864,34 @@ fn declared_route_reroute_reuses_the_binding_identity_and_updates_endpoint_port(
 }
 
 #[test]
+fn declared_route_rejects_duplicate_target_regardless_of_endpoint_port() {
+    for duplicate_port in [8080, 9090] {
+        let mut request = deploy_request(1);
+        request.routes = vec![
+            deploy_route("api.example.com", 8080),
+            deploy_route("api.example.com", duplicate_port),
+        ];
+
+        let error = prepare_deploy(
+            DeployPreparationInput {
+                request,
+                occupied_route_bindings: Vec::new(),
+                eligible_machines: Vec::new(),
+                draining_machines: Vec::new(),
+                observed_machines: Vec::new(),
+            },
+            route_binding_id_for,
+        )
+        .expect_err("duplicate declared target must collide");
+
+        assert!(matches!(
+            error,
+            ployz_core::deploy::RouteBindingCommitError::HostnameCollision { .. }
+        ));
+    }
+}
+
+#[test]
 fn declared_route_reroute_rejects_other_owners_and_automatic_bindings() {
     let mut request = deploy_request(1);
     request.routes = vec![deploy_route("api.example.com", 9090)];
@@ -1035,6 +1063,30 @@ fn automatic_route_reroute_reuses_the_binding_identity_and_updates_endpoint_port
 
     assert_eq!(commit.id, route_binding_id("route_existing"));
     assert_eq!(commit.endpoint_port, route_port(9090));
+}
+
+#[test]
+fn automatic_route_rejects_duplicate_target_regardless_of_endpoint_port() {
+    for duplicate_port in [8080, 9090] {
+        let mut request = deploy_request(1);
+        request.routes = vec![
+            automatic_deploy_route("api", 8080),
+            automatic_deploy_route("api", duplicate_port),
+        ];
+
+        let error = auto_hostname_route_binding_commits(
+            &request,
+            Some(&route_hostname("apps.example.com")),
+            &[],
+            route_binding_id_for,
+        )
+        .expect_err("duplicate automatic target must collide");
+
+        assert!(matches!(
+            error,
+            ployz_core::deploy::AutoHostnameRouteBindingError::HostnameCollision { .. }
+        ));
+    }
 }
 
 #[test]
