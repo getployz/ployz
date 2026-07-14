@@ -60,8 +60,9 @@ pub use ingress_configure::{
     IngressConfigureFailure, IngressConfigureOperationState, IngressConfigureTransition,
 };
 pub use ingress_refresh::{
-    IngressRefreshCandidateEvidence, IngressRefreshEvidence, IngressRefreshFactsOutcome,
-    IngressRefreshFailure, IngressRefreshGatewayOutcome, IngressRefreshOperationState,
+    IngressRefreshCandidateEvidence, IngressRefreshCandidatePublication, IngressRefreshEvidence,
+    IngressRefreshExclusionReason, IngressRefreshFactsOutcome, IngressRefreshFailure,
+    IngressRefreshGatewayOutcome, IngressRefreshInvalidationEvidence, IngressRefreshOperationState,
     IngressRefreshTransition,
 };
 pub use machine_add::{MachineAddOperationState, MachineAddOperationStateName};

@@ -29,6 +29,8 @@ pub enum SeedCoreError {
     Authorizations(#[from] NatsAuthorizationStoreError),
     #[error("seeding ingress intent: {0}")]
     Ingress(#[from] IngressIntentStoreError),
+    #[error("mirrored ingress intent is invalid: {0}")]
+    InvalidIngress(#[from] ployz_core::ingress::IngressConfigurationError),
     #[error("seeding active certificate metadata: {0}")]
     Certificate(CoreStoreError),
     #[error("seeding control-plane epoch: {0}")]
@@ -80,10 +82,10 @@ pub async fn seed_core_from_snapshot(
         namespace.replace_volume_pin(pin.clone()).await?;
     }
     IngressIntentStore::new(core_store.clone())
-        .replace(IngressConfiguration {
-            automatic_hostnames: snapshot.automatic_hostname_configuration.clone(),
-            ployz_dns_target: snapshot.ployz_dns_target,
-        })
+        .replace(IngressConfiguration::try_new(
+            snapshot.automatic_hostname_configuration.clone(),
+            snapshot.ployz_dns_target,
+        )?)
         .await?;
     let certificate_store = ActiveCertificateMetadataStore::new(core_store.clone());
     for certificate in &snapshot.active_certificates {
@@ -203,10 +205,13 @@ mod tests {
                 .load()
                 .await
                 .expect("load ingress intent"),
-            Some(IngressConfiguration {
-                automatic_hostnames: snapshot.automatic_hostname_configuration,
-                ployz_dns_target: PloyzDnsTargetIntent::Disabled,
-            })
+            Some(
+                IngressConfiguration::try_new(
+                    snapshot.automatic_hostname_configuration,
+                    PloyzDnsTargetIntent::Disabled,
+                )
+                .expect("valid ingress configuration")
+            )
         );
         assert!(
             crate::intent::ingress_intent::PloyzDnsTargetStore::new(store)

@@ -8,7 +8,7 @@ use ployz_core::cert::{ManagedLeaseAcquireRequest, ManagedLeaseRecord, ManagedLe
 use ployz_core::ids::OperationId;
 use ployz_core::ingress::{
     IngressEndpointProjection, IngressEndpointProjectionIdentity, IngressEndpointProjectionState,
-    PloyzDnsTargetIntent,
+    IngressEndpointSet, PloyzDnsTargetIntent,
 };
 use ployz_core::ops::{
     FailureMessage, ManagedDnsReconcileFailure, ManagedDnsReconcileFailureClass,
@@ -171,7 +171,7 @@ pub async fn reconcile_once(
     let Some(configuration) = ingress_intent.load().await? else {
         return Ok(ManagedDnsTaskOutcome::AwaitingConfiguration);
     };
-    match configuration.ployz_dns_target {
+    match configuration.ployz_dns_target() {
         PloyzDnsTargetIntent::Disabled => reconcile_disabled(target, repository, worker).await,
         PloyzDnsTargetIntent::Enabled => {
             reconcile_enabled(target, repository, worker, projection, now_seconds).await
@@ -294,7 +294,7 @@ async fn reconcile_allocation(
                 },
             },
             Some(identity),
-            ManagedDnsEndpointSet::empty(),
+            empty_managed_dns_endpoint_set(),
         ),
         ReconcileAction::LeaseRenewal {
             identity,
@@ -359,7 +359,7 @@ fn next_action(
         match &projection.state {
             IngressEndpointProjectionState::Current { endpoints }
             | IngressEndpointProjectionState::Retained { endpoints } => {
-                let endpoints = ManagedDnsEndpointSet::from(endpoints);
+                let endpoints = managed_dns_endpoint_set(endpoints);
                 if !checkpoint_matches(checkpoint, Some(projection.identity()), &endpoints) {
                     return Some(ReconcileAction::ProjectionApply {
                         identity: projection.identity(),
@@ -368,7 +368,7 @@ fn next_action(
                 }
             }
             IngressEndpointProjectionState::Unavailable { .. } => {
-                let endpoints = ManagedDnsEndpointSet::empty();
+                let endpoints = empty_managed_dns_endpoint_set();
                 if !checkpoint_matches(checkpoint, Some(projection.identity()), &endpoints) {
                     return Some(ReconcileAction::ProjectionWithdraw {
                         identity: projection.identity(),
@@ -395,10 +395,21 @@ fn next_action(
     {
         return Some(ReconcileAction::LeaseRenewal {
             identity: None,
-            endpoints: ManagedDnsEndpointSet::empty(),
+            endpoints: empty_managed_dns_endpoint_set(),
         });
     }
     None
+}
+
+fn managed_dns_endpoint_set(endpoints: &IngressEndpointSet) -> ManagedDnsEndpointSet {
+    ManagedDnsEndpointSet::new(
+        endpoints.ipv4().iter().copied().collect(),
+        endpoints.ipv6().iter().copied().collect(),
+    )
+}
+
+fn empty_managed_dns_endpoint_set() -> ManagedDnsEndpointSet {
+    ManagedDnsEndpointSet::new(Vec::new(), Vec::new())
 }
 
 fn checkpoint_matches(
@@ -582,7 +593,7 @@ impl From<crate::operations::log::SubmitOperationError> for ManagedDnsTaskError 
 mod tests {
     use super::*;
     use ployz_core::cert::{LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, ManagedLeaseName};
-    use ployz_core::ingress::{IngressEndpointSet, IngressEndpointUnavailableReason};
+    use ployz_core::ingress::IngressEndpointUnavailableReason;
     use ployz_core::state::ControlPlaneEpoch;
 
     fn lease(issued_at: u64, expires_at: u64) -> ManagedLeaseRecord {
@@ -608,7 +619,7 @@ mod tests {
 
     fn endpoints() -> IngressEndpointSet {
         IngressEndpointSet::try_new(
-            ["203.0.113.8".parse().expect("IPv4")],
+            ["8.8.8.8".parse().expect("IPv4")],
             ["2001:4860:4860::8888".parse().expect("IPv6")],
         )
         .expect("public endpoints")
@@ -619,7 +630,7 @@ mod tests {
         let lease = lease(100, 190);
         let checkpoint = ManagedDnsCheckpoint::Applied {
             last_applied_identity: None,
-            last_applied_endpoints: ManagedDnsEndpointSet::empty(),
+            last_applied_endpoints: empty_managed_dns_endpoint_set(),
         };
         let pending = projection(IngressEndpointProjectionState::Pending, 0);
 
@@ -639,7 +650,7 @@ mod tests {
             },
             4,
         );
-        let expected = ManagedDnsEndpointSet::from(match &current.state {
+        let expected = managed_dns_endpoint_set(match &current.state {
             IngressEndpointProjectionState::Current { endpoints } => endpoints,
             _ => unreachable!(),
         });
@@ -687,7 +698,7 @@ mod tests {
         };
         let checkpoint = ManagedDnsCheckpoint::Applied {
             last_applied_identity: Some(identity),
-            last_applied_endpoints: ManagedDnsEndpointSet::from(&endpoints()),
+            last_applied_endpoints: managed_dns_endpoint_set(&endpoints()),
         };
         assert_eq!(next_action(None, Some(&checkpoint), &lease, 159), None);
         assert!(matches!(

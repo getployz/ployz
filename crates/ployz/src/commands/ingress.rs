@@ -90,12 +90,7 @@ pub(crate) fn ingress_configure_command(
 ) -> Result<IngressConfigureCommand, PloyzctlCliError> {
     let ployz_dns_target = parsed.dns_target.intent();
     let automatic_hostnames = parsed.automatic_hostnames.configuration();
-    let configuration = IngressConfiguration {
-        automatic_hostnames,
-        ployz_dns_target,
-    };
-    configuration
-        .validate()
+    let configuration = IngressConfiguration::try_new(automatic_hostnames, ployz_dns_target)
         .map_err(|error| invalid_value("ingress configuration", error))?;
     Ok(IngressConfigureCommand {
         operation_id: generate_client_ingress_configure_id()
@@ -120,7 +115,7 @@ mod tests {
         .expect("valid configuration");
 
         assert!(matches!(
-            command.configuration.automatic_hostnames,
+            command.configuration.automatic_hostnames(),
             AutomaticHostnameConfiguration::Custom { suffix }
                 if suffix.as_str() == "apps.example.com"
         ));
@@ -141,16 +136,17 @@ mod tests {
         )
         .expect("parse ingress configure");
 
-        assert!(matches!(
-            command,
-            crate::commands::PloyzctlCommand::IngressConfigure(IngressConfigureCommand {
-                configuration: IngressConfiguration {
-                    automatic_hostnames: AutomaticHostnameConfiguration::Ployz,
-                    ployz_dns_target: PloyzDnsTargetIntent::Enabled,
-                },
-                ..
-            })
-        ));
+        let crate::commands::PloyzctlCommand::IngressConfigure(command) = command else {
+            panic!("expected ingress configure command")
+        };
+        assert_eq!(
+            command.configuration,
+            IngressConfiguration::try_new(
+                AutomaticHostnameConfiguration::Ployz,
+                PloyzDnsTargetIntent::Enabled,
+            )
+            .expect("valid ingress configuration")
+        );
     }
 
     #[test]

@@ -265,8 +265,8 @@ async fn load_intent(
         serving_target_entries: namespace_intent.serving_target_entries,
         volume_pins: namespace_intent.volume_pins,
         nats_authorizations,
-        automatic_hostname_configuration: ingress.automatic_hostnames,
-        ployz_dns_target: ingress.ployz_dns_target,
+        automatic_hostname_configuration: ingress.automatic_hostnames().clone(),
+        ployz_dns_target: ingress.ployz_dns_target(),
         active_certificates,
     })
 }
@@ -317,10 +317,13 @@ mod tests {
         let namespace_intent = NamespaceIntentStore::new(store.clone());
         let ingress_intent = IngressIntentStore::new(store.clone());
         ingress_intent
-            .replace(IngressConfiguration {
-                automatic_hostnames: AutomaticHostnameConfiguration::Ployz,
-                ployz_dns_target: PloyzDnsTargetIntent::Enabled,
-            })
+            .replace(
+                IngressConfiguration::try_new(
+                    AutomaticHostnameConfiguration::Ployz,
+                    PloyzDnsTargetIntent::Enabled,
+                )
+                .expect("valid ingress configuration"),
+            )
             .await
             .expect("configure ingress");
         assert!(

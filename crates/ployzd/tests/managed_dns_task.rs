@@ -127,10 +127,13 @@ impl Fixture {
         let store = CoreStore::open_in_memory().await.expect("store");
         let ingress = IngressIntentStore::new(store.clone());
         ingress
-            .replace(IngressConfiguration {
-                automatic_hostnames: AutomaticHostnameConfiguration::Disabled,
-                ployz_dns_target: PloyzDnsTargetIntent::Enabled,
-            })
+            .replace(
+                IngressConfiguration::try_new(
+                    AutomaticHostnameConfiguration::Disabled,
+                    PloyzDnsTargetIntent::Enabled,
+                )
+                .expect("valid ingress configuration"),
+            )
             .await
             .expect("configure ingress");
         let target = PloyzDnsTargetStore::new(store.clone());

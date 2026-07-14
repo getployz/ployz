@@ -20,6 +20,28 @@ use crate::certificate::GatewayCertificateTarget;
 use super::{DeployExecutionCommand, DeployServiceExecutionCommand};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutomaticHostnameMode {
+    Disabled,
+    Ployz { suffix: RouteHostname },
+    Custom { suffix: RouteHostname },
+}
+
+impl AutomaticHostnameMode {
+    #[must_use]
+    pub fn suffix(&self) -> Option<&RouteHostname> {
+        match self {
+            Self::Disabled => None,
+            Self::Ployz { suffix } | Self::Custom { suffix } => Some(suffix),
+        }
+    }
+
+    #[must_use]
+    pub const fn is_ployz(&self) -> bool {
+        matches!(self, Self::Ployz { .. })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployExecutionFacts {
     pub namespace_route_bindings: Vec<RouteBindingState>,
     pub namespace_serving_entries: Vec<ServingTargetEntry>,
@@ -30,8 +52,7 @@ pub struct DeployExecutionFacts {
     pub observed_machines: Vec<MachineContainerObservationSnapshot>,
     pub machine_platforms: BTreeMap<MachineId, OciPlatform>,
     pub namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
-    pub automatic_hostname_suffix: Option<RouteHostname>,
-    pub ployz_automatic_hostnames: bool,
+    pub automatic_hostname_mode: AutomaticHostnameMode,
     pub gateway_certificate_targets: Vec<GatewayCertificateTarget>,
     pub ployz_gateway_certificate_targets: Vec<GatewayCertificateTarget>,
     pub step_timeout: Duration,
@@ -97,9 +118,9 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
     for service_request in mint_requests {
         let commits = auto_hostname_route_binding_commits(
             service_request,
-            facts.automatic_hostname_suffix.as_ref(),
+            facts.automatic_hostname_mode.suffix(),
             &occupied_bindings,
-            route_binding_id_for_target,
+            mint_route_binding_id,
         )
         .expect("route bindings were validated while loading deploy facts");
         occupied_bindings.extend(commits.iter().cloned());
@@ -157,7 +178,7 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
                 draining_machines: draining_machines.clone(),
                 observed_machines: facts.observed_machines.clone(),
             },
-            route_binding_id_for_target,
+            mint_route_binding_id,
         )
         .expect("route bindings were validated while loading deploy facts");
         occupied_bindings.extend(prepared.route_commits.iter().cloned());
@@ -188,8 +209,8 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
             cleanup_candidates: prepared.cleanup_candidates,
         });
     }
-    let exact_certificate_routes =
-        exact_certificate_routes(&services, facts.ployz_automatic_hostnames);
+    let ployz_automatic_hostnames = facts.automatic_hostname_mode.is_ployz();
+    let exact_certificate_routes = exact_certificate_routes(&services, ployz_automatic_hostnames);
 
     // Manifest omission removes a service: its containers are cleanup
     // candidates on every deploy, not only when the manifest is empty.
@@ -210,7 +231,7 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         machine_platforms: facts.machine_platforms,
         dataplane_members: facts.dataplane_members,
         exact_certificate_routes,
-        ployz_automatic_hostnames: facts.ployz_automatic_hostnames,
+        ployz_automatic_hostnames,
         gateway_certificate_targets: facts.gateway_certificate_targets,
         ployz_gateway_certificate_targets: facts.ployz_gateway_certificate_targets,
         unusable_machines: facts.unusable_machines,
@@ -236,12 +257,9 @@ fn exact_certificate_routes(
     routes
 }
 
-pub(super) fn route_binding_id_for_target(target: &RouteTarget) -> RouteBindingId {
-    use sha2::{Digest, Sha256};
-
-    let digest = Sha256::digest(target.hostname.as_str().as_bytes());
-    RouteBindingId::try_new(format!("route_{digest:x}"))
-        .expect("SHA-256 route binding id is a valid subject token")
+pub(super) fn mint_route_binding_id(_target: &RouteTarget) -> RouteBindingId {
+    RouteBindingId::try_new(format!("route_{}", nuid::next()))
+        .expect("NUID route binding id is a valid subject token")
 }
 
 pub fn namespace_cleanup_candidates(

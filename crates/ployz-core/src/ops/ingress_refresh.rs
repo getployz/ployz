@@ -11,7 +11,7 @@ use super::events::OperationEvent;
 use super::projection::{
     OperationProjection, ProjectionOperationState, StatusProjectionError, project_transition,
 };
-use super::{EventSequence, OperationStatus};
+use super::{EventSequence, FailureMessage, OperationStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -29,14 +29,28 @@ impl IngressRefreshOperationState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "class", rename_all = "snake_case", deny_unknown_fields)]
 pub enum IngressRefreshFailure {
-    IntentUnavailable,
-    GatherFailed,
-    StorageFailed,
-    ConcurrentWriter,
+    IntentUnavailable {
+        message: FailureMessage,
+    },
+    GatherFailed {
+        message: FailureMessage,
+        candidates: Vec<IngressRefreshCandidateEvidence>,
+    },
+    StorageFailed {
+        message: FailureMessage,
+        candidates: Vec<IngressRefreshCandidateEvidence>,
+    },
+    ConcurrentWriter {
+        message: FailureMessage,
+        candidates: Vec<IngressRefreshCandidateEvidence>,
+    },
+    Interrupted {
+        message: FailureMessage,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +62,7 @@ pub struct IngressRefreshEvidence {
     pub deadline_seconds: u64,
     pub before: IngressEndpointProjectionIdentity,
     pub after: IngressEndpointProjectionIdentity,
+    pub invalidation: IngressRefreshInvalidationEvidence,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,7 +72,39 @@ pub struct IngressRefreshCandidateEvidence {
     pub machine_id: MachineId,
     pub gateway: IngressRefreshGatewayOutcome,
     pub facts: IngressRefreshFactsOutcome,
-    pub contribution: Vec<IpAddr>,
+    pub publication: IngressRefreshCandidatePublication,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum IngressRefreshCandidatePublication {
+    Published {
+        addresses: Vec<IpAddr>,
+    },
+    Excluded {
+        reason: IngressRefreshExclusionReason,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum IngressRefreshExclusionReason {
+    GatewayUnavailable,
+    GatewayTestimonyFailed,
+    FactsTestimonyFailed,
+    MissingFacts,
+    Addressless,
+    NonPublicAddresses,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum IngressRefreshInvalidationEvidence {
+    Published,
+    Failed { message: FailureMessage },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +129,9 @@ pub enum IngressRefreshFactsOutcome {
     Responded {
         public_control_endpoints: Vec<IpAddr>,
     },
+    Missing,
+    Addressless,
+    NonPublic,
     TimedOut,
     NoResponder,
     WrongResponder,
@@ -106,7 +156,7 @@ impl IngressRefreshTransition {
             },
             Self::Failed { failure } => OperationEvent::IngressRefreshFailed {
                 operation_id: operation_id.clone(),
-                failure: *failure,
+                failure: failure.clone(),
             },
         }
     }
@@ -116,7 +166,9 @@ impl IngressRefreshTransition {
             Self::Completed { evidence } => IngressRefreshOperationState::Completed {
                 evidence: evidence.clone(),
             },
-            Self::Failed { failure } => IngressRefreshOperationState::Failed { failure: *failure },
+            Self::Failed { failure } => IngressRefreshOperationState::Failed {
+                failure: failure.clone(),
+            },
         }
     }
 }
@@ -179,6 +231,7 @@ mod tests {
                 revision: 0,
             },
             after: identity,
+            invalidation: IngressRefreshInvalidationEvidence::Published,
         };
 
         let projected = project_event(
@@ -198,6 +251,41 @@ mod tests {
                     state: IngressRefreshOperationState::Completed { evidence: stored },
                     ..
                 } if stored == &evidence)
+        ));
+    }
+
+    #[test]
+    fn failed_refresh_preserves_typed_message_and_candidate_evidence() {
+        let id = OperationId::try_new("op_ingress_refresh_failed").expect("operation id");
+        let failure = IngressRefreshFailure::StorageFailed {
+            message: FailureMessage::try_new("projection write failed").expect("message"),
+            candidates: vec![IngressRefreshCandidateEvidence {
+                machine_id: MachineId::try_new("machine_a").expect("machine id"),
+                gateway: IngressRefreshGatewayOutcome::Current,
+                facts: IngressRefreshFactsOutcome::NonPublic,
+                publication: IngressRefreshCandidatePublication::Excluded {
+                    reason: IngressRefreshExclusionReason::NonPublicAddresses,
+                },
+            }],
+        };
+
+        let projected = project_event(
+            &id,
+            &IngressRefreshOperationState::Accepted,
+            IngressRefreshEvent::Transition(IngressRefreshTransition::Failed {
+                failure: failure.clone(),
+            }),
+            EventSequence::try_new(2).expect("sequence"),
+        )
+        .expect("project failure");
+
+        assert!(matches!(
+            projected,
+            OperationProjection::StatusChanged { status }
+                if matches!(status.as_ref(), OperationStatus::IngressRefresh {
+                    state: IngressRefreshOperationState::Failed { failure: stored },
+                    ..
+                } if stored == &failure)
         ));
     }
 }

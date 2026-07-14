@@ -2,7 +2,7 @@
 
 use crate::certificate::gateway_certificate_targets;
 use crate::intent::ingress_intent::{
-    IngressIntentStore, PloyzDnsTargetAllocation, PloyzDnsTargetStore,
+    IngressIntentStore, IngressProjectionStore, PloyzDnsTargetAllocation, PloyzDnsTargetStore,
 };
 use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::intent::service::NatsIntentReader;
@@ -11,27 +11,45 @@ use crate::roles::machine::convergence::gather_dataplane_statuses;
 use ployz_core::dataplane::{DataplaneMember, DataplaneProjection};
 use ployz_core::deploy::{DeployRequest, DeployRouteTarget, validate_deploy_route_bindings};
 use ployz_core::ids::MachineId;
-use ployz_core::ingress::AutomaticHostnameConfiguration;
+use ployz_core::ingress::{AutomaticHostnameConfiguration, IngressConfiguration};
 use ployz_core::ops::RouteHostname;
 use ployz_core::state::{ActiveMachineState, IntentSnapshot, MachineLifecycle};
 use std::time::Duration;
 
-use super::DeployExecutionFacts;
 use super::placement::classify_machine_usability;
-use super::preparation::{namespace_cleanup_candidates, route_binding_id_for_target};
+use super::preparation::{mint_route_binding_id, namespace_cleanup_candidates};
+use super::{AutomaticHostnameMode, DeployExecutionFacts};
 
 pub async fn load_deploy_execution_facts_from_nats(
     request: &DeployRequest,
     intent_reader: &NatsIntentReader,
     facts_reader: &NatsMachineFactsReader,
     target_store: &PloyzDnsTargetStore,
+    projection_store: &IngressProjectionStore,
     step_timeout: Duration,
 ) -> Result<DeployExecutionFacts, DeployFactLoadError> {
     let intent = read_intent(intent_reader).await?;
-    let (automatic_hostname_suffix, ployz_automatic_hostnames) =
-        automatic_hostname_context(request, &intent, target_store).await?;
-    let publishable_gateway_ids = if ployz_automatic_hostnames {
+    let allocation = if auto_hostname_service(request).is_some()
+        && matches!(
+            &intent.automatic_hostname_configuration,
+            AutomaticHostnameConfiguration::Ployz
+        ) {
         target_store
+            .load_allocation()
+            .await
+            .map_err(|error| DeployFactLoadError::IngressState {
+                message: error.to_string(),
+            })?
+    } else {
+        None
+    };
+    let automatic_hostname_mode = resolve_automatic_hostname_mode(
+        request,
+        Some(&intent.automatic_hostname_configuration),
+        allocation.as_ref(),
+    )?;
+    let publishable_gateway_ids = if automatic_hostname_mode.is_ployz() {
+        projection_store
             .load_publishable_gateway_ids()
             .await
             .map_err(|error| DeployFactLoadError::IngressState {
@@ -46,8 +64,7 @@ pub async fn load_deploy_execution_facts_from_nats(
         facts_reader,
         intent,
         projection,
-        automatic_hostname_suffix,
-        ployz_automatic_hostnames,
+        automatic_hostname_mode,
         publishable_gateway_ids,
         step_timeout,
     )
@@ -65,29 +82,29 @@ pub(super) fn auto_hostname_service(
     })
 }
 
-async fn automatic_hostname_context(
+fn resolve_automatic_hostname_mode(
     request: &DeployRequest,
-    intent: &IntentSnapshot,
-    target_store: &PloyzDnsTargetStore,
-) -> Result<(Option<RouteHostname>, bool), DeployFactLoadError> {
+    configuration: Option<&AutomaticHostnameConfiguration>,
+    allocation: Option<&PloyzDnsTargetAllocation>,
+) -> Result<AutomaticHostnameMode, DeployFactLoadError> {
     if auto_hostname_service(request).is_none() {
-        return Ok((None, false));
+        return Ok(AutomaticHostnameMode::Disabled);
     }
-    match &intent.automatic_hostname_configuration {
+    let Some(configuration) = configuration else {
+        return Err(DeployFactLoadError::IngressUnavailable {
+            message: "ingress is not configured".to_owned(),
+        });
+    };
+    match configuration {
         AutomaticHostnameConfiguration::Disabled => {
             Err(DeployFactLoadError::InvalidRouteBindings {
                 message: "automatic hostnames are disabled".to_owned(),
             })
         }
-        AutomaticHostnameConfiguration::Custom { suffix } => {
-            Ok((Some(suffix.as_hostname().clone()), false))
-        }
+        AutomaticHostnameConfiguration::Custom { suffix } => Ok(AutomaticHostnameMode::Custom {
+            suffix: suffix.as_hostname().clone(),
+        }),
         AutomaticHostnameConfiguration::Ployz => {
-            let allocation = target_store.load_allocation().await.map_err(|error| {
-                DeployFactLoadError::IngressState {
-                    message: error.to_string(),
-                }
-            })?;
             let Some(PloyzDnsTargetAllocation::Allocated { lease }) = allocation else {
                 return Err(DeployFactLoadError::IngressUnavailable {
                     message: "Ployz DNS target is not allocated".to_owned(),
@@ -98,7 +115,7 @@ async fn automatic_hostname_context(
                     message: error.to_string(),
                 }
             })?;
-            Ok((Some(suffix), true))
+            Ok(AutomaticHostnameMode::Ployz { suffix })
         }
     }
 }
@@ -116,42 +133,29 @@ pub async fn validate_deploy_route_admission(
             .map_err(|error| DeployFactLoadError::IngressState {
                 message: error.to_string(),
             })?;
-    let automatic_hostname_suffix = if auto_hostname_service(request).is_some() {
-        let Some(configuration) = configuration else {
-            return Err(DeployFactLoadError::IngressUnavailable {
-                message: "ingress is not configured".to_owned(),
-            });
-        };
-        match configuration.automatic_hostnames {
-            AutomaticHostnameConfiguration::Disabled => {
-                return Err(DeployFactLoadError::InvalidRouteBindings {
-                    message: "automatic hostnames are disabled".to_owned(),
-                });
-            }
-            AutomaticHostnameConfiguration::Custom { suffix } => Some(suffix.as_hostname().clone()),
-            AutomaticHostnameConfiguration::Ployz => {
-                let allocation = target_store.load_allocation().await.map_err(|error| {
-                    DeployFactLoadError::IngressState {
-                        message: error.to_string(),
-                    }
-                })?;
-                let Some(PloyzDnsTargetAllocation::Allocated { lease }) = allocation else {
-                    return Err(DeployFactLoadError::IngressUnavailable {
-                        message: "Ployz DNS target is not allocated".to_owned(),
-                    });
-                };
-                Some(
-                    RouteHostname::try_new(lease.name.hostname_suffix()).map_err(|error| {
-                        DeployFactLoadError::IngressState {
-                            message: error.to_string(),
-                        }
-                    })?,
-                )
-            }
-        }
+    let allocation = if auto_hostname_service(request).is_some()
+        && configuration.as_ref().is_some_and(|configuration| {
+            matches!(
+                configuration.automatic_hostnames(),
+                AutomaticHostnameConfiguration::Ployz
+            )
+        }) {
+        target_store
+            .load_allocation()
+            .await
+            .map_err(|error| DeployFactLoadError::IngressState {
+                message: error.to_string(),
+            })?
     } else {
         None
     };
+    let automatic_hostname_mode = resolve_automatic_hostname_mode(
+        request,
+        configuration
+            .as_ref()
+            .map(IngressConfiguration::automatic_hostnames),
+        allocation.as_ref(),
+    )?;
     let existing = namespace
         .load()
         .await
@@ -159,7 +163,7 @@ pub async fn validate_deploy_route_admission(
             message: error.to_string(),
         })?
         .route_bindings;
-    validate_route_bindings(request, automatic_hostname_suffix.as_ref(), &existing)
+    validate_route_bindings(request, automatic_hostname_mode.suffix(), &existing)
 }
 
 async fn read_intent(
@@ -178,8 +182,7 @@ async fn deploy_execution_facts(
     facts_reader: &NatsMachineFactsReader,
     intent: IntentSnapshot,
     projection: DataplaneProjection,
-    automatic_hostname_suffix: Option<RouteHostname>,
-    ployz_automatic_hostnames: bool,
+    automatic_hostname_mode: AutomaticHostnameMode,
     publishable_gateway_ids: Vec<MachineId>,
     step_timeout: Duration,
 ) -> Result<DeployExecutionFacts, DeployFactLoadError> {
@@ -235,7 +238,7 @@ async fn deploy_execution_facts(
         namespace_cleanup_candidates(&request.namespace_id, &observed_machines);
     validate_route_bindings(
         request,
-        automatic_hostname_suffix.as_ref(),
+        automatic_hostname_mode.suffix(),
         &namespace_route_bindings,
     )?;
     Ok(DeployExecutionFacts {
@@ -248,8 +251,7 @@ async fn deploy_execution_facts(
         observed_machines,
         machine_platforms,
         namespace_cleanup_candidates,
-        automatic_hostname_suffix,
-        ployz_automatic_hostnames,
+        automatic_hostname_mode,
         gateway_certificate_targets,
         ployz_gateway_certificate_targets,
         step_timeout,
@@ -265,7 +267,7 @@ fn validate_route_bindings(
         request,
         automatic_hostname_suffix,
         existing,
-        route_binding_id_for_target,
+        mint_route_binding_id,
     )
     .map(|_| ())
     .map_err(|error| DeployFactLoadError::InvalidRouteBindings {

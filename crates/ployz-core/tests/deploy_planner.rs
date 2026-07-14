@@ -838,9 +838,9 @@ fn deploy_preparation_commits_multiple_routes_per_service() {
 }
 
 #[test]
-fn declared_route_redeploy_reuses_the_binding_identity() {
+fn declared_route_reroute_reuses_the_binding_identity_and_updates_endpoint_port() {
     let mut request = deploy_request(1);
-    request.routes = vec![deploy_route("api.example.com", 8080)];
+    request.routes = vec![deploy_route("api.example.com", 9090)];
     let mut existing = route_binding_state("api.example.com", "svc_api");
     existing.id = route_binding_id("route_existing");
 
@@ -860,6 +860,41 @@ fn declared_route_redeploy_reuses_the_binding_identity() {
     };
 
     assert_eq!(commit.id, route_binding_id("route_existing"));
+    assert_eq!(commit.endpoint_port, route_port(9090));
+}
+
+#[test]
+fn declared_route_reroute_rejects_other_owners_and_automatic_bindings() {
+    let mut request = deploy_request(1);
+    request.routes = vec![deploy_route("api.example.com", 9090)];
+
+    let mut other_service = route_binding_state("api.example.com", "svc_worker");
+    other_service.id = route_binding_id("route_other_service");
+    let mut other_namespace = route_binding_state("api.example.com", "svc_api");
+    other_namespace.id = route_binding_id("route_other_namespace");
+    other_namespace.namespace_id = namespace_id("other");
+    let mut automatic = route_binding_state("api.example.com", "svc_api");
+    automatic.id = route_binding_id("route_automatic");
+    automatic.origin = RouteBindingOrigin::Automatic;
+
+    for occupied in [other_service, other_namespace, automatic] {
+        let error = prepare_deploy(
+            DeployPreparationInput {
+                request: request.clone(),
+                occupied_route_bindings: vec![occupied],
+                eligible_machines: Vec::new(),
+                draining_machines: Vec::new(),
+                observed_machines: Vec::new(),
+            },
+            route_binding_id_for,
+        )
+        .expect_err("hostname owner must collide");
+
+        assert!(matches!(
+            error,
+            ployz_core::deploy::RouteBindingCommitError::HostnameCollision { .. }
+        ));
+    }
 }
 
 #[test]

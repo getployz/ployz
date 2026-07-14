@@ -652,13 +652,12 @@ pub(crate) fn machine_init_command(
         None => None,
     };
 
-    let ingress_configuration = ployz_core::ingress::IngressConfiguration {
-        automatic_hostnames: automatic_hostnames.configuration(),
-        ployz_dns_target: dns_target.intent(),
-    };
-    ingress_configuration
-        .validate()
-        .map_err(|error| invalid_value("ingress configuration", error))?;
+    let ingress_configuration = ployz_core::ingress::IngressConfiguration::try_new(
+        automatic_hostnames.configuration(),
+        dns_target.intent(),
+    )
+    .map_err(|error| invalid_value("ingress configuration", error))?;
+    let (automatic_hostname_configuration, ployz_dns_target) = ingress_configuration.into_parts();
 
     Ok(MachineInitCommand {
         target,
@@ -672,8 +671,8 @@ pub(crate) fn machine_init_command(
         installer_script: validate_installer_script(installer_script)?,
         local_release: validate_local_release(local_release)?,
         public_ip,
-        automatic_hostname_configuration: ingress_configuration.automatic_hostnames,
-        ployz_dns_target: ingress_configuration.ployz_dns_target,
+        automatic_hostname_configuration,
+        ployz_dns_target,
         host_port_assurance: host_port_assurance(host_ports_assured_externally),
     })
 }

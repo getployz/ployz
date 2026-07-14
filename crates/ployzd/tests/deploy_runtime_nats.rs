@@ -18,7 +18,7 @@ use ployz_test_support::ids::idempotency_key;
 use ployzd::certificate::{CertificateManager, CertificateManagerConfig};
 use ployzd::config::DEFAULT_MACHINE_BOOTSTRAP_URL;
 use ployzd::core_store::CoreStore;
-use ployzd::intent::ingress_intent::PloyzDnsTargetStore;
+use ployzd::intent::ingress_intent::{IngressProjectionStore, PloyzDnsTargetStore};
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
@@ -75,6 +75,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
             ployz_dns_target: nats.ployz_dns_target.clone(),
+            ingress_projection: nats.ingress_projection.clone(),
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
@@ -162,6 +163,7 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
             ployz_dns_target: nats.ployz_dns_target.clone(),
+            ingress_projection: nats.ingress_projection.clone(),
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
@@ -228,6 +230,7 @@ async fn health_failure_records_failed_operation_without_committing_active_state
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
             ployz_dns_target: nats.ployz_dns_target.clone(),
+            ingress_projection: nats.ingress_projection.clone(),
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
@@ -293,6 +296,7 @@ async fn duplicate_driver_execution_does_not_release_the_original_namespace_lock
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
             ployz_dns_target: nats.ployz_dns_target.clone(),
+            ingress_projection: nats.ingress_projection.clone(),
             controllers: controllers.clone(),
         },
         CertificateManager::new(
@@ -350,6 +354,7 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
             ployz_dns_target: nats.ployz_dns_target.clone(),
+            ingress_projection: nats.ingress_projection.clone(),
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
@@ -435,6 +440,7 @@ async fn machine_service_timeout_marks_deploy_failed_without_committing_active_s
             intent_change_client: nats.client.clone(),
             namespace_intent: nats.namespace_intent.clone(),
             ployz_dns_target: nats.ployz_dns_target.clone(),
+            ingress_projection: nats.ingress_projection.clone(),
             controllers: controllers.clone(),
         },
         DeployOperationPorts {
@@ -609,6 +615,7 @@ struct TestNats {
     _intent_dir: tempfile::TempDir,
     namespace_intent: NamespaceIntentStore,
     ployz_dns_target: PloyzDnsTargetStore,
+    ingress_projection: IngressProjectionStore,
     /// Controller principal: the deploy-runtime side.
     client: async_nats::Client,
     /// Machine principal for facts in normal deploy tests.
@@ -645,6 +652,7 @@ async fn test_nats() -> TestNats {
         .await
         .expect("slow machine enters roster");
     let ployz_dns_target = PloyzDnsTargetStore::new(intent_core_store.clone());
+    let ingress_projection = IngressProjectionStore::new(intent_core_store.clone());
     let intent = start_intent_service(
         client.clone(),
         machine_id("machine_a"),
@@ -661,6 +669,7 @@ async fn test_nats() -> TestNats {
         _intent_dir: lifecycle_dir,
         namespace_intent,
         ployz_dns_target,
+        ingress_projection,
         client,
         machine_a,
         machine_slow,

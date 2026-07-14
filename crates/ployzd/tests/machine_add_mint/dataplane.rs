@@ -232,10 +232,13 @@ async fn first_machine_activation_repairs_completed_operation_without_roster() {
     );
     assert_eq!(
         ingress_intent.load().await.expect("ingress intent loads"),
-        Some(ployz_core::ingress::IngressConfiguration {
-            automatic_hostnames: ployz_core::ingress::AutomaticHostnameConfiguration::Disabled,
-            ployz_dns_target: ployz_core::ingress::PloyzDnsTargetIntent::Disabled,
-        })
+        Some(
+            ployz_core::ingress::IngressConfiguration::try_new(
+                ployz_core::ingress::AutomaticHostnameConfiguration::Disabled,
+                ployz_core::ingress::PloyzDnsTargetIntent::Disabled,
+            )
+            .expect("valid ingress configuration")
+        )
     );
 
     runtime

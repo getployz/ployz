@@ -296,15 +296,21 @@ export type IngressConfigureFailure = { "kind": "invalid_configuration", message
 
 export type IngressRefreshOperationState = { "state": "accepted" } | { "state": "completed", evidence: IngressRefreshEvidence, } | { "state": "failed", failure: IngressRefreshFailure, };
 
-export type IngressRefreshFailure = "intent_unavailable" | "gather_failed" | "storage_failed" | "concurrent_writer";
+export type IngressRefreshFailure = { "class": "intent_unavailable", message: FailureMessage, } | { "class": "gather_failed", message: FailureMessage, candidates: Array<IngressRefreshCandidateEvidence>, } | { "class": "storage_failed", message: FailureMessage, candidates: Array<IngressRefreshCandidateEvidence>, } | { "class": "concurrent_writer", message: FailureMessage, candidates: Array<IngressRefreshCandidateEvidence>, } | { "class": "interrupted", message: FailureMessage, };
 
-export type IngressRefreshEvidence = { candidates: Array<IngressRefreshCandidateEvidence>, publishable_gateway_ids: Array<MachineId>, deadline_seconds: number, before: IngressEndpointProjectionIdentity, after: IngressEndpointProjectionIdentity, };
+export type IngressRefreshEvidence = { candidates: Array<IngressRefreshCandidateEvidence>, publishable_gateway_ids: Array<MachineId>, deadline_seconds: number, before: IngressEndpointProjectionIdentity, after: IngressEndpointProjectionIdentity, invalidation: IngressRefreshInvalidationEvidence, };
 
-export type IngressRefreshCandidateEvidence = { machine_id: MachineId, gateway: IngressRefreshGatewayOutcome, facts: IngressRefreshFactsOutcome, contribution: Array<string>, };
+export type IngressRefreshCandidateEvidence = { machine_id: MachineId, gateway: IngressRefreshGatewayOutcome, facts: IngressRefreshFactsOutcome, publication: IngressRefreshCandidatePublication, };
+
+export type IngressRefreshCandidatePublication = { "status": "published", addresses: Array<string>, } | { "status": "excluded", reason: IngressRefreshExclusionReason, };
+
+export type IngressRefreshExclusionReason = "gateway_unavailable" | "gateway_testimony_failed" | "facts_testimony_failed" | "missing_facts" | "addressless" | "non_public_addresses";
+
+export type IngressRefreshInvalidationEvidence = { "status": "published" } | { "status": "failed", message: FailureMessage, };
 
 export type IngressRefreshGatewayOutcome = { "status": "current" } | { "status": "last_known_good" } | { "status": "unavailable" } | { "status": "timed_out" } | { "status": "no_responder" } | { "status": "wrong_responder" } | { "status": "rejected" } | { "status": "malformed" } | { "status": "transport" };
 
-export type IngressRefreshFactsOutcome = { "status": "responded", public_control_endpoints: Array<string>, } | { "status": "timed_out" } | { "status": "no_responder" } | { "status": "wrong_responder" } | { "status": "rejected" } | { "status": "malformed" } | { "status": "transport" };
+export type IngressRefreshFactsOutcome = { "status": "responded", public_control_endpoints: Array<string>, } | { "status": "missing" } | { "status": "addressless" } | { "status": "non_public" } | { "status": "timed_out" } | { "status": "no_responder" } | { "status": "wrong_responder" } | { "status": "rejected" } | { "status": "malformed" } | { "status": "transport" };
 
 export type NamespaceRemoveOperationState = { "state": "accepted" } | { "state": "running", stage: NamespaceRemoveRunningStage, } | { "state": "completed" } | { "state": "failed", failure: NamespaceRemoveFailure, } | { "state": "cancelled", reason: CancellationReason, };
 

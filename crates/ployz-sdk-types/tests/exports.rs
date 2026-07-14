@@ -172,10 +172,11 @@ fn sdk_exports_cert_wire_types() {
 
 #[test]
 fn sdk_exports_ingress_and_managed_dns_wire_types() {
-    let configuration = IngressConfiguration {
-        automatic_hostnames: AutomaticHostnameConfiguration::Ployz,
-        ployz_dns_target: PloyzDnsTargetIntent::Enabled,
-    };
+    let configuration = IngressConfiguration::try_new(
+        AutomaticHostnameConfiguration::Ployz,
+        PloyzDnsTargetIntent::Enabled,
+    )
+    .expect("valid ingress configuration");
     let request = IngressConfigureRequest {
         operation_id: ployz_sdk_types::OperationId::try_new("op_ingress")
             .expect("valid operation id"),

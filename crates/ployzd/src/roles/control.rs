@@ -250,6 +250,7 @@ pub async fn start_control_process_with_client_and_reload(
             intent_change_client: client.clone(),
             namespace_intent: namespace_intent.clone(),
             ployz_dns_target: ployz_dns_target.clone(),
+            ingress_projection: IngressProjectionStore::new(core_store.clone()),
             controllers: controllers.clone(),
         },
         certificate_manager.clone(),

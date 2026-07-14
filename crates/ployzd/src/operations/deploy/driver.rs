@@ -1,7 +1,7 @@
 //! Owned deploy execution started by the control service.
 
 use crate::certificate::{CertificateManager, GatewayCertificateTarget};
-use crate::intent::ingress_intent::PloyzDnsTargetStore;
+use crate::intent::ingress_intent::{IngressProjectionStore, PloyzDnsTargetStore};
 use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::intent::service::NatsIntentReader;
 use crate::operation_api::admission::{AcceptedDeployExecution, OperationControllers};
@@ -90,6 +90,7 @@ where
         intent_reader,
         facts_reader,
         &stores.ployz_dns_target,
+        &stores.ingress_projection,
         step_timeout,
     )
     .await
@@ -113,6 +114,7 @@ where
         intent_change_client,
         namespace_intent,
         ployz_dns_target: _,
+        ingress_projection: _,
         controllers,
     } = stores;
     let input = DeployExecutionInput::new(
@@ -173,6 +175,7 @@ pub struct DeployOperationStores {
     pub intent_change_client: async_nats::Client,
     pub namespace_intent: NamespaceIntentStore,
     pub ployz_dns_target: PloyzDnsTargetStore,
+    pub ingress_projection: IngressProjectionStore,
     pub controllers: OperationControllers,
 }
 

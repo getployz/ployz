@@ -39,8 +39,8 @@ pub use ports::{
     MachineContainerRuntime, NamespaceCommitError, NamespaceStateCommitter,
 };
 pub use preparation::{
-    DeployExecutionFacts, DeployExecutionInput, namespace_cleanup_candidates,
-    prepare_deploy_execution_command,
+    AutomaticHostnameMode, DeployExecutionFacts, DeployExecutionInput,
+    namespace_cleanup_candidates, prepare_deploy_execution_command,
 };
 use step::with_step_timeout;
 pub use step::{DeployExecutionStep, DeployFailureRecordError, DeployOperationRecordError};

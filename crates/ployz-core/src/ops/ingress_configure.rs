@@ -125,19 +125,21 @@ mod tests {
     #[test]
     fn submitted_configuration_must_match_status() {
         let operation_id = OperationId::try_new("op_ingress_configure").expect("operation id");
-        let configuration = IngressConfiguration {
-            automatic_hostnames: AutomaticHostnameConfiguration::Disabled,
-            ployz_dns_target: PloyzDnsTargetIntent::Disabled,
-        };
+        let configuration = IngressConfiguration::try_new(
+            AutomaticHostnameConfiguration::Disabled,
+            PloyzDnsTargetIntent::Disabled,
+        )
+        .expect("valid configuration");
         let result = project_event(
             &operation_id,
             &configuration,
             &IngressConfigureOperationState::Accepted,
             IngressConfigureEvent::Submitted {
-                configuration: IngressConfiguration {
-                    automatic_hostnames: AutomaticHostnameConfiguration::Ployz,
-                    ployz_dns_target: PloyzDnsTargetIntent::Enabled,
-                },
+                configuration: IngressConfiguration::try_new(
+                    AutomaticHostnameConfiguration::Ployz,
+                    PloyzDnsTargetIntent::Enabled,
+                )
+                .expect("valid configuration"),
             },
             EventSequence::try_new(1).expect("sequence"),
         );

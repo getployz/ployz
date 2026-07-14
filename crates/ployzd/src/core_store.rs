@@ -96,6 +96,10 @@ const CURRENT_SCHEMA: &str = "
         json         TEXT NOT NULL,
         PRIMARY KEY (namespace_id, volume_name)
     );
+    CREATE TABLE deploy_claims (
+        key  TEXT PRIMARY KEY,
+        json TEXT NOT NULL
+    );
     CREATE TABLE deploy_reservations (
         namespace_id                  TEXT PRIMARY KEY,
         last_issued                   TEXT NOT NULL,
@@ -442,6 +446,7 @@ mod tests {
                 "active_certificate_metadata",
                 "automatic_hostname_intent",
                 "control_plane",
+                "deploy_claims",
                 "deploy_reservations",
                 "ingress_endpoint_projection",
                 "machine_add_claims",

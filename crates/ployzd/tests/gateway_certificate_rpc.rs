@@ -58,6 +58,21 @@ fn gateway_certificate_catalog_pins_names_subjects_and_execution() {
                 EndpointExecution::MachineRpc,
             ),
             (
+                "machine.certificate.artifact.remove",
+                "plz.v1.rpc.machine.command.machine_7.certificate.artifact.remove",
+                EndpointExecution::MachineRpc,
+            ),
+            (
+                "machine.certificate.challenge.apply",
+                "plz.v1.rpc.machine.command.machine_7.certificate.challenge.apply",
+                EndpointExecution::MachineRpc,
+            ),
+            (
+                "machine.certificate.challenge.remove",
+                "plz.v1.rpc.machine.command.machine_7.certificate.challenge.remove",
+                EndpointExecution::MachineRpc,
+            ),
+            (
                 "machine.certificate.challenge.status",
                 "plz.v1.rpc.machine.query.machine_7.certificate.challenge.status",
                 EndpointExecution::MachineRpc,
@@ -354,6 +369,7 @@ fn expired_stored_certificate_keeps_serving_with_its_renewal_challenge() {
             }],
         })
         .expect("lapsed TLS and renewal challenge apply together");
+    registry.apply_challenge(&challenge);
 
     assert_eq!(
         (
@@ -452,7 +468,7 @@ async fn gateway_status_client_rejects_wrong_machine_response() {
             &machine_endpoint_spec(&requested, MachineServiceEndpoint::GatewayStatusGet),
             |_request| async {
                 NatsServiceResponse::json_ok(&GatewayStatusGetResponse::Ok(GatewayStatusGetOk {
-                    status: GatewayStatusObservation {
+                    observation: GatewayStatusObservation {
                         machine_id: machine_id("machine_b"),
                         listen_addr: "192.0.2.8:80".parse().expect("listen address"),
                         serving: GatewayServingStatus::Current,
@@ -539,13 +555,7 @@ async fn challenge_status_endpoint_reports_only_applied_registry_snapshot() {
         challenge_status(&nats.controller, applied_challenge.clone()).await,
         CertificateChallengeApplicationStatus::NotApplied
     );
-    registry
-        .replace_projection(&GatewayProjection {
-            certificate_bundles: Vec::new(),
-            challenges: vec![applied_challenge.clone()],
-            routes: Vec::new(),
-        })
-        .expect("apply challenge projection");
+    registry.apply_challenge(&applied_challenge);
     assert_eq!(
         challenge_status(&nats.controller, applied_challenge).await,
         CertificateChallengeApplicationStatus::Applied

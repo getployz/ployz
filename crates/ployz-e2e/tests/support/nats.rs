@@ -70,10 +70,13 @@ impl TestNats {
             .await
             .expect("test core store opens");
         IngressIntentStore::new(store)
-            .replace(ployz_core::ingress::IngressConfiguration {
-                automatic_hostnames: ployz_core::ingress::AutomaticHostnameConfiguration::Disabled,
-                ployz_dns_target: ployz_core::ingress::PloyzDnsTargetIntent::Disabled,
-            })
+            .replace(
+                ployz_core::ingress::IngressConfiguration::try_new(
+                    ployz_core::ingress::AutomaticHostnameConfiguration::Disabled,
+                    ployz_core::ingress::PloyzDnsTargetIntent::Disabled,
+                )
+                .expect("valid ingress configuration"),
+            )
             .await
             .expect("test ingress intent initializes");
         ployzd::roles::control::start_control_process_with_client_and_reload(

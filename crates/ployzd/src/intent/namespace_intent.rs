@@ -268,6 +268,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn detached_hostname_accepts_a_fresh_route_binding_identity() {
+        let store = NamespaceIntentStore::new(CoreStore::open_in_memory().await.expect("store"));
+        let first = route("route_1", "service_a");
+        store
+            .replace_route_binding(first.clone())
+            .await
+            .expect("insert route");
+        store
+            .remove_route_binding(&first.target)
+            .await
+            .expect("detach route");
+
+        let recreated = route("route_2", "service_a");
+        store
+            .replace_route_binding(recreated.clone())
+            .await
+            .expect("recreate route");
+
+        assert_eq!(
+            store.load().await.expect("load").route_bindings,
+            [recreated]
+        );
+    }
+
+    #[tokio::test]
     async fn route_identity_conflict_rolls_back_the_phase_commit() {
         let store = NamespaceIntentStore::new(CoreStore::open_in_memory().await.expect("store"));
         let existing = route("route_1", "service_a");

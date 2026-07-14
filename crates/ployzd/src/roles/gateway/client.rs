@@ -18,12 +18,12 @@ pub struct GatewayStatusGetRequest {}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GatewayStatusGetOk {
-    pub status: GatewayStatusObservation,
+    pub observation: GatewayStatusObservation,
 }
 
 impl MachineRpcResponder for GatewayStatusGetOk {
     fn responder_machine_id(&self) -> &MachineId {
-        &self.status.machine_id
+        &self.observation.machine_id
     }
 }
 
@@ -73,7 +73,7 @@ impl NatsGatewayStatusReader {
             &GatewayStatusGetRequest {},
         )
         .await
-        .map(|response| response.status)
+        .map(|response| response.observation)
         .map_err(|error| match error {
             MachineCallError::Unavailable(reason) => GatewayStatusReadError {
                 machine_id: machine_id.clone(),

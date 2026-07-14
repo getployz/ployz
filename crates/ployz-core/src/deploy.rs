@@ -1605,9 +1605,11 @@ fn route_binding_commits(
                 if existing.origin == RouteBindingOrigin::Declared
                     && existing.namespace_id == request.namespace_id
                     && existing.service_id == request.service_id
-                    && existing.endpoint_port == route.endpoint_port
                 {
-                    return Ok(existing.clone());
+                    return Ok(RouteBindingState {
+                        endpoint_port: route.endpoint_port,
+                        ..existing.clone()
+                    });
                 }
                 return Err(RouteBindingCommitError::HostnameCollision {
                     hostname: target.hostname,

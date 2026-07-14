@@ -10,8 +10,8 @@ use ployz_core::cert::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, CertificateArtifactPushOk,
     CertificateArtifactPushRequest, CertificateArtifactPushResponse,
-    CertificateChallengeApplicationStatus, CertificateChallengeStatusOk,
-    CertificateChallengeStatusRequest, CertificateChallengeStatusResponse,
+    CertificateChallengeApplyRequest, CertificateChallengeApplyResponse,
+    CertificateChallengeMutationOk,
 };
 use ployz_core::ids::{MachineId, RouteBindingId};
 use ployz_core::ingress::{ActiveCertificateMetadata, CertificateOwner};
@@ -128,7 +128,7 @@ async fn renewal_dns_failure_records_terminal_evidence_with_retained_metadata() 
         &manager,
         &[GatewayCertificateTarget {
             machine_id: gateway_machine_id(),
-            public_ips: vec![IpAddr::from([192, 0, 2, 10])],
+            public_ips: Vec::new(),
         }],
         u64::MAX,
     )
@@ -421,7 +421,7 @@ async fn startup_recovery_fails_unfinished_operations() {
 }
 
 #[tokio::test]
-async fn cached_certificate_still_requires_dns_preflight() {
+async fn cached_certificate_dns_mismatch_is_warning_evidence() {
     let (nats, _gateway) = test_nats_with_gateway(true).await;
     let core_store = CoreStore::open_in_memory().await.expect("core store");
     let state_dir = tempfile::tempdir().expect("certificate state");
@@ -443,7 +443,7 @@ async fn cached_certificate_still_requires_dns_preflight() {
         .await
         .expect("initial certificate");
 
-    let error = manager
+    let cached = manager
         .ensure(
             &operation_id("op_deploy_wrong_dns"),
             route_owner(),
@@ -454,12 +454,9 @@ async fn cached_certificate_still_requires_dns_preflight() {
             }],
         )
         .await
-        .expect_err("cached certificate does not bypass DNS preflight");
+        .expect("DNS mismatch is warning evidence");
 
-    assert!(matches!(
-        error,
-        CertificateProvisionFailure::DnsPreflight { .. }
-    ));
+    assert_eq!(cached.hostname, hostname);
     assert_eq!(issuer.calls.load(Ordering::Relaxed), 1);
 }
 
@@ -807,6 +804,7 @@ struct TestGateway {
     tasks: Vec<tokio::task::JoinHandle<()>>,
     challenge_applied: Arc<std::sync::atomic::AtomicBool>,
     challenge_requests: Arc<tokio::sync::Notify>,
+    challenge_applied_notifications: Arc<tokio::sync::Notify>,
 }
 
 impl TestGateway {
@@ -818,6 +816,7 @@ impl TestGateway {
         let client = nats.machine_client(&machine_id).await;
         let challenge_applied = Arc::new(std::sync::atomic::AtomicBool::new(applied));
         let challenge_requests = Arc::new(tokio::sync::Notify::new());
+        let challenge_applied_notifications = Arc::new(tokio::sync::Notify::new());
         let mut pushes = client
             .subscribe(machine_service(
                 &machine_id,
@@ -828,7 +827,7 @@ impl TestGateway {
         let mut challenges = client
             .subscribe(machine_service(
                 &machine_id,
-                MachineServiceEndpoint::CertificateChallengeStatus,
+                MachineServiceEndpoint::CertificateChallengeApply,
             ))
             .await
             .expect("subscribe challenge status");
@@ -866,24 +865,28 @@ impl TestGateway {
         let challenge_client = client.clone();
         let responder_applied = Arc::clone(&challenge_applied);
         let responder_requests = Arc::clone(&challenge_requests);
+        let responder_applied_notifications = Arc::clone(&challenge_applied_notifications);
         let challenge_task = tokio::spawn(async move {
             while let Some(message) = challenges.next().await {
                 let Some(reply) = message.reply.clone() else {
                     continue;
                 };
-                if serde_json::from_slice::<CertificateChallengeStatusRequest>(&message.payload)
+                if serde_json::from_slice::<CertificateChallengeApplyRequest>(&message.payload)
                     .is_err()
                 {
                     continue;
                 }
-                let response: CertificateChallengeStatusResponse =
-                    MachineRpcResponse::Ok(CertificateChallengeStatusOk {
+                responder_requests.notify_one();
+                while !responder_applied.load(Ordering::Acquire) {
+                    let notified = responder_applied_notifications.notified();
+                    if responder_applied.load(Ordering::Acquire) {
+                        break;
+                    }
+                    notified.await;
+                }
+                let response: CertificateChallengeApplyResponse =
+                    MachineRpcResponse::Ok(CertificateChallengeMutationOk {
                         machine_id: machine_id.clone(),
-                        application: if responder_applied.load(Ordering::Acquire) {
-                            CertificateChallengeApplicationStatus::Applied
-                        } else {
-                            CertificateChallengeApplicationStatus::NotApplied
-                        },
                     });
                 let _ = challenge_client
                     .publish(
@@ -893,7 +896,6 @@ impl TestGateway {
                             .into(),
                     )
                     .await;
-                responder_requests.notify_one();
             }
         });
 
@@ -901,6 +903,7 @@ impl TestGateway {
             tasks: vec![push_task, challenge_task],
             challenge_applied,
             challenge_requests,
+            challenge_applied_notifications,
         }
     }
 
@@ -910,6 +913,7 @@ impl TestGateway {
 
     fn apply_challenge(&self) {
         self.challenge_applied.store(true, Ordering::Release);
+        self.challenge_applied_notifications.notify_waiters();
     }
 }
 

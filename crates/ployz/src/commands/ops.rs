@@ -538,7 +538,7 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
         OperationStatus::IngressRefresh {
             state: ployz_sdk_types::IngressRefreshOperationState::Failed { failure },
             ..
-        } => Some(format!("failure {}", ingress_refresh_failure(*failure))),
+        } => Some(format!("failure {}", ingress_refresh_failure(failure))),
         OperationStatus::IngressConfigure {
             state: ployz_sdk_types::IngressConfigureOperationState::Failed { failure },
             ..
@@ -569,12 +569,13 @@ fn ingress_configure_failure(failure: &ployz_sdk_types::IngressConfigureFailure)
     }
 }
 
-const fn ingress_refresh_failure(failure: ployz_sdk_types::IngressRefreshFailure) -> &'static str {
+fn ingress_refresh_failure(failure: &ployz_sdk_types::IngressRefreshFailure) -> &str {
     match failure {
-        ployz_sdk_types::IngressRefreshFailure::IntentUnavailable => "intent unavailable",
-        ployz_sdk_types::IngressRefreshFailure::GatherFailed => "gather failed",
-        ployz_sdk_types::IngressRefreshFailure::StorageFailed => "storage failed",
-        ployz_sdk_types::IngressRefreshFailure::ConcurrentWriter => "concurrent writer",
+        ployz_sdk_types::IngressRefreshFailure::IntentUnavailable { message }
+        | ployz_sdk_types::IngressRefreshFailure::GatherFailed { message, .. }
+        | ployz_sdk_types::IngressRefreshFailure::StorageFailed { message, .. }
+        | ployz_sdk_types::IngressRefreshFailure::ConcurrentWriter { message, .. }
+        | ployz_sdk_types::IngressRefreshFailure::Interrupted { message } => message.as_str(),
     }
 }
 

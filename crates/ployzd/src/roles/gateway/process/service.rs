@@ -163,7 +163,9 @@ fn handle_gateway_status_get(
         return response;
     }
     let status = gateway_status_observation(&machine_id, listen_addr, runtime);
-    NatsServiceResponse::json_ok(&GatewayStatusGetResponse::Ok(GatewayStatusGetOk { status }))
+    NatsServiceResponse::json_ok(&GatewayStatusGetResponse::Ok(GatewayStatusGetOk {
+        observation: status,
+    }))
 }
 
 pub(super) fn gateway_status_observation(

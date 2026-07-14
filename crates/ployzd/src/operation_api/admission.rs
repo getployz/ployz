@@ -1,20 +1,24 @@
 //! Controller wiring for operation execution.
 
+mod ingress;
+
+use ingress::{IngressClaim, deploy_requires_ingress};
+pub use ingress::{IngressConfigureSubmitCommand, IngressConfigureSubmitError};
+
 use crate::operations::log::{
     AcceptedDeploySubmission, AcceptedMachineAddSubmission, CoreReplaceOperationSubmission,
-    CredentialGrantOperationSubmission, DeployOperationSubmission,
-    IngressConfigureOperationSubmission, MachineAddOperationSubmission, MachineJoinIdentity,
-    MachineJoinRedemption, MachineLifecycleOperationSubmission, MachineUpdateOperationSubmission,
-    NamespaceRemoveOperationSubmission, NetworkRepairOperationSubmission, OperationRepository,
-    OperationStatusStoreError, RedeemMachineJoinTokenError, ServiceRestartOperationSubmission,
-    SubmitMachineAddError, SubmitOperationError, VolumeRemoveOperationSubmission,
+    CredentialGrantOperationSubmission, DeployOperationSubmission, MachineAddOperationSubmission,
+    MachineJoinIdentity, MachineJoinRedemption, MachineLifecycleOperationSubmission,
+    MachineUpdateOperationSubmission, NamespaceRemoveOperationSubmission,
+    NetworkRepairOperationSubmission, OperationRepository, OperationStatusStoreError,
+    RedeemMachineJoinTokenError, ServiceRestartOperationSubmission, SubmitMachineAddError,
+    SubmitOperationError, VolumeRemoveOperationSubmission,
 };
 use ployz_core::deploy::{
     DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS, DeployRequest, DeployReservationExpiresAt,
     DeployReservationId, RegistryCredential, VolumeName,
 };
 use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
-use ployz_core::ingress::IngressConfiguration;
 use ployz_core::install::{
     HostPortAssurance, InstallArtifactVersion, MachineBootstrapUrl, MachineJoinBundle,
     MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
@@ -132,12 +136,6 @@ pub struct VolumeRemoveSubmitCommand {
 pub struct CredentialGrantSubmitCommand {
     pub operation_id: OperationId,
     pub action: CredentialGrantAction,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IngressConfigureSubmitCommand {
-    pub operation_id: OperationId,
-    pub configuration: IngressConfiguration,
 }
 
 /// Bootstrap material available at submit time.
@@ -259,19 +257,14 @@ impl OperationControllers {
         &self,
         command: DeploySubmitCommand,
     ) -> Result<AcceptedDeployExecution, SubmitCommandError> {
-        let requires_ingress = command.target.services.iter().any(|service| {
-            service.routes.iter().any(|route| {
-                matches!(
-                    route.target,
-                    ployz_core::deploy::DeployRouteTarget::AutoHostname { .. }
-                )
-            })
-        });
-        let ingress_claim = if requires_ingress {
-            Some(self.claim_ingress(&command.operation_id).await)
+        let ingress_fence_owner =
+            deploy_requires_ingress(&command.target).then(|| command.operation_id.clone());
+        let ingress_claim = if let Some(owner) = &ingress_fence_owner {
+            Some(self.claim_ingress(owner).await)
         } else {
             None
         };
+        let acquired_ingress = matches!(ingress_claim, Some(IngressClaim::Acquired));
         if let Some(IngressClaim::Busy { owner }) = &ingress_claim {
             return Err(SubmitCommandError::IngressBusy {
                 namespace_id: command.target.namespace_id.clone(),
@@ -287,7 +280,7 @@ impl OperationControllers {
         )
         .await
         {
-            if requires_ingress {
+            if acquired_ingress {
                 self.release_ingress(&command.operation_id).await;
             }
             return Err(SubmitCommandError::InvalidDeployRoutes {
@@ -295,8 +288,8 @@ impl OperationControllers {
             });
         }
         let operation_id = command.operation_id.clone();
-        let result = self.submit_deploy_inner(command).await;
-        if requires_ingress {
+        let result = self.submit_deploy_inner(command, ingress_fence_owner).await;
+        if acquired_ingress {
             match &result {
                 Err(_) => self.release_ingress(&operation_id).await,
                 Ok(accepted) if !accepted.submission.should_start_execution => {
@@ -314,20 +307,8 @@ impl OperationControllers {
     async fn submit_deploy_inner(
         &self,
         command: DeploySubmitCommand,
+        ingress_fence_owner: Option<OperationId>,
     ) -> Result<AcceptedDeployExecution, SubmitCommandError> {
-        let ingress_fence_owner = command
-            .target
-            .services
-            .iter()
-            .any(|service| {
-                service.routes.iter().any(|route| {
-                    matches!(
-                        route.target,
-                        ployz_core::deploy::DeployRouteTarget::AutoHostname { .. }
-                    )
-                })
-            })
-            .then(|| command.operation_id.clone());
         let operation_id = command.operation_id;
         let idempotency_key = command.idempotency_key;
         let reservation_id = command.reservation_id;
@@ -403,74 +384,6 @@ impl OperationControllers {
             })
             .await
             .map_err(SubmitCommandError::Submit)
-    }
-
-    pub async fn submit_ingress_configure(
-        &self,
-        command: IngressConfigureSubmitCommand,
-        intent: &crate::intent::ingress_intent::IngressIntentStore,
-    ) -> Result<
-        crate::operations::log::AcceptedIngressConfigureSubmission,
-        IngressConfigureSubmitError,
-    > {
-        if let IngressClaim::Busy { owner } = self.claim_ingress(&command.operation_id).await {
-            return Err(IngressConfigureSubmitError::Busy { owner });
-        }
-
-        if let Err(error) = intent.validate_replace(&command.configuration).await {
-            self.release_ingress(&command.operation_id).await;
-            return Err(match error {
-                crate::intent::ingress_intent::IngressIntentStoreError::InvalidConfiguration {
-                    message,
-                } => IngressConfigureSubmitError::InvalidConfiguration { message },
-                crate::intent::ingress_intent::IngressIntentStoreError::Store(error) => {
-                    IngressConfigureSubmitError::Unavailable {
-                        message: error.to_string(),
-                    }
-                }
-            });
-        }
-
-        let submitted = self
-            .repository
-            .submit_ingress_configure(IngressConfigureOperationSubmission {
-                operation_id: command.operation_id.clone(),
-                configuration: command.configuration,
-            })
-            .await;
-        match submitted {
-            Ok(accepted) => {
-                if !accepted.should_start_execution {
-                    self.release_ingress(&accepted.operation_id).await;
-                }
-                Ok(accepted)
-            }
-            Err(error) => {
-                self.release_ingress(&command.operation_id).await;
-                Err(IngressConfigureSubmitError::Submit(error))
-            }
-        }
-    }
-
-    pub async fn release_ingress(&self, operation_id: &OperationId) {
-        let mut lock = self.ingress_lock.lock().await;
-        if lock.as_ref() == Some(operation_id) {
-            *lock = None;
-        }
-    }
-
-    async fn claim_ingress(&self, operation_id: &OperationId) -> IngressClaim {
-        let mut lock = self.ingress_lock.lock().await;
-        match lock.as_ref() {
-            Some(owner) if owner == operation_id => IngressClaim::AlreadyOwned,
-            Some(owner) => IngressClaim::Busy {
-                owner: owner.clone(),
-            },
-            None => {
-                *lock = Some(operation_id.clone());
-                IngressClaim::Acquired
-            }
-        }
     }
 
     pub async fn reserve_deploy(
@@ -916,13 +829,6 @@ enum NamespaceClaim {
     Busy { owner: OperationId },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum IngressClaim {
-    Acquired,
-    AlreadyOwned,
-    Busy { owner: OperationId },
-}
-
 /// How a submit command fails at the controller.
 #[derive(Debug)]
 pub enum SubmitCommandError {
@@ -949,14 +855,6 @@ pub enum SubmitCommandError {
         reservation_id: DeployReservationId,
         expired_at: DeployReservationExpiresAt,
     },
-    Submit(SubmitOperationError),
-}
-
-#[derive(Debug)]
-pub enum IngressConfigureSubmitError {
-    Busy { owner: OperationId },
-    InvalidConfiguration { message: String },
-    Unavailable { message: String },
     Submit(SubmitOperationError),
 }
 
@@ -1049,36 +947,5 @@ fn current_join_time() -> Result<JoinTokenRedeemedAt, RedeemMachineJoinTokenErro
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn deploy_reservation_expires_at_its_deadline() {
-        let namespace_id = NamespaceId::try_new("default").expect("valid namespace id");
-        let reservation_id = DeployReservationId::first();
-        let expired_at = DeployReservationExpiresAt::try_new(10).expect("valid expiration");
-        let mut reservations = BTreeMap::from([(
-            namespace_id.clone(),
-            BTreeMap::from([(reservation_id, expired_at)]),
-        )]);
-
-        let error = validate_deploy_reservation_at(
-            &mut reservations,
-            &namespace_id,
-            reservation_id,
-            expired_at.unix_seconds(),
-        )
-        .expect_err("reservation expires at its deadline");
-
-        assert!(matches!(
-            error,
-            SubmitCommandError::ReservationExpired {
-                namespace_id: expired_namespace,
-                reservation_id: expired_reservation,
-                expired_at: deadline,
-            } if expired_namespace == namespace_id
-                && expired_reservation == reservation_id
-                && deadline == expired_at
-        ));
-    }
-}
+#[path = "admission_tests.rs"]
+mod tests;

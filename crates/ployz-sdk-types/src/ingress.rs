@@ -42,14 +42,14 @@ mod tests {
 
     #[test]
     fn request_rejects_ployz_hostnames_without_dns_target() {
-        let request = IngressConfigureRequest {
-            operation_id: OperationId::try_new("op_ingress_configure").expect("operation id"),
-            configuration: IngressConfiguration {
-                automatic_hostnames: AutomaticHostnameConfiguration::Ployz,
-                ployz_dns_target: PloyzDnsTargetIntent::Disabled,
-            },
-        };
+        let request = serde_json::json!({
+            "operation_id": "op_ingress_configure",
+            "configuration": {
+                "automatic_hostnames": { "mode": "ployz" },
+                "ployz_dns_target": "disabled"
+            }
+        });
 
-        assert!(request.configuration.validate().is_err());
+        assert!(serde_json::from_value::<IngressConfigureRequest>(request).is_err());
     }
 }

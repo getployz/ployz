@@ -331,16 +331,17 @@ async fn prepare_command_from_nats(
     facts_reader: &NatsMachineFactsReader,
     step_timeout: Duration,
 ) -> ployzd::operations::deploy::DeployExecutionCommand {
-    let ployz_dns_target = ployzd::intent::ingress_intent::PloyzDnsTargetStore::new(
-        ployzd::core_store::CoreStore::open_in_memory()
-            .await
-            .expect("open ingress store"),
-    );
+    let store = ployzd::core_store::CoreStore::open_in_memory()
+        .await
+        .expect("open ingress store");
+    let ployz_dns_target = ployzd::intent::ingress_intent::PloyzDnsTargetStore::new(store.clone());
+    let ingress_projection = ployzd::intent::ingress_intent::IngressProjectionStore::new(store);
     let facts = load_deploy_execution_facts_from_nats(
         &request,
         intent_reader,
         facts_reader,
         &ployz_dns_target,
+        &ingress_projection,
         step_timeout,
     )
     .await

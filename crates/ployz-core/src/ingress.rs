@@ -160,16 +160,22 @@ pub enum PloyzDnsTargetIntent {
 /// Cluster-wide ingress configuration committed as one operator decision.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
+#[serde(
+    try_from = "IngressConfigurationWire",
+    into = "IngressConfigurationWire"
+)]
 pub struct IngressConfiguration {
-    pub automatic_hostnames: AutomaticHostnameConfiguration,
-    pub ployz_dns_target: PloyzDnsTargetIntent,
+    automatic_hostnames: AutomaticHostnameConfiguration,
+    ployz_dns_target: PloyzDnsTargetIntent,
 }
 
 impl IngressConfiguration {
-    pub fn validate(&self) -> Result<(), IngressConfigurationError> {
+    pub fn try_new(
+        automatic_hostnames: AutomaticHostnameConfiguration,
+        ployz_dns_target: PloyzDnsTargetIntent,
+    ) -> Result<Self, IngressConfigurationError> {
         if matches!(
-            (&self.automatic_hostnames, self.ployz_dns_target),
+            (&automatic_hostnames, ployz_dns_target),
             (
                 AutomaticHostnameConfiguration::Ployz,
                 PloyzDnsTargetIntent::Disabled
@@ -177,7 +183,51 @@ impl IngressConfiguration {
         ) {
             return Err(IngressConfigurationError::PloyzHostnamesRequireDnsTarget);
         }
-        Ok(())
+        Ok(Self {
+            automatic_hostnames,
+            ployz_dns_target,
+        })
+    }
+
+    #[must_use]
+    pub const fn automatic_hostnames(&self) -> &AutomaticHostnameConfiguration {
+        &self.automatic_hostnames
+    }
+
+    #[must_use]
+    pub const fn ployz_dns_target(&self) -> PloyzDnsTargetIntent {
+        self.ployz_dns_target
+    }
+
+    #[must_use]
+    pub fn into_parts(self) -> (AutomaticHostnameConfiguration, PloyzDnsTargetIntent) {
+        (self.automatic_hostnames, self.ployz_dns_target)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+struct IngressConfigurationWire {
+    automatic_hostnames: AutomaticHostnameConfiguration,
+    ployz_dns_target: PloyzDnsTargetIntent,
+}
+
+impl TryFrom<IngressConfigurationWire> for IngressConfiguration {
+    type Error = IngressConfigurationError;
+
+    fn try_from(value: IngressConfigurationWire) -> Result<Self, Self::Error> {
+        Self::try_new(value.automatic_hostnames, value.ployz_dns_target)
+    }
+}
+
+impl From<IngressConfiguration> for IngressConfigurationWire {
+    fn from(value: IngressConfiguration) -> Self {
+        let (automatic_hostnames, ployz_dns_target) = value.into_parts();
+        Self {
+            automatic_hostnames,
+            ployz_dns_target,
+        }
     }
 }
 
@@ -347,6 +397,24 @@ impl IngressEndpointProjection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ingress_configuration_rejects_ployz_hostnames_without_dns_target() {
+        assert_eq!(
+            IngressConfiguration::try_new(
+                AutomaticHostnameConfiguration::Ployz,
+                PloyzDnsTargetIntent::Disabled,
+            ),
+            Err(IngressConfigurationError::PloyzHostnamesRequireDnsTarget)
+        );
+        assert!(
+            serde_json::from_value::<IngressConfiguration>(serde_json::json!({
+                "automatic_hostnames": { "mode": "ployz" },
+                "ployz_dns_target": "disabled"
+            }))
+            .is_err()
+        );
+    }
 
     #[test]
     fn automatic_label_accepts_one_lowercase_dns_label() {

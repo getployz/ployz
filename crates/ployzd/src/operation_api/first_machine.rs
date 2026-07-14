@@ -27,10 +27,11 @@ pub async fn init_first_machine_activate(
     handlers: &OperationApiHandlers,
     request: InitFirstMachineActivateRequest,
 ) -> Result<InitFirstMachineActivated, InitFirstMachineActivateError> {
-    let ingress_configuration = IngressConfiguration {
-        automatic_hostnames: request.automatic_hostname_configuration,
-        ployz_dns_target: request.ployz_dns_target,
-    };
+    let ingress_configuration = IngressConfiguration::try_new(
+        request.automatic_hostname_configuration,
+        request.ployz_dns_target,
+    )
+    .map_err(|_| InitFirstMachineActivateError::InvalidPlan)?;
     let plan = plan_first_machine_activation(&request.machine_id)
         .map_err(|_| InitFirstMachineActivateError::InvalidPlan)?;
     if let Some(active) = first_machine_active_machine(handlers, &request.machine_id).await? {
