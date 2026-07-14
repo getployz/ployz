@@ -1024,6 +1024,7 @@ async fn serial_smoke() {
         .await;
         wait_for_machine_observations(&core, &machine_id("core_1")).await;
         wait_for_machine_observations(&core, &machine_id("edge_2")).await;
+        wait_for_fresh_peer_handshakes(&core).await;
 
         timed(
             "cross_machine_deploy",
@@ -2743,7 +2744,7 @@ async fn wait_for_fresh_peer_handshakes(core: &CoreContext) {
         }
         assert!(
             Instant::now() < deadline,
-            "peer handshakes did not recover after daemon restart: {status:?}"
+            "peer handshakes did not become fresh before the next scenario: {status:?}"
         );
         tokio::time::sleep(Duration::from_millis(250)).await;
     }

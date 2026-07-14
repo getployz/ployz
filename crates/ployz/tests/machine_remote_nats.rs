@@ -1114,6 +1114,95 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
     assert!(!install.contains("PLOYZ_MACHINE_PUBLIC_IP="));
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn machine_add_remote_local_release_mismatch_reports_accepted_operation() {
+    let server = TestNats::start().await;
+    let client = server.controller.clone();
+    let spec = test_api_service(&[MachineAddApi::ENDPOINT]);
+    let mut runtime = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("service starts");
+    runtime
+        .bind_endpoint(
+            &endpoint(&spec, MachineAddApi::ENDPOINT),
+            |request| async move {
+                let request: MachineAddRequest =
+                    serde_json::from_slice(&request.payload).expect("machine add request decodes");
+                let response: MachineAddResponse = OperationApiResponse::Ok {
+                    value: MachineAddAccepted {
+                        accepted: accepted_operation(&request.operation_id, &request.machine_id),
+                        machine_id: request.machine_id,
+                        bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
+                            .expect("valid bootstrap url"),
+                        join_bundle: machine_join_bundle(),
+                        join_token: MachineJoinToken::try_new("join_once_123")
+                            .expect("valid join token"),
+                        join_secret_delivery: machine_join_secret_delivery(),
+                    },
+                };
+                NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+            },
+        )
+        .await
+        .expect("machine add endpoint binds");
+    client.flush().await.expect("service flushes");
+
+    let ssh = FakeSshMachine::new("sg-edge-1", "echo 'join ok'");
+    let context = ContextDir::new();
+    let seed_dir = tempfile::TempDir::new().expect("seed dir");
+    let config = test_config(&server, &ssh, &context, seed_dir.path());
+    save_cluster_context(
+        &context.context_path,
+        &ClusterContext {
+            nats_url: server.server.client_url().clone(),
+            nats_ca_file: server.server.ca_path().to_owned(),
+            operator_seed_file: config
+                .nats_seed_file
+                .clone()
+                .expect("test config has operator seed"),
+            join_seed_file: config.join_seed_file.clone(),
+            machines: Vec::new(),
+        },
+    )
+    .expect("cluster context saves");
+    let release_dir = tempfile::TempDir::new().expect("release dir");
+    let (bundle, _) = local_release_bundle(release_dir.path());
+
+    let error = execute_command(
+        PloyzctlCommand::MachineAddRemote(MachineAddRemoteCommand {
+            target: SshTarget::parse("root@203.0.113.11").expect("target parses"),
+            identity_override: None,
+            roles: InstallRolePolicy::install_all(),
+            detach: false,
+            installer_script: None,
+            local_release: Some(Box::new(bundle)),
+            host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
+        }),
+        &config,
+    )
+    .await
+    .expect_err("mismatched local release fails remote machine add");
+
+    let PloyzctlExecutionError::RemoteMachine { source } = &error else {
+        panic!("expected remote machine error, got {error:?}");
+    };
+    let RemoteMachineExecutionError::LocalReleaseAfterMachineAdd {
+        operation_id,
+        message,
+    } = &**source
+    else {
+        panic!("expected accepted local release error, got {error:?}");
+    };
+    assert!(operation_id.as_str().starts_with("op_add_sg-edge-1_"));
+    assert!(message.contains("does not match the cluster machine-join release"));
+    assert!(
+        error
+            .to_string()
+            .contains("machine add operation op_add_sg-edge-1_")
+    );
+    assert_eq!(ssh.commands(), vec!["hostname".to_owned()]);
+}
+
 /// Installer failure after token redemption keeps the operation id visible
 /// next to the SSH phase and remote output (R14); the operation itself stays
 /// on the server as evidence.

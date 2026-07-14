@@ -768,7 +768,10 @@ pub(crate) async fn execute_machine_add_remote(
         bundle
             .validate_join_material(&output.join_bundle.material)
             .map_err(|message| {
-                remote_machine_error(RemoteMachineExecutionError::LocalRelease { message })
+                remote_machine_error(RemoteMachineExecutionError::LocalReleaseAfterMachineAdd {
+                    operation_id: operation_id.clone(),
+                    message,
+                })
             })?;
     }
     let staged_release = command
@@ -869,6 +872,10 @@ pub enum RemoteMachineExecutionError {
     LocalRelease {
         message: String,
     },
+    LocalReleaseAfterMachineAdd {
+        operation_id: OperationId,
+        message: String,
+    },
     MachineIdentity {
         source: MachineIdentityError,
     },
@@ -926,6 +933,14 @@ impl fmt::Display for RemoteMachineExecutionError {
         match self {
             Self::Ssh { source } => write!(formatter, "{source}"),
             Self::LocalRelease { message } => write!(formatter, "local release: {message}"),
+            Self::LocalReleaseAfterMachineAdd {
+                operation_id,
+                message,
+            } => write!(
+                formatter,
+                "machine add operation {} accepted, but local release validation failed: {message}",
+                operation_id.as_str()
+            ),
             Self::MachineIdentity { source } => write!(formatter, "{source}"),
             Self::FirstMachineBootstrapOutputTruncated => write!(
                 formatter,
