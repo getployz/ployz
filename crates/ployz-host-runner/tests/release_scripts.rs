@@ -78,7 +78,10 @@ fn filtered_dind_reuses_matching_substrate_and_unfiltered_is_full() {
     fixture.clear_log();
     let full = fixture.run_dind(None, &format!("linux/amd64 {fingerprint}"), true);
     assert_success(&full);
-    assert!(fixture.log().contains("pull --platform linux/amd64"));
+    let log = fixture.log();
+    assert!(log.contains("pull --platform linux/amd64"));
+    assert!(log.contains("group_ --skip acceptance::group_v1_acceptance"));
+    assert!(log.contains("acceptance::group_v1_acceptance --exact"));
 }
 
 #[cfg(unix)]

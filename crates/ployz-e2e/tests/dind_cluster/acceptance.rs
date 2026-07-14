@@ -324,6 +324,7 @@ async fn step_4_keep_https_while_core_is_stopped(core: &CoreContext, app: &Deplo
     assert!(started.success(), "restart Control-Plane Core: {started:?}");
     assert_unit_active(core, core.cluster.core(), "ployzd-control").await;
     wait_for_machine_observations(core, &machine_id("core_1")).await;
+    wait_for_fresh_peer_handshakes(core).await;
 }
 
 async fn step_5_retry_and_rollback(

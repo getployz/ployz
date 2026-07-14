@@ -5,7 +5,8 @@ set -euo pipefail
 # (docs/operations/dind-e2e.md, plan C5).
 #
 # Rebuilds changed linux artifacts, then runs the smoke test serially and the
-# remaining scenario groups concurrently:
+# compatible scenario groups concurrently, then the heavyweight acceptance
+# lifecycle serially:
 #
 #   scripts/dind-e2e.sh                              # clean gated suite
 #   scripts/dind-e2e.sh scenario_machine_add         # one scenario (filter)
@@ -71,5 +72,6 @@ if [ "$#" -gt 0 ]; then
   run_dind "${WORKERS}" "$@"
 else
   run_dind 1 serial_smoke --exact
-  run_dind "${WORKERS}" group_
+  run_dind "${WORKERS}" group_ --skip acceptance::group_v1_acceptance
+  run_dind 1 acceptance::group_v1_acceptance --exact
 fi

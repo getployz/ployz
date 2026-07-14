@@ -2706,6 +2706,13 @@ async fn scenario_daemon_restart_invisibility(core: &CoreContext, edge: &DindMac
 }
 
 async fn wait_for_fresh_peer_handshakes(core: &CoreContext) {
+    let expected_machines = core
+        .api
+        .machine_list(&MachineListRequest {})
+        .await
+        .expect("list machines before handshake wait")
+        .machines
+        .len();
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let status = core
@@ -2715,14 +2722,14 @@ async fn wait_for_fresh_peer_handshakes(core: &CoreContext) {
             })
             .await
             .expect("read dataplane testimony after daemon restart");
-        let ready = status.machines.len() == 2
+        let ready = status.machines.len() == expected_machines
             && status.machines.iter().all(|machine| {
                 let ployz_sdk_types::NetworkDataplaneTestimony::Answered { value } =
                     &machine.dataplane
                 else {
                     return false;
                 };
-                !value.wireguard.peers.is_empty()
+                value.wireguard.peers.len() == expected_machines.saturating_sub(1)
                     && value.wireguard.peers.iter().all(|peer| {
                         matches!(
                             peer.handshake,

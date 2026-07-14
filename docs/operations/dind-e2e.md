@@ -100,7 +100,7 @@ prerequisite evidence; they do not add steps to this scenario.
 | `PLOYZ_DIND_ARTIFACT_DIR` | Host directory with the linux binaries (default `/tmp/ployz-dind-machine-target/release`). |
 | `PLOYZ_DIND_TARGET_DIR` | Build target dir used by the build script and the wrapper's marker file (default `/tmp/ployz-dind-machine-target`). |
 | `PLOYZ_DIND_BUILDER_IMAGE` | Shared native/eBPF builder image (default `ployz-dind-builder:rust-1.91-bookworm-v2`). |
-| `PLOYZ_DIND_WORKERS` | Concurrent non-smoke groups: `1`, `2` (default), or `3`. |
+| `PLOYZ_DIND_WORKERS` | Concurrent compatible groups: `1`, `2` (default), or `3`. The heavyweight acceptance group stays serial. |
 
 ## Evidence
 
