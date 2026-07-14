@@ -5,12 +5,12 @@ use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{
     CORE_RPC_QUERY_SCOPE, INTENT_CHANGED, INTENT_GET, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT,
     MACHINE_RPC_COMMAND_SCOPE, MACHINE_RPC_QUERY_SCOPE, MachineServiceEndpoint,
-    OPERATION_PROGRESS_SCOPE, OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE,
-    OPERATOR_MACHINE_IMAGE_QUERY_SCOPE, OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE,
-    OPERATOR_RUNTIME_SNAPSHOT, PENDING_MACHINE_JOINS_CHANGED, RUNTIME_SNAPSHOT_SEED,
-    RUNTIME_SNAPSHOT_STREAM, gateway_status, gateway_status_scope, machine_container_facts,
-    machine_facts, machine_facts_scope, machine_service, machine_service_command_scope,
-    machine_service_query_scope,
+    OPERATION_PROGRESS_SCOPE, OPERATOR_INIT_FIRST_MACHINE_ACTIVATE,
+    OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE, OPERATOR_MACHINE_IMAGE_QUERY_SCOPE,
+    OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE, OPERATOR_RUNTIME_SNAPSHOT,
+    PENDING_MACHINE_JOINS_CHANGED, RUNTIME_SNAPSHOT_SEED, RUNTIME_SNAPSHOT_STREAM, gateway_status,
+    gateway_status_scope, machine_container_facts, machine_facts, machine_facts_scope,
+    machine_service, machine_service_command_scope, machine_service_query_scope,
 };
 use ployz_test_support::ids::machine_id;
 
@@ -55,6 +55,7 @@ fn controller_credential_renders_owner_machine_service_and_progress_scopes() {
         profile.publish.allowed_subjects(),
         &[
             "_INBOX_ctl.>".to_owned(),
+            OPERATOR_INIT_FIRST_MACHINE_ACTIVATE.to_owned(),
             MACHINE_RPC_QUERY_SCOPE.to_owned(),
             MACHINE_RPC_COMMAND_SCOPE.to_owned(),
             CORE_RPC_QUERY_SCOPE.to_owned(),

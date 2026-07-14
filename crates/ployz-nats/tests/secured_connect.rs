@@ -308,6 +308,42 @@ async fn controller_can_serve_operator_rpc_subjects() {
 }
 
 #[tokio::test]
+async fn controller_can_request_first_machine_activation() {
+    let fixture = SecuredTestNats::start().await.expect("secured fixture");
+    let controller_config = fixture.controller_config();
+    let service_client = connect_authenticated(&controller_config, CONNECT_TIMEOUT)
+        .await
+        .expect("controller service connects");
+    let (caller_client, mut events) = connect_with_event_capture(&controller_config).await;
+    let mut requests = service_client
+        .subscribe(OPERATOR_INIT_FIRST_MACHINE_ACTIVATE)
+        .await
+        .expect("controller subscribes activation endpoint");
+    service_client.flush().await.expect("flush");
+    let responder = service_client.clone();
+    tokio::spawn(async move {
+        while let Some(message) = requests.next().await {
+            let Some(reply) = message.reply else {
+                continue;
+            };
+            responder.publish(reply, "activated".into()).await.ok();
+            responder.flush().await.ok();
+        }
+    });
+
+    let response = tokio::time::timeout(
+        EVENT_TIMEOUT,
+        caller_client.request(OPERATOR_INIT_FIRST_MACHINE_ACTIVATE, "activate".into()),
+    )
+    .await
+    .expect("request does not hang")
+    .expect("controller receives the activation response");
+
+    assert_eq!(response.payload.as_ref(), b"activated");
+    assert_no_permission_violation(&mut events).await;
+}
+
+#[tokio::test]
 async fn machine_can_serve_machine_rpc_and_service_discovery_subjects() {
     let machine_id = MachineId::try_new("machine-a").expect("valid machine id");
     let fixture = SecuredTestNats::start_with_machines(std::slice::from_ref(&machine_id))
