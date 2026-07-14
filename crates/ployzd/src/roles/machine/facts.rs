@@ -184,6 +184,13 @@ impl MachineEndpointCache {
         }
     }
 
+    pub(crate) fn with_observation(observation: MachineEndpointObservation) -> Self {
+        Self {
+            latest: Arc::new(Mutex::new(Some(observation))),
+            wg_ifname: String::new(),
+        }
+    }
+
     fn wg_ifname(&self) -> &str {
         &self.wg_ifname
     }

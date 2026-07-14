@@ -58,7 +58,9 @@ use ployzd::roles::machine::protocol::{
     MachineSubstrateReportRpcResponse, MachineSubstrateUpdateRpcOk,
     MachineSubstrateUpdateRpcResponse,
 };
-use ployzd::roles::machine::service::start_machine_role_runtime;
+use ployzd::roles::machine::service::{
+    start_machine_role_runtime, start_machine_role_runtime_with_endpoint_observation,
+};
 use ployzd::service_catalog::machine_role_service;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
@@ -938,12 +940,17 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         .await
         .expect("active machine stores");
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_role_runtime(
+    let machine_runtime = start_machine_role_runtime_with_endpoint_observation(
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
         ReadyWireGuardEbpf::for_machine(&machine_id("machine_a")),
         runner.clone(),
+        MachineEndpointObservation {
+            machine_id: machine_id("machine_a"),
+            control_endpoints: vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+            mesh_endpoints: Vec::new(),
+        },
     )
     .await
     .expect("machine runtime starts");

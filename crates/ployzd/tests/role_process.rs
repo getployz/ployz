@@ -459,7 +459,8 @@ async fn machine_role_sigterm_exits_cleanly_and_restarts_after_nats_loss() {
         &seed_file,
     );
     wait_for_machine_service_interest(&mut first, &controller, &subject).await;
-    first.terminate_and_assert_clean();
+    let status = first.terminate();
+    assert!(status.success(), "ployzd machine exited with {status}");
 
     let mut second = TestChild::spawn_machine(
         &machine_id,
@@ -476,7 +477,11 @@ async fn machine_role_sigterm_exits_cleanly_and_restarts_after_nats_loss() {
     })
     .await
     .expect("controller observes NATS shutdown");
-    second.terminate_and_assert_clean();
+    let status = second.terminate();
+    assert!(
+        status.success() || status.code() == Some(3),
+        "ployzd machine must exit cleanly for SIGTERM or request restart after NATS loss, got {status}"
+    );
 }
 
 #[cfg(unix)]
@@ -505,7 +510,7 @@ impl TestChild {
         )
     }
 
-    fn terminate_and_assert_clean(&mut self) {
+    fn terminate(&mut self) -> std::process::ExitStatus {
         let signal = Command::new("kill")
             .args(["-TERM", &self.0.id().to_string()])
             .status()
@@ -518,7 +523,7 @@ impl TestChild {
         let Some(status) = status else {
             panic!("ployzd machine did not exit within six seconds of SIGTERM");
         };
-        assert!(status.success(), "ployzd machine exited with {status}");
+        status
     }
 }
 

@@ -40,7 +40,10 @@ use ployzd::roles::machine::protocol::{
     MachineContainerRunRpcRequest, MachineDataplaneStatusRpcRequest,
     MachineDataplaneStatusRpcResponse, MachineRpcResponse,
 };
-use ployzd::roles::machine::service::start_machine_role_runtime;
+use ployzd::roles::machine::service::{
+    MachineServiceError, RunningMachineRoleRuntime, start_machine_role_runtime,
+    start_machine_role_runtime_with_endpoint_observation,
+};
 
 mod support;
 
@@ -354,11 +357,9 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
     let control_runtime = start_control_with_deploy_roster(&nats, &config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_role_runtime(
+    let machine_runtime = start_routed_machine_role_runtime(
         machine_client.clone(),
         machine_id("machine_a"),
-        runner.clone(),
-        ReadyWireGuardEbpf::for_machine(&machine_id("machine_a")),
         runner.clone(),
     )
     .await?;
@@ -444,11 +445,9 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
     let control_runtime = start_control_with_deploy_roster(&nats, &config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_role_runtime(
+    let machine_runtime = start_routed_machine_role_runtime(
         machine_client.clone(),
         machine_id("machine_a"),
-        runner.clone(),
-        ReadyWireGuardEbpf::for_machine(&machine_id("machine_a")),
         runner.clone(),
     )
     .await?;
@@ -552,11 +551,9 @@ async fn e2e_gateway_keeps_serving_last_projection_after_control_shutdown()
     let control_runtime = start_control_with_deploy_roster(&nats, &config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_role_runtime(
+    let machine_runtime = start_routed_machine_role_runtime(
         machine_client.clone(),
         machine_id("machine_a"),
-        runner.clone(),
-        ReadyWireGuardEbpf::for_machine(&machine_id("machine_a")),
         runner.clone(),
     )
     .await?;
@@ -651,19 +648,15 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
     let edge_machine_client = nats.machine_client(&machine_id("edge_2")).await;
     let core_runner = ObservingContainerRunner::new(machine_id("core_1"));
     let edge_runner = ObservingContainerRunner::new(machine_id("edge_2"));
-    let core_machine_runtime = start_machine_role_runtime(
+    let core_machine_runtime = start_routed_machine_role_runtime(
         core_machine_client.clone(),
         machine_id("core_1"),
         core_runner.clone(),
-        ReadyWireGuardEbpf::for_machine(&machine_id("core_1")),
-        core_runner.clone(),
     )
     .await?;
-    let edge_machine_runtime = start_machine_role_runtime(
+    let edge_machine_runtime = start_routed_machine_role_runtime(
         edge_machine_client.clone(),
         machine_id("edge_2"),
-        edge_runner.clone(),
-        ReadyWireGuardEbpf::for_machine(&machine_id("edge_2")),
         edge_runner.clone(),
     )
     .await?;
@@ -916,6 +909,27 @@ fn test_disk_space() -> ployz_core::machine_runtime::MachineDiskSpace {
 
 fn public_ip(last_octet: u8) -> std::net::IpAddr {
     std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, last_octet))
+}
+
+async fn start_routed_machine_role_runtime(
+    client: async_nats::Client,
+    machine_id: ployz_core::ids::MachineId,
+    runner: ObservingContainerRunner,
+) -> Result<RunningMachineRoleRuntime, MachineServiceError> {
+    let loopback = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+    start_machine_role_runtime_with_endpoint_observation(
+        client,
+        machine_id.clone(),
+        runner.clone(),
+        ReadyWireGuardEbpf::for_machine(&machine_id),
+        runner,
+        MachineEndpointObservation {
+            machine_id,
+            control_endpoints: vec![loopback],
+            mesh_endpoints: Vec::new(),
+        },
+    )
+    .await
 }
 
 fn assert_smoke_response(response: &str) {

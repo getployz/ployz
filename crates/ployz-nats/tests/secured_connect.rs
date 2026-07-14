@@ -296,13 +296,12 @@ async fn controller_can_serve_operator_rpc_subjects() {
         }
     });
 
-    let response = tokio::time::timeout(
-        EVENT_TIMEOUT,
-        caller_client.request(OPERATOR_INIT_FIRST_MACHINE_ACTIVATE, "activate".into()),
+    let response = request_when_responder_ready(
+        &caller_client,
+        OPERATOR_INIT_FIRST_MACHINE_ACTIVATE,
+        "activate",
     )
-    .await
-    .expect("request does not hang")
-    .expect("operator receives the API response");
+    .await;
 
     assert_eq!(response.payload.as_ref(), b"activated");
 }
@@ -331,16 +330,35 @@ async fn controller_can_request_first_machine_activation() {
         }
     });
 
-    let response = tokio::time::timeout(
-        EVENT_TIMEOUT,
-        caller_client.request(OPERATOR_INIT_FIRST_MACHINE_ACTIVATE, "activate".into()),
+    let response = request_when_responder_ready(
+        &caller_client,
+        OPERATOR_INIT_FIRST_MACHINE_ACTIVATE,
+        "activate",
     )
-    .await
-    .expect("request does not hang")
-    .expect("controller receives the activation response");
+    .await;
 
     assert_eq!(response.payload.as_ref(), b"activated");
     assert_no_permission_violation(&mut events).await;
+}
+
+async fn request_when_responder_ready(
+    client: &async_nats::Client,
+    subject: &str,
+    payload: &'static str,
+) -> async_nats::Message {
+    tokio::time::timeout(EVENT_TIMEOUT, async {
+        loop {
+            match client.request(subject.to_owned(), payload.into()).await {
+                Ok(response) => return response,
+                Err(error) if error.kind() == async_nats::RequestErrorKind::NoResponders => {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(error) => panic!("responder did not become ready: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("responder becomes ready before the event timeout")
 }
 
 #[tokio::test]

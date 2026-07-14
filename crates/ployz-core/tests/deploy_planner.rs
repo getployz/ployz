@@ -864,6 +864,34 @@ fn declared_route_reroute_reuses_the_binding_identity_and_updates_endpoint_port(
 }
 
 #[test]
+fn declared_route_rejects_duplicate_target_regardless_of_endpoint_port() {
+    for duplicate_port in [8080, 9090] {
+        let mut request = deploy_request(1);
+        request.routes = vec![
+            deploy_route("api.example.com", 8080),
+            deploy_route("api.example.com", duplicate_port),
+        ];
+
+        let error = prepare_deploy(
+            DeployPreparationInput {
+                request,
+                occupied_route_bindings: Vec::new(),
+                eligible_machines: Vec::new(),
+                draining_machines: Vec::new(),
+                observed_machines: Vec::new(),
+            },
+            route_binding_id_for,
+        )
+        .expect_err("duplicate declared target must collide");
+
+        assert!(matches!(
+            error,
+            ployz_core::deploy::RouteBindingCommitError::HostnameCollision { .. }
+        ));
+    }
+}
+
+#[test]
 fn declared_route_reroute_rejects_other_owners_and_automatic_bindings() {
     let mut request = deploy_request(1);
     request.routes = vec![deploy_route("api.example.com", 9090)];
@@ -1015,9 +1043,9 @@ fn automatic_route_commit_uses_the_exact_requested_label() {
 }
 
 #[test]
-fn identical_automatic_route_request_reuses_the_binding_identity() {
+fn automatic_route_reroute_reuses_the_binding_identity_and_updates_endpoint_port() {
     let mut request = deploy_request(1);
-    request.routes = vec![automatic_deploy_route("api", 8080)];
+    request.routes = vec![automatic_deploy_route("api", 9090)];
     let mut existing = route_binding_state("api.apps.example.com", "svc_api");
     existing.id = route_binding_id("route_existing");
     existing.origin = RouteBindingOrigin::Automatic;
@@ -1034,6 +1062,59 @@ fn identical_automatic_route_request_reuses_the_binding_identity() {
     };
 
     assert_eq!(commit.id, route_binding_id("route_existing"));
+    assert_eq!(commit.endpoint_port, route_port(9090));
+}
+
+#[test]
+fn automatic_route_rejects_duplicate_target_regardless_of_endpoint_port() {
+    for duplicate_port in [8080, 9090] {
+        let mut request = deploy_request(1);
+        request.routes = vec![
+            automatic_deploy_route("api", 8080),
+            automatic_deploy_route("api", duplicate_port),
+        ];
+
+        let error = auto_hostname_route_binding_commits(
+            &request,
+            Some(&route_hostname("apps.example.com")),
+            &[],
+            route_binding_id_for,
+        )
+        .expect_err("duplicate automatic target must collide");
+
+        assert!(matches!(
+            error,
+            ployz_core::deploy::AutoHostnameRouteBindingError::HostnameCollision { .. }
+        ));
+    }
+}
+
+#[test]
+fn deploy_route_validation_rejects_duplicate_service_ids() {
+    let mut first = service_spec("svc_api", "registry.example/api:rev-1", 1, None);
+    first.routes = vec![automatic_deploy_route("api", 8080)];
+    let mut second = first.clone();
+    second.routes = vec![automatic_deploy_route("api", 9090)];
+    let request = ployz_core::deploy::DeployRequest {
+        namespace_id: namespace_id("default"),
+        origin: None,
+        services: vec![first, second],
+    };
+
+    let error = validate_deploy_route_bindings(
+        &request,
+        Some(&route_hostname("apps.example.com")),
+        &[],
+        route_binding_id_for,
+    )
+    .expect_err("duplicate service ids must be rejected");
+
+    assert!(matches!(
+        error,
+        ployz_core::deploy::DeployRouteBindingValidationError::DuplicateServiceId {
+            service_id: duplicate_service_id
+        } if duplicate_service_id == service_id("svc_api")
+    ));
 }
 
 #[test]
