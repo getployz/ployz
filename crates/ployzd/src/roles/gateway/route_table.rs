@@ -231,7 +231,7 @@ mod tests {
     fn update(
         certificate_failures: Vec<GatewayCertificateMaterialFailure>,
     ) -> GatewayProjectionUpdate {
-        GatewayProjectionUpdate::SourceAvailable(Box::new(GatewayProjectionInput {
+        GatewayProjectionUpdate::Available(Box::new(GatewayProjectionInput {
             certificate_bundles: Vec::new(),
             certificate_failures,
             challenges: Vec::new(),

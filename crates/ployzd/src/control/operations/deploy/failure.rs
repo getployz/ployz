@@ -641,7 +641,7 @@ impl From<NamespaceCommitError> for DeployExecutionError {
 impl NamespaceCommitError {
     fn deploy_failure(&self, retained_artifacts: Vec<RetainedArtifact>) -> DeployOperationFailure {
         match self {
-            Self::RouteStore { target, message } => DeployOperationFailure::RouteCutoverFailed {
+            Self::Route { target, message } => DeployOperationFailure::RouteCutoverFailed {
                 route: target.clone(),
                 reason: RouteCutoverFailureReason::StateStoreFailed {
                     message: failure_message(format!(
@@ -650,7 +650,7 @@ impl NamespaceCommitError {
                 },
                 retained_artifacts,
             },
-            Self::ServingTargetStore { scope, message } => {
+            Self::ServingTarget { scope, message } => {
                 DeployOperationFailure::ControlPlaneCommitFailed {
                     scope: scope.clone(),
                     message: failure_message(format!(
@@ -669,7 +669,7 @@ impl NamespaceCommitError {
                     retained_artifacts,
                 }
             }
-            Self::VolumePinStore { state, message } => {
+            Self::VolumePin { state, message } => {
                 DeployOperationFailure::ControlPlaneCommitFailed {
                     scope: ControlPlaneCommitScope::VolumePin {
                         namespace_id: state.namespace_id.clone(),

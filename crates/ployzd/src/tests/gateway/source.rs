@@ -61,7 +61,7 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
         &GatewayCertificateStore::new(certificate_dir.path().to_path_buf()),
     )
     .await;
-    let GatewayProjectionUpdate::SourceAvailable(input) = update else {
+    let GatewayProjectionUpdate::Available(input) = update else {
         panic!("gateway source should be available, got {update:?}");
     };
     let projection = project_gateway(*input).expect("gateway projection succeeds");

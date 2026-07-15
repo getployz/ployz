@@ -92,7 +92,7 @@ async fn pingora_shutdown_observes_signal_sent_before_recv() {
 #[test]
 fn gateway_status_reads_current_process_state() {
     let mut projector = GatewayProjector::new();
-    projector.apply_source_update(GatewayProjectionUpdate::SourceAvailable(Box::new(
+    projector.apply_source_update(GatewayProjectionUpdate::Available(Box::new(
         GatewayProjectionInput {
             certificate_bundles: Vec::new(),
             certificate_failures: Vec::new(),
@@ -120,7 +120,7 @@ fn gateway_status_reads_current_process_state() {
 #[test]
 fn gateway_status_reports_last_known_good_after_source_failure() {
     let mut projector = GatewayProjector::new();
-    projector.apply_source_update(GatewayProjectionUpdate::SourceAvailable(Box::new(
+    projector.apply_source_update(GatewayProjectionUpdate::Available(Box::new(
         GatewayProjectionInput {
             certificate_bundles: Vec::new(),
             certificate_failures: Vec::new(),
@@ -130,7 +130,7 @@ fn gateway_status_reports_last_known_good_after_source_failure() {
             observed_machines: Vec::new(),
         },
     )));
-    projector.apply_source_update(GatewayProjectionUpdate::SourceUnavailable(
+    projector.apply_source_update(GatewayProjectionUpdate::Unavailable(
         GatewayProjectionError::SourceUnavailable {
             message: "intent unavailable".to_owned(),
         },

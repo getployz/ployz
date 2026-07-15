@@ -24,9 +24,9 @@ pub async fn load_gateway_projection_update_from_nats(
     certificate_store: &GatewayCertificateStore,
 ) -> GatewayProjectionUpdate {
     match load_gateway_projection_input_from_nats(intent_reader, facts, certificate_store).await {
-        Ok(input) => GatewayProjectionUpdate::SourceAvailable(Box::new(input)),
+        Ok(input) => GatewayProjectionUpdate::Available(Box::new(input)),
         Err(GatewaySourceError::Unavailable { message }) => {
-            GatewayProjectionUpdate::SourceUnavailable(GatewayProjectionError::SourceUnavailable {
+            GatewayProjectionUpdate::Unavailable(GatewayProjectionError::SourceUnavailable {
                 message,
             })
         }

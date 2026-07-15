@@ -2,10 +2,10 @@
 //!
 //! - `protocol`: wire request/response types and the shared RPC envelope.
 //! - `service`: server-side NATS handlers for machine-local commands.
-//! - `client`: compatibility exports for Control-owned request adapters.
 //! - `execution`: machine-owned container, image, and host dataplane adapters.
 //! - `runner`: the `MachineContainerRunner` port and container-run decision.
 //! - `process`: the machine role process and observation loop.
+//!
 //! Recovery mirroring and failover are owned by the role-neutral
 //! [`crate::recovery`] module.
 

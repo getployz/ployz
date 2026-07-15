@@ -151,17 +151,17 @@ pub trait NamespaceStateCommitter {
 /// each concern is keyed by (route targets vs commit scopes).
 #[derive(Debug)]
 pub enum NamespaceCommitError {
-    RouteStore {
+    Route {
         target: RouteTarget,
         message: String,
     },
-    ServingTargetStore {
+    ServingTarget {
         scope: ControlPlaneCommitScope,
         message: String,
     },
     #[cfg(test)]
     ServingTargetLockLost { scope: ControlPlaneCommitScope },
-    VolumePinStore {
+    VolumePin {
         state: VolumePinState,
         message: String,
     },

@@ -96,6 +96,7 @@ fn lock_mirror_transaction(path: &Path) -> io::Result<File> {
     lock_name.push(".lock");
     let lock = OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .open(parent.join(lock_name))?;

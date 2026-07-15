@@ -21,7 +21,7 @@ fn gateway_runtime_serves_new_projection_from_available_source() {
     let mut runtime = GatewayProjector::new();
     let api = projected_route("api.example.com", "machine_1", "ctr_1");
 
-    let tick = runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(Box::new(
+    let tick = runtime.apply_source_update(GatewayProjectionUpdate::Available(Box::new(
         source_input("api.example.com", "machine_1", "ctr_1"),
     )));
 
@@ -40,13 +40,14 @@ fn gateway_runtime_serves_new_projection_from_available_source() {
 fn gateway_runtime_keeps_serving_last_good_routes_when_source_disappears() {
     let mut runtime = GatewayProjector::new();
     let api = projected_route("api.example.com", "machine_1", "ctr_1");
-    runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(Box::new(
-        source_input("api.example.com", "machine_1", "ctr_1"),
-    )));
+    runtime.apply_source_update(GatewayProjectionUpdate::Available(Box::new(source_input(
+        "api.example.com",
+        "machine_1",
+        "ctr_1",
+    ))));
 
-    let tick = runtime.apply_source_update(GatewayProjectionUpdate::SourceUnavailable(
-        source_unavailable(),
-    ));
+    let tick =
+        runtime.apply_source_update(GatewayProjectionUpdate::Unavailable(source_unavailable()));
 
     assert_eq!(
         tick.state,
@@ -66,12 +67,13 @@ fn gateway_runtime_keeps_serving_last_good_routes_when_source_disappears() {
 fn gateway_runtime_keeps_serving_last_good_routes_when_source_is_invalid() {
     let mut runtime = GatewayProjector::new();
     let api = projected_route("api.example.com", "machine_1", "ctr_1");
-    runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(Box::new(
-        source_input("api.example.com", "machine_1", "ctr_1"),
-    )));
+    runtime.apply_source_update(GatewayProjectionUpdate::Available(Box::new(source_input(
+        "api.example.com",
+        "machine_1",
+        "ctr_1",
+    ))));
 
-    let tick =
-        runtime.apply_source_update(GatewayProjectionUpdate::SourceInvalid(invalid_source()));
+    let tick = runtime.apply_source_update(GatewayProjectionUpdate::Invalid(invalid_source()));
 
     assert_eq!(
         tick.state,
@@ -91,14 +93,14 @@ fn gateway_runtime_keeps_serving_last_good_routes_when_source_is_invalid() {
 fn gateway_runtime_applies_later_route_changes_after_outage() {
     let mut runtime = GatewayProjector::new();
     let api_v2 = projected_route("api.example.com", "machine_2", "ctr_2");
-    runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(Box::new(
-        source_input("api.example.com", "machine_1", "ctr_1"),
-    )));
-    runtime.apply_source_update(GatewayProjectionUpdate::SourceUnavailable(
-        source_unavailable(),
-    ));
+    runtime.apply_source_update(GatewayProjectionUpdate::Available(Box::new(source_input(
+        "api.example.com",
+        "machine_1",
+        "ctr_1",
+    ))));
+    runtime.apply_source_update(GatewayProjectionUpdate::Unavailable(source_unavailable()));
 
-    let tick = runtime.apply_source_update(GatewayProjectionUpdate::SourceAvailable(Box::new(
+    let tick = runtime.apply_source_update(GatewayProjectionUpdate::Available(Box::new(
         source_input("api.example.com", "machine_2", "ctr_2"),
     )));
 
@@ -117,9 +119,8 @@ fn gateway_runtime_applies_later_route_changes_after_outage() {
 fn gateway_runtime_has_no_served_routes_before_first_valid_source() {
     let mut runtime = GatewayProjector::new();
 
-    let tick = runtime.apply_source_update(GatewayProjectionUpdate::SourceUnavailable(
-        source_unavailable(),
-    ));
+    let tick =
+        runtime.apply_source_update(GatewayProjectionUpdate::Unavailable(source_unavailable()));
 
     assert_eq!(
         tick.state,

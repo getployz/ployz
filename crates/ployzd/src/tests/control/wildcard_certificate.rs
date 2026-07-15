@@ -30,7 +30,7 @@ use ployz_test_lease_worker::{LeaseWorkerRequest, LeaseWorkerResponse, StubLease
 fn cold_gateway_with_missing_required_material_is_unavailable_not_last_known_good() {
     let mut projector = GatewayProjector::new();
 
-    let tick = projector.apply_source_update(GatewayProjectionUpdate::SourceAvailable(Box::new(
+    let tick = projector.apply_source_update(GatewayProjectionUpdate::Available(Box::new(
         GatewayProjectionInput {
             certificate_bundles: Vec::new(),
             certificate_failures: vec![GatewayCertificateMaterialFailure {

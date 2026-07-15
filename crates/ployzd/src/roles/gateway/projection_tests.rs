@@ -72,7 +72,7 @@ fn failed_custom_material_retains_prior_tls_and_applies_unrelated_updates() {
 
     let state = apply_gateway_update(
         previous,
-        GatewayProjectionUpdate::SourceAvailable(Box::new(GatewayProjectionInput {
+        GatewayProjectionUpdate::Available(Box::new(GatewayProjectionInput {
             certificate_bundles: Vec::new(),
             certificate_failures: vec![failure.clone()],
             challenges: vec![challenge.clone()],
@@ -411,14 +411,14 @@ fn gateway_keeps_last_good_projection_when_source_is_unavailable() {
     assert_eq!(
         apply_gateway_update(
             current_state(last_good),
-            GatewayProjectionUpdate::SourceUnavailable(error.clone()),
+            GatewayProjectionUpdate::Unavailable(error.clone()),
         ),
         failed_state(single_route_projection(), error)
     );
     assert_eq!(
         apply_gateway_update(
             GatewayProjectionState::unavailable(),
-            GatewayProjectionUpdate::SourceUnavailable(source_unavailable()),
+            GatewayProjectionUpdate::Unavailable(source_unavailable()),
         ),
         GatewayProjectionState {
             last_good: None,
@@ -466,7 +466,7 @@ fn gateway_rejects_duplicate_route_targets() {
 fn gateway_retains_last_good_projection_when_source_is_invalid() {
     let target = route_target("api.example.com", 443);
     let last_good = single_route_projection();
-    let update = GatewayProjectionUpdate::SourceAvailable(Box::new(GatewayProjectionInput {
+    let update = GatewayProjectionUpdate::Available(Box::new(GatewayProjectionInput {
         certificate_bundles: Vec::new(),
         certificate_failures: Vec::new(),
         challenges: Vec::new(),
@@ -513,7 +513,7 @@ fn gateway_retains_last_good_projection_when_source_decode_fails() {
     assert_eq!(
         apply_gateway_update(
             current_state(last_good),
-            GatewayProjectionUpdate::SourceInvalid(error.clone()),
+            GatewayProjectionUpdate::Invalid(error.clone()),
         ),
         failed_state(single_route_projection(), error)
     );
@@ -528,13 +528,13 @@ fn gateway_keeps_failure_evidence_when_invalid_source_then_disappears() {
 
     let failed = apply_gateway_update(
         current_state(last_good),
-        GatewayProjectionUpdate::SourceInvalid(error.clone()),
+        GatewayProjectionUpdate::Invalid(error.clone()),
     );
 
     assert_eq!(
         apply_gateway_update(
             failed,
-            GatewayProjectionUpdate::SourceUnavailable(source_unavailable()),
+            GatewayProjectionUpdate::Unavailable(source_unavailable()),
         ),
         failed_state(single_route_projection(), error)
     );

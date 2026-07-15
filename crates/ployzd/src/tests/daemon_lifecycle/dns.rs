@@ -18,8 +18,10 @@ struct DnsStatusResponse {
 #[tokio::test]
 async fn dns_process_serves_machine_scoped_status_and_shuts_down() {
     let dns_machine_id = machine_id("dns_a");
-    let nats =
-        ployz_test_support::nats::TestNats::start_with_machines(&[dns_machine_id.clone()]).await;
+    let nats = ployz_test_support::nats::TestNats::start_with_machines(std::slice::from_ref(
+        &dns_machine_id,
+    ))
+    .await;
     let machine_client = nats.machine_client(&dns_machine_id).await;
     let process = start_dns_process_with_client(
         machine_client.clone(),

@@ -233,7 +233,7 @@ impl NamespaceStateCommitter for NamespaceIntentCommitter {
                 serving_target_entries,
             )
             .await
-            .map_err(|error| NamespaceCommitError::ServingTargetStore {
+            .map_err(|error| NamespaceCommitError::ServingTarget {
                 scope,
                 message: error.to_string(),
             })?;
@@ -248,7 +248,7 @@ impl NamespaceStateCommitter for NamespaceIntentCommitter {
         self.namespace_intent
             .remove_route_binding(&target)
             .await
-            .map_err(|error| NamespaceCommitError::RouteStore {
+            .map_err(|error| NamespaceCommitError::Route {
                 target,
                 message: error.to_string(),
             })?;
@@ -267,7 +267,7 @@ impl NamespaceStateCommitter for NamespaceIntentCommitter {
         self.namespace_intent
             .remove_serving_target_entry(&entry)
             .await
-            .map_err(|error| NamespaceCommitError::ServingTargetStore {
+            .map_err(|error| NamespaceCommitError::ServingTarget {
                 scope,
                 message: error.to_string(),
             })?;
@@ -282,7 +282,7 @@ impl NamespaceStateCommitter for NamespaceIntentCommitter {
         self.namespace_intent
             .replace_volume_pin(state.clone())
             .await
-            .map_err(|error| NamespaceCommitError::VolumePinStore {
+            .map_err(|error| NamespaceCommitError::VolumePin {
                 state,
                 message: error.to_string(),
             })?;
