@@ -49,6 +49,8 @@ pub const OPERATOR_RUNTIME_SNAPSHOT: &str = "plz.v1.rpc.operator.query.runtime.s
 pub const OPERATOR_LOGS_TAIL: &str = "plz.v1.rpc.operator.query.logs.tail";
 pub const OPERATOR_MACHINE_DRAIN: &str = "plz.v1.rpc.operator.command.machine.drain";
 pub const OPERATOR_MACHINE_RESUME: &str = "plz.v1.rpc.operator.command.machine.resume";
+pub const OPERATOR_MACHINE_STORAGE_PREPARE: &str =
+    "plz.v1.rpc.operator.command.machine.storage_prepare";
 pub const OPERATOR_CORE_REPLACE: &str = "plz.v1.rpc.operator.command.core.replace";
 pub const OPERATOR_CORE_REPLACE_REPORT: &str = "plz.v1.rpc.operator.command.core.replace.report";
 pub const OPERATOR_CREDENTIAL_ADD: &str = "plz.v1.rpc.operator.command.credential.add";
@@ -63,6 +65,7 @@ pub enum OperationApiEndpoint {
     InitFirstMachineActivate,
     MachineAdd,
     MachineUpdate,
+    MachineStoragePrepare,
     MachineDrain,
     MachineResume,
     MachineList,
@@ -107,6 +110,7 @@ impl OperationApiEndpoint {
             Self::InitFirstMachineActivate => "init.first_machine.activate",
             Self::MachineAdd => "machine.add",
             Self::MachineUpdate => "machine.update",
+            Self::MachineStoragePrepare => "machine.storage_prepare",
             Self::MachineDrain => "machine.drain",
             Self::MachineResume => "machine.resume",
             Self::MachineList => "machine.list",
@@ -144,6 +148,7 @@ impl OperationApiEndpoint {
             Self::InitFirstMachineActivate => OPERATOR_INIT_FIRST_MACHINE_ACTIVATE,
             Self::MachineAdd => OPERATOR_MACHINE_ADD,
             Self::MachineUpdate => OPERATOR_MACHINE_UPDATE,
+            Self::MachineStoragePrepare => OPERATOR_MACHINE_STORAGE_PREPARE,
             Self::MachineDrain => OPERATOR_MACHINE_DRAIN,
             Self::MachineResume => OPERATOR_MACHINE_RESUME,
             Self::MachineList => OPERATOR_MACHINE_LIST,
@@ -179,6 +184,7 @@ impl OperationApiEndpoint {
             Self::DeploySubmit
             | Self::MachineAdd
             | Self::MachineUpdate
+            | Self::MachineStoragePrepare
             | Self::MachineDrain
             | Self::MachineResume
             | Self::NetworkRepair
@@ -221,6 +227,7 @@ impl From<ployz_sdk_types::operation_api::OperationApiEndpoint> for OperationApi
             Core::InitFirstMachineActivate => Self::InitFirstMachineActivate,
             Core::MachineAdd => Self::MachineAdd,
             Core::MachineUpdate => Self::MachineUpdate,
+            Core::MachineStoragePrepare => Self::MachineStoragePrepare,
             Core::MachineDrain => Self::MachineDrain,
             Core::MachineResume => Self::MachineResume,
             Core::MachineList => Self::MachineList,
@@ -420,6 +427,8 @@ pub enum MachineServiceEndpoint {
     DataplaneStatus,
     SubstrateUpdate,
     SubstrateReport,
+    StoragePrepare,
+    StoragePrepareReport,
     LogsTail,
     ImageBlobCheck,
     ImageBlobPush,
@@ -462,6 +471,8 @@ impl MachineServiceEndpoint {
             Self::DataplaneStatus => "dataplane.status",
             Self::SubstrateUpdate => "substrate.update",
             Self::SubstrateReport => "substrate.report",
+            Self::StoragePrepare => "storage.prepare",
+            Self::StoragePrepareReport => "storage.prepare.report",
             Self::LogsTail => "logs.tail",
             Self::ImageBlobCheck => "image.blob.check",
             Self::ImageBlobPush => "image.blob.push",
@@ -489,6 +500,7 @@ impl MachineServiceEndpoint {
             | Self::ContainerResolveImage
             | Self::DataplanePublicKey
             | Self::SubstrateReport
+            | Self::StoragePrepareReport
             | Self::DataplaneStatus
             | Self::LogsTail
             | Self::ImageBlobCheck
@@ -503,6 +515,7 @@ impl MachineServiceEndpoint {
             | Self::ContainerRemove
             | Self::VolumeRemove
             | Self::SubstrateUpdate
+            | Self::StoragePrepare
             | Self::ImageBlobPush
             | Self::ImageManifestPush
             | Self::ImageEnsure

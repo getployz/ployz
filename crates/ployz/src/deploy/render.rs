@@ -334,6 +334,7 @@ impl DeployTree {
                 | OperationKind::ManagedDnsReconcile
                 | OperationKind::MachineAdd
                 | OperationKind::MachineUpdate
+                | OperationKind::MachineStoragePrepare
                 | OperationKind::MachineLifecycle
                 | OperationKind::CoreReplace
                 | OperationKind::CredentialGrant
@@ -357,6 +358,10 @@ impl DeployTree {
                     };
                 }
             }
+            OperationEvent::MachineStoragePrepareSubmitted { .. }
+            | OperationEvent::MachineStoragePreparePreparing { .. }
+            | OperationEvent::MachineStoragePrepareCompleted { .. }
+            | OperationEvent::MachineStoragePrepareFailed { .. } => {}
             OperationEvent::ManagedDnsReconcileSubmitted { .. }
             | OperationEvent::ManagedDnsReconcileCompleted { .. }
             | OperationEvent::ManagedDnsReconcileFailed { .. }

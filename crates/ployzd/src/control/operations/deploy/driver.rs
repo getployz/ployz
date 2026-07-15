@@ -397,6 +397,7 @@ async fn reusable_interrupted_deploy_operation_ids(
             | OperationStatus::Cert { .. }
             | OperationStatus::MachineAdd { .. }
             | OperationStatus::MachineUpdate { .. }
+            | OperationStatus::MachineStoragePrepare { .. }
             | OperationStatus::MachineLifecycle { .. }
             | OperationStatus::CoreReplace { .. }
             | OperationStatus::CredentialGrant { .. }

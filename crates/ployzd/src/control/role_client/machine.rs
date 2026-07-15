@@ -15,7 +15,9 @@ use crate::roles::machine::protocol::{
     MachineFactsGetRpcRequest, MachineFactsRefreshDomainError, MachineFactsRefreshRpcOk,
     MachineFactsRefreshRpcRequest, MachineLogsTailDomainError, MachineLogsTailResult,
     MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineRpcResponder, MachineRpcResponse,
-    MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
+    MachineStoragePrepareDomainError, MachineStoragePrepareReportRpcOk,
+    MachineStoragePrepareReportRpcRequest, MachineStoragePrepareRpcOk,
+    MachineStoragePrepareRpcRequest, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
     MachineSubstrateUpdateDomainError, MachineSubstrateUpdateRpcOk,
     MachineSubstrateUpdateRpcRequest, MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk,
     MachineVolumeRemoveRpcRequest,
@@ -110,6 +112,18 @@ pub enum MachineSubstrateUpdateError {
         reason: MachineRuntimeUnavailableReason,
     },
     UpdateFailed {
+        machine_id: MachineId,
+        message: ployz_core::operation::FailureMessage,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineStoragePrepareError {
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
+    PreparationFailed {
         machine_id: MachineId,
         message: ployz_core::operation::FailureMessage,
     },
@@ -470,6 +484,60 @@ impl NatsMachineSubstrateUpdater {
             },
             MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
         })
+    }
+
+    pub async fn prepare_storage(
+        &self,
+        machine_id: &MachineId,
+        request: MachineStoragePrepareRpcRequest,
+    ) -> Result<(), MachineStoragePrepareError> {
+        call_machine::<MachineStoragePrepareRpcOk, MachineStoragePrepareDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::StoragePrepare,
+            &request,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| storage_prepare_error(machine_id, error))
+    }
+
+    pub async fn report_storage_prepare(
+        &self,
+        machine_id: &MachineId,
+        operation_id: &OperationId,
+    ) -> Result<Option<ployz_core::deploy::ZfsPoolName>, MachineStoragePrepareError> {
+        call_machine::<MachineStoragePrepareReportRpcOk, MachineStoragePrepareDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::StoragePrepareReport,
+            &MachineStoragePrepareReportRpcRequest {
+                operation_id: operation_id.clone(),
+            },
+        )
+        .await
+        .map(|response| response.pool)
+        .map_err(|error| storage_prepare_error(machine_id, error))
+    }
+}
+
+fn storage_prepare_error(
+    machine_id: &MachineId,
+    error: MachineCallError<MachineStoragePrepareDomainError>,
+) -> MachineStoragePrepareError {
+    match error {
+        MachineCallError::Unavailable(reason) => MachineStoragePrepareError::Unavailable {
+            machine_id: machine_id.clone(),
+            reason,
+        },
+        MachineCallError::Domain(MachineStoragePrepareDomainError::PreparationFailed {
+            message,
+        }) => MachineStoragePrepareError::PreparationFailed {
+            machine_id: machine_id.clone(),
+            message,
+        },
     }
 }
 

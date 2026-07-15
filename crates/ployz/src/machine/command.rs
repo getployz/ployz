@@ -3,6 +3,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 
 use clap::Args;
+use ployz_core::deploy::ZfsPoolName;
 use ployz_core::ids::{MachineId, OperationId, SubjectTokenError};
 use ployz_core::ingress::{AutomaticHostnameConfiguration, PloyzDnsTargetIntent};
 use ployz_core::install::{
@@ -17,7 +18,7 @@ use ployz_core::roles::InstallRolePolicy;
 use ployz_sdk_types::{
     AcceptedOperation, MachineAddAccepted, MachineAddRequest, MachineEndpointObservation,
     MachineInspectRequest, MachineListRequest, MachineListResult, MachineSnapshot,
-    MachineTestimony, MachineUpdateRequest,
+    MachineStoragePrepareRequest, MachineTestimony, MachineUpdateRequest,
 };
 
 pub use ployz_sdk_types::MachineName;
@@ -780,6 +781,25 @@ pub struct MachineUpdateCommand {
     pub detach: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineStoragePrepareCommand {
+    pub operation_id: OperationId,
+    pub machine_id: MachineId,
+    pub pool: Option<ZfsPoolName>,
+    pub detach: bool,
+}
+
+impl MachineStoragePrepareCommand {
+    #[must_use]
+    pub fn into_request(self) -> MachineStoragePrepareRequest {
+        MachineStoragePrepareRequest {
+            operation_id: self.operation_id,
+            machine_id: self.machine_id,
+            pool: self.pool,
+        }
+    }
+}
+
 impl MachineUpdateCommand {
     #[must_use]
     pub fn into_request(self) -> MachineUpdateRequest {
@@ -876,6 +896,29 @@ pub(crate) fn machine_update_command(
     })
 }
 
+pub(crate) fn machine_storage_prepare_command(
+    parsed: MachineStoragePrepareCli,
+) -> Result<MachineStoragePrepareCommand, PloyzctlCliError> {
+    let machine_id = MachineId::try_new(parsed.machine_id)
+        .map_err(|error| invalid_value("<machine_id>", error))?;
+    let pool = parsed
+        .pool
+        .map(ZfsPoolName::try_new)
+        .transpose()
+        .map_err(|error| invalid_value("--pool", error))?;
+    let operation_id = OperationId::try_new(format!("op_machine_storage_prepare_{}", nuid::next()))
+        .map_err(|error| PloyzctlCliError::InvalidValue {
+            flag: "<machine_id>",
+            message: error.to_string(),
+        })?;
+    Ok(MachineStoragePrepareCommand {
+        operation_id,
+        machine_id,
+        pool,
+        detach: parsed.detach,
+    })
+}
+
 #[derive(Debug, Args)]
 pub(crate) struct MachineInspectCli {
     machine_id: String,
@@ -886,6 +929,15 @@ pub(crate) struct MachineUpdateCli {
     machine_id: String,
     #[arg(long)]
     version: String,
+    #[arg(long)]
+    detach: bool,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct MachineStoragePrepareCli {
+    machine_id: String,
+    #[arg(long)]
+    pool: Option<String>,
     #[arg(long)]
     detach: bool,
 }

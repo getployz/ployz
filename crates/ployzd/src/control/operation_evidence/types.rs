@@ -133,6 +133,19 @@ pub(super) struct MachineUpdatePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineStoragePrepareOperationSubmission {
+    pub operation_id: OperationId,
+    pub machine_id: MachineId,
+    pub requested_pool: Option<ployz_core::deploy::ZfsPoolName>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct MachineStoragePreparePayload {
+    pub(super) machine_id: MachineId,
+    pub(super) requested_pool: Option<ployz_core::deploy::ZfsPoolName>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineLifecycleOperationSubmission {
     pub operation_id: OperationId,
     pub machine_id: MachineId,
@@ -250,6 +263,15 @@ pub struct AcceptedMachineUpdateSubmission {
     pub start_sequence: EventSequence,
     pub machine_id: MachineId,
     pub target_version: InstallArtifactVersion,
+    pub should_start_execution: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedMachineStoragePrepareSubmission {
+    pub operation_id: OperationId,
+    pub start_sequence: EventSequence,
+    pub machine_id: MachineId,
+    pub requested_pool: Option<ployz_core::deploy::ZfsPoolName>,
     pub should_start_execution: bool,
 }
 

@@ -26,6 +26,7 @@ use super::deploy::{DeployEvent, DeployEvidence, DeployTransition};
 use super::ingress_configure::{IngressConfigureEvent, IngressConfigureTransition};
 use super::machine_add::MachineAddEvent;
 use super::machine_lifecycle::{MachineLifecycleEvent, MachineLifecycleTransition};
+use super::machine_storage_prepare::{MachineStoragePrepareEvent, MachineStoragePrepareTransition};
 use super::machine_update::{MachineUpdateEvent, MachineUpdateTransition};
 use super::managed_dns_reconcile::{ManagedDnsReconcileEvent, ManagedDnsReconcileTransition};
 use super::namespace_remove::{NamespaceRemoveEvent, NamespaceRemoveTransition};
@@ -36,10 +37,10 @@ use super::volume_remove::{VolumeRemoveEvent, VolumeRemoveTransition};
 use super::{
     CertOperationFailure, CertRunningStage, DeployCleanupFailure, DeployCompletionOutcome,
     DeployOperationFailure, DeployPhaseOutcome, DeployRunningStage, DeployServiceResult,
-    MachineAddOperationState, MachineLifecycleFailure, MachineSubstrateVersions,
-    MachineUpdateFailure, NamespaceRemoveFailure, NamespaceRemoveRunningStage,
-    NetworkRepairFailure, NetworkRepairRunningStage, OperationKind, RouteTarget,
-    ServiceRestartFailure, ServiceRestartRunningStage, VolumeRemoveFailure,
+    MachineAddOperationState, MachineLifecycleFailure, MachineStoragePrepareFailure,
+    MachineSubstrateVersions, MachineUpdateFailure, NamespaceRemoveFailure,
+    NamespaceRemoveRunningStage, NetworkRepairFailure, NetworkRepairRunningStage, OperationKind,
+    RouteTarget, ServiceRestartFailure, ServiceRestartRunningStage, VolumeRemoveFailure,
     VolumeRemoveRunningStage,
 };
 
@@ -57,6 +58,9 @@ pub enum OperationSubject {
         machine_id: MachineId,
     },
     MachineUpdate {
+        machine_id: MachineId,
+    },
+    MachineStoragePrepare {
         machine_id: MachineId,
     },
     CoreReplace {
@@ -226,6 +230,26 @@ pub enum OperationEvent {
         operation_id: OperationId,
         machine_id: MachineId,
         failure: MachineUpdateFailure,
+    },
+    MachineStoragePrepareSubmitted {
+        operation_id: OperationId,
+        machine_id: MachineId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        requested_pool: Option<crate::deploy::ZfsPoolName>,
+    },
+    MachineStoragePreparePreparing {
+        operation_id: OperationId,
+        machine_id: MachineId,
+    },
+    MachineStoragePrepareCompleted {
+        operation_id: OperationId,
+        machine_id: MachineId,
+        pool: crate::deploy::ZfsPoolName,
+    },
+    MachineStoragePrepareFailed {
+        operation_id: OperationId,
+        machine_id: MachineId,
+        failure: MachineStoragePrepareFailure,
     },
     MachineLifecycleSubmitted {
         operation_id: OperationId,
@@ -423,6 +447,10 @@ impl OperationEvent {
             | Self::MachineUpdateRunning { operation_id, .. }
             | Self::MachineUpdateCompleted { operation_id, .. }
             | Self::MachineUpdateFailed { operation_id, .. }
+            | Self::MachineStoragePrepareSubmitted { operation_id, .. }
+            | Self::MachineStoragePreparePreparing { operation_id, .. }
+            | Self::MachineStoragePrepareCompleted { operation_id, .. }
+            | Self::MachineStoragePrepareFailed { operation_id, .. }
             | Self::MachineLifecycleSubmitted { operation_id, .. }
             | Self::MachineLifecycleCompleted { operation_id, .. }
             | Self::MachineLifecycleFailed { operation_id, .. }
@@ -509,6 +537,10 @@ impl OperationEvent {
             | Self::MachineUpdateRunning { .. }
             | Self::MachineUpdateCompleted { .. }
             | Self::MachineUpdateFailed { .. }
+            | Self::MachineStoragePrepareSubmitted { .. }
+            | Self::MachineStoragePreparePreparing { .. }
+            | Self::MachineStoragePrepareCompleted { .. }
+            | Self::MachineStoragePrepareFailed { .. }
             | Self::MachineLifecycleSubmitted { .. }
             | Self::MachineLifecycleCompleted { .. }
             | Self::MachineLifecycleFailed { .. }
@@ -637,6 +669,10 @@ impl OperationEvent {
             | Self::MachineUpdateRunning { .. }
             | Self::MachineUpdateCompleted { .. }
             | Self::MachineUpdateFailed { .. }
+            | Self::MachineStoragePrepareSubmitted { .. }
+            | Self::MachineStoragePreparePreparing { .. }
+            | Self::MachineStoragePrepareCompleted { .. }
+            | Self::MachineStoragePrepareFailed { .. }
             | Self::MachineLifecycleSubmitted { .. }
             | Self::MachineLifecycleCompleted { .. }
             | Self::MachineLifecycleFailed { .. }
@@ -688,6 +724,7 @@ pub enum OperationSubjectRef {
     Cert(CertId),
     MachineAdd(MachineId),
     MachineUpdate(MachineId),
+    MachineStoragePrepare(MachineId),
     MachineLifecycle(MachineId),
     CoreReplace(MachineId),
     CredentialGrant,
@@ -711,6 +748,10 @@ pub(super) enum ClassifiedOperationEvent {
     MachineUpdate {
         operation_id: OperationId,
         event: MachineUpdateEvent,
+    },
+    MachineStoragePrepare {
+        operation_id: OperationId,
+        event: MachineStoragePrepareEvent,
     },
     MachineLifecycle {
         operation_id: OperationId,
@@ -761,6 +802,7 @@ impl ClassifiedOperationEvent {
             | Self::Cert { operation_id, .. }
             | Self::MachineAdd { operation_id, .. }
             | Self::MachineUpdate { operation_id, .. }
+            | Self::MachineStoragePrepare { operation_id, .. }
             | Self::MachineLifecycle { operation_id, .. }
             | Self::CoreReplace { operation_id, .. }
             | Self::CredentialGrant { operation_id, .. }
@@ -1040,6 +1082,46 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 event: MachineUpdateEvent::Transition {
                     machine_id,
                     transition: MachineUpdateTransition::Failed { failure },
+                },
+            },
+            OperationEvent::MachineStoragePrepareSubmitted {
+                operation_id,
+                machine_id,
+                ..
+            } => Self::MachineStoragePrepare {
+                operation_id,
+                event: MachineStoragePrepareEvent::Submitted { machine_id },
+            },
+            OperationEvent::MachineStoragePreparePreparing {
+                operation_id,
+                machine_id,
+            } => Self::MachineStoragePrepare {
+                operation_id,
+                event: MachineStoragePrepareEvent::Transition {
+                    machine_id,
+                    transition: MachineStoragePrepareTransition::Preparing,
+                },
+            },
+            OperationEvent::MachineStoragePrepareCompleted {
+                operation_id,
+                machine_id,
+                pool,
+            } => Self::MachineStoragePrepare {
+                operation_id,
+                event: MachineStoragePrepareEvent::Transition {
+                    machine_id,
+                    transition: MachineStoragePrepareTransition::Completed { pool },
+                },
+            },
+            OperationEvent::MachineStoragePrepareFailed {
+                operation_id,
+                machine_id,
+                failure,
+            } => Self::MachineStoragePrepare {
+                operation_id,
+                event: MachineStoragePrepareEvent::Transition {
+                    machine_id,
+                    transition: MachineStoragePrepareTransition::Failed { failure },
                 },
             },
             OperationEvent::MachineLifecycleSubmitted {
@@ -1367,6 +1449,10 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 OperationKind::MachineUpdate => Self::MachineUpdate {
                     operation_id,
                     event: MachineUpdateEvent::Cancelled(reason),
+                },
+                OperationKind::MachineStoragePrepare => Self::MachineStoragePrepare {
+                    operation_id,
+                    event: MachineStoragePrepareEvent::Cancelled(reason),
                 },
                 OperationKind::MachineLifecycle => Self::MachineLifecycle {
                     operation_id,

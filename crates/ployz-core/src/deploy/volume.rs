@@ -65,7 +65,10 @@ pub enum VolumeNameError {
 const ZFS_DATASET_NAME_MAX_BYTES: usize = 255;
 
 /// One physical ZFS pool component; it cannot name an arbitrary dataset root.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"ZfsPoolName\">"))]
+#[serde(try_from = "String", into = "String")]
 pub struct ZfsPoolName(String);
 
 impl ZfsPoolName {
@@ -89,6 +92,20 @@ impl ZfsPoolName {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl TryFrom<String> for ZfsPoolName {
+    type Error = ZfsPoolNameError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<ZfsPoolName> for String {
+    fn from(value: ZfsPoolName) -> Self {
+        value.0
     }
 }
 

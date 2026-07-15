@@ -464,6 +464,56 @@ pub type MachineSubstrateReportRpcResponse =
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct MachineStoragePrepareRpcRequest {
+    pub operation_id: OperationId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<ployz_core::deploy::ZfsPoolName>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineStoragePrepareReportRpcRequest {
+    pub operation_id: OperationId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineStoragePrepareRpcOk {
+    pub machine_id: MachineId,
+}
+
+impl MachineRpcResponder for MachineStoragePrepareRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        &self.machine_id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineStoragePrepareReportRpcOk {
+    pub machine_id: MachineId,
+    pub pool: Option<ployz_core::deploy::ZfsPoolName>,
+}
+
+impl MachineRpcResponder for MachineStoragePrepareReportRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        &self.machine_id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineStoragePrepareDomainError {
+    PreparationFailed { message: FailureMessage },
+}
+
+pub type MachineStoragePrepareRpcResponse =
+    MachineRpcResponse<MachineStoragePrepareRpcOk, MachineStoragePrepareDomainError>;
+pub type MachineStoragePrepareReportRpcResponse =
+    MachineRpcResponse<MachineStoragePrepareReportRpcOk, MachineStoragePrepareDomainError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MachineDataplanePublicKeyRpcRequest {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

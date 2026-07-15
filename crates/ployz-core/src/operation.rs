@@ -32,6 +32,7 @@ mod ingress_configure;
 mod interruption;
 mod machine_add;
 mod machine_lifecycle;
+mod machine_storage_prepare;
 mod machine_update;
 mod managed_dns_reconcile;
 mod namespace_remove;
@@ -74,6 +75,10 @@ pub use interruption::{
 pub use machine_add::{MachineAddOperationState, MachineAddOperationStateName};
 pub use machine_lifecycle::{
     MachineLifecycleFailure, MachineLifecycleOperationState, MachineLifecycleTransition,
+};
+pub use machine_storage_prepare::{
+    MachineStoragePrepareFailure, MachineStoragePrepareOperationState,
+    MachineStoragePrepareTransition,
 };
 pub use machine_update::{
     MachineSubstrateVersions, MachineUpdateFailure, MachineUpdateOperationState,
@@ -122,6 +127,7 @@ pub enum OperationKind {
     Cert,
     MachineAdd,
     MachineUpdate,
+    MachineStoragePrepare,
     MachineLifecycle,
     CoreReplace,
     CredentialGrant,
@@ -171,6 +177,14 @@ pub enum OperationStatus {
         machine_id: MachineId,
         target_version: InstallArtifactVersion,
         state: MachineUpdateOperationState,
+        last_event_sequence: EventSequence,
+    },
+    MachineStoragePrepare {
+        id: OperationId,
+        machine_id: MachineId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        requested_pool: Option<crate::deploy::ZfsPoolName>,
+        state: MachineStoragePrepareOperationState,
         last_event_sequence: EventSequence,
     },
     MachineLifecycle {
@@ -310,6 +324,22 @@ impl OperationStatus {
             machine_id,
             target_version,
             state: MachineUpdateOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
+    pub fn machine_storage_prepare_accepted(
+        id: OperationId,
+        machine_id: MachineId,
+        requested_pool: Option<crate::deploy::ZfsPoolName>,
+        event_sequence: EventSequence,
+    ) -> Self {
+        Self::MachineStoragePrepare {
+            id,
+            machine_id,
+            requested_pool,
+            state: MachineStoragePrepareOperationState::Accepted,
             last_event_sequence: event_sequence,
         }
     }
@@ -455,6 +485,7 @@ impl OperationStatus {
             Self::Cert { state, .. } => state.is_terminal(),
             Self::MachineAdd { state, .. } => state.is_terminal(),
             Self::MachineUpdate { state, .. } => state.is_terminal(),
+            Self::MachineStoragePrepare { state, .. } => state.is_terminal(),
             Self::MachineLifecycle { state, .. } => state.is_terminal(),
             Self::CoreReplace { state, .. } => state.is_terminal(),
             Self::CredentialGrant { state, .. } => state.is_terminal(),
@@ -494,6 +525,10 @@ impl OperationStatus {
             Self::MachineUpdate { state, .. } => OperationOutcome::from_terminal(
                 matches!(state, MachineUpdateOperationState::Completed { .. }),
                 matches!(state, MachineUpdateOperationState::Cancelled { .. }),
+            ),
+            Self::MachineStoragePrepare { state, .. } => OperationOutcome::from_terminal(
+                matches!(state, MachineStoragePrepareOperationState::Completed { .. }),
+                matches!(state, MachineStoragePrepareOperationState::Cancelled { .. }),
             ),
             Self::MachineLifecycle { state, .. } => OperationOutcome::from_terminal(
                 matches!(state, MachineLifecycleOperationState::Completed),

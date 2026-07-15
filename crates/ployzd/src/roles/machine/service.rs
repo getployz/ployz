@@ -16,7 +16,10 @@ use super::images::{
     handle_image_manifest_push, handle_image_remove,
 };
 use super::logs::handle_logs_tail;
-use super::substrate::{handle_substrate_report, handle_substrate_update};
+use super::substrate::{
+    handle_storage_prepare, handle_storage_prepare_report, handle_substrate_report,
+    handle_substrate_update,
+};
 use crate::roles::machine::execution::host_dataplane::dataplane_status_budget;
 use crate::roles::machine::projection::MachineProjectionState;
 #[cfg(test)]
@@ -358,6 +361,22 @@ where
         MachineServiceEndpoint::SubstrateReport,
         (),
         handle_substrate_report,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::StoragePrepare,
+        (),
+        handle_storage_prepare,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::StoragePrepareReport,
+        (),
+        handle_storage_prepare_report,
     )
     .await?;
     bind_machine_endpoint(

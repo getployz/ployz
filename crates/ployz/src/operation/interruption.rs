@@ -39,6 +39,12 @@ fn stage(stage: OperationInterruptionStage) -> String {
         }
         OperationInterruptionStage::MachineUpdateAccepted => "machine update accepted".to_owned(),
         OperationInterruptionStage::MachineUpdateRunning => "machine update running".to_owned(),
+        OperationInterruptionStage::MachineStoragePrepareAccepted => {
+            "machine storage prepare accepted".to_owned()
+        }
+        OperationInterruptionStage::MachineStoragePreparePreparing => {
+            "machine storage prepare preparing".to_owned()
+        }
         OperationInterruptionStage::MachineLifecycleAccepted => {
             "machine lifecycle accepted".to_owned()
         }

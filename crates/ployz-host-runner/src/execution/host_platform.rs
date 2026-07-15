@@ -61,7 +61,6 @@ pub struct HostPlatformProfile {
 }
 
 impl HostPlatformProfile {
-    /// Returns the host's reported release version when present.
     /// Returns the host package ecosystem.
     #[must_use]
     pub const fn package_family(&self) -> HostPackageFamily {
@@ -82,6 +81,24 @@ impl HostPlatformProfile {
     #[must_use]
     pub const fn docker_install(&self) -> DockerInstall {
         self.docker_install
+    }
+
+    /// Returns whether this is an Ubuntu-family profile.
+    #[must_use]
+    pub const fn is_ubuntu(&self) -> bool {
+        matches!(self.distribution, LinuxDistribution::Ubuntu)
+    }
+
+    /// Returns whether this is the Rocky Linux profile.
+    #[must_use]
+    pub const fn is_rocky(&self) -> bool {
+        matches!(self.distribution, LinuxDistribution::Rocky)
+    }
+
+    /// Returns the host's reported release version when present.
+    #[must_use]
+    pub fn version_id(&self) -> Option<&str> {
+        self.version_id.as_deref()
     }
 }
 

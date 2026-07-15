@@ -30,6 +30,7 @@ mod deploy;
 mod ingress_configure;
 mod machine_add;
 mod machine_lifecycle;
+mod machine_storage_prepare;
 mod machine_update;
 mod managed_dns_reconcile;
 mod namespace_remove;

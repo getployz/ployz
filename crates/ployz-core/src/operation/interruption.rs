@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     CredentialGrantOperationState, DeployOperationState, DeployRunningStage,
-    IngressConfigureOperationState, MachineLifecycleOperationState, MachineUpdateOperationState,
+    IngressConfigureOperationState, MachineLifecycleOperationState,
+    MachineStoragePrepareOperationState, MachineUpdateOperationState,
     NamespaceRemoveOperationState, NamespaceRemoveRunningStage, NetworkRepairOperationState,
     NetworkRepairRunningStage, OperationKind, OperationStatus, ServiceRestartOperationState,
     ServiceRestartRunningStage, VolumeRemoveOperationState, VolumeRemoveRunningStage,
@@ -34,6 +35,8 @@ pub enum OperationInterruptionStage {
     IngressConfigureAccepted,
     MachineUpdateAccepted,
     MachineUpdateRunning,
+    MachineStoragePrepareAccepted,
+    MachineStoragePreparePreparing,
     MachineLifecycleAccepted,
     NetworkRepairAccepted,
     NetworkRepairRunning { stage: NetworkRepairRunningStage },
@@ -54,6 +57,9 @@ impl OperationInterruptionStage {
             Self::IngressConfigureAccepted => OperationKind::IngressConfigure,
             Self::MachineUpdateAccepted | Self::MachineUpdateRunning => {
                 OperationKind::MachineUpdate
+            }
+            Self::MachineStoragePrepareAccepted | Self::MachineStoragePreparePreparing => {
+                OperationKind::MachineStoragePrepare
             }
             Self::MachineLifecycleAccepted => OperationKind::MachineLifecycle,
             Self::NetworkRepairAccepted | Self::NetworkRepairRunning { .. } => {
@@ -79,6 +85,8 @@ impl OperationInterruptionStage {
             | Self::MachineLifecycleAccepted => OperationInterruptionUncertainWork::Intent,
             Self::MachineUpdateAccepted
             | Self::MachineUpdateRunning
+            | Self::MachineStoragePrepareAccepted
+            | Self::MachineStoragePreparePreparing
             | Self::ServiceRestartAccepted
             | Self::ServiceRestartRunning { .. } => OperationInterruptionUncertainWork::Runtime,
             Self::Deploy { .. }
@@ -101,6 +109,8 @@ impl OperationInterruptionStage {
             | Self::IngressConfigureAccepted
             | Self::MachineUpdateAccepted
             | Self::MachineUpdateRunning
+            | Self::MachineStoragePrepareAccepted
+            | Self::MachineStoragePreparePreparing
             | Self::MachineLifecycleAccepted
             | Self::NetworkRepairAccepted
             | Self::NetworkRepairRunning { .. }
@@ -245,6 +255,7 @@ impl OperationStatus {
             Self::CredentialGrant { state, .. } => state.interruption_evidence(cause),
             Self::IngressConfigure { state, .. } => state.interruption_evidence(cause),
             Self::MachineUpdate { state, .. } => state.interruption_evidence(cause),
+            Self::MachineStoragePrepare { state, .. } => state.interruption_evidence(cause),
             Self::MachineLifecycle { state, .. } => state.interruption_evidence(cause),
             Self::NetworkRepair { state, .. } => state.interruption_evidence(cause),
             Self::ServiceRestart { state, .. } => state.interruption_evidence(cause),
@@ -276,6 +287,10 @@ impl OperationStatus {
                 state: MachineUpdateOperationState::Interrupted { evidence },
                 ..
             }
+            | Self::MachineStoragePrepare {
+                state: MachineStoragePrepareOperationState::Interrupted { evidence },
+                ..
+            }
             | Self::MachineLifecycle {
                 state: MachineLifecycleOperationState::Interrupted { evidence },
                 ..
@@ -300,6 +315,7 @@ impl OperationStatus {
             | Self::CredentialGrant { .. }
             | Self::IngressConfigure { .. }
             | Self::MachineUpdate { .. }
+            | Self::MachineStoragePrepare { .. }
             | Self::MachineLifecycle { .. }
             | Self::NetworkRepair { .. }
             | Self::ServiceRestart { .. }

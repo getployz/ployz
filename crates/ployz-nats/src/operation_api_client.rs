@@ -17,7 +17,8 @@ use ployz_sdk_types::{
     MachineAddRequest, MachineInspectError, MachineInspectRequest, MachineJoinRedeemError,
     MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
     MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError, MachineLifecycleRequest,
-    MachineListError, MachineListRequest, MachineListResult, MachineSnapshot, MachineUpdateError,
+    MachineListError, MachineListRequest, MachineListResult, MachineSnapshot,
+    MachineStoragePrepareError, MachineStoragePrepareRequest, MachineUpdateError,
     MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest, NetworkRepairError,
     NetworkRepairRequest, NetworkResolveError, NetworkResolveRequest, NetworkResolveResult,
     NetworkStatusError, NetworkStatusRequest, NetworkStatusResult, OperationApiResponse,
@@ -31,10 +32,10 @@ use ployz_sdk_types::{
         CredentialRemoveApi, DeployReserveApi, DeploySubmitApi, IngressConfigureApi,
         InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineDrainApi,
         MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
-        MachineResumeApi, MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi,
-        NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi,
-        OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi,
-        VolumeListApi, VolumeRemoveApi,
+        MachineResumeApi, MachineStoragePrepareApi, MachineUpdateApi, NamespaceRemoveApi,
+        NetworkRepairApi, NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi,
+        OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi,
+        ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -145,6 +146,13 @@ impl OperationApiClient {
         request: &MachineUpdateRequest,
     ) -> Result<AcceptedOperation, OperationApiClientError<MachineUpdateError>> {
         self.request_api::<MachineUpdateApi>(request).await
+    }
+
+    pub async fn machine_storage_prepare(
+        &self,
+        request: &MachineStoragePrepareRequest,
+    ) -> Result<AcceptedOperation, OperationApiClientError<MachineStoragePrepareError>> {
+        self.request_api::<MachineStoragePrepareApi>(request).await
     }
 
     pub async fn machine_drain(

@@ -11,6 +11,7 @@ use super::events::{ClassifiedOperationEvent, OperationSubjectRef};
 use super::ingress_configure::{self, IngressConfigureOperationState};
 use super::machine_add::{self, MachineAddFields, MachineAddOperationState};
 use super::machine_lifecycle::{self, MachineLifecycleOperationState};
+use super::machine_storage_prepare::{self, MachineStoragePrepareOperationState};
 use super::machine_update::{self, MachineUpdateOperationState};
 use super::managed_dns_reconcile::{self, ManagedDnsReconcileOperationState};
 use super::namespace_remove::{self, NamespaceRemoveOperationState};
@@ -101,6 +102,7 @@ pub enum ProjectionOperationState {
     Cert(CertOperationState),
     MachineAdd(MachineAddOperationState),
     MachineUpdate(MachineUpdateOperationState),
+    MachineStoragePrepare(MachineStoragePrepareOperationState),
     MachineLifecycle(MachineLifecycleOperationState),
     CoreReplace(CoreReplaceOperationState),
     CredentialGrant(CredentialGrantOperationState),
@@ -120,6 +122,7 @@ impl ProjectionOperationState {
             Self::Cert(_) => OperationKind::Cert,
             Self::MachineAdd(_) => OperationKind::MachineAdd,
             Self::MachineUpdate(_) => OperationKind::MachineUpdate,
+            Self::MachineStoragePrepare(_) => OperationKind::MachineStoragePrepare,
             Self::MachineLifecycle(_) => OperationKind::MachineLifecycle,
             Self::CoreReplace(_) => OperationKind::CoreReplace,
             Self::CredentialGrant(_) => OperationKind::CredentialGrant,
@@ -139,6 +142,7 @@ pub(crate) const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::Cert => "cert",
         OperationKind::MachineAdd => "machine-add",
         OperationKind::MachineUpdate => "machine-update",
+        OperationKind::MachineStoragePrepare => "machine-storage-prepare",
         OperationKind::MachineLifecycle => "machine-lifecycle",
         OperationKind::CoreReplace => "core-replace",
         OperationKind::CredentialGrant => "credential-grant",
@@ -159,6 +163,9 @@ fn subject_ref_text(subject: &OperationSubjectRef) -> String {
         }
         OperationSubjectRef::MachineUpdate(machine_id) => {
             format!("machine-update {}", machine_id.as_str())
+        }
+        OperationSubjectRef::MachineStoragePrepare(machine_id) => {
+            format!("machine-storage-prepare {}", machine_id.as_str())
         }
         OperationSubjectRef::MachineLifecycle(machine_id) => {
             format!("machine-lifecycle {}", machine_id.as_str())
@@ -331,6 +338,26 @@ pub fn project_operation_event(
                 id,
                 machine_id,
                 target_version,
+                state,
+                event,
+                event_sequence,
+            )
+        }
+        ClassifiedOperationEvent::MachineStoragePrepare { event, .. } => {
+            let OperationStatus::MachineStoragePrepare {
+                id,
+                machine_id,
+                requested_pool,
+                state,
+                ..
+            } = current
+            else {
+                return Err(kind_mismatch(current, OperationKind::MachineStoragePrepare));
+            };
+            machine_storage_prepare::project_event(
+                id,
+                machine_id,
+                requested_pool,
                 state,
                 event,
                 event_sequence,
@@ -512,6 +539,14 @@ fn project_operation_interruption(
             ..
         } => {
             *state = MachineUpdateOperationState::interrupted(evidence);
+            *last_event_sequence = event_sequence;
+        }
+        OperationStatus::MachineStoragePrepare {
+            state,
+            last_event_sequence,
+            ..
+        } => {
+            *state = MachineStoragePrepareOperationState::interrupted(evidence);
             *last_event_sequence = event_sequence;
         }
         OperationStatus::MachineLifecycle {

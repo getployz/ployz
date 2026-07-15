@@ -10,7 +10,178 @@ use ployz_core::ingress::{
     PloyzDnsTargetIntent,
 };
 use ployz_core::operation::RoutePort;
-use ployz_test_support::ids::{idempotency_key, namespace_id, operation_id, service_id};
+use ployz_test_support::ids::{
+    idempotency_key, machine_id, namespace_id, operation_id, service_id,
+};
+
+fn machine_update_command(operation: &str) -> MachineUpdateSubmitCommand {
+    MachineUpdateSubmitCommand {
+        operation_id: operation_id(operation),
+        machine_id: machine_id("machine-a"),
+        target_version: InstallArtifactVersion::try_new("0.2.0").expect("valid version"),
+    }
+}
+
+fn storage_prepare_command(operation: &str) -> MachineStoragePrepareSubmitCommand {
+    MachineStoragePrepareSubmitCommand {
+        operation_id: operation_id(operation),
+        machine_id: machine_id("machine-a"),
+        requested_pool: None,
+    }
+}
+
+#[tokio::test]
+async fn update_and_storage_prepare_conflict_in_both_directions() {
+    let (_nats, controllers, _intent) = test_controllers().await;
+    controllers
+        .submit_machine_update(machine_update_command("op_update"))
+        .await
+        .expect("update submits");
+    assert!(matches!(
+        controllers
+            .submit_machine_storage_prepare(storage_prepare_command("op_prepare"))
+            .await,
+        Err(SubmitCommandError::MachineBusy { owner, .. })
+            if owner == operation_id("op_update")
+    ));
+
+    controllers
+        .release_machine(&machine_id("machine-a"), &operation_id("op_update"))
+        .await;
+    controllers
+        .submit_machine_storage_prepare(storage_prepare_command("op_prepare"))
+        .await
+        .expect("storage prepare submits");
+    assert!(matches!(
+        controllers
+            .submit_machine_update(machine_update_command("op_next_update"))
+            .await,
+        Err(SubmitCommandError::MachineBusy { owner, .. })
+            if owner == operation_id("op_prepare")
+    ));
+}
+
+#[tokio::test]
+async fn machine_update_fence_rejects_a_different_owner() {
+    let (_nats, controllers, _intent) = test_controllers().await;
+    controllers
+        .submit_machine_update(machine_update_command("op_original"))
+        .await
+        .expect("original update submits");
+    controllers
+        .release_machine(&machine_id("machine-a"), &operation_id("op_not_owner"))
+        .await;
+
+    let error = controllers
+        .submit_machine_update(machine_update_command("op_conflicting"))
+        .await
+        .expect_err("a second substrate operation is fenced");
+
+    assert!(matches!(
+        error,
+        SubmitCommandError::MachineBusy { machine_id: busy_machine, owner }
+            if busy_machine == machine_id("machine-a") && owner == operation_id("op_original")
+    ));
+}
+
+#[tokio::test]
+async fn machine_fence_releases_when_repository_submission_fails() {
+    let (_nats, controllers, _intent) = test_controllers().await;
+    let original = machine_update_command("op_reused");
+    controllers
+        .submit_machine_update(original.clone())
+        .await
+        .expect("original update submits");
+    controllers
+        .release_machine(&original.machine_id, &original.operation_id)
+        .await;
+
+    let error = controllers
+        .submit_machine_storage_prepare(storage_prepare_command("op_reused"))
+        .await;
+    assert!(
+        matches!(
+            error,
+            Err(SubmitCommandError::Submit(
+                SubmitOperationError::DuplicateSequenceMismatch { .. }
+            ))
+        ),
+        "unexpected submission result: {error:?}"
+    );
+    controllers
+        .submit_machine_update(machine_update_command("op_after_error"))
+        .await
+        .expect("repository error released its acquired machine fence");
+
+    let (_nats, controllers, _intent) = test_controllers().await;
+    let original = storage_prepare_command("op_reused");
+    controllers
+        .submit_machine_storage_prepare(original.clone())
+        .await
+        .expect("original storage preparation submits");
+    controllers
+        .release_machine(&original.machine_id, &original.operation_id)
+        .await;
+    let error = controllers
+        .submit_machine_update(machine_update_command("op_reused"))
+        .await;
+    assert!(
+        matches!(
+            error,
+            Err(SubmitCommandError::Submit(
+                SubmitOperationError::DuplicateSequenceMismatch { .. }
+            ))
+        ),
+        "unexpected submission result: {error:?}"
+    );
+    controllers
+        .submit_machine_storage_prepare(storage_prepare_command("op_after_error"))
+        .await
+        .expect("repository error released its acquired machine fence");
+}
+
+#[tokio::test]
+async fn idempotent_machine_update_replay_releases_its_new_claim() {
+    let (_nats, controllers, _intent) = test_controllers().await;
+    let command = machine_update_command("op_original");
+    let accepted = controllers
+        .submit_machine_update(command.clone())
+        .await
+        .expect("original update submits");
+    controllers
+        .repository()
+        .record_machine_update_transition(
+            &accepted.operation_id,
+            &accepted.machine_id,
+            ployz_core::operation::MachineUpdateTransition::Running,
+        )
+        .await
+        .expect("running transition records");
+    controllers
+        .repository()
+        .record_machine_update_transition(
+            &accepted.operation_id,
+            &accepted.machine_id,
+            ployz_core::operation::MachineUpdateTransition::Completed {
+                reported: ployz_core::operation::MachineSubstrateVersions::default(),
+            },
+        )
+        .await
+        .expect("completed transition records");
+    controllers
+        .release_machine(&command.machine_id, &command.operation_id)
+        .await;
+
+    let replay = controllers
+        .submit_machine_update(command)
+        .await
+        .expect("terminal replay is accepted idempotently");
+    assert!(!replay.should_start_execution);
+    controllers
+        .submit_machine_update(machine_update_command("op_next"))
+        .await
+        .expect("replay released its newly acquired claim");
+}
 
 #[test]
 fn deploy_reservation_expires_at_its_deadline() {

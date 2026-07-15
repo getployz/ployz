@@ -4,8 +4,8 @@ use crate::control::operator_api::{
     OperationApiHandlers, core_replace, core_replace_report, credential_add, credential_list,
     credential_remove, deploy_reserve, deploy_submit, ingress_configure,
     init_first_machine_activate, machine_add, machine_drain, machine_join_redeem,
-    machine_join_report, machine_resume, machine_update, namespace_remove, network_repair,
-    ops_list, ops_status, ops_watch, service_restart, volume_remove,
+    machine_join_report, machine_resume, machine_storage_prepare, machine_update, namespace_remove,
+    network_repair, ops_list, ops_status, ops_watch, service_restart, volume_remove,
 };
 use crate::service_catalog::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
 use ployz_nats::service_runtime::{
@@ -20,10 +20,10 @@ use ployz_sdk_types::{
         CredentialRemoveApi, DeployReserveApi, DeploySubmitApi, IngressConfigureApi,
         InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineDrainApi,
         MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
-        MachineResumeApi, MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi,
-        NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi,
-        OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi,
-        VolumeListApi, VolumeRemoveApi,
+        MachineResumeApi, MachineStoragePrepareApi, MachineUpdateApi, NamespaceRemoveApi,
+        NetworkRepairApi, NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi,
+        OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi,
+        ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -143,6 +143,16 @@ async fn bind_operation_endpoint(
                 runtime,
                 handlers,
                 |handlers, request| async move { machine_update(&handlers, request).await },
+            )
+            .await
+        }
+        OperationApiEndpoint::MachineStoragePrepare => {
+            bind_operation_contract::<MachineStoragePrepareApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move {
+                    machine_storage_prepare(&handlers, request).await
+                },
             )
             .await
         }

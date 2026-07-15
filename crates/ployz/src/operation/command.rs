@@ -301,6 +301,7 @@ const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::Cert => "cert",
         OperationKind::MachineAdd => "machine-add",
         OperationKind::MachineUpdate => "machine-update",
+        OperationKind::MachineStoragePrepare => "machine-storage-prepare",
         OperationKind::MachineLifecycle => "machine-lifecycle",
         OperationKind::CoreReplace => "core-replace",
         OperationKind::CredentialGrant => "credential-grant",
@@ -340,6 +341,14 @@ fn operation_subject(status: &OperationStatus) -> String {
             "machine {} target-version {}",
             machine_id.as_str(),
             target_version.as_str()
+        ),
+        OperationStatus::MachineStoragePrepare {
+            machine_id,
+            requested_pool,
+            ..
+        } => requested_pool.as_ref().map_or_else(
+            || format!("machine {} pool automatic", machine_id.as_str()),
+            |pool| format!("machine {} pool {}", machine_id.as_str(), pool.as_str()),
         ),
         OperationStatus::MachineLifecycle {
             machine_id, target, ..
@@ -437,6 +446,9 @@ fn operation_state(status: &OperationStatus) -> String {
         OperationStatus::Cert { state, .. } => cert_state(state).to_owned(),
         OperationStatus::MachineAdd { state, .. } => machine_add_state(state).to_owned(),
         OperationStatus::MachineUpdate { state, .. } => machine_update_state(state).to_owned(),
+        OperationStatus::MachineStoragePrepare { state, .. } => {
+            machine_storage_prepare_state(state).to_owned()
+        }
         OperationStatus::MachineLifecycle { state, .. } => {
             machine_lifecycle_state(state).to_owned()
         }
@@ -588,10 +600,18 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
             state: ployz_sdk_types::IngressConfigureOperationState::Failed { failure },
             ..
         } => Some(format!("failure {}", ingress_configure_failure(failure))),
+        OperationStatus::MachineStoragePrepare {
+            state: ployz_sdk_types::MachineStoragePrepareOperationState::Failed { failure },
+            ..
+        } => Some(format!(
+            "failure {}",
+            machine_storage_prepare_failure(failure)
+        )),
         OperationStatus::Deploy { .. }
         | OperationStatus::Cert { .. }
         | OperationStatus::MachineAdd { .. }
         | OperationStatus::MachineUpdate { .. }
+        | OperationStatus::MachineStoragePrepare { .. }
         | OperationStatus::MachineLifecycle { .. }
         | OperationStatus::CoreReplace { .. }
         | OperationStatus::CredentialGrant { .. }
@@ -757,6 +777,32 @@ const fn machine_update_state(state: &MachineUpdateOperationState) -> &'static s
     }
 }
 
+const fn machine_storage_prepare_state(
+    state: &ployz_sdk_types::MachineStoragePrepareOperationState,
+) -> &'static str {
+    match state {
+        ployz_sdk_types::MachineStoragePrepareOperationState::Accepted => "accepted",
+        ployz_sdk_types::MachineStoragePrepareOperationState::Preparing => "preparing",
+        ployz_sdk_types::MachineStoragePrepareOperationState::Completed { .. } => "completed",
+        ployz_sdk_types::MachineStoragePrepareOperationState::Failed { .. } => "failed",
+        ployz_sdk_types::MachineStoragePrepareOperationState::Cancelled { .. } => "cancelled",
+        ployz_sdk_types::MachineStoragePrepareOperationState::Interrupted { .. } => "interrupted",
+    }
+}
+
+fn machine_storage_prepare_failure(
+    failure: &ployz_sdk_types::MachineStoragePrepareFailure,
+) -> &str {
+    match failure {
+        ployz_sdk_types::MachineStoragePrepareFailure::MachineUnavailable { message, .. }
+        | ployz_sdk_types::MachineStoragePrepareFailure::PreparationRejected { message, .. }
+        | ployz_sdk_types::MachineStoragePrepareFailure::EvidenceUnavailable { message, .. }
+        | ployz_sdk_types::MachineStoragePrepareFailure::StateCommitFailed { message, .. } => {
+            message.as_str()
+        }
+    }
+}
+
 struct DeployEventRenderContext {
     service_id: Option<ServiceId>,
 }
@@ -794,6 +840,10 @@ impl DeployEventRenderContext {
             | OperationEvent::MachineUpdateRunning { .. }
             | OperationEvent::MachineUpdateCompleted { .. }
             | OperationEvent::MachineUpdateFailed { .. }
+            | OperationEvent::MachineStoragePrepareSubmitted { .. }
+            | OperationEvent::MachineStoragePreparePreparing { .. }
+            | OperationEvent::MachineStoragePrepareCompleted { .. }
+            | OperationEvent::MachineStoragePrepareFailed { .. }
             | OperationEvent::MachineLifecycleSubmitted { .. }
             | OperationEvent::MachineLifecycleCompleted { .. }
             | OperationEvent::MachineLifecycleFailed { .. }
@@ -924,6 +974,10 @@ fn render_replayed_event_text(
         | OperationEvent::MachineUpdateRunning { .. }
         | OperationEvent::MachineUpdateCompleted { .. }
         | OperationEvent::MachineUpdateFailed { .. }
+        | OperationEvent::MachineStoragePrepareSubmitted { .. }
+        | OperationEvent::MachineStoragePreparePreparing { .. }
+        | OperationEvent::MachineStoragePrepareCompleted { .. }
+        | OperationEvent::MachineStoragePrepareFailed { .. }
         | OperationEvent::MachineLifecycleSubmitted { .. }
         | OperationEvent::MachineLifecycleCompleted { .. }
         | OperationEvent::MachineLifecycleFailed { .. }
@@ -1017,6 +1071,16 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::MachineUpdateRunning { .. } => "machine.update.running",
         OperationEvent::MachineUpdateCompleted { .. } => "machine.update.completed",
         OperationEvent::MachineUpdateFailed { .. } => "machine.update.failed",
+        OperationEvent::MachineStoragePrepareSubmitted { .. } => {
+            "machine.storage_prepare.submitted"
+        }
+        OperationEvent::MachineStoragePreparePreparing { .. } => {
+            "machine.storage_prepare.preparing"
+        }
+        OperationEvent::MachineStoragePrepareCompleted { .. } => {
+            "machine.storage_prepare.completed"
+        }
+        OperationEvent::MachineStoragePrepareFailed { .. } => "machine.storage_prepare.failed",
         OperationEvent::MachineLifecycleSubmitted { .. } => "machine.lifecycle.submitted",
         OperationEvent::MachineLifecycleCompleted { .. } => "machine.lifecycle.completed",
         OperationEvent::MachineLifecycleFailed { .. } => "machine.lifecycle.failed",

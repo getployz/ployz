@@ -65,6 +65,18 @@ pub fn operation_event_subject_suffix(event: &OperationEvent) -> String {
         OperationEvent::MachineUpdateRunning { .. } => "machine.update.running".to_owned(),
         OperationEvent::MachineUpdateCompleted { .. } => "machine.update.completed".to_owned(),
         OperationEvent::MachineUpdateFailed { .. } => "machine.update.failed".to_owned(),
+        OperationEvent::MachineStoragePrepareSubmitted { .. } => {
+            "machine.storage_prepare.submitted".to_owned()
+        }
+        OperationEvent::MachineStoragePreparePreparing { .. } => {
+            "machine.storage_prepare.preparing".to_owned()
+        }
+        OperationEvent::MachineStoragePrepareCompleted { .. } => {
+            "machine.storage_prepare.completed".to_owned()
+        }
+        OperationEvent::MachineStoragePrepareFailed { .. } => {
+            "machine.storage_prepare.failed".to_owned()
+        }
         OperationEvent::MachineLifecycleSubmitted { target, .. } => match target {
             MachineLifecycle::Active => "machine.lifecycle.resume.submitted".to_owned(),
             MachineLifecycle::Draining => "machine.lifecycle.drain.submitted".to_owned(),

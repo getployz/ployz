@@ -11,7 +11,8 @@ use crate::{
     MachineAddRequest, MachineInspectError, MachineInspectRequest, MachineJoinRedeemError,
     MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
     MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError, MachineLifecycleRequest,
-    MachineListError, MachineListRequest, MachineListResult, MachineSnapshot, MachineUpdateError,
+    MachineListError, MachineListRequest, MachineListResult, MachineSnapshot,
+    MachineStoragePrepareError, MachineStoragePrepareRequest, MachineUpdateError,
     MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest, NetworkRepairError,
     NetworkRepairRequest, NetworkResolveError, NetworkResolveRequest, NetworkResolveResult,
     NetworkStatusError, NetworkStatusRequest, NetworkStatusResult, OperationStatusSnapshot,
@@ -31,6 +32,7 @@ pub enum OperationApiEndpoint {
     InitFirstMachineActivate,
     MachineAdd,
     MachineUpdate,
+    MachineStoragePrepare,
     MachineDrain,
     MachineResume,
     MachineList,
@@ -78,6 +80,7 @@ macro_rules! operation_api_contracts {
             $crate::operation_api::InitFirstMachineActivateApi,
             $crate::operation_api::MachineAddApi,
             $crate::operation_api::MachineUpdateApi,
+            $crate::operation_api::MachineStoragePrepareApi,
             $crate::operation_api::MachineDrainApi,
             $crate::operation_api::MachineResumeApi,
             $crate::operation_api::ServiceRestartApi,
@@ -166,6 +169,18 @@ impl OperationApiContract for MachineUpdateApi {
 
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::MachineUpdate;
     const RESPONSE_ALIAS: &'static str = "MachineUpdateResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MachineStoragePrepareApi;
+
+impl OperationApiContract for MachineStoragePrepareApi {
+    type Request = MachineStoragePrepareRequest;
+    type Success = AcceptedOperation;
+    type Error = MachineStoragePrepareError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::MachineStoragePrepare;
+    const RESPONSE_ALIAS: &'static str = "MachineStoragePrepareResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -22,6 +22,7 @@ use crate::control::operations::credential_grant::CredentialGrantOperation;
 use crate::control::operations::deploy::driver::{DeployOperationDriver, DeployOperationStores};
 use crate::control::operations::ingress_configure::IngressConfigureOperation;
 use crate::control::operations::machine_lifecycle::MachineLifecycleOperation;
+use crate::control::operations::machine_storage_prepare::MachineStoragePrepareOperation;
 use crate::control::operations::machine_update::MachineUpdateOperation;
 use crate::control::operator_api::service::{
     ApiServiceError, start_operation_api_service_with_handlers,
@@ -456,8 +457,16 @@ async fn start_control_process_with_client_reload_and_issuer(
     })?;
     let runtime_projection_health = runtime_projection.health_reader();
     let machine_updater = NatsMachineSubstrateUpdater::new(client.clone());
-    let machine_update =
-        MachineUpdateOperation::new(controllers.clone(), machine_updater, task_spawner.clone());
+    let machine_update = MachineUpdateOperation::new(
+        controllers.clone(),
+        machine_updater.clone(),
+        task_spawner.clone(),
+    );
+    let machine_storage_prepare = MachineStoragePrepareOperation::new(
+        controllers.clone(),
+        machine_updater,
+        task_spawner.clone(),
+    );
     let machine_lifecycle = MachineLifecycleOperation::new(
         client.clone(),
         controllers.clone(),
@@ -477,6 +486,7 @@ async fn start_control_process_with_client_reload_and_issuer(
                 network_repair,
                 volume_remove,
                 machine_update,
+                machine_storage_prepare,
                 machine_lifecycle,
                 machine_mint: machine_mint.clone(),
             },
