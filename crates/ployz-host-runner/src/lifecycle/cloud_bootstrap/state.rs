@@ -365,8 +365,8 @@ mod tests {
     use std::fs;
 
     use super::{
-        CloudBootstrapLocalState, cloud_joiner_connect_config, cloud_joiner_success_callback,
-        write_cloud_joiner_trusted_ca,
+        CloudBootstrapLocalState, JOIN_MATERIAL_DIR, JOIN_NATS_CREDENTIALS_FILE,
+        cloud_joiner_connect_config, cloud_joiner_success_callback, write_cloud_joiner_trusted_ca,
     };
     use ployz_core::ids::{MachineId, OperationId};
     use ployz_core::install::{

@@ -10,8 +10,9 @@ use std::net::IpAddr;
 use ployz_core::install::WrappedCoreSeeds;
 use ployz_core::nats_config::{
     MintedNatsUser, NatsCaCertificatePem, NatsServerCertificatePem, NatsServerConfigError,
-    NatsUserSeed, is_valid_host_syntax,
+    NatsUserSeed,
 };
+use ployz_nats::server_config::is_valid_host_syntax;
 use serde::{Deserialize, Serialize};
 
 use crate::recovery_secret::{self, RecoverySecretError};

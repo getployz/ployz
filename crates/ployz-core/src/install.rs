@@ -20,4 +20,4 @@ pub use join::{
 pub use nats::{MachineJoinRuntimeNatsUrl, MachineJoinTrustedNats, NatsMachineMaterialPaths};
 pub use paths::{AbsoluteInstallPath, INTENT_MIRROR_FILE_NAME};
 pub use roles::{FirstMachineInstallSpec, HostPortAssurance};
-pub use validation::InstallContractError;
+pub use validation::{InstallContractError, is_valid_host_syntax};

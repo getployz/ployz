@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use ployz_core::ids::MachineId;
+pub use ployz_core::install::is_valid_host_syntax;
 
 /// Where the NATS listener binds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,35 +125,6 @@ impl NatsAdvertisedHost {
     pub fn as_str(&self) -> &str {
         &self.0
     }
-}
-
-#[must_use]
-pub fn is_valid_host_syntax(value: &str) -> bool {
-    if let Some(bracketed) = value.strip_prefix('[') {
-        let Some(address) = bracketed.strip_suffix(']') else {
-            return false;
-        };
-        return address.parse::<std::net::Ipv6Addr>().is_ok();
-    }
-    if value.parse::<std::net::Ipv4Addr>().is_ok() {
-        return true;
-    }
-    is_hostname_syntax(value)
-}
-
-fn is_hostname_syntax(value: &str) -> bool {
-    if value.is_empty() || value.len() > 253 {
-        return false;
-    }
-    value.split('.').all(|label| {
-        !label.is_empty()
-            && label.len() <= 63
-            && !label.starts_with('-')
-            && !label.ends_with('-')
-            && label
-                .chars()
-                .all(|character| character.is_ascii_alphanumeric() || character == '-')
-    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

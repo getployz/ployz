@@ -21,6 +21,7 @@ pub const INGRESS_ENDPOINT_GET: &str = "plz.v1.rpc.core.query.ingress.endpoint.g
 pub const INGRESS_ENDPOINT_CHANGED: &str = "plz.v1.signal.ingress.endpoint.changed";
 pub const PENDING_MACHINE_JOINS_CHANGED: &str = "plz.v1.signal.machine.join.pending";
 pub const RUNTIME_SNAPSHOT_STREAM: &str = "plz.v1.projection.runtime.snapshot";
+pub const RUNTIME_SNAPSHOT_SEED: &str = "plz.v1.rpc.operator.query.runtime.snapshot.seed";
 
 pub const OPERATOR_DEPLOY_SUBMIT: &str = "plz.v1.rpc.operator.command.deploy.submit";
 pub const OPERATOR_DEPLOY_RESERVE: &str = "plz.v1.rpc.operator.command.deploy.reserve";

@@ -2,8 +2,6 @@
 
 use url::{Host, Url};
 
-use crate::nats_config::is_valid_host_syntax;
-
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum InstallContractError {
     #[error("cluster name is empty")]
@@ -62,6 +60,32 @@ pub(super) fn nats_url_has_host_and_port(value: &str) -> bool {
             Host::Domain(host) => is_valid_host_syntax(host),
             Host::Ipv4(_) | Host::Ipv6(_) => true,
         }
+}
+
+/// Syntactic host validation shared by install contracts and NATS rendering.
+#[must_use]
+pub fn is_valid_host_syntax(value: &str) -> bool {
+    if let Some(bracketed) = value.strip_prefix('[') {
+        let Some(address) = bracketed.strip_suffix(']') else {
+            return false;
+        };
+        return address.parse::<std::net::Ipv6Addr>().is_ok();
+    }
+    if value.parse::<std::net::Ipv4Addr>().is_ok() {
+        return true;
+    }
+    if value.is_empty() || value.len() > 253 {
+        return false;
+    }
+    value.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    })
 }
 
 pub(super) fn has_invisible_characters(value: &str) -> bool {
