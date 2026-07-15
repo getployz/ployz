@@ -9,6 +9,7 @@ use crate::control::role_client::machine::{
     MachineStoragePrepareError, NatsMachineSubstrateUpdater,
 };
 use crate::control::sequencer::OperationControllers;
+use crate::roles::machine::MachineRuntimeUnavailableReason;
 use crate::roles::machine::protocol::MachineStoragePrepareRpcRequest;
 use crate::tasks::TaskSpawner;
 use ployz_core::ids::{MachineId, OperationId};
@@ -16,7 +17,6 @@ use ployz_core::operation::{
     FailureMessage, MachineStoragePrepareFailure, MachineStoragePrepareTransition,
 };
 
-const REPORT_TIMEOUT: Duration = Duration::from_secs(120);
 const REPORT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone)]
@@ -92,7 +92,8 @@ impl MachineStoragePrepareOperation {
             .await;
             return;
         }
-        if let Err(error) = self
+        let deadline = Instant::now() + ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT;
+        let pool = match self
             .updater
             .prepare_storage(
                 &machine_id,
@@ -103,23 +104,49 @@ impl MachineStoragePrepareOperation {
             )
             .await
         {
-            self.record_failed(&operation_id, &machine_id, operation_failure(error))
+            Ok(pool) => pool,
+            Err(MachineStoragePrepareError::PreparationFailed {
+                machine_id,
+                failure,
+            }) => {
+                self.record_failed(
+                    &operation_id,
+                    &machine_id,
+                    MachineStoragePrepareFailure::PreparationRejected {
+                        machine_id: machine_id.clone(),
+                        failure,
+                    },
+                )
                 .await;
-            return;
-        }
-        let deadline = Instant::now() + REPORT_TIMEOUT;
-        let pool = loop {
-            match self
-                .updater
-                .report_storage_prepare(&machine_id, &operation_id)
-                .await
-            {
-                Ok(Some(pool)) => break pool,
-                Ok(None) if Instant::now() < deadline => {
-                    tokio::time::sleep(REPORT_POLL_INTERVAL).await;
-                }
-                Ok(None) => {
-                    self.record_failed(
+                return;
+            }
+            Err(MachineStoragePrepareError::Unavailable {
+                machine_id,
+                reason: MachineRuntimeUnavailableReason::NoResponders,
+            }) => {
+                self.record_failed(
+                    &operation_id,
+                    &machine_id,
+                    MachineStoragePrepareFailure::MachineUnavailable {
+                        machine_id: machine_id.clone(),
+                        message: MachineRuntimeUnavailableReason::NoResponders.failure_message(),
+                    },
+                )
+                .await;
+                return;
+            }
+            Err(MachineStoragePrepareError::Unavailable { .. }) => loop {
+                match self
+                    .updater
+                    .report_storage_prepare(&machine_id, &operation_id)
+                    .await
+                {
+                    Ok(Some(pool)) => break pool,
+                    Ok(None) if Instant::now() < deadline => {
+                        tokio::time::sleep(REPORT_POLL_INTERVAL).await;
+                    }
+                    Ok(None) => {
+                        self.record_failed(
                         &operation_id,
                         &machine_id,
                         MachineStoragePrepareFailure::EvidenceUnavailable {
@@ -130,19 +157,35 @@ impl MachineStoragePrepareOperation {
                         },
                     )
                     .await;
-                    return;
-                }
-                Err(MachineStoragePrepareError::Unavailable { .. })
-                    if Instant::now() < deadline =>
-                {
-                    tokio::time::sleep(REPORT_POLL_INTERVAL).await;
-                }
-                Err(error) => {
-                    self.record_failed(&operation_id, &machine_id, operation_failure(error))
+                        return;
+                    }
+                    Err(MachineStoragePrepareError::Unavailable { .. })
+                        if Instant::now() < deadline =>
+                    {
+                        tokio::time::sleep(REPORT_POLL_INTERVAL).await;
+                    }
+                    Err(MachineStoragePrepareError::PreparationFailed {
+                        machine_id,
+                        failure,
+                    }) => {
+                        self.record_failed(
+                            &operation_id,
+                            &machine_id,
+                            MachineStoragePrepareFailure::PreparationRejected {
+                                machine_id: machine_id.clone(),
+                                failure,
+                            },
+                        )
                         .await;
-                    return;
+                        return;
+                    }
+                    Err(error) => {
+                        self.record_failed(&operation_id, &machine_id, operation_failure(error))
+                            .await;
+                        return;
+                    }
                 }
-            }
+            },
         };
         if let Err(error) = self
             .controllers
@@ -194,10 +237,10 @@ fn operation_failure(error: MachineStoragePrepareError) -> MachineStoragePrepare
         }
         MachineStoragePrepareError::PreparationFailed {
             machine_id,
-            message,
+            failure,
         } => MachineStoragePrepareFailure::PreparationRejected {
             machine_id,
-            message,
+            failure,
         },
     }
 }

@@ -1,15 +1,16 @@
 //! Operation admission, idempotency, resource fences, transitions, and evidence.
 
 mod ingress;
+mod machine_substrate;
 
 use ingress::{IngressClaim, deploy_requires_ingress};
 pub use ingress::{IngressConfigureSubmitCommand, IngressConfigureSubmitError};
+pub use machine_substrate::{MachineStoragePrepareSubmitCommand, MachineUpdateSubmitCommand};
 
 use crate::control::operation_evidence::{
     AcceptedDeploySubmission, AcceptedMachineAddSubmission, CoreReplaceOperationSubmission,
     CredentialGrantOperationSubmission, DeployOperationSubmission, MachineAddOperationSubmission,
     MachineJoinIdentity, MachineJoinRedemption, MachineLifecycleOperationSubmission,
-    MachineStoragePrepareOperationSubmission, MachineUpdateOperationSubmission,
     NamespaceRemoveOperationSubmission, NetworkRepairOperationSubmission, OperationRepository,
     OperationStatusStoreError, RedeemMachineJoinTokenError, ServiceRestartOperationSubmission,
     SubmitMachineAddError, SubmitOperationError, VolumeRemoveOperationSubmission,
@@ -20,8 +21,8 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
 use ployz_core::install::{
-    HostPortAssurance, InstallArtifactVersion, MachineBootstrapUrl, MachineJoinBundle,
-    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
+    HostPortAssurance, MachineBootstrapUrl, MachineJoinBundle, MachineJoinRuntimeNatsUrl,
+    MachineJoinSecretDelivery, MachineJoinTemplate,
 };
 use ployz_core::intent::recovery::PendingMachineJoinRecovery;
 use ployz_core::machine::{
@@ -83,20 +84,6 @@ pub struct MachineAddSubmitCommand {
 pub enum MachineAddEndpointSubnet {
     Allocate,
     Preserve(ployz_core::network::MachineEndpointSubnet),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MachineUpdateSubmitCommand {
-    pub operation_id: OperationId,
-    pub machine_id: ployz_core::ids::MachineId,
-    pub target_version: InstallArtifactVersion,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MachineStoragePrepareSubmitCommand {
-    pub operation_id: OperationId,
-    pub machine_id: ployz_core::ids::MachineId,
-    pub requested_pool: Option<ployz_core::deploy::ZfsPoolName>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,7 +204,7 @@ pub struct OperationControllers {
     deploy_reservations: Arc<Mutex<DeployReservations>>,
     mesh_lock: Arc<Mutex<()>>,
     ingress_lock: Arc<Mutex<Option<OperationId>>>,
-    machine_locks: Arc<Mutex<BTreeMap<ployz_core::ids::MachineId, OperationId>>>,
+    machine_substrate_locks: machine_substrate::MachineSubstrateLocks,
     machine_bootstrap: MachineAddBootstrapConfig,
     pending_join_recovery: Arc<Mutex<Vec<PendingMachineJoinRecovery>>>,
 }
@@ -234,7 +221,7 @@ impl OperationControllers {
             deploy_reservations: Arc::default(),
             mesh_lock: Arc::default(),
             ingress_lock: Arc::default(),
-            machine_locks: Arc::default(),
+            machine_substrate_locks: machine_substrate::MachineSubstrateLocks::default(),
             machine_bootstrap,
             pending_join_recovery: Arc::default(),
         }
@@ -252,7 +239,7 @@ impl OperationControllers {
             deploy_reservations: Arc::default(),
             mesh_lock: Arc::default(),
             ingress_lock: Arc::default(),
-            machine_locks: Arc::default(),
+            machine_substrate_locks: machine_substrate::MachineSubstrateLocks::default(),
             machine_bootstrap,
             pending_join_recovery: Arc::new(Mutex::new(pending_join_recovery)),
         }
@@ -501,80 +488,6 @@ impl OperationControllers {
                 idempotency_key: command.idempotency_key,
             })
             .await?)
-    }
-
-    pub async fn submit_machine_update(
-        &self,
-        command: MachineUpdateSubmitCommand,
-    ) -> Result<
-        crate::control::operation_evidence::AcceptedMachineUpdateSubmission,
-        SubmitCommandError,
-    > {
-        let machine_id = command.machine_id.clone();
-        let operation_id = command.operation_id.clone();
-        let claim = self.claim_machine(&machine_id, &operation_id).await;
-        if let MachineClaim::Busy { owner } = claim {
-            return Err(SubmitCommandError::MachineBusy { machine_id, owner });
-        }
-        let submitted = self
-            .repository
-            .submit_machine_update(MachineUpdateOperationSubmission {
-                operation_id: command.operation_id,
-                machine_id: command.machine_id,
-                target_version: command.target_version,
-            })
-            .await;
-        match submitted {
-            Ok(accepted) => {
-                if !accepted.should_start_execution && matches!(claim, MachineClaim::Acquired) {
-                    self.release_machine(&machine_id, &operation_id).await;
-                }
-                Ok(accepted)
-            }
-            Err(error) => {
-                if matches!(claim, MachineClaim::Acquired) {
-                    self.release_machine(&machine_id, &operation_id).await;
-                }
-                Err(SubmitCommandError::Submit(error))
-            }
-        }
-    }
-
-    pub async fn submit_machine_storage_prepare(
-        &self,
-        command: MachineStoragePrepareSubmitCommand,
-    ) -> Result<
-        crate::control::operation_evidence::AcceptedMachineStoragePrepareSubmission,
-        SubmitCommandError,
-    > {
-        let machine_id = command.machine_id.clone();
-        let operation_id = command.operation_id.clone();
-        let claim = self.claim_machine(&machine_id, &operation_id).await;
-        if let MachineClaim::Busy { owner } = claim {
-            return Err(SubmitCommandError::MachineBusy { machine_id, owner });
-        }
-        let submitted = self
-            .repository
-            .submit_machine_storage_prepare(MachineStoragePrepareOperationSubmission {
-                operation_id: command.operation_id,
-                machine_id: command.machine_id,
-                requested_pool: command.requested_pool,
-            })
-            .await;
-        match submitted {
-            Ok(accepted) => {
-                if !accepted.should_start_execution && matches!(claim, MachineClaim::Acquired) {
-                    self.release_machine(&machine_id, &operation_id).await;
-                }
-                Ok(accepted)
-            }
-            Err(error) => {
-                if matches!(claim, MachineClaim::Acquired) {
-                    self.release_machine(&machine_id, &operation_id).await;
-                }
-                Err(SubmitCommandError::Submit(error))
-            }
-        }
     }
 
     pub async fn submit_machine_lifecycle(
@@ -895,46 +808,10 @@ impl OperationControllers {
             locks.remove(namespace_id);
         }
     }
-
-    async fn claim_machine(
-        &self,
-        machine_id: &ployz_core::ids::MachineId,
-        operation_id: &OperationId,
-    ) -> MachineClaim {
-        let mut locks = self.machine_locks.lock().await;
-        match locks.get(machine_id) {
-            Some(owner) if owner == operation_id => MachineClaim::AlreadyOwned,
-            Some(owner) => MachineClaim::Busy {
-                owner: owner.clone(),
-            },
-            None => {
-                locks.insert(machine_id.clone(), operation_id.clone());
-                MachineClaim::Acquired
-            }
-        }
-    }
-
-    pub async fn release_machine(
-        &self,
-        machine_id: &ployz_core::ids::MachineId,
-        operation_id: &OperationId,
-    ) {
-        let mut locks = self.machine_locks.lock().await;
-        if locks.get(machine_id) == Some(operation_id) {
-            locks.remove(machine_id);
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum NamespaceClaim {
-    Acquired,
-    AlreadyOwned,
-    Busy { owner: OperationId },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum MachineClaim {
     Acquired,
     AlreadyOwned,
     Busy { owner: OperationId },
@@ -950,7 +827,7 @@ pub enum SubmitCommandError {
         namespace_id: NamespaceId,
         owner: OperationId,
     },
-    MachineBusy {
+    MachineSubstrateBusy {
         machine_id: ployz_core::ids::MachineId,
         owner: OperationId,
     },

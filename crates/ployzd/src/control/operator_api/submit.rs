@@ -9,9 +9,8 @@ use crate::control::sequencer::{
     CoreReplaceSubmitCommand, CredentialGrantSubmitCommand, DeploySubmitCommand,
     IngressConfigureSubmitCommand, IngressConfigureSubmitError, MachineAddBootstrapMaterial,
     MachineAddBootstrapMaterialError, MachineAddSubmitCommand, MachineLifecycleSubmitCommand,
-    MachineStoragePrepareSubmitCommand, MachineUpdateSubmitCommand, NamespaceRemoveSubmitCommand,
-    NetworkRepairSubmitCommand, OperationControllers, ServiceRestartSubmitCommand,
-    VolumeRemoveSubmitCommand,
+    MachineUpdateSubmitCommand, NamespaceRemoveSubmitCommand, NetworkRepairSubmitCommand,
+    OperationControllers, ServiceRestartSubmitCommand, VolumeRemoveSubmitCommand,
 };
 use ployz_core::deploy::ImageSource;
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
@@ -25,10 +24,9 @@ use ployz_sdk_types::{
     DeployReserveRequest, DeployReserved, DeploySubmitError, DeploySubmitRequest,
     IngressConfigureError, IngressConfigureRequest, MachineAddAccepted, MachineAddError,
     MachineAddRequest, MachineJoinToken, MachineLifecycleError, MachineLifecycleRequest,
-    MachineStoragePrepareError, MachineStoragePrepareRequest, MachineUpdateError,
-    MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest, NetworkRepairError,
-    NetworkRepairRequest, ServiceRestartError, ServiceRestartRequest, VolumeRemoveError,
-    VolumeRemoveRequest,
+    MachineUpdateError, MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest,
+    NetworkRepairError, NetworkRepairRequest, ServiceRestartError, ServiceRestartRequest,
+    VolumeRemoveError, VolumeRemoveRequest,
 };
 
 use super::OperationApiHandlers;
@@ -263,16 +261,6 @@ impl From<MachineUpdateRequest> for MachineUpdateSubmitCommand {
             operation_id: value.operation_id,
             machine_id: value.machine_id,
             target_version: value.target_version,
-        }
-    }
-}
-
-impl From<MachineStoragePrepareRequest> for MachineStoragePrepareSubmitCommand {
-    fn from(value: MachineStoragePrepareRequest) -> Self {
-        Self {
-            operation_id: value.operation_id,
-            machine_id: value.machine_id,
-            requested_pool: value.pool,
         }
     }
 }
@@ -824,55 +812,6 @@ pub async fn machine_update(
     Ok(operation)
 }
 
-pub async fn machine_storage_prepare(
-    handlers: &OperationApiHandlers,
-    request: MachineStoragePrepareRequest,
-) -> Result<AcceptedOperation, MachineStoragePrepareError> {
-    let operation_id = request.operation_id.clone();
-    let target_machine = handlers
-        .machine_roster
-        .active_machine(&request.machine_id)
-        .await
-        .map_err(|error| MachineStoragePrepareError::Unavailable {
-            operation_id: operation_id.clone(),
-            message: error.to_string(),
-        })?;
-    if target_machine.is_none() {
-        return Err(MachineStoragePrepareError::NoSuchMachine {
-            operation_id,
-            machine_id: request.machine_id,
-        });
-    }
-    let operation_id = request.operation_id.clone();
-    let accepted = handlers
-        .controllers()
-        .submit_machine_storage_prepare(request.into())
-        .await
-        .map_err(|error| {
-            match super::error_map::unfenced_submit_failure("machine-storage-prepare", error) {
-                super::error_map::UnfencedSubmitFailure::Unavailable { message } => {
-                    MachineStoragePrepareError::Unavailable {
-                        operation_id: operation_id.clone(),
-                        message,
-                    }
-                }
-                super::error_map::UnfencedSubmitFailure::DuplicateSequenceMismatch { sequence } => {
-                    MachineStoragePrepareError::DuplicateSequenceMismatch {
-                        operation_id: operation_id.clone(),
-                        sequence,
-                    }
-                }
-            }
-        })?;
-    let operation = owned_machine_operation(
-        accepted.operation_id.clone(),
-        &accepted.machine_id,
-        accepted.start_sequence,
-    );
-    handlers.machine_storage_prepare().start(accepted).await;
-    Ok(operation)
-}
-
 pub async fn machine_drain(
     handlers: &OperationApiHandlers,
     request: MachineLifecycleRequest,
@@ -1006,7 +945,7 @@ pub async fn core_replace(
 }
 
 #[must_use]
-fn owned_machine_operation(
+pub(super) fn owned_machine_operation(
     operation_id: OperationId,
     machine_id: &MachineId,
     start_sequence: EventSequence,

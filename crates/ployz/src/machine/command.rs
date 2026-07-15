@@ -27,7 +27,9 @@ pub use ployz_sdk_types::{
 };
 
 use crate::commands::{PloyzctlCliError, invalid_value};
-use crate::execution_support::generate_client_machine_update_id;
+use crate::execution_support::{
+    generate_client_machine_storage_prepare_id, generate_client_machine_update_id,
+};
 use crate::ingress::command::{AutomaticHostnamesCli, DnsTargetCli};
 use crate::machine::bootstrap::{
     BootstrapInstaller, BootstrapRelease, DEFAULT_BOOTSTRAP_URL, DEFAULT_CLUSTER_NAME,
@@ -906,11 +908,12 @@ pub(crate) fn machine_storage_prepare_command(
         .map(ZfsPoolName::try_new)
         .transpose()
         .map_err(|error| invalid_value("--pool", error))?;
-    let operation_id = OperationId::try_new(format!("op_machine_storage_prepare_{}", nuid::next()))
+    let operation_id = generate_client_machine_storage_prepare_id(&machine_id)
         .map_err(|error| PloyzctlCliError::InvalidValue {
             flag: "<machine_id>",
             message: error.to_string(),
-        })?;
+        })?
+        .operation_id;
     Ok(MachineStoragePrepareCommand {
         operation_id,
         machine_id,

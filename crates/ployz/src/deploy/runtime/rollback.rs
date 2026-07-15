@@ -296,7 +296,8 @@ mod tests {
     #[test]
     fn rollback_synthesizes_plain_declarations_for_legacy_history_requests() {
         let mut legacy = request("nginx:latest");
-        legacy.services[0].runtime.volume_mounts = vec![ServiceVolumeMount {
+        let service = legacy.services.first_mut().expect("test service");
+        service.runtime.volume_mounts = vec![ServiceVolumeMount {
             volume_name: VolumeName::try_new("data").expect("volume name"),
             target: ContainerMountPath::try_new("/data").expect("mount path"),
         }];

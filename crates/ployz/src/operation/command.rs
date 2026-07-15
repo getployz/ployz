@@ -792,13 +792,15 @@ const fn machine_storage_prepare_state(
 
 fn machine_storage_prepare_failure(
     failure: &ployz_sdk_types::MachineStoragePrepareFailure,
-) -> &str {
+) -> String {
     match failure {
         ployz_sdk_types::MachineStoragePrepareFailure::MachineUnavailable { message, .. }
-        | ployz_sdk_types::MachineStoragePrepareFailure::PreparationRejected { message, .. }
         | ployz_sdk_types::MachineStoragePrepareFailure::EvidenceUnavailable { message, .. }
         | ployz_sdk_types::MachineStoragePrepareFailure::StateCommitFailed { message, .. } => {
-            message.as_str()
+            message.as_str().to_owned()
+        }
+        ployz_sdk_types::MachineStoragePrepareFailure::PreparationRejected { failure, .. } => {
+            failure.to_string()
         }
     }
 }

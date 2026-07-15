@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::deploy::ZfsPoolName;
 use crate::ids::{MachineId, OperationId};
+use crate::storage::StorageEffectFailure;
 
 use super::events::{OperationEvent, OperationSubjectRef};
 use super::projection::{
@@ -78,7 +79,7 @@ pub enum MachineStoragePrepareFailure {
     },
     PreparationRejected {
         machine_id: MachineId,
-        message: FailureMessage,
+        failure: StorageEffectFailure,
     },
     EvidenceUnavailable {
         machine_id: MachineId,

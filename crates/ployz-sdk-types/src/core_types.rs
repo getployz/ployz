@@ -116,3 +116,4 @@ pub use ployz_core::operation::{
     DeployServiceResult, PreStartHookFailure,
 };
 pub use ployz_core::security::NatsPrincipal;
+pub use ployz_core::storage::StorageEffectFailure;

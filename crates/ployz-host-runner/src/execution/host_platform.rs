@@ -29,6 +29,13 @@ pub enum DockerInstall {
     CentosRepositoryFile,
 }
 
+/// ZFS installation facility available to storage preparation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ZfsInstall {
+    UbuntuPackages,
+    RockyPackages { major_release: Option<String> },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LinuxDistribution {
     Arch,
@@ -54,10 +61,10 @@ enum LinuxDistribution {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostPlatformProfile {
     distribution: LinuxDistribution,
-    version_id: Option<String>,
     package_family: HostPackageFamily,
     supervisor: SupervisorKind,
     docker_install: DockerInstall,
+    zfs_install: Option<ZfsInstall>,
 }
 
 impl HostPlatformProfile {
@@ -83,22 +90,10 @@ impl HostPlatformProfile {
         self.docker_install
     }
 
-    /// Returns whether this is an Ubuntu-family profile.
+    /// Returns the supported ZFS installation facility, when this host has one.
     #[must_use]
-    pub const fn is_ubuntu(&self) -> bool {
-        matches!(self.distribution, LinuxDistribution::Ubuntu)
-    }
-
-    /// Returns whether this is the Rocky Linux profile.
-    #[must_use]
-    pub const fn is_rocky(&self) -> bool {
-        matches!(self.distribution, LinuxDistribution::Rocky)
-    }
-
-    /// Returns the host's reported release version when present.
-    #[must_use]
-    pub fn version_id(&self) -> Option<&str> {
-        self.version_id.as_deref()
+    pub const fn zfs_install(&self) -> Option<&ZfsInstall> {
+        self.zfs_install.as_ref()
     }
 }
 
@@ -243,19 +238,44 @@ fn normalize_distribution_id(id: &str) -> Option<LinuxDistribution> {
     Some(distribution)
 }
 
-const fn profile(
+fn profile(
     distribution: LinuxDistribution,
     version_id: Option<String>,
     package_family: HostPackageFamily,
     supervisor: SupervisorKind,
     docker_install: DockerInstall,
 ) -> HostPlatformProfile {
+    let zfs_install = match distribution {
+        LinuxDistribution::Ubuntu => Some(ZfsInstall::UbuntuPackages),
+        LinuxDistribution::Rocky => Some(ZfsInstall::RockyPackages {
+            major_release: version_id
+                .as_deref()
+                .and_then(|version| version.split('.').next())
+                .filter(|major| !major.is_empty())
+                .map(str::to_owned),
+        }),
+        LinuxDistribution::Arch
+        | LinuxDistribution::Debian
+        | LinuxDistribution::Raspbian
+        | LinuxDistribution::Centos
+        | LinuxDistribution::Fedora
+        | LinuxDistribution::Rhel
+        | LinuxDistribution::OracleLinux
+        | LinuxDistribution::Sles
+        | LinuxDistribution::OpenSuseLeap
+        | LinuxDistribution::OpenSuseTumbleweed
+        | LinuxDistribution::AlmaLinux
+        | LinuxDistribution::AmazonLinux
+        | LinuxDistribution::Alpine
+        | LinuxDistribution::PostmarketOs
+        | LinuxDistribution::TencentOs => None,
+    };
     HostPlatformProfile {
         distribution,
-        version_id,
         package_family,
         supervisor,
         docker_install,
+        zfs_install,
     }
 }
 
@@ -270,5 +290,29 @@ fn unquote_os_release_value(value: &str) -> String {
     match value.as_bytes() {
         [b'"', .., b'"'] | [b'\'', .., b'\''] => value[1..value.len() - 1].to_owned(),
         _ => value.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zfs_install_capability_matrix_is_closed_and_explicit() {
+        let ubuntu = detect_host_platform("ID=ubuntu\nVERSION_ID=24.04\n").expect("Ubuntu");
+        assert_eq!(ubuntu.zfs_install(), Some(&ZfsInstall::UbuntuPackages));
+
+        let rocky = detect_host_platform("ID=rocky\nVERSION_ID=9.8\n").expect("Rocky");
+        assert_eq!(
+            rocky.zfs_install(),
+            Some(&ZfsInstall::RockyPackages {
+                major_release: Some("9".to_owned()),
+            })
+        );
+
+        for os_release in ["ID=debian\nVERSION_ID=13\n", "ID=arch\n"] {
+            let profile = detect_host_platform(os_release).expect("supported non-ZFS profile");
+            assert_eq!(profile.zfs_install(), None);
+        }
     }
 }

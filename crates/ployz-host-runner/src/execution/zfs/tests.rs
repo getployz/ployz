@@ -1,11 +1,14 @@
-
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use ployz_core::deploy::{VolumeName, ZfsPoolName};
-use ployz_core::ids::NamespaceId;
+use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes, VolumeName, ZfsPoolName};
+use ployz_core::ids::{NamespaceId, OperationId};
 use ployz_core::operation::FailureMessage;
 
+use super::state::persist_prepared_storage_state;
 use super::*;
+use crate::execution::{HostPlatformProfile, HostRunnerCommandOutput, HostRunnerCommandRunner};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Invocation {
@@ -55,9 +58,6 @@ impl HostRunnerCommandRunner for RecordingRunner {
             args: args.iter().map(|arg| (*arg).to_owned()).collect(),
             timeout,
         });
-        if program == "zfs" && args.first() == Some(&"list") {
-            return Ok(success());
-        }
         Ok(self.outputs.pop_front().unwrap_or_else(success))
     }
 
@@ -117,25 +117,26 @@ fn profile(value: &str) -> HostPlatformProfile {
 
 fn dataset(pool: &str) -> DatasetName {
     DatasetName::for_volume(
-        &ZfsPoolName::try_new(pool).unwrap(),
-        &NamespaceId::try_new("default").unwrap(),
-        &VolumeName::try_new("data").unwrap(),
+        &ZfsPoolName::try_new(pool).expect("test pool"),
+        &NamespaceId::try_new("default").expect("test namespace"),
+        &VolumeName::try_new("data").expect("test volume"),
     )
-    .unwrap()
+    .expect("test dataset")
 }
 
 fn persist(directory: &Path, origin: PreparedStorageOrigin) {
     let pool = match &origin {
-        PreparedStorageOrigin::OwnedImage { .. } => OWNED_POOL,
+        PreparedStorageOrigin::OwnedImage { .. } => PLOYZ_OWNED_ZFS_POOL,
         PreparedStorageOrigin::Adopted => "tank",
     };
     persist_prepared_storage_state(
         directory,
-        &PreparedStorageState {
-            pool: pool.to_owned(),
+        &PreparedStorageState::try_new(
+            ZfsPoolName::try_new(pool).expect("test pool"),
             origin,
-            dataset_root: format!("{pool}/ployz/volumes"),
-        },
+            ZfsDatasetRoot::try_from(format!("{pool}/ployz/volumes")).expect("test dataset root"),
+        )
+        .expect("test prepared state"),
     )
     .unwrap();
 }
@@ -224,7 +225,10 @@ fn automatic_multiple_pools_are_sorted_and_refused() {
     assert_eq!(
         error,
         ZfsEffectError::AmbiguousPools {
-            candidates: vec!["alpha".to_owned(), "zeta".to_owned()],
+            candidates: vec![
+                ZfsPoolName::try_new("alpha").expect("test pool"),
+                ZfsPoolName::try_new("zeta").expect("test pool"),
+            ],
         }
     );
 }
@@ -237,7 +241,7 @@ fn owned_image_pool_without_descriptor_is_refused_as_ambiguous_half_state() {
         success(),
         success(),
         stdout("ployz\n"),
-        stdout(&format!("  {OWNED_BACKING_FILE}\n")),
+        stdout(&format!("  {PLOYZ_OWNED_ZFS_BACKING_FILE}\n")),
     ]);
 
     let error = prepare_storage(
@@ -270,6 +274,9 @@ fn ubuntu_one_pool_is_adopted_with_exact_bounded_setup() {
         success(),
         stdout("tank\n"),
         success(),
+        failed("dataset absent"),
+        success(),
+        failed("dataset absent"),
         success(),
         success(),
     ]);
@@ -282,7 +289,7 @@ fn ubuntu_one_pool_is_adopted_with_exact_bounded_setup() {
     )
     .unwrap();
 
-    assert_eq!(prepared.origin, PreparedStorageOrigin::Adopted);
+    assert_eq!(prepared.origin(), &PreparedStorageOrigin::Adopted);
     assert_eq!(load_prepared_storage_state(state.path()).unwrap(), prepared);
     assert_eq!(invocation(&runner, 0).program, "env");
     assert_eq!(
@@ -332,6 +339,9 @@ fn rocky_installs_repo_epel_matching_kernel_and_zfs() {
         success(),
         stdout("tank\n"),
         success(),
+        failed("dataset absent"),
+        success(),
+        failed("dataset absent"),
         success(),
         success(),
     ]);
@@ -375,6 +385,9 @@ fn zero_pools_create_sparse_owned_pool_from_filesystem_total() {
         success(),
         success(),
         success(),
+        failed("dataset absent"),
+        success(),
+        failed("dataset absent"),
         success(),
         success(),
     ]);
@@ -388,20 +401,25 @@ fn zero_pools_create_sparse_owned_pool_from_filesystem_total() {
     .unwrap();
 
     assert_eq!(
-        prepared.origin,
-        PreparedStorageOrigin::OwnedImage {
-            backing_file: PathBuf::from(OWNED_BACKING_FILE)
+        prepared.origin(),
+        &PreparedStorageOrigin::OwnedImage {
+            backing_file: PathBuf::from(PLOYZ_OWNED_ZFS_BACKING_FILE)
         }
     );
     assert_eq!(invocation(&runner, 6).program, "truncate");
     assert_eq!(
         invocation(&runner, 6).args,
-        vec!["-s", "1048576", OWNED_BACKING_FILE]
+        vec!["-s", "1048576", PLOYZ_OWNED_ZFS_BACKING_FILE]
     );
     assert_eq!(invocation(&runner, 7).program, "zpool");
     assert_eq!(
         invocation(&runner, 7).args,
-        vec!["create", "-f", OWNED_POOL, OWNED_BACKING_FILE]
+        vec![
+            "create",
+            "-f",
+            PLOYZ_OWNED_ZFS_POOL,
+            PLOYZ_OWNED_ZFS_BACKING_FILE
+        ]
     );
 }
 
@@ -411,13 +429,13 @@ fn owned_origin_survives_restart_and_selects_filesystem_capacity() {
     persist(
         state.path(),
         PreparedStorageOrigin::OwnedImage {
-            backing_file: PathBuf::from(OWNED_BACKING_FILE),
+            backing_file: PathBuf::from(PLOYZ_OWNED_ZFS_BACKING_FILE),
         },
     );
     let mut runner = RecordingRunner::new([
         success(),
         stdout(VOLUME_MOUNTPOINT),
-        stdout(&format!("  {OWNED_BACKING_FILE}\n")),
+        stdout(&format!("  {PLOYZ_OWNED_ZFS_BACKING_FILE}\n")),
         stdout("Available\n4096\n"),
         stdout("ployz/ployz/volumes\tnone\n"),
     ]);
@@ -426,7 +444,7 @@ fn owned_origin_survives_restart_and_selects_filesystem_capacity() {
     assert_eq!(invocation(&runner, 3).program, "df");
     assert_eq!(
         invocation(&runner, 3).args,
-        vec!["-B1", "--output=avail", OWNED_BACKING_FILE]
+        vec!["-B1", "--output=avail", PLOYZ_OWNED_ZFS_BACKING_FILE]
     );
 }
 
@@ -436,7 +454,7 @@ fn repeated_prepare_verifies_and_preserves_owned_origin() {
     persist(
         state.path(),
         PreparedStorageOrigin::OwnedImage {
-            backing_file: PathBuf::from(OWNED_BACKING_FILE),
+            backing_file: PathBuf::from(PLOYZ_OWNED_ZFS_BACKING_FILE),
         },
     );
     let mut runner = RecordingRunner::new([
@@ -446,9 +464,10 @@ fn repeated_prepare_verifies_and_preserves_owned_origin() {
         stdout("ployz\n"),
         success(),
         stdout(VOLUME_MOUNTPOINT),
-        stdout(&format!("  {OWNED_BACKING_FILE}\n")),
+        stdout(&format!("  {PLOYZ_OWNED_ZFS_BACKING_FILE}\n")),
         success(),
-        success(),
+        stdout("ployz/ployz\n"),
+        stdout("ployz/ployz/volumes\n"),
         success(),
     ]);
     let prepared = prepare_storage(
@@ -461,7 +480,7 @@ fn repeated_prepare_verifies_and_preserves_owned_origin() {
     .unwrap();
 
     assert!(matches!(
-        prepared.origin,
+        prepared.origin(),
         PreparedStorageOrigin::OwnedImage { .. }
     ));
     assert!(
@@ -470,6 +489,9 @@ fn repeated_prepare_verifies_and_preserves_owned_origin() {
             .iter()
             .all(|call| call.program != "truncate")
     );
+    assert!(runner.invocations.iter().all(|call| {
+        !(call.program == "zfs" && call.args.first().is_some_and(|arg| arg == "create"))
+    }));
 }
 
 #[test]
@@ -489,6 +511,67 @@ fn adopted_origin_survives_restart_and_selects_zpool_capacity() {
         invocation(&runner, 2).args,
         vec!["list", "-H", "-p", "-o", "free", "tank"]
     );
+}
+
+#[test]
+fn pool_capacity_parses_and_orders_direct_child_quotas() {
+    let state = tempfile::tempdir().expect("temporary state");
+    persist(state.path(), PreparedStorageOrigin::Adopted);
+    let alpha = DatasetName::for_volume(
+        &ZfsPoolName::try_new("tank").expect("pool"),
+        &NamespaceId::try_new("alpha").expect("namespace"),
+        &VolumeName::try_new("data").expect("volume"),
+    )
+    .expect("dataset");
+    let zeta = DatasetName::for_volume(
+        &ZfsPoolName::try_new("tank").expect("pool"),
+        &NamespaceId::try_new("zeta").expect("namespace"),
+        &VolumeName::try_new("data").expect("volume"),
+    )
+    .expect("dataset");
+    let rows = format!(
+        "tank/ployz/volumes\tnone\n{}\t2048\n{}\t1024\n",
+        zeta.as_str(),
+        alpha.as_str()
+    );
+    let mut runner = RecordingRunner::new([
+        success(),
+        stdout(VOLUME_MOUNTPOINT),
+        stdout("8192\n"),
+        stdout(&rows),
+    ]);
+
+    let facts = gather_pool_capacity(&mut runner, state.path()).expect("capacity facts");
+
+    let mut expected = vec![
+        DatasetQuotaFact {
+            dataset: alpha,
+            quota_bytes: 1024,
+        },
+        DatasetQuotaFact {
+            dataset: zeta,
+            quota_bytes: 2048,
+        },
+    ];
+    expected.sort_by(|left, right| left.dataset.cmp(&right.dataset));
+    assert_eq!(facts.child_quotas, expected);
+}
+
+#[test]
+fn pool_capacity_rejects_invalid_child_quota_rows() {
+    let state = tempfile::tempdir().expect("temporary state");
+    persist(state.path(), PreparedStorageOrigin::Adopted);
+    let mut runner = RecordingRunner::new([
+        success(),
+        stdout(VOLUME_MOUNTPOINT),
+        stdout("8192\n"),
+        stdout("tank/ployz/volumes\tnone\ninvalid-row\n"),
+    ]);
+
+    assert!(matches!(
+        gather_pool_capacity(&mut runner, state.path()),
+        Err(ZfsEffectError::GatherParse { .. })
+    ));
 }
 
 #[test]

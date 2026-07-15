@@ -125,7 +125,7 @@ pub enum MachineStoragePrepareError {
     },
     PreparationFailed {
         machine_id: MachineId,
-        message: ployz_core::operation::FailureMessage,
+        failure: ployz_core::storage::StorageEffectFailure,
     },
 }
 
@@ -490,16 +490,16 @@ impl NatsMachineSubstrateUpdater {
         &self,
         machine_id: &MachineId,
         request: MachineStoragePrepareRpcRequest,
-    ) -> Result<(), MachineStoragePrepareError> {
+    ) -> Result<ployz_core::deploy::ZfsPoolName, MachineStoragePrepareError> {
         call_machine::<MachineStoragePrepareRpcOk, MachineStoragePrepareDomainError>(
             &self.client,
-            self.request_timeout,
+            ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT,
             machine_id,
             MachineServiceEndpoint::StoragePrepare,
             &request,
         )
         .await
-        .map(|_| ())
+        .map(|response| response.pool)
         .map_err(|error| storage_prepare_error(machine_id, error))
     }
 
@@ -533,10 +533,10 @@ fn storage_prepare_error(
             reason,
         },
         MachineCallError::Domain(MachineStoragePrepareDomainError::PreparationFailed {
-            message,
+            failure,
         }) => MachineStoragePrepareError::PreparationFailed {
             machine_id: machine_id.clone(),
-            message,
+            failure,
         },
     }
 }

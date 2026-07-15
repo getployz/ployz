@@ -18,7 +18,7 @@ use bollard::models::{
     ContainerCreateBody, ContainerSummary, ContainerSummaryHealthStatusEnum,
     ContainerSummaryNetworkSettings, ContainerSummaryStateEnum, EndpointSettings, HealthConfig,
     HealthStatusEnum, HostConfig, Mount, MountType, NetworkingConfig, RestartPolicy,
-    RestartPolicyNameEnum,
+    RestartPolicyNameEnum, VolumeCreateRequest,
 };
 use bollard::query_parameters::{
     CreateImageOptionsBuilder, InspectContainerOptions, ListContainersOptionsBuilder,
@@ -343,6 +343,12 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
             MachineImagePull::MeshSeed { .. } => None,
         };
         self.pull_image(&pull_reference, credential).await?;
+        ensure_local_bind_volumes(
+            docker,
+            &command.identity.namespace_id,
+            &command.runtime.volume_mounts,
+        )
+        .await?;
         // Every service container joins the already-converged endpoint
         // network; route state alone decides whether anything dials it.
         let response = docker
@@ -568,6 +574,42 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
                 message: error.to_string(),
             }),
         }
+    }
+}
+
+async fn ensure_local_bind_volumes(
+    docker: &Docker,
+    namespace_id: &ployz_core::ids::NamespaceId,
+    mounts: &[ployz_core::deploy::ServiceVolumeMount],
+) -> Result<(), MachineContainerRunnerError> {
+    for mount in mounts {
+        docker
+            .create_volume(local_bind_volume_request(namespace_id, &mount.volume_name))
+            .await
+            .map_err(|error| MachineContainerRunnerError::Create {
+                message: error.to_string(),
+            })?;
+    }
+    Ok(())
+}
+
+fn local_bind_volume_request(
+    namespace_id: &ployz_core::ids::NamespaceId,
+    volume_name: &ployz_core::deploy::VolumeName,
+) -> VolumeCreateRequest {
+    let storage_name = docker_volume_name(namespace_id, volume_name);
+    VolumeCreateRequest {
+        name: Some(storage_name.clone()),
+        driver: Some("local".to_owned()),
+        driver_opts: Some(HashMap::from([
+            (
+                "device".to_owned(),
+                format!("/var/lib/ployz/volumes/{storage_name}"),
+            ),
+            ("o".to_owned(), "bind".to_owned()),
+            ("type".to_owned(), "none".to_owned()),
+        ])),
+        ..Default::default()
     }
 }
 
@@ -1076,7 +1118,7 @@ mod tests {
         ImageReference, LinuxCapability, MemoryBytes, NanoCpus, PidsLimit, ServiceEnvironment,
         ServiceVolumeMount, StopGracePeriod, VolumeName,
     };
-    use ployz_core::ids::{NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
+    use ployz_core::ids::{NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
     use ployz_core::machine::runtime::{ManagedContainerIdentity, ManagedContainerKind};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1524,6 +1566,65 @@ mod tests {
             Some("ployz-n7-default-v13-postgres_data".to_owned())
         );
         assert_eq!(mount.target, Some("/var/lib/postgresql/data".to_owned()));
+    }
+
+    #[test]
+    fn provisioned_volume_uses_a_local_driver_bind_to_the_zfs_mountpoint() {
+        let namespace_id = NamespaceId::try_new("default").expect("namespace");
+        let volume_name = VolumeName::try_new("postgres_data").expect("volume");
+        let request = local_bind_volume_request(&namespace_id, &volume_name);
+
+        assert_eq!(
+            request.name.as_deref(),
+            Some("ployz-n7-default-v13-postgres_data")
+        );
+        assert_eq!(request.driver.as_deref(), Some("local"));
+        assert_eq!(
+            request.driver_opts,
+            Some(HashMap::from([
+                (
+                    "device".to_owned(),
+                    "/var/lib/ployz/volumes/ployz-n7-default-v13-postgres_data".to_owned(),
+                ),
+                ("o".to_owned(), "bind".to_owned()),
+                ("type".to_owned(), "none".to_owned()),
+            ]))
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_dataset_bind_fails_without_creating_the_source_path() {
+        let (runner, attempts, _socket_dir) = registry_runner_with_responses(vec![(
+            500,
+            r#"{"message":"bind source path does not exist"}"#.to_owned(),
+        )])
+        .await;
+        let namespace_id =
+            NamespaceId::try_new(format!("missing-{}", nuid::next())).expect("generated namespace");
+        let volume_name = VolumeName::try_new("data").expect("volume");
+        let request = local_bind_volume_request(&namespace_id, &volume_name);
+        let source = request
+            .driver_opts
+            .as_ref()
+            .and_then(|options| options.get("device"))
+            .expect("bind source");
+        assert!(!std::path::Path::new(source).exists());
+
+        let docker = runner.docker().await.expect("stub Docker client");
+        let error = ensure_local_bind_volumes(
+            docker,
+            &namespace_id,
+            &[ServiceVolumeMount {
+                volume_name,
+                target: ContainerMountPath::try_new("/data").expect("mount target"),
+            }],
+        )
+        .await
+        .expect_err("Docker rejects a missing bind source");
+
+        assert!(matches!(error, MachineContainerRunnerError::Create { .. }));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(!std::path::Path::new(source).exists());
     }
 
     #[test]

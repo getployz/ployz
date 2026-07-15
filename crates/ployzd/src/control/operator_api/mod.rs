@@ -4,6 +4,7 @@ mod core_replace;
 mod error_map;
 mod first_machine;
 mod machine_join;
+mod machine_storage_prepare;
 mod network_query;
 mod queries;
 pub mod service;
@@ -12,6 +13,7 @@ mod submit;
 pub use core_replace::core_replace_report;
 pub use first_machine::init_first_machine_activate;
 pub use machine_join::{machine_join_redeem, machine_join_report};
+pub use machine_storage_prepare::machine_storage_prepare;
 pub use network_query::NetworkQueryService;
 pub(crate) use queries::ControlHealthReaders;
 #[cfg(test)]
@@ -24,8 +26,8 @@ pub use queries::{
 pub use submit::owned_operation;
 pub use submit::{
     core_replace, credential_add, credential_remove, deploy_reserve, deploy_submit,
-    ingress_configure, machine_add, machine_drain, machine_resume, machine_storage_prepare,
-    machine_update, namespace_remove, network_repair, service_restart, volume_remove,
+    ingress_configure, machine_add, machine_drain, machine_resume, machine_update,
+    namespace_remove, network_repair, service_restart, volume_remove,
 };
 
 use crate::control::authorization::MachineCredentialMint;

@@ -480,6 +480,7 @@ pub struct MachineStoragePrepareReportRpcRequest {
 #[serde(deny_unknown_fields)]
 pub struct MachineStoragePrepareRpcOk {
     pub machine_id: MachineId,
+    pub pool: ployz_core::deploy::ZfsPoolName,
 }
 
 impl MachineRpcResponder for MachineStoragePrepareRpcOk {
@@ -504,7 +505,9 @@ impl MachineRpcResponder for MachineStoragePrepareReportRpcOk {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineStoragePrepareDomainError {
-    PreparationFailed { message: FailureMessage },
+    PreparationFailed {
+        failure: ployz_core::storage::StorageEffectFailure,
+    },
 }
 
 pub type MachineStoragePrepareRpcResponse =

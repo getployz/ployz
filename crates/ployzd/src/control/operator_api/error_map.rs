@@ -53,13 +53,15 @@ pub(super) fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
             namespace_id,
             owner,
         },
-        SubmitCommandError::MachineBusy { machine_id, owner } => SubmitFailure::Unavailable {
-            message: format!(
-                "machine {} substrate is busy with operation {}",
-                machine_id.as_str(),
-                owner.as_str()
-            ),
-        },
+        SubmitCommandError::MachineSubstrateBusy { machine_id, owner } => {
+            SubmitFailure::Unavailable {
+                message: format!(
+                    "Machine Substrate Lock for {} is held by operation {}",
+                    machine_id.as_str(),
+                    owner.as_str()
+                ),
+            }
+        }
         SubmitCommandError::ReservationNotFound {
             namespace_id: _,
             reservation_id: _,
@@ -171,7 +173,7 @@ pub(super) fn deploy_submit_error_from_submit_error(
         error @ SubmitCommandError::Clock { .. }
         | error @ SubmitCommandError::NamespaceBusy { .. }
         | error @ SubmitCommandError::IngressBusy { .. }
-        | error @ SubmitCommandError::MachineBusy { .. }
+        | error @ SubmitCommandError::MachineSubstrateBusy { .. }
         | error @ SubmitCommandError::Submit(SubmitOperationError::StoreStatus(_))
         | error @ SubmitCommandError::Submit(SubmitOperationError::DuplicateSequenceMismatch {
             ..

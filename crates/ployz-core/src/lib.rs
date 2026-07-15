@@ -21,4 +21,5 @@ pub mod operation;
 pub mod roles;
 pub mod security;
 pub(crate) mod state_key;
+pub mod storage;
 pub(crate) mod wire;

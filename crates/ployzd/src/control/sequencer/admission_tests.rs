@@ -9,6 +9,7 @@ use ployz_core::ingress::{
     AutomaticHostnameConfiguration, AutomaticHostnameLabel, IngressConfiguration,
     PloyzDnsTargetIntent,
 };
+use ployz_core::install::InstallArtifactVersion;
 use ployz_core::operation::RoutePort;
 use ployz_test_support::ids::{
     idempotency_key, machine_id, namespace_id, operation_id, service_id,
@@ -41,7 +42,7 @@ async fn update_and_storage_prepare_conflict_in_both_directions() {
         controllers
             .submit_machine_storage_prepare(storage_prepare_command("op_prepare"))
             .await,
-        Err(SubmitCommandError::MachineBusy { owner, .. })
+        Err(SubmitCommandError::MachineSubstrateBusy { owner, .. })
             if owner == operation_id("op_update")
     ));
 
@@ -56,7 +57,7 @@ async fn update_and_storage_prepare_conflict_in_both_directions() {
         controllers
             .submit_machine_update(machine_update_command("op_next_update"))
             .await,
-        Err(SubmitCommandError::MachineBusy { owner, .. })
+        Err(SubmitCommandError::MachineSubstrateBusy { owner, .. })
             if owner == operation_id("op_prepare")
     ));
 }
@@ -79,7 +80,7 @@ async fn machine_update_fence_rejects_a_different_owner() {
 
     assert!(matches!(
         error,
-        SubmitCommandError::MachineBusy { machine_id: busy_machine, owner }
+        SubmitCommandError::MachineSubstrateBusy { machine_id: busy_machine, owner }
             if busy_machine == machine_id("machine-a") && owner == operation_id("op_original")
     ));
 }
