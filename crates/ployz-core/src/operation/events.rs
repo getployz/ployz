@@ -24,7 +24,6 @@ use super::credential_grant::{
 };
 use super::deploy::{DeployEvent, DeployEvidence, DeployTransition};
 use super::ingress_configure::{IngressConfigureEvent, IngressConfigureTransition};
-use super::ingress_refresh::{IngressRefreshEvent, IngressRefreshTransition};
 use super::machine_add::MachineAddEvent;
 use super::machine_lifecycle::{MachineLifecycleEvent, MachineLifecycleTransition};
 use super::machine_update::{MachineUpdateEvent, MachineUpdateTransition};
@@ -72,7 +71,6 @@ pub enum OperationSubject {
         subject: super::ManagedDnsReconcileSubject,
     },
     IngressConfigure,
-    IngressRefresh,
     NamespaceRemove {
         namespace_id: NamespaceId,
     },
@@ -328,17 +326,6 @@ pub enum OperationEvent {
         subject: super::ManagedDnsReconcileSubject,
         failure: super::ManagedDnsReconcileFailure,
     },
-    IngressRefreshSubmitted {
-        operation_id: OperationId,
-    },
-    IngressRefreshCompleted {
-        operation_id: OperationId,
-        evidence: super::IngressRefreshEvidence,
-    },
-    IngressRefreshFailed {
-        operation_id: OperationId,
-        failure: super::IngressRefreshFailure,
-    },
     IngressConfigureSubmitted {
         operation_id: OperationId,
         configuration: IngressConfiguration,
@@ -453,9 +440,6 @@ impl OperationEvent {
             | Self::ManagedDnsReconcileSubmitted { operation_id, .. }
             | Self::ManagedDnsReconcileCompleted { operation_id, .. }
             | Self::ManagedDnsReconcileFailed { operation_id, .. }
-            | Self::IngressRefreshSubmitted { operation_id }
-            | Self::IngressRefreshCompleted { operation_id, .. }
-            | Self::IngressRefreshFailed { operation_id, .. }
             | Self::IngressConfigureSubmitted { operation_id, .. }
             | Self::IngressConfigureCompleted { operation_id }
             | Self::IngressConfigureFailed { operation_id, .. }
@@ -538,9 +522,6 @@ impl OperationEvent {
             | Self::ManagedDnsReconcileSubmitted { .. }
             | Self::ManagedDnsReconcileCompleted { .. }
             | Self::ManagedDnsReconcileFailed { .. }
-            | Self::IngressRefreshSubmitted { .. }
-            | Self::IngressRefreshCompleted { .. }
-            | Self::IngressRefreshFailed { .. }
             | Self::IngressConfigureSubmitted { .. }
             | Self::IngressConfigureCompleted { .. }
             | Self::IngressConfigureFailed { .. }
@@ -665,9 +646,6 @@ impl OperationEvent {
             | Self::ManagedDnsReconcileSubmitted { .. }
             | Self::ManagedDnsReconcileCompleted { .. }
             | Self::ManagedDnsReconcileFailed { .. }
-            | Self::IngressRefreshSubmitted { .. }
-            | Self::IngressRefreshCompleted { .. }
-            | Self::IngressRefreshFailed { .. }
             | Self::IngressConfigureSubmitted { .. }
             | Self::IngressConfigureCompleted { .. }
             | Self::IngressConfigureFailed { .. }
@@ -699,7 +677,6 @@ pub enum OperationSubjectRef {
     CredentialGrant,
     ManagedDnsReconcile(super::ManagedDnsReconcileSubject),
     IngressConfigure,
-    IngressRefresh,
 }
 
 pub(super) enum ClassifiedOperationEvent {
@@ -747,10 +724,6 @@ pub(super) enum ClassifiedOperationEvent {
         operation_id: OperationId,
         event: IngressConfigureEvent,
     },
-    IngressRefresh {
-        operation_id: OperationId,
-        event: IngressRefreshEvent,
-    },
     NamespaceRemove {
         operation_id: OperationId,
         event: NamespaceRemoveEvent,
@@ -775,7 +748,6 @@ impl ClassifiedOperationEvent {
             | Self::ServiceRestart { operation_id, .. }
             | Self::ManagedDnsReconcile { operation_id, .. }
             | Self::IngressConfigure { operation_id, .. }
-            | Self::IngressRefresh { operation_id, .. }
             | Self::NamespaceRemove { operation_id, .. } => operation_id,
             Self::VolumeRemove { operation_id, .. } => operation_id,
         }
@@ -1244,28 +1216,6 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                     transition: ManagedDnsReconcileTransition::Failed { failure },
                 },
             },
-            OperationEvent::IngressRefreshSubmitted { operation_id } => Self::IngressRefresh {
-                operation_id,
-                event: IngressRefreshEvent::Submitted,
-            },
-            OperationEvent::IngressRefreshCompleted {
-                operation_id,
-                evidence,
-            } => Self::IngressRefresh {
-                operation_id,
-                event: IngressRefreshEvent::Transition(IngressRefreshTransition::Completed {
-                    evidence,
-                }),
-            },
-            OperationEvent::IngressRefreshFailed {
-                operation_id,
-                failure,
-            } => Self::IngressRefresh {
-                operation_id,
-                event: IngressRefreshEvent::Transition(IngressRefreshTransition::Failed {
-                    failure,
-                }),
-            },
             OperationEvent::IngressConfigureSubmitted {
                 operation_id,
                 configuration,
@@ -1410,10 +1360,6 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 OperationKind::ManagedDnsReconcile => Self::ManagedDnsReconcile {
                     operation_id,
                     event: ManagedDnsReconcileEvent::UnsupportedCancellation,
-                },
-                OperationKind::IngressRefresh => Self::IngressRefresh {
-                    operation_id,
-                    event: IngressRefreshEvent::UnsupportedCancellation,
                 },
                 OperationKind::IngressConfigure => Self::IngressConfigure {
                     operation_id,

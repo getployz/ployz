@@ -14,7 +14,8 @@ use crate::service_catalog::{DaemonServiceCatalog, gateway_role_service, machine
 use ployz_core::certificate::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
-    CertificateArtifactPushRequest, CertificateArtifactPushResponse,
+    CertificateArtifactPushRequest, CertificateArtifactPushResponse, CertificateArtifactStatusOk,
+    CertificateArtifactStatusRequest, CertificateArtifactStatusResponse,
     CertificateChallengeApplicationStatus, CertificateChallengeStatusRequest,
     CertificateChallengeStatusResponse, CustomCertBundle, GatewayCertificateRpcError,
     custom_bundle_digest,
@@ -51,6 +52,11 @@ fn gateway_certificate_catalog_pins_names_subjects_and_execution() {
             .map(|endpoint| (endpoint.name, endpoint.subject.as_str(), endpoint.execution,))
             .collect::<Vec<_>>(),
         vec![
+            (
+                "machine.certificate.artifact.status",
+                "plz.v1.rpc.machine.query.machine_7.certificate.artifact.status",
+                EndpointExecution::MachineRpc,
+            ),
             (
                 "machine.certificate.artifact.push",
                 "plz.v1.rpc.machine.command.machine_7.certificate.artifact.push",
@@ -148,6 +154,23 @@ fn repeated_artifact_push_is_idempotent() {
     store.push_at(&request, NOW).expect("initial push");
 
     assert_eq!(store.push_at(&request, NOW), Ok(()));
+}
+
+#[test]
+fn artifact_status_treats_mismatched_local_material_as_missing() {
+    let state = tempfile::tempdir().expect("state directory");
+    let request = artifact_request("app.example.com", Path::new("/core/owned.bundle"));
+    let store = GatewayCertificateStore::new(state.path().to_path_buf());
+    store.push_at(&request, NOW).expect("initial push");
+    let path = store
+        .artifact_path(request.bundle.active_cert())
+        .expect("artifact path");
+    std::fs::write(path, b"mismatched material").expect("replace material");
+
+    assert_eq!(
+        store.missing_at(&[request.bundle.active_cert().clone()], NOW),
+        Ok(vec![request.bundle.active_cert().cert_id.clone()])
+    );
 }
 
 #[test]
@@ -418,6 +441,105 @@ async fn artifact_push_endpoint_returns_typed_machine_ack() {
 }
 
 #[tokio::test]
+async fn artifact_status_reports_only_missing_desired_material() {
+    let nats =
+        ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_7")]).await;
+    let state = tempfile::tempdir().expect("state directory");
+    let store = GatewayCertificateStore::new(state.path().to_path_buf());
+    let request = artifact_request("app.example.com", Path::new("/core/owned.bundle"));
+    let desired = request.bundle.active_cert().clone();
+    let service = start_gateway_certificate_service(
+        nats.machine_client(&machine_id("machine_7")).await,
+        machine_id("machine_7"),
+        store.clone(),
+        PingoraRouteRegistry::new(),
+    )
+    .await
+    .expect("gateway certificate service");
+
+    assert_eq!(
+        artifact_status(&nats.controller, vec![desired.clone()]).await,
+        CertificateArtifactStatusResponse::Ok(CertificateArtifactStatusOk {
+            machine_id: machine_id("machine_7"),
+            missing_cert_ids: vec![desired.cert_id.clone()],
+        })
+    );
+
+    store
+        .push_at(&request, NOW)
+        .expect("store desired artifact");
+    assert_eq!(
+        artifact_status(&nats.controller, vec![desired]).await,
+        CertificateArtifactStatusResponse::Ok(CertificateArtifactStatusOk {
+            machine_id: machine_id("machine_7"),
+            missing_cert_ids: Vec::new(),
+        })
+    );
+    service.shutdown().await.expect("service shutdown");
+}
+
+#[tokio::test]
+async fn artifact_status_rejects_duplicate_desired_certificate_ids() {
+    let nats =
+        ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_7")]).await;
+    let state = tempfile::tempdir().expect("state directory");
+    let desired = artifact_request("app.example.com", Path::new("/core/owned.bundle"))
+        .bundle
+        .active_cert()
+        .clone();
+    let service = start_gateway_certificate_service(
+        nats.machine_client(&machine_id("machine_7")).await,
+        machine_id("machine_7"),
+        GatewayCertificateStore::new(state.path().to_path_buf()),
+        PingoraRouteRegistry::new(),
+    )
+    .await
+    .expect("gateway certificate service");
+
+    assert!(matches!(
+        artifact_status(&nats.controller, vec![desired.clone(), desired]).await,
+        CertificateArtifactStatusResponse::DomainError {
+            machine_id: response_machine_id,
+            error: GatewayCertificateRpcError::InvalidRequest { .. },
+        } if response_machine_id == machine_id("machine_7")
+    ));
+    service.shutdown().await.expect("service shutdown");
+}
+
+#[tokio::test]
+async fn artifact_status_rejects_unusable_desired_certificate() {
+    let nats =
+        ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_7")]).await;
+    let state = tempfile::tempdir().expect("state directory");
+    let mut desired = artifact_request("app.example.com", Path::new("/core/owned.bundle"))
+        .bundle
+        .active_cert()
+        .clone();
+    desired.validity = CertValidityWindow::try_new(
+        CertValidAt::try_new(1).expect("not before"),
+        CertValidAt::try_new(2).expect("not after"),
+    )
+    .expect("validity window");
+    let service = start_gateway_certificate_service(
+        nats.machine_client(&machine_id("machine_7")).await,
+        machine_id("machine_7"),
+        GatewayCertificateStore::new(state.path().to_path_buf()),
+        PingoraRouteRegistry::new(),
+    )
+    .await
+    .expect("gateway certificate service");
+
+    assert!(matches!(
+        artifact_status(&nats.controller, vec![desired]).await,
+        CertificateArtifactStatusResponse::DomainError {
+            machine_id: response_machine_id,
+            error: GatewayCertificateRpcError::InvalidRequest { .. },
+        } if response_machine_id == machine_id("machine_7")
+    ));
+    service.shutdown().await.expect("service shutdown");
+}
+
+#[tokio::test]
 async fn gateway_status_endpoint_reads_fresh_process_state() {
     let nats =
         ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_7")]).await;
@@ -598,6 +720,23 @@ async fn challenge_status(
         panic!("challenge status returns testimony")
     };
     ok.application
+}
+
+async fn artifact_status(
+    client: &async_nats::Client,
+    desired: Vec<ActiveCertState>,
+) -> CertificateArtifactStatusResponse {
+    request_json(
+        client,
+        machine_service(
+            &machine_id("machine_7"),
+            MachineServiceEndpoint::CertificateArtifactStatus,
+        ),
+        &CertificateArtifactStatusRequest { desired },
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("artifact status response")
 }
 
 fn artifact_request(hostname: &str, core_path: &Path) -> CertificateArtifactPushRequest {

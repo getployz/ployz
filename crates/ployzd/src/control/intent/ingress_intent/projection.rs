@@ -109,7 +109,6 @@ mod tests {
     fn projection_record(revision: u64) -> ProjectionEvidenceRecord {
         ProjectionEvidenceRecord {
             projection: projection(revision),
-            candidate_outcomes: Vec::new(),
             publishable_gateway_ids: Vec::new(),
         }
     }
@@ -133,5 +132,22 @@ mod tests {
                 current: Some(projection(1).identity())
             }
         );
+    }
+
+    #[tokio::test]
+    async fn projection_compare_and_replace_skips_identical_record() {
+        let store = IngressProjectionStore::new(CoreStore::open_in_memory().await.expect("store"));
+        let record = projection_record(1);
+        store
+            .compare_and_replace(None, record.clone())
+            .await
+            .expect("initial write");
+
+        let outcome = store
+            .compare_and_replace(Some(record.projection.identity()), record)
+            .await
+            .expect("compare");
+
+        assert_eq!(outcome, IngressProjectionWrite::Unchanged);
     }
 }

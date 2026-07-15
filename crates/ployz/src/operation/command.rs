@@ -307,7 +307,6 @@ const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::ServiceRestart => "service-restart",
         OperationKind::ManagedDnsReconcile => "managed-dns-reconcile",
         OperationKind::IngressConfigure => "ingress-configure",
-        OperationKind::IngressRefresh => "ingress-refresh",
         OperationKind::NamespaceRemove => "namespace-remove",
         OperationKind::VolumeRemove => "volume-remove",
     }
@@ -399,7 +398,6 @@ fn operation_subject(status: &OperationStatus) -> String {
                 format!("Ployz DNS target {} lease renewal", lease.as_str())
             }
         },
-        OperationStatus::IngressRefresh { .. } => "cluster ingress endpoints".to_owned(),
         OperationStatus::IngressConfigure { .. } => "cluster ingress configuration".to_owned(),
     }
 }
@@ -447,7 +445,6 @@ fn operation_state(status: &OperationStatus) -> String {
         OperationStatus::ManagedDnsReconcile { state, .. } => {
             managed_dns_reconcile_state(state).to_owned()
         }
-        OperationStatus::IngressRefresh { state, .. } => ingress_refresh_state(state).to_owned(),
         OperationStatus::IngressConfigure { state, .. } => {
             ingress_configure_state(state).to_owned()
         }
@@ -463,16 +460,6 @@ const fn ingress_configure_state(
         ployz_sdk_types::IngressConfigureOperationState::Accepted => "accepted",
         ployz_sdk_types::IngressConfigureOperationState::Completed => "completed",
         ployz_sdk_types::IngressConfigureOperationState::Failed { .. } => "failed",
-    }
-}
-
-const fn ingress_refresh_state(
-    state: &ployz_sdk_types::IngressRefreshOperationState,
-) -> &'static str {
-    match state {
-        ployz_sdk_types::IngressRefreshOperationState::Accepted => "accepted",
-        ployz_sdk_types::IngressRefreshOperationState::Completed { .. } => "completed",
-        ployz_sdk_types::IngressRefreshOperationState::Failed { .. } => "failed",
     }
 }
 
@@ -588,10 +575,6 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
             "failure {}",
             provision_failure_detail(failure.failure(), None)
         )),
-        OperationStatus::IngressRefresh {
-            state: ployz_sdk_types::IngressRefreshOperationState::Failed { failure },
-            ..
-        } => Some(format!("failure {}", ingress_refresh_failure(failure))),
         OperationStatus::IngressConfigure {
             state: ployz_sdk_types::IngressConfigureOperationState::Failed { failure },
             ..
@@ -606,7 +589,6 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
         | OperationStatus::NetworkRepair { .. }
         | OperationStatus::ServiceRestart { .. }
         | OperationStatus::ManagedDnsReconcile { .. }
-        | OperationStatus::IngressRefresh { .. }
         | OperationStatus::IngressConfigure { .. }
         | OperationStatus::NamespaceRemove { .. }
         | OperationStatus::VolumeRemove { .. } => None,
@@ -619,16 +601,6 @@ fn ingress_configure_failure(failure: &ployz_sdk_types::IngressConfigureFailure)
         | ployz_sdk_types::IngressConfigureFailure::IntentStoreFailed { message } => {
             message.as_str()
         }
-    }
-}
-
-fn ingress_refresh_failure(failure: &ployz_sdk_types::IngressRefreshFailure) -> &str {
-    match failure {
-        ployz_sdk_types::IngressRefreshFailure::IntentUnavailable { message }
-        | ployz_sdk_types::IngressRefreshFailure::GatherFailed { message, .. }
-        | ployz_sdk_types::IngressRefreshFailure::StorageFailed { message, .. }
-        | ployz_sdk_types::IngressRefreshFailure::ConcurrentWriter { message, .. }
-        | ployz_sdk_types::IngressRefreshFailure::Interrupted { message } => message.as_str(),
     }
 }
 
@@ -834,9 +806,6 @@ impl DeployEventRenderContext {
             | OperationEvent::ManagedDnsReconcileSubmitted { .. }
             | OperationEvent::ManagedDnsReconcileCompleted { .. }
             | OperationEvent::ManagedDnsReconcileFailed { .. }
-            | OperationEvent::IngressRefreshSubmitted { .. }
-            | OperationEvent::IngressRefreshCompleted { .. }
-            | OperationEvent::IngressRefreshFailed { .. }
             | OperationEvent::IngressConfigureSubmitted { .. }
             | OperationEvent::IngressConfigureCompleted { .. }
             | OperationEvent::IngressConfigureFailed { .. }
@@ -958,9 +927,6 @@ fn render_replayed_event_text(
         | OperationEvent::ManagedDnsReconcileSubmitted { .. }
         | OperationEvent::ManagedDnsReconcileCompleted { .. }
         | OperationEvent::ManagedDnsReconcileFailed { .. }
-        | OperationEvent::IngressRefreshSubmitted { .. }
-        | OperationEvent::IngressRefreshCompleted { .. }
-        | OperationEvent::IngressRefreshFailed { .. }
         | OperationEvent::IngressConfigureSubmitted { .. }
         | OperationEvent::IngressConfigureCompleted { .. }
         | OperationEvent::IngressConfigureFailed { .. }
@@ -1067,9 +1033,6 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::ManagedDnsReconcileSubmitted { .. } => "managed.dns.reconcile.submitted",
         OperationEvent::ManagedDnsReconcileCompleted { .. } => "managed.dns.reconcile.completed",
         OperationEvent::ManagedDnsReconcileFailed { .. } => "managed.dns.reconcile.failed",
-        OperationEvent::IngressRefreshSubmitted { .. } => "ingress.refresh.submitted",
-        OperationEvent::IngressRefreshCompleted { .. } => "ingress.refresh.completed",
-        OperationEvent::IngressRefreshFailed { .. } => "ingress.refresh.failed",
         OperationEvent::IngressConfigureSubmitted { .. } => "ingress.configure.submitted",
         OperationEvent::IngressConfigureCompleted { .. } => "ingress.configure.completed",
         OperationEvent::IngressConfigureFailed { .. } => "ingress.configure.failed",

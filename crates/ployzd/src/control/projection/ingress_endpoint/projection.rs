@@ -1,19 +1,14 @@
 use std::net::IpAddr;
 
+use super::{CandidateOutcome, CandidatePublication, GatewayOutcome, ProjectionEvidenceRecord};
 use ployz_core::ingress::{
     IngressEndpointProjection, IngressEndpointProjectionState, IngressEndpointSet,
     IngressEndpointUnavailableReason,
 };
-use ployz_core::operation::{
-    IngressRefreshCandidateEvidence, IngressRefreshCandidatePublication,
-    IngressRefreshGatewayOutcome,
-};
-
-use super::ProjectionEvidenceRecord;
 
 pub(super) fn project_refresh(
     previous: &ProjectionEvidenceRecord,
-    mut outcomes: Vec<IngressRefreshCandidateEvidence>,
+    mut outcomes: Vec<CandidateOutcome>,
 ) -> ProjectionEvidenceRecord {
     outcomes.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
     let next_state = if outcomes.is_empty() {
@@ -29,8 +24,8 @@ pub(super) fn project_refresh(
         let addresses = outcomes
             .iter()
             .flat_map(|outcome| match &outcome.publication {
-                IngressRefreshCandidatePublication::Published { addresses } => addresses.as_slice(),
-                IngressRefreshCandidatePublication::Excluded { .. } => &[],
+                CandidatePublication::Published { addresses } => addresses.as_slice(),
+                CandidatePublication::Excluded { .. } => &[],
             })
             .copied()
             .collect::<Vec<_>>();
@@ -40,12 +35,7 @@ pub(super) fn project_refresh(
         previous.projection.revision + u64::from(next_state != previous.projection.state);
     let publishable_gateway_ids = outcomes
         .iter()
-        .filter(|outcome| {
-            matches!(
-                outcome.publication,
-                IngressRefreshCandidatePublication::Published { .. }
-            )
-        })
+        .filter(|outcome| matches!(outcome.publication, CandidatePublication::Published { .. }))
         .map(|outcome| outcome.machine_id.clone())
         .collect();
     ProjectionEvidenceRecord {
@@ -54,7 +44,6 @@ pub(super) fn project_refresh(
             revision,
             state: next_state,
         },
-        candidate_outcomes: outcomes,
         publishable_gateway_ids,
     }
 }
@@ -93,42 +82,36 @@ fn endpoint_state(addresses: Vec<IpAddr>) -> IngressEndpointProjectionState {
     }
 }
 
-const fn gateway_is_valid_reply(outcome: IngressRefreshGatewayOutcome) -> bool {
+const fn gateway_is_valid_reply(outcome: GatewayOutcome) -> bool {
     matches!(
         outcome,
-        IngressRefreshGatewayOutcome::Current
-            | IngressRefreshGatewayOutcome::LastKnownGood
-            | IngressRefreshGatewayOutcome::Unavailable
+        GatewayOutcome::Current | GatewayOutcome::LastKnownGood | GatewayOutcome::Unavailable
     )
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::{ExclusionReason, FactsOutcome};
     use super::*;
     use ployz_core::ids::MachineId;
     use ployz_core::intent::recovery::ControlPlaneEpoch;
-    use ployz_core::operation::{IngressRefreshExclusionReason, IngressRefreshFactsOutcome};
 
     fn pending() -> ProjectionEvidenceRecord {
         ProjectionEvidenceRecord::pending(ControlPlaneEpoch::initial())
     }
 
-    fn outcome(
-        machine: &str,
-        gateway: IngressRefreshGatewayOutcome,
-        addresses: &[&str],
-    ) -> IngressRefreshCandidateEvidence {
+    fn outcome(machine: &str, gateway: GatewayOutcome, addresses: &[&str]) -> CandidateOutcome {
         let addresses = addresses
             .iter()
             .map(|address| address.parse().expect("address"))
             .collect::<Vec<_>>();
-        IngressRefreshCandidateEvidence {
+        CandidateOutcome {
             machine_id: MachineId::try_new(machine).expect("machine id"),
             gateway,
-            facts: IngressRefreshFactsOutcome::Responded {
+            facts: FactsOutcome::Responded {
                 public_control_endpoints: addresses.clone(),
             },
-            publication: IngressRefreshCandidatePublication::Published { addresses },
+            publication: CandidatePublication::Published { addresses },
         }
     }
 
@@ -148,17 +131,13 @@ mod tests {
         let projected = project_refresh(
             &pending(),
             vec![
-                outcome(
-                    "machine_a",
-                    IngressRefreshGatewayOutcome::Current,
-                    &["8.8.8.8"],
-                ),
-                IngressRefreshCandidateEvidence {
+                outcome("machine_a", GatewayOutcome::Current, &["8.8.8.8"]),
+                CandidateOutcome {
                     machine_id: MachineId::try_new("machine_b").expect("machine id"),
-                    gateway: IngressRefreshGatewayOutcome::TimedOut,
-                    facts: IngressRefreshFactsOutcome::TimedOut,
-                    publication: IngressRefreshCandidatePublication::Excluded {
-                        reason: IngressRefreshExclusionReason::GatewayTestimonyFailed,
+                    gateway: GatewayOutcome::TimedOut,
+                    facts: FactsOutcome::TimedOut,
+                    publication: CandidatePublication::Excluded {
+                        reason: ExclusionReason::GatewayTestimonyFailed,
                     },
                 },
             ],
@@ -177,20 +156,16 @@ mod tests {
     fn total_silence_retains_current_complete_set() {
         let current = project_refresh(
             &pending(),
-            vec![outcome(
-                "machine_a",
-                IngressRefreshGatewayOutcome::Current,
-                &["1.1.1.1"],
-            )],
+            vec![outcome("machine_a", GatewayOutcome::Current, &["1.1.1.1"])],
         );
         let retained = project_refresh(
             &current,
-            vec![IngressRefreshCandidateEvidence {
+            vec![CandidateOutcome {
                 machine_id: MachineId::try_new("machine_a").expect("machine id"),
-                gateway: IngressRefreshGatewayOutcome::TimedOut,
-                facts: IngressRefreshFactsOutcome::TimedOut,
-                publication: IngressRefreshCandidatePublication::Excluded {
-                    reason: IngressRefreshExclusionReason::GatewayTestimonyFailed,
+                gateway: GatewayOutcome::TimedOut,
+                facts: FactsOutcome::TimedOut,
+                publication: CandidatePublication::Excluded {
+                    reason: ExclusionReason::GatewayTestimonyFailed,
                 },
             }],
         );
@@ -208,12 +183,12 @@ mod tests {
     fn valid_gateway_without_facts_is_decisive_empty_union() {
         let projected = project_refresh(
             &pending(),
-            vec![IngressRefreshCandidateEvidence {
+            vec![CandidateOutcome {
                 machine_id: MachineId::try_new("machine_a").expect("machine id"),
-                gateway: IngressRefreshGatewayOutcome::Current,
-                facts: IngressRefreshFactsOutcome::TimedOut,
-                publication: IngressRefreshCandidatePublication::Excluded {
-                    reason: IngressRefreshExclusionReason::FactsTestimonyFailed,
+                gateway: GatewayOutcome::Current,
+                facts: FactsOutcome::TimedOut,
+                publication: CandidatePublication::Excluded {
+                    reason: ExclusionReason::FactsTestimonyFailed,
                 },
             }],
         );
@@ -229,20 +204,12 @@ mod tests {
     fn identical_refresh_keeps_revision_stable() {
         let first = project_refresh(
             &pending(),
-            vec![outcome(
-                "machine_a",
-                IngressRefreshGatewayOutcome::Current,
-                &["1.1.1.1"],
-            )],
+            vec![outcome("machine_a", GatewayOutcome::Current, &["1.1.1.1"])],
         );
         let repeated = project_refresh(
             &first,
-            vec![outcome(
-                "machine_a",
-                IngressRefreshGatewayOutcome::Current,
-                &["1.1.1.1"],
-            )],
+            vec![outcome("machine_a", GatewayOutcome::Current, &["1.1.1.1"])],
         );
-        assert_eq!(repeated.projection.revision, first.projection.revision);
+        assert_eq!(repeated, first);
     }
 }

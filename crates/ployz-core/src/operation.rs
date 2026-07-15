@@ -29,7 +29,6 @@ mod credential_grant;
 mod deploy;
 mod events;
 mod ingress_configure;
-mod ingress_refresh;
 mod machine_add;
 mod machine_lifecycle;
 mod machine_update;
@@ -64,12 +63,6 @@ pub use deploy::{
 pub use events::{OperationEvent, OperationSubject, OperationSubjectRef};
 pub use ingress_configure::{
     IngressConfigureFailure, IngressConfigureOperationState, IngressConfigureTransition,
-};
-pub use ingress_refresh::{
-    IngressRefreshCandidateEvidence, IngressRefreshCandidatePublication, IngressRefreshEvidence,
-    IngressRefreshExclusionReason, IngressRefreshFactsOutcome, IngressRefreshFailure,
-    IngressRefreshGatewayOutcome, IngressRefreshInvalidationEvidence, IngressRefreshOperationState,
-    IngressRefreshTransition,
 };
 pub use machine_add::{MachineAddOperationState, MachineAddOperationStateName};
 pub use machine_lifecycle::{
@@ -128,7 +121,6 @@ pub enum OperationKind {
     ServiceRestart,
     ManagedDnsReconcile,
     IngressConfigure,
-    IngressRefresh,
     NamespaceRemove,
     VolumeRemove,
 }
@@ -217,11 +209,6 @@ pub enum OperationStatus {
         id: OperationId,
         configuration: crate::ingress::IngressConfiguration,
         state: IngressConfigureOperationState,
-        last_event_sequence: EventSequence,
-    },
-    IngressRefresh {
-        id: OperationId,
-        state: IngressRefreshOperationState,
         last_event_sequence: EventSequence,
     },
     NamespaceRemove {
@@ -440,15 +427,6 @@ impl OperationStatus {
     }
 
     #[must_use]
-    pub fn ingress_refresh_accepted(id: OperationId, event_sequence: EventSequence) -> Self {
-        Self::IngressRefresh {
-            id,
-            state: IngressRefreshOperationState::Accepted,
-            last_event_sequence: event_sequence,
-        }
-    }
-
-    #[must_use]
     pub fn ingress_configure_accepted(
         id: OperationId,
         configuration: crate::ingress::IngressConfiguration,
@@ -476,7 +454,6 @@ impl OperationStatus {
             Self::ServiceRestart { state, .. } => state.is_terminal(),
             Self::ManagedDnsReconcile { state, .. } => state.is_terminal(),
             Self::IngressConfigure { state, .. } => state.is_terminal(),
-            Self::IngressRefresh { state, .. } => state.is_terminal(),
             Self::NamespaceRemove { state, .. } => state.is_terminal(),
             Self::VolumeRemove { state, .. } => state.is_terminal(),
         }
@@ -536,10 +513,6 @@ impl OperationStatus {
             ),
             Self::IngressConfigure { state, .. } => OperationOutcome::from_terminal(
                 matches!(state, IngressConfigureOperationState::Completed),
-                false,
-            ),
-            Self::IngressRefresh { state, .. } => OperationOutcome::from_terminal(
-                matches!(state, IngressRefreshOperationState::Completed { .. }),
                 false,
             ),
             Self::NamespaceRemove { state, .. } => OperationOutcome::from_terminal(

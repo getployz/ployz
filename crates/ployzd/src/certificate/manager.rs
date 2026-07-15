@@ -171,6 +171,7 @@ impl CertificateManager {
 
     pub async fn ensure_ployz_wildcard(
         &self,
+        owner_operation_id: &OperationId,
         targets: &[GatewayCertificateTarget],
     ) -> Result<ActiveCertState, CertificateProvisionFailure> {
         let certificate = self
@@ -181,7 +182,13 @@ impl CertificateManager {
             .ok_or_else(|| CertificateProvisionFailure::AcmeValidation {
                 message: failure_message("Ployz automatic wildcard certificate is not active"),
             })?;
-        self.synchronize(certificate, targets).await
+        validate_custom_certificate_for_activation(&certificate.active, (self.now_seconds)())
+            .map_err(acme_validation_failure)?;
+        let bundle = load_custom_certificate(&self.state_dir, &certificate.active)
+            .map_err(acme_validation_failure)?;
+        self.push_bundle(owner_operation_id, targets, &bundle)
+            .await?;
+        Ok(certificate.active)
     }
 
     pub(crate) async fn renew(
@@ -189,9 +196,11 @@ impl CertificateManager {
         certificate: ActiveCertificateMetadata,
         targets: &[GatewayCertificateTarget],
     ) -> Result<ActiveCertState, CertificateProvisionFailure> {
-        if matches!(certificate.owner, CertificateOwner::PloyzAutomaticNamespace) {
-            return self.synchronize(certificate, targets).await;
-        }
+        let CertificateOwner::RouteBinding { .. } = &certificate.owner else {
+            return Err(CertificateProvisionFailure::AcmeValidation {
+                message: failure_message("only exact route certificates can be renewed"),
+            });
+        };
         let hostname = certificate.active.hostname.clone();
         let owner = certificate.owner.clone();
         self.spawn_issue(
@@ -259,24 +268,22 @@ impl CertificateManager {
         .await
     }
 
-    pub async fn record_renewal_failure(
+    pub(crate) async fn artifact_status(
         &self,
-        active: ActiveCertState,
-        failure: CertificateProvisionFailure,
-    ) -> Result<(), CertificateProvisionFailure> {
-        let operation_id = cert_operation_id()?;
-        self.submit_operation(&operation_id, active.cert_id.clone())
-            .await?;
-        let recorded = self
-            .record_failure(&operation_id, &active.cert_id, failure, Some(&active))
-            .await;
-        if matches!(
-            &recorded,
-            CertificateProvisionFailure::OperationEvidenceWrite { .. }
-        ) {
-            return Err(recorded);
-        }
-        Ok(())
+        certificates: &[ActiveCertificateMetadata],
+        targets: &[GatewayCertificateTarget],
+    ) -> Vec<(MachineId, Result<Vec<CertId>, FailureMessage>)> {
+        let desired = certificates
+            .iter()
+            .map(|certificate| certificate.active.clone())
+            .collect::<Vec<_>>();
+        let machine_ids = targets
+            .iter()
+            .map(|target| target.machine_id.clone())
+            .collect::<Vec<_>>();
+        self.gateway_client
+            .artifact_status(&machine_ids, &desired)
+            .await
     }
 
     pub(crate) const fn store(&self) -> &CertificateIntentStore {
@@ -285,6 +292,10 @@ impl CertificateManager {
 
     pub(crate) const fn repository(&self) -> &OperationRepository {
         &self.repository
+    }
+
+    pub(crate) const fn nats_client(&self) -> &async_nats::Client {
+        &self.client
     }
 
     async fn spawn_issue(

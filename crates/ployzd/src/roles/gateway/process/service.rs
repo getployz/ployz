@@ -16,11 +16,13 @@ use crate::service_catalog::{gateway_role_service, machine_endpoint_spec};
 use ployz_core::certificate::{
     CertificateArtifactPushOk, CertificateArtifactPushRequest, CertificateArtifactPushResponse,
     CertificateArtifactRemoveOk, CertificateArtifactRemoveRequest,
-    CertificateArtifactRemoveResponse, CertificateChallengeApplyRequest,
-    CertificateChallengeApplyResponse, CertificateChallengeMutationOk,
-    CertificateChallengeRemoveRequest, CertificateChallengeRemoveResponse,
-    CertificateChallengeStatusOk, CertificateChallengeStatusRequest,
-    CertificateChallengeStatusResponse, GatewayCertificateRpcError,
+    CertificateArtifactRemoveResponse, CertificateArtifactStatusOk,
+    CertificateArtifactStatusRequest, CertificateArtifactStatusResponse,
+    CertificateChallengeApplyRequest, CertificateChallengeApplyResponse,
+    CertificateChallengeMutationOk, CertificateChallengeRemoveRequest,
+    CertificateChallengeRemoveResponse, CertificateChallengeStatusOk,
+    CertificateChallengeStatusRequest, CertificateChallengeStatusResponse,
+    GatewayCertificateRpcError,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::machine::{GatewayProcessHealth, GatewayServingStatus, GatewayStatusObservation};
@@ -61,6 +63,23 @@ pub(super) async fn start_gateway_role_service(
     listen_addr: SocketAddr,
 ) -> Result<RunningNatsService, NatsServiceRuntimeError> {
     let mut service = start_nats_service(client, &gateway_role_service(&machine_id)).await?;
+    let status_spec = machine_endpoint_spec(
+        &machine_id,
+        MachineServiceEndpoint::CertificateArtifactStatus,
+    );
+    let status_machine_id = machine_id.clone();
+    let status_store = certificate_store.clone();
+    if let Err(error) = service
+        .bind_endpoint(&status_spec, move |request| {
+            let machine_id = status_machine_id.clone();
+            let store = status_store.clone();
+            async move { handle_certificate_artifact_status(machine_id, store, request) }
+        })
+        .await
+    {
+        let _ = service.shutdown().await;
+        return Err(error);
+    }
     let artifact_spec =
         machine_endpoint_spec(&machine_id, MachineServiceEndpoint::CertificateArtifactPush);
     let artifact_machine_id = machine_id.clone();
@@ -239,7 +258,8 @@ fn handle_certificate_artifact_push(
                         message: failure_message(error.to_string()),
                     }
                 }
-                GatewayCertificateStoreError::SizeMismatch { .. }
+                GatewayCertificateStoreError::DuplicateDesiredCertificate { .. }
+                | GatewayCertificateStoreError::SizeMismatch { .. }
                 | GatewayCertificateStoreError::DigestMismatch { .. }
                 | GatewayCertificateStoreError::InvalidMaterial { .. }
                 | GatewayCertificateStoreError::NotUsable { .. } => {
@@ -252,6 +272,49 @@ fn handle_certificate_artifact_push(
                 machine_id,
                 error: rpc_error,
             })
+        }
+    }
+}
+
+fn handle_certificate_artifact_status(
+    machine_id: MachineId,
+    store: GatewayCertificateStore,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse {
+    let request = match decode_json_request::<CertificateArtifactStatusRequest>(&request) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    match store.missing_at(&request.desired, current_unix_seconds()) {
+        Ok(missing_cert_ids) => NatsServiceResponse::json_ok(
+            &CertificateArtifactStatusResponse::Ok(CertificateArtifactStatusOk {
+                machine_id,
+                missing_cert_ids,
+            }),
+        ),
+        Err(error) => {
+            let rpc_error = match &error {
+                GatewayCertificateStoreError::ArtifactFile { .. } => {
+                    GatewayCertificateRpcError::ArtifactStoreFailed {
+                        message: failure_message(error.to_string()),
+                    }
+                }
+                GatewayCertificateStoreError::DuplicateDesiredCertificate { .. }
+                | GatewayCertificateStoreError::SizeMismatch { .. }
+                | GatewayCertificateStoreError::DigestMismatch { .. }
+                | GatewayCertificateStoreError::InvalidMaterial { .. }
+                | GatewayCertificateStoreError::NotUsable { .. } => {
+                    GatewayCertificateRpcError::InvalidRequest {
+                        message: failure_message(error.to_string()),
+                    }
+                }
+            };
+            NatsServiceResponse::json_domain_error(
+                &CertificateArtifactStatusResponse::DomainError {
+                    machine_id,
+                    error: rpc_error,
+                },
+            )
         }
     }
 }

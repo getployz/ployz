@@ -1,13 +1,15 @@
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use futures_util::future::join_all;
 use ployz_core::certificate::{
-    AcmeHttp01Challenge, CertificateArtifactPushRequest, CertificateArtifactPushResponse,
-    CertificateChallengeApplyRequest, CertificateChallengeApplyResponse,
-    CertificateChallengeRemoveRequest, CertificateChallengeRemoveResponse,
-    CertificateProvisionFailure, CustomCertBundle,
+    AcmeHttp01Challenge, ActiveCertState, CertificateArtifactPushRequest,
+    CertificateArtifactPushResponse, CertificateArtifactStatusRequest,
+    CertificateArtifactStatusResponse, CertificateChallengeApplyRequest,
+    CertificateChallengeApplyResponse, CertificateChallengeRemoveRequest,
+    CertificateChallengeRemoveResponse, CertificateProvisionFailure, CustomCertBundle,
 };
-use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::ids::{CertId, MachineId, OperationId};
 use ployz_core::machine::rpc::MachineRpcResponse;
 use ployz_core::operation::FailureMessage;
 use ployz_nats::service_runtime::request_json;
@@ -23,6 +25,78 @@ pub(super) struct GatewayCertificateClient {
 impl GatewayCertificateClient {
     pub(super) fn new(client: async_nats::Client) -> Self {
         Self { client }
+    }
+
+    pub(super) async fn artifact_status(
+        &self,
+        machine_ids: &[MachineId],
+        desired: &[ActiveCertState],
+    ) -> Vec<(MachineId, Result<Vec<CertId>, FailureMessage>)> {
+        let request = CertificateArtifactStatusRequest {
+            desired: desired.to_vec(),
+        };
+        let desired_cert_ids = desired
+            .iter()
+            .map(|certificate| certificate.cert_id.clone())
+            .collect::<BTreeSet<_>>();
+
+        join_all(machine_ids.iter().map(|machine_id| async {
+            let result = self
+                .artifact_status_from_gateway(machine_id, &request, &desired_cert_ids)
+                .await;
+            (machine_id.clone(), result)
+        }))
+        .await
+    }
+
+    async fn artifact_status_from_gateway(
+        &self,
+        machine_id: &MachineId,
+        request: &CertificateArtifactStatusRequest,
+        desired_cert_ids: &BTreeSet<CertId>,
+    ) -> Result<Vec<CertId>, FailureMessage> {
+        let subject = machine_service(
+            machine_id,
+            MachineServiceEndpoint::CertificateArtifactStatus,
+        );
+        let response = request_json::<_, CertificateArtifactStatusResponse>(
+            &self.client,
+            subject,
+            request,
+            GATEWAY_RPC_TIMEOUT,
+        )
+        .await
+        .map_err(status_failure)?;
+        let ok = match response {
+            MachineRpcResponse::Ok(ok) => ok,
+            MachineRpcResponse::DomainError {
+                machine_id: response_machine_id,
+                error,
+            } => {
+                return Err(status_failure(format!(
+                    "gateway {} rejected certificate artifact status: {error:?}",
+                    response_machine_id.as_str()
+                )));
+            }
+        };
+        let ployz_core::certificate::CertificateArtifactStatusOk {
+            machine_id: response_machine_id,
+            missing_cert_ids,
+        } = ok;
+        if response_machine_id != *machine_id {
+            return Err(status_failure(
+                "gateway certificate artifact status responder mismatch",
+            ));
+        }
+        let missing_count = missing_cert_ids.len();
+        let missing_cert_ids = missing_cert_ids.into_iter().collect::<BTreeSet<_>>();
+        if missing_cert_ids.len() != missing_count || !missing_cert_ids.is_subset(desired_cert_ids)
+        {
+            return Err(status_failure(
+                "gateway certificate artifact status contains invalid certificate ids",
+            ));
+        }
+        Ok(missing_cert_ids.into_iter().collect())
     }
 
     pub(super) async fn push_bundle(
@@ -191,6 +265,10 @@ fn push_failure(
         machine_id: machine_id.clone(),
         message: failure_message(error.to_string()),
     }
+}
+
+fn status_failure(error: impl std::fmt::Display) -> FailureMessage {
+    failure_message(format!("artifact status: {error}"))
 }
 
 fn failure_message(message: impl Into<String>) -> FailureMessage {

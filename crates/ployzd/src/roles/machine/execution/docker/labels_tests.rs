@@ -1,5 +1,6 @@
-use super::{
-    self as labels, CONTAINER_TYPE_LABEL, MANAGED_LABEL, ManagedContainerLabelError,
+use crate::roles::machine::execution::docker::labels;
+use crate::roles::machine::execution::docker::labels::{
+    CONTAINER_TYPE_LABEL, MANAGED_LABEL, ManagedContainerLabelError,
     NAMESPACE_REVISION_ENTRY_LABEL, OPERATION_ID_LABEL, SERVICE_ID_LABEL, STEP_ID_LABEL,
 };
 use ployz_core::machine::runtime::{

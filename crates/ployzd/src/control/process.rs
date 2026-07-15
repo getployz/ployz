@@ -374,7 +374,6 @@ async fn start_control_process_with_client_reload_and_issuer(
             .control_plane_epoch()
             .await
             .map_err(ControlProcessError::ReadCoreEpoch)?,
-        controllers.repository().clone(),
     )
     .await
     .map_err(ControlProcessError::StartIngressEndpointProjection)?;

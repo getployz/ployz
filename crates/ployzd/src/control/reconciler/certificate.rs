@@ -1,12 +1,15 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use futures_util::StreamExt;
 use ployz_core::certificate::ActiveCertState;
+use ployz_core::ids::{CertId, MachineId};
 use ployz_core::ingress::{ActiveCertificateMetadata, CertificateOwner};
 use ployz_core::operation::{
     CertOperationFailure, CertificateProvisionFailure, FailureMessage, OperationStatus,
 };
 use ployz_core::roles::GatewayRole;
+use ployz_nats::subjects::INTENT_CHANGED;
 use ployz_sdk_types::{
     ControlCertificateRenewalAttempt, ControlCertificateRenewalFailure,
     ControlCertificateRenewalHealth, ControlCertificateRenewalOutcome,
@@ -24,10 +27,10 @@ use crate::lease::{BundleDownloadOutcome, LeaseClient, LeaseClientError};
 use crate::tasks::TaskRegistry;
 
 pub const CERTIFICATE_RENEWAL_TICK_INTERVAL: Duration = Duration::from_secs(60 * 60);
-const CERTIFICATE_SYNC_TICK_INTERVAL: Duration = Duration::from_secs(60);
 const PLOYZ_WILDCARD_PENDING_INTERVAL: Duration = Duration::from_secs(60);
 const CERTIFICATE_FAILURE_BACKOFF_BASE: Duration = Duration::from_secs(5);
 const CERTIFICATE_RENEWAL_BACKOFF_CAP: Duration = Duration::from_secs(6 * 60 * 60);
+const INTENT_SUBSCRIPTION_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[must_use]
 pub fn start_certificate_renewal_task(
@@ -65,6 +68,8 @@ async fn run_loop(
         eprintln!("ployzd certificate recovery warning: {error}");
         record_renewal_attempt(&health, &Err(error));
     }
+    let mut intent_changes = None;
+    let mut wake_open = true;
     loop {
         let outcome = run_once_with_roster_at(
             &manager,
@@ -81,10 +86,44 @@ async fn run_loop(
         let delay = record_renewal_attempt(&health, &outcome);
         tokio::select! {
             _ = tokio::time::sleep(delay) => {}
-            received = wake.recv() => {
+            received = wake.recv(), if wake_open => {
                 if received.is_none() {
-                    tokio::time::sleep(delay).await;
+                    wake_open = false;
                 }
+            }
+            () = wait_for_intent_change(manager.nats_client(), &mut intent_changes) => {}
+        }
+    }
+}
+
+async fn wait_for_intent_change(
+    client: &async_nats::Client,
+    subscription: &mut Option<async_nats::Subscriber>,
+) {
+    let mut delay = CERTIFICATE_FAILURE_BACKOFF_BASE;
+    loop {
+        if let Some(changes) = subscription {
+            if changes.next().await.is_some() {
+                return;
+            }
+            *subscription = None;
+        }
+        match tokio::time::timeout(
+            INTENT_SUBSCRIPTION_TIMEOUT,
+            client.subscribe(INTENT_CHANGED),
+        )
+        .await
+        {
+            Ok(Ok(changes)) => *subscription = Some(changes),
+            Ok(Err(error)) => {
+                eprintln!("ployzd certificate intent subscription warning: {error}");
+                tokio::time::sleep(delay).await;
+                delay = delay.saturating_mul(2).min(CERTIFICATE_RENEWAL_BACKOFF_CAP);
+            }
+            Err(_) => {
+                eprintln!("ployzd certificate intent subscription warning: subscribe timed out");
+                tokio::time::sleep(delay).await;
+                delay = delay.saturating_mul(2).min(CERTIFICATE_RENEWAL_BACKOFF_CAP);
             }
         }
     }
@@ -104,15 +143,13 @@ fn record_renewal_attempt(
             state.consecutive_failures = 0;
             PLOYZ_WILDCARD_PENDING_INTERVAL
         }
-        Ok(outcome @ CertificateRenewalOutcome::NoAction) => {
+        Ok(
+            outcome @ (CertificateRenewalOutcome::NoAction
+            | CertificateRenewalOutcome::Attempted { failed: 0, .. }),
+        ) => {
             state.last_attempt = Some(CertificateRenewalAttempt::Completed { outcome: *outcome });
             state.consecutive_failures = 0;
             CERTIFICATE_RENEWAL_TICK_INTERVAL
-        }
-        Ok(outcome @ CertificateRenewalOutcome::Attempted { failed: 0, .. }) => {
-            state.last_attempt = Some(CertificateRenewalAttempt::Completed { outcome: *outcome });
-            state.consecutive_failures = 0;
-            CERTIFICATE_SYNC_TICK_INTERVAL
         }
         Ok(outcome @ CertificateRenewalOutcome::Attempted { failed, .. }) => {
             state.last_attempt = Some(CertificateRenewalAttempt::Completed { outcome: *outcome });
@@ -141,7 +178,7 @@ pub async fn run_once_at(
     if active.is_empty() {
         return Ok(CertificateRenewalOutcome::NoAction);
     }
-    Ok(run_certificate_work(manager, active, None, targets, now_seconds).await)
+    run_certificate_work(manager, active, None, targets, now_seconds).await
 }
 
 async fn run_certificate_work(
@@ -150,10 +187,9 @@ async fn run_certificate_work(
     wildcard_bundle: Option<BundleDownloadOutcome>,
     targets: &[GatewayCertificateTarget],
     now_seconds: u64,
-) -> CertificateRenewalOutcome {
+) -> Result<CertificateRenewalOutcome, CertificateRenewalTaskError> {
     let mut attempted = 0;
     let mut failed = 0;
-    let mut wildcard_handled = false;
     let mut wildcard_pending = false;
     match wildcard_bundle {
         Some(BundleDownloadOutcome::Ready(bundle)) => {
@@ -167,7 +203,6 @@ async fn run_certificate_work(
             });
             if !already_active {
                 attempted += 1;
-                wildcard_handled = true;
                 if manager
                     .install_ployz_wildcard(bundle, targets)
                     .await
@@ -181,29 +216,70 @@ async fn run_certificate_work(
         None => {}
     }
     for certificate in active {
-        if wildcard_handled
-            && matches!(certificate.owner, CertificateOwner::PloyzAutomaticNamespace)
-        {
-            continue;
-        }
-        attempted += 1;
-        let result = if certificate.active.needs_renewal(now_seconds)
+        if certificate.active.needs_renewal(now_seconds)
             && matches!(certificate.owner, CertificateOwner::RouteBinding { .. })
         {
-            manager.renew(certificate, targets).await
-        } else {
-            manager.synchronize(certificate, targets).await
+            attempted += 1;
+            if manager.renew(certificate, targets).await.is_err() {
+                failed += 1;
+            }
+        }
+    }
+
+    let current = manager.store().active_certificates().await?;
+    let statuses = manager.artifact_status(&current, targets).await;
+    let mut missing_by_cert = std::collections::BTreeMap::<CertId, Vec<_>>::new();
+    let mut unknown = Vec::new();
+    for (machine_id, status) in statuses {
+        match status {
+            Ok(missing_cert_ids) => {
+                let Some(target) = targets
+                    .iter()
+                    .find(|target| target.machine_id == machine_id)
+                else {
+                    unknown.push(GatewayArtifactStatusUnknown {
+                        machine_id,
+                        message: "status returned for a gateway outside the requested target set"
+                            .to_owned(),
+                    });
+                    continue;
+                };
+                for cert_id in missing_cert_ids {
+                    missing_by_cert
+                        .entry(cert_id)
+                        .or_default()
+                        .push(target.clone());
+                }
+            }
+            Err(message) => unknown.push(GatewayArtifactStatusUnknown {
+                machine_id,
+                message: message.as_str().to_owned(),
+            }),
+        }
+    }
+    for certificate in current {
+        let Some(deficient_targets) = missing_by_cert.remove(&certificate.active.cert_id) else {
+            continue;
         };
-        if result.is_err() {
+        attempted += 1;
+        if manager
+            .synchronize(certificate, &deficient_targets)
+            .await
+            .is_err()
+        {
             failed += 1;
         }
     }
+    if !unknown.is_empty() {
+        return Err(CertificateRenewalTaskError::GatewayArtifactStatus { unknown });
+    }
+
     if attempted == 0 && wildcard_pending {
-        CertificateRenewalOutcome::AwaitingPloyzWildcard
+        Ok(CertificateRenewalOutcome::AwaitingPloyzWildcard)
     } else if attempted == 0 {
-        CertificateRenewalOutcome::NoAction
+        Ok(CertificateRenewalOutcome::NoAction)
     } else {
-        CertificateRenewalOutcome::Attempted { attempted, failed }
+        Ok(CertificateRenewalOutcome::Attempted { attempted, failed })
     }
 }
 
@@ -220,12 +296,11 @@ async fn run_once_with_roster_at(
     if active.is_empty() && allocation.is_none() {
         return Ok(CertificateRenewalOutcome::NoAction);
     }
-    let active_machines = match roster.active_machines().await {
-        Ok(active_machines) => active_machines,
-        Err(error) => {
-            return record_roster_failure(manager, active, error.to_string()).await;
+    let active_machines = roster.active_machines().await.map_err(|error| {
+        CertificateRenewalTaskError::MachineRoster {
+            message: error.to_string(),
         }
-    };
+    })?;
     let gateway_machines = active_machines
         .iter()
         .filter(|machine| matches!(machine.roles.gateway, GatewayRole::Install))
@@ -242,37 +317,7 @@ async fn run_once_with_roster_at(
         ),
         Some(PloyzDnsTargetAllocation::Unacquired { .. }) | None => None,
     };
-    Ok(run_certificate_work(manager, active, wildcard_bundle, &targets, now_seconds).await)
-}
-
-async fn record_roster_failure(
-    manager: &CertificateManager,
-    active: Vec<ActiveCertificateMetadata>,
-    message: String,
-) -> Result<CertificateRenewalOutcome, CertificateRenewalTaskError> {
-    let attempted = active.len();
-    let failure = CertificateProvisionFailure::DnsPreflight {
-        message: FailureMessage::try_new(format!(
-            "gateway roster unavailable before certificate renewal: {message}"
-        ))
-        .expect("generated roster failure is non-empty"),
-    };
-    let mut evidence_error = None;
-    for active in active {
-        if let Err(error) = manager
-            .record_renewal_failure(active.active, failure.clone())
-            .await
-        {
-            evidence_error.get_or_insert(error);
-        }
-    }
-    if let Some(error) = evidence_error {
-        return Err(CertificateRenewalTaskError::RenewalEvidence(error));
-    }
-    Ok(CertificateRenewalOutcome::Attempted {
-        attempted,
-        failed: attempted,
-    })
+    run_certificate_work(manager, active, wildcard_bundle, &targets, now_seconds).await
 }
 
 pub async fn recover_unfinished_operations(
@@ -365,8 +410,16 @@ impl CertificateRenewalHealth {
                             CertificateRenewalHealthFailure::IntentStore { message } => {
                                 ControlCertificateRenewalFailure::IntentStore { message }
                             }
-                            CertificateRenewalHealthFailure::RenewalEvidence { failure } => {
-                                ControlCertificateRenewalFailure::RenewalEvidence { failure }
+                            CertificateRenewalHealthFailure::MachineRoster { message } => {
+                                ControlCertificateRenewalFailure::MachineRoster { message }
+                            }
+                            CertificateRenewalHealthFailure::GatewayArtifactStatus { unknown } => {
+                                ControlCertificateRenewalFailure::GatewayArtifactStatus {
+                                    machine_ids: unknown
+                                        .into_iter()
+                                        .map(|failure| failure.machine_id)
+                                        .collect(),
+                                }
                             }
                             CertificateRenewalHealthFailure::OperationStatus { message } => {
                                 ControlCertificateRenewalFailure::OperationStatus { message }
@@ -410,8 +463,11 @@ pub enum CertificateRenewalHealthFailure {
     IntentStore {
         message: String,
     },
-    RenewalEvidence {
-        failure: CertificateProvisionFailure,
+    MachineRoster {
+        message: String,
+    },
+    GatewayArtifactStatus {
+        unknown: Vec<GatewayArtifactStatusUnknown>,
     },
     OperationStatus {
         message: String,
@@ -433,9 +489,14 @@ impl From<&CertificateRenewalTaskError> for CertificateRenewalHealthFailure {
             CertificateRenewalTaskError::Intent(error) => Self::IntentStore {
                 message: error.to_string(),
             },
-            CertificateRenewalTaskError::RenewalEvidence(failure) => Self::RenewalEvidence {
-                failure: failure.clone(),
+            CertificateRenewalTaskError::MachineRoster { message } => Self::MachineRoster {
+                message: message.clone(),
             },
+            CertificateRenewalTaskError::GatewayArtifactStatus { unknown } => {
+                Self::GatewayArtifactStatus {
+                    unknown: unknown.clone(),
+                }
+            }
             CertificateRenewalTaskError::OperationStatus(error) => Self::OperationStatus {
                 message: error.to_string(),
             },
@@ -467,12 +528,22 @@ pub enum CertificateRenewalTaskError {
     PloyzDnsTarget(#[from] CoreStoreError),
     #[error("Ployz wildcard issuer adapter: {0}")]
     Worker(LeaseClientError),
-    #[error("certificate renewal evidence: {0:?}")]
-    RenewalEvidence(CertificateProvisionFailure),
+    #[error("certificate machine roster: {message}")]
+    MachineRoster { message: String },
+    #[error("certificate artifact status is unknown for gateways {unknown:?}")]
+    GatewayArtifactStatus {
+        unknown: Vec<GatewayArtifactStatusUnknown>,
+    },
     #[error("certificate operation status: {0}")]
     OperationStatus(#[from] OperationStatusStoreError),
     #[error("certificate operation evidence: {0}")]
     OperationEvidence(#[from] RecordCertTransitionError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatewayArtifactStatusUnknown {
+    pub machine_id: MachineId,
+    pub message: String,
 }
 
 #[cfg(test)]

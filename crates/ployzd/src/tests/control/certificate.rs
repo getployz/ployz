@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -19,7 +19,8 @@ use futures_util::StreamExt;
 use ployz_core::certificate::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, CertificateArtifactPushOk,
-    CertificateArtifactPushRequest, CertificateArtifactPushResponse,
+    CertificateArtifactPushRequest, CertificateArtifactPushResponse, CertificateArtifactStatusOk,
+    CertificateArtifactStatusRequest, CertificateArtifactStatusResponse,
     CertificateChallengeApplyRequest, CertificateChallengeApplyResponse,
     CertificateChallengeMutationOk,
 };
@@ -100,6 +101,48 @@ async fn failed_due_renewal_keeps_the_active_certificate_and_records_terminal_ev
             ..
         }
     )));
+}
+
+#[tokio::test]
+async fn healthy_non_due_certificate_scan_creates_no_operation() {
+    let (nats, _gateway) = test_nats_with_gateway(true).await;
+    let core_store = CoreStore::open_in_memory().await.expect("core store");
+    let state_dir = tempfile::tempdir().expect("certificate state");
+    let manager = CertificateManager::with_issuer(
+        core_store.clone(),
+        nats.controller.clone(),
+        test_config(state_dir.path()),
+        Arc::new(FakeAcmeIssuer::new([Ok(fixture_certificate("localhost"))])),
+    );
+    manager
+        .ensure(
+            &operation_id("op_deploy_initial"),
+            route_owner(),
+            &route_hostname("localhost"),
+            &gateway_targets(),
+        )
+        .await
+        .expect("initial certificate");
+    let repository = OperationRepository::open(core_store, nats.controller);
+    let before = repository
+        .operation_statuses()
+        .await
+        .expect("operation statuses")
+        .len();
+
+    let outcome = run_once_at(&manager, &gateway_targets(), system_now_seconds())
+        .await
+        .expect("healthy scan");
+
+    assert_eq!(outcome, CertificateRenewalOutcome::NoAction);
+    assert_eq!(
+        repository
+            .operation_statuses()
+            .await
+            .expect("operation statuses")
+            .len(),
+        before
+    );
 }
 
 #[tokio::test]
@@ -540,46 +583,6 @@ async fn atomic_activation_cannot_be_rewritten_as_failed() {
 }
 
 #[tokio::test]
-async fn renewal_precondition_failure_records_retained_metadata() {
-    let nats = ployz_test_support::nats::TestNats::start().await;
-    let core_store = CoreStore::open_in_memory().await.expect("core store");
-    let state_dir = tempfile::tempdir().expect("certificate state");
-    let manager = CertificateManager::with_issuer(
-        core_store.clone(),
-        nats.controller.clone(),
-        test_config(state_dir.path()),
-        Arc::new(FakeAcmeIssuer::new([])),
-    );
-    let active = active_cert("cert_example", "example.com");
-
-    manager
-        .record_renewal_failure(
-            active.clone(),
-            CertificateProvisionFailure::DnsPreflight {
-                message: FailureMessage::try_new("gateway roster unavailable")
-                    .expect("failure message"),
-            },
-        )
-        .await
-        .expect("record renewal failure");
-
-    let statuses = OperationRepository::open(core_store, nats.controller)
-        .operation_statuses()
-        .await
-        .expect("operation statuses");
-    assert!(statuses.iter().any(|status| {
-        let OperationStatus::Cert {
-            state: CertOperationState::Failed { failure },
-            ..
-        } = status
-        else {
-            return false;
-        };
-        failure.retained_active_cert() == Some(&active)
-    }));
-}
-
-#[tokio::test]
 async fn acme_validation_waits_for_exact_gateway_challenge_application() {
     let (nats, gateway) = test_nats_with_gateway(false).await;
     let core_store = CoreStore::open_in_memory().await.expect("core store");
@@ -831,10 +834,19 @@ impl TestGateway {
             ))
             .await
             .expect("subscribe challenge status");
+        let mut artifact_status = client
+            .subscribe(machine_service(
+                &machine_id,
+                MachineServiceEndpoint::CertificateArtifactStatus,
+            ))
+            .await
+            .expect("subscribe artifact status");
         client.flush().await.expect("flush gateway subscriptions");
 
+        let stored_cert_ids = Arc::new(Mutex::new(BTreeSet::new()));
         let push_client = client.clone();
         let push_machine_id = machine_id.clone();
+        let pushed_cert_ids = Arc::clone(&stored_cert_ids);
         let push_task = tokio::spawn(async move {
             while let Some(message) = pushes.next().await {
                 let Some(reply) = message.reply.clone() else {
@@ -851,11 +863,53 @@ impl TestGateway {
                         cert_id: request.bundle.active_cert().cert_id.clone(),
                         digest: request.expected_digest,
                     });
+                pushed_cert_ids
+                    .lock()
+                    .expect("stored cert ids")
+                    .insert(request.bundle.active_cert().cert_id.clone());
                 let _ = push_client
                     .publish(
                         reply,
                         serde_json::to_vec(&response)
                             .expect("encode artifact response")
+                            .into(),
+                    )
+                    .await;
+            }
+        });
+
+        let status_client = client.clone();
+        let status_machine_id = machine_id.clone();
+        let status_cert_ids = Arc::clone(&stored_cert_ids);
+        let status_task = tokio::spawn(async move {
+            while let Some(message) = artifact_status.next().await {
+                let Some(reply) = message.reply.clone() else {
+                    continue;
+                };
+                let Ok(request) =
+                    serde_json::from_slice::<CertificateArtifactStatusRequest>(&message.payload)
+                else {
+                    continue;
+                };
+                let missing_cert_ids = {
+                    let stored = status_cert_ids.lock().expect("stored cert ids");
+                    request
+                        .desired
+                        .into_iter()
+                        .filter(|certificate| !stored.contains(&certificate.cert_id))
+                        .map(|certificate| certificate.cert_id)
+                        .collect()
+                };
+                let response: CertificateArtifactStatusResponse =
+                    MachineRpcResponse::Ok(CertificateArtifactStatusOk {
+                        machine_id: status_machine_id.clone(),
+                        missing_cert_ids,
+                    });
+                let _ = status_client
+                    .publish(
+                        reply,
+                        serde_json::to_vec(&response)
+                            .expect("encode artifact status response")
                             .into(),
                     )
                     .await;
@@ -900,7 +954,7 @@ impl TestGateway {
         });
 
         Self {
-            tasks: vec![push_task, challenge_task],
+            tasks: vec![push_task, status_task, challenge_task],
             challenge_applied,
             challenge_requests,
             challenge_applied_notifications,

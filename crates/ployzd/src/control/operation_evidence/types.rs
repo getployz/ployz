@@ -212,19 +212,6 @@ pub(super) struct ManagedDnsReconcilePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IngressRefreshOperationSubmission {
-    pub operation_id: OperationId,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct IngressRefreshPayload;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AcceptedIngressRefreshSubmission {
-    pub operation_id: OperationId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct NamespaceRemovePayload {
     pub(super) namespace_id: NamespaceId,
 }
@@ -428,7 +415,6 @@ pub type RecordNetworkRepairTransitionError = RecordOperationEventError;
 pub type RecordNetworkRepairEvidenceError = RecordOperationEventError;
 pub type RecordVolumeRemoveTransitionError = RecordOperationEventError;
 pub type RecordManagedDnsReconcileTransitionError = RecordOperationEventError;
-pub type RecordIngressRefreshTransitionError = RecordOperationEventError;
 pub type RecordIngressConfigureTransitionError = RecordOperationEventError;
 pub type RecordLifecycleEventError = RecordOperationEventError;
 pub type RecordMachineAddEventError = RecordLifecycleEventError;

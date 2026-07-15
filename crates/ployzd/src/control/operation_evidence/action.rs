@@ -2,9 +2,8 @@ use super::{
     CertOperationPayload, CertOperationSubmission, CoreReplaceOperationSubmission,
     CoreReplacePayload, CredentialGrantOperationSubmission, DeployOperationPayload,
     DeployOperationSubmission, IngressConfigureOperationSubmission,
-    IngressRefreshOperationSubmission, IngressRefreshPayload, MachineLifecycleOperationSubmission,
-    MachineLifecyclePayload, MachineUpdateOperationSubmission, MachineUpdatePayload,
-    ManagedDnsReconcileOperationSubmission, ManagedDnsReconcilePayload,
+    MachineLifecycleOperationSubmission, MachineLifecyclePayload, MachineUpdateOperationSubmission,
+    MachineUpdatePayload, ManagedDnsReconcileOperationSubmission, ManagedDnsReconcilePayload,
     NamespaceRemoveOperationSubmission, NamespaceRemovePayload, NetworkRepairOperationSubmission,
     NetworkRepairPayload, ServiceRestartOperationSubmission, ServiceRestartPayload,
     VolumeRemoveOperationSubmission, VolumeRemovePayload,
@@ -481,29 +480,5 @@ impl OperationAction for ManagedDnsReconcileOperationSubmission {
             payload.subject.clone(),
             sequence,
         )
-    }
-}
-
-impl OperationAction for IngressRefreshOperationSubmission {
-    type Payload = IngressRefreshPayload;
-    const KIND: OperationKind = OperationKind::IngressRefresh;
-
-    fn submitted_event(operation_id: OperationId, _: Self::Payload) -> OperationEvent {
-        OperationEvent::IngressRefreshSubmitted { operation_id }
-    }
-
-    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
-        let OperationEvent::IngressRefreshSubmitted { operation_id } = event else {
-            return None;
-        };
-        Some((operation_id, IngressRefreshPayload))
-    }
-
-    fn accepted_status(
-        operation_id: OperationId,
-        _: &Self::Payload,
-        sequence: EventSequence,
-    ) -> OperationStatus {
-        OperationStatus::ingress_refresh_accepted(operation_id, sequence)
     }
 }

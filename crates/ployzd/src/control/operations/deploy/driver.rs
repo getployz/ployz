@@ -51,9 +51,10 @@ impl CertificateProvisioner for CertificateManager {
 
     async fn ensure_ployz_wildcard(
         &mut self,
+        owner_operation_id: &ployz_core::ids::OperationId,
         targets: &[GatewayCertificateTarget],
     ) -> Result<ActiveCertState, CertificateProvisionFailure> {
-        CertificateManager::ensure_ployz_wildcard(self, targets).await
+        CertificateManager::ensure_ployz_wildcard(self, owner_operation_id, targets).await
     }
 }
 

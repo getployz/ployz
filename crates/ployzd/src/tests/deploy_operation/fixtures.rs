@@ -349,6 +349,7 @@ impl NamespaceStateCommitter for RecordingNamespaceState {
 pub(super) struct RecordingCertificates {
     pub(super) requests: Vec<(OperationId, RouteHostname, Vec<GatewayCertificateTarget>)>,
     pub(super) ployz_wildcard_requests: usize,
+    pub(super) ployz_operation_ids: Vec<OperationId>,
     pub(super) ployz_target_requests: Vec<Vec<GatewayCertificateTarget>>,
     result: Result<(), CertificateProvisionFailure>,
     certificate_ready: Arc<AtomicBool>,
@@ -360,6 +361,7 @@ impl RecordingCertificates {
         Self {
             requests: Vec::new(),
             ployz_wildcard_requests: 0,
+            ployz_operation_ids: Vec::new(),
             ployz_target_requests: Vec::new(),
             result: Ok(()),
             certificate_ready: Arc::new(AtomicBool::new(false)),
@@ -371,6 +373,7 @@ impl RecordingCertificates {
         Self {
             requests: Vec::new(),
             ployz_wildcard_requests: 0,
+            ployz_operation_ids: Vec::new(),
             ployz_target_requests: Vec::new(),
             result: Err(failure),
             certificate_ready: Arc::new(AtomicBool::new(false)),
@@ -407,9 +410,11 @@ impl CertificateProvisioner for RecordingCertificates {
 
     async fn ensure_ployz_wildcard(
         &mut self,
+        owner_operation_id: &OperationId,
         targets: &[GatewayCertificateTarget],
     ) -> Result<ActiveCertState, CertificateProvisionFailure> {
         self.ployz_wildcard_requests += 1;
+        self.ployz_operation_ids.push(owner_operation_id.clone());
         self.ployz_target_requests.push(targets.to_vec());
         self.result.clone()?;
         self.ployz_wildcard_ready.store(true, Ordering::SeqCst);

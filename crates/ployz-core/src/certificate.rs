@@ -28,12 +28,13 @@ pub use custom_bundle::{
 pub use gateway_rpc::{
     CertificateArtifactPushOk, CertificateArtifactPushRequest, CertificateArtifactPushResponse,
     CertificateArtifactRemoveOk, CertificateArtifactRemoveRequest,
-    CertificateArtifactRemoveResponse, CertificateChallengeApplicationStatus,
-    CertificateChallengeApplyRequest, CertificateChallengeApplyResponse,
-    CertificateChallengeMutationOk, CertificateChallengeRemoveRequest,
-    CertificateChallengeRemoveResponse, CertificateChallengeStatusOk,
-    CertificateChallengeStatusRequest, CertificateChallengeStatusResponse,
-    GatewayCertificateRpcError,
+    CertificateArtifactRemoveResponse, CertificateArtifactStatusOk,
+    CertificateArtifactStatusRequest, CertificateArtifactStatusResponse,
+    CertificateChallengeApplicationStatus, CertificateChallengeApplyRequest,
+    CertificateChallengeApplyResponse, CertificateChallengeMutationOk,
+    CertificateChallengeRemoveRequest, CertificateChallengeRemoveResponse,
+    CertificateChallengeStatusOk, CertificateChallengeStatusRequest,
+    CertificateChallengeStatusResponse, GatewayCertificateRpcError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

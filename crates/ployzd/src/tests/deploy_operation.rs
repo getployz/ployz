@@ -1424,8 +1424,9 @@ async fn ployz_automatic_route_synchronizes_wildcard_before_commit() {
     let mut namespace_state =
         RecordingNamespaceState::requiring_certificate_ready(certificates.ployz_readiness());
 
+    let command = ployz_automatic_deploy_command();
     execute_deploy(
-        ployz_automatic_deploy_command(),
+        command,
         DeployExecutionPorts {
             recorder: &mut recorder,
             machine_runtime: &mut runtime,
@@ -1438,6 +1439,7 @@ async fn ployz_automatic_route_synchronizes_wildcard_before_commit() {
     .expect("managed HTTPS and plain HTTP routes deploy");
 
     assert_eq!(certificates.ployz_wildcard_requests, 1);
+    assert_eq!(certificates.ployz_operation_ids, [operation_id("op_123")]);
     let [target_request] = certificates.ployz_target_requests.as_slice() else {
         panic!("expected one Ployz target request");
     };
