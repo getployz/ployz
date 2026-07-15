@@ -1,6 +1,6 @@
 use ployz_core::deploy::{DeployPhasePlan, DeployPlanStep, ImageSource};
 use ployz_core::ids::ServiceId;
-use ployz_core::ops::{
+use ployz_core::operation::{
     ControlPlaneCommitScope, DeployEvidence, DeployPhaseNumber, DeployPhaseOutcome,
     DeployRunningStage, DeployServiceResult,
 };
@@ -234,7 +234,7 @@ impl<'a> DeployRun<'a> {
 pub(super) async fn start_services<R, N>(
     command: &DeployExecutionCommand,
     phase: &DeployPhasePlan,
-    dataplane_members: &[ployz_core::dataplane::DataplaneMember],
+    dataplane_members: &[ployz_core::network::DataplaneMember],
     containers: &mut Vec<DeployContainer>,
     run: &mut DeployRun<'_>,
     recorder: &mut R,

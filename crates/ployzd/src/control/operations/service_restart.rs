@@ -15,14 +15,14 @@ use crate::roles::machine::protocol::{
 };
 use crate::tasks::TaskRegistry;
 use ployz_core::ids::{ContainerId, MachineId, OperationId};
-use ployz_core::machine_runtime::{
+use ployz_core::intent::IntentSnapshot;
+use ployz_core::machine::runtime::{
     ContainerHealth, ContainerRuntimeState, ManagedContainerIdentity,
 };
-use ployz_core::ops::{
+use ployz_core::operation::{
     FailureMessage, OperatorHint, ServiceRestartFailure, ServiceRestartRunningStage,
     ServiceRestartTransition,
 };
-use ployz_core::state::IntentSnapshot;
 use std::time::{Duration, Instant};
 
 const RESTART_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -347,7 +347,7 @@ fn restart_health_observation(
 
 fn restart_targets<'a>(
     intent: &IntentSnapshot,
-    facts: impl IntoIterator<Item = &'a ployz_core::machine_runtime::MachineFactsSnapshot>,
+    facts: impl IntoIterator<Item = &'a ployz_core::machine::runtime::MachineFactsSnapshot>,
     accepted: &AcceptedServiceRestartSubmission,
 ) -> RestartTargetSelection {
     let service_exists = intent.serving_target_entries.iter().any(|entry| {
@@ -513,7 +513,7 @@ fn timeout_seconds(timeout: Duration) -> u32 {
 mod tests {
     use super::*;
     use ployz_core::ids::{NamespaceId, NamespaceRevisionEntryId, ServiceId, StepId};
-    use ployz_core::machine_runtime::ManagedContainerKind;
+    use ployz_core::machine::runtime::ManagedContainerKind;
 
     #[test]
     fn restart_health_observation_accepts_running_without_healthcheck() {

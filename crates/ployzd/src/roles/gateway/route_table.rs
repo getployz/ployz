@@ -5,7 +5,7 @@ use crate::roles::gateway::projection::{
     GatewayProjectionError, GatewayProjectionState, GatewayProjectionUpdate, GatewayUpstream,
     apply_gateway_update,
 };
-use ployz_core::ops::RouteTarget;
+use ployz_core::operation::RouteTarget;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayProjector {

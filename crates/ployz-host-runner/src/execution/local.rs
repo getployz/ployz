@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use ployz_core::install::HostPortAssurance;
-use ployz_core::ops::FailureMessage;
+use ployz_core::operation::FailureMessage;
 use tempfile::{Builder, TempDir};
 
 use super::artifacts::{
@@ -219,7 +219,7 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
     fn prepare_container_runtime(
         &mut self,
         runtime: ContainerRuntime,
-        endpoint_supernet: &ployz_core::dataplane::MachineEndpointSupernet,
+        endpoint_supernet: &ployz_core::network::MachineEndpointSupernet,
     ) -> Result<(), HostRunnerStepEffectError> {
         match runtime {
             ContainerRuntime::Docker => self.prepare_docker(endpoint_supernet).map_err(|message| {
@@ -351,7 +351,7 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
 
     fn prepare_docker(
         &mut self,
-        endpoint_supernet: &ployz_core::dataplane::MachineEndpointSupernet,
+        endpoint_supernet: &ployz_core::network::MachineEndpointSupernet,
     ) -> Result<(), PrepareDockerError> {
         let platform = self.host_platform()?.clone();
         let endpoint_supernet = endpoint_supernet.as_string();

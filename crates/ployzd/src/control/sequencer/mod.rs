@@ -23,20 +23,20 @@ use ployz_core::install::{
     HostPortAssurance, InstallArtifactVersion, MachineBootstrapUrl, MachineJoinBundle,
     MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
 };
+use ployz_core::intent::recovery::PendingMachineJoinRecovery;
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineName, RawJoinToken,
     redeem_pending_join_token,
 };
-use ployz_core::ops::CredentialGrantAction;
-use ployz_core::ops::{OperationStatus, OperationStatusSnapshot};
+use ployz_core::operation::CredentialGrantAction;
+use ployz_core::operation::{OperationStatus, OperationStatusSnapshot};
 use ployz_core::roles::InstallRolePolicy;
-use ployz_core::state::PendingMachineJoinRecovery;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
-pub use ployz_core::ops::OperationIdempotencyKey as IdempotencyKey;
+pub use ployz_core::operation::OperationIdempotencyKey as IdempotencyKey;
 
 const MACHINE_JOIN_TOKEN_TTL_SECONDS: u64 = 600;
 
@@ -82,7 +82,7 @@ pub struct MachineAddSubmitCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MachineAddEndpointSubnet {
     Allocate,
-    Preserve(ployz_core::dataplane::MachineEndpointSubnet),
+    Preserve(ployz_core::network::MachineEndpointSubnet),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,7 +96,7 @@ pub struct MachineUpdateSubmitCommand {
 pub struct MachineLifecycleSubmitCommand {
     pub operation_id: OperationId,
     pub machine_id: ployz_core::ids::MachineId,
-    pub target: ployz_core::state::MachineLifecycle,
+    pub target: ployz_core::machine::MachineLifecycle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -411,7 +411,7 @@ impl OperationControllers {
     pub async fn submit_machine_add(
         &self,
         command: MachineAddSubmitCommand,
-        endpoint_supernet: &ployz_core::dataplane::MachineEndpointSupernet,
+        endpoint_supernet: &ployz_core::network::MachineEndpointSupernet,
         machine_roster: &crate::control::intent::machine_roster::MachineRosterStore,
     ) -> Result<AcceptedMachineAddSubmission, MachineAddSubmitCommandError> {
         let _mesh = self.mesh_lock.lock().await;
@@ -457,8 +457,8 @@ impl OperationControllers {
                         .await
                         .map_err(MachineAddSubmitCommandError::Store)?,
                 );
-                let derived = ployz_core::dataplane::MachineEndpointSubnet::try_new(
-                    ployz_core::dataplane::default_endpoint_subnet(&command.machine_id),
+                let derived = ployz_core::network::MachineEndpointSubnet::try_new(
+                    ployz_core::network::default_endpoint_subnet(&command.machine_id),
                 )
                 .map_err(|error| MachineAddSubmitCommandError::Admission {
                     message: error.to_string(),

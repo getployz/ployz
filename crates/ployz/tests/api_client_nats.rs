@@ -3,15 +3,17 @@ use ployz_core::deploy::{
     DeployRequest, DeployServiceSpec, ImageReference, ReplicaCount, VolumeName,
 };
 use ployz_core::install::InstallArtifactSpec;
+use ployz_core::intent::ActiveMachineState;
+use ployz_core::machine::GatewayServingStatus;
+use ployz_core::machine::GatewayStatusObservation;
 use ployz_core::machine::JoinTokenRedeemedAt;
-use ployz_core::ops::{
+use ployz_core::machine::MachineEndpointObservation;
+use ployz_core::machine::MachineLifecycle;
+use ployz_core::operation::{
     OperationEventReplayLimit, OperationEventReplayRequest, OperationIdempotencyKey,
 };
 use ployz_core::roles::InstallRolePolicy;
-use ployz_core::state::MachineLifecycle;
-use ployz_core::state::{
-    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation,
-};
+
 use ployz_nats::connect::connect_authenticated;
 use ployz_nats::service_runtime::{
     NatsServiceError, NatsServiceErrorCode, NatsServiceResponse, start_nats_service,
@@ -176,7 +178,7 @@ async fn operation_api_client_routes_machine_join_redeem_success() {
                     name: MachineName::try_new("edge_2").expect("valid machine name"),
                     roles: InstallRolePolicy::install_all().without_gateway(),
                     host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
-                    endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(
+                    endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new(
                         "10.198.2.0/24",
                     )
                     .expect("valid subnet"),
@@ -643,8 +645,7 @@ fn machine_join_redeem_request() -> MachineJoinRedeemRequest {
 fn machine_join_bundle() -> MachineJoinBundle {
     MachineJoinBundle {
         material: ployz_core::install::MachineJoinMaterial {
-            dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(
-            ),
+            dataplane_endpoint_supernet: ployz_core::network::MachineEndpointSupernet::default_v1(),
             cluster_name: ployz_core::install::MachineJoinClusterName::try_new("prod")
                 .expect("valid cluster name"),
             runtime_nats_url: ployz_core::install::MachineJoinRuntimeNatsUrl::try_new(
@@ -716,9 +717,9 @@ fn machine_snapshot(machine_id: &str) -> MachineSnapshot {
             roles: ployz_core::roles::InstallRolePolicy::install_all(),
             control_endpoints: Vec::new(),
             mesh_endpoints: Vec::new(),
-            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
+            endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new("10.198.0.0/24")
                 .expect("valid endpoint subnet"),
-            wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+            wireguard_public_key: ployz_core::network::WireGuardPublicKey::try_new(format!(
                 "public-{}",
                 machine_id.as_str()
             ))

@@ -4,7 +4,7 @@ use super::{
     RecordOperationEventOutcome, SubmitOperationError,
 };
 use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::ops::MachineUpdateTransition;
+use ployz_core::operation::MachineUpdateTransition;
 
 impl OperationRepository {
     pub async fn submit_machine_update(

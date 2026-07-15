@@ -2,11 +2,13 @@ use super::{ServiceLogLine, bounded_ops_list, missing_machine_ids, service_log_l
 use crate::control::projection::runtime_state::{
     derive_instances, derive_releases, derive_revisions, missing_links, service_snapshot,
 };
-use ployz_core::machine_runtime::{
+use ployz_core::intent::RouteBindingState;
+use ployz_core::machine::runtime::{
     MachineContainerObservationSnapshot, MachineFactsSnapshot, ManagedContainerKind,
 };
-use ployz_core::ops::{EventSequence, OperationStatus, RouteHostname, RoutePort, RouteTarget};
-use ployz_core::state::RouteBindingState;
+use ployz_core::operation::{
+    EventSequence, OperationStatus, RouteHostname, RoutePort, RouteTarget,
+};
 use ployz_sdk_types::{
     ServiceContainerMembership, ServiceMachineTestimony, ServiceSnapshot, ServiceTestimony,
 };
@@ -64,7 +66,7 @@ fn namespace_remove_status(index: usize, terminal: bool) -> OperationStatus {
         let OperationStatus::NamespaceRemove { state, .. } = &mut status else {
             unreachable!("constructor returns namespace removal status");
         };
-        *state = ployz_core::ops::NamespaceRemoveOperationState::Completed;
+        *state = ployz_core::operation::NamespaceRemoveOperationState::Completed;
     }
     status
 }
@@ -163,7 +165,7 @@ fn service_snapshot_keeps_retained_service_containers_from_inactive_entries() {
 
 fn machine_facts(
     machine_id_value: &str,
-    containers: impl IntoIterator<Item = ployz_core::machine_runtime::ManagedContainerObservation>,
+    containers: impl IntoIterator<Item = ployz_core::machine::runtime::ManagedContainerObservation>,
 ) -> MachineFactsSnapshot {
     let machine_id = ployz_test_support::ids::machine_id(machine_id_value);
     MachineFactsSnapshot::try_new(

@@ -9,7 +9,7 @@ use ployz_core::machine::{MachineAddFailure, MachineCredentialProvisioningStep};
 use ployz_core::nats_config::{
     MintedNatsUser, NatsAuthorizationGrant, NatsInternalAuthority, NatsUserSeed,
 };
-use ployz_core::ops::{
+use ployz_core::operation::{
     FailureMessage, MachineAddOperationState, OperationIdempotencyKey, OperationStatus,
 };
 use ployz_core::security::NatsPrincipal;

@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 
 use ployz_core::ids::MachineId;
+use ployz_core::intent::ActiveMachineState;
 use ployz_core::roles::GatewayRole;
-use ployz_core::state::ActiveMachineState;
 
 use crate::control::role_client::machine::MachinePlacementFacts;
 
@@ -50,12 +50,15 @@ pub(crate) fn gateway_certificate_targets(
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::dataplane::MachineEndpointSubnet;
     use ployz_core::ids::MachineId;
+    use ployz_core::intent::ActiveMachineState;
+    use ployz_core::machine::MachineEndpointObservation;
+    use ployz_core::machine::MachineLifecycle;
     use ployz_core::machine::MachineName;
-    use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
+    use ployz_core::machine::runtime::MachineContainerObservationSnapshot;
+    use ployz_core::network::MachineEndpointSubnet;
     use ployz_core::roles::InstallRolePolicy;
-    use ployz_core::state::{ActiveMachineState, MachineEndpointObservation, MachineLifecycle};
+
     use ployz_test_support::ids::operation_id;
 
     use super::*;
@@ -99,7 +102,7 @@ mod tests {
             mesh_endpoints: Vec::new(),
             endpoint_subnet: MachineEndpointSubnet::try_new("10.198.1.0/24")
                 .expect("valid endpoint subnet"),
-            wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+            wireguard_public_key: ployz_core::network::WireGuardPublicKey::try_new(format!(
                 "public-{machine_id}"
             ))
             .expect("public key"),

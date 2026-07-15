@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use ployz_core::ids::MachineId;
-use ployz_core::internal_dns::InternalServiceName;
+use ployz_core::network::internal_dns::InternalServiceName;
 use ployz_nats::service_runtime::{NatsJsonServiceRequestError, request_json};
 use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
 

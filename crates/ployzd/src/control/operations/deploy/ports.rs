@@ -1,12 +1,15 @@
-use ployz_core::cert::ActiveCertState;
+use ployz_core::certificate::ActiveCertState;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::image::{ImageEnsureOk, ImageEnsureRequest};
 use ployz_core::ingress::CertificateOwner;
-use ployz_core::ops::ControlPlaneCommitScope;
-use ployz_core::ops::{
+use ployz_core::intent::RouteBindingState;
+use ployz_core::intent::ServingTargetEntry;
+use ployz_core::intent::VolumePinState;
+use ployz_core::operation::ControlPlaneCommitScope;
+use ployz_core::operation::{
     CertificateProvisionFailure, DeployEvidence, DeployTransition, RouteHostname, RouteTarget,
 };
-use ployz_core::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
+
 use std::future::Future;
 
 use crate::certificate::GatewayCertificateTarget;

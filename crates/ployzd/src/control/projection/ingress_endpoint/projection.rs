@@ -4,7 +4,7 @@ use ployz_core::ingress::{
     IngressEndpointProjection, IngressEndpointProjectionState, IngressEndpointSet,
     IngressEndpointUnavailableReason,
 };
-use ployz_core::ops::{
+use ployz_core::operation::{
     IngressRefreshCandidateEvidence, IngressRefreshCandidatePublication,
     IngressRefreshGatewayOutcome,
 };
@@ -106,8 +106,8 @@ const fn gateway_is_valid_reply(outcome: IngressRefreshGatewayOutcome) -> bool {
 mod tests {
     use super::*;
     use ployz_core::ids::MachineId;
-    use ployz_core::ops::{IngressRefreshExclusionReason, IngressRefreshFactsOutcome};
-    use ployz_core::state::ControlPlaneEpoch;
+    use ployz_core::intent::recovery::ControlPlaneEpoch;
+    use ployz_core::operation::{IngressRefreshExclusionReason, IngressRefreshFactsOutcome};
 
     fn pending() -> ProjectionEvidenceRecord {
         ProjectionEvidenceRecord::pending(ControlPlaneEpoch::initial())

@@ -2,7 +2,7 @@ use bollard::Docker;
 use bollard::errors::Error as BollardError;
 use bollard::models::{Ipam, IpamConfig, NetworkCreateRequest, NetworkInspect};
 use bollard::query_parameters::InspectNetworkOptions;
-use ployz_core::dataplane::{EndpointBridgeStatus, MachineEndpointSubnet};
+use ployz_core::network::{EndpointBridgeStatus, MachineEndpointSubnet};
 use std::collections::HashMap;
 
 use super::labels::MANAGED_LABEL;
@@ -167,8 +167,8 @@ pub(super) async fn read_endpoint_network_status(
     }
 }
 
-fn endpoint_status_failure(message: String) -> ployz_core::ops::FailureMessage {
-    ployz_core::ops::FailureMessage::try_new(message)
+fn endpoint_status_failure(message: String) -> ployz_core::operation::FailureMessage {
+    ployz_core::operation::FailureMessage::try_new(message)
         .expect("Docker endpoint status failure is non-empty")
 }
 

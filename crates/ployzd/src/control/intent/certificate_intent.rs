@@ -101,7 +101,9 @@ fn store_error(error: CoreStoreError) -> CertificateIntentStoreError {
 
 #[cfg(test)]
 mod tests {
-    use ployz_core::cert::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
+    use ployz_core::certificate::{
+        ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
+    };
     use ployz_core::ids::RouteBindingId;
     use ployz_test_support::ids::{cert_id, route_hostname};
 

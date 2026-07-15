@@ -6,7 +6,10 @@
 //! — a healed, stale core — never overwrites a higher one.
 
 use ployz_core::install::INTENT_MIRROR_FILE_NAME;
-use ployz_core::state::{ControlPlaneEpoch, IntentSnapshot, PendingMachineJoinRecoverySnapshot};
+use ployz_core::intent::IntentSnapshot;
+use ployz_core::intent::recovery::ControlPlaneEpoch;
+use ployz_core::intent::recovery::PendingMachineJoinRecoverySnapshot;
+
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io;

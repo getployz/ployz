@@ -1,6 +1,5 @@
 //! Convert current cluster facts into a deploy execution command.
 
-use ployz_core::dataplane::DataplaneMember;
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployPreparationInput, DeployRequest, RegistryCredential,
     auto_hostname_route_binding_commits, namespace_route_binding_removals,
@@ -8,10 +7,13 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::{MachineId, OperationId, RouteBindingId, ServiceId};
 use ployz_core::image::OciPlatform;
-use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
-use ployz_core::ops::{RouteHostname, RouteTarget};
-use ployz_core::state::VolumePinState;
-use ployz_core::state::{RouteBindingState, ServingTargetEntry};
+use ployz_core::intent::RouteBindingState;
+use ployz_core::intent::ServingTargetEntry;
+use ployz_core::intent::VolumePinState;
+use ployz_core::machine::runtime::MachineContainerObservationSnapshot;
+use ployz_core::network::DataplaneMember;
+use ployz_core::operation::{RouteHostname, RouteTarget};
+
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -47,7 +49,7 @@ pub struct DeployExecutionFacts {
     pub namespace_serving_entries: Vec<ServingTargetEntry>,
     pub namespace_volume_pins: Vec<VolumePinState>,
     pub eligible_machines: Vec<MachineId>,
-    pub unusable_machines: Vec<ployz_core::ops::UnusableMachine>,
+    pub unusable_machines: Vec<ployz_core::operation::UnusableMachine>,
     pub dataplane_members: Vec<DataplaneMember>,
     pub observed_machines: Vec<MachineContainerObservationSnapshot>,
     pub machine_platforms: BTreeMap<MachineId, OciPlatform>,
@@ -162,9 +164,9 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         .unusable_machines
         .iter()
         .filter(|unusable| match unusable.reason {
-            ployz_core::state::MachineUsabilityReason::Draining => true,
-            ployz_core::state::MachineUsabilityReason::FactsUnavailable
-            | ployz_core::state::MachineUsabilityReason::DataplaneUnavailable { .. } => false,
+            ployz_core::machine::MachineUsabilityReason::Draining => true,
+            ployz_core::machine::MachineUsabilityReason::FactsUnavailable
+            | ployz_core::machine::MachineUsabilityReason::DataplaneUnavailable { .. } => false,
         })
         .map(|unusable| unusable.machine_id.clone())
         .collect::<Vec<_>>();

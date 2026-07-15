@@ -9,7 +9,7 @@ use ployz_core::deploy::{
     ImageSource, ReplicaCount,
 };
 use ployz_core::ids::{NamespaceId, ServiceId};
-use ployz_core::ops::{
+use ployz_core::operation::{
     DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, OperationEvent,
     OperationEventReplayPage, OperationStatus, OperationStatusSnapshot, ReplayedOperationEvent,
 };
@@ -216,7 +216,7 @@ async fn binary_rollback_replays_the_selected_pinned_payload_as_a_new_deploy() {
         .expect("submit endpoint binds");
     runtime
         .bind_endpoint(&watch_endpoint, |request| async move {
-            let request: ployz_core::ops::OperationEventReplayRequest =
+            let request: ployz_core::operation::OperationEventReplayRequest =
                 serde_json::from_slice(&request.payload).expect("watch request decodes");
             assert_eq!(request.operation_id, operation_id("op_rollback"));
             assert_eq!(request.start_sequence, event_sequence(1));
@@ -342,7 +342,7 @@ async fn binary_foreground_deploy_exits_non_zero_when_operation_fails() {
         .expect("submit endpoint binds");
     runtime
         .bind_endpoint(&watch_endpoint, |request| async move {
-            let request: ployz_core::ops::OperationEventReplayRequest =
+            let request: ployz_core::operation::OperationEventReplayRequest =
                 serde_json::from_slice(&request.payload).expect("watch request decodes");
             assert_eq!(request.operation_id, operation_id("op_deploy_failed"));
             let response: OpsWatchResponse = OperationApiResponse::Ok {

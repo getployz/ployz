@@ -11,7 +11,7 @@
 //! on the blocking pool via [`CoreStore::call`], matching how the file stores
 //! this replaces already blocked inside an async mutex.
 
-use ployz_core::state::ControlPlaneEpoch;
+use ployz_core::intent::recovery::ControlPlaneEpoch;
 use rusqlite::{Connection, OptionalExtension};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};

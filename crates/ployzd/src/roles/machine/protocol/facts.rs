@@ -1,6 +1,6 @@
 use ployz_core::ids::MachineId;
-use ployz_core::machine_runtime::{MachineFactsRefreshConfirmation, MachineFactsSnapshot};
-use ployz_core::ops::FailureMessage;
+use ployz_core::machine::runtime::{MachineFactsRefreshConfirmation, MachineFactsSnapshot};
+use ployz_core::operation::FailureMessage;
 use serde::{Deserialize, Serialize};
 
 use super::{MachineRpcResponder, MachineRpcResponse};

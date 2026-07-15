@@ -2,14 +2,14 @@ use std::path::{Path, PathBuf};
 
 use pingora::tls::pkey::PKey;
 use pingora::tls::x509::{X509, X509Ref};
-use ployz_core::cert::{
+use ployz_core::certificate::{
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, CustomCertBundle,
     ManagedCertBundle, custom_bundle_digest,
 };
 use ployz_core::ids::CertId;
 use ployz_core::ingress::{ActiveCertificateMetadata, CertificateOwner};
 use ployz_core::install::{AbsoluteInstallPath, InstallSha256Digest};
-use ployz_core::ops::RouteHostname;
+use ployz_core::operation::RouteHostname;
 use time::PrimitiveDateTime;
 
 use crate::adapters::atomic_file::{
@@ -317,12 +317,12 @@ fn invalid_material(error: impl std::fmt::Display) -> CertificateMaterialError {
 mod tests {
     use std::path::Path;
 
-    use ployz_core::cert::{
+    use ployz_core::certificate::{
         ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, LeaseBearerToken,
         ManagedLeaseAcquireRequest, ManagedLeaseAcquisitionId,
     };
     use ployz_core::ids::CertId;
-    use ployz_core::ops::RouteHostname;
+    use ployz_core::operation::RouteHostname;
     use ployz_test_lease_worker::{LeaseWorkerRequest, LeaseWorkerResponse, StubLeaseWorker};
 
     use super::*;

@@ -13,12 +13,14 @@ use crate::control::sequencer::OperationControllers;
 use crate::roles::machine::protocol::MachineContainerRemoveRpcRequest;
 use crate::tasks::TaskRegistry;
 use ployz_core::ids::{ContainerId, MachineId, NamespaceId, OperationId};
-use ployz_core::machine_runtime::{ManagedContainerIdentity, ManagedContainerKind};
-use ployz_core::ops::{
+use ployz_core::intent::RouteBindingState;
+use ployz_core::intent::ServingTargetEntry;
+use ployz_core::machine::runtime::{ManagedContainerIdentity, ManagedContainerKind};
+use ployz_core::operation::{
     FailureMessage, NamespaceRemoveFailure, NamespaceRemoveRunningStage, NamespaceRemoveTransition,
     OperatorHint,
 };
-use ployz_core::state::{RouteBindingState, ServingTargetEntry};
+
 use ployz_nats::subjects::INTENT_CHANGED;
 use std::time::Duration;
 

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use ployz_core::certificate::{
+use ployz_core::certificateificate::{
     LeaseBearerToken, ManagedLeaseAcquireRequest, ManagedLeaseAcquisitionId,
     ManagedLeaseRenewRequest,
 };

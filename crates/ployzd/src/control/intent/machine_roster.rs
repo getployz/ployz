@@ -7,7 +7,9 @@
 
 use crate::control::store::{CoreStore, CoreStoreError, query_json, query_json_list, to_json};
 use ployz_core::ids::MachineId;
-use ployz_core::state::{ActiveMachineState, MachineLifecycle};
+use ployz_core::intent::ActiveMachineState;
+use ployz_core::machine::MachineLifecycle;
+
 use rusqlite::{Connection, params};
 use std::net::{IpAddr, SocketAddr};
 
@@ -199,11 +201,11 @@ mod tests {
                 lifecycle: MachineLifecycle::Active,
                 control_endpoints: Vec::new(),
                 mesh_endpoints: Vec::new(),
-                endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(
+                endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new(
                     "10.198.0.0/24",
                 )
                 .expect("valid endpoint subnet"),
-                wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+                wireguard_public_key: ployz_core::network::WireGuardPublicKey::try_new(format!(
                     "public-{machine}"
                 ))
                 .expect("public key"),

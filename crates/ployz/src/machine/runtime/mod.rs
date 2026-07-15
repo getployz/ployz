@@ -21,7 +21,7 @@ use crate::machine::founder::{
 };
 use crate::operation::runtime::watch_accepted;
 use ployz_core::nats_config::NatsUserSeed;
-use ployz_core::ops::MachineAddOperationStateName;
+use ployz_core::operation::MachineAddOperationStateName;
 use ployz_nats::connect::NatsConnectError;
 use ployz_sdk_types::{InitFirstMachineActivateError, MachineJoinRedeemError};
 use tokio::time::sleep as async_sleep;
@@ -190,8 +190,8 @@ pub(crate) async fn lifecycle(
     let api = operation_api_client(config).await?;
     let request = command.into_request();
     let accepted = match target {
-        ployz_core::state::MachineLifecycle::Draining => api.machine_drain(&request).await,
-        ployz_core::state::MachineLifecycle::Active => api.machine_resume(&request).await,
+        ployz_core::machine::MachineLifecycle::Draining => api.machine_drain(&request).await,
+        ployz_core::machine::MachineLifecycle::Active => api.machine_resume(&request).await,
     }
     .map_err(api_error)?;
     if detach {

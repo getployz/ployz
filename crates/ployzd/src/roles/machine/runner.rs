@@ -3,12 +3,12 @@ use std::future::Future;
 use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredential};
 use ployz_core::ids::ContainerId;
 use ployz_core::image::OciDigest;
-use ployz_core::machine_runtime::ContainerHealth;
+use ployz_core::machine::runtime::ContainerHealth;
 use std::net::IpAddr;
 
 use crate::roles::machine::protocol::MachineImagePull;
-use ployz_core::dataplane::{EndpointBridgeStatus, MachineEndpointSubnet};
-use ployz_core::machine_runtime::{ManagedContainerHealthStatus, ManagedContainerIdentity};
+use ployz_core::machine::runtime::{ManagedContainerHealthStatus, ManagedContainerIdentity};
+use ployz_core::network::{EndpointBridgeStatus, MachineEndpointSubnet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExistingManagedContainer {

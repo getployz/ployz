@@ -3,7 +3,7 @@
 use std::fmt;
 
 use clap::{Args, Parser, Subcommand};
-use ployz_core::state::MachineLifecycle;
+use ployz_core::machine::MachineLifecycle;
 
 use crate::core::command as core;
 use crate::deploy::{command as deploy, compose_command as compose};

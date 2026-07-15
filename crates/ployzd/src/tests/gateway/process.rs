@@ -7,7 +7,7 @@ use crate::roles::gateway::process::{
 use crate::roles::gateway::projection::GatewayUpstream;
 use crate::service_catalog::{intent_get_endpoint_spec, intent_service};
 use futures_util::StreamExt;
-use ployz_core::certificate::{
+use ployz_core::certificateificate::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
     CertificateChallengeApplicationStatus, CertificateChallengeApplyRequest,
     CertificateChallengeApplyResponse, CertificateChallengeStatusRequest,

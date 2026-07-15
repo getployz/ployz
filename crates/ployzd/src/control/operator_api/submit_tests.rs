@@ -6,7 +6,7 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::image::OciDigest;
-use ployz_core::ops::OperationIdempotencyKey;
+use ployz_core::operation::OperationIdempotencyKey;
 use ployz_sdk_types::{DeploySubmitError, NetworkRepairError};
 
 use crate::control::sequencer::DeploySubmitCommand;

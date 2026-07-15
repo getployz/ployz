@@ -17,8 +17,8 @@ use ployz_core::deploy::{
     DeployPlanningInput, ImageSource, ReplicaSlot, plan_namespace_deploy,
 };
 use ployz_core::ids::{OperationId, StepId, SubjectTokenError};
-use ployz_core::machine_runtime::ManagedContainerKind;
-use ployz_core::ops::{
+use ployz_core::machine::runtime::ManagedContainerKind;
+use ployz_core::operation::{
     ControlPlaneCommitScope, DeployCleanupFailure, DeployEvidence, DeployPhaseNumber,
     DeployPhaseOutcome, DeployRunningStage, DeployServiceResult, DeployTransition, FailureMessage,
     OperatorHint, RetainedArtifact,
@@ -50,7 +50,7 @@ use crate::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRunHookRpcRequest,
     MachineContainerRunRpcRequest, MachineContainerStopRpcRequest,
 };
-use ployz_core::machine_runtime::ManagedContainerIdentity;
+use ployz_core::machine::runtime::ManagedContainerIdentity;
 pub use types::{
     DeployCleanupResult, DeployContainer, DeployExecutionCommand, DeployExecutionOutcome,
     DeployExecutionPorts, DeployServiceExecutionCommand, DeployTerminalEvent,
@@ -405,7 +405,7 @@ async fn run_pre_start_hook<N>(
     command: &DeployExecutionCommand,
     service: &DeployServiceExecutionCommand,
     step: &ployz_core::deploy::PreStartHookStep,
-    dataplane_members: &[ployz_core::dataplane::DataplaneMember],
+    dataplane_members: &[ployz_core::network::DataplaneMember],
     machine_runtime: &mut N,
 ) -> Result<(), DeployExecutionError>
 where
@@ -863,7 +863,7 @@ async fn run_deploy_step<N>(
     service: &DeployServiceExecutionCommand,
     machine_id: &ployz_core::ids::MachineId,
     slot: ReplicaSlot,
-    dataplane_members: &[ployz_core::dataplane::DataplaneMember],
+    dataplane_members: &[ployz_core::network::DataplaneMember],
 ) -> Result<(DeployContainer, RunContainerDisposition), DeployExecutionError>
 where
     N: MachineContainerRuntime,

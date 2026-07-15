@@ -16,7 +16,7 @@ use crate::control::reconciler::certificate::{
 use crate::control::store::CoreStore;
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use ployz_core::certificate::{
+use ployz_core::certificateificate::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, CertificateArtifactPushOk,
     CertificateArtifactPushRequest, CertificateArtifactPushResponse,

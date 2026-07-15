@@ -4,7 +4,7 @@ use super::{
     RecordNetworkRepairTransitionError, RecordOperationEventOutcome, SubmitOperationError,
 };
 use ployz_core::ids::OperationId;
-use ployz_core::ops::{EventSequence, NetworkRepairEvidence, NetworkRepairTransition};
+use ployz_core::operation::{EventSequence, NetworkRepairEvidence, NetworkRepairTransition};
 
 impl OperationRepository {
     pub async fn submit_network_repair(

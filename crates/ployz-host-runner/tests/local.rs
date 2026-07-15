@@ -10,7 +10,7 @@ use std::time::Duration;
 use ployz_core::ids::MachineId;
 use ployz_core::install::NatsMachineMaterialPaths;
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
-use ployz_core::ops::FailureMessage;
+use ployz_core::operation::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_host_runner::execution::{
     ArtifactKind, ArtifactSource, ArtifactTarget, DataplaneArtifactTargets,
@@ -568,7 +568,7 @@ fn arch_package_installs_use_existing_pacman_sync_databases() {
     effects
         .apply_step(&HostRunnerStep::PrepareContainerRuntime(
             ContainerRuntime::Docker,
-            ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+            ployz_core::network::MachineEndpointSupernet::default_v1(),
         ))
         .expect("Arch installs Docker from existing pacman sync databases");
 
@@ -608,7 +608,7 @@ fn amazon_linux_2_falls_back_to_yum_for_dataplane_and_docker_packages() {
     effects
         .apply_step(&HostRunnerStep::PrepareContainerRuntime(
             ContainerRuntime::Docker,
-            ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+            ployz_core::network::MachineEndpointSupernet::default_v1(),
         ))
         .expect("Amazon Linux 2 installs Docker with yum");
 
@@ -699,7 +699,7 @@ fn local_effects_reject_stopped_classic_store_before_writing_daemon_config() {
 
     let result = effects.apply_step(&HostRunnerStep::PrepareContainerRuntime(
         ContainerRuntime::Docker,
-        ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+        ployz_core::network::MachineEndpointSupernet::default_v1(),
     ));
 
     assert!(matches!(
@@ -785,7 +785,7 @@ fn local_effects_use_configured_supernet_without_restarting_unchanged_docker() {
     effects
         .apply_step(&HostRunnerStep::PrepareContainerRuntime(
             ContainerRuntime::Docker,
-            ployz_core::dataplane::MachineEndpointSupernet::try_new("10.77.0.0/16")
+            ployz_core::network::MachineEndpointSupernet::try_new("10.77.0.0/16")
                 .expect("valid custom supernet"),
         ))
         .expect("unchanged Docker config is accepted");
@@ -889,7 +889,7 @@ fn local_effects_install_docker_from_native_packages_on_opensuse() {
     effects
         .apply_step(&HostRunnerStep::PrepareContainerRuntime(
             ContainerRuntime::Docker,
-            ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+            ployz_core::network::MachineEndpointSupernet::default_v1(),
         ))
         .expect("openSUSE installs Docker from native packages");
 
@@ -940,7 +940,7 @@ fn local_effects_install_docker_from_rhel_repository_on_rocky() {
     effects
         .apply_step(&HostRunnerStep::PrepareContainerRuntime(
             ContainerRuntime::Docker,
-            ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+            ployz_core::network::MachineEndpointSupernet::default_v1(),
         ))
         .expect("Rocky installs Docker from the supported RHEL repository");
 
@@ -996,7 +996,7 @@ fn local_effects_install_docker_with_openrc_on_alpine() {
     effects
         .apply_step(&HostRunnerStep::PrepareContainerRuntime(
             ContainerRuntime::Docker,
-            ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+            ployz_core::network::MachineEndpointSupernet::default_v1(),
         ))
         .expect("Alpine installs Docker and starts it with OpenRC");
 

@@ -28,10 +28,10 @@ use crate::roles::machine::service::{
     start_machine_role_service_with_endpoint_cache_and_image,
 };
 use futures_util::StreamExt;
-use ployz_core::dataplane::MachineEndpointSubnet;
 use ployz_core::ids::MachineId;
 use ployz_core::image::IMAGE_MESH_REGISTRY_PORT;
-use ployz_core::state::PendingMachineJoinRecoverySnapshot;
+use ployz_core::intent::recovery::PendingMachineJoinRecoverySnapshot;
+use ployz_core::network::MachineEndpointSubnet;
 use ployz_nats::connect::{NatsClientUrl, NatsConnectError, connect_authenticated_pool};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
 use ployz_nats::subjects::PENDING_MACHINE_JOINS_CHANGED;
@@ -43,7 +43,7 @@ use tokio::task::JoinHandle;
 
 const MACHINE_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MACHINE_OBSERVATION_INTERVAL: Duration =
-    ployz_core::machine_runtime::OBSERVATION_PUBLISH_INTERVAL;
+    ployz_core::machine::runtime::OBSERVATION_PUBLISH_INTERVAL;
 const MACHINE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
 const MACHINE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const INTENT_MIRROR_RESUBSCRIBE_DELAY: Duration = Duration::from_secs(5);
@@ -497,14 +497,14 @@ mod tests {
         MachineLogReaderError, MachineLogTail,
     };
     use futures_util::StreamExt;
-    use ployz_core::dataplane::{
+    use ployz_core::ids::{ContainerId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
+    use ployz_core::machine::runtime::ManagedContainerKind;
+    use ployz_core::machine::runtime::{
+        ContainerRuntimeState, MachineFactsSnapshot, ManagedContainerIdentity,
+    };
+    use ployz_core::network::{
         EbpfForwardingReady, EbpfForwardingReadyEvidence, PloyzNativeMeshReady,
         WireGuardEbpfPrepareError, WireGuardReady, WireGuardReadyEvidence,
-    };
-    use ployz_core::ids::{ContainerId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
-    use ployz_core::machine_runtime::ManagedContainerKind;
-    use ployz_core::machine_runtime::{
-        ContainerRuntimeState, MachineFactsSnapshot, ManagedContainerIdentity,
     };
     use ployz_nats::subjects::machine_facts;
     use std::sync::{Arc, Mutex};
@@ -619,15 +619,13 @@ mod tests {
 
         async fn ensure_projection_endpoint_network(
             &self,
-            _expected_subnet: &ployz_core::dataplane::MachineEndpointSubnet,
+            _expected_subnet: &ployz_core::network::MachineEndpointSubnet,
         ) -> Result<(), MachineContainerRunnerError> {
             Ok(())
         }
 
-        async fn read_endpoint_network_status(
-            &self,
-        ) -> ployz_core::dataplane::EndpointBridgeStatus {
-            ployz_core::dataplane::EndpointBridgeStatus::Missing
+        async fn read_endpoint_network_status(&self) -> ployz_core::network::EndpointBridgeStatus {
+            ployz_core::network::EndpointBridgeStatus::Missing
         }
 
         async fn resolve_registry_image(
@@ -754,16 +752,14 @@ mod tests {
 
         async fn ensure_projection_endpoint_network(
             &self,
-            _expected_subnet: &ployz_core::dataplane::MachineEndpointSubnet,
+            _expected_subnet: &ployz_core::network::MachineEndpointSubnet,
         ) -> Result<(), MachineContainerRunnerError> {
             self.ensure_endpoint_network().await
         }
 
-        async fn read_endpoint_network_status(
-            &self,
-        ) -> ployz_core::dataplane::EndpointBridgeStatus {
-            ployz_core::dataplane::EndpointBridgeStatus::Unavailable {
-                message: ployz_core::ops::FailureMessage::try_new("docker unavailable")
+        async fn read_endpoint_network_status(&self) -> ployz_core::network::EndpointBridgeStatus {
+            ployz_core::network::EndpointBridgeStatus::Unavailable {
+                message: ployz_core::operation::FailureMessage::try_new("docker unavailable")
                     .expect("failure"),
             }
         }
@@ -869,7 +865,7 @@ mod tests {
             identity: identity_for("run_1"),
             state: ExistingManagedContainerState::Running {
                 ip: None,
-                health: ployz_core::machine_runtime::ContainerHealth::None,
+                health: ployz_core::machine::runtime::ContainerHealth::None,
                 started_at_unix_ms: None,
             },
             health_status: None,
@@ -915,33 +911,31 @@ mod tests {
     impl crate::roles::machine::service::MachinePloyzNativeMeshPreparer for ReadyWireGuardEbpf {
         async fn read_ployz_native_mesh_status(
             &self,
-            _mode: ployz_core::dataplane::NetworkStatusMode,
-        ) -> Result<ployz_core::dataplane::MachineDataplaneStatus, String> {
+            _mode: ployz_core::network::NetworkStatusMode,
+        ) -> Result<ployz_core::network::MachineDataplaneStatus, String> {
             Err("dataplane status is unavailable".to_owned())
         }
 
         async fn read_wireguard_public_key(
             &self,
-        ) -> Result<ployz_core::dataplane::WireGuardPublicKey, WireGuardEbpfPrepareError> {
-            ployz_core::dataplane::WireGuardPublicKey::try_new("test-public-key").map_err(
-                |source| WireGuardEbpfPrepareError::InvalidReport {
-                    message: ployz_core::ops::FailureMessage::try_new(source.to_string())
+        ) -> Result<ployz_core::network::WireGuardPublicKey, WireGuardEbpfPrepareError> {
+            ployz_core::network::WireGuardPublicKey::try_new("test-public-key").map_err(|source| {
+                WireGuardEbpfPrepareError::InvalidReport {
+                    message: ployz_core::operation::FailureMessage::try_new(source.to_string())
                         .expect("wireguard public key error is non-empty"),
-                },
-            )
+                }
+            })
         }
 
         async fn prepare_ployz_native_mesh(
             &self,
-            _endpoint_routes: &[ployz_core::dataplane::WireGuardEbpfEndpointRoute],
-            _peers: &[ployz_core::dataplane::WireGuardPeer],
+            _endpoint_routes: &[ployz_core::network::WireGuardEbpfEndpointRoute],
+            _peers: &[ployz_core::network::WireGuardPeer],
         ) -> Result<PloyzNativeMeshReady, WireGuardEbpfPrepareError> {
             Ok(PloyzNativeMeshReady {
                 wireguard: WireGuardReady {
-                    public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(
-                        "test-public-key",
-                    )
-                    .expect("test public key is valid"),
+                    public_key: ployz_core::network::WireGuardPublicKey::try_new("test-public-key")
+                        .expect("test public key is valid"),
                     evidence: vec![WireGuardReadyEvidence::Command {
                         program: "wg".to_owned(),
                         args: vec!["--version".to_owned()],
@@ -958,8 +952,8 @@ mod tests {
 
         async fn prepare_wireguard(
             &self,
-            endpoint_routes: &[ployz_core::dataplane::WireGuardEbpfEndpointRoute],
-            peers: &[ployz_core::dataplane::WireGuardPeer],
+            endpoint_routes: &[ployz_core::network::WireGuardEbpfEndpointRoute],
+            peers: &[ployz_core::network::WireGuardPeer],
         ) -> Result<WireGuardReady, WireGuardEbpfPrepareError> {
             self.prepare_ployz_native_mesh(endpoint_routes, peers)
                 .await

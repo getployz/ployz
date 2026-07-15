@@ -1,11 +1,11 @@
 //! Pushed-image availability and mesh redistribution for deploy execution.
 
-use ployz_core::dataplane::DataplaneMember;
 use ployz_core::deploy::{
     DeployPlan, DeployPlanStep, DeployRequest, DeployServicePlan, ImageSource,
 };
 use ployz_core::image::{ImageEnsureRequest, ImageRepository, ImageRpcDomainError, OciDigest};
-use ployz_core::ops::{DeployEvidence, DeployOperationFailure, FailureMessage};
+use ployz_core::network::DataplaneMember;
+use ployz_core::operation::{DeployEvidence, DeployOperationFailure, FailureMessage};
 
 use crate::control::role_client::machine::{MachineImageEnsureError, MachineImageResolveError};
 use crate::roles::machine::protocol::{MachineContainerResolveImageRpcRequest, MachineImagePull};

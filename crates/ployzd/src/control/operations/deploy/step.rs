@@ -2,7 +2,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use ployz_core::ids::MachineId;
-use ployz_core::ops::{ControlPlaneCommitScope, RouteHostname, RouteTarget};
+use ployz_core::operation::{ControlPlaneCommitScope, RouteHostname, RouteTarget};
 
 use super::{DeployExecutionCommand, DeployExecutionError};
 use crate::control::operation_evidence::{RecordDeployEvidenceError, RecordDeployTransitionError};

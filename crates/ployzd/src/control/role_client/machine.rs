@@ -22,13 +22,13 @@ use crate::roles::machine::protocol::{
     MachineVolumeRemoveRpcRequest,
 };
 use futures_util::{StreamExt, stream};
-use ployz_core::dataplane::{MachineDataplaneStatus, NetworkStatusMode};
 use ployz_core::deploy::VolumeName;
 use ployz_core::ids::{MachineId, NamespaceId, OperationId};
 use ployz_core::image::{ImageEnsureOk, ImageEnsureRequest, ImageRpcDomainError};
-use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
-use ployz_core::ops::{MachineSubstrateVersions, MachineUpdateFailure};
-use ployz_core::state::MachineLifecycle;
+use ployz_core::machine::MachineLifecycle;
+use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
+use ployz_core::network::{MachineDataplaneStatus, NetworkStatusMode};
+use ployz_core::operation::{MachineSubstrateVersions, MachineUpdateFailure};
 use ployz_nats::service_protocol::{NatsServiceError, NatsServiceErrorCode};
 use ployz_nats::service_runtime::{
     NatsJsonServiceRequestError, NatsServiceRequestFailure, request_json,
@@ -88,7 +88,7 @@ pub enum MachineImageEnsureError {
 pub enum MachineImageResolveError {
     Rejected {
         machine_id: MachineId,
-        message: ployz_core::ops::FailureMessage,
+        message: ployz_core::operation::FailureMessage,
     },
     Unavailable {
         machine_id: MachineId,
@@ -104,7 +104,7 @@ pub enum MachineSubstrateUpdateError {
     },
     UpdateFailed {
         machine_id: MachineId,
-        message: ployz_core::ops::FailureMessage,
+        message: ployz_core::operation::FailureMessage,
     },
 }
 
@@ -117,7 +117,7 @@ pub enum MachineLogsTailError {
     ReadFailed {
         machine_id: MachineId,
         container_id: ployz_core::ids::ContainerId,
-        message: ployz_core::ops::FailureMessage,
+        message: ployz_core::operation::FailureMessage,
     },
     Unavailable {
         machine_id: MachineId,
@@ -130,7 +130,7 @@ pub enum MachineFactsReadError {
     #[error("machine {} rejected facts gather: {}", machine_id.as_str(), message.as_str())]
     GatherFailed {
         machine_id: MachineId,
-        message: ployz_core::ops::FailureMessage,
+        message: ployz_core::operation::FailureMessage,
     },
     #[error(
         "machine {} facts unavailable: {}",
@@ -148,7 +148,7 @@ pub enum MachineFactsRefreshError {
     #[error("machine {} facts refresh failed: {}", machine_id.as_str(), message.as_str())]
     RefreshFailed {
         machine_id: MachineId,
-        message: ployz_core::ops::FailureMessage,
+        message: ployz_core::operation::FailureMessage,
     },
     #[error(
         "machine {} facts refresh unavailable: {}",
@@ -166,7 +166,7 @@ pub enum MachineContainerInspectError {
     InspectFailed {
         machine_id: MachineId,
         container_id: ployz_core::ids::ContainerId,
-        message: ployz_core::ops::FailureMessage,
+        message: ployz_core::operation::FailureMessage,
     },
     Unavailable {
         machine_id: MachineId,
@@ -179,12 +179,12 @@ pub enum MachineVolumeRemoveError {
     #[error("machine {} volume remove unavailable: {}", machine_id.as_str(), message.as_str())]
     Unavailable {
         machine_id: MachineId,
-        message: ployz_core::ops::FailureMessage,
+        message: ployz_core::operation::FailureMessage,
     },
     #[error("machine {} volume remove failed: {}", machine_id.as_str(), message.as_str())]
     RemoveFailed {
         machine_id: MachineId,
-        message: ployz_core::ops::FailureMessage,
+        message: ployz_core::operation::FailureMessage,
     },
 }
 
@@ -352,7 +352,7 @@ impl NatsMachineFactsReader {
         &self,
         machine_id: &MachineId,
     ) -> Result<
-        ployz_core::machine_runtime::MachineFactsRefreshConfirmation,
+        ployz_core::machine::runtime::MachineFactsRefreshConfirmation,
         MachineFactsRefreshError,
     > {
         call_machine::<MachineFactsRefreshRpcOk, MachineFactsRefreshDomainError>(
@@ -384,7 +384,7 @@ pub(crate) struct MachinePlacementFacts {
     pub lifecycle: MachineLifecycle,
     pub containers: Option<MachineContainerObservationSnapshot>,
     pub platform: Option<ployz_core::image::OciPlatform>,
-    pub endpoints: Option<ployz_core::state::MachineEndpointObservation>,
+    pub endpoints: Option<ployz_core::machine::MachineEndpointObservation>,
 }
 
 pub(crate) async fn read_machine_placement_facts(
@@ -514,7 +514,7 @@ impl MachineSubstrateUpdateError {
         match self {
             Self::Unavailable { machine_id, reason } => MachineUpdateFailure::MachineUnavailable {
                 machine_id,
-                message: ployz_core::ops::FailureMessage::try_new(format!("{reason:?}"))
+                message: ployz_core::operation::FailureMessage::try_new(format!("{reason:?}"))
                     .expect("machine runtime unavailable reason is non-empty"),
             },
             Self::UpdateFailed {
@@ -532,7 +532,7 @@ impl NatsMachineFactsReader {
     pub(crate) async fn read_dataplane_status(
         &self,
         machine_id: &MachineId,
-    ) -> Result<MachineDataplaneStatus, ployz_core::ops::FailureMessage> {
+    ) -> Result<MachineDataplaneStatus, ployz_core::operation::FailureMessage> {
         call_machine::<MachineDataplaneStatusRpcOk, MachineDataplaneStatusDomainError>(
             &self.client,
             self.request_timeout,

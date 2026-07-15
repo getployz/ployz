@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use super::command::HostRunnerCommandRunner;
 use super::host_platform::SupervisorKind;
 use super::service::{SupervisorUnitFileError, SupervisorUnitSpec, SupervisorUnitTarget};
-use ployz_core::ops::FailureMessage;
+use ployz_core::operation::FailureMessage;
 use ployz_core::roles::DaemonProcessRole;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

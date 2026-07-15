@@ -6,7 +6,7 @@ use ployz_core::deploy::{
     DeployServiceSpec, ImageReference, ReplicaCount,
 };
 use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
-use ployz_core::ops::{OperationIdempotencyKey, RouteHostname, RoutePort};
+use ployz_core::operation::{OperationIdempotencyKey, RouteHostname, RoutePort};
 use ployz_sdk_types::{AcceptedOperation, DeploySubmitRequest};
 
 use crate::commands::{PloyzctlCliError, cli_error, invalid_value};

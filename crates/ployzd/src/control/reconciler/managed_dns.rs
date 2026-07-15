@@ -4,13 +4,15 @@ use std::future::Future;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::{FutureExt, StreamExt};
-use ployz_core::cert::{ManagedLeaseAcquireRequest, ManagedLeaseRecord, ManagedLeaseRenewRequest};
+use ployz_core::certificate::{
+    ManagedLeaseAcquireRequest, ManagedLeaseRecord, ManagedLeaseRenewRequest,
+};
 use ployz_core::ids::OperationId;
 use ployz_core::ingress::{
     IngressEndpointProjection, IngressEndpointProjectionIdentity, IngressEndpointProjectionState,
     IngressEndpointSet, PloyzDnsTargetIntent,
 };
-use ployz_core::ops::{
+use ployz_core::operation::{
     FailureMessage, ManagedDnsReconcileFailure, ManagedDnsReconcileFailureClass,
     ManagedDnsReconcileSubject, ManagedDnsReconcileTransition, ManagedDnsWithdrawAuthorization,
     OperationStatus,
@@ -592,9 +594,11 @@ impl From<crate::control::operation_evidence::SubmitOperationError> for ManagedD
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::cert::{LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, ManagedLeaseName};
+    use ployz_core::certificate::{
+        LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, ManagedLeaseName,
+    };
     use ployz_core::ingress::IngressEndpointUnavailableReason;
-    use ployz_core::state::ControlPlaneEpoch;
+    use ployz_core::intent::recovery::ControlPlaneEpoch;
 
     fn lease(issued_at: u64, expires_at: u64) -> ManagedLeaseRecord {
         ManagedLeaseRecord::try_new(

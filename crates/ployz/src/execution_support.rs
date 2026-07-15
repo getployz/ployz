@@ -14,7 +14,7 @@ use crate::machine::runtime::host_runner::LocalHostRunnerInstallError;
 use crate::machine::runtime::remote::RemoteMachineExecutionError;
 use ployz_core::ids::OperationId;
 use ployz_core::nats_config::NatsUserSeed;
-use ployz_core::ops::{
+use ployz_core::operation::{
     EventSequence, OperationEventReplayCursor, OperationEventReplayRequest, OperationOutcome,
     ReplayedOperationEvent,
 };

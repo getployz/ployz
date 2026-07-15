@@ -8,7 +8,7 @@ use defguard_wireguard_rs::{
 #[cfg(target_os = "linux")]
 use futures_util::TryStreamExt;
 use ipnet::Ipv4Net;
-use ployz_core::dataplane::{
+use ployz_core::network::{
     MAX_WIREGUARD_MTU, MIN_WIREGUARD_MTU, WireGuardPeer, WireGuardPublicKey,
 };
 #[cfg(target_os = "linux")]
@@ -349,7 +349,7 @@ pub(super) async fn ensure_wireguard_interface(
     private_key: &str,
     listen_port: u16,
     mtu: u32,
-    endpoint_routes: &[ployz_core::dataplane::WireGuardEbpfEndpointRoute],
+    endpoint_routes: &[ployz_core::network::WireGuardEbpfEndpointRoute],
     peers: &[WireGuardPeer],
     local_machine_id: &ployz_core::ids::MachineId,
 ) -> Result<(), String> {

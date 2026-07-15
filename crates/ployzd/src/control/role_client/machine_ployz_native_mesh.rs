@@ -7,10 +7,10 @@ use crate::roles::machine::protocol::{
     MachineDataplanePublicKeyDomainError, MachineDataplanePublicKeyRpcOk,
     MachineDataplanePublicKeyRpcRequest,
 };
-use ployz_core::dataplane::{
+use ployz_core::ids::MachineId;
+use ployz_core::network::{
     PloyzNativeMeshComponent, WireGuardEbpfPrepareError, WireGuardPublicKey,
 };
-use ployz_core::ids::MachineId;
 use ployz_nats::subjects::MachineServiceEndpoint;
 
 impl NatsMachineFactsReader {

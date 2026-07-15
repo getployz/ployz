@@ -16,7 +16,7 @@ use crate::plan::{HostRunnerPlanTerminal, execute_host_runner_plan};
 use crate::release_manifest::{ReleaseManifest, release_manifest_url};
 use ployz_core::ids::OperationId;
 use ployz_core::install::InstallArtifactVersion;
-use ployz_core::ops::FailureMessage;
+use ployz_core::operation::FailureMessage;
 use serde::Serialize;
 
 use crate::env_config::load_versioned_release_manifest;

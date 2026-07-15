@@ -1,6 +1,6 @@
 use clap::Args;
 use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
-use ployz_core::machine_runtime::{ContainerRuntimeState, ManagedContainerHealthStatus};
+use ployz_core::machine::runtime::{ContainerRuntimeState, ManagedContainerHealthStatus};
 use ployz_sdk_types::{
     ServiceContainerMembership, ServiceInspectRequest, ServiceListRequest, ServiceListResult,
     ServiceMachineTestimony, ServiceRestartRequest, ServiceSnapshot,

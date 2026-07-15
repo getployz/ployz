@@ -1,7 +1,7 @@
 use futures_util::future::join_all;
-use ployz_core::dataplane::MachineDataplaneStatus;
 use ployz_core::ids::MachineId;
-use ployz_core::ops::FailureMessage;
+use ployz_core::network::MachineDataplaneStatus;
+use ployz_core::operation::FailureMessage;
 
 use super::machine::NatsMachineFactsReader;
 

@@ -4,8 +4,10 @@ use super::{
 };
 use crate::control::store::{query_json, query_json_list, to_json};
 use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::ops::{MachineAddOperationState, OperationStatus};
-use ployz_core::state::{ActiveMachineState, StagedMachineDataplaneState};
+use ployz_core::intent::ActiveMachineState;
+use ployz_core::intent::StagedMachineDataplaneState;
+use ployz_core::operation::{MachineAddOperationState, OperationStatus};
+
 use rusqlite::{Connection, params};
 
 impl OperationRepository {

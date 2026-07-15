@@ -4,13 +4,15 @@ use ployz_core::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, ServiceI
 use ployz_core::ingress::{
     CertificateOwner, IngressEndpointProjection, PloyzDnsTargetIntent, RouteBindingOrigin,
 };
-use ployz_core::machine_runtime::{
+use ployz_core::intent::ActiveMachineState;
+use ployz_core::intent::IntentSnapshot;
+use ployz_core::intent::RouteBindingState;
+use ployz_core::intent::ServingTargetEntry;
+use ployz_core::machine::GatewayStatusObservation;
+use ployz_core::machine::runtime::{
     MachineFactsSnapshot, ManagedContainerKind, ManagedContainerObservation,
 };
-use ployz_core::state::{
-    ActiveMachineState, GatewayStatusObservation, IntentSnapshot, RouteBindingState,
-    ServingTargetEntry,
-};
+
 use ployz_sdk_types::{
     MachineSnapshot, MachineTestimony, RouteTlsAvailability, RouteTlsStatus,
     RuntimeDerivedCollectionSource, RuntimeDerivedCollectionStatus, RuntimePloyzDnsTarget,
@@ -128,8 +130,10 @@ fn runtime_ployz_dns_target(
     let allocation = match allocation {
         Some(PloyzDnsTargetAllocation::Allocated { lease }) => {
             RuntimePloyzDnsTargetAllocation::Allocated {
-                hostname: ployz_core::ops::RouteHostname::try_new(lease.name.hostname_suffix())
-                    .expect("managed lease names always form valid route hostnames"),
+                hostname: ployz_core::operation::RouteHostname::try_new(
+                    lease.name.hostname_suffix(),
+                )
+                .expect("managed lease names always form valid route hostnames"),
                 issued_at_unix_seconds: lease.issued_at.unix_seconds(),
                 expires_at_unix_seconds: lease.expires_at.unix_seconds(),
             }
@@ -442,17 +446,17 @@ fn derived_source(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::cert::{
+    use ployz_core::certificate::{
         ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, LeaseBearerToken,
         LeaseExpiresAt, LeaseIssuedAt, ManagedLeaseName, ManagedLeaseRecord,
     };
-    use ployz_core::dataplane::DataplaneProjection;
     use ployz_core::ids::{CertId, RouteBindingId};
     use ployz_core::ingress::{
         ActiveCertificateMetadata, AutomaticHostnameConfiguration, IngressEndpointProjectionState,
     };
-    use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
-    use ployz_core::state::ControlPlaneEpoch;
+    use ployz_core::intent::recovery::ControlPlaneEpoch;
+    use ployz_core::network::DataplaneProjection;
+    use ployz_core::operation::{RouteHostname, RoutePort, RouteTarget};
 
     #[test]
     fn runtime_ingress_exposes_only_non_secret_current_state() {

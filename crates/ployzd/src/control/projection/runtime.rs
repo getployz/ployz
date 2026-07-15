@@ -9,7 +9,7 @@ use crate::process_support::BackoffSchedule;
 use crate::role_testimony::RoleTestimonyCache;
 use crate::service_catalog::{runtime_projection_service, runtime_snapshot_seed_endpoint_spec};
 use futures_util::StreamExt;
-use ployz_core::state::IntentSnapshot;
+use ployz_core::intent::IntentSnapshot;
 use ployz_nats::service_protocol::NatsServiceError;
 use ployz_nats::service_runtime::{
     NatsServiceHealth, NatsServiceResponse, NatsServiceShutdownError, RunningNatsService,
@@ -325,14 +325,16 @@ async fn run_projection(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::dataplane::{DataplaneProjection, MachineEndpointSubnet, WireGuardPublicKey};
+    use ployz_core::intent::ActiveMachineState;
+    use ployz_core::intent::recovery::ControlPlaneEpoch;
+    use ployz_core::machine::GatewayServingStatus;
+    use ployz_core::machine::GatewayStatusObservation;
+    use ployz_core::machine::MachineLifecycle;
     use ployz_core::machine::MachineName;
-    use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
+    use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
+    use ployz_core::network::{DataplaneProjection, MachineEndpointSubnet, WireGuardPublicKey};
     use ployz_core::roles::InstallRolePolicy;
-    use ployz_core::state::{
-        ActiveMachineState, ControlPlaneEpoch, GatewayServingStatus, GatewayStatusObservation,
-        MachineLifecycle,
-    };
+
     use ployz_sdk_types::{MachineTestimony, RuntimeDerivedCollectionStatus};
     use ployz_test_support::containers;
     use ployz_test_support::fixtures::{serving_target_entry, test_disk_space};
@@ -441,7 +443,7 @@ mod tests {
     }
 
     fn intent(
-        serving_target_entries: Vec<ployz_core::state::ServingTargetEntry>,
+        serving_target_entries: Vec<ployz_core::intent::ServingTargetEntry>,
     ) -> IntentSnapshot {
         let machine = active_machine();
         IntentSnapshot {

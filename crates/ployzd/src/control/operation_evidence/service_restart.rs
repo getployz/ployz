@@ -4,7 +4,7 @@ use super::{
     ServiceRestartOperationSubmission, ServiceRestartPayload, SubmitOperationError,
 };
 use ployz_core::ids::OperationId;
-use ployz_core::ops::ServiceRestartTransition;
+use ployz_core::operation::ServiceRestartTransition;
 
 impl OperationRepository {
     pub async fn submit_service_restart(
@@ -44,10 +44,10 @@ impl OperationRepository {
         operation_id: &OperationId,
         machine_id: ployz_core::ids::MachineId,
         container_id: ployz_core::ids::ContainerId,
-    ) -> Result<ployz_core::ops::EventSequence, RecordServiceRestartTransitionError> {
+    ) -> Result<ployz_core::operation::EventSequence, RecordServiceRestartTransitionError> {
         self.record_operation_event(
             operation_id,
-            ployz_core::ops::OperationEvent::ServiceRestartContainerRestarted {
+            ployz_core::operation::OperationEvent::ServiceRestartContainerRestarted {
                 operation_id: operation_id.clone(),
                 machine_id,
                 container_id,

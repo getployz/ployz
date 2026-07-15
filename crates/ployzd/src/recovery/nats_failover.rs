@@ -11,7 +11,9 @@
 use super::{IntentMirror, IntentMirrorStoreOutcome};
 use crate::control::intent::service::NatsIntentReader;
 use futures_util::StreamExt;
-use ployz_core::state::{ControlPlaneEpoch, IntentSnapshot};
+use ployz_core::intent::IntentSnapshot;
+use ployz_core::intent::recovery::ControlPlaneEpoch;
+
 use ployz_nats::connect::NatsClientUrl;
 use ployz_nats::service_runtime::NatsClient;
 use ployz_nats::subjects::INTENT_CHANGED;
@@ -300,7 +302,10 @@ fn push_unique(pool: &mut Vec<String>, urls: impl IntoIterator<Item = String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::state::{ActiveMachineState, ControlPlaneEpoch, MachineLifecycle};
+    use ployz_core::intent::ActiveMachineState;
+    use ployz_core::intent::recovery::ControlPlaneEpoch;
+    use ployz_core::machine::MachineLifecycle;
+
     use ployz_nats::subjects::INTENT_GET;
     use ployz_test_support::ids::{machine_id, operation_id};
 
@@ -313,9 +318,9 @@ mod tests {
             lifecycle: MachineLifecycle::Active,
             control_endpoints: endpoints.iter().map(|ip| ip.parse().expect("ip")).collect(),
             mesh_endpoints: Vec::new(),
-            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
+            endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new("10.198.0.0/24")
                 .expect("valid endpoint subnet"),
-            wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+            wireguard_public_key: ployz_core::network::WireGuardPublicKey::try_new(format!(
                 "public-{id}"
             ))
             .expect("public key"),
@@ -331,7 +336,7 @@ mod tests {
             epoch,
             core_machine_id: machine_id(core_machine_id),
             active_machines: machines,
-            dataplane_projection: ployz_core::dataplane::DataplaneProjection::try_new(
+            dataplane_projection: ployz_core::network::DataplaneProjection::try_new(
                 Vec::new(),
                 None,
             )

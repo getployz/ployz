@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use ployz_core::cert::{
+use ployz_core::certificate::{
     LeaseBearerToken, ManagedLeaseAcquisitionId, ManagedLeaseAddressSet, ManagedLeaseRecord,
 };
 use ployz_core::ingress::{IngressEndpointProjectionIdentity, PloyzDnsTargetIntent};
@@ -11,7 +11,7 @@ use crate::control::store::{CoreStore, CoreStoreError, query_json, to_json};
 
 const SINGLETON_ID: &str = "1";
 
-pub use ployz_core::cert::ManagedLeaseAddressSet as ManagedDnsEndpointSet;
+pub use ployz_core::certificate::ManagedLeaseAddressSet as ManagedDnsEndpointSet;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
@@ -319,10 +319,10 @@ mod tests {
             panic!("unacquired target");
         };
         let lease = ManagedLeaseRecord::try_new(
-            ployz_core::cert::ManagedLeaseName::try_new("cluster-one").expect("name"),
+            ployz_core::certificate::ManagedLeaseName::try_new("cluster-one").expect("name"),
             token,
-            ployz_core::cert::LeaseIssuedAt::try_new(1_000).expect("issued"),
-            ployz_core::cert::LeaseExpiresAt::try_new(2_000).expect("expires"),
+            ployz_core::certificate::LeaseIssuedAt::try_new(1_000).expect("issued"),
+            ployz_core::certificate::LeaseExpiresAt::try_new(2_000).expect("expires"),
         )
         .expect("lease");
 

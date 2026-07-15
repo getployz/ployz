@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ployz_core::ops::FailureMessage;
+use ployz_core::operation::FailureMessage;
 
 /// The permissions a staged file is created with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -11,7 +11,7 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::ServiceId;
 use ployz_core::ingress::AutomaticHostnameLabel;
-use ployz_core::ops::{RouteHostname, RoutePort};
+use ployz_core::operation::{RouteHostname, RoutePort};
 use serde_yaml::Value;
 
 use super::diagnostics::{ComposeFinding, ComposePath, KnownUnsupported, classify_service_key};

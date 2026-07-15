@@ -5,7 +5,7 @@ use super::{
     GatewayProjectionState, GatewayProjectionUpdate, GatewayRoute, GatewayServingEntry,
     GatewayUnroutableContainer, GatewayUpstream, apply_gateway_update, project_gateway,
 };
-use ployz_core::certificate::{
+use ployz_core::certificateificate::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, CustomCertBundle,
     custom_bundle_digest,

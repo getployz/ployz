@@ -18,7 +18,7 @@ use crate::control::intent::nats_authorizations::{
     NatsAuthorizationStore, NatsAuthorizationStoreError,
 };
 use crate::control::store::{CoreStore, CoreStoreError};
-use ployz_core::state::IntentSnapshot;
+use ployz_core::intent::IntentSnapshot;
 use std::path::Path;
 
 #[derive(Debug, thiserror::Error)]
@@ -116,12 +116,17 @@ pub async fn seed_core_from_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::cert::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
+    use ployz_core::certificate::{
+        ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
+    };
     use ployz_core::ingress::{
         ActiveCertificateMetadata, AutomaticHostnameConfiguration, CertificateOwner,
         PloyzDnsTargetIntent,
     };
-    use ployz_core::state::{ActiveMachineState, ControlPlaneEpoch, MachineLifecycle};
+    use ployz_core::intent::ActiveMachineState;
+    use ployz_core::intent::recovery::ControlPlaneEpoch;
+    use ployz_core::machine::MachineLifecycle;
+
     use ployz_test_support::ids::{machine_id, operation_id};
 
     fn snapshot_at_epoch(epoch: ControlPlaneEpoch) -> IntentSnapshot {
@@ -139,16 +144,16 @@ mod tests {
                 lifecycle: MachineLifecycle::Active,
                 control_endpoints: Vec::new(),
                 mesh_endpoints: Vec::new(),
-                endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(
+                endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new(
                     "10.198.0.0/24",
                 )
                 .expect("valid endpoint subnet"),
-                wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(
+                wireguard_public_key: ployz_core::network::WireGuardPublicKey::try_new(
                     "public-machine-a",
                 )
                 .expect("public key"),
             }],
-            dataplane_projection: ployz_core::dataplane::DataplaneProjection::try_new(
+            dataplane_projection: ployz_core::network::DataplaneProjection::try_new(
                 Vec::new(),
                 None,
             )

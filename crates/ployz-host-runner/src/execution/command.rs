@@ -9,7 +9,7 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ployz_core::ops::FailureMessage;
+use ployz_core::operation::FailureMessage;
 use wait_timeout::ChildExt;
 
 pub trait HostRunnerCommandRunner {

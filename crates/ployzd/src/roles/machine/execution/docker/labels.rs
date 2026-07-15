@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use ployz_core::ids::{
     NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId, SubjectTokenError,
 };
-use ployz_core::machine_runtime::{ManagedContainerIdentity, ManagedContainerKind};
+use ployz_core::machine::runtime::{ManagedContainerIdentity, ManagedContainerKind};
 
 pub const MANAGED_LABEL: &str = "plz.managed";
 pub const NAMESPACE_ID_LABEL: &str = "plz.namespace_id";

@@ -23,12 +23,12 @@ use crate::roles::machine::projection::{
 };
 use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
 use crate::service_catalog::{machine_endpoint_spec, machine_role_service_base};
-use ployz_core::dataplane::{
+use ployz_core::ids::MachineId;
+use ployz_core::machine::MachineEndpointObservation;
+use ployz_core::network::{
     PloyzNativeMeshReady, WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer,
     WireGuardPublicKey, WireGuardReady,
 };
-use ployz_core::ids::MachineId;
-use ployz_core::state::MachineEndpointObservation;
 use ployz_nats::service_runtime::{
     EndpointExecutionPolicy, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
     NatsServiceShutdownError, RunningNatsService, start_nats_service,
@@ -45,7 +45,7 @@ const PRE_START_HOOK_ENDPOINT_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 
 pub use super::facts::MachineFactsReadError;
 
 const DATAPLANE_STATUS_ENDPOINT_TIMEOUT: Duration =
-    dataplane_status_budget(ployz_core::dataplane::NetworkStatusMode::ProbePathMtu)
+    dataplane_status_budget(ployz_core::network::NetworkStatusMode::ProbePathMtu)
         .saturating_add(Duration::from_secs(10));
 
 pub struct RunningMachineRoleRuntime {
@@ -438,8 +438,8 @@ pub trait MachinePloyzNativeMeshPreparer {
 
     fn read_ployz_native_mesh_status(
         &self,
-        mode: ployz_core::dataplane::NetworkStatusMode,
-    ) -> impl Future<Output = Result<ployz_core::dataplane::MachineDataplaneStatus, String>> + Send;
+        mode: ployz_core::network::NetworkStatusMode,
+    ) -> impl Future<Output = Result<ployz_core::network::MachineDataplaneStatus, String>> + Send;
 
     fn prepare_wireguard(
         &self,
@@ -469,11 +469,9 @@ mod tests {
 
         assert!(
             policy.request_timeout
-                > dataplane_status_budget(ployz_core::dataplane::NetworkStatusMode::Snapshot)
+                > dataplane_status_budget(ployz_core::network::NetworkStatusMode::Snapshot)
                 && policy.request_timeout
-                    > dataplane_status_budget(
-                        ployz_core::dataplane::NetworkStatusMode::ProbePathMtu,
-                    )
+                    > dataplane_status_budget(ployz_core::network::NetworkStatusMode::ProbePathMtu,)
         );
     }
 }

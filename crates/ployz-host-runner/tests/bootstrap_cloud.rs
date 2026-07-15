@@ -4,7 +4,7 @@ use ployz_core::install::{
     MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTrustedNats,
 };
 use ployz_core::nats_config::NatsUserSeed;
-use ployz_core::ops::FailureMessage;
+use ployz_core::operation::FailureMessage;
 use ployz_core::security::NatsPrincipal;
 use ployz_host_runner::lifecycle::{
     CloudAttemptStateError, CloudBootstrapLocalState, cloud_joiner_connect_config,

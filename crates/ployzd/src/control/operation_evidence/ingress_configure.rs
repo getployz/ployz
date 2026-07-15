@@ -4,7 +4,7 @@ use super::{
     SubmitOperationError,
 };
 use ployz_core::ids::OperationId;
-use ployz_core::ops::IngressConfigureTransition;
+use ployz_core::operation::IngressConfigureTransition;
 
 impl OperationRepository {
     pub async fn submit_ingress_configure(

@@ -22,10 +22,10 @@ use crate::roles::machine::protocol::{
     MachineContainerInspectRpcOk, MachineContainerInspectRpcRequest,
 };
 use crate::tasks::TaskRegistry;
-use ployz_core::cert::ActiveCertState;
+use ployz_core::certificate::ActiveCertState;
 use ployz_core::ingress::CertificateOwner;
-use ployz_core::machine_runtime::{ContainerHealth, ContainerRuntimeState};
-use ployz_core::ops::{
+use ployz_core::machine::runtime::{ContainerHealth, ContainerRuntimeState};
+use ployz_core::operation::{
     CertificateProvisionFailure, DeployOperationFailure, DeployTransition, FailureMessage,
     OperatorHint, RouteHostname, StatusProjectionError,
 };
@@ -243,7 +243,7 @@ impl NamespaceStateCommitter for NamespaceIntentCommitter {
 
     async fn remove_route_binding(
         &mut self,
-        target: ployz_core::ops::RouteTarget,
+        target: ployz_core::operation::RouteTarget,
     ) -> Result<(), NamespaceCommitError> {
         self.namespace_intent
             .remove_route_binding(&target)
@@ -258,9 +258,9 @@ impl NamespaceStateCommitter for NamespaceIntentCommitter {
 
     async fn remove_serving_target_entry(
         &mut self,
-        entry: ployz_core::state::ServingTargetEntry,
+        entry: ployz_core::intent::ServingTargetEntry,
     ) -> Result<(), NamespaceCommitError> {
-        let scope = ployz_core::ops::ControlPlaneCommitScope::ServiceEntry {
+        let scope = ployz_core::operation::ControlPlaneCommitScope::ServiceEntry {
             service_id: entry.service_id.clone(),
             namespace_revision_entry_id: entry.namespace_revision_entry_id.clone(),
         };
@@ -277,7 +277,7 @@ impl NamespaceStateCommitter for NamespaceIntentCommitter {
 
     async fn replace_volume_pin(
         &mut self,
-        state: ployz_core::state::VolumePinState,
+        state: ployz_core::intent::VolumePinState,
     ) -> Result<(), NamespaceCommitError> {
         self.namespace_intent
             .replace_volume_pin(state.clone())
@@ -465,7 +465,7 @@ impl DeployHealthChecker for LiveContainerHealthChecker {
 }
 
 fn observed_container_readiness(
-    observation: &ployz_core::machine_runtime::ManagedContainerObservation,
+    observation: &ployz_core::machine::runtime::ManagedContainerObservation,
     requires_docker_healthcheck: bool,
     observed_at_unix_ms: u64,
 ) -> ObservedContainerReadiness {
@@ -537,7 +537,7 @@ mod tests {
     use ployz_core::ids::{
         ContainerId, MachineId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId,
     };
-    use ployz_core::machine_runtime::{
+    use ployz_core::machine::runtime::{
         ContainerHealth, ContainerRuntimeState, ManagedContainerIdentity, ManagedContainerKind,
         ManagedContainerObservation,
     };

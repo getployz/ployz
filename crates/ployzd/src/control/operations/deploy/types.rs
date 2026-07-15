@@ -1,4 +1,3 @@
-use ployz_core::dataplane::DataplaneMember;
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployRequest, DeployServiceRequest, ExistingServiceReplica,
     RegistryCredential,
@@ -8,9 +7,14 @@ use ployz_core::ids::{
     StepId,
 };
 use ployz_core::image::OciPlatform;
-use ployz_core::ops::{DeployCompletionOutcome, FailureMessage, OperatorHint, RetainedArtifact};
-use ployz_core::state::VolumePinState;
-use ployz_core::state::{RouteBindingState, ServingTargetEntry};
+use ployz_core::intent::RouteBindingState;
+use ployz_core::intent::ServingTargetEntry;
+use ployz_core::intent::VolumePinState;
+use ployz_core::network::DataplaneMember;
+use ployz_core::operation::{
+    DeployCompletionOutcome, FailureMessage, OperatorHint, RetainedArtifact,
+};
+
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -32,7 +36,7 @@ pub struct DeployExecutionCommand {
     pub(super) ployz_automatic_hostnames: bool,
     pub(super) gateway_certificate_targets: Vec<GatewayCertificateTarget>,
     pub(super) ployz_gateway_certificate_targets: Vec<GatewayCertificateTarget>,
-    pub(super) unusable_machines: Vec<ployz_core::ops::UnusableMachine>,
+    pub(super) unusable_machines: Vec<ployz_core::operation::UnusableMachine>,
     pub(super) step_timeout: Duration,
 }
 
@@ -74,7 +78,7 @@ impl DeployExecutionCommand {
     }
 
     #[must_use]
-    pub fn unusable_machines(&self) -> &[ployz_core::ops::UnusableMachine] {
+    pub fn unusable_machines(&self) -> &[ployz_core::operation::UnusableMachine] {
         &self.unusable_machines
     }
 

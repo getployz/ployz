@@ -1,7 +1,7 @@
 //! Concrete NATS subject construction.
 
 use ployz_core::ids::{MachineId, NamespaceId, OperationId};
-use ployz_core::ops::{
+use ployz_core::operation::{
     DeployRunningStage, NamespaceRemoveRunningStage, NetworkRepairRunningStage,
     ServiceRestartRunningStage, VolumeRemoveRunningStage,
 };

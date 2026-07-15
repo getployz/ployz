@@ -1,14 +1,14 @@
 //! Role-specific daemon configuration.
 
-use ployz_core::dataplane::{
-    MachineEndpointSubnet, MachineEndpointSupernet, default_endpoint_subnet,
-};
 use ployz_core::ids::MachineId;
 use ployz_core::install::{
     InstallContractError, MachineBootstrapUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
     NatsMachineMaterialPaths,
 };
 use ployz_core::nats_config::NatsUserSeed;
+use ployz_core::network::{
+    MachineEndpointSubnet, MachineEndpointSupernet, default_endpoint_subnet,
+};
 use ployz_core::security::NatsPrincipal;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -589,11 +589,11 @@ pub enum DaemonProcessConfigError {
     },
     InvalidDataplaneEndpointSupernet {
         value: String,
-        source: ployz_core::dataplane::MachineEndpointSupernetError,
+        source: ployz_core::network::MachineEndpointSupernetError,
     },
     InvalidDataplaneEndpointSubnet {
         value: String,
-        source: ployz_core::dataplane::MachineEndpointSubnetError,
+        source: ployz_core::network::MachineEndpointSubnetError,
     },
     InvalidLeaseWorkerUrl {
         value: String,

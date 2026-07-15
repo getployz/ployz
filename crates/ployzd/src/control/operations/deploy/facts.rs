@@ -8,12 +8,15 @@ use crate::control::intent::namespace_intent::NamespaceIntentStore;
 use crate::control::intent::service::NatsIntentReader;
 use crate::control::role_client::machine::{NatsMachineFactsReader, read_machine_placement_facts};
 use crate::control::role_client::machine_convergence::gather_dataplane_statuses;
-use ployz_core::dataplane::{DataplaneMember, DataplaneProjection};
 use ployz_core::deploy::{DeployRequest, DeployRouteTarget, validate_deploy_route_bindings};
 use ployz_core::ids::MachineId;
 use ployz_core::ingress::{AutomaticHostnameConfiguration, IngressConfiguration};
-use ployz_core::ops::RouteHostname;
-use ployz_core::state::{ActiveMachineState, IntentSnapshot, MachineLifecycle};
+use ployz_core::intent::ActiveMachineState;
+use ployz_core::intent::IntentSnapshot;
+use ployz_core::machine::MachineLifecycle;
+use ployz_core::network::{DataplaneMember, DataplaneProjection};
+use ployz_core::operation::RouteHostname;
+
 use std::time::Duration;
 
 use super::placement::classify_machine_usability;
@@ -261,7 +264,7 @@ async fn deploy_execution_facts(
 fn validate_route_bindings(
     request: &DeployRequest,
     automatic_hostname_suffix: Option<&RouteHostname>,
-    existing: &[ployz_core::state::RouteBindingState],
+    existing: &[ployz_core::intent::RouteBindingState],
 ) -> Result<(), DeployFactLoadError> {
     validate_deploy_route_bindings(
         request,

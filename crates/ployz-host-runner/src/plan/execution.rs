@@ -1,6 +1,6 @@
 //! Ordered, bounded Host Runner plan execution and typed failures.
 
-use ployz_core::ops::FailureMessage;
+use ployz_core::operation::FailureMessage;
 
 use super::steps::{
     HostRunnerStep, HostRunnerStepEffectError, HostRunnerStepFailure, HostRunnerStepFailureReason,

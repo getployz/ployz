@@ -25,8 +25,8 @@ use ployz_core::install::{
 };
 use ployz_core::machine::MachineAddFailure;
 use ployz_core::nats_config::NatsCaCertificatePem;
-use ployz_core::ops::MachineAddOperationState;
-use ployz_core::ops::{
+use ployz_core::operation::MachineAddOperationState;
+use ployz_core::operation::{
     CoreReplaceOperationState, FailureMessage, OperationEventReplayPage, OperationStatus,
     OperationStatusSnapshot,
 };
@@ -402,8 +402,7 @@ fn machine_join_bundle() -> MachineJoinBundle {
     };
     MachineJoinBundle {
         material: MachineJoinMaterial {
-            dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(
-            ),
+            dataplane_endpoint_supernet: ployz_core::network::MachineEndpointSupernet::default_v1(),
             cluster_name: MachineJoinClusterName::try_new("testcluster")
                 .expect("valid cluster name"),
             runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222")

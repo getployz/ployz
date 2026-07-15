@@ -25,17 +25,17 @@ use bollard::query_parameters::{
     RestartContainerOptions, StopContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
-use ployz_core::dataplane::{
-    EndpointBridgeStatus, INTERNAL_DNS_SUFFIX, MachineEndpointSubnet, endpoint_bridge_gateway_ipv4,
-};
 use ployz_core::deploy::{
     ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest, ContainerRestartPolicy,
     ImageReference, RegistryCredential,
 };
 use ployz_core::ids::{ContainerId, SubjectTokenError};
 use ployz_core::image::OciDigest;
-use ployz_core::machine_runtime::{
+use ployz_core::machine::runtime::{
     ContainerHealth, ManagedContainerHealthStatus, ManagedContainerIdentity,
+};
+use ployz_core::network::{
+    EndpointBridgeStatus, INTERNAL_DNS_SUFFIX, MachineEndpointSubnet, endpoint_bridge_gateway_ipv4,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
@@ -216,7 +216,7 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
             Ok(docker) => docker,
             Err(error) => {
                 return EndpointBridgeStatus::Unavailable {
-                    message: ployz_core::ops::FailureMessage::try_new(error.to_string())
+                    message: ployz_core::operation::FailureMessage::try_new(error.to_string())
                         .expect("Docker connection failure is non-empty"),
                 };
             }
@@ -1052,7 +1052,7 @@ mod tests {
         ServiceVolumeMount, StopGracePeriod, VolumeName,
     };
     use ployz_core::ids::{NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
-    use ployz_core::machine_runtime::{ManagedContainerIdentity, ManagedContainerKind};
+    use ployz_core::machine::runtime::{ManagedContainerIdentity, ManagedContainerKind};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixListener;

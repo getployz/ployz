@@ -534,7 +534,7 @@ fn discover_machine_public_ips() -> Vec<std::net::IpAddr> {
         .unwrap_or_default()
         .into_iter()
         .map(|(_, ip)| ip)
-        .filter(|ip| ployz_core::reachability::is_public(*ip))
+        .filter(|ip| ployz_core::network::reachability::is_public(*ip))
         .collect()
 }
 

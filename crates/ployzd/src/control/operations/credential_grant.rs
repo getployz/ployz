@@ -5,7 +5,7 @@ use crate::control::authorization::{
 use crate::control::operation_evidence::AcceptedCredentialGrantSubmission;
 use crate::control::sequencer::OperationControllers;
 use crate::tasks::TaskRegistry;
-use ployz_core::ops::{
+use ployz_core::operation::{
     CredentialGrantAction, CredentialGrantFailure, CredentialGrantTransition, FailureMessage,
 };
 use ployz_nats::subjects::INTENT_CHANGED;

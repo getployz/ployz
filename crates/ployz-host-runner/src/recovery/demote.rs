@@ -9,7 +9,7 @@ use crate::execution::{
     detect_host_platform,
 };
 use ployz_core::ids::MachineId;
-use ployz_core::ops::FailureMessage;
+use ployz_core::operation::FailureMessage;
 use ployz_core::roles::DaemonProcessRole;
 use ployz_nats::connect::NatsClientUrl;
 

@@ -1,4 +1,3 @@
-use ployz_core::dataplane::MachineEndpointSubnet;
 use ployz_core::deploy::{DeployReservationId, VolumeName};
 use ployz_core::ids::{CertId, MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::ingress::IngressConfiguration;
@@ -6,15 +5,16 @@ use ployz_core::install::MachineJoinRuntimeNatsUrl;
 use ployz_core::install::{
     HostPortAssurance, InstallArtifactVersion, MachineJoinBundle, MachineJoinSecretDelivery,
 };
+use ployz_core::machine::MachineLifecycle;
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineName, RawJoinToken,
 };
-use ployz_core::ops::{
+use ployz_core::network::MachineEndpointSubnet;
+use ployz_core::operation::{
     CredentialGrantAction, EventSequence, MachineAddOperationStateName, ManagedDnsReconcileSubject,
     OperationIdempotencyKey, OperationStatus, StatusProjectionError,
 };
 use ployz_core::roles::InstallRolePolicy;
-use ployz_core::state::MachineLifecycle;
 use serde::Serialize;
 
 pub(super) struct SubmittedOperation<P> {
@@ -415,7 +415,7 @@ pub enum RecordOperationEventError {
     #[error("operation record corrupt: missing operation {}", .operation_id.as_str())]
     MissingOperation { operation_id: OperationId },
     #[error("operation record corrupt: {0}")]
-    InvalidNextSequence(ployz_core::ops::NextEventSequenceError),
+    InvalidNextSequence(ployz_core::operation::NextEventSequenceError),
     #[error("operation status projection failed: {0}")]
     ProjectStatus(StatusProjectionError),
 }
@@ -467,7 +467,7 @@ pub enum OperationEventLogError {
     #[error("operation event sequence {sequence} is invalid: {error}")]
     InvalidEventSequence {
         sequence: u64,
-        error: ployz_core::ops::EventSequenceError,
+        error: ployz_core::operation::EventSequenceError,
     },
     #[error("operation replay next sequence {sequence} is invalid")]
     InvalidNextReplaySequence { sequence: u64 },

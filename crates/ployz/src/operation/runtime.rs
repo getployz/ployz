@@ -11,7 +11,7 @@ use crate::operation::command::{
     WatchOutput,
 };
 use ployz_core::ids::OperationId;
-use ployz_core::ops::{
+use ployz_core::operation::{
     EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEventReplayCursor,
     OperationEventReplayLimit, OperationEventReplayRequest, ReplayedOperationEvent,
 };

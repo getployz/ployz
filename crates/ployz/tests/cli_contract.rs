@@ -11,20 +11,20 @@ use ployz::machine::founder::{
 };
 use ployz::operation::command::{ListOutput, OpsWatchOutput, StatusOutput, WatchOutput};
 use ployz::service::command::{ServiceInspectOutput, ServiceListOutput};
-use ployz_core::cert::ManagedLeaseName;
+use ployz_core::certificate::ManagedLeaseName;
 use ployz_core::deploy::{
     DeployOrigin, DeployRequest, DeployServiceSpec, ImageReference, ReplicaCount,
 };
 use ployz_core::ids::{ContainerId, MachineId, NamespaceId, ServiceId};
-use ployz_core::machine_runtime::ManagedContainerHealthStatus;
-use ployz_core::ops::{
+use ployz_core::machine::MachineLifecycle;
+use ployz_core::machine::runtime::ManagedContainerHealthStatus;
+use ployz_core::operation::{
     DeployOperationFailure, DeployOperationState, DeployRunningStage, HealthCheckFailure,
     MAX_OPERATION_EVENT_REPLAY_LIMIT, ManagedDnsReconcileOperationState,
     ManagedDnsReconcileSubject, OperationEventReplayLimit, OperationIdempotencyKey,
     OperationStatus, OperationStatusSnapshot, OperatorHint, ReplayedOperationEvent,
     RetainedArtifact,
 };
-use ployz_core::state::MachineLifecycle;
 use ployz_sdk_types::{
     LogsTailLines, LogsTailTarget, OpsListResult, ServiceContainerMembership,
     ServiceContainerTestimony, ServiceSnapshot,
@@ -1060,7 +1060,7 @@ fn ops_watch_renders_persisted_operation_events() {
         events: vec![
             replayed(
                 1,
-                ployz_core::ops::OperationEvent::DeploySubmitted {
+                ployz_core::operation::OperationEvent::DeploySubmitted {
                     operation_id: operation_id("op_123"),
                     reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
                     target: request,
@@ -1068,9 +1068,9 @@ fn ops_watch_renders_persisted_operation_events() {
             ),
             replayed(
                 2,
-                ployz_core::ops::OperationEvent::DeployCompleted {
+                ployz_core::operation::OperationEvent::DeployCompleted {
                     operation_id: operation_id("op_123"),
-                    outcome: ployz_core::ops::DeployCompletionOutcome::Completed,
+                    outcome: ployz_core::operation::DeployCompletionOutcome::Completed,
                 },
             ),
         ],
@@ -1131,7 +1131,7 @@ fn ops_watch_renders_failed_deploy_details() {
         events: vec![
             replayed(
                 1,
-                ployz_core::ops::OperationEvent::DeploySubmitted {
+                ployz_core::operation::OperationEvent::DeploySubmitted {
                     operation_id: operation_id("op_123"),
                     reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
                     target: deploy_request(),
@@ -1139,7 +1139,7 @@ fn ops_watch_renders_failed_deploy_details() {
             ),
             replayed(
                 4,
-                ployz_core::ops::OperationEvent::DeployFailed {
+                ployz_core::operation::OperationEvent::DeployFailed {
                     operation_id: operation_id("op_123"),
                     failure: health_check_failure(),
                 },
@@ -1182,7 +1182,7 @@ fn ops_status_renders_operation_state() {
         }),
         vec![replayed(
             7,
-            ployz_core::ops::OperationEvent::DeployRunning {
+            ployz_core::operation::OperationEvent::DeployRunning {
                 operation_id,
                 stage: DeployRunningStage::WaitingForHealth,
             },
@@ -1204,7 +1204,7 @@ fn ops_status_renders_managed_dns_projection_apply() {
             subject: ManagedDnsReconcileSubject::ProjectionApply {
                 lease: ManagedLeaseName::try_new("cluster-one").expect("valid lease name"),
                 projection: ployz_core::ingress::IngressEndpointProjectionIdentity {
-                    control_plane_epoch: ployz_core::state::ControlPlaneEpoch::initial(),
+                    control_plane_epoch: ployz_core::intent::recovery::ControlPlaneEpoch::initial(),
                     revision: 4,
                 },
             },
@@ -1249,9 +1249,9 @@ fn ops_status_renders_managed_dns_failure() {
             id: operation_id("op_managed_lease"),
             subject: ManagedDnsReconcileSubject::Acquire,
             state: ManagedDnsReconcileOperationState::Failed {
-                failure: ployz_core::ops::ManagedDnsReconcileFailure {
-                    class: ployz_core::ops::ManagedDnsReconcileFailureClass::Transport,
-                    message: ployz_core::ops::FailureMessage::try_new(
+                failure: ployz_core::operation::ManagedDnsReconcileFailure {
+                    class: ployz_core::operation::ManagedDnsReconcileFailureClass::Transport,
+                    message: ployz_core::operation::FailureMessage::try_new(
                         "gateway endpoint testimony unavailable",
                     )
                     .expect("valid failure message"),
@@ -1301,7 +1301,7 @@ fn ops_status_renders_unclaimed_machine_add() {
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
             host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
-            state: ployz_core::ops::MachineAddOperationState::Completed,
+            state: ployz_core::operation::MachineAddOperationState::Completed,
             last_event_sequence: event_sequence(9),
         }),
         Vec::new(),
@@ -1407,7 +1407,7 @@ fn service_inspect_renders_container_rows() {
     );
 }
 
-fn replayed(sequence: u64, event: ployz_core::ops::OperationEvent) -> ReplayedOperationEvent {
+fn replayed(sequence: u64, event: ployz_core::operation::OperationEvent) -> ReplayedOperationEvent {
     ReplayedOperationEvent {
         sequence: event_sequence(sequence),
         event,
@@ -1434,7 +1434,7 @@ fn health_check_failure() -> DeployOperationFailure {
         health_check: HealthCheckFailure::ProbeFailed {
             machine_id: machine_id("machine_7"),
             container_id: ContainerId::try_new("ctr_123").expect("valid container id"),
-            message: ployz_core::ops::FailureMessage::try_new("probe failed")
+            message: ployz_core::operation::FailureMessage::try_new("probe failed")
                 .expect("valid failure message"),
             log_hint: OperatorHint::try_new("ployzctl logs ctr_123").expect("valid operator hint"),
         },

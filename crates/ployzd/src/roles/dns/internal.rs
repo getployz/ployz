@@ -5,14 +5,14 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ployz_core::dataplane::INTERNAL_DNS_SUFFIX;
+use ployz_core::network::INTERNAL_DNS_SUFFIX;
 use tokio::net::UdpSocket;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
 use crate::role_testimony::RoleTestimonyCache;
-use ployz_core::internal_dns::{InternalServiceName, internal_dns_records};
-use ployz_core::state::IntentSnapshot;
+use ployz_core::intent::IntentSnapshot;
+use ployz_core::network::internal_dns::{InternalServiceName, internal_dns_records};
 
 const DNS_HEADER_LEN: usize = 12;
 const DNS_PORT: u16 = 53;
@@ -290,7 +290,7 @@ impl InternalDnsIntentCache {
 
     fn records(
         &self,
-        snapshots: &[ployz_core::machine_runtime::MachineFactsSnapshot],
+        snapshots: &[ployz_core::machine::runtime::MachineFactsSnapshot],
     ) -> std::collections::BTreeMap<InternalServiceName, Vec<Ipv4Addr>> {
         self.intent
             .lock()
@@ -470,20 +470,22 @@ fn load_upstream_nameserver(own_bind: IpAddr) -> IpAddr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::dataplane::MachineEndpointSubnet;
     use ployz_core::ids::{
         ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId,
         StepId,
     };
-    use ployz_core::machine_runtime::{
+    use ployz_core::intent::ActiveMachineState;
+    use ployz_core::intent::IntentSnapshot;
+    use ployz_core::intent::recovery::ControlPlaneEpoch;
+    use ployz_core::machine::MachineLifecycle;
+    use ployz_core::machine::runtime::{
         ContainerRuntimeState, MachineContainerObservationSnapshot, MachineDiskSpace,
         MachineFactsSnapshot, ManagedContainerIdentity, ManagedContainerKind,
         ManagedContainerObservation,
     };
+    use ployz_core::network::MachineEndpointSubnet;
     use ployz_core::roles::InstallRolePolicy;
-    use ployz_core::state::{
-        ActiveMachineState, ControlPlaneEpoch, IntentSnapshot, MachineLifecycle,
-    };
+
     use ployz_test_support::fixtures::serving_target_entry;
     use ployz_test_support::ids::{machine_id, machine_name, operation_id};
 
@@ -789,12 +791,12 @@ mod tests {
                 mesh_endpoints: Vec::new(),
                 endpoint_subnet: MachineEndpointSubnet::try_new("10.198.0.0/24")
                     .expect("endpoint subnet"),
-                wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+                wireguard_public_key: ployz_core::network::WireGuardPublicKey::try_new(format!(
                     "public-{machine}"
                 ))
                 .expect("public key"),
             }],
-            dataplane_projection: ployz_core::dataplane::DataplaneProjection::try_new(
+            dataplane_projection: ployz_core::network::DataplaneProjection::try_new(
                 Vec::new(),
                 None,
             )

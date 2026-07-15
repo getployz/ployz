@@ -14,9 +14,9 @@ use crate::control::sequencer::{
 };
 use ployz_core::deploy::ImageSource;
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
-use ployz_core::internal_dns::InternalServiceName;
-use ployz_core::ops::{CredentialGrantAction, EventSequence};
-use ployz_core::state::MachineLifecycle;
+use ployz_core::machine::MachineLifecycle;
+use ployz_core::network::internal_dns::InternalServiceName;
+use ployz_core::operation::{CredentialGrantAction, EventSequence};
 use ployz_nats::subjects::{OperationProgressScope, operation_progress_watch};
 use ployz_sdk_types::{
     AcceptedOperation, CoreReplaceError, CoreReplaceRequest, CredentialAddError,
@@ -282,7 +282,7 @@ pub async fn deploy_submit(
     .await
     .map_err(|error| DeploySubmitError::InvalidTarget {
         operation_id: operation_id.clone(),
-        message: ployz_core::ops::FailureMessage::try_new(error.to_string())
+        message: ployz_core::operation::FailureMessage::try_new(error.to_string())
             .expect("route admission validation error is non-empty"),
     })?;
     let accepted_execution = handlers
@@ -307,11 +307,11 @@ pub async fn deploy_submit(
 fn validate_internal_dns_name(
     namespace_id: &NamespaceId,
     service_id: &ServiceId,
-) -> Result<(), ployz_core::ops::FailureMessage> {
+) -> Result<(), ployz_core::operation::FailureMessage> {
     InternalServiceName::try_from_ids(service_id, namespace_id)
         .map(|_| ())
         .map_err(|_| {
-            ployz_core::ops::FailureMessage::try_new(format!(
+            ployz_core::operation::FailureMessage::try_new(format!(
                 "service {} in namespace {} cannot form internal DNS name because each label is limited to 63 bytes",
                 service_id.as_str(),
                 namespace_id.as_str()
@@ -375,7 +375,7 @@ fn invalid_pushed_image(
 ) -> DeploySubmitError {
     DeploySubmitError::InvalidTarget {
         operation_id: command.operation_id.clone(),
-        message: ployz_core::ops::FailureMessage::try_new(format!(
+        message: ployz_core::operation::FailureMessage::try_new(format!(
             "pushed image for service {} {reason}",
             service.service_id.as_str()
         ))
@@ -390,7 +390,7 @@ fn invalid_registry_credential(
 ) -> DeploySubmitError {
     DeploySubmitError::InvalidTarget {
         operation_id: command.operation_id.clone(),
-        message: ployz_core::ops::FailureMessage::try_new(format!(
+        message: ployz_core::operation::FailureMessage::try_new(format!(
             "registry credential for service {} {reason}",
             service_id.as_str()
         ))
@@ -444,7 +444,7 @@ fn invalid_image_seed(
 ) -> DeploySubmitError {
     DeploySubmitError::InvalidTarget {
         operation_id: command.operation_id.clone(),
-        message: ployz_core::ops::FailureMessage::try_new(format!(
+        message: ployz_core::operation::FailureMessage::try_new(format!(
             "pushed image seed {} {reason}",
             seed.as_str()
         ))
@@ -820,7 +820,7 @@ pub async fn machine_drain(
         handlers,
         request.operation_id,
         request.machine_id,
-        ployz_core::state::MachineLifecycle::Draining,
+        ployz_core::machine::MachineLifecycle::Draining,
     )
     .await
 }
@@ -833,7 +833,7 @@ pub async fn machine_resume(
         handlers,
         request.operation_id,
         request.machine_id,
-        ployz_core::state::MachineLifecycle::Active,
+        ployz_core::machine::MachineLifecycle::Active,
     )
     .await
 }
@@ -842,7 +842,7 @@ async fn machine_lifecycle(
     handlers: &OperationApiHandlers,
     operation_id: ployz_core::ids::OperationId,
     machine_id: ployz_core::ids::MachineId,
-    target: ployz_core::state::MachineLifecycle,
+    target: ployz_core::machine::MachineLifecycle,
 ) -> Result<AcceptedOperation, MachineLifecycleError> {
     let target_machine = handlers
         .machine_roster

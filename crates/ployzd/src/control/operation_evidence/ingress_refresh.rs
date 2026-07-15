@@ -1,5 +1,5 @@
 use ployz_core::ids::OperationId;
-use ployz_core::ops::IngressRefreshTransition;
+use ployz_core::operation::IngressRefreshTransition;
 
 use super::{
     AcceptedIngressRefreshSubmission, IngressRefreshOperationSubmission, IngressRefreshPayload,

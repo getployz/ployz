@@ -1,9 +1,9 @@
-use ployz_core::dataplane::{
+use ployz_core::ids::MachineId;
+use ployz_core::network::{
     EbpfForwardingReadyEvidence, PloyzNativeMeshComponent, WireGuardEbpfPrepareError,
     WireGuardReadyEvidence,
 };
-use ployz_core::ids::MachineId;
-use ployz_core::ops::FailureMessage;
+use ployz_core::operation::FailureMessage;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::process::Command;

@@ -12,7 +12,7 @@ use crate::roles::gateway::projection::{
 };
 use crate::roles::gateway::source::{GatewayCertificateStore, GatewayCertificateStoreError};
 use crate::service_catalog::{DaemonServiceCatalog, gateway_role_service, machine_endpoint_spec};
-use ployz_core::certificate::{
+use ployz_core::certificateificate::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
     CertificateArtifactPushRequest, CertificateArtifactPushResponse,

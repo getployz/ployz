@@ -9,7 +9,7 @@ use ployz_core::machine::{
     DataplaneProjectionAdmissionEvidence, MachineAddFailure, MachineName, RawJoinToken,
     active_machine_from_completed_add,
 };
-use ployz_core::ops::{MachineAddOperationState, OperationStatus};
+use ployz_core::operation::{MachineAddOperationState, OperationStatus};
 use ployz_nats::subjects::INTENT_CHANGED;
 use ployz_sdk_types::{
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinRedeemed,
@@ -260,12 +260,16 @@ async fn admit_completed_join(
     }
 }
 
-fn dataplane_admission_unavailable_message(message: String) -> ployz_core::ops::FailureMessage {
-    ployz_core::ops::FailureMessage::try_new(format!("dataplane admission unavailable: {message}"))
-        .unwrap_or_else(|_| {
-            ployz_core::ops::FailureMessage::try_new("dataplane admission unavailable")
-                .expect("static failure message is valid")
-        })
+fn dataplane_admission_unavailable_message(
+    message: String,
+) -> ployz_core::operation::FailureMessage {
+    ployz_core::operation::FailureMessage::try_new(format!(
+        "dataplane admission unavailable: {message}"
+    ))
+    .unwrap_or_else(|_| {
+        ployz_core::operation::FailureMessage::try_new("dataplane admission unavailable")
+            .expect("static failure message is valid")
+    })
 }
 
 pub(super) async fn repair_completed_machine_add(
@@ -288,7 +292,7 @@ pub(super) async fn repair_completed_machine_add(
         id,
         machine_id,
         name,
-        state: ployz_core::ops::MachineAddOperationState::Completed,
+        state: ployz_core::operation::MachineAddOperationState::Completed,
         last_event_sequence,
         ..
     } = status
@@ -387,7 +391,7 @@ async fn activate_reported_machine(
         name.clone(),
         roles,
         staged,
-        ployz_core::ops::MachineAddOperationState::Completed,
+        ployz_core::operation::MachineAddOperationState::Completed,
     )
     .map_err(|_| MachineJoinReportError::Unavailable {
         message: corrupt("completed machine-add did not produce active machine"),

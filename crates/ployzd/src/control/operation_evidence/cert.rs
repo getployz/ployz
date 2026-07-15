@@ -1,7 +1,7 @@
-use ployz_core::cert::AcmeHttp01Challenge;
+use ployz_core::certificate::AcmeHttp01Challenge;
 use ployz_core::ids::{CertId, OperationId};
 use ployz_core::ingress::ActiveCertificateMetadata;
-use ployz_core::ops::{
+use ployz_core::operation::{
     CertOperationFailure, CertOperationState, CertificateProvisionWarning, OperationEvent,
     OperationStatus,
 };

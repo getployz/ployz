@@ -11,7 +11,7 @@ use super::artifacts::{
 use ployz_core::ids::MachineId;
 use ployz_core::install::NatsMachineMaterialPaths;
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
-use ployz_core::ops::FailureMessage;
+use ployz_core::operation::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_host_runner::execution::{ArtifactKind, ArtifactTarget, DataplaneArtifactTargets};
 use ployz_host_runner::execution::{PloyzdRoleEnvironmentFile, SupervisorUnitTarget};

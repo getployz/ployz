@@ -3,7 +3,7 @@ use ployz_core::deploy::{
     DeployRouteTarget, ImageSource,
 };
 use ployz_core::ids::{OperationId, ServiceId};
-use ployz_core::ops::{
+use ployz_core::operation::{
     CancellationReason, DeployCleanupFailure, DeployCompletionOutcome, DeployOperationFailure,
     DeployRunningStage, OperationEvent, OperationKind, ReplayedOperationEvent,
 };

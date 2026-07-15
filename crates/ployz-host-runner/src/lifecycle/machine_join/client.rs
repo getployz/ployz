@@ -21,7 +21,7 @@ use crate::plan::{
     NonEmptyRoleSet, PloyzdRoleEnvironmentTarget, RoleNatsCredentials,
 };
 use ployz_core::nats_config::NatsUserSeed;
-use ployz_core::ops::FailureMessage;
+use ployz_core::operation::FailureMessage;
 use ployz_core::roles::plan_joined_machine_process_set;
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{
@@ -402,12 +402,12 @@ mod tests {
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
             host_port_assurance: ployz_core::install::HostPortAssurance::External,
-            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.2.0/24")
+            endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new("10.198.2.0/24")
                 .expect("valid endpoint subnet"),
             join_bundle: machine_join_bundle(),
             secret_delivery: machine_join_secret_delivery(),
             joined_at: JoinTokenRedeemedAt::try_new(60).expect("valid redeemed at"),
-            last_event_sequence: ployz_core::ops::EventSequence::try_new(8)
+            last_event_sequence: ployz_core::operation::EventSequence::try_new(8)
                 .expect("valid sequence"),
             result: MachineJoinRedeemResult::Joined,
         };
@@ -443,7 +443,7 @@ mod tests {
             join_bundle: machine_join_bundle(),
             secret_delivery: machine_join_secret_delivery(),
             joined_at: JoinTokenRedeemedAt::try_new(60).expect("valid redeemed at"),
-            last_event_sequence: ployz_core::ops::EventSequence::try_new(8)
+            last_event_sequence: ployz_core::operation::EventSequence::try_new(8)
                 .expect("valid sequence"),
             result: MachineJoinRedeemResult::Joined,
         };
@@ -470,7 +470,7 @@ mod tests {
             join_bundle: machine_join_bundle(),
             secret_delivery: machine_join_secret_delivery(),
             joined_at: JoinTokenRedeemedAt::try_new(60).expect("valid redeemed at"),
-            last_event_sequence: ployz_core::ops::EventSequence::try_new(8)
+            last_event_sequence: ployz_core::operation::EventSequence::try_new(8)
                 .expect("valid sequence"),
             result: MachineJoinRedeemResult::Joined,
         };
@@ -492,7 +492,7 @@ mod tests {
             material: MachineJoinMaterial {
                 cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
                 dataplane_endpoint_supernet:
-                    ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+                    ployz_core::network::MachineEndpointSupernet::default_v1(),
                 runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
                     .expect("valid runtime nats url"),
                 trusted_nats: MachineJoinTrustedNats {
@@ -513,8 +513,8 @@ mod tests {
         }
     }
 
-    fn endpoint_subnet(value: &str) -> ployz_core::dataplane::MachineEndpointSubnet {
-        ployz_core::dataplane::MachineEndpointSubnet::try_new(value).expect("valid endpoint subnet")
+    fn endpoint_subnet(value: &str) -> ployz_core::network::MachineEndpointSubnet {
+        ployz_core::network::MachineEndpointSubnet::try_new(value).expect("valid endpoint subnet")
     }
 
     fn join_artifact(source: &str, install_path: &str) -> InstallArtifactSpec {

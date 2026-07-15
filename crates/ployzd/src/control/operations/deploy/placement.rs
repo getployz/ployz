@@ -1,15 +1,15 @@
 use std::collections::BTreeMap;
 
-use ployz_core::dataplane::{
-    DataplaneProjection, DataplaneProjectionMember, MachineDataplaneStatus,
-};
 use ployz_core::ids::MachineId;
+use ployz_core::machine::DataplaneUnavailableReason;
+use ployz_core::machine::MachineUsabilityReason;
+use ployz_core::machine::placement_rejection;
 use ployz_core::machine::{
     DataplaneProjectionAdmissionFailure, validate_declared_local_machine,
     validate_placement_machine_peers,
 };
-use ployz_core::ops::{FailureMessage, UnusableMachine};
-use ployz_core::state::{DataplaneUnavailableReason, MachineUsabilityReason, placement_rejection};
+use ployz_core::network::{DataplaneProjection, DataplaneProjectionMember, MachineDataplaneStatus};
+use ployz_core::operation::{FailureMessage, UnusableMachine};
 
 use crate::control::role_client::machine::MachinePlacementFacts;
 
@@ -117,15 +117,15 @@ fn dataplane_unavailable(reason: DataplaneUnavailableReason) -> MachineUsability
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::dataplane::{
+    use ployz_core::machine::MachineLifecycle;
+    use ployz_core::machine::runtime::MachineContainerObservationSnapshot;
+    use ployz_core::network::{
         DataplaneProjectionRevisions, DataplaneProjectionTestimony, EbpfAttachmentStatus,
         EndpointBridgeStatus, MachineEndpointSubnet, NativeDataplaneProjectionStatus,
         WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardHandshakeStatus,
         WireGuardInterfaceMtu, WireGuardMtuProbe, WireGuardPeerEndpointSubnet, WireGuardPeerStatus,
         WireGuardPublicKey, WireGuardRttStatus, WireGuardStatus,
     };
-    use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
-    use ployz_core::state::MachineLifecycle;
 
     #[test]
     fn placement_preserves_dataplane_no_answer_message() {

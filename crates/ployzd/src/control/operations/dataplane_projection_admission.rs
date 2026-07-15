@@ -2,16 +2,16 @@
 
 use std::time::Duration;
 
-use ployz_core::dataplane::{
-    DataplaneProjection, MachineDataplaneStatus, WireGuardEbpfPrepareError, WireGuardPublicKey,
-};
 use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::intent::StagedMachineDataplaneState;
 use ployz_core::machine::{
     DataplaneProjectionAdmissionEvidence, DataplaneProjectionAdmissionFailure,
     validate_target_machine as validate_machine,
 };
-use ployz_core::ops::FailureMessage;
-use ployz_core::state::StagedMachineDataplaneState;
+use ployz_core::network::{
+    DataplaneProjection, MachineDataplaneStatus, WireGuardEbpfPrepareError, WireGuardPublicKey,
+};
+use ployz_core::operation::FailureMessage;
 
 use crate::control::intent::service::NatsIntentReader;
 use crate::control::role_client::machine::{MachineFactsReadError, NatsMachineFactsReader};
@@ -53,7 +53,7 @@ impl DataplaneProjectionAdmissionOperation {
         &self,
         operation_id: OperationId,
         joining_machine_id: MachineId,
-        joining_subnet: ployz_core::dataplane::MachineEndpointSubnet,
+        joining_subnet: ployz_core::network::MachineEndpointSubnet,
     ) -> Result<Option<DataplaneProjectionAdmissionEvidence>, DataplaneProjectionAdmissionError>
     {
         let mesh_lock = self.controllers.mesh_lock();
@@ -261,7 +261,7 @@ fn retryable_admission(reason: &DataplaneProjectionAdmissionFailure) -> bool {
             | DataplaneProjectionAdmissionFailure::PeerHandshakeNever { .. }
             | DataplaneProjectionAdmissionFailure::PeerHandshakeStale { .. }
             | DataplaneProjectionAdmissionFailure::UnusableProjection {
-                failure: ployz_core::dataplane::DataplaneProjectionFailure::FetchFailed { .. }
+                failure: ployz_core::network::DataplaneProjectionFailure::FetchFailed { .. }
             }
     )
 }
@@ -330,7 +330,7 @@ fn invalid_staged_projection(
     DataplaneProjectionAdmissionEvidence {
         machine_id,
         reason: DataplaneProjectionAdmissionFailure::UnusableProjection {
-            failure: ployz_core::dataplane::DataplaneProjectionFailure::InvalidView {
+            failure: ployz_core::network::DataplaneProjectionFailure::InvalidView {
                 message: failure_message(message),
             },
         },
@@ -353,14 +353,14 @@ fn unavailable(error: impl std::fmt::Display) -> DataplaneProjectionAdmissionErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::dataplane::{
+    use ployz_core::machine::validate_declared_machine;
+    use ployz_core::network::{
         DataplaneProjectionMember, DataplaneProjectionRevisions, DataplaneProjectionTestimony,
         EbpfAttachmentStatus, EndpointBridgeStatus, NativeDataplaneProjectionStatus,
         WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardHandshakeStatus,
         WireGuardInterfaceMtu, WireGuardMtuProbe, WireGuardPeerEndpointSubnet, WireGuardPeerStatus,
         WireGuardPublicKey, WireGuardRttStatus, WireGuardStatus,
     };
-    use ployz_core::machine::validate_declared_machine;
 
     #[test]
     fn founder_is_admitted_with_local_readiness_and_no_peers() {
@@ -470,7 +470,7 @@ mod tests {
                 target_revision: old.target_revision().clone(),
             }),
             last_applied_revisions: None,
-            failure: ployz_core::dataplane::DataplaneProjectionFailure::LocalMemberMissing,
+            failure: ployz_core::network::DataplaneProjectionFailure::LocalMemberMissing,
         };
 
         let reason = validate_machine(&target, member(&target, "edge"), &status)
@@ -620,7 +620,7 @@ mod tests {
         };
         DataplaneProjectionMember {
             machine_id: machine_id(machine),
-            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(format!(
+            endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new(format!(
                 "10.198.{octet}.0/24"
             ))
             .expect("valid subnet"),

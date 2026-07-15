@@ -4,7 +4,7 @@ use super::{
     RecordManagedDnsReconcileTransitionError, RecordOperationEventOutcome, SubmitOperationError,
 };
 use ployz_core::ids::OperationId;
-use ployz_core::ops::{
+use ployz_core::operation::{
     ManagedDnsReconcileOperationState, ManagedDnsReconcileSubject, ManagedDnsReconcileTransition,
     OperationStatus,
 };

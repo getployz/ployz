@@ -1,5 +1,5 @@
 use super::*;
-use ployz_core::cert::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
+use ployz_core::certificate::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
 use ployz_core::deploy::{
     ContainerRuntimeSpec, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute,
     DeployRouteTarget, DeployServicePlan, DeployServiceSpec, ImageReference, ImageSource,
@@ -11,7 +11,7 @@ use ployz_core::ids::{
 };
 use ployz_core::image::OciDigest;
 use ployz_core::ingress::AutomaticHostnameLabel;
-use ployz_core::ops::{
+use ployz_core::operation::{
     ArtifactUnavailableReason, CertificateProvisionFailure, DeployCompletionOutcome,
     DeployOperationFailure, DeployRunningStage, EventSequence, FailureMessage, HealthCheckFailure,
     OperationEvent, OperatorHint, PreStartHookFailure, RetainedArtifact, RouteCutoverFailureReason,
@@ -510,7 +510,7 @@ fn route_cutover_failure_makes_no_safety_claim() {
             OperationEvent::DeployFailed {
                 operation_id,
                 failure: DeployOperationFailure::RouteCutoverFailed {
-                    route: ployz_core::ops::RouteTarget::new(
+                    route: ployz_core::operation::RouteTarget::new(
                         RouteHostname::try_new("app.example.com").expect("valid hostname"),
                     ),
                     reason: RouteCutoverFailureReason::RouteRejected {

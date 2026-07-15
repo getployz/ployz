@@ -1,7 +1,7 @@
 use clap::Args;
 use ployz_core::ids::{OperationId, ServiceId};
-use ployz_core::ops::MachineAddOperationState;
-use ployz_core::ops::{
+use ployz_core::operation::MachineAddOperationState;
+use ployz_core::operation::{
     CertOperationState, CertRunningStage, CredentialGrantAction, CredentialGrantFailure,
     CredentialGrantOperationState, DeployOperationFailure, DeployOperationState,
     DeployRunningStage, EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT,
@@ -708,15 +708,15 @@ const fn deploy_state(state: &DeployOperationState) -> &'static str {
 }
 
 const fn deploy_completion_outcome(
-    outcome: ployz_core::ops::DeployCompletionOutcome,
+    outcome: ployz_core::operation::DeployCompletionOutcome,
 ) -> &'static str {
     match outcome {
-        ployz_core::ops::DeployCompletionOutcome::Completed => "completed",
-        ployz_core::ops::DeployCompletionOutcome::CompletedWithWarnings => {
+        ployz_core::operation::DeployCompletionOutcome::Completed => "completed",
+        ployz_core::operation::DeployCompletionOutcome::CompletedWithWarnings => {
             "completed-with-warnings"
         }
-        ployz_core::ops::DeployCompletionOutcome::PartiallyCompleted => "partially-completed",
-        ployz_core::ops::DeployCompletionOutcome::PartiallyCompletedWithWarnings => {
+        ployz_core::operation::DeployCompletionOutcome::PartiallyCompleted => "partially-completed",
+        ployz_core::operation::DeployCompletionOutcome::PartiallyCompletedWithWarnings => {
             "partially-completed-with-warnings"
         }
     }
@@ -1112,12 +1112,12 @@ fn render_deploy_failure_detail(
 #[cfg(test)]
 mod tests {
     use super::status_failure_detail;
-    use ployz_core::cert::{
+    use ployz_core::certificate::{
         ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
         CertificateProvisionFailure,
     };
     use ployz_core::ids::{CertId, MachineId, OperationId};
-    use ployz_core::ops::{
+    use ployz_core::operation::{
         CertOperationFailure, CertOperationState, EventSequence, FailureMessage, OperationStatus,
         RouteHostname,
     };

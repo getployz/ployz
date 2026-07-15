@@ -6,13 +6,15 @@ use crate::roles::gateway::projection::{
     GatewayCertificateBundle, GatewayProjectedRoute, GatewayProjection, GatewayUpstream,
 };
 use pingora::protocols::l4::socket::SocketAddr as PingoraSocketAddr;
-use ployz_core::certificate::{
+use ployz_core::certificateificate::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
     CertificateChallengeApplicationStatus, CustomCertBundle, LeaseBearerToken,
     ManagedLeaseAcquireRequest, ManagedLeaseAcquisitionId, custom_bundle_digest,
 };
-use ployz_core::certificate::{LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle, ManagedLeaseName};
+use ployz_core::certificateificate::{
+    LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle, ManagedLeaseName,
+};
 use ployz_core::ids::RouteBindingId;
 use ployz_core::ingress::{CertificateOwner, RouteBindingOrigin};
 use ployz_core::operation::{RouteHostnameError, RouteTarget};

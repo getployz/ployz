@@ -3,8 +3,11 @@
 use crate::control::store::{CoreStore, CoreStoreError, query_json_list, to_json};
 use ployz_core::deploy::VolumeName;
 use ployz_core::ids::NamespaceId;
-use ployz_core::ops::RouteTarget;
-use ployz_core::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
+use ployz_core::intent::RouteBindingState;
+use ployz_core::intent::ServingTargetEntry;
+use ployz_core::intent::VolumePinState;
+use ployz_core::operation::RouteTarget;
+
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
@@ -232,7 +235,7 @@ mod tests {
     use ployz_core::deploy::{ImageReference, ReplicaCount};
     use ployz_core::ids::{NamespaceRevisionEntryId, RouteBindingId, ServiceId};
     use ployz_core::ingress::RouteBindingOrigin;
-    use ployz_core::ops::{RouteHostname, RoutePort};
+    use ployz_core::operation::{RouteHostname, RoutePort};
 
     #[tokio::test]
     async fn same_hostname_reuses_its_route_binding_identity() {

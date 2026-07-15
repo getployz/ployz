@@ -3,10 +3,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ployz_core::cert::{ActiveCertState, CustomCertBundle, ManagedCertBundle};
+use ployz_core::certificate::{ActiveCertState, CustomCertBundle, ManagedCertBundle};
 use ployz_core::ids::{CertId, MachineId, OperationId};
 use ployz_core::ingress::{ActiveCertificateMetadata, CertificateOwner};
-use ployz_core::ops::{
+use ployz_core::operation::{
     CertOperationFailure, CertificateProvisionFailure, CertificateProvisionWarning, FailureMessage,
     RouteHostname,
 };

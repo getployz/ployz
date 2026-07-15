@@ -5,8 +5,8 @@
 use crate::control::authorization::write_machine_seed_file;
 use crate::control::intent::ingress_intent::{IngressConfiguration, IngressIntentStore};
 use ployz_core::ids::MachineId;
+use ployz_core::intent::ActiveMachineState;
 use ployz_core::machine::plan_first_machine_activation;
-use ployz_core::state::ActiveMachineState;
 use ployz_sdk_types::{
     InitFirstMachineActivateError, InitFirstMachineActivateRequest, InitFirstMachineActivated,
     MachineAddRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
@@ -136,10 +136,10 @@ async fn redeem_seed_and_report(
 
 fn machine_seed_write_failure_message(
     error: &crate::control::authorization::MachineSeedWriteError,
-) -> ployz_core::ops::FailureMessage {
-    match ployz_core::ops::FailureMessage::try_new(error.to_string()) {
+) -> ployz_core::operation::FailureMessage {
+    match ployz_core::operation::FailureMessage::try_new(error.to_string()) {
         Ok(message) => message,
-        Err(_) => ployz_core::ops::FailureMessage::try_new("machine seed write failed")
+        Err(_) => ployz_core::operation::FailureMessage::try_new("machine seed write failed")
             .expect("static failure message is non-empty"),
     }
 }

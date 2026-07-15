@@ -4,7 +4,7 @@ use super::{
     RecordOperationEventOutcome, SubmitOperationError,
 };
 use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::ops::CoreReplaceTransition;
+use ployz_core::operation::CoreReplaceTransition;
 
 impl OperationRepository {
     pub async fn submit_core_replace(

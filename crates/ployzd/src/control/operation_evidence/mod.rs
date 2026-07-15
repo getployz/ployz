@@ -11,7 +11,7 @@ use crate::control::store::{
     CoreStore, CoreStoreError, from_json, query_json, query_json_list, to_json,
 };
 use ployz_core::ids::OperationId;
-use ployz_core::ops::{
+use ployz_core::operation::{
     EventSequence, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
     OperationEventReplayPage, OperationProjection, OperationStatus, StatusProjectionError,
     project_operation_event, validate_fresh_deploy_evidence,
@@ -124,7 +124,7 @@ impl OperationRepository {
 
 enum RecordTxn {
     Missing,
-    InvalidNextSequence(ployz_core::ops::NextEventSequenceError),
+    InvalidNextSequence(ployz_core::operation::NextEventSequenceError),
     Projection(StatusProjectionError),
     AlreadySatisfied {
         current_sequence: EventSequence,
@@ -340,7 +340,7 @@ fn replay_operation_events_txn(
                 )));
             }
         };
-        events.push(ployz_core::ops::ReplayedOperationEvent { sequence, event });
+        events.push(ployz_core::operation::ReplayedOperationEvent { sequence, event });
     }
     if events.len() < page_limit {
         return Ok(finish_replay_page(
@@ -571,7 +571,7 @@ fn create_or_adopt_deploy_claim(
     Ok(AdoptResult::Value(value.clone()))
 }
 
-fn sequence_conversion(error: ployz_core::ops::EventSequenceError) -> rusqlite::Error {
+fn sequence_conversion(error: ployz_core::operation::EventSequenceError) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(
         0,
         rusqlite::types::Type::Integer,

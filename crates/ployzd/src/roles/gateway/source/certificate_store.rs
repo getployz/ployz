@@ -7,7 +7,7 @@ use crate::certificate::material::{
     custom_certificate_material_path, load_custom_certificate, validate_custom_certificate,
     validate_custom_certificate_for_activation, write_custom_certificate,
 };
-use ployz_core::cert::{
+use ployz_core::certificate::{
     ActiveCertState, CertificateArtifactPushRequest, CertificateArtifactRemoveRequest,
     CustomCertBundle,
 };

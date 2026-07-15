@@ -12,10 +12,12 @@ use crate::control::sequencer::OperationControllers;
 use crate::tasks::TaskRegistry;
 use ployz_core::deploy::VolumeName;
 use ployz_core::ids::{NamespaceId, OperationId};
-use ployz_core::ops::{
+use ployz_core::intent::IntentSnapshot;
+use ployz_core::intent::VolumePinState;
+use ployz_core::operation::{
     FailureMessage, VolumeRemoveFailure, VolumeRemoveRunningStage, VolumeRemoveTransition,
 };
-use ployz_core::state::{IntentSnapshot, VolumePinState};
+
 use ployz_nats::subjects::INTENT_CHANGED;
 use std::time::Duration;
 
@@ -231,8 +233,11 @@ fn failure_message(value: impl Into<String>) -> FailureMessage {
 mod tests {
     use super::removable_volume_pin;
     use ployz_core::deploy::VolumeName;
-    use ployz_core::ops::VolumeRemoveFailure;
-    use ployz_core::state::{ControlPlaneEpoch, IntentSnapshot, VolumePinState};
+    use ployz_core::intent::IntentSnapshot;
+    use ployz_core::intent::VolumePinState;
+    use ployz_core::intent::recovery::ControlPlaneEpoch;
+    use ployz_core::operation::VolumeRemoveFailure;
+
     use ployz_test_support::fixtures::serving_target_entry_in;
     use ployz_test_support::ids::{machine_id, namespace_id, service_id};
 
@@ -246,7 +251,7 @@ mod tests {
             epoch: ControlPlaneEpoch::initial(),
             core_machine_id: machine_id("core"),
             active_machines: Vec::new(),
-            dataplane_projection: ployz_core::dataplane::DataplaneProjection::try_new(
+            dataplane_projection: ployz_core::network::DataplaneProjection::try_new(
                 Vec::new(),
                 None,
             )

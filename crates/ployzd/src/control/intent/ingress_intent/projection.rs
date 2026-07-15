@@ -96,7 +96,7 @@ fn compare_and_replace_projection(
 mod tests {
     use super::*;
     use ployz_core::ingress::{IngressEndpointProjection, IngressEndpointProjectionState};
-    use ployz_core::state::ControlPlaneEpoch;
+    use ployz_core::intent::recovery::ControlPlaneEpoch;
 
     fn projection(revision: u64) -> IngressEndpointProjection {
         IngressEndpointProjection {

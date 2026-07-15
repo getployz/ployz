@@ -4,7 +4,6 @@ use std::fmt;
 use std::net::IpAddr;
 use std::path::PathBuf;
 
-use ployz_core::dataplane::MachineEndpointSupernet;
 use ployz_core::ids::MachineId;
 use ployz_core::install::{
     AbsoluteInstallPath, HostPortAssurance, MachineBootstrapUrl, MachineJoinBundle,
@@ -15,7 +14,8 @@ use ployz_core::install::{
 use ployz_core::nats_config::{
     CredentialGrant, CredentialName, NatsCaCertificatePem, NatsUserSeed,
 };
-use ployz_core::ops::FailureMessage;
+use ployz_core::network::MachineEndpointSupernet;
+use ployz_core::operation::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy, plan_first_machine_process_set};
 use ployz_nats::connect::NatsClientUrl;
 use sha2::{Digest, Sha256};
@@ -705,7 +705,7 @@ pub struct PloyzdRoleEnvironmentTarget {
     ebpf_ctl_path: Option<PathBuf>,
     seed_from_mirror: Option<PathBuf>,
     dataplane_endpoint_supernet: Option<MachineEndpointSupernet>,
-    dataplane_endpoint_subnet: Option<ployz_core::dataplane::MachineEndpointSubnet>,
+    dataplane_endpoint_subnet: Option<ployz_core::network::MachineEndpointSubnet>,
 }
 
 impl PloyzdRoleEnvironmentTarget {
@@ -821,7 +821,7 @@ impl PloyzdRoleEnvironmentTarget {
     #[must_use]
     pub fn with_dataplane_endpoint_subnet(
         mut self,
-        subnet: ployz_core::dataplane::MachineEndpointSubnet,
+        subnet: ployz_core::network::MachineEndpointSubnet,
     ) -> Self {
         self.dataplane_endpoint_subnet = Some(subnet);
         self

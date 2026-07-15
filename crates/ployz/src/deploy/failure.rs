@@ -1,11 +1,11 @@
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{ContainerId, MachineId, NamespaceRevisionId, ServiceId};
-use ployz_core::ops::{
+use ployz_core::machine::MachineUsabilityReason;
+use ployz_core::operation::{
     ArtifactUnavailableReason, CertificateProvisionFailure, ControlPlaneCommitScope,
     DeployOperationFailure, HealthCheckFailure, PreStartHookFailure, RetainedArtifact,
     RouteCutoverFailureReason, RouteHostname, RouteTarget,
 };
-use ployz_core::state::MachineUsabilityReason;
 
 pub(crate) struct DeployFailureContainerEvidence<'a> {
     pub machine_id: &'a MachineId,

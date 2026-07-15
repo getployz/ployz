@@ -6,9 +6,11 @@ use crate::control::intent::nats_authorizations::NatsAuthorizationStore;
 use crate::control::operation_evidence::OperationRepository;
 use crate::control::store::CoreStore;
 use crate::service_catalog::{intent_get_endpoint_spec, intent_service};
-use ployz_core::dataplane::{DataplaneProjection, DataplaneProjectionMember};
 use ployz_core::ids::MachineId;
-use ployz_core::state::{IntentSnapshot, PendingMachineJoinRecoverySnapshot};
+use ployz_core::intent::IntentSnapshot;
+use ployz_core::intent::recovery::PendingMachineJoinRecoverySnapshot;
+use ployz_core::network::{DataplaneProjection, DataplaneProjectionMember};
+
 use ployz_nats::service_protocol::NatsServiceError;
 use ployz_nats::service_runtime::{
     NatsJsonServiceRequestError, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
@@ -182,8 +184,8 @@ pub async fn start_intent_service(
 }
 
 fn dataplane_projection(
-    active_machines: &[ployz_core::state::ActiveMachineState],
-    staged: Option<ployz_core::state::StagedMachineDataplaneState>,
+    active_machines: &[ployz_core::intent::ActiveMachineState],
+    staged: Option<ployz_core::intent::StagedMachineDataplaneState>,
 ) -> Result<DataplaneProjection, String> {
     let declared = active_machines
         .iter()

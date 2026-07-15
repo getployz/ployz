@@ -36,8 +36,8 @@ use crate::shell::shell_quote;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::MachineJoinRuntimeNatsUrl;
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
-use ployz_core::ops::{CoreReplaceFailure, FailureMessage, MachineAddOperationState};
-use ployz_core::ops::{
+use ployz_core::operation::{CoreReplaceFailure, FailureMessage, MachineAddOperationState};
+use ployz_core::operation::{
     EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEventReplayLimit,
     OperationEventReplayRequest, OperationStatus,
 };

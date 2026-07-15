@@ -5,7 +5,7 @@ use super::{
     select_all_statuses_newest_first, select_status, select_statuses_before,
 };
 use ployz_core::ids::OperationId;
-use ployz_core::ops::{
+use ployz_core::operation::{
     OperationEvent, OperationEventReplayPage, OperationEventReplayRequest, OperationStatus,
     OperationStatusSnapshot,
 };

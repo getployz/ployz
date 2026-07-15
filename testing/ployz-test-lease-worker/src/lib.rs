@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ployz_core::certificate::{
+use ployz_core::certificateificate::{
     LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle, ManagedLeaseAcquireRequest,
     ManagedLeaseAcquired, ManagedLeaseAcquisitionId, ManagedLeaseName, ManagedLeaseRecord,
     ManagedLeaseRenewRequest, ManagedLeaseRenewed,
@@ -69,9 +69,9 @@ pub enum LeaseWorkerError {
     #[error("managed certificate issue failed: {message}")]
     CertIssue { message: String },
     #[error("{0}")]
-    Lease(#[from] ployz_core::certificate::ManagedLeaseError),
+    Lease(#[from] ployz_core::certificateificate::ManagedLeaseError),
     #[error("{0}")]
-    LeaseTimestamp(#[from] ployz_core::certificate::LeaseTimestampError),
+    LeaseTimestamp(#[from] ployz_core::certificateificate::LeaseTimestampError),
     #[error("{0}")]
     Clock(#[from] ClockError),
 }
@@ -502,7 +502,7 @@ pub enum LeaseWorkerHttpError {
     #[error("{0}")]
     Json(#[from] serde_json::Error),
     #[error("{0}")]
-    Lease(#[from] ployz_core::certificate::ManagedLeaseError),
+    Lease(#[from] ployz_core::certificateificate::ManagedLeaseError),
     #[error("bearer token is required")]
     MissingBearerToken,
     #[error("route not found")]

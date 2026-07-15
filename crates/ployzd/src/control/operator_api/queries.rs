@@ -18,12 +18,12 @@ use crate::control::store::CoreStore;
 use crate::role_testimony::RoleTestimonyCache;
 use crate::roles::machine::protocol::MachineLogsTailRpcRequest;
 use ployz_core::ids::{ContainerId, MachineId, NamespaceId, OperationId, ServiceId};
-use ployz_core::machine_runtime::ManagedContainerKind;
+use ployz_core::intent::ActiveMachineState;
+use ployz_core::machine::runtime::ManagedContainerKind;
 use ployz_core::nats_config::NatsAuthorizationGrant;
-use ployz_core::ops::{
+use ployz_core::operation::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationStatus, OperationStatusSnapshot,
 };
-use ployz_core::state::ActiveMachineState;
 use ployz_sdk_types::{
     CredentialListError, CredentialListResult, LogsTailError, LogsTailRequest, LogsTailResult,
     LogsTailResultTarget, LogsTailTarget, MachineInspectError, MachineListError, MachineListResult,

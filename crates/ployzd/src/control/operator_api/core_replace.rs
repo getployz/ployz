@@ -1,6 +1,6 @@
 use crate::control::operation_evidence::RecordOperationEventError;
 use crate::control::operator_api::error_map::corrupt;
-use ployz_core::ops::{CoreReplaceTransition, OperationStatus};
+use ployz_core::operation::{CoreReplaceTransition, OperationStatus};
 use ployz_sdk_types::{
     CoreReplaceReportError, CoreReplaceReportOutcome, CoreReplaceReportRequest, CoreReplaceReported,
 };

@@ -1,5 +1,5 @@
 use super::{select_all_statuses_newest_first, select_status, upsert_status};
-use ployz_core::ops::{EventSequence, OperationStatus};
+use ployz_core::operation::{EventSequence, OperationStatus};
 use ployz_test_support::ids::{namespace_id, operation_id};
 use rusqlite::Connection;
 

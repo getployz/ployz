@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use ployz_core::ids::{NamespaceId, OperationId};
-use ployz_core::ops::{DeployCompletionOutcome, OperationEvent, ReplayedOperationEvent};
+use ployz_core::operation::{DeployCompletionOutcome, OperationEvent, ReplayedOperationEvent};
 
 use crate::deploy::command::DeployHistoryCommand;
 use crate::deploy::history_store::{
@@ -210,7 +210,7 @@ mod tests {
         ContainerRuntimeSpec, DeployRequest, DeployServiceSpec, ImageReference, ImageSource,
         ReplicaCount,
     };
-    use ployz_core::ops::{DeployOperationFailure, OperationKind};
+    use ployz_core::operation::{DeployOperationFailure, OperationKind};
     use ployz_test_support::ids::{
         cancellation_reason, event_sequence, machine_id, namespace_id, operation_id, service_id,
     };

@@ -1,8 +1,8 @@
 //! Gateway-role status RPC wire contract.
 
 use ployz_core::ids::MachineId;
-use ployz_core::machine_rpc::{MachineRpcResponder, MachineRpcResponse};
-use ployz_core::state::GatewayStatusObservation;
+use ployz_core::machine::GatewayStatusObservation;
+use ployz_core::machine::rpc::{MachineRpcResponder, MachineRpcResponse};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

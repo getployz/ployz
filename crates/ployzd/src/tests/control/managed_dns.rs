@@ -7,7 +7,7 @@ use crate::control::operation_evidence::OperationRepository;
 use crate::control::reconciler::managed_dns::{ManagedDnsTaskOutcome, reconcile_once};
 use crate::control::store::CoreStore;
 use crate::lease::{LeaseClient, LeaseWorkerUrl};
-use ployz_core::certificate::ManagedLeaseRenewRequest;
+use ployz_core::certificateificate::ManagedLeaseRenewRequest;
 use ployz_core::ingress::{
     AutomaticHostnameConfiguration, IngressConfiguration, IngressEndpointProjection,
     IngressEndpointProjectionState, IngressEndpointSet, PloyzDnsTargetIntent,

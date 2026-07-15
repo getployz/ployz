@@ -7,7 +7,7 @@ use crate::roles::machine::protocol::{
 };
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::InstallArtifactVersion;
-use ployz_core::ops::{FailureMessage, MachineSubstrateVersions};
+use ployz_core::operation::{FailureMessage, MachineSubstrateVersions};
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decode_json_request};
 use serde::Deserialize;
 use std::path::Path;

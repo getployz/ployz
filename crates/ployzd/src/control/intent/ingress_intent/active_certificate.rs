@@ -99,7 +99,7 @@ pub(crate) fn upsert_active_certificate_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::cert::{CertBundleRef, CertValidAt, CertValidityWindow};
+    use ployz_core::certificate::{CertBundleRef, CertValidAt, CertValidityWindow};
     use ployz_core::ids::RouteBindingId;
     use ployz_test_support::ids::{cert_id, route_hostname};
 
@@ -108,7 +108,7 @@ mod tests {
             owner: CertificateOwner::RouteBinding {
                 route_binding_id: RouteBindingId::try_new("route_1").expect("route binding id"),
             },
-            active: ployz_core::cert::ActiveCertState {
+            active: ployz_core::certificate::ActiveCertState {
                 cert_id: cert_id("cert_app_example_com"),
                 hostname: route_hostname("app.example.com"),
                 bundle_ref: CertBundleRef::try_new(format!(

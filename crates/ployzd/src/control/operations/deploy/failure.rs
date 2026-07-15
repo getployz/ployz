@@ -4,7 +4,7 @@ use ployz_core::deploy::DeployPlanError;
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceRevisionId, OperationId, ServiceId, StepId, SubjectTokenError,
 };
-use ployz_core::ops::{
+use ployz_core::operation::{
     CertificateProvisionFailure, ControlPlaneCommitScope, DeployOperationFailure, FailureMessage,
     HealthCheckFailure, OperatorHint, PreStartHookFailure, RetainedArtifact,
     RouteCutoverFailureReason, RouteHostname,
@@ -129,8 +129,8 @@ where
             command.step_timeout(),
             recorder.record_deploy_transition(
                 &command.operation_id,
-                ployz_core::ops::DeployTransition::Completed {
-                    outcome: ployz_core::ops::DeployCompletionOutcome::PartiallyCompleted,
+                ployz_core::operation::DeployTransition::Completed {
+                    outcome: ployz_core::operation::DeployCompletionOutcome::PartiallyCompleted,
                 },
             ),
         )
@@ -173,7 +173,7 @@ where
         timeout,
         recorder.record_deploy_transition(
             &command.operation_id,
-            ployz_core::ops::DeployTransition::Failed {
+            ployz_core::operation::DeployTransition::Failed {
                 failure: operation_failure.clone(),
             },
         ),
@@ -747,7 +747,7 @@ impl MachineContainerRuntimeError {
             } => DeployOperationFailure::ArtifactUnavailable {
                 service_id: service_id.clone(),
                 namespace_revision_entry_id: namespace_revision_entry_id.clone(),
-                reason: ployz_core::ops::ArtifactUnavailableReason::ImagePullFailed {
+                reason: ployz_core::operation::ArtifactUnavailableReason::ImagePullFailed {
                     machine_id: machine_id.clone(),
                     message: message.clone(),
                 },

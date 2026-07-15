@@ -8,10 +8,12 @@ use ployz_core::ingress::{AutomaticHostnameConfiguration, PloyzDnsTargetIntent};
 use ployz_core::install::{
     HostPortAssurance, InstallArtifactVersion, MachineJoinBundle, MachineJoinClusterName,
 };
+use ployz_core::machine::GatewayServingStatus;
+use ployz_core::machine::MachineLifecycle;
 use ployz_core::nats_config::NatsUserSeed;
-use ployz_core::ops::OperationIdempotencyKey;
+use ployz_core::operation::OperationIdempotencyKey;
 use ployz_core::roles::InstallRolePolicy;
-use ployz_core::state::{GatewayServingStatus, MachineLifecycle};
+
 use ployz_sdk_types::{
     AcceptedOperation, MachineAddAccepted, MachineAddRequest, MachineEndpointObservation,
     MachineInspectRequest, MachineListRequest, MachineListResult, MachineSnapshot,

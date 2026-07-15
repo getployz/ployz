@@ -82,7 +82,7 @@ fn host_runner_join_installs_ployzd_and_only_assigned_role_units() {
         *prepare_runtime,
         HostRunnerStep::PrepareContainerRuntime(
             ContainerRuntime::Docker,
-            ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+            ployz_core::network::MachineEndpointSupernet::default_v1(),
         )
     );
     assert_eq!(

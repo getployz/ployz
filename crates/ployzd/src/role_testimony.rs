@@ -6,14 +6,16 @@
 
 use futures_util::StreamExt;
 use ployz_core::ids::{ContainerId, MachineId};
-use ployz_core::internal_dns::{
-    InternalDnsFactGeneration, InternalDnsFactWatermark, InternalDnsResolverCacheIncarnation,
-};
-use ployz_core::machine_runtime::{
+use ployz_core::machine::GatewayStatusObservation;
+use ployz_core::machine::MachineEndpointObservation;
+use ployz_core::machine::runtime::{
     MachineContainerFactDelta, MachineContainerObservationSnapshot, MachineFactsSnapshot,
     ManagedContainerObservation,
 };
-use ployz_core::state::{GatewayStatusObservation, MachineEndpointObservation};
+use ployz_core::network::internal_dns::{
+    InternalDnsFactGeneration, InternalDnsFactWatermark, InternalDnsResolverCacheIncarnation,
+};
+
 use ployz_nats::subjects::{gateway_status_scope, machine_facts_scope};
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
@@ -381,10 +383,10 @@ fn warn_unowned_subject(subject: &str) {
 fn empty_machine_facts(
     machine_id: MachineId,
     observed_at_unix_ms: u64,
-) -> Result<MachineFactsSnapshot, ployz_core::machine_runtime::MachineFactsSnapshotError> {
+) -> Result<MachineFactsSnapshot, ployz_core::machine::runtime::MachineFactsSnapshotError> {
     let containers =
         MachineContainerObservationSnapshot::try_new(machine_id.clone(), Vec::new())
-            .map_err(ployz_core::machine_runtime::MachineFactsSnapshotError::BuildContainers)?;
+            .map_err(ployz_core::machine::runtime::MachineFactsSnapshotError::BuildContainers)?;
     MachineFactsSnapshot::try_new(
         machine_id,
         containers,
@@ -395,8 +397,8 @@ fn empty_machine_facts(
     )
 }
 
-fn test_disk_space() -> ployz_core::machine_runtime::MachineDiskSpace {
-    ployz_core::machine_runtime::MachineDiskSpace {
+fn test_disk_space() -> ployz_core::machine::runtime::MachineDiskSpace {
+    ployz_core::machine::runtime::MachineDiskSpace {
         available_bytes: 40,
         total_bytes: 100,
     }
@@ -415,7 +417,7 @@ mod tests {
         ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId,
         StepId,
     };
-    use ployz_core::machine_runtime::{
+    use ployz_core::machine::runtime::{
         ContainerRuntimeState, ManagedContainerIdentity, ManagedContainerKind,
     };
 
@@ -644,7 +646,7 @@ mod tests {
         let status = GatewayStatusObservation {
             machine_id: machine_id("machine_a"),
             listen_addr: "203.0.113.10:443".parse().expect("valid socket addr"),
-            serving: ployz_core::state::GatewayServingStatus::Current,
+            serving: ployz_core::machine::GatewayServingStatus::Current,
             route_count: 1,
         };
 

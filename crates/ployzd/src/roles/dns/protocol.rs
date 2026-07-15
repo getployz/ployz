@@ -3,7 +3,7 @@
 use std::net::Ipv4Addr;
 
 use ployz_core::ids::MachineId;
-use ployz_core::internal_dns::{InternalDnsStatus, InternalServiceName};
+use ployz_core::network::internal_dns::{InternalDnsStatus, InternalServiceName};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

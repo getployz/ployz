@@ -9,7 +9,7 @@ use ployz_core::ingress::{
     AutomaticHostnameConfiguration, AutomaticHostnameLabel, IngressConfiguration,
     PloyzDnsTargetIntent,
 };
-use ployz_core::ops::RoutePort;
+use ployz_core::operation::RoutePort;
 use ployz_test_support::ids::{idempotency_key, namespace_id, operation_id, service_id};
 
 #[test]

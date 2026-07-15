@@ -10,8 +10,9 @@ use crate::roles::gateway::projection::{
 use ployz_core::ingress::{
     ActiveCertificateMetadata, AutomaticHostnameConfiguration, CertificateOwner, RouteBindingOrigin,
 };
-use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
-use ployz_core::state::{RouteBindingState, ServingTargetEntry};
+use ployz_core::intent::RouteBindingState;
+use ployz_core::intent::ServingTargetEntry;
+use ployz_core::machine::runtime::MachineContainerObservationSnapshot;
 
 mod certificate_store;
 
@@ -197,10 +198,12 @@ fn gateway_route_from_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::cert::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
+    use ployz_core::certificate::{
+        ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
+    };
     use ployz_core::ids::{CertId, RouteBindingId};
     use ployz_core::ingress::{ActiveCertificateMetadata, CertificateOwner};
-    use ployz_core::ops::RouteTarget;
+    use ployz_core::operation::RouteTarget;
     use ployz_test_support::ids::{namespace_id, route_hostname, route_port, service_id};
 
     #[test]

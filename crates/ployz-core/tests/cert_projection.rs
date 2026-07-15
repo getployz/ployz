@@ -1,4 +1,4 @@
-use ployz_core::cert::{
+use ployz_core::certificate::{
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, CertificateProvisionFailure,
 };
 use ployz_core::ids::{CertId, MachineId, OperationId, RouteBindingId};

@@ -9,8 +9,8 @@ use crate::roles::machine::protocol::MachineSubstrateUpdateRpcRequest;
 use crate::tasks::TaskRegistry;
 use ployz_core::ids::MachineId;
 use ployz_core::install::InstallArtifactVersion;
-use ployz_core::ops::MachineSubstrateVersions;
-use ployz_core::ops::{FailureMessage, MachineUpdateFailure, MachineUpdateTransition};
+use ployz_core::operation::MachineSubstrateVersions;
+use ployz_core::operation::{FailureMessage, MachineUpdateFailure, MachineUpdateTransition};
 use std::time::{Duration, Instant};
 
 const UPDATE_REPORT_TIMEOUT: Duration = Duration::from_secs(120);

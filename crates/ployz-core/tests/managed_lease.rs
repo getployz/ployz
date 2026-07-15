@@ -1,4 +1,4 @@
-use ployz_core::cert::{
+use ployz_core::certificate::{
     LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle,
     ManagedCertificateIssuanceFailureKind, ManagedLeaseAcquired, ManagedLeaseName,
     ManagedLeaseRecord, ManagedLeaseRenewed,

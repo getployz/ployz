@@ -1,8 +1,8 @@
 mod support;
 
-use ployz_core::dataplane::MachineEndpointSupernet;
 use ployz_core::install::{WrappedCaKey, WrappedCoreSeeds};
 use ployz_core::nats_config::{CredentialGrant, CredentialName, CredentialRole, NatsUserPublicKey};
+use ployz_core::network::MachineEndpointSupernet;
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_host_runner::execution::ArtifactKind;
 use ployz_host_runner::execution::SupervisorUnitTarget;

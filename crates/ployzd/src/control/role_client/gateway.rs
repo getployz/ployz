@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use ployz_core::ids::MachineId;
-use ployz_core::state::GatewayStatusObservation;
+use ployz_core::machine::GatewayStatusObservation;
 use ployz_nats::subjects::MachineServiceEndpoint;
 
 use crate::control::role_client::machine::{

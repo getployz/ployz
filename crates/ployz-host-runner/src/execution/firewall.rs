@@ -1,6 +1,6 @@
 //! Host firewall detection and port operations.
 
-use ployz_core::ops::FailureMessage;
+use ployz_core::operation::FailureMessage;
 
 use super::command::HostRunnerCommandRunner;
 use super::supervisor::SupervisorBackend;

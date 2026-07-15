@@ -4,7 +4,7 @@ use super::{
     VolumeRemoveOperationSubmission, VolumeRemovePayload,
 };
 use ployz_core::ids::OperationId;
-use ployz_core::ops::VolumeRemoveTransition;
+use ployz_core::operation::VolumeRemoveTransition;
 
 impl OperationRepository {
     pub async fn submit_volume_remove(

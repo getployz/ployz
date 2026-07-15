@@ -15,14 +15,14 @@ use crate::roles::dns::protocol::DnsStatusRpcOk;
 use crate::roles::machine::{MachineRequestFailure, MachineRuntimeUnavailableReason};
 use crate::tasks::TaskRegistry;
 use futures_util::{StreamExt, stream};
-use ployz_core::dataplane::DataplaneProjection;
 use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::internal_dns::{
+use ployz_core::machine::runtime::MachineFactsRefreshConfirmation;
+use ployz_core::machine::validate_declared_machine;
+use ployz_core::network::DataplaneProjection;
+use ployz_core::network::internal_dns::{
     InternalDnsFactWatermark, InternalDnsResolverStatus, InternalDnsStatus,
 };
-use ployz_core::machine::validate_declared_machine;
-use ployz_core::machine_runtime::MachineFactsRefreshConfirmation;
-use ployz_core::ops::{
+use ployz_core::operation::{
     FailureMessage, NetworkRepairDnsRefreshProblem, NetworkRepairEvidence, NetworkRepairFailure,
     NetworkRepairMachineFactsRefreshOutcome, NetworkRepairProgressPhase,
     NetworkRepairRequestFailure, NetworkRepairRunningStage, NetworkRepairTransition,
@@ -607,7 +607,7 @@ impl NetworkRepairOperation {
 fn declared_projection_member<'a>(
     projection: &'a DataplaneProjection,
     machine_id: &MachineId,
-) -> Result<&'a ployz_core::dataplane::DataplaneProjectionMember, NetworkRepairFailure> {
+) -> Result<&'a ployz_core::network::DataplaneProjectionMember, NetworkRepairFailure> {
     projection
         .declared_members()
         .iter()
@@ -769,7 +769,7 @@ fn record_warning(operation_id: &OperationId, phase: &str, error: &RecordOperati
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::internal_dns::{
+    use ployz_core::network::internal_dns::{
         InternalDnsFactGeneration, InternalDnsResolverCacheIncarnation,
     };
     use ployz_nats::service_runtime::NatsServiceRequestFailure;

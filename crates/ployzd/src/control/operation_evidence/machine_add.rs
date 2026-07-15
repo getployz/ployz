@@ -10,15 +10,15 @@ use super::{
 };
 use crate::control::store::{CoreStoreError, query_json, query_json_list, to_json};
 use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::intent::recovery::PendingMachineJoinRecovery;
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenFingerprint, JoinTokenRedeemedAt, MachineAddFailure, RawJoinToken,
     redeem_pending_join_token,
 };
-use ployz_core::ops::{
+use ployz_core::operation::{
     EventSequence, MachineAddOperationState, OperationEvent, OperationIdempotencyKey,
     OperationKind, OperationStatus,
 };
-use ployz_core::state::PendingMachineJoinRecovery;
 use rusqlite::{Connection, OptionalExtension, params};
 
 impl OperationRepository {
@@ -165,7 +165,7 @@ impl OperationRepository {
 
     pub async fn machine_add_submission(
         &self,
-        idempotency_key: &ployz_core::ops::OperationIdempotencyKey,
+        idempotency_key: &ployz_core::operation::OperationIdempotencyKey,
     ) -> Result<Option<StoredMachineAddSubmission>, OperationStatusStoreError> {
         let idempotency_key = idempotency_key.clone();
         self.store
@@ -176,7 +176,7 @@ impl OperationRepository {
 
     pub async fn live_machine_add_endpoint_subnets(
         &self,
-    ) -> Result<Vec<ployz_core::dataplane::MachineEndpointSubnet>, OperationStatusStoreError> {
+    ) -> Result<Vec<ployz_core::network::MachineEndpointSubnet>, OperationStatusStoreError> {
         let mut assigned = Vec::new();
         for submission in self.machine_add_submissions().await? {
             let Some(OperationStatus::MachineAdd {
@@ -220,7 +220,7 @@ impl OperationRepository {
 
     pub async fn machine_add_secret_delivery(
         &self,
-        idempotency_key: &ployz_core::ops::OperationIdempotencyKey,
+        idempotency_key: &ployz_core::operation::OperationIdempotencyKey,
     ) -> Result<Option<StoredMachineAddSecretDelivery>, OperationStatusStoreError> {
         let idempotency_key = idempotency_key.clone();
         self.store
@@ -231,7 +231,7 @@ impl OperationRepository {
 
     pub async fn put_machine_add_mint_claim_if_absent(
         &self,
-        idempotency_key: &ployz_core::ops::OperationIdempotencyKey,
+        idempotency_key: &ployz_core::operation::OperationIdempotencyKey,
         claim: &StoredMachineAddMintClaim,
     ) -> Result<StoredMachineAddMintClaim, OperationStatusStoreError> {
         let idempotency_key = idempotency_key.clone();
@@ -245,7 +245,7 @@ impl OperationRepository {
 
     pub async fn put_machine_add_secret_delivery_if_absent(
         &self,
-        idempotency_key: &ployz_core::ops::OperationIdempotencyKey,
+        idempotency_key: &ployz_core::operation::OperationIdempotencyKey,
         secret_delivery: &StoredMachineAddSecretDelivery,
     ) -> Result<StoredMachineAddSecretDelivery, OperationStatusStoreError> {
         let idempotency_key = idempotency_key.clone();
@@ -261,7 +261,7 @@ impl OperationRepository {
 
     pub async fn machine_add_mint_claim(
         &self,
-        idempotency_key: &ployz_core::ops::OperationIdempotencyKey,
+        idempotency_key: &ployz_core::operation::OperationIdempotencyKey,
     ) -> Result<Option<StoredMachineAddMintClaim>, OperationStatusStoreError> {
         let idempotency_key = idempotency_key.clone();
         self.store

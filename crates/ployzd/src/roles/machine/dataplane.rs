@@ -6,11 +6,11 @@ use crate::roles::machine::protocol::{
     MachineDataplaneStatusRpcOk, MachineDataplaneStatusRpcRequest,
     MachineDataplaneStatusRpcResponse,
 };
-use ployz_core::dataplane::{
+use ployz_core::ids::MachineId;
+use ployz_core::network::{
     DataplaneProjectionComponent, DataplaneProjectionFailure, DataplaneProjectionTestimony,
     EndpointBridgeStatus, NativeDataplaneProjectionStatus,
 };
-use ployz_core::ids::MachineId;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decode_json_request};
 
 use super::projection::MachineProjectionState;
@@ -132,7 +132,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::dataplane::{
+    use ployz_core::network::{
         DataplaneProjection, DataplaneProjectionMember, DataplaneProjectionRevisions,
         EndpointBridgeStatus, MachineEndpointSubnet, WireGuardPublicKey,
     };

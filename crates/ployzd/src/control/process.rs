@@ -51,7 +51,9 @@ use crate::role_testimony::{
 };
 use crate::seed::{SeedCoreError, seed_core_from_snapshot};
 use crate::tasks::TaskRegistry;
-use ployz_core::state::{ControlPlaneEpoch, PendingMachineJoinRecovery};
+use ployz_core::intent::recovery::ControlPlaneEpoch;
+use ployz_core::intent::recovery::PendingMachineJoinRecovery;
+
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
 use std::path::{Path, PathBuf};
@@ -644,12 +646,14 @@ pub enum ControlProcessError {
 mod tests {
     use super::*;
     use ployz_core::ids::OperationId;
+    use ployz_core::intent::ActiveMachineState;
+    use ployz_core::intent::IntentSnapshot;
+    use ployz_core::intent::recovery::ControlPlaneEpoch;
+    use ployz_core::intent::recovery::PendingMachineJoinRecoverySnapshot;
+    use ployz_core::machine::MachineLifecycle;
     use ployz_core::machine::{IssuedJoinToken, JoinTokenExpiresAt, MachineName, RawJoinToken};
     use ployz_core::roles::InstallRolePolicy;
-    use ployz_core::state::{
-        ActiveMachineState, ControlPlaneEpoch, IntentSnapshot, MachineLifecycle,
-        PendingMachineJoinRecoverySnapshot,
-    };
+
     use ployz_test_support::ids::machine_id;
 
     fn empty_snapshot(epoch: ControlPlaneEpoch) -> IntentSnapshot {
@@ -657,7 +661,7 @@ mod tests {
             epoch,
             core_machine_id: machine_id("machine_a"),
             active_machines: Vec::new(),
-            dataplane_projection: ployz_core::dataplane::DataplaneProjection::try_new(
+            dataplane_projection: ployz_core::network::DataplaneProjection::try_new(
                 Vec::new(),
                 None,
             )
@@ -681,8 +685,8 @@ mod tests {
             name: MachineName::try_new(machine_id_value).expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
             host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
-            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(
-                ployz_core::dataplane::default_endpoint_subnet(&machine_id(machine_id_value)),
+            endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new(
+                ployz_core::network::default_endpoint_subnet(&machine_id(machine_id_value)),
             )
             .expect("valid endpoint subnet"),
             join_token: IssuedJoinToken::new(
@@ -702,9 +706,9 @@ mod tests {
             lifecycle: MachineLifecycle::Active,
             control_endpoints: Vec::new(),
             mesh_endpoints: Vec::new(),
-            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
+            endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new("10.198.0.0/24")
                 .expect("valid endpoint subnet"),
-            wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+            wireguard_public_key: ployz_core::network::WireGuardPublicKey::try_new(format!(
                 "public-{machine_id_value}"
             ))
             .expect("public key"),

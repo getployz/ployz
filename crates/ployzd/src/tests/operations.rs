@@ -1001,13 +1001,16 @@ impl AcmeIssuer for FixtureAcmeIssuer {
         context: &AcmeIssueContext,
         hostname: &ployz_core::operation::RouteHostname,
     ) -> Result<IssuedCertificate, AcmeIssuerError> {
-        let challenge = ployz_core::certificate::AcmeHttp01Challenge::try_new(
+        let challenge = ployz_core::certificateificate::AcmeHttp01Challenge::try_new(
             hostname.clone(),
-            ployz_core::certificate::AcmeChallengeToken::try_new("e2e-token")
+            ployz_core::certificateificate::AcmeChallengeToken::try_new("e2e-token")
                 .expect("challenge token"),
-            ployz_core::certificate::AcmeChallengeValue::try_new("e2e-token.fixture-thumbprint")
-                .expect("challenge value"),
-            ployz_core::certificate::AcmeChallengeTtlSeconds::try_new(900).expect("challenge ttl"),
+            ployz_core::certificateificate::AcmeChallengeValue::try_new(
+                "e2e-token.fixture-thumbprint",
+            )
+            .expect("challenge value"),
+            ployz_core::certificateificate::AcmeChallengeTtlSeconds::try_new(900)
+                .expect("challenge ttl"),
         )
         .expect("challenge");
         context.publish_challenge(challenge).await?;

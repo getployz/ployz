@@ -1,7 +1,7 @@
 use defguard_wireguard_rs::{WGApi, WireguardInterfaceApi, peer::Peer};
 use futures_util::{StreamExt, TryStreamExt, stream};
 use ipnet::Ipv4Net;
-use ployz_core::dataplane::{
+use ployz_core::network::{
     MachineEndpointSubnet, NetworkStatusMode, WireGuardConfiguredMtu, WireGuardDetectedMtu,
     WireGuardHandshakeStatus, WireGuardInterfaceMtu, WireGuardMtuProbe,
     WireGuardPeerEndpointSubnet, WireGuardPeerStatus, WireGuardPublicKey, WireGuardRttStatus,

@@ -13,7 +13,7 @@ use crate::roles::gateway::protocol::{
 use crate::roles::gateway::route_table::GatewayProjector;
 use crate::roles::gateway::source::{GatewayCertificateStore, GatewayCertificateStoreError};
 use crate::service_catalog::{gateway_role_service, machine_endpoint_spec};
-use ployz_core::cert::{
+use ployz_core::certificate::{
     CertificateArtifactPushOk, CertificateArtifactPushRequest, CertificateArtifactPushResponse,
     CertificateArtifactRemoveOk, CertificateArtifactRemoveRequest,
     CertificateArtifactRemoveResponse, CertificateChallengeApplyRequest,
@@ -23,8 +23,10 @@ use ployz_core::cert::{
     CertificateChallengeStatusResponse, GatewayCertificateRpcError,
 };
 use ployz_core::ids::MachineId;
-use ployz_core::ops::FailureMessage;
-use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation};
+use ployz_core::machine::GatewayServingStatus;
+use ployz_core::machine::GatewayStatusObservation;
+use ployz_core::operation::FailureMessage;
+
 use ployz_nats::service_runtime::{
     NatsClient, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
     RunningNatsService, decode_json_request, start_nats_service,

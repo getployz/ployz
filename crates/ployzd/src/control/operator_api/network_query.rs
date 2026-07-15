@@ -3,10 +3,10 @@
 use std::time::Duration;
 
 use futures_util::{StreamExt, stream};
-use ployz_core::dataplane::{INTERNAL_DNS_SUFFIX, NetworkStatusMode};
 use ployz_core::ids::MachineId;
-use ployz_core::internal_dns::InternalServiceName;
-use ployz_core::state::ActiveMachineState;
+use ployz_core::intent::ActiveMachineState;
+use ployz_core::network::internal_dns::InternalServiceName;
+use ployz_core::network::{INTERNAL_DNS_SUFFIX, NetworkStatusMode};
 use ployz_nats::service_runtime::{NatsJsonServiceRequestError, request_json};
 use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_sdk_types::{
@@ -413,15 +413,17 @@ mod tests {
     use std::time::Duration;
 
     use futures_util::StreamExt;
-    use ployz_core::dataplane::{
+    use ployz_core::intent::ActiveMachineState;
+    use ployz_core::machine::MachineLifecycle;
+    use ployz_core::machine::MachineName;
+    use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
+    use ployz_core::network::internal_dns::{InternalDnsResolverStatus, InternalDnsStatus};
+    use ployz_core::network::{
         EbpfAttachmentStatus, MachineDataplaneStatus, MachineEndpointSubnet,
         WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardInterfaceMtu, WireGuardStatus,
     };
-    use ployz_core::internal_dns::{InternalDnsResolverStatus, InternalDnsStatus};
-    use ployz_core::machine::MachineName;
-    use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
-    use ployz_core::ops::FailureMessage;
-    use ployz_core::state::{ActiveMachineState, MachineLifecycle};
+    use ployz_core::operation::FailureMessage;
+
     use ployz_nats::service_protocol::NatsServiceErrorHeaderDecodeError;
     use ployz_nats::service_runtime::{NatsJsonServiceRequestError, NatsServiceRequestFailure};
     use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
@@ -840,8 +842,8 @@ mod tests {
             let response = MachineDataplaneStatusRpcResponse::Ok(MachineDataplaneStatusRpcOk {
                 machine_id: responder_machine,
                 value: MachineDataplaneStatus {
-                    projection: ployz_core::dataplane::NativeDataplaneProjectionStatus::unavailable(
-                        ployz_core::ops::FailureMessage::try_new("projection unavailable")
+                    projection: ployz_core::network::NativeDataplaneProjectionStatus::unavailable(
+                        ployz_core::operation::FailureMessage::try_new("projection unavailable")
                             .expect("failure message"),
                     ),
                     wireguard: WireGuardStatus {
@@ -868,7 +870,7 @@ mod tests {
             &nats.controller,
             &dns_client,
             Duration::from_millis(200),
-            ployz_core::dataplane::NetworkStatusMode::ProbePathMtu,
+            ployz_core::network::NetworkStatusMode::ProbePathMtu,
             vec![
                 active_machine("machine_a", "10.198.1.0/24"),
                 active_machine("machine_b", "10.198.2.0/24"),
@@ -909,7 +911,7 @@ mod tests {
             control_endpoints: Vec::new(),
             mesh_endpoints: Vec::new(),
             endpoint_subnet: MachineEndpointSubnet::try_new(subnet).expect("endpoint subnet"),
-            wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+            wireguard_public_key: ployz_core::network::WireGuardPublicKey::try_new(format!(
                 "public-{id}"
             ))
             .expect("public key"),

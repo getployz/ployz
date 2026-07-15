@@ -4,7 +4,7 @@ use super::{
     RecordOperationEventOutcome, SubmitOperationError,
 };
 use ployz_core::ids::OperationId;
-use ployz_core::ops::{NamespaceRemoveTransition, OperationEvent, RouteTarget};
+use ployz_core::operation::{NamespaceRemoveTransition, OperationEvent, RouteTarget};
 
 impl OperationRepository {
     pub async fn submit_namespace_remove(
@@ -41,7 +41,7 @@ impl OperationRepository {
         &self,
         operation_id: &OperationId,
         target: RouteTarget,
-    ) -> Result<ployz_core::ops::EventSequence, RecordNamespaceRemoveTransitionError> {
+    ) -> Result<ployz_core::operation::EventSequence, RecordNamespaceRemoveTransitionError> {
         self.record_operation_event(
             operation_id,
             OperationEvent::NamespaceRemoveRouteBindingRemoved {
@@ -58,7 +58,7 @@ impl OperationRepository {
         operation_id: &OperationId,
         machine_id: ployz_core::ids::MachineId,
         container_id: ployz_core::ids::ContainerId,
-    ) -> Result<ployz_core::ops::EventSequence, RecordNamespaceRemoveTransitionError> {
+    ) -> Result<ployz_core::operation::EventSequence, RecordNamespaceRemoveTransitionError> {
         self.record_operation_event(
             operation_id,
             OperationEvent::NamespaceRemoveContainerRemoved {

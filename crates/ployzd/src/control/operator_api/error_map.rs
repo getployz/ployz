@@ -9,7 +9,7 @@ use crate::control::operation_evidence::{
 };
 use crate::control::sequencer::{MachineAddSubmitCommandError, SubmitCommandError};
 use ployz_core::ids::OperationId;
-use ployz_core::ops::{
+use ployz_core::operation::{
     EventSequence, FailureMessage, ProjectionOperationState, StatusProjectionError,
 };
 use ployz_sdk_types::{
@@ -252,7 +252,10 @@ pub(super) fn machine_add_error_from_submit_error(
 
 fn machine_add_state_conflict(
     error: &RecordMachineJoinReportError,
-) -> Option<(OperationId, ployz_core::ops::MachineAddOperationStateName)> {
+) -> Option<(
+    OperationId,
+    ployz_core::operation::MachineAddOperationStateName,
+)> {
     let RecordMachineJoinReportError::RecordMachineAddEvent(
         RecordMachineAddEventError::ProjectStatus(
             StatusProjectionError::InvalidTransition {
@@ -280,7 +283,8 @@ pub(super) fn completed_machine_add_operation_id(
     error: &RecordMachineJoinReportError,
 ) -> Option<OperationId> {
     machine_add_state_conflict(error).and_then(|(operation_id, state)| {
-        (state == ployz_core::ops::MachineAddOperationStateName::Completed).then_some(operation_id)
+        (state == ployz_core::operation::MachineAddOperationStateName::Completed)
+            .then_some(operation_id)
     })
 }
 
@@ -408,7 +412,7 @@ mod tests {
     };
     use crate::control::sequencer::{MachineAddSubmitCommandError, SubmitCommandError};
     use ployz_core::ids::{NamespaceId, OperationId};
-    use ployz_core::ops::EventSequence;
+    use ployz_core::operation::EventSequence;
     use ployz_sdk_types::{DeploySubmitError, MachineAddError, OpsWatchError};
 
     #[test]

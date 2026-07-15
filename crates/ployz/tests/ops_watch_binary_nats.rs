@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use ployz::dispatcher::{PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV};
 use ployz_core::deploy::{DeployServiceSpec, ImageReference, ReplicaCount};
 use ployz_core::ids::NamespaceId;
-use ployz_core::ops::{
+use ployz_core::operation::{
     DeployOperationState, ManagedDnsReconcileOperationState, ManagedDnsReconcileSubject,
     OperationEvent, OperationEventReplayPage, OperationEventReplayRequest, OperationStatus,
     OperationStatusSnapshot, ReplayedOperationEvent,
@@ -71,7 +71,8 @@ async fn binary_ops_watch_replays_terminal_event_after_a_caught_up_page() {
                                 2,
                                 OperationEvent::DeployCompleted {
                                     operation_id: operation_id("op_deploy"),
-                                    outcome: ployz_core::ops::DeployCompletionOutcome::Completed,
+                                    outcome:
+                                        ployz_core::operation::DeployCompletionOutcome::Completed,
                                 },
                             )])
                         }
@@ -100,7 +101,7 @@ async fn binary_ops_watch_replays_terminal_event_after_a_caught_up_page() {
                     service_id: service_id("svc_api"),
                     origin: None,
                     state: DeployOperationState::Completed {
-                        outcome: ployz_core::ops::DeployCompletionOutcome::Completed,
+                        outcome: ployz_core::operation::DeployCompletionOutcome::Completed,
                     },
                     last_event_sequence: event_sequence(2),
                 }),

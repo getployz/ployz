@@ -36,7 +36,7 @@ pub(crate) fn local_core_target_from_env() -> Result<FirstMachineInstallTarget, 
 
     let install = FirstMachineInstallSpec {
         machine_id,
-        dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+        dataplane_endpoint_supernet: ployz_core::network::MachineEndpointSupernet::default_v1(),
         gateway: env_gateway_role(PLOYZ_GATEWAY_ENV)?,
         host_port_assurance: env_host_port_assurance()?,
         machine_public_ip: local_core_machine_public_ip_from_env()?,

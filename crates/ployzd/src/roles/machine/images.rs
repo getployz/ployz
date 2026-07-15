@@ -16,7 +16,7 @@ use ployz_core::image::{
     ImageRpcDomainError, ImageUploadId, OCI_IMAGE_CONFIG_MEDIA_TYPE, OCI_IMAGE_MANIFEST_MEDIA_TYPE,
     OciDigest, OciPlatform,
 };
-use ployz_core::machine_rpc::MachineRpcResponse;
+use ployz_core::machine::rpc::MachineRpcResponse;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse};
 use serde::Deserialize;
 use std::collections::BTreeMap;

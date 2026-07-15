@@ -4,7 +4,7 @@ use super::{
     SubmitOperationError,
 };
 use ployz_core::ids::OperationId;
-use ployz_core::ops::CredentialGrantTransition;
+use ployz_core::operation::CredentialGrantTransition;
 
 impl OperationRepository {
     pub async fn submit_credential_grant(

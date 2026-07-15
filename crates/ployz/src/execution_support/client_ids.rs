@@ -2,7 +2,7 @@
 
 use ployz_core::deploy::VolumeName;
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId, SubjectTokenError};
-use ployz_core::ops::OperationIdempotencyKey;
+use ployz_core::operation::OperationIdempotencyKey;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ClientGeneratedOperationId {

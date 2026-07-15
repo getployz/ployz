@@ -7,15 +7,18 @@ use ployz_core::ids::MachineId;
 use ployz_core::ingress::{
     IngressEndpointProjection, IngressEndpointProjectionIdentity, IngressEndpointProjectionState,
 };
-use ployz_core::ops::{
+use ployz_core::intent::IntentSnapshot;
+use ployz_core::intent::recovery::ControlPlaneEpoch;
+use ployz_core::machine::GatewayServingStatus;
+use ployz_core::network::reachability::is_public;
+use ployz_core::operation::{
     FailureMessage, IngressRefreshCandidateEvidence, IngressRefreshCandidatePublication,
     IngressRefreshEvidence, IngressRefreshExclusionReason, IngressRefreshFactsOutcome,
     IngressRefreshFailure, IngressRefreshGatewayOutcome, IngressRefreshInvalidationEvidence,
     IngressRefreshOperationState, IngressRefreshTransition, OperationStatus,
 };
-use ployz_core::reachability::is_public;
 use ployz_core::roles::GatewayRole;
-use ployz_core::state::{ControlPlaneEpoch, GatewayServingStatus, IntentSnapshot};
+
 use ployz_nats::service_runtime::{
     NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError, NatsServiceShutdownError,
     RunningNatsService, decode_json_request, start_nats_service,
@@ -442,11 +445,11 @@ impl ProjectionRuntime {
 enum GatherReply {
     Gateway {
         machine_id: MachineId,
-        result: Result<ployz_core::state::GatewayStatusObservation, GatewayStatusReadError>,
+        result: Result<ployz_core::machine::GatewayStatusObservation, GatewayStatusReadError>,
     },
     Facts {
         machine_id: MachineId,
-        result: Result<ployz_core::machine_runtime::MachineFactsSnapshot, MachineFactsReadError>,
+        result: Result<ployz_core::machine::runtime::MachineFactsSnapshot, MachineFactsReadError>,
     },
 }
 
@@ -573,8 +576,8 @@ fn gateway_candidates(intent: &IntentSnapshot) -> Vec<MachineId> {
 
 fn candidate_outcome(
     machine_id: MachineId,
-    gateway: Result<ployz_core::state::GatewayStatusObservation, GatewayStatusReadError>,
-    facts: Result<ployz_core::machine_runtime::MachineFactsSnapshot, MachineFactsReadError>,
+    gateway: Result<ployz_core::machine::GatewayStatusObservation, GatewayStatusReadError>,
+    facts: Result<ployz_core::machine::runtime::MachineFactsSnapshot, MachineFactsReadError>,
 ) -> IngressRefreshCandidateEvidence {
     let gateway = match gateway {
         Ok(status) => match status.serving {
@@ -709,7 +712,7 @@ async fn publish_changed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::ops::EventSequence;
+    use ployz_core::operation::EventSequence;
 
     fn pending() -> ProjectionEvidenceRecord {
         ProjectionEvidenceRecord::pending(ControlPlaneEpoch::initial())

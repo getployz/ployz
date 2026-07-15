@@ -176,7 +176,7 @@ fn check_core_promote_preflight() -> Result<(), String> {
     )?;
     let mirror_path = join_dir.join(ployz_core::install::INTENT_MIRROR_FILE_NAME);
     require_promote_file(&mirror_path, ployz_core::install::INTENT_MIRROR_FILE_NAME)?;
-    let _: ployz_core::state::IntentSnapshot =
+    let _: ployz_core::intent::IntentSnapshot =
         serde_json::from_str(&read_promote_file(&mirror_path)?).map_err(|error| {
             format!(
                 "cannot parse intent mirror {}: {error}",
@@ -221,7 +221,7 @@ fn resolve_core_promote_target(
         .unwrap_or_else(|| MachineJoinClusterName::try_new("ployz").expect("valid cluster name"));
     let dataplane_endpoint_supernet =
         parse_dataplane_endpoint_supernet_from_join_material(&join_material)
-            .unwrap_or_else(ployz_core::dataplane::MachineEndpointSupernet::default_v1);
+            .unwrap_or_else(ployz_core::network::MachineEndpointSupernet::default_v1);
     let ca = ployz_core::nats_config::NatsCaCertificatePem::try_new(read_promote_file(
         &join_dir.join(JOIN_TRUSTED_CA_FILE),
     )?)
@@ -246,7 +246,7 @@ fn resolve_core_promote_target(
     // that seed lives in the join-material directory (nats.creds), so the mirror is
     // there too — not the first-machine `/var/lib/ployz/nats` layout.
     let mirror_path = join_dir.join(ployz_core::install::INTENT_MIRROR_FILE_NAME);
-    let snapshot: ployz_core::state::IntentSnapshot =
+    let snapshot: ployz_core::intent::IntentSnapshot =
         serde_json::from_str(&read_promote_file(&mirror_path)?).map_err(|error| {
             format!(
                 "cannot parse intent mirror {}: {error}",

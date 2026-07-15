@@ -16,8 +16,8 @@ use ployz_core::image::{
     ImageManifestPushResponse, ImageRpcDomainError, ImageUploadId, OCI_IMAGE_CONFIG_MEDIA_TYPE,
     OCI_IMAGE_LAYER_GZIP_MEDIA_TYPE, OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciDigest, OciPlatform,
 };
-use ployz_core::machine_rpc::{MachineRpcResponder, MachineRpcResponse};
-use ployz_core::state::MachineLifecycle;
+use ployz_core::machine::MachineLifecycle;
+use ployz_core::machine::rpc::{MachineRpcResponder, MachineRpcResponse};
 use ployz_nats::operation_api_client::OperationApiClient;
 use ployz_nats::service_protocol::decode_nats_service_error;
 use ployz_nats::service_runtime::request_json;

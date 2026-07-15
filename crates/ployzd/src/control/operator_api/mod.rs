@@ -42,8 +42,8 @@ use crate::control::role_client::machine::{NatsMachineFactsReader, NatsMachineLo
 use crate::control::sequencer::OperationControllers;
 use crate::control::store::CoreStore;
 use crate::role_testimony::RoleTestimonyCache;
-use ployz_core::dataplane::MachineEndpointSupernet;
 use ployz_core::ids::MachineId;
+use ployz_core::network::MachineEndpointSupernet;
 use std::sync::Arc;
 
 /// The operation drivers, bundled so a new kind adds a field here instead of

@@ -8,7 +8,7 @@ use super::{
 };
 use ployz_core::deploy::DeployReservationId;
 use ployz_core::ids::{NamespaceId, OperationId};
-use ployz_core::ops::{DeployEvidence, DeployTransition, EventSequence};
+use ployz_core::operation::{DeployEvidence, DeployTransition, EventSequence};
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub(super) enum DeployReservationRejection {

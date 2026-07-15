@@ -4,8 +4,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::plan::{JoinMaterialError, JoinToken, RedactedJoinMaterial};
-use ployz_core::dataplane::MachineEndpointSupernet;
 use ployz_core::ids::MachineId;
+use ployz_core::network::MachineEndpointSupernet;
 
 pub const JOIN_MATERIAL_FILE: &str = "join-material";
 pub const JOIN_NATS_CREDENTIALS_FILE: &str = "nats.creds";

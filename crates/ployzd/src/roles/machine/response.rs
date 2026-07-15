@@ -3,7 +3,7 @@ use crate::roles::machine::protocol::{
 };
 use crate::roles::machine::runner::MachineContainerRunnerError;
 use ployz_core::ids::{ContainerId, MachineId};
-use ployz_core::ops::{FailureMessage, OperatorHint};
+use ployz_core::operation::{FailureMessage, OperatorHint};
 use ployz_nats::service_runtime::{NatsServiceError, NatsServiceResponse};
 
 pub(crate) fn machine_success(response: impl serde::Serialize) -> NatsServiceResponse {

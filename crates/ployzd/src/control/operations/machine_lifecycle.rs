@@ -9,7 +9,7 @@ use crate::control::operation_evidence::AcceptedMachineLifecycleSubmission;
 use crate::control::sequencer::OperationControllers;
 use crate::tasks::TaskRegistry;
 use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::ops::{FailureMessage, MachineLifecycleFailure, MachineLifecycleTransition};
+use ployz_core::operation::{FailureMessage, MachineLifecycleFailure, MachineLifecycleTransition};
 use ployz_nats::subjects::INTENT_CHANGED;
 
 #[derive(Debug, Clone)]

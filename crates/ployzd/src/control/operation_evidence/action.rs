@@ -10,7 +10,7 @@ use super::{
     VolumeRemoveOperationSubmission, VolumeRemovePayload,
 };
 use ployz_core::ids::OperationId;
-use ployz_core::ops::{
+use ployz_core::operation::{
     CredentialGrantAction, EventSequence, OperationEvent, OperationKind, OperationStatus,
 };
 

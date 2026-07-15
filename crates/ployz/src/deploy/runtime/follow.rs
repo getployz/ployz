@@ -2,7 +2,7 @@ use std::io::{self, IsTerminal, Write};
 
 use ployz_core::deploy::DeployReservationId;
 use ployz_core::ids::{NamespaceId, OperationId};
-use ployz_core::ops::ReplayedOperationEvent;
+use ployz_core::operation::ReplayedOperationEvent;
 use ployz_sdk_types::{AcceptedOperation, DeployReserveRequest, DeploySubmitRequest};
 
 use crate::api_client::OperationApiClient;

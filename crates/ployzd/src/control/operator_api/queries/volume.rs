@@ -1,5 +1,5 @@
 use crate::control::intent::service::NatsIntentReader;
-use ployz_core::state::IntentSnapshot;
+use ployz_core::intent::IntentSnapshot;
 use ployz_sdk_types::{VolumeListError, VolumeListResult, VolumeSnapshot, VolumeStatus};
 
 #[derive(Clone)]
@@ -55,7 +55,10 @@ fn volume_snapshots(intent: &IntentSnapshot) -> Vec<VolumeSnapshot> {
 mod tests {
     use super::volume_snapshots;
     use ployz_core::deploy::VolumeName;
-    use ployz_core::state::{ControlPlaneEpoch, IntentSnapshot, VolumePinState};
+    use ployz_core::intent::IntentSnapshot;
+    use ployz_core::intent::VolumePinState;
+    use ployz_core::intent::recovery::ControlPlaneEpoch;
+
     use ployz_sdk_types::VolumeStatus;
     use ployz_test_support::fixtures::serving_target_entry_in;
     use ployz_test_support::ids::{machine_id, namespace_id};
@@ -71,7 +74,7 @@ mod tests {
             epoch: ControlPlaneEpoch::initial(),
             core_machine_id: machine_id("core"),
             active_machines: Vec::new(),
-            dataplane_projection: ployz_core::dataplane::DataplaneProjection::try_new(
+            dataplane_projection: ployz_core::network::DataplaneProjection::try_new(
                 Vec::new(),
                 None,
             )

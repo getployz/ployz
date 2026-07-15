@@ -1,9 +1,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ployz_core::cert::ActiveCertState;
+use ployz_core::certificate::ActiveCertState;
 use ployz_core::ingress::{ActiveCertificateMetadata, CertificateOwner};
-use ployz_core::ops::{
+use ployz_core::operation::{
     CertOperationFailure, CertificateProvisionFailure, FailureMessage, OperationStatus,
 };
 use ployz_core::roles::GatewayRole;
@@ -428,10 +428,12 @@ mod tests {
         CertificateRenewalHealthFailure, CertificateRenewalOutcome, CertificateRenewalTaskError,
         record_renewal_attempt, recovery_failure,
     };
-    use ployz_core::cert::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
+    use ployz_core::certificate::{
+        ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
+    };
     use ployz_core::ids::CertId;
     use ployz_core::ingress::{ActiveCertificateMetadata, CertificateOwner};
-    use ployz_core::ops::{CertificateProvisionFailure, FailureMessage, RouteHostname};
+    use ployz_core::operation::{CertificateProvisionFailure, FailureMessage, RouteHostname};
 
     #[test]
     fn renewal_becomes_due_at_two_thirds_of_validity() {

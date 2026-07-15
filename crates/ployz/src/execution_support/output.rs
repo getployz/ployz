@@ -1,4 +1,4 @@
-use ployz_core::ops::OperationOutcome;
+use ployz_core::operation::OperationOutcome;
 
 /// Whether a completed command should exit the process successfully. A command
 /// that followed an operation to a failed or cancelled terminal state prints
@@ -48,7 +48,7 @@ impl PloyzctlExecutionOutput {
 #[cfg(test)]
 mod tests {
     use super::{CommandExit, PloyzctlExecutionOutput};
-    use ployz_core::ops::OperationOutcome;
+    use ployz_core::operation::OperationOutcome;
 
     #[test]
     fn failed_and_cancelled_operations_exit_non_zero() {

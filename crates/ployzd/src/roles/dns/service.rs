@@ -10,7 +10,7 @@ use crate::roles::dns::protocol::{
 };
 use crate::service_catalog::{dns_role_service_base, machine_endpoint_spec};
 use ployz_core::ids::MachineId;
-use ployz_core::internal_dns::{InternalDnsResolverStatus, InternalDnsStatus};
+use ployz_core::network::internal_dns::{InternalDnsResolverStatus, InternalDnsStatus};
 use ployz_nats::service_runtime::{
     NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError, RunningNatsService,
     decode_json_request, start_nats_service,
@@ -127,8 +127,8 @@ async fn resolve_from_bound_resolver(
 #[cfg(test)]
 mod tests {
     use ployz_core::ids::{NamespaceId, ServiceId};
-    use ployz_core::internal_dns::{InternalDnsResolverStatus, InternalServiceName};
-    use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
+    use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
+    use ployz_core::network::internal_dns::{InternalDnsResolverStatus, InternalServiceName};
     use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse};
     use ployz_test_support::ids::machine_id;
 

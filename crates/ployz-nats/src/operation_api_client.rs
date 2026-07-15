@@ -5,7 +5,7 @@ use crate::service_runtime::{
     NatsJsonServiceRequestError, NatsServiceRequestFailure, request_json,
 };
 use crate::subjects::OperationApiEndpoint;
-use ployz_core::ops::{OperationEventReplayPage, OperationStatusSnapshot};
+use ployz_core::operation::{OperationEventReplayPage, OperationStatusSnapshot};
 use ployz_sdk_types::{
     AcceptedOperation, CoreReplaceError, CoreReplaceReportError, CoreReplaceReportRequest,
     CoreReplaceReported, CoreReplaceRequest, CredentialAddError, CredentialAddRequest,

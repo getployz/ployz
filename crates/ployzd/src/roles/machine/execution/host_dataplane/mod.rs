@@ -1,14 +1,14 @@
 //! Host WireGuard/eBPF readiness for machine-local dataplane preparation.
 
-use ployz_core::dataplane::{
+use ployz_core::ids::MachineId;
+use ployz_core::network::{
     DEFAULT_WIREGUARD_LISTEN_PORT, EbpfAttachmentStatus, EbpfForwardingReady,
     MachineDataplaneStatus, NativeDataplaneProjectionStatus, NetworkStatusMode,
     PloyzNativeMeshComponent, PloyzNativeMeshReady, WireGuardEbpfEndpointRoute,
     WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey, WireGuardReady,
     WireGuardReadyEvidence,
 };
-use ployz_core::ids::MachineId;
-use ployz_core::ops::FailureMessage;
+use ployz_core::operation::FailureMessage;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -516,7 +516,7 @@ impl WireGuardEndpointRotation {
             let established_down = after_change
                 && last_handshake != 0
                 && now_unix.saturating_sub(last_handshake)
-                    >= ployz_core::dataplane::MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS;
+                    >= ployz_core::network::MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS;
             let never_connected = last_handshake == 0 && after_change;
             if !established_down && !never_connected {
                 continue;

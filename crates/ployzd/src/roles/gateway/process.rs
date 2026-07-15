@@ -31,8 +31,10 @@ use pingora::listeners::tls::TlsSettings;
 use pingora::server::configuration::ServerConf;
 use pingora::server::{RunArgs, Server, ShutdownSignal, ShutdownSignalWatch};
 use ployz_core::ids::MachineId;
-use ployz_core::ops::RoutePort;
-use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation};
+use ployz_core::machine::GatewayServingStatus;
+use ployz_core::machine::GatewayStatusObservation;
+use ployz_core::operation::RoutePort;
+
 use ployz_nats::connect::{NatsConnectError, connect_authenticated_pool};
 use ployz_nats::service_runtime::{
     NatsClient, NatsServiceRuntimeError, NatsServiceShutdownError, RunningNatsService,

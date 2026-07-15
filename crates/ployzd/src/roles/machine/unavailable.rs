@@ -1,7 +1,7 @@
 //! Failure classification for machine-scoped transport calls.
 
 use ployz_core::ids::MachineId;
-use ployz_core::ops::FailureMessage;
+use ployz_core::operation::FailureMessage;
 
 /// Transport and responder failures shared by machine-scoped RPC calls.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,12 +1,12 @@
 //! Gateway projection read-model.
 
-use ployz_core::cert::{AcmeHttp01Challenge, CustomCertBundle};
+use ployz_core::certificate::{AcmeHttp01Challenge, CustomCertBundle};
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, RouteBindingId, ServiceId,
 };
 use ployz_core::ingress::{CertificateOwner, RouteBindingOrigin};
-use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
-use ployz_core::ops::{RoutePort, RouteTarget};
+use ployz_core::machine::runtime::MachineContainerObservationSnapshot;
+use ployz_core::operation::{RoutePort, RouteTarget};
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -111,7 +111,9 @@ impl GatewayUpstreamKey {
         }
     }
 
-    fn for_container(container: &ployz_core::machine_runtime::ManagedContainerObservation) -> Self {
+    fn for_container(
+        container: &ployz_core::machine::runtime::ManagedContainerObservation,
+    ) -> Self {
         Self {
             namespace_id: container.identity.namespace_id.clone(),
             service_id: container.identity.service_id.clone(),

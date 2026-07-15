@@ -142,7 +142,7 @@ pub(super) fn prepare_cloud_bootstrap_attempt() -> Option<CloudBootstrapAttemptS
         detect_host_platform(&os_release)
             .map(|profile| SupervisorBackend::from(profile.supervisor()))
             .map_err(|error| {
-                ployz_core::ops::FailureMessage::try_new(error.to_string())
+                ployz_core::operation::FailureMessage::try_new(error.to_string())
                     .expect("host platform failure message is non-empty")
             })
     }) {
@@ -448,7 +448,7 @@ fn build_cloud_founder_install_spec(
     Ok(FirstMachineInstallSpec {
         machine_id: MachineId::try_new(format!("cloud_founder_{suffix}"))
             .map_err(|error| error.to_string())?,
-        dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+        dataplane_endpoint_supernet: ployz_core::network::MachineEndpointSupernet::default_v1(),
         gateway: GatewayRole::Install,
         host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
         machine_public_ip: Some(public_ip_from_runtime_nats_url(&founder.runtime_nats_url)?),
@@ -748,7 +748,7 @@ mod tests {
         HostRunnerStepLabel,
     };
     use ployz_core::install::MachineJoinRuntimeNatsUrl;
-    use ployz_core::ops::FailureMessage;
+    use ployz_core::operation::FailureMessage;
     use ployz_sdk_types::{
         CloudBootstrapAttemptId, CloudBootstrapCallbackRequest, CloudBootstrapCallbackToken,
         CloudBootstrapEnvelope, CloudBootstrapIntent, CloudBootstrapOutcome,
@@ -843,7 +843,7 @@ mod tests {
                         .expect("valid machine id"),
                     name: ployz_core::machine::MachineName::try_new("edge_2")
                         .expect("valid machine name"),
-                    last_event_sequence: ployz_core::ops::EventSequence::try_new(8)
+                    last_event_sequence: ployz_core::operation::EventSequence::try_new(8)
                         .expect("valid sequence"),
                     result: ployz_sdk_types::MachineJoinRedeemResult::Joined,
                 },
