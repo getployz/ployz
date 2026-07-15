@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Args, Subcommand};
 use ployz_core::ids::NamespaceId;
 
-use super::{PloyzctlCliError, invalid_value};
+use crate::commands::{PloyzctlCliError, invalid_value};
 use crate::deploy::compose::{UnsupportedFieldMode, parse_compose_file};
 
 #[derive(Debug, Args)]
