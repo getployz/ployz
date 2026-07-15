@@ -125,6 +125,7 @@ impl GatewayUpstreamKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GatewayProjectionUpdate {
     SourceAvailable(Box<GatewayProjectionInput>),
+    #[cfg(test)]
     SourceInvalid(GatewayProjectionError),
     SourceUnavailable(GatewayProjectionError),
 }
@@ -154,6 +155,7 @@ pub enum GatewayProjectionError {
         failures: Vec<GatewayCertificateMaterialFailure>,
         availability: GatewayCertificateFailureAvailability,
     },
+    #[cfg(test)]
     InvalidSource {
         message: String,
     },
@@ -226,6 +228,7 @@ pub fn apply_gateway_update(
                 },
             }
         }
+        #[cfg(test)]
         GatewayProjectionUpdate::SourceInvalid(error) => GatewayProjectionState {
             last_error: Some(error),
             ..previous

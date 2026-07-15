@@ -379,14 +379,12 @@ pub enum GatewayProcessAttempt {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GatewayHttpFailure {
-    Accept { message: String },
     Proxy { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GatewayWatchFailure {
     Open { message: String },
-    Stream { message: String },
     Ended { source: &'static str },
 }
 

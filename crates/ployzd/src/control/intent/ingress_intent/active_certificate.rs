@@ -59,19 +59,6 @@ impl ActiveCertificateMetadataStore {
             })
             .await
     }
-
-    pub async fn remove(&self, owner: &CertificateOwner) -> Result<(), CoreStoreError> {
-        let owner_key = certificate_owner_key(owner);
-        self.store
-            .call(move |conn| {
-                conn.execute(
-                    "DELETE FROM active_certificate_metadata WHERE owner_key = ?1",
-                    [owner_key],
-                )?;
-                Ok(())
-            })
-            .await
-    }
 }
 
 fn certificate_owner_key(owner: &CertificateOwner) -> String {

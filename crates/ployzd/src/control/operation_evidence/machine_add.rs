@@ -259,17 +259,6 @@ impl OperationRepository {
             .into_value()
     }
 
-    pub async fn machine_add_mint_claim(
-        &self,
-        idempotency_key: &ployz_core::operation::OperationIdempotencyKey,
-    ) -> Result<Option<StoredMachineAddMintClaim>, OperationStatusStoreError> {
-        let idempotency_key = idempotency_key.clone();
-        self.store
-            .call(move |conn| select_machine_add_mint_claim(conn, &idempotency_key))
-            .await
-            .map_err(|error| index_error(&error))
-    }
-
     pub async fn redeem_machine_join_token(
         &self,
         token: &RawJoinToken,

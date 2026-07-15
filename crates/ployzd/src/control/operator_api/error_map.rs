@@ -298,7 +298,6 @@ pub(super) fn machine_join_report_error(
         };
     }
     match error {
-        RecordMachineJoinReportError::InvalidJoinToken => MachineJoinReportError::InvalidJoinToken,
         RecordMachineJoinReportError::UnknownJoinToken => MachineJoinReportError::UnknownJoinToken,
         RecordMachineJoinReportError::StoreStatus(source) => MachineJoinReportError::Unavailable {
             message: source.to_string(),
@@ -306,14 +305,6 @@ pub(super) fn machine_join_report_error(
         RecordMachineJoinReportError::RecordMachineAddEvent(source) => {
             MachineJoinReportError::Unavailable {
                 message: source.to_string(),
-            }
-        }
-        RecordMachineJoinReportError::JoinTokenMismatch { operation_id } => {
-            MachineJoinReportError::Unavailable {
-                message: corrupt(format_args!(
-                    "join token mismatch for {}",
-                    operation_id.as_str()
-                )),
             }
         }
     }
@@ -370,14 +361,6 @@ pub(super) fn machine_join_redeem_error_from_repository_error(
             MachineJoinRedeemError::Unavailable {
                 message: corrupt(format_args!(
                     "{} is not a machine-add operation",
-                    operation_id.as_str()
-                )),
-            }
-        }
-        RedeemMachineJoinTokenRepositoryError::JoinTokenMismatch { operation_id } => {
-            MachineJoinRedeemError::Unavailable {
-                message: corrupt(format_args!(
-                    "join token mismatch for {}",
                     operation_id.as_str()
                 )),
             }

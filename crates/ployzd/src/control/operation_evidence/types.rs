@@ -530,9 +530,6 @@ pub enum RedeemMachineJoinTokenError {
     WrongOperationKind {
         operation_id: OperationId,
     },
-    JoinTokenMismatch {
-        operation_id: OperationId,
-    },
     OperationNotPending {
         operation_id: OperationId,
         current: MachineAddOperationStateName,
@@ -545,9 +542,7 @@ pub enum RedeemMachineJoinTokenError {
 
 #[derive(Debug)]
 pub enum RecordMachineJoinReportError {
-    InvalidJoinToken,
     UnknownJoinToken,
     StoreStatus(OperationStatusStoreError),
     RecordMachineAddEvent(RecordMachineAddEventError),
-    JoinTokenMismatch { operation_id: OperationId },
 }

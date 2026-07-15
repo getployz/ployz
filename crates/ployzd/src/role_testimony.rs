@@ -5,12 +5,15 @@
 //! cluster truth and never an owner of Core machine testimony contracts.
 
 use futures_util::StreamExt;
-use ployz_core::ids::{ContainerId, MachineId};
+#[cfg(test)]
+use ployz_core::ids::ContainerId;
+use ployz_core::ids::MachineId;
 use ployz_core::machine::GatewayStatusObservation;
 use ployz_core::machine::MachineEndpointObservation;
+#[cfg(test)]
+use ployz_core::machine::runtime::ManagedContainerObservation;
 use ployz_core::machine::runtime::{
     MachineContainerFactDelta, MachineContainerObservationSnapshot, MachineFactsSnapshot,
-    ManagedContainerObservation,
 };
 use ployz_core::network::internal_dns::{
     InternalDnsFactGeneration, InternalDnsFactWatermark, InternalDnsResolverCacheIncarnation,
@@ -201,6 +204,7 @@ impl RoleTestimonyCache {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn container(
         &self,
         machine_id: &MachineId,
@@ -260,11 +264,6 @@ impl RunningRoleTestimonyCache {
     pub async fn shutdown(self) {
         self.task.abort();
         let _ = self.task.await;
-    }
-
-    #[must_use]
-    pub fn into_task(self) -> JoinHandle<()> {
-        self.task
     }
 }
 

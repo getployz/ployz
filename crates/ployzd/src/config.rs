@@ -826,11 +826,6 @@ impl ControlProcessConfig {
         self.certificate_manager = certificate_manager;
         self
     }
-
-    #[must_use]
-    pub fn nats_url(&self) -> NatsClientUrl {
-        self.nats.client_url()
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -916,12 +911,6 @@ impl GatewayProcessConfig {
             listen_addr,
             certificate_state_dir: PathBuf::from(DEFAULT_GATEWAY_CERTIFICATE_STATE_DIR),
         }
-    }
-
-    #[must_use]
-    pub fn with_certificate_state_dir(mut self, certificate_state_dir: PathBuf) -> Self {
-        self.certificate_state_dir = certificate_state_dir;
-        self
     }
 }
 

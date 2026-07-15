@@ -25,11 +25,6 @@ pub async fn load_gateway_projection_update_from_nats(
 ) -> GatewayProjectionUpdate {
     match load_gateway_projection_input_from_nats(intent_reader, facts, certificate_store).await {
         Ok(input) => GatewayProjectionUpdate::SourceAvailable(Box::new(input)),
-        Err(GatewaySourceError::Invalid { message }) => {
-            GatewayProjectionUpdate::SourceInvalid(GatewayProjectionError::InvalidSource {
-                message,
-            })
-        }
         Err(GatewaySourceError::Unavailable { message }) => {
             GatewayProjectionUpdate::SourceUnavailable(GatewayProjectionError::SourceUnavailable {
                 message,
@@ -128,8 +123,6 @@ fn current_unix_seconds() -> u64 {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum GatewaySourceError {
-    #[error("invalid gateway source: {message}")]
-    Invalid { message: String },
     #[error("gateway source unavailable: {message}")]
     Unavailable { message: String },
 }

@@ -186,39 +186,54 @@ where
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum DeployExecutionError {
+    #[error("deploy planning failed: {0:?}")]
     Plan(DeployPlanError),
-    PlanInconsistent {
-        service_id: ServiceId,
-    },
+    #[error("deploy plan is inconsistent for service {service_id}")]
+    PlanInconsistent { service_id: ServiceId },
+    #[error("deploy step identifier is invalid: {0:?}")]
     StepId(SubjectTokenError),
-    InvalidImagePull {
-        message: String,
-    },
+    #[error("image pull result is invalid: {message}")]
+    InvalidImagePull { message: String },
+    #[error("deploy step {step:?} timed out after {timeout:?}")]
     StepTimedOut {
         step: DeployExecutionStep,
         timeout: Duration,
     },
+    #[error("deploy transition could not be recorded: {0}")]
     RecordTransition(DeployOperationRecordError),
+    #[error("deploy evidence could not be recorded: {0}")]
     RecordEvidence(DeployOperationRecordError),
+    #[error("image preparation failed: {failure:?}")]
     Image {
         failure: Box<DeployOperationFailure>,
     },
+    #[error("container execution failed: {0:?}")]
     RunContainer(MachineContainerRuntimeError),
+    #[error("pre-start hook failed: {0:?}")]
     PreStartHook(PreStartHookRuntimeError),
+    #[error(
+        "pre-start hook container {container_id} on {machine_id} exited {exit_code}: {message}"
+    )]
     PreStartHookExited {
         machine_id: MachineId,
         container_id: ContainerId,
         exit_code: i64,
         message: FailureMessage,
     },
+    #[error("deploy health check failed: {0:?}")]
     WaitHealthy(DeployHealthCheckError),
+    #[error("certificate provisioning failed for {hostname}: {failure:?}")]
     ProvisionCertificate {
         hostname: RouteHostname,
         failure: Box<CertificateProvisionFailure>,
     },
+    #[error("namespace state commit failed: {0:?}")]
     CommitNamespaceState(NamespaceCommitError),
+    #[error(
+        "deploy failed: {failure:?}; source: {source}; failure record: {failure_record_error:?}"
+    )]
     Failed {
         failure: Box<DeployOperationFailure>,
         source: Box<DeployExecutionError>,
@@ -632,13 +647,6 @@ impl NamespaceCommitError {
                     message: failure_message(format!(
                         "route binding state write failed: {message}"
                     )),
-                },
-                retained_artifacts,
-            },
-            Self::RouteLockLost { target } => DeployOperationFailure::RouteCutoverFailed {
-                route: target.clone(),
-                reason: RouteCutoverFailureReason::StateStoreFailed {
-                    message: failure_message("namespace lock was lost before route cutover"),
                 },
                 retained_artifacts,
             },

@@ -7,16 +7,21 @@ use ployz_core::operation::{ControlPlaneCommitScope, RouteHostname, RouteTarget}
 use super::{DeployExecutionCommand, DeployExecutionError};
 use crate::control::operation_evidence::{RecordDeployEvidenceError, RecordDeployTransitionError};
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum DeployOperationRecordError {
+    #[error("deploy transition write failed: {0:?}")]
     RecordTransition(RecordDeployTransitionError),
+    #[error("deploy evidence write failed: {0:?}")]
     RecordEvidence(RecordDeployEvidenceError),
+    #[error("synthetic deploy record failure: {message}")]
     Synthetic { message: &'static str },
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum DeployFailureRecordError {
+    #[error("failure evidence write timed out after {timeout:?}")]
     TimedOut { timeout: Duration },
+    #[error("failure evidence write failed: {0}")]
     Record(DeployOperationRecordError),
 }
 

@@ -155,14 +155,6 @@ pub async fn start_control_process(
         .await
 }
 
-pub async fn start_control_process_with_client(
-    client: NatsClient,
-    config: &ControlProcessConfig,
-) -> Result<RunningControlProcess, ControlProcessError> {
-    start_control_process_with_client_and_reload(client, config, HostNatsReloadRunner::default())
-        .await
-}
-
 pub async fn start_control_process_with_client_and_reload(
     client: NatsClient,
     config: &ControlProcessConfig,

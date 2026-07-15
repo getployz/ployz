@@ -398,8 +398,6 @@ where
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ApiServiceError {
-    #[error("machine join template is missing")]
-    MissingMachineJoinTemplate,
     #[error("{0}")]
     Nats(NatsServiceRuntimeError),
 }

@@ -155,9 +155,6 @@ pub enum NamespaceCommitError {
         target: RouteTarget,
         message: String,
     },
-    RouteLockLost {
-        target: RouteTarget,
-    },
     ServingTargetStore {
         scope: ControlPlaneCommitScope,
         message: String,

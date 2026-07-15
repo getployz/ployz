@@ -125,8 +125,6 @@ impl AcmeIssueContext {
 pub enum AcmeIssuerError {
     #[error("certificate operation evidence write failed: {message}")]
     OperationEvidenceWrite { message: String },
-    #[error("ACME challenge publication failed: {message}")]
-    ChallengePublish { message: String },
     #[error("HTTP-01 challenge is not applied on gateways {missing_machine_ids:?}")]
     ChallengeReadiness { missing_machine_ids: Vec<MachineId> },
     #[error("ACME validation failed: {message}")]

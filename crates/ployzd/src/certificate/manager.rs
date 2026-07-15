@@ -686,11 +686,6 @@ fn provision_failure_from_issuer(error: AcmeIssuerError) -> CertificateProvision
                 message: failure_message(message),
             }
         }
-        AcmeIssuerError::ChallengePublish { message } => {
-            CertificateProvisionFailure::ChallengePublish {
-                message: failure_message(message),
-            }
-        }
         AcmeIssuerError::ChallengeReadiness {
             missing_machine_ids,
         } => CertificateProvisionFailure::ChallengeReadiness {

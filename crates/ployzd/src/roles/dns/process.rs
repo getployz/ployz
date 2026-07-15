@@ -40,7 +40,6 @@ const DNS_WATCH_RESTART_DELAY: Duration = Duration::from_secs(1);
 const DNS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct RunningDnsProcess {
-    internal_resolver_health: Option<Arc<Mutex<InternalResolverHealth>>>,
     shutdown: broadcast::Sender<()>,
     role_service: RunningNatsService,
     testimony_cache: RunningRoleTestimonyCache,
@@ -70,16 +69,6 @@ impl RunningDnsProcess {
             service_shutdown
         };
         bounded_role_shutdown("DNS", DNS_SHUTDOWN_TIMEOUT, &abort_handles, cleanup).await
-    }
-
-    #[must_use]
-    pub fn internal_resolver_health(&self) -> Option<InternalResolverHealth> {
-        self.internal_resolver_health.as_ref().map(|health| {
-            health
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone()
-        })
     }
 }
 
@@ -211,7 +200,6 @@ pub async fn start_dns_process_with_client(
     tasks.push(watch_task);
 
     Ok(RunningDnsProcess {
-        internal_resolver_health,
         shutdown,
         role_service,
         testimony_cache,

@@ -291,14 +291,18 @@ impl NamespaceStateCommitter for NamespaceIntentCommitter {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum DeployOperationRunError {
+    #[error("deploy operation was already started")]
     AlreadyStarted,
+    #[error("deploy start could not be recorded: {0:?}")]
     ClaimStart(RecordDeployTransitionError),
+    #[error("deploy facts could not be loaded: {source}; failure record: {failure_record_error:?}")]
     LoadFacts {
         source: DeployFactLoadError,
         failure_record_error: Option<RecordDeployTransitionError>,
     },
+    #[error("deploy execution failed: {0}")]
     Execute(DeployExecutionError),
 }
 

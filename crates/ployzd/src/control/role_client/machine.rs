@@ -66,12 +66,6 @@ pub struct NatsMachineSubstrateUpdater {
     request_timeout: Duration,
 }
 
-#[derive(Debug, Clone)]
-pub struct NatsMachineImageEnsurer {
-    client: async_nats::Client,
-    request_timeout: Duration,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MachineImageEnsureError {
     Domain {
@@ -240,12 +234,6 @@ impl NatsMachineLogsTailer {
         }
     }
 
-    #[must_use]
-    pub const fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
-        self.request_timeout = request_timeout;
-        self
-    }
-
     pub async fn tail_logs(
         &self,
         machine_id: &MachineId,
@@ -266,47 +254,6 @@ impl NatsMachineLogsTailer {
                 reason,
             },
             MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
-        })
-    }
-}
-
-impl NatsMachineImageEnsurer {
-    #[must_use]
-    pub fn new(client: async_nats::Client) -> Self {
-        Self {
-            client,
-            request_timeout: DEFAULT_MACHINE_RPC_TIMEOUT,
-        }
-    }
-
-    #[must_use]
-    pub const fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
-        self.request_timeout = request_timeout;
-        self
-    }
-
-    pub async fn ensure(
-        &self,
-        machine_id: &MachineId,
-        request: &ImageEnsureRequest,
-    ) -> Result<ImageEnsureOk, MachineImageEnsureError> {
-        call_machine::<ImageEnsureOk, ImageRpcDomainError>(
-            &self.client,
-            self.request_timeout,
-            machine_id,
-            MachineServiceEndpoint::ImageEnsure,
-            request,
-        )
-        .await
-        .map_err(|error| match error {
-            MachineCallError::Domain(error) => MachineImageEnsureError::Domain {
-                machine_id: machine_id.clone(),
-                error,
-            },
-            MachineCallError::Unavailable(reason) => MachineImageEnsureError::Unavailable {
-                machine_id: machine_id.clone(),
-                reason,
-            },
         })
     }
 }
@@ -451,12 +398,6 @@ impl NatsMachineSubstrateUpdater {
             client,
             request_timeout: DEFAULT_MACHINE_RPC_TIMEOUT,
         }
-    }
-
-    #[must_use]
-    pub const fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
-        self.request_timeout = request_timeout;
-        self
     }
 
     pub async fn update_substrate(

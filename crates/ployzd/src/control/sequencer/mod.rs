@@ -776,16 +776,6 @@ impl OperationControllers {
         })
     }
 
-    #[must_use]
-    pub fn machine_bootstrap_url(&self) -> &MachineBootstrapUrl {
-        &self.machine_bootstrap.bootstrap_url
-    }
-
-    #[must_use]
-    pub fn has_machine_join_template(&self) -> bool {
-        self.machine_bootstrap.join_material.is_some()
-    }
-
     pub async fn operation_status_snapshot(
         &self,
         operation_id: &OperationId,
