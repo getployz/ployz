@@ -100,7 +100,7 @@ async fn returning_gateway_is_repaired_even_when_another_gateway_is_silent() {
     assert!(matches!(
         outcome,
         CertificateRenewalOutcome::Degraded { attempted: 1, failed: 0, unknown }
-            if unknown.len() == 1 && unknown[0].machine_id == silent
+            if matches!(unknown.as_slice(), [failure] if failure.machine_id == silent)
     ));
     assert_eq!(first_pushes.load(Ordering::Relaxed), 1);
     assert_eq!(returning_pushes.load(Ordering::Relaxed), 1);

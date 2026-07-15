@@ -31,7 +31,7 @@ use crate::control::projection::ingress_endpoint::{
     IngressEndpointStartError, RunningIngressEndpointProjection, start_ingress_endpoint_projection,
 };
 use crate::control::projection::runtime::{RunningRuntimeProjection, start_runtime_projection};
-use crate::control::reconciler::certificate::start_certificate_renewal_task;
+use crate::control::reconciler::certificate::CertificateRenewalTask;
 use crate::control::reconciler::managed_dns::start_managed_dns_task;
 use crate::control::role_client::machine::{
     NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
@@ -349,8 +349,7 @@ async fn start_control_process_with_client_reload_and_issuer(
         lease_client.clone(),
         certificate_wake,
     );
-    let certificate_renewal_health = start_certificate_renewal_task(
-        &certificate_renewal_tasks,
+    let certificate_renewal_health = CertificateRenewalTask::new(
         client.clone(),
         certificate_manager,
         NatsMachineFactsReader::new(client.clone()),
@@ -358,7 +357,8 @@ async fn start_control_process_with_client_reload_and_issuer(
         ployz_dns_target,
         lease_client,
         certificate_wake_rx,
-    );
+    )
+    .start(&certificate_renewal_tasks);
     let intent = start_intent_service(
         client.clone(),
         core_machine_id.clone(),

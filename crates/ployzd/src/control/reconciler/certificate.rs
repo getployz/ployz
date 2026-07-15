@@ -32,9 +32,7 @@ const CERTIFICATE_FAILURE_BACKOFF_BASE: Duration = Duration::from_secs(5);
 const CERTIFICATE_RENEWAL_BACKOFF_CAP: Duration = Duration::from_secs(6 * 60 * 60);
 const INTENT_SUBSCRIPTION_TIMEOUT: Duration = Duration::from_secs(2);
 
-#[must_use]
-pub fn start_certificate_renewal_task(
-    registry: &TaskRegistry,
+pub struct CertificateRenewalTask {
     client: async_nats::Client,
     manager: CertificateManager,
     facts_reader: NatsMachineFactsReader,
@@ -42,74 +40,82 @@ pub fn start_certificate_renewal_task(
     ployz_dns_target: PloyzDnsTargetStore,
     worker: LeaseClient,
     wake: tokio::sync::mpsc::Receiver<()>,
-) -> CertificateRenewalHealth {
-    let health = CertificateRenewalHealth::default();
-    registry.spawn(run_loop(
-        client,
-        manager,
-        facts_reader,
-        roster,
-        ployz_dns_target,
-        worker,
-        wake,
-        health.clone(),
-    ));
-    health
 }
 
-async fn run_loop(
-    client: async_nats::Client,
-    manager: CertificateManager,
-    facts_reader: NatsMachineFactsReader,
-    roster: MachineRosterStore,
-    ployz_dns_target: PloyzDnsTargetStore,
-    worker: LeaseClient,
-    mut wake: tokio::sync::mpsc::Receiver<()>,
-    health: CertificateRenewalHealth,
-) {
-    if let Err(error) = recover_unfinished_operations(&manager).await {
-        eprintln!("ployzd certificate recovery warning: {error}");
-        record_renewal_attempt(&health, &Err(error));
+impl CertificateRenewalTask {
+    #[must_use]
+    pub fn new(
+        client: async_nats::Client,
+        manager: CertificateManager,
+        facts_reader: NatsMachineFactsReader,
+        roster: MachineRosterStore,
+        ployz_dns_target: PloyzDnsTargetStore,
+        worker: LeaseClient,
+        wake: tokio::sync::mpsc::Receiver<()>,
+    ) -> Self {
+        Self {
+            client,
+            manager,
+            facts_reader,
+            roster,
+            ployz_dns_target,
+            worker,
+            wake,
+        }
     }
-    let mut intent_changes = match tokio::time::timeout(
-        INTENT_SUBSCRIPTION_TIMEOUT,
-        client.subscribe(INTENT_CHANGED),
-    )
-    .await
-    {
-        Ok(Ok(changes)) => Some(changes),
-        Ok(Err(error)) => {
-            eprintln!("ployzd certificate intent subscription warning: {error}");
-            None
+
+    #[must_use]
+    pub fn start(self, registry: &TaskRegistry) -> CertificateRenewalHealth {
+        let health = CertificateRenewalHealth::default();
+        registry.spawn(self.run_loop(health.clone()));
+        health
+    }
+
+    async fn run_loop(mut self, health: CertificateRenewalHealth) {
+        if let Err(error) = recover_unfinished_operations(&self.manager).await {
+            eprintln!("ployzd certificate recovery warning: {error}");
+            record_renewal_attempt(&health, &Err(error));
         }
-        Err(_) => {
-            eprintln!("ployzd certificate intent subscription warning: subscribe timed out");
-            None
-        }
-    };
-    let mut wake_open = true;
-    loop {
-        let outcome = run_once_with_roster_at(
-            &manager,
-            &facts_reader,
-            &roster,
-            &ployz_dns_target,
-            &worker,
-            now_seconds(),
+        let mut intent_changes = match tokio::time::timeout(
+            INTENT_SUBSCRIPTION_TIMEOUT,
+            self.client.subscribe(INTENT_CHANGED),
         )
-        .await;
-        if let Err(error) = &outcome {
-            eprintln!("ployzd certificate renewal warning: {error}");
-        }
-        let delay = record_renewal_attempt(&health, &outcome);
-        tokio::select! {
-            _ = tokio::time::sleep(delay) => {}
-            received = wake.recv(), if wake_open => {
-                if received.is_none() {
-                    wake_open = false;
-                }
+        .await
+        {
+            Ok(Ok(changes)) => Some(changes),
+            Ok(Err(error)) => {
+                eprintln!("ployzd certificate intent subscription warning: {error}");
+                None
             }
-            () = wait_for_intent_change(&client, &mut intent_changes) => {}
+            Err(_) => {
+                eprintln!("ployzd certificate intent subscription warning: subscribe timed out");
+                None
+            }
+        };
+        let mut wake_open = true;
+        loop {
+            let outcome = run_once_with_roster_at(
+                &self.manager,
+                &self.facts_reader,
+                &self.roster,
+                &self.ployz_dns_target,
+                &self.worker,
+                now_seconds(),
+            )
+            .await;
+            if let Err(error) = &outcome {
+                eprintln!("ployzd certificate renewal warning: {error}");
+            }
+            let delay = record_renewal_attempt(&health, &outcome);
+            tokio::select! {
+                _ = tokio::time::sleep(delay) => {}
+                received = self.wake.recv(), if wake_open => {
+                    if received.is_none() {
+                        wake_open = false;
+                    }
+                }
+                () = wait_for_intent_change(&self.client, &mut intent_changes) => {}
+            }
         }
     }
 }
