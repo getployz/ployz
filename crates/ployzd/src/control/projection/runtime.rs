@@ -34,14 +34,13 @@ pub(crate) struct RunningRuntimeProjection {
     projection_task: JoinHandle<()>,
     publisher_task: JoinHandle<()>,
     seed_service: RunningNatsService,
-    _health: RuntimeProjectionHealth,
+    health: RuntimeProjectionHealth,
 }
 
 impl RunningRuntimeProjection {
     #[must_use]
-    #[cfg(test)]
     pub(crate) fn health(&self) -> RuntimeProjectionHealthState {
-        let mut snapshot = self._health.snapshot();
+        let mut snapshot = self.health.snapshot();
         snapshot.seed = self.seed_service.health();
         snapshot
     }
@@ -51,7 +50,7 @@ impl RunningRuntimeProjection {
             projection_task,
             publisher_task,
             seed_service,
-            _health: _,
+            health: _,
         } = self;
         let seed_result = seed_service.shutdown().await;
         projection_task.abort();
@@ -261,7 +260,7 @@ pub(crate) async fn start_runtime_projection(
         projection_task,
         publisher_task,
         seed_service,
-        _health: health,
+        health,
     })
 }
 

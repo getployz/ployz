@@ -328,8 +328,7 @@ pub struct CertificateRenewalHealth {
 
 impl CertificateRenewalHealth {
     #[must_use]
-    #[cfg(test)]
-    pub fn snapshot(&self) -> CertificateRenewalHealthState {
+    pub(crate) fn snapshot(&self) -> CertificateRenewalHealthState {
         self.state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())

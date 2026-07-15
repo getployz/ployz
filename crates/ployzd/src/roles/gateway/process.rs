@@ -64,7 +64,7 @@ use service::start_gateway_role_service;
 
 pub struct RunningGatewayProcess {
     _runtime: Arc<Mutex<GatewayProjector>>,
-    _health: Arc<Mutex<GatewayProcessHealth>>,
+    health: Arc<Mutex<GatewayProcessHealth>>,
     _listen_addr: SocketAddr,
     shutdown: broadcast::Sender<()>,
     pingora_shutdown: watch::Sender<bool>,
@@ -103,9 +103,8 @@ impl RunningGatewayProcess {
     }
 
     #[must_use]
-    #[cfg(test)]
     pub fn health(&self) -> GatewayProcessHealth {
-        self._health
+        self.health
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -352,7 +351,7 @@ async fn start_gateway_process_inner(
 
     Ok(RunningGatewayProcess {
         _runtime: runtime,
-        _health: health,
+        health,
         _listen_addr: listen_addr,
         shutdown,
         pingora_shutdown,
