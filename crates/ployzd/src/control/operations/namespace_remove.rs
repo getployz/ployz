@@ -6,10 +6,10 @@ use crate::control::operation_evidence::{
     AcceptedNamespaceRemoveSubmission, RecordOperationEventError,
 };
 use crate::control::operations::deploy::{MachineContainerRuntime, MachineContainerRuntimeError};
-use crate::control::operator_api::admission::OperationControllers;
 use crate::control::role_client::machine::{
     NatsMachineContainerRuntime, NatsMachineFactsReader, read_available_machine_facts_by_id,
 };
+use crate::control::sequencer::OperationControllers;
 use crate::roles::machine::protocol::MachineContainerRemoveRpcRequest;
 use crate::tasks::TaskRegistry;
 use ployz_core::ids::{ContainerId, MachineId, NamespaceId, OperationId};

@@ -23,7 +23,6 @@ use crate::control::operations::deploy::driver::{DeployOperationDriver, DeployOp
 use crate::control::operations::ingress_configure::IngressConfigureOperation;
 use crate::control::operations::machine_lifecycle::MachineLifecycleOperation;
 use crate::control::operations::machine_update::MachineUpdateOperation;
-use crate::control::operator_api::admission::OperationControllers;
 use crate::control::operator_api::service::{
     ApiServiceError, start_operation_api_service_with_handlers,
 };
@@ -41,6 +40,7 @@ use crate::control::reconciler::managed_dns::start_managed_dns_task;
 use crate::control::role_client::machine::{
     NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
 };
+use crate::control::sequencer::OperationControllers;
 use crate::control::store::{CoreStore, CoreStoreError};
 use crate::lease::LeaseClient;
 use crate::process_support::shutdown_signal;

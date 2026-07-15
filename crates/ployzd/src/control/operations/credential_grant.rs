@@ -3,7 +3,7 @@ use crate::control::authorization::{
     NatsAuthorizationHandle, RenderFailure, RenderPrepareFailure,
 };
 use crate::control::operation_evidence::AcceptedCredentialGrantSubmission;
-use crate::control::operator_api::admission::OperationControllers;
+use crate::control::sequencer::OperationControllers;
 use crate::tasks::TaskRegistry;
 use ployz_core::ops::{
     CredentialGrantAction, CredentialGrantFailure, CredentialGrantTransition, FailureMessage,

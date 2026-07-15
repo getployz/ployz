@@ -1,8 +1,5 @@
 //! Request-side NATS adapters for machine-local services.
 
-use crate::control::operations::deploy::{
-    MachineContainerRuntime, MachineContainerRuntimeError, PreStartHookRuntimeError,
-};
 use crate::roles::machine::MachineRuntimeUnavailableReason;
 use crate::roles::machine::execution::docker::runner::docker_volume_name;
 use crate::roles::machine::protocol::{
@@ -19,7 +16,7 @@ use crate::roles::machine::protocol::{
     MachineFactsGetRpcRequest, MachineFactsRefreshDomainError, MachineFactsRefreshRpcOk,
     MachineFactsRefreshRpcRequest, MachineLogsTailDomainError, MachineLogsTailResult,
     MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineRpcResponder, MachineRpcResponse,
-    MachineRunContainerOutcome, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
+    MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
     MachineSubstrateUpdateDomainError, MachineSubstrateUpdateRpcOk,
     MachineSubstrateUpdateRpcRequest, MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk,
     MachineVolumeRemoveRpcRequest,
@@ -28,7 +25,7 @@ use futures_util::{StreamExt, stream};
 use ployz_core::dataplane::{MachineDataplaneStatus, NetworkStatusMode};
 use ployz_core::deploy::VolumeName;
 use ployz_core::ids::{MachineId, NamespaceId, OperationId};
-use ployz_core::image::{ImageEnsureOk, ImageEnsureRequest, ImageRpcDomainError, OciDigest};
+use ployz_core::image::{ImageEnsureOk, ImageEnsureRequest, ImageRpcDomainError};
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::{MachineSubstrateVersions, MachineUpdateFailure};
 use ployz_core::state::MachineLifecycle;
@@ -626,198 +623,114 @@ impl NatsMachineContainerRuntime {
             }
         })
     }
-}
 
-impl MachineContainerRuntime for NatsMachineContainerRuntime {
-    async fn resolve_image(
-        &mut self,
+    pub(crate) async fn request_resolve_image(
+        &self,
         machine_id: &MachineId,
-        request: MachineContainerResolveImageRpcRequest,
-    ) -> Result<OciDigest, MachineImageResolveError> {
-        call_machine::<MachineContainerResolveImageRpcOk, MachineContainerResolveImageDomainError>(
+        request: &MachineContainerResolveImageRpcRequest,
+    ) -> Result<
+        MachineContainerResolveImageRpcOk,
+        MachineCallError<MachineContainerResolveImageDomainError>,
+    > {
+        call_machine(
             &self.client,
             self.request_timeout,
             machine_id,
             MachineServiceEndpoint::ContainerResolveImage,
-            &request,
+            request,
         )
         .await
-        .map(|ok| ok.digest)
-        .map_err(|error| match error {
-            MachineCallError::Unavailable(reason) => MachineImageResolveError::Unavailable {
-                machine_id: machine_id.clone(),
-                reason,
-            },
-            MachineCallError::Domain(MachineContainerResolveImageDomainError::ResolveFailed {
-                message,
-            }) => MachineImageResolveError::Rejected {
-                machine_id: machine_id.clone(),
-                message,
-            },
-        })
     }
 
-    async fn ensure_image(
-        &mut self,
+    pub(crate) async fn request_ensure_image(
+        &self,
         machine_id: &MachineId,
-        request: ImageEnsureRequest,
-    ) -> Result<ImageEnsureOk, MachineImageEnsureError> {
-        NatsMachineImageEnsurer::new(self.client.clone())
-            .with_request_timeout(self.request_timeout)
-            .ensure(machine_id, &request)
-            .await
+        request: &ImageEnsureRequest,
+    ) -> Result<ImageEnsureOk, MachineCallError<ImageRpcDomainError>> {
+        call_machine(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::ImageEnsure,
+            request,
+        )
+        .await
     }
 
-    async fn run_container(
-        &mut self,
+    pub(crate) async fn request_container_run(
+        &self,
         machine_id: &MachineId,
-        request: MachineContainerRunRpcRequest,
-    ) -> Result<MachineRunContainerOutcome, MachineContainerRuntimeError> {
-        call_machine::<MachineContainerRunRpcOk, MachineContainerRunDomainError>(
+        request: &MachineContainerRunRpcRequest,
+    ) -> Result<MachineContainerRunRpcOk, MachineCallError<MachineContainerRunDomainError>> {
+        call_machine(
             &self.client,
             self.request_timeout,
             machine_id,
             MachineServiceEndpoint::ContainerRun,
-            &request,
+            request,
         )
         .await
-        .map(|ok| ok.outcome)
-        .map_err(|error| match error {
-            MachineCallError::Unavailable(reason) => {
-                container_runtime_unavailable(machine_id, reason)
-            }
-            MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
-        })
     }
 
-    async fn run_pre_start_hook(
-        &mut self,
+    pub(crate) async fn request_container_run_hook(
+        &self,
         machine_id: &MachineId,
-        request: MachineContainerRunHookRpcRequest,
-    ) -> Result<MachineContainerRunHookRpcOk, PreStartHookRuntimeError> {
-        call_machine::<MachineContainerRunHookRpcOk, MachineContainerRunHookDomainError>(
+        request: &MachineContainerRunHookRpcRequest,
+    ) -> Result<MachineContainerRunHookRpcOk, MachineCallError<MachineContainerRunHookDomainError>>
+    {
+        call_machine(
             &self.client,
             self.request_timeout,
             machine_id,
             MachineServiceEndpoint::ContainerRunHook,
-            &request,
+            request,
         )
         .await
-        .map_err(|error| match error {
-            MachineCallError::Unavailable(reason) => PreStartHookRuntimeError::Unavailable {
-                machine_id: machine_id.clone(),
-                reason,
-            },
-            MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
-        })
     }
 
-    async fn remove_pre_start_hook(
-        &mut self,
+    pub(crate) async fn request_container_remove(
+        &self,
         machine_id: &MachineId,
-        request: MachineContainerRemoveRpcRequest,
-    ) -> Result<(), PreStartHookRuntimeError> {
-        call_machine::<MachineContainerRpcOk, MachineContainerRemoveDomainError>(
+        request: &MachineContainerRemoveRpcRequest,
+    ) -> Result<MachineContainerRpcOk, MachineCallError<MachineContainerRemoveDomainError>> {
+        call_machine(
             &self.client,
             self.request_timeout,
             machine_id,
             MachineServiceEndpoint::ContainerRemove,
-            &request,
+            request,
         )
         .await
-        .map(|_| ())
-        .map_err(|error| match error {
-            MachineCallError::Unavailable(reason) => PreStartHookRuntimeError::Unavailable {
-                machine_id: machine_id.clone(),
-                reason,
-            },
-            MachineCallError::Domain(MachineContainerRemoveDomainError::RemoveFailed {
-                container_id,
-                message,
-                inspect_hint,
-            }) => PreStartHookRuntimeError::CleanupFailed {
-                machine_id: machine_id.clone(),
-                container_id,
-                message,
-                inspect_hint,
-            },
-        })
     }
 
-    async fn remove_container(
-        &mut self,
+    pub(crate) async fn request_container_restart(
+        &self,
         machine_id: &MachineId,
-        request: MachineContainerRemoveRpcRequest,
-    ) -> Result<(), MachineContainerRuntimeError> {
-        call_machine::<MachineContainerRpcOk, MachineContainerRemoveDomainError>(
-            &self.client,
-            self.request_timeout,
-            machine_id,
-            MachineServiceEndpoint::ContainerRemove,
-            &request,
-        )
-        .await
-        .map(|_| ())
-        .map_err(|error| match error {
-            MachineCallError::Unavailable(reason) => {
-                container_runtime_unavailable(machine_id, reason)
-            }
-            MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
-        })
-    }
-
-    async fn restart_container(
-        &mut self,
-        machine_id: &MachineId,
-        request: MachineContainerRestartRpcRequest,
-    ) -> Result<(), MachineContainerRuntimeError> {
-        call_machine::<MachineContainerRpcOk, MachineContainerRestartDomainError>(
+        request: &MachineContainerRestartRpcRequest,
+    ) -> Result<MachineContainerRpcOk, MachineCallError<MachineContainerRestartDomainError>> {
+        call_machine(
             &self.client,
             self.request_timeout,
             machine_id,
             MachineServiceEndpoint::ContainerRestart,
-            &request,
+            request,
         )
         .await
-        .map(|_| ())
-        .map_err(|error| match error {
-            MachineCallError::Unavailable(reason) => {
-                container_runtime_unavailable(machine_id, reason)
-            }
-            MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
-        })
     }
 
-    async fn stop_container(
-        &mut self,
+    pub(crate) async fn request_container_stop(
+        &self,
         machine_id: &MachineId,
-        request: MachineContainerStopRpcRequest,
-    ) -> Result<(), MachineContainerRuntimeError> {
-        call_machine::<MachineContainerRpcOk, MachineContainerStopDomainError>(
+        request: &MachineContainerStopRpcRequest,
+    ) -> Result<MachineContainerRpcOk, MachineCallError<MachineContainerStopDomainError>> {
+        call_machine(
             &self.client,
             self.request_timeout,
             machine_id,
             MachineServiceEndpoint::ContainerStop,
-            &request,
+            request,
         )
         .await
-        .map(|_| ())
-        .map_err(|error| match error {
-            MachineCallError::Unavailable(reason) => {
-                container_runtime_unavailable(machine_id, reason)
-            }
-            MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
-        })
-    }
-}
-
-fn container_runtime_unavailable(
-    machine_id: &MachineId,
-    reason: MachineRuntimeUnavailableReason,
-) -> MachineContainerRuntimeError {
-    MachineContainerRuntimeError::Unavailable {
-        machine_id: machine_id.clone(),
-        reason,
     }
 }
 
@@ -851,116 +764,6 @@ impl MachineSubstrateUpdateDomainError {
     }
 }
 
-impl MachineContainerRunDomainError {
-    fn into_runtime_error(self, machine_id: MachineId) -> MachineContainerRuntimeError {
-        match self {
-            Self::ImagePullFailed {
-                service_id,
-                namespace_revision_entry_id,
-                message,
-            } => MachineContainerRuntimeError::ImagePullFailed {
-                machine_id,
-                service_id,
-                namespace_revision_entry_id,
-                message,
-            },
-            Self::OperationStepAmbiguous {
-                operation_id,
-                step_id,
-                container_ids,
-            } => MachineContainerRuntimeError::OperationStepAmbiguous {
-                machine_id,
-                operation_id,
-                step_id,
-                container_ids,
-            },
-            Self::CreatedContainerStartFailed {
-                container_id,
-                message,
-                inspect_hint,
-            } => MachineContainerRuntimeError::CreatedContainerStartFailed {
-                machine_id,
-                container_id,
-                message,
-                inspect_hint,
-            },
-            Self::ExistingContainerStartFailed {
-                container_id,
-                message,
-                inspect_hint,
-            } => MachineContainerRuntimeError::ExistingContainerStartFailed {
-                machine_id,
-                container_id,
-                message,
-                inspect_hint,
-            },
-            Self::OperationStepContainerNotStartable {
-                container_id,
-                message,
-                inspect_hint,
-            } => MachineContainerRuntimeError::OperationStepContainerNotStartable {
-                machine_id,
-                container_id,
-                message,
-                inspect_hint,
-            },
-        }
-    }
-}
-
-impl MachineContainerRunHookDomainError {
-    fn into_runtime_error(self, machine_id: MachineId) -> PreStartHookRuntimeError {
-        match self {
-            Self::OperationStepAmbiguous {
-                operation_id,
-                step_id,
-                container_ids,
-            } => PreStartHookRuntimeError::OperationStepAmbiguous {
-                machine_id,
-                operation_id,
-                step_id,
-                container_ids,
-            },
-            Self::CreateFailed { message } => PreStartHookRuntimeError::CreateFailed {
-                machine_id,
-                message,
-            },
-            Self::StartFailed {
-                container_id,
-                message,
-                inspect_hint,
-            } => PreStartHookRuntimeError::StartFailed {
-                machine_id,
-                container_id,
-                message,
-                inspect_hint,
-            },
-            Self::WaitFailed {
-                container_id,
-                message,
-                log_hint,
-            } => PreStartHookRuntimeError::WaitFailed {
-                machine_id,
-                container_id,
-                message,
-                log_hint,
-            },
-            Self::TimedOut {
-                container_id,
-                timeout_millis,
-                message,
-                inspect_hint,
-            } => PreStartHookRuntimeError::TimedOut {
-                machine_id,
-                container_id,
-                timeout_millis,
-                message,
-                inspect_hint,
-            },
-        }
-    }
-}
-
 impl MachineContainerInspectDomainError {
     fn into_runtime_error(self, machine_id: MachineId) -> MachineContainerInspectError {
         match self {
@@ -982,57 +785,6 @@ impl MachineFactsGetDomainError {
             Self::GatherFailed { message } => MachineFactsReadError::GatherFailed {
                 machine_id,
                 message,
-            },
-        }
-    }
-}
-
-impl MachineContainerRemoveDomainError {
-    fn into_runtime_error(self, machine_id: MachineId) -> MachineContainerRuntimeError {
-        match self {
-            Self::RemoveFailed {
-                container_id,
-                message,
-                inspect_hint,
-            } => MachineContainerRuntimeError::RemoveContainerFailed {
-                machine_id,
-                container_id,
-                message,
-                inspect_hint,
-            },
-        }
-    }
-}
-
-impl MachineContainerRestartDomainError {
-    fn into_runtime_error(self, machine_id: MachineId) -> MachineContainerRuntimeError {
-        match self {
-            Self::RestartFailed {
-                container_id,
-                message,
-                inspect_hint,
-            } => MachineContainerRuntimeError::RestartContainerFailed {
-                machine_id,
-                container_id,
-                message,
-                inspect_hint,
-            },
-        }
-    }
-}
-
-impl MachineContainerStopDomainError {
-    fn into_runtime_error(self, machine_id: MachineId) -> MachineContainerRuntimeError {
-        match self {
-            Self::StopFailed {
-                container_id,
-                message,
-                inspect_hint,
-            } => MachineContainerRuntimeError::StopContainerFailed {
-                machine_id,
-                container_id,
-                message,
-                inspect_hint,
             },
         }
     }

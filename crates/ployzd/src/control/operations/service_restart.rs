@@ -5,11 +5,11 @@ use crate::control::operation_evidence::{
     AcceptedServiceRestartSubmission, RecordOperationEventError,
 };
 use crate::control::operations::deploy::{MachineContainerRuntime, MachineContainerRuntimeError};
-use crate::control::operator_api::admission::OperationControllers;
 use crate::control::role_client::machine::{
     MachineContainerInspectError, NatsMachineContainerRuntime, NatsMachineFactsReader,
     read_available_machine_facts_by_id,
 };
+use crate::control::sequencer::OperationControllers;
 use crate::roles::machine::protocol::{
     MachineContainerInspectRpcRequest, MachineContainerRestartRpcRequest,
 };

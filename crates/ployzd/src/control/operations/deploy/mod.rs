@@ -4,6 +4,7 @@ pub mod driver;
 mod facts;
 mod failure;
 mod images;
+mod machine_client;
 mod phase;
 mod placement;
 mod ports;

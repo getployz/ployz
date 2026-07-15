@@ -168,7 +168,7 @@ pub enum NamespaceCommitError {
     },
 }
 
-impl DeployOperationRecorder for crate::control::operator_api::admission::OperationControllers {
+impl DeployOperationRecorder for crate::control::sequencer::OperationControllers {
     async fn record_deploy_transition(
         &mut self,
         operation_id: &OperationId,

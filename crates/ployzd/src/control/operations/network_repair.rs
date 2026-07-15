@@ -4,13 +4,13 @@ use crate::control::intent::service::NatsIntentReader;
 use crate::control::operation_evidence::{
     AcceptedNetworkRepairSubmission, OperationStatusStoreError, RecordOperationEventError,
 };
-use crate::control::operator_api::admission::OperationControllers;
 use crate::control::role_client::dns::NatsDnsClient;
 use crate::control::role_client::machine::{
     MAX_CONCURRENT_MACHINE_READS, MachineFactsRefreshError, NatsMachineFactsReader,
     unavailable_reason,
 };
 use crate::control::role_client::machine_convergence::gather_dataplane_statuses;
+use crate::control::sequencer::OperationControllers;
 use crate::roles::dns::protocol::DnsStatusRpcOk;
 use crate::roles::machine::{MachineRequestFailure, MachineRuntimeUnavailableReason};
 use crate::tasks::TaskRegistry;

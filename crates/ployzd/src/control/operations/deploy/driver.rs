@@ -14,10 +14,10 @@ use crate::control::operations::deploy::{
     DeployHealthChecker, DeployPhasePromotion, MachineContainerRuntime, NamespaceCommitError,
     NamespaceStateCommitter, execute_deploy_operation, load_deploy_execution_facts_from_nats,
 };
-use crate::control::operator_api::admission::{AcceptedDeployExecution, OperationControllers};
 use crate::control::role_client::machine::{
     MachineContainerInspectError, NatsMachineContainerRuntime, NatsMachineFactsReader,
 };
+use crate::control::sequencer::{AcceptedDeployExecution, OperationControllers};
 use crate::roles::machine::protocol::{
     MachineContainerInspectRpcOk, MachineContainerInspectRpcRequest,
 };

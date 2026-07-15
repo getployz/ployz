@@ -14,4 +14,5 @@ pub mod process;
 pub mod projection;
 pub mod reconciler;
 pub mod role_client;
+pub mod sequencer;
 pub mod store;

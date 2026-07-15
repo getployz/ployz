@@ -2,7 +2,10 @@
 //! and return the operation id + watch subject.
 
 use crate::control::authorization::MintRequest;
-use crate::control::operator_api::admission::{
+use crate::control::intent::ingress_intent::PloyzDnsTargetStore;
+use crate::control::intent::namespace_intent::NamespaceIntentStore;
+use crate::control::operations::deploy::validate_deploy_route_admission;
+use crate::control::sequencer::{
     CoreReplaceSubmitCommand, CredentialGrantSubmitCommand, DeploySubmitCommand,
     IngressConfigureSubmitCommand, IngressConfigureSubmitError, MachineAddBootstrapMaterial,
     MachineAddBootstrapMaterialError, MachineAddSubmitCommand, MachineLifecycleSubmitCommand,
@@ -173,7 +176,7 @@ fn ingress_configure_submit_error(
         IngressConfigureSubmitError::Submit(error) => {
             match super::error_map::unfenced_submit_failure(
                 "ingress configure",
-                crate::control::operator_api::admission::SubmitCommandError::Submit(error),
+                crate::control::sequencer::SubmitCommandError::Submit(error),
             ) {
                 super::error_map::UnfencedSubmitFailure::Unavailable { message } => {
                     IngressConfigureError::Unavailable {
@@ -194,7 +197,7 @@ fn ingress_configure_submit_error(
 
 fn credential_add_submit_error(
     operation_id: OperationId,
-    error: crate::control::operator_api::admission::SubmitCommandError,
+    error: crate::control::sequencer::SubmitCommandError,
 ) -> CredentialAddError {
     match super::error_map::submit_failure(error) {
         super::error_map::SubmitFailure::Unavailable { message } => {
@@ -218,7 +221,7 @@ fn credential_add_submit_error(
 
 fn credential_remove_submit_error(
     operation_id: OperationId,
-    error: crate::control::operator_api::admission::SubmitCommandError,
+    error: crate::control::sequencer::SubmitCommandError,
 ) -> CredentialRemoveError {
     match super::error_map::submit_failure(error) {
         super::error_map::SubmitFailure::Unavailable { message } => {
@@ -270,6 +273,17 @@ pub async fn deploy_submit(
     }
     validate_registry_credentials(&command)?;
     validate_pushed_image_seeds(handlers, &command).await?;
+    validate_deploy_route_admission(
+        &command.target,
+        &handlers.ingress_intent,
+        &PloyzDnsTargetStore::new(handlers.core_store.clone()),
+        &NamespaceIntentStore::new(handlers.core_store.clone()),
+    )
+    .await
+    .map_err(|error| DeploySubmitError::InvalidTarget {
+        operation_id: operation_id.clone(),
+        message: error.to_string(),
+    })?;
     let accepted_execution = handlers
         .controllers
         .submit_deploy(command)
@@ -693,7 +707,7 @@ pub async fn machine_add(
         name: request.name,
         roles: request.roles,
         host_port_assurance: request.host_port_assurance,
-        endpoint_subnet: super::admission::MachineAddEndpointSubnet::Allocate,
+        endpoint_subnet: crate::control::sequencer::MachineAddEndpointSubnet::Allocate,
         join_bundle: material.join_bundle,
         join_token: material.join_token,
         raw_join_token: material.raw_join_token,

@@ -3,8 +3,8 @@
 use crate::control::operation_evidence::{
     AcceptedMachineUpdateSubmission, RecordOperationEventError,
 };
-use crate::control::operator_api::admission::OperationControllers;
 use crate::control::role_client::machine::NatsMachineSubstrateUpdater;
+use crate::control::sequencer::OperationControllers;
 use crate::roles::machine::protocol::MachineSubstrateUpdateRpcRequest;
 use crate::tasks::TaskRegistry;
 use ployz_core::ids::MachineId;
