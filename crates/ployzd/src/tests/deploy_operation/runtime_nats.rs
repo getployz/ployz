@@ -302,10 +302,10 @@ async fn interrupted_deploy_retry_gathers_and_reuses_retained_runtime_work() {
     );
     assert_eq!(
         retry_health.checked,
-        vec![vec![DeployContainerForAssert::new(
-            retry_machine_id.as_str(),
-            "ctr_missing",
-        )]]
+        vec![vec![
+            DeployContainerForAssert::new(retained_machine_id.as_str(), "ctr_retained"),
+            DeployContainerForAssert::new(retry_machine_id.as_str(), "ctr_missing"),
+        ]]
     );
     let serving = nats
         .namespace_intent

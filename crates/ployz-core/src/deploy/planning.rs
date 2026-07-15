@@ -1,6 +1,7 @@
 //! Pure deploy preparation and placement planning.
 
 use super::*;
+use crate::ids::OperationId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployPlanningInput {
@@ -15,6 +16,30 @@ pub struct DeployPlanningInput {
 pub struct ExistingServiceReplica {
     pub machine_id: MachineId,
     pub container_id: ContainerId,
+    pub creation_gate: ExistingReplicaCreationGate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExistingReplicaCreationGate {
+    /// Current serving intent proves a prior deploy completed the creation gate.
+    AlreadyPassed,
+    /// Durable interruption provenance permits adoption, but cannot prove the
+    /// container passed its first-creation gate.
+    RequiredAfterInterruption,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExistingReplicaPolicy {
+    /// Matching observed replicas belong to the current serving target.
+    Promoted,
+    /// Only replicas created by one of these durably interrupted deploys may
+    /// be adopted, and each adopted replica must pass its creation gate.
+    RecoverInterrupted {
+        operation_ids: std::collections::BTreeSet<OperationId>,
+    },
+    /// Matching observations have neither serving intent nor recoverable
+    /// interruption provenance.
+    ExcludeUnpromoted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +66,7 @@ pub struct DeployPreparationInput<'a> {
     /// intent may disqualify observed capacity.
     pub draining_machines: Vec<MachineId>,
     pub observed_machines: Vec<MachineContainerObservationSnapshot>,
+    pub existing_replica_policy: ExistingReplicaPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,6 +249,7 @@ pub fn prepare_deploy(
         service,
         &input.observed_machines,
         &input.draining_machines,
+        &input.existing_replica_policy,
     );
     let cleanup_candidates = cleanup_candidates(
         input.request.namespace_id(),
@@ -292,6 +319,7 @@ fn existing_replicas(
     service: &DeployServiceSpec,
     observed_machines: &[MachineContainerObservationSnapshot],
     draining_machines: &[MachineId],
+    policy: &ExistingReplicaPolicy,
 ) -> Vec<ExistingServiceReplica> {
     observed_machines
         .iter()
@@ -304,10 +332,26 @@ fn existing_replicas(
                     &service.service_id,
                     &service.namespace_revision_entry_id(namespace_id),
                 )
+                && match policy {
+                    ExistingReplicaPolicy::Promoted => true,
+                    ExistingReplicaPolicy::RecoverInterrupted { operation_ids } => {
+                        operation_ids.contains(&container.identity.operation_id)
+                    }
+                    ExistingReplicaPolicy::ExcludeUnpromoted => false,
+                }
         })
         .map(|container| ExistingServiceReplica {
             machine_id: container.machine_id.clone(),
             container_id: container.container_id.clone(),
+            creation_gate: match policy {
+                ExistingReplicaPolicy::Promoted => ExistingReplicaCreationGate::AlreadyPassed,
+                ExistingReplicaPolicy::RecoverInterrupted { .. } => {
+                    ExistingReplicaCreationGate::RequiredAfterInterruption
+                }
+                ExistingReplicaPolicy::ExcludeUnpromoted => {
+                    unreachable!("excluded replicas were filtered before mapping")
+                }
+            },
         })
         .collect()
 }

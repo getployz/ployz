@@ -1400,7 +1400,7 @@ fn deploy_execution_input(
             .expect("fixture deploy request normalizes"),
         facts,
         std::collections::BTreeMap::new(),
-        Vec::new(),
+        std::collections::BTreeSet::new(),
     )
 }
 

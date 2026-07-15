@@ -31,6 +31,7 @@ use ployz_core::operation::{
     FailureMessage, OperationStatus, OperatorHint, RouteHostname, StatusProjectionError,
 };
 use ployz_nats::subjects::INTENT_CHANGED;
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -373,37 +374,38 @@ async fn reusable_interrupted_deploy_operation_ids(
     repository: &crate::control::operation_evidence::OperationRepository,
     namespace_id: &ployz_core::ids::NamespaceId,
     observed_machines: &[ployz_core::machine::runtime::MachineContainerObservationSnapshot],
-) -> Result<Vec<ployz_core::ids::OperationId>, OperationStatusStoreError> {
+) -> Result<BTreeSet<ployz_core::ids::OperationId>, OperationStatusStoreError> {
     let candidate_ids = observed_machines
         .iter()
         .flat_map(ployz_core::machine::runtime::MachineContainerObservationSnapshot::containers)
         .filter(|container| container.identity.namespace_id == *namespace_id)
         .map(|container| container.identity.operation_id.clone())
-        .collect::<std::collections::BTreeSet<_>>();
-    let mut reusable = Vec::new();
-    for operation_id in candidate_ids {
-        let status = repository.get(&operation_id).await?;
+        .collect::<BTreeSet<_>>();
+    let statuses = repository.operation_statuses_for(candidate_ids).await?;
+    let mut reusable = BTreeSet::new();
+    for status in statuses {
         match status {
-            Some(OperationStatus::Deploy {
+            OperationStatus::Deploy {
                 id,
                 namespace_id: status_namespace_id,
                 state: DeployOperationState::Interrupted { .. },
                 ..
-            }) if status_namespace_id == *namespace_id => reusable.push(id),
-            Some(OperationStatus::Deploy { .. })
-            | Some(OperationStatus::Cert { .. })
-            | Some(OperationStatus::MachineAdd { .. })
-            | Some(OperationStatus::MachineUpdate { .. })
-            | Some(OperationStatus::MachineLifecycle { .. })
-            | Some(OperationStatus::CoreReplace { .. })
-            | Some(OperationStatus::CredentialGrant { .. })
-            | Some(OperationStatus::NetworkRepair { .. })
-            | Some(OperationStatus::ServiceRestart { .. })
-            | Some(OperationStatus::ManagedDnsReconcile { .. })
-            | Some(OperationStatus::IngressConfigure { .. })
-            | Some(OperationStatus::NamespaceRemove { .. })
-            | Some(OperationStatus::VolumeRemove { .. })
-            | None => {}
+            } if status_namespace_id == *namespace_id => {
+                reusable.insert(id);
+            }
+            OperationStatus::Deploy { .. }
+            | OperationStatus::Cert { .. }
+            | OperationStatus::MachineAdd { .. }
+            | OperationStatus::MachineUpdate { .. }
+            | OperationStatus::MachineLifecycle { .. }
+            | OperationStatus::CoreReplace { .. }
+            | OperationStatus::CredentialGrant { .. }
+            | OperationStatus::NetworkRepair { .. }
+            | OperationStatus::ServiceRestart { .. }
+            | OperationStatus::ManagedDnsReconcile { .. }
+            | OperationStatus::IngressConfigure { .. }
+            | OperationStatus::NamespaceRemove { .. }
+            | OperationStatus::VolumeRemove { .. } => {}
         }
     }
     Ok(reusable)

@@ -4,9 +4,10 @@ use ployz_core::deploy::{
     DeployCleanupContainer, DeployPhasePlan, DeployPlan, DeployPlanError, DeployPlanStep,
     DeployPlanningInput as CoreDeployPlanningInput, DeployPreparationInput, DeployRoute,
     DeployRouteTarget, DeployServicePlan, DeployServiceSpec, EnvName, EnvValue,
-    ExistingServiceReplica, HealthcheckShellCommand, ImageReference, ImageSource, PreStartHook,
-    PreStartHookStep, ReplicaCount, ReplicaSlot, ServiceDependency, ServiceEnvironment,
-    ServiceVolumeMount, StopGracePeriod, VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName,
+    ExistingReplicaCreationGate, ExistingReplicaPolicy, ExistingServiceReplica,
+    HealthcheckShellCommand, ImageReference, ImageSource, PreStartHook, PreStartHookStep,
+    ReplicaCount, ReplicaSlot, ServiceDependency, ServiceEnvironment, ServiceVolumeMount,
+    StopGracePeriod, VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName,
     auto_hostname_route_binding_commits, namespace_revision_id_for,
     namespace_route_binding_removals, namespace_serving_target_removals, plan_namespace_deploy,
     prepare_deploy, validate_deploy_route_bindings,
@@ -22,8 +23,10 @@ use ployz_core::machine::runtime::{
 use ployz_core::operation::{RouteHostname, RoutePort, RouteTarget};
 use ployz_test_support::containers;
 use ployz_test_support::fixtures::serving_target_entry;
-use ployz_test_support::ids::{container_id, machine_id, namespace_id, route_hostname, service_id};
-use std::collections::BTreeMap;
+use ployz_test_support::ids::{
+    container_id, machine_id, namespace_id, operation_id, route_hostname, service_id,
+};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone)]
 struct DeployPlanningInput {
@@ -903,6 +906,7 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
                     ),
                 ],
             )],
+            existing_replica_policy: ExistingReplicaPolicy::Promoted,
         },
         route_binding_id_for,
     )
@@ -928,6 +932,47 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
 }
 
 #[test]
+fn deploy_preparation_marks_interrupted_replicas_for_creation_gating() {
+    let request = deploy_request(2);
+    let entry_id = request.namespace_revision_entry_id(&namespace_id("default"));
+    let normalized = normalized_services(vec![request.clone()], BTreeMap::new());
+    let prepared = prepare_deploy(
+        DeployPreparationInput {
+            request: &normalized,
+            service_id: request.service_id.clone(),
+            occupied_route_bindings: Vec::new(),
+            eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+            draining_machines: Vec::new(),
+            observed_machines: vec![observed_machine(
+                "machine_b",
+                [observed_container(
+                    "machine_b",
+                    "ctr_retained",
+                    "svc_api",
+                    entry_id.as_str(),
+                    ManagedContainerKind::Service,
+                    ContainerRuntimeState::running_unroutable(),
+                )],
+            )],
+            existing_replica_policy: ExistingReplicaPolicy::RecoverInterrupted {
+                operation_ids: BTreeSet::from([operation_id("op_existing")]),
+            },
+        },
+        route_binding_id_for,
+    )
+    .expect("interrupted deploy preparation");
+
+    assert_eq!(
+        prepared.existing_replicas,
+        vec![ExistingServiceReplica {
+            machine_id: machine_id("machine_b"),
+            container_id: container_id("ctr_retained"),
+            creation_gate: ExistingReplicaCreationGate::RequiredAfterInterruption,
+        }]
+    );
+}
+
+#[test]
 fn deploy_preparation_evacuates_draining_machine_replicas() {
     let request = deploy_request(1);
     let normalized = normalized_services(vec![request.clone()], BTreeMap::new());
@@ -949,6 +994,7 @@ fn deploy_preparation_evacuates_draining_machine_replicas() {
                     ContainerRuntimeState::running_unroutable(),
                 )],
             )],
+            existing_replica_policy: ExistingReplicaPolicy::Promoted,
         },
         route_binding_id_for,
     )
@@ -1020,6 +1066,7 @@ fn routed_deploy_preparation_reuses_matching_identity_regardless_of_endpoint_por
                     ),
                 ],
             )],
+            existing_replica_policy: ExistingReplicaPolicy::Promoted,
         },
         route_binding_id_for,
     )
@@ -1054,6 +1101,7 @@ fn deploy_preparation_commits_multiple_routes_per_service() {
             eligible_machines: vec![machine_id("machine_a")],
             draining_machines: Vec::new(),
             observed_machines: Vec::new(),
+            existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
         },
         route_binding_id_for,
     )
@@ -1098,6 +1146,7 @@ fn declared_route_reroute_reuses_the_binding_identity_and_updates_endpoint_port(
             eligible_machines: Vec::new(),
             draining_machines: Vec::new(),
             observed_machines: Vec::new(),
+            existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
         },
         route_binding_id_for,
     )
@@ -1131,6 +1180,7 @@ fn declared_route_rejects_duplicate_target_regardless_of_endpoint_port() {
                 eligible_machines: Vec::new(),
                 draining_machines: Vec::new(),
                 observed_machines: Vec::new(),
+                existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
             },
             route_binding_id_for,
         )
@@ -1169,6 +1219,7 @@ fn declared_route_reroute_rejects_other_owners_and_automatic_bindings() {
                 eligible_machines: Vec::new(),
                 draining_machines: Vec::new(),
                 observed_machines: Vec::new(),
+                existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
             },
             route_binding_id_for,
         )
@@ -1249,6 +1300,7 @@ fn deploy_preparation_updates_endpoint_port_without_container_plan_changes() {
             eligible_machines: Vec::new(),
             draining_machines: Vec::new(),
             observed_machines: Vec::new(),
+            existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
         },
         route_binding_id_for,
     )
@@ -1475,6 +1527,7 @@ fn deploy_preparation_ignores_same_service_id_in_other_namespace() {
             eligible_machines: vec![machine_id("machine_a")],
             draining_machines: Vec::new(),
             observed_machines: vec![observed_machine("machine_a", [foreign])],
+            existing_replica_policy: ExistingReplicaPolicy::Promoted,
         },
         route_binding_id_for,
     )
@@ -1842,6 +1895,7 @@ fn existing_replica(machine: &str, container: &str) -> ExistingServiceReplica {
     ExistingServiceReplica {
         machine_id: machine_id(machine),
         container_id: container_id(container),
+        creation_gate: ExistingReplicaCreationGate::AlreadyPassed,
     }
 }
 

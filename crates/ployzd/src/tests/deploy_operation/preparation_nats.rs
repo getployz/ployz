@@ -100,7 +100,8 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
         service.existing_replicas(),
         [ployz_core::deploy::ExistingServiceReplica {
             machine_id: machine_id("machine_a"),
-            container_id: container_id("ctr_target")
+            container_id: container_id("ctr_target"),
+            creation_gate: ployz_core::deploy::ExistingReplicaCreationGate::AlreadyPassed,
         }]
     );
     assert_eq!(
@@ -164,7 +165,8 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
         service.existing_replicas(),
         [ployz_core::deploy::ExistingServiceReplica {
             machine_id: machine_id("edge_2"),
-            container_id: container_id("ctr_target")
+            container_id: container_id("ctr_target"),
+            creation_gate: ployz_core::deploy::ExistingReplicaCreationGate::AlreadyPassed,
         }]
     );
     assert!(command.dataplane_machines().is_empty());

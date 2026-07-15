@@ -391,6 +391,7 @@ fn existing_service_replica(
     ployz_core::deploy::ExistingServiceReplica {
         machine_id: self::machine_id(machine_id),
         container_id: self::container_id(container_id),
+        creation_gate: ployz_core::deploy::ExistingReplicaCreationGate::AlreadyPassed,
     }
 }
 

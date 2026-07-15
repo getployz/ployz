@@ -12,8 +12,25 @@ use ployz_core::operation::{
     OperationEvent, OperationEventReplayPage, OperationEventReplayRequest,
     OperationInterruptionCause, OperationStatus, OperationStatusSnapshot,
 };
+use std::collections::BTreeSet;
 
 impl OperationRepository {
+    pub(crate) async fn operation_statuses_for(
+        &self,
+        operation_ids: BTreeSet<OperationId>,
+    ) -> Result<Vec<OperationStatus>, super::OperationStatusStoreError> {
+        self.store
+            .call(move |conn| {
+                operation_ids
+                    .iter()
+                    .map(|operation_id| select_status(conn, operation_id))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(|statuses| statuses.into_iter().flatten().collect())
+            })
+            .await
+            .map_err(|error| index_error(&error))
+    }
+
     pub async fn record_interrupted_operation(
         &self,
         operation_id: &OperationId,

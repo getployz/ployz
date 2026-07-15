@@ -1,7 +1,7 @@
 //! Convert current cluster facts into a deploy execution command.
 
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployPreparationInput, RegistryCredential,
+    DeployCleanupContainer, DeployPreparationInput, ExistingReplicaPolicy, RegistryCredential,
     VolumeDeclaredDeployRequest, auto_hostname_route_binding_commits,
     namespace_route_binding_removals, namespace_serving_target_removals, prepare_deploy,
 };
@@ -14,7 +14,7 @@ use ployz_core::machine::runtime::MachineContainerObservationSnapshot;
 use ployz_core::network::DataplaneMember;
 use ployz_core::operation::{RouteHostname, RouteTarget};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use crate::certificate::GatewayCertificateTarget;
@@ -67,7 +67,7 @@ pub struct DeployExecutionInput {
     pub(super) facts: DeployExecutionFacts,
     pub(super) registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
     /// Provenance allowed to recover matching unpromoted containers.
-    pub(super) reusable_interrupted_operation_ids: Vec<OperationId>,
+    pub(super) reusable_interrupted_operation_ids: BTreeSet<OperationId>,
 }
 
 impl DeployExecutionInput {
@@ -77,7 +77,7 @@ impl DeployExecutionInput {
         request: VolumeDeclaredDeployRequest,
         facts: DeployExecutionFacts,
         registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
-        reusable_interrupted_operation_ids: Vec<OperationId>,
+        reusable_interrupted_operation_ids: BTreeSet<OperationId>,
     ) -> Self {
         Self {
             operation_id,
@@ -110,7 +110,7 @@ pub fn prepare_deploy_execution_command(
         request,
         facts,
         &BTreeMap::new(),
-        &[],
+        &BTreeSet::new(),
     )
 }
 
@@ -120,7 +120,7 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
     request: VolumeDeclaredDeployRequest,
     facts: DeployExecutionFacts,
     registry_credentials: &BTreeMap<ServiceId, RegistryCredential>,
-    reusable_interrupted_operation_ids: &[OperationId],
+    reusable_interrupted_operation_ids: &BTreeSet<OperationId>,
 ) -> DeployExecutionCommand {
     let mut mint_requests = request.services().iter().collect::<Vec<_>>();
     mint_requests.sort_by(|left, right| left.service_id.cmp(&right.service_id));
@@ -182,7 +182,13 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         .collect::<Vec<_>>();
     let mut services = Vec::new();
     for service in request.services() {
-        let mut prepared = prepare_deploy(
+        let is_promoted = facts.namespace_serving_entries.iter().any(|entry| {
+            entry.namespace_id == *request.namespace_id()
+                && entry.service_id == service.service_id
+                && entry.namespace_revision_entry_id
+                    == service.namespace_revision_entry_id(request.namespace_id())
+        });
+        let prepared = prepare_deploy(
             DeployPreparationInput {
                 request: &request,
                 service_id: service.service_id.clone(),
@@ -190,31 +196,20 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
                 eligible_machines: facts.eligible_machines.clone(),
                 draining_machines: draining_machines.clone(),
                 observed_machines: facts.observed_machines.clone(),
+                existing_replica_policy: if is_promoted {
+                    ExistingReplicaPolicy::Promoted
+                } else if reusable_interrupted_operation_ids.is_empty() {
+                    ExistingReplicaPolicy::ExcludeUnpromoted
+                } else {
+                    ExistingReplicaPolicy::RecoverInterrupted {
+                        operation_ids: reusable_interrupted_operation_ids.clone(),
+                    }
+                },
             },
             mint_route_binding_id,
         )
         .expect("route bindings were validated while loading deploy facts");
         occupied_bindings.extend(prepared.route_commits.iter().cloned());
-        let is_promoted = facts.namespace_serving_entries.iter().any(|entry| {
-            entry.namespace_id == *request.namespace_id()
-                && entry.service_id == prepared.service.service_id
-                && entry.namespace_revision_entry_id
-                    == prepared
-                        .service
-                        .namespace_revision_entry_id(request.namespace_id())
-        });
-        if !is_promoted {
-            prepared.existing_replicas.retain(|replica| {
-                facts.observed_machines.iter().any(|machine| {
-                    machine.containers().iter().any(|container| {
-                        container.machine_id == replica.machine_id
-                            && container.container_id == replica.container_id
-                            && reusable_interrupted_operation_ids
-                                .contains(&container.identity.operation_id)
-                    })
-                })
-            });
-        }
         let mut route_commits = prepared.route_commits;
         route_commits.extend(
             declared_auto_bindings

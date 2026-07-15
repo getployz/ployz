@@ -614,6 +614,68 @@ async fn deploy_worker_commits_volume_pin_and_mounts_volume() {
 }
 
 #[tokio::test]
+async fn deploy_worker_reuses_running_target_containers_from_observed_reality() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_new"]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+    let command = deploy_command_with_existing_container(2, "machine_b", "ctr_existing");
+
+    let outcome = execute_deploy(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("deploy succeeds with an existing target container");
+
+    assert_eq!(
+        outcome
+            .containers
+            .iter()
+            .map(|container| container.container_id.clone())
+            .collect::<Vec<_>>(),
+        vec![container_id("ctr_existing"), container_id("ctr_new")]
+    );
+    assert_eq!(runtime.requests.len(), 1);
+    let [(request_machine_id, _)] = runtime.requests.as_slice() else {
+        panic!("expected one runtime request");
+    };
+    assert_eq!(*request_machine_id, machine_id("machine_a"));
+    assert_eq!(
+        health.checked,
+        vec![vec![DeployContainerForAssert::new("machine_a", "ctr_new")]]
+    );
+    assert_eq!(
+        recorder.records,
+        vec![
+            RecordedOperation::Transition(DeployTransition::Planning),
+            RecordedOperation::PlanCreated { replica_count: 2 },
+            RecordedOperation::Transition(DeployTransition::Running {
+                stage: DeployRunningStage::StartingContainers,
+            }),
+            RecordedOperation::ContainerStarted {
+                machine_id: machine_id("machine_a"),
+                container_id: container_id("ctr_new"),
+            },
+            RecordedOperation::Transition(DeployTransition::Running {
+                stage: DeployRunningStage::WaitingForHealth,
+            }),
+            RecordedOperation::HealthCheckStarted,
+            RecordedOperation::Transition(DeployTransition::Running {
+                stage: active_service_running(),
+            }),
+            RecordedOperation::Transition(DeployTransition::completed()),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn deploy_worker_removes_superseded_containers_after_active_commit() {
     let mut recorder = RecordingOperations::default();
     let mut runtime = RecordingRuntime::with_containers(["ctr_new"]);
