@@ -34,7 +34,8 @@ use std::fmt;
 use crate::ids::{MachineId, OperationId, SubjectToken, SubjectTokenError};
 use crate::intent::{ActiveMachineState, StagedMachineDataplaneState};
 use crate::operation::{
-    FailureMessage, MachineAddOperationState, MachineAddOperationStateName, OperationIdempotencyKey,
+    FailureMessage, MachineAddOperationState, MachineAddOperationStateName,
+    OperationIdempotencyKey, OperationInterruptionCause,
 };
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
@@ -189,8 +190,10 @@ pub enum MachineAddFailure {
     NatsReloadFailed { message: FailureMessage },
     #[error("minted credential is unusable: {message}")]
     MintedCredentialUnusable { message: FailureMessage },
-    #[error("credential mint task was interrupted: {message}")]
-    ControlTaskInterrupted { message: FailureMessage },
+    #[error("credential mint task was interrupted: {evidence:?}")]
+    ControlTaskInterrupted {
+        evidence: MachineAddInterruptionEvidence,
+    },
     /// Credential provisioning progressed but its operation evidence could
     /// not be recorded; the mint fails terminally instead of stranding the
     /// operation non-terminal.
@@ -320,6 +323,118 @@ pub enum MachineCredentialProvisioningStep {
     MaterialReady,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "stage", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineAddInterruptionStage {
+    Accepted,
+    CredentialProvisioning {
+        step: MachineCredentialProvisioningStep,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum MachineAddInterruptionUncertainWork {
+    CredentialAuthorityAndDelivery,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum MachineAddInterruptionNextAction {
+    InspectThenResubmit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(
+        type = "{ cause: OperationInterruptionCause, last_durable_stage: MachineAddInterruptionStage, uncertain_work: MachineAddInterruptionUncertainWork, next_action: MachineAddInterruptionNextAction }"
+    )
+)]
+pub struct MachineAddInterruptionEvidence {
+    cause: OperationInterruptionCause,
+    last_durable_stage: MachineAddInterruptionStage,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MachineAddInterruptionEvidenceWire {
+    cause: OperationInterruptionCause,
+    last_durable_stage: MachineAddInterruptionStage,
+    #[serde(default, rename = "uncertain_work")]
+    _uncertain_work: Option<serde::de::IgnoredAny>,
+    #[serde(default, rename = "next_action")]
+    _next_action: Option<serde::de::IgnoredAny>,
+}
+
+impl MachineAddInterruptionEvidence {
+    #[must_use]
+    pub const fn new(
+        cause: OperationInterruptionCause,
+        last_durable_stage: MachineAddInterruptionStage,
+    ) -> Self {
+        Self {
+            cause,
+            last_durable_stage,
+        }
+    }
+
+    #[must_use]
+    pub const fn cause(&self) -> OperationInterruptionCause {
+        self.cause
+    }
+
+    #[must_use]
+    pub const fn last_durable_stage(&self) -> MachineAddInterruptionStage {
+        self.last_durable_stage
+    }
+
+    #[must_use]
+    pub const fn uncertain_work(&self) -> MachineAddInterruptionUncertainWork {
+        MachineAddInterruptionUncertainWork::CredentialAuthorityAndDelivery
+    }
+
+    #[must_use]
+    pub const fn next_action(&self) -> MachineAddInterruptionNextAction {
+        MachineAddInterruptionNextAction::InspectThenResubmit
+    }
+}
+
+impl Serialize for MachineAddInterruptionEvidence {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        let mut state = serializer.serialize_struct("MachineAddInterruptionEvidence", 4)?;
+        state.serialize_field("cause", &self.cause())?;
+        state.serialize_field("last_durable_stage", &self.last_durable_stage())?;
+        state.serialize_field("uncertain_work", &self.uncertain_work())?;
+        state.serialize_field("next_action", &self.next_action())?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for MachineAddInterruptionEvidence {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let MachineAddInterruptionEvidenceWire {
+            cause,
+            last_durable_stage,
+            _uncertain_work: _,
+            _next_action: _,
+        } = MachineAddInterruptionEvidenceWire::deserialize(deserializer)?;
+        Ok(Self::new(cause, last_durable_stage))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineTransitionRejected {
     pub current: MachineAddOperationStateName,
@@ -429,6 +544,65 @@ impl fmt::Display for MachineReadinessCheck {
         match self {
             Self::Confirmed => formatter.write_str("confirmed"),
             Self::Missing { reason } => write!(formatter, "missing ({reason})"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod interruption_tests {
+    use super::*;
+
+    #[test]
+    fn machine_add_interruption_json_projects_current_advice() {
+        let evidence = MachineAddInterruptionEvidence::new(
+            OperationInterruptionCause::CoreShutdown,
+            MachineAddInterruptionStage::CredentialProvisioning {
+                step: MachineCredentialProvisioningStep::Rendered,
+            },
+        );
+
+        assert_eq!(
+            serde_json::to_value(evidence).expect("interruption evidence serializes"),
+            serde_json::json!({
+                "cause": "core_shutdown",
+                "last_durable_stage": {
+                    "stage": "credential_provisioning",
+                    "step": "rendered",
+                },
+                "uncertain_work": "credential_authority_and_delivery",
+                "next_action": "inspect_then_resubmit",
+            })
+        );
+    }
+
+    #[test]
+    fn machine_add_interruption_json_accepts_missing_or_stale_historical_advice() {
+        for historical in [
+            serde_json::json!({
+                "cause": "prior_core_process_loss",
+                "last_durable_stage": { "stage": "accepted" },
+            }),
+            serde_json::json!({
+                "cause": "prior_core_process_loss",
+                "last_durable_stage": { "stage": "accepted" },
+                "uncertain_work": "obsolete_policy_value",
+                "next_action": { "obsolete": true },
+            }),
+        ] {
+            let evidence: MachineAddInterruptionEvidence = serde_json::from_value(historical)
+                .expect("historical derived advice does not invalidate durable facts");
+            assert_eq!(
+                evidence.cause(),
+                OperationInterruptionCause::PriorCoreProcessLoss
+            );
+            assert_eq!(
+                evidence.last_durable_stage(),
+                MachineAddInterruptionStage::Accepted
+            );
+            assert_eq!(
+                evidence.next_action(),
+                MachineAddInterruptionNextAction::InspectThenResubmit
+            );
         }
     }
 }

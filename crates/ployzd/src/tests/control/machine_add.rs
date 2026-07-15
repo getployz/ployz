@@ -512,6 +512,71 @@ async fn control_restart_resumes_stranded_mint_to_material_ready() {
 }
 
 #[tokio::test]
+async fn graceful_shutdown_preserves_pending_machine_add_with_ready_material() {
+    let _guard = lock_machine_add_mint_test().await;
+    let nats = TestNats::start().await;
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
+    let api = nats.api();
+    let accepted = machine_add(
+        &api,
+        "op_shutdown_ready",
+        "idem_shutdown_ready",
+        "machine_sr",
+    )
+    .await;
+    let repository = operation_repository_for_test(&nats).await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if repository
+                .machine_add_secret_delivery(&idempotency_key("idem_shutdown_ready"))
+                .await
+                .expect("secret delivery reads")
+                .is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("credential material becomes durable");
+
+    runtime.shutdown().await.expect("control shuts down");
+    assert!(matches!(
+        repository
+            .get(&accepted.accepted.operation_id)
+            .await
+            .expect("machine-add status reads")
+            .expect("machine-add status exists"),
+        OperationStatus::MachineAdd {
+            state: MachineAddOperationState::Pending { .. },
+            ..
+        }
+    ));
+
+    let restarted = nats.start_control(&config).await;
+    let redeemed = nats
+        .join_api()
+        .machine_join_redeem(&MachineJoinRedeemRequest {
+            join_token: accepted.join_token,
+        })
+        .await
+        .expect("material-ready pending machine-add redeems after restart");
+    assert!(
+        redeemed
+            .secret_delivery
+            .nats_credentials
+            .secret()
+            .starts_with("SU")
+    );
+    restarted
+        .shutdown()
+        .await
+        .expect("restarted control shuts down");
+}
+
+#[tokio::test]
 async fn promoted_core_recovers_pending_join_without_old_operation_log() {
     let _guard = lock_machine_add_mint_test().await;
     let nats = TestNats::start().await;

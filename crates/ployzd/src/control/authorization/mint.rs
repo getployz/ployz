@@ -5,12 +5,16 @@ use crate::control::operation_evidence::{
 };
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::MachineJoinSecretDelivery;
-use ployz_core::machine::{MachineAddFailure, MachineCredentialProvisioningStep};
+use ployz_core::machine::{
+    MachineAddFailure, MachineAddInterruptionEvidence, MachineAddInterruptionStage,
+    MachineCredentialProvisioningStep,
+};
 use ployz_core::nats_config::{
     MintedNatsUser, NatsAuthorizationGrant, NatsInternalAuthority, NatsUserSeed,
 };
 use ployz_core::operation::{
-    FailureMessage, MachineAddOperationState, OperationIdempotencyKey, OperationStatus,
+    FailureMessage, MachineAddOperationState, OperationIdempotencyKey, OperationInterruptionCause,
+    OperationStatus,
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{NatsClientAuth, NatsClientUrl, NatsConnectConfig, NatsTlsTrust};
@@ -80,6 +84,8 @@ pub enum MintResumeError {
     ReadSecretDelivery(OperationStatusStoreError),
     #[error("failed to read machine-add status: {0:?}")]
     ReadStatus(OperationStatusStoreError),
+    #[error("failed to read machine-add provisioning stage: {0:?}")]
+    ReadProvisioningStage(OperationStatusStoreError),
     #[error("failed to record interrupted machine-add mint {}: {message}", .operation_id.as_str())]
     RecordInterruption {
         operation_id: OperationId,
@@ -127,12 +133,15 @@ impl MachineCredentialMint {
     }
 
     pub async fn start(&self, request: MintRequest) {
-        if let Err(error) = self.admit(request.clone()) {
+        if self.admit(request.clone()).is_err() {
             let outcome = self
                 .fail(
                     &request,
                     MachineAddFailure::ControlTaskInterrupted {
-                        message: failure_message(&error.to_string()),
+                        evidence: MachineAddInterruptionEvidence::new(
+                            OperationInterruptionCause::CoreShutdown,
+                            MachineAddInterruptionStage::Accepted,
+                        ),
                     },
                 )
                 .await;
@@ -206,11 +215,16 @@ impl MachineCredentialMint {
             let outcome = match recovery {
                 Ok(outcome) => outcome,
                 Err(_) => {
+                    let last_durable_stage = self
+                        .last_durable_stage(&request.operation_id)
+                        .await
+                        .map_err(MintResumeError::ReadProvisioningStage)?;
                     self.fail(
                         &request,
                         MachineAddFailure::ControlTaskInterrupted {
-                            message: failure_message(
-                                "prior core process mint recovery timed out; retry machine add",
+                            evidence: MachineAddInterruptionEvidence::new(
+                                OperationInterruptionCause::PriorCoreProcessLoss,
+                                last_durable_stage,
                             ),
                         },
                     )
@@ -237,6 +251,15 @@ impl MachineCredentialMint {
             .map_err(MintResumeError::ListSubmissions)?;
         let mut failed = 0;
         for submission in submissions {
+            let delivered = self
+                .controllers
+                .repository()
+                .machine_add_secret_delivery(&submission.idempotency_key)
+                .await
+                .map_err(MintResumeError::ReadSecretDelivery)?;
+            if delivered.is_some() {
+                continue;
+            }
             let Some(status) = self
                 .controllers
                 .repository()
@@ -253,14 +276,19 @@ impl MachineCredentialMint {
             else {
                 continue;
             };
+            let last_durable_stage = self
+                .last_durable_stage(&submission.operation_id)
+                .await
+                .map_err(MintResumeError::ReadProvisioningStage)?;
             self.controllers
                 .repository()
                 .record_machine_add_failed(
                     &submission.operation_id,
                     &submission.identity.machine_id,
                     MachineAddFailure::ControlTaskInterrupted {
-                        message: failure_message(
-                            "control stopped before credential mint reached terminal evidence",
+                        evidence: MachineAddInterruptionEvidence::new(
+                            OperationInterruptionCause::CoreShutdown,
+                            last_durable_stage,
                         ),
                     },
                 )
@@ -272,6 +300,20 @@ impl MachineCredentialMint {
             failed += 1;
         }
         Ok(failed)
+    }
+
+    async fn last_durable_stage(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<MachineAddInterruptionStage, OperationStatusStoreError> {
+        Ok(self
+            .controllers
+            .repository()
+            .last_machine_add_provisioning_step(operation_id)
+            .await?
+            .map_or(MachineAddInterruptionStage::Accepted, |step| {
+                MachineAddInterruptionStage::CredentialProvisioning { step }
+            }))
     }
 
     pub async fn run(&self, request: MintRequest) -> MintOutcome {

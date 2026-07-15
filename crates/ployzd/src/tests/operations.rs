@@ -41,8 +41,9 @@ use ployz_core::machine::MachineName;
 use ployz_core::machine::roles::InstallRolePolicy;
 use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::machine::{
-    IssuedJoinToken, JoinTokenExpiresAt, MachineAddFailure, MachineEndpointObservation,
-    MachineLifecycle, RawJoinToken,
+    IssuedJoinToken, JoinTokenExpiresAt, MachineAddFailure, MachineAddInterruptionNextAction,
+    MachineAddInterruptionStage, MachineAddInterruptionUncertainWork,
+    MachineCredentialProvisioningStep, MachineEndpointObservation, MachineLifecycle, RawJoinToken,
 };
 use ployz_core::network::MachineEndpointSubnet;
 use ployz_core::operation::{
@@ -143,6 +144,14 @@ async fn graceful_shutdown_records_owned_operation_interruption() {
         })
         .await
         .expect("machine-add operation accepts");
+    repository
+        .record_machine_add_credential_provisioned(
+            &machine_add_operation_id,
+            &machine_id("shutdown_machine"),
+            MachineCredentialProvisioningStep::Rendered,
+        )
+        .await
+        .expect("machine-add credential stage records");
 
     runtime.shutdown().await.expect("control shuts down");
 
@@ -197,10 +206,17 @@ async fn graceful_shutdown_records_owned_operation_interruption() {
             .expect("machine-add status exists"),
         OperationStatus::MachineAdd {
             state: MachineAddOperationState::Failed {
-                failure: MachineAddFailure::ControlTaskInterrupted { .. },
+                failure: MachineAddFailure::ControlTaskInterrupted { evidence },
             },
             ..
-        }
+        } if evidence.cause() == OperationInterruptionCause::CoreShutdown
+            && evidence.last_durable_stage()
+                == MachineAddInterruptionStage::CredentialProvisioning {
+                    step: MachineCredentialProvisioningStep::Rendered,
+                }
+            && evidence.uncertain_work()
+                == MachineAddInterruptionUncertainWork::CredentialAuthorityAndDelivery
+            && evidence.next_action() == MachineAddInterruptionNextAction::InspectThenResubmit
     ));
 }
 

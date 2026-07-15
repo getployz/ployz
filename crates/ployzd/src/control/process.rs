@@ -94,60 +94,45 @@ impl RunningControlProcess {
             certificate_manager,
             machine_mint,
         } = self;
-        let mut nats_service_error = operation_api.shutdown().await.err();
+        let operation_api_shutdown = operation_api.shutdown().await;
         let quiesce_result = control_tasks
             .abort_and_join(CONTROL_TASK_QUIESCE_TIMEOUT)
             .await;
-        let owner_recovery_result = if quiesce_result.is_ok() {
-            Some(
-                finish_aborted_owner_operations(
-                    &certificate_manager,
-                    &machine_mint,
-                    &operation_repository,
-                )
-                .await,
-            )
+        let operation_seal_result = if quiesce_result.is_ok() {
+            seal_aborted_operations(&certificate_manager, &machine_mint, &operation_repository)
+                .await
         } else {
-            None
+            Ok(())
         };
-        let interruption_result = if quiesce_result.is_ok() {
-            Some(
-                operation_repository
-                    .record_interrupted_operations(OperationInterruptionCause::CoreShutdown)
-                    .await,
-            )
-        } else {
-            None
-        };
-        if let Err(error) = ingress_endpoint_projection.shutdown().await
-            && nats_service_error.is_none()
-        {
-            nats_service_error = Some(error);
-        }
-        if let Err(error) = runtime_projection.shutdown().await
-            && nats_service_error.is_none()
-        {
-            nats_service_error = Some(error);
-        }
-        if let Err(error) = intent.shutdown().await
-            && nats_service_error.is_none()
-        {
-            nats_service_error = Some(error);
-        }
+        let ingress_projection_shutdown = ingress_endpoint_projection.shutdown().await;
+        let runtime_projection_shutdown = runtime_projection.shutdown().await;
+        let intent_shutdown = intent.shutdown().await;
         testimony_cache.shutdown().await;
         authorization.shutdown();
         quiesce_result.map_err(ControlProcessShutdownError::TaskQuiesce)?;
-        if let Some(owner_recovery_result) = owner_recovery_result {
-            owner_recovery_result.map_err(ControlProcessShutdownError::OwnerOperationEvidence)?;
-        }
-        if let Some(interruption_result) = interruption_result {
-            interruption_result.map_err(ControlProcessShutdownError::OperationEvidence)?;
-        }
-        if let Some(error) = nats_service_error {
-            return Err(ControlProcessShutdownError::NatsService(error));
-        }
+        operation_seal_result?;
+        operation_api_shutdown.map_err(ControlProcessShutdownError::NatsService)?;
+        ingress_projection_shutdown.map_err(ControlProcessShutdownError::NatsService)?;
+        runtime_projection_shutdown.map_err(ControlProcessShutdownError::NatsService)?;
+        intent_shutdown.map_err(ControlProcessShutdownError::NatsService)?;
         Ok(())
     }
+}
+
+async fn seal_aborted_operations(
+    certificate_manager: &CertificateManager,
+    machine_mint: &MachineCredentialMint,
+    operation_repository: &OperationRepository,
+) -> Result<(), ControlProcessShutdownError> {
+    let owner_recovery =
+        finish_aborted_owner_operations(certificate_manager, machine_mint, operation_repository)
+            .await;
+    let interruption = operation_repository
+        .record_interrupted_operations(OperationInterruptionCause::CoreShutdown)
+        .await;
+    owner_recovery.map_err(ControlProcessShutdownError::OwnerOperationEvidence)?;
+    interruption.map_err(ControlProcessShutdownError::OperationEvidence)?;
+    Ok(())
 }
 
 async fn finish_aborted_owner_operations(
@@ -155,29 +140,17 @@ async fn finish_aborted_owner_operations(
     machine_mint: &MachineCredentialMint,
     operation_repository: &OperationRepository,
 ) -> Result<(), OwnerOperationRecoveryError> {
-    let mut first_error = None;
-    if let Err(error) = recover_unfinished_operations(
+    let certificate = recover_unfinished_operations(
         certificate_manager,
         OperationInterruptionCause::CoreShutdown,
     )
-    .await
-    {
-        first_error = Some(OwnerOperationRecoveryError::new("certificate", error));
-    }
-    if let Err(error) = recover_accepted_operations(operation_repository).await
-        && first_error.is_none()
-    {
-        first_error = Some(OwnerOperationRecoveryError::new("managed DNS", error));
-    }
-    if let Err(error) = machine_mint.fail_unfinished_mints().await
-        && first_error.is_none()
-    {
-        first_error = Some(OwnerOperationRecoveryError::new("machine-add mint", error));
-    }
-    match first_error {
-        Some(error) => Err(error),
-        None => Ok(()),
-    }
+    .await;
+    let managed_dns = recover_accepted_operations(operation_repository).await;
+    let machine_add = machine_mint.fail_unfinished_mints().await;
+    certificate.map_err(|error| OwnerOperationRecoveryError::new("certificate", error))?;
+    managed_dns.map_err(|error| OwnerOperationRecoveryError::new("managed DNS", error))?;
+    machine_add.map_err(|error| OwnerOperationRecoveryError::new("machine-add mint", error))?;
+    Ok(())
 }
 
 #[derive(Debug, thiserror::Error)]
