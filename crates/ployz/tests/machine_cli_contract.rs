@@ -1,15 +1,15 @@
 use std::fs;
 
-use ployz::bootstrap_command::{
+use ployz::commands::{PloyzctlCommand, parse_command};
+use ployz::machine::bootstrap::{
     BootstrapInstaller, BootstrapRelease, CloudBootstrapCommand, CloudBootstrapMode,
     DEFAULT_BOOTSTRAP_URL, DEFAULT_RELEASE_CHANNEL, FounderBootstrapCommand,
 };
-use ployz::commands::machine::{
+use ployz::machine::command::{
     MachineAddInstaller, MachineAddOutput, MachineBootstrapUrl, MachineIdentity,
     MachineIdentityError, MachineInspectOutput, MachineJoinRuntimeNatsUrl, MachineJoinToken,
     MachineListOutput, MachineName, derive_machine_identity,
 };
-use ployz::commands::{PloyzctlCommand, parse_command};
 use ployz::ssh::{SshClient, SshCommandError, SshPhase, SshTarget, SshTargetParseError};
 use ployz_core::ids::MachineId;
 use ployz_core::install::{
@@ -17,12 +17,14 @@ use ployz_core::install::{
     InstallArtifactVersion, InstallSha256Digest, MachineJoinBundle, MachineJoinClusterName,
     MachineJoinMaterial, MachineJoinTrustedNats,
 };
+use ployz_core::intent::ActiveMachineState;
+use ployz_core::machine::GatewayServingStatus;
+use ployz_core::machine::GatewayStatusObservation;
+use ployz_core::machine::MachineEndpointObservation;
+use ployz_core::machine::MachineLifecycle;
 use ployz_core::nats_config::NatsCaCertificatePem;
 use ployz_core::roles::{GatewayRole, InstallRolePolicy};
-use ployz_core::state::MachineLifecycle;
-use ployz_core::state::{
-    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation,
-};
+
 use ployz_sdk_types::{AcceptedOperation, CloudBootstrapToken, MachineSnapshot};
 use ployz_test_support::fs::make_executable;
 use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
@@ -215,9 +217,9 @@ fn machine_snapshot(machine_id: &str, gateway: Option<GatewayServingStatus>) -> 
             roles: ployz_core::roles::InstallRolePolicy::install_all(),
             control_endpoints: Vec::new(),
             mesh_endpoints: Vec::new(),
-            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
+            endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new("10.198.0.0/24")
                 .expect("valid endpoint subnet"),
-            wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+            wireguard_public_key: ployz_core::network::WireGuardPublicKey::try_new(format!(
                 "public-{}",
                 machine_id.as_str()
             ))
@@ -229,11 +231,14 @@ fn machine_snapshot(machine_id: &str, gateway: Option<GatewayServingStatus>) -> 
                 control_endpoints: vec!["203.0.113.10".parse().expect("valid public ip")],
                 mesh_endpoints: vec!["203.0.113.10:51820".parse().expect("valid mesh endpoint")],
             }),
-            gateway: gateway.map(|serving| GatewayStatusObservation {
-                machine_id,
-                listen_addr: "127.0.0.1:8080".parse().expect("valid listen addr"),
-                serving,
-                route_count: 2,
+            gateway: gateway.map(|serving| {
+                Box::new(GatewayStatusObservation {
+                    machine_id,
+                    listen_addr: "127.0.0.1:8080".parse().expect("valid listen addr"),
+                    serving,
+                    route_count: 2,
+                    process_health: ployz_core::machine::GatewayProcessHealth::default(),
+                })
             }),
             observed_container_count: 3,
             disk_space: ployz_test_support::fixtures::test_disk_space(),
@@ -252,8 +257,7 @@ fn machine_join_bundle(runtime_nats_url: &str) -> MachineJoinBundle {
     MachineJoinBundle {
         material: MachineJoinMaterial {
             cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
-            dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(
-            ),
+            dataplane_endpoint_supernet: ployz_core::network::MachineEndpointSupernet::default_v1(),
             runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new(runtime_nats_url)
                 .expect("valid runtime NATS URL"),
             trusted_nats: MachineJoinTrustedNats {

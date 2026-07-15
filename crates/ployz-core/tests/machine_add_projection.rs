@@ -2,15 +2,15 @@
 //! checks, failure-phase rules, and cancellation.
 
 use ployz_core::install::HostPortAssurance;
+use ployz_core::machine::InstallRolePolicy;
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, MachineAddFailure,
     MachineReadinessCheck, MachineReadinessEvidence,
 };
-use ployz_core::ops::{
+use ployz_core::operation::{
     FailureMessage, MachineAddOperationState, OperationEvent, OperationKind, OperationProjection,
     OperationStatus, ProjectionOperationState, StatusProjectionError, project_operation_event,
 };
-use ployz_core::roles::InstallRolePolicy;
 use ployz_test_support::ids::{event_sequence, machine_id, machine_name, operation_id};
 
 #[test]
@@ -55,10 +55,10 @@ fn machine_add_rejects_submitted_event_for_another_machine() {
         ),
         Err(StatusProjectionError::OperationSubjectMismatch {
             operation_id: operation_id("op_machine"),
-            expected: Box::new(ployz_core::ops::OperationSubjectRef::MachineAdd(
+            expected: Box::new(ployz_core::operation::OperationSubjectRef::MachineAdd(
                 machine_id("machine_2",)
             )),
-            actual: Box::new(ployz_core::ops::OperationSubjectRef::MachineAdd(
+            actual: Box::new(ployz_core::operation::OperationSubjectRef::MachineAdd(
                 machine_id("machine_3",)
             )),
         })
@@ -76,7 +76,7 @@ fn machine_add_cancel_records_terminal_status() {
         issued_join_token(),
         event_sequence(7),
     );
-    let reason = ployz_core::ops::CancellationReason::try_new("operator_cancelled")
+    let reason = ployz_core::operation::CancellationReason::try_new("operator_cancelled")
         .expect("valid cancellation reason");
 
     assert_eq!(
@@ -106,7 +106,7 @@ fn machine_add_cancel_records_terminal_status() {
 #[test]
 fn cancel_with_mismatched_kind_is_typed_evidence_not_a_cancel() {
     let accepted = machine_add_pending_status();
-    let reason = ployz_core::ops::CancellationReason::try_new("operator_cancelled")
+    let reason = ployz_core::operation::CancellationReason::try_new("operator_cancelled")
         .expect("valid cancellation reason");
 
     assert_eq!(

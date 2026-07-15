@@ -6,64 +6,41 @@
 //! controllers, machine-local services, and integration adapters. Product policy stays
 //! in `ployz-core`; NATS mechanics stay in `ployz-nats`.
 
-pub mod adapters {
+mod adapters {
     pub(crate) mod atomic_file;
-    pub mod containerd_content;
     pub mod credentials;
-    pub mod docker;
-    pub mod host_dataplane;
-    pub mod nats_authorization;
     pub mod nats_server;
 }
-pub mod certificate;
+mod certificate;
 pub mod config;
-pub mod roles {
-    pub mod control;
+mod control;
+mod recovery;
+mod role_testimony;
+mod roles {
     pub mod dns {
         mod internal;
         pub use internal::InternalResolverHealth;
         pub mod process;
-        pub mod projection;
         pub(crate) mod protocol;
         pub(crate) mod service;
-        pub mod source;
     }
     pub mod gateway {
-        pub mod client;
         pub mod pingora;
         pub mod process;
         pub mod projection;
+        pub(crate) mod protocol;
         pub mod route_table;
         pub mod source;
     }
     pub mod machine;
-    pub mod nats_failover;
 }
-pub mod operations {
-    pub mod credential_grant;
-    pub mod dataplane_projection_admission;
-    pub mod deploy;
-    pub mod ingress_configure;
-    pub mod log;
-    pub mod machine_lifecycle;
-    pub mod machine_update;
-    pub mod namespace_remove;
-    pub mod network_repair;
-    pub mod service_restart;
-    pub mod volume_remove;
-}
-pub mod core_store;
 pub mod dispatch;
-pub mod fact_cache;
-pub mod ingress_endpoint;
-pub mod intent;
-pub mod lease;
-pub(crate) mod machine_runtime;
-pub mod operation_api;
-pub mod process_support;
+mod lease;
+mod process_support;
 pub mod role_cli;
-pub(crate) mod runtime_projection;
-pub(crate) mod runtime_snapshot;
-pub mod seed;
-pub mod service_catalog;
-pub mod tasks;
+mod seed;
+mod service_catalog;
+mod tasks;
+
+#[cfg(test)]
+mod tests;

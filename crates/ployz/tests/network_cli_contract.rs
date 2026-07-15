@@ -1,15 +1,17 @@
 use std::net::Ipv4Addr;
 
-use ployz::commands::network::{NetworkResolveOutput, NetworkStatusOutput};
-use ployz::commands::ops::{OpsWatchOutput, StatusOutput, WatchOutput};
 use ployz::commands::{PloyzctlCommand, parse_command};
-use ployz_core::dataplane::{DataplaneProjection, MachineEndpointSubnet};
+use ployz::network::command::{NetworkResolveOutput, NetworkStatusOutput};
+use ployz::operation::command::{OpsWatchOutput, StatusOutput, WatchOutput};
 use ployz_core::ids::{NamespaceId, ServiceId};
-use ployz_core::internal_dns::InternalServiceName;
+use ployz_core::intent::ActiveMachineState;
+use ployz_core::machine::MachineLifecycle;
 use ployz_core::machine::MachineName;
-use ployz_core::ops::FailureMessage;
+use ployz_core::network::internal_dns::InternalServiceName;
+use ployz_core::network::{DataplaneProjection, MachineEndpointSubnet};
+use ployz_core::operation::FailureMessage;
 use ployz_core::roles::InstallRolePolicy;
-use ployz_core::state::{ActiveMachineState, MachineLifecycle};
+
 use ployz_sdk_types::{
     NetworkDataplaneTestimony, NetworkInternalDnsTestimony, NetworkResolveMachineTestimony,
     NetworkResolveResult, NetworkStatusMachine,
@@ -78,7 +80,7 @@ fn network_status_keeps_no_answer_machine_row() {
                 mesh_endpoints: vec!["203.0.113.10:51820".parse().expect("valid socket address")],
                 endpoint_subnet: MachineEndpointSubnet::try_new("10.198.1.0/24")
                     .expect("valid endpoint subnet"),
-                wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(
+                wireguard_public_key: ployz_core::network::WireGuardPublicKey::try_new(
                     "public-machine-a",
                 )
                 .expect("public key"),
@@ -289,9 +291,9 @@ fn status_machine(dataplane: NetworkDataplaneTestimony) -> NetworkStatusMachine 
             lifecycle: MachineLifecycle::Active,
             control_endpoints: Vec::new(),
             mesh_endpoints: Vec::new(),
-            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.1.0/24")
+            endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new("10.198.1.0/24")
                 .expect("valid endpoint subnet"),
-            wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(
+            wireguard_public_key: ployz_core::network::WireGuardPublicKey::try_new(
                 "public-machine-a",
             )
             .expect("public key"),

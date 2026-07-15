@@ -1,5 +1,5 @@
-use ployz_core::dataplane::DataplaneProjection;
-use ployz_core::ops::{
+use ployz_core::network::DataplaneProjection;
+use ployz_core::operation::{
     FailureMessage, NetworkRepairFailure, NetworkRepairOperationState, NetworkRepairProgressPhase,
     NetworkRepairRunningStage, NetworkRepairTransition, OperationEvent, OperationProjection,
     OperationStatus, ProjectionOperationState, StatusProjectionError,
@@ -8,7 +8,7 @@ use ployz_core::ops::{
 use ployz_test_support::ids::machine_id;
 use ployz_test_support::ids::{event_sequence, operation_id};
 
-fn dataplane_revision() -> ployz_core::dataplane::DataplaneProjectionRevision {
+fn dataplane_revision() -> ployz_core::network::DataplaneProjectionRevision {
     DataplaneProjection::try_new(Vec::new(), None)
         .expect("empty projection")
         .declared_revision()
@@ -111,7 +111,7 @@ fn network_repair_dataplane_converged_evidence_advances_projection_cursor() {
 }
 
 #[test]
-fn network_repair_dataplane_converged_evidence_has_stable_singleton_subject() {
+fn network_repair_dataplane_converged_evidence_has_stable_singleton_key() {
     let event = OperationEvent::NetworkRepairDataplaneConverged {
         operation_id: operation_id("op_network_repair"),
         revision: dataplane_revision(),
@@ -119,11 +119,8 @@ fn network_repair_dataplane_converged_evidence_has_stable_singleton_subject() {
     };
 
     assert_eq!(
-        (event.subject_suffix(), event.singleton_subject()),
-        (
-            "network.repair.dataplane.converged".to_owned(),
-            Some("network.repair.dataplane.converged"),
-        )
+        event.singleton_evidence_key(),
+        Some("network.repair.dataplane.converged")
     );
 }
 
@@ -139,12 +136,10 @@ fn network_repair_refresh_evidence_advances_only_its_stage_cursor() {
     };
     let event = OperationEvent::NetworkRepairMachineFactsRefreshed {
         operation_id: operation_id("op_network_repair"),
-        refreshes: vec![
-            ployz_core::machine_runtime::MachineFactsRefreshConfirmation {
-                machine_id: machine_id("machine_a"),
-                observed_at_unix_ms: 42,
-            },
-        ],
+        refreshes: vec![ployz_core::machine::MachineFactsRefreshConfirmation {
+            machine_id: machine_id("machine_a"),
+            observed_at_unix_ms: 42,
+        }],
     };
 
     assert!(matches!(
@@ -223,7 +218,7 @@ fn network_repair_rejects_failed_before_running() {
         None,
         event_sequence(1),
     );
-    let failure = ployz_core::ops::NetworkRepairFailure::NoActiveMachines;
+    let failure = ployz_core::operation::NetworkRepairFailure::NoActiveMachines;
 
     assert_eq!(
         project_network_repair_transition(

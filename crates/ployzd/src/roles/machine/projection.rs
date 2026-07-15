@@ -3,20 +3,20 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use ployz_core::dataplane::{
+use ployz_core::ids::MachineId;
+use ployz_core::network::{
     DataplaneProjection, DataplaneProjectionComponent, DataplaneProjectionFailure,
     DataplaneProjectionRevisions, DataplaneProjectionTestimony, EndpointBridgeStatus,
     MachineEndpointSubnet, NativeDataplaneProjectionStatus, PloyzNativeMeshComponent,
     WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer,
 };
-use ployz_core::ids::MachineId;
-use ployz_core::ops::FailureMessage;
-use ployz_core::subjects::INTENT_CHANGED;
+use ployz_core::operation::FailureMessage;
 use ployz_nats::service_runtime::NatsClient;
+use ployz_nats::subjects::INTENT_CHANGED;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::intent::service::NatsIntentReader;
+use crate::control::intent::service::NatsIntentReader;
 use crate::roles::machine::runner::{MachineContainerRunner, MachineContainerRunnerError};
 use crate::roles::machine::service::MachinePloyzNativeMeshPreparer;
 
@@ -145,6 +145,7 @@ impl RunningProjectionTask {
         let _ = (&mut self.task).await;
     }
 
+    #[cfg(test)]
     pub(crate) async fn shutdown(mut self) {
         self.request_shutdown();
         self.wait().await;
@@ -346,7 +347,7 @@ async fn converge_once<R, P>(
 struct RenderedProjection {
     revisions: DataplaneProjectionRevisions,
     local_subnet: MachineEndpointSubnet,
-    local_public_key: ployz_core::dataplane::WireGuardPublicKey,
+    local_public_key: ployz_core::network::WireGuardPublicKey,
     endpoint_routes: Vec<WireGuardEbpfEndpointRoute>,
     peers: Vec<WireGuardPeer>,
 }
@@ -460,7 +461,7 @@ fn failure_message(message: impl Into<String>) -> FailureMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::dataplane::{DataplaneProjectionMember, WireGuardPublicKey};
+    use ployz_core::network::{DataplaneProjectionMember, WireGuardPublicKey};
     use std::future::pending;
     use std::net::SocketAddr;
 

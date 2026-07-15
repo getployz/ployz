@@ -1,12 +1,12 @@
 //! Gateway projection read-model.
 
-use ployz_core::cert::{AcmeHttp01Challenge, CustomCertBundle};
+use ployz_core::certificate::{AcmeHttp01Challenge, CustomCertBundle};
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, RouteBindingId, ServiceId,
 };
 use ployz_core::ingress::{CertificateOwner, RouteBindingOrigin};
-use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
-use ployz_core::ops::{RoutePort, RouteTarget};
+use ployz_core::machine::runtime::MachineContainerObservationSnapshot;
+use ployz_core::operation::{RoutePort, RouteTarget};
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -111,7 +111,9 @@ impl GatewayUpstreamKey {
         }
     }
 
-    fn for_container(container: &ployz_core::machine_runtime::ManagedContainerObservation) -> Self {
+    fn for_container(
+        container: &ployz_core::machine::runtime::ManagedContainerObservation,
+    ) -> Self {
         Self {
             namespace_id: container.identity.namespace_id.clone(),
             service_id: container.identity.service_id.clone(),
@@ -122,9 +124,10 @@ impl GatewayUpstreamKey {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GatewayProjectionUpdate {
-    SourceAvailable(Box<GatewayProjectionInput>),
-    SourceInvalid(GatewayProjectionError),
-    SourceUnavailable(GatewayProjectionError),
+    Available(Box<GatewayProjectionInput>),
+    #[cfg(test)]
+    Invalid(GatewayProjectionError),
+    Unavailable(GatewayProjectionError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,6 +155,7 @@ pub enum GatewayProjectionError {
         failures: Vec<GatewayCertificateMaterialFailure>,
         availability: GatewayCertificateFailureAvailability,
     },
+    #[cfg(test)]
     InvalidSource {
         message: String,
     },
@@ -172,7 +176,7 @@ pub fn apply_gateway_update(
     update: GatewayProjectionUpdate,
 ) -> GatewayProjectionState {
     match update {
-        GatewayProjectionUpdate::SourceAvailable(input) => {
+        GatewayProjectionUpdate::Available(input) => {
             let mut input = *input;
             let failures = input.certificate_failures.clone();
             let had_complete_projection = previous.last_good.is_some()
@@ -224,11 +228,12 @@ pub fn apply_gateway_update(
                 },
             }
         }
-        GatewayProjectionUpdate::SourceInvalid(error) => GatewayProjectionState {
+        #[cfg(test)]
+        GatewayProjectionUpdate::Invalid(error) => GatewayProjectionState {
             last_error: Some(error),
             ..previous
         },
-        GatewayProjectionUpdate::SourceUnavailable(error) => {
+        GatewayProjectionUpdate::Unavailable(error) => {
             if previous.last_good.is_some() && previous.last_error.is_some() {
                 previous
             } else {
@@ -401,3 +406,7 @@ fn index_running_containers(
         unroutable_by_entry,
     }
 }
+
+#[cfg(test)]
+#[path = "projection_tests.rs"]
+mod tests;

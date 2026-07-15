@@ -1,14 +1,14 @@
 use std::process::{Command, Output};
 
-use ployz::commands::deploy::{
+use ployz::commands::{PloyzctlCommand, parse_command};
+use ployz::deploy::command::{
     DeployCommand, DeployOutput, DeployRollbackCommand, DeployRollbackSelection,
 };
-use ployz::commands::{PloyzctlCommand, parse_command};
 use ployz_core::deploy::{
     DeployOrigin, DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageReference, ReplicaCount,
 };
 use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
-use ployz_core::ops::{RouteHostname, RoutePort};
+use ployz_core::operation::{RouteHostname, RoutePort};
 use ployz_sdk_types::AcceptedOperation;
 use ployz_test_support::ids::{event_sequence, operation_id};
 

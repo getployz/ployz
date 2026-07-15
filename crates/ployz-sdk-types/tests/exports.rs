@@ -1,4 +1,4 @@
-use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
+use ployz_sdk_types::operation_api::OperationApiEndpoint;
 use ployz_sdk_types::{
     AcceptedOperation, AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue,
     AcmeHttp01Challenge, ActiveCertState, ActiveCertificateMetadata,
@@ -8,15 +8,20 @@ use ployz_sdk_types::{
     CloudBootstrapDecision, CloudBootstrapEnvelope, CloudBootstrapIntent, CloudBootstrapOutcome,
     CloudBootstrapRedemptionId, CloudBootstrapSessionCreateRequest, CloudBootstrapSessionCreated,
     CloudBootstrapSessionPollRequest, CloudBootstrapToken, CloudBootstrapTokenRedeemRequest,
-    CloudFounderBootstrapResult, ControlPlaneEpoch, CoreReplaceError, CoreReplaceReportError,
+    CloudFounderBootstrapResult, ControlCertificateRenewalAttempt,
+    ControlCertificateRenewalFailure, ControlCertificateRenewalHealth,
+    ControlCertificateRenewalOutcome, ControlHealth, ControlPlaneEpoch,
+    ControlRuntimeProjectionHealth, ControlRuntimeProjectionLoopHealth,
+    ControlRuntimeProjectionServiceHealth, CoreReplaceError, CoreReplaceReportError,
     CoreReplaceReportRequest, CoreReplaceReported, CoreReplaceRequest, CredentialAddError,
     CredentialAddRequest, CredentialListError, CredentialListRequest, CredentialListResult,
     CredentialRemoveError, CredentialRemoveRequest, DependencyCondition, DeployOperationState,
     DeployPhaseNumber, DeployPhaseNumberError, DeployRequest, DeployReservationId,
     DeployReserveError, DeployReserveRequest, DeployReserved, DeployRunningStage,
     DeployServiceSpec, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse, EventSequence,
-    EventSequenceError, HostPortAssurance, ImageReference, ImageReferenceError,
-    IngressConfiguration, IngressConfigureError, IngressConfigureRequest,
+    EventSequenceError, GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessHealth,
+    GatewayStatusPublishFailure, GatewayWatchFailure, HostPortAssurance, ImageReference,
+    ImageReferenceError, IngressConfiguration, IngressConfigureError, IngressConfigureRequest,
     IngressEndpointProjectionIdentity, InitFirstMachineActivateError,
     InitFirstMachineActivateRequest, InitFirstMachineActivated, InstallContractError,
     InstallRolePolicy, LogsTailError, LogsTailRequest, LogsTailResult,
@@ -53,7 +58,7 @@ use ployz_sdk_types::{
         ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
     },
 };
-use ts_rs::{Config, TS};
+use ts_rs::TS;
 
 #[test]
 fn sdk_exports_core_wire_types() {
@@ -300,7 +305,7 @@ fn sdk_exports_operation_api_wire_types() {
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
             host_port_assurance: HostPortAssurance::External,
-            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.2.0/24")
+            endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new("10.198.2.0/24")
                 .expect("valid subnet"),
             join_bundle: machine_join_bundle(),
             secret_delivery: machine_join_secret_delivery(),
@@ -456,14 +461,6 @@ fn typescript_contract_fixture_matches_rust_wire_types() {
 }
 
 #[test]
-fn package_typescript_contract_is_generated_from_rust_crate() {
-    assert_eq!(
-        include_str!("../../../packages/ployz-sdk/src/generated.ts"),
-        ployz_sdk_types::typescript::generated_typescript()
-    );
-}
-
-#[test]
 fn operation_api_contract_registry_owns_endpoint_shapes() {
     assert_contract::<DeployReserveApi, DeployReserveRequest, DeployReserved, DeployReserveError>();
     assert_contract::<DeploySubmitApi, DeploySubmitRequest, AcceptedOperation, DeploySubmitError>();
@@ -612,290 +609,6 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             OperationApiEndpoint::OpsWatch,
         ]
     );
-    assert_eq!(
-        operation_api_contract_rows(),
-        vec![
-            (
-                "deploy.reserve",
-                "plz.v1.rpc.operator.command.deploy.reserve",
-                OperationApiEndpointExecution::MutatesOperation,
-                "DeployReserveRequest".to_owned(),
-                "DeployReserved".to_owned(),
-                "DeployReserveError".to_owned(),
-                "DeployReserveResponse",
-            ),
-            (
-                "deploy.submit",
-                "plz.v1.rpc.operator.command.deploy.submit",
-                OperationApiEndpointExecution::AcceptsOperation,
-                "DeploySubmitRequest".to_owned(),
-                "AcceptedOperation".to_owned(),
-                "DeploySubmitError".to_owned(),
-                "DeploySubmitResponse",
-            ),
-            (
-                "init.first_machine.activate",
-                "plz.v1.rpc.operator.command.init.first_machine.activate",
-                OperationApiEndpointExecution::MutatesOperation,
-                "InitFirstMachineActivateRequest".to_owned(),
-                "InitFirstMachineActivated".to_owned(),
-                "InitFirstMachineActivateError".to_owned(),
-                "InitFirstMachineActivateResponse",
-            ),
-            (
-                "machine.add",
-                "plz.v1.rpc.operator.command.machine.add",
-                OperationApiEndpointExecution::AcceptsOperation,
-                "MachineAddRequest".to_owned(),
-                "MachineAddAccepted".to_owned(),
-                "MachineAddError".to_owned(),
-                "MachineAddResponse",
-            ),
-            (
-                "machine.update",
-                "plz.v1.rpc.operator.command.machine.update",
-                OperationApiEndpointExecution::AcceptsOperation,
-                "MachineUpdateRequest".to_owned(),
-                "AcceptedOperation".to_owned(),
-                "MachineUpdateError".to_owned(),
-                "MachineUpdateResponse",
-            ),
-            (
-                "machine.drain",
-                "plz.v1.rpc.operator.command.machine.drain",
-                OperationApiEndpointExecution::AcceptsOperation,
-                "MachineLifecycleRequest".to_owned(),
-                "AcceptedOperation".to_owned(),
-                "MachineLifecycleError".to_owned(),
-                "MachineDrainResponse",
-            ),
-            (
-                "machine.resume",
-                "plz.v1.rpc.operator.command.machine.resume",
-                OperationApiEndpointExecution::AcceptsOperation,
-                "MachineLifecycleRequest".to_owned(),
-                "AcceptedOperation".to_owned(),
-                "MachineLifecycleError".to_owned(),
-                "MachineResumeResponse",
-            ),
-            (
-                "service.restart",
-                "plz.v1.rpc.operator.command.service.restart",
-                OperationApiEndpointExecution::AcceptsOperation,
-                "ServiceRestartRequest".to_owned(),
-                "AcceptedOperation".to_owned(),
-                "ServiceRestartError".to_owned(),
-                "ServiceRestartResponse",
-            ),
-            (
-                "namespace.remove",
-                "plz.v1.rpc.operator.command.namespace.remove",
-                OperationApiEndpointExecution::AcceptsOperation,
-                "NamespaceRemoveRequest".to_owned(),
-                "AcceptedOperation".to_owned(),
-                "NamespaceRemoveError".to_owned(),
-                "NamespaceRemoveResponse",
-            ),
-            (
-                "volume.remove",
-                "plz.v1.rpc.operator.command.volume.remove",
-                OperationApiEndpointExecution::AcceptsOperation,
-                "VolumeRemoveRequest".to_owned(),
-                "AcceptedOperation".to_owned(),
-                "VolumeRemoveError".to_owned(),
-                "VolumeRemoveResponse",
-            ),
-            (
-                "core.replace",
-                "plz.v1.rpc.operator.command.core.replace",
-                OperationApiEndpointExecution::AcceptsOperation,
-                "CoreReplaceRequest".to_owned(),
-                "AcceptedOperation".to_owned(),
-                "CoreReplaceError".to_owned(),
-                "CoreReplaceResponse",
-            ),
-            (
-                "core.replace.report",
-                "plz.v1.rpc.operator.command.core.replace.report",
-                OperationApiEndpointExecution::MutatesOperation,
-                "CoreReplaceReportRequest".to_owned(),
-                "CoreReplaceReported".to_owned(),
-                "CoreReplaceReportError".to_owned(),
-                "CoreReplaceReportResponse",
-            ),
-            (
-                "credential.add",
-                "plz.v1.rpc.operator.command.credential.add",
-                OperationApiEndpointExecution::AcceptsOperation,
-                "CredentialAddRequest".to_owned(),
-                "AcceptedOperation".to_owned(),
-                "CredentialAddError".to_owned(),
-                "CredentialAddResponse",
-            ),
-            (
-                "credential.list",
-                "plz.v1.rpc.operator.query.credential.list",
-                OperationApiEndpointExecution::Query,
-                "CredentialListRequest".to_owned(),
-                "CredentialListResult".to_owned(),
-                "CredentialListError".to_owned(),
-                "CredentialListResponse",
-            ),
-            (
-                "credential.remove",
-                "plz.v1.rpc.operator.command.credential.remove",
-                OperationApiEndpointExecution::AcceptsOperation,
-                "CredentialRemoveRequest".to_owned(),
-                "AcceptedOperation".to_owned(),
-                "CredentialRemoveError".to_owned(),
-                "CredentialRemoveResponse",
-            ),
-            (
-                "ingress.configure",
-                "plz.v1.rpc.operator.command.ingress.configure",
-                OperationApiEndpointExecution::AcceptsOperation,
-                "IngressConfigureRequest".to_owned(),
-                "AcceptedOperation".to_owned(),
-                "IngressConfigureError".to_owned(),
-                "IngressConfigureResponse",
-            ),
-            (
-                "machine.list",
-                "plz.v1.rpc.operator.query.machine.list",
-                OperationApiEndpointExecution::Query,
-                "MachineListRequest".to_owned(),
-                "MachineListResult".to_owned(),
-                "MachineListError".to_owned(),
-                "MachineListResponse",
-            ),
-            (
-                "machine.inspect",
-                "plz.v1.rpc.operator.query.machine.inspect",
-                OperationApiEndpointExecution::Query,
-                "MachineInspectRequest".to_owned(),
-                "MachineSnapshot".to_owned(),
-                "MachineInspectError".to_owned(),
-                "MachineInspectResponse",
-            ),
-            (
-                "network.status",
-                "plz.v1.rpc.operator.query.network.status",
-                OperationApiEndpointExecution::Query,
-                "NetworkStatusRequest".to_owned(),
-                "NetworkStatusResult".to_owned(),
-                "NetworkStatusError".to_owned(),
-                "NetworkStatusResponse",
-            ),
-            (
-                "network.resolve",
-                "plz.v1.rpc.operator.query.network.resolve",
-                OperationApiEndpointExecution::Query,
-                "NetworkResolveRequest".to_owned(),
-                "NetworkResolveResult".to_owned(),
-                "NetworkResolveError".to_owned(),
-                "NetworkResolveResponse",
-            ),
-            (
-                "network.repair",
-                "plz.v1.rpc.operator.command.network.repair",
-                OperationApiEndpointExecution::AcceptsOperation,
-                "NetworkRepairRequest".to_owned(),
-                "AcceptedOperation".to_owned(),
-                "NetworkRepairError".to_owned(),
-                "NetworkRepairResponse",
-            ),
-            (
-                "machine.redeem",
-                "plz.v1.rpc.join.command.machine.redeem",
-                OperationApiEndpointExecution::MutatesOperation,
-                "MachineJoinRedeemRequest".to_owned(),
-                "MachineJoinRedeemed".to_owned(),
-                "MachineJoinRedeemError".to_owned(),
-                "MachineJoinRedeemResponse",
-            ),
-            (
-                "machine.report",
-                "plz.v1.rpc.join.command.machine.report",
-                OperationApiEndpointExecution::MutatesOperation,
-                "MachineJoinReportRequest".to_owned(),
-                "MachineJoinReported".to_owned(),
-                "MachineJoinReportError".to_owned(),
-                "MachineJoinReportResponse",
-            ),
-            (
-                "service.list",
-                "plz.v1.rpc.operator.query.service.list",
-                OperationApiEndpointExecution::Query,
-                "ServiceListRequest".to_owned(),
-                "ServiceListResult".to_owned(),
-                "ServiceListError".to_owned(),
-                "ServiceListResponse",
-            ),
-            (
-                "volume.list",
-                "plz.v1.rpc.operator.query.volume.list",
-                OperationApiEndpointExecution::Query,
-                "VolumeListRequest".to_owned(),
-                "VolumeListResult".to_owned(),
-                "VolumeListError".to_owned(),
-                "VolumeListResponse",
-            ),
-            (
-                "service.inspect",
-                "plz.v1.rpc.operator.query.service.inspect",
-                OperationApiEndpointExecution::Query,
-                "ServiceInspectRequest".to_owned(),
-                "ServiceSnapshot".to_owned(),
-                "ServiceInspectError".to_owned(),
-                "ServiceInspectResponse",
-            ),
-            (
-                "runtime.snapshot",
-                "plz.v1.rpc.operator.query.runtime.snapshot",
-                OperationApiEndpointExecution::Query,
-                "RuntimeSnapshotRequest".to_owned(),
-                "RuntimeSnapshotResult".to_owned(),
-                "RuntimeSnapshotError".to_owned(),
-                "RuntimeSnapshotResponse",
-            ),
-            (
-                "logs.tail",
-                "plz.v1.rpc.operator.query.logs.tail",
-                OperationApiEndpointExecution::Query,
-                "LogsTailRequest".to_owned(),
-                "LogsTailResult".to_owned(),
-                "LogsTailError".to_owned(),
-                "LogsTailResponse",
-            ),
-            (
-                "ops.list",
-                "plz.v1.rpc.operator.query.ops.list",
-                OperationApiEndpointExecution::Query,
-                "OpsListRequest".to_owned(),
-                "OpsListResult".to_owned(),
-                "OpsListError".to_owned(),
-                "OpsListResponse",
-            ),
-            (
-                "ops.status",
-                "plz.v1.rpc.operator.query.ops.status",
-                OperationApiEndpointExecution::Query,
-                "OpsStatusRequest".to_owned(),
-                "OperationStatusSnapshot".to_owned(),
-                "OpsStatusError".to_owned(),
-                "OpsStatusResponse",
-            ),
-            (
-                "ops.watch",
-                "plz.v1.rpc.operator.query.ops.watch",
-                OperationApiEndpointExecution::Query,
-                "OpsWatchRequest".to_owned(),
-                "OperationEventReplayPage".to_owned(),
-                "OpsWatchError".to_owned(),
-                "OpsWatchResponse",
-            ),
-        ]
-    );
 }
 
 fn assert_fixture<T>(fixture: &serde_json::Value, key: &'static str)
@@ -920,7 +633,7 @@ where
 {
 }
 
-fn operation_api_contract_endpoints() -> Vec<ployz_core::subjects::OperationApiEndpoint> {
+fn operation_api_contract_endpoints() -> Vec<OperationApiEndpoint> {
     let mut endpoints = Vec::new();
     macro_rules! push_endpoints {
         ($($contract:ty),+ $(,)?) => {
@@ -931,59 +644,10 @@ fn operation_api_contract_endpoints() -> Vec<ployz_core::subjects::OperationApiE
     endpoints
 }
 
-fn operation_api_contract_rows() -> Vec<(
-    &'static str,
-    &'static str,
-    OperationApiEndpointExecution,
-    String,
-    String,
-    String,
-    &'static str,
-)> {
-    let config = Config::new().with_large_int("number");
-    let mut rows = Vec::new();
-    macro_rules! push_rows {
-        ($($contract:ty),+ $(,)?) => {
-            $(rows.push(contract_row_for::<$contract>(&config));)+
-        };
-    }
-    ployz_sdk_types::operation_api_contracts!(push_rows);
-    rows
-}
-
-fn contract_row_for<C>(
-    config: &Config,
-) -> (
-    &'static str,
-    &'static str,
-    OperationApiEndpointExecution,
-    String,
-    String,
-    String,
-    &'static str,
-)
-where
-    C: OperationApiContract,
-    C::Request: TS,
-    C::Success: TS,
-    C::Error: TS,
-{
-    (
-        C::ENDPOINT.name(),
-        C::ENDPOINT.subject(),
-        C::ENDPOINT.execution(),
-        C::REQUEST_ALIAS.map_or_else(|| C::Request::name(config), str::to_owned),
-        C::Success::name(config),
-        C::Error::name(config),
-        C::RESPONSE_ALIAS,
-    )
-}
-
 fn machine_join_bundle() -> MachineJoinBundle {
     MachineJoinBundle {
         material: MachineJoinMaterial {
-            dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(
-            ),
+            dataplane_endpoint_supernet: ployz_core::network::MachineEndpointSupernet::default_v1(),
             cluster_name: ployz_core::install::MachineJoinClusterName::try_new("prod")
                 .expect("valid cluster name"),
             runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
@@ -1088,6 +752,29 @@ fn sdk_exports_constructor_error_types() {
         MachineJoinToken::try_new("join token"),
         Err(ployz_sdk_types::BootstrapCommandError::InvalidJoinToken)
     ));
+}
+
+#[test]
+fn sdk_exports_operational_health_wire_types() {
+    assert_wire_type::<GatewayProcessHealth>();
+    assert_wire_type::<GatewayProcessAttempt>();
+    assert_wire_type::<GatewayHttpFailure>();
+    assert_wire_type::<GatewayWatchFailure>();
+    assert_wire_type::<GatewayStatusPublishFailure>();
+    assert_wire_type::<ControlHealth>();
+    assert_wire_type::<ControlRuntimeProjectionHealth>();
+    assert_wire_type::<ControlRuntimeProjectionLoopHealth>();
+    assert_wire_type::<ControlRuntimeProjectionServiceHealth>();
+    assert_wire_type::<ControlCertificateRenewalHealth>();
+    assert_wire_type::<ControlCertificateRenewalAttempt>();
+    assert_wire_type::<ControlCertificateRenewalFailure>();
+    assert_wire_type::<ControlCertificateRenewalOutcome>();
+}
+
+fn assert_wire_type<T>()
+where
+    T: serde::Serialize + for<'de> serde::Deserialize<'de> + TS,
+{
 }
 
 fn valid_at(value: u64) -> CertValidAt {

@@ -1,7 +1,7 @@
 //! Gateway projection source adapters.
 
-use crate::fact_cache::FactCache;
-use crate::intent::service::{IntentReadError, NatsIntentReader};
+use crate::control::intent::service::{IntentReadError, NatsIntentReader};
+use crate::role_testimony::RoleTestimonyCache;
 use crate::roles::gateway::projection::{
     GatewayCertificateBundle, GatewayCertificateMaterialFailure,
     GatewayCertificateMaterialFailureKind, GatewayProjectionError, GatewayProjectionInput,
@@ -10,8 +10,9 @@ use crate::roles::gateway::projection::{
 use ployz_core::ingress::{
     ActiveCertificateMetadata, AutomaticHostnameConfiguration, CertificateOwner, RouteBindingOrigin,
 };
-use ployz_core::machine_runtime::MachineContainerObservationSnapshot;
-use ployz_core::state::{RouteBindingState, ServingTargetEntry};
+use ployz_core::intent::RouteBindingState;
+use ployz_core::intent::ServingTargetEntry;
+use ployz_core::machine::runtime::MachineContainerObservationSnapshot;
 
 mod certificate_store;
 
@@ -19,18 +20,13 @@ pub use certificate_store::{GatewayCertificateStore, GatewayCertificateStoreErro
 
 pub async fn load_gateway_projection_update_from_nats(
     intent_reader: &NatsIntentReader,
-    facts: &FactCache,
+    facts: &RoleTestimonyCache,
     certificate_store: &GatewayCertificateStore,
 ) -> GatewayProjectionUpdate {
     match load_gateway_projection_input_from_nats(intent_reader, facts, certificate_store).await {
-        Ok(input) => GatewayProjectionUpdate::SourceAvailable(Box::new(input)),
-        Err(GatewaySourceError::Invalid { message }) => {
-            GatewayProjectionUpdate::SourceInvalid(GatewayProjectionError::InvalidSource {
-                message,
-            })
-        }
+        Ok(input) => GatewayProjectionUpdate::Available(Box::new(input)),
         Err(GatewaySourceError::Unavailable { message }) => {
-            GatewayProjectionUpdate::SourceUnavailable(GatewayProjectionError::SourceUnavailable {
+            GatewayProjectionUpdate::Unavailable(GatewayProjectionError::SourceUnavailable {
                 message,
             })
         }
@@ -39,7 +35,7 @@ pub async fn load_gateway_projection_update_from_nats(
 
 pub async fn load_gateway_projection_input_from_nats(
     intent_reader: &NatsIntentReader,
-    facts: &FactCache,
+    facts: &RoleTestimonyCache,
     certificate_store: &GatewayCertificateStore,
 ) -> Result<GatewayProjectionInput, GatewaySourceError> {
     let intent = async {
@@ -127,8 +123,6 @@ fn current_unix_seconds() -> u64 {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum GatewaySourceError {
-    #[error("invalid gateway source: {message}")]
-    Invalid { message: String },
     #[error("gateway source unavailable: {message}")]
     Unavailable { message: String },
 }
@@ -197,10 +191,12 @@ fn gateway_route_from_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::cert::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
+    use ployz_core::certificate::{
+        ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
+    };
     use ployz_core::ids::{CertId, RouteBindingId};
     use ployz_core::ingress::{ActiveCertificateMetadata, CertificateOwner};
-    use ployz_core::ops::RouteTarget;
+    use ployz_core::operation::RouteTarget;
     use ployz_test_support::ids::{namespace_id, route_hostname, route_port, service_id};
 
     #[test]

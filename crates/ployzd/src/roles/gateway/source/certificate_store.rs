@@ -2,12 +2,14 @@
 
 use std::path::PathBuf;
 
+#[cfg(test)]
+use crate::certificate::material::custom_certificate_material_path;
 use crate::certificate::material::{
-    CertificateMaterialError, certificate_material_path_for_digest,
-    custom_certificate_material_path, load_custom_certificate, validate_custom_certificate,
-    validate_custom_certificate_for_activation, write_custom_certificate,
+    CertificateMaterialError, certificate_material_path_for_digest, load_custom_certificate,
+    validate_custom_certificate, validate_custom_certificate_for_activation,
+    write_custom_certificate,
 };
-use ployz_core::cert::{
+use ployz_core::certificate::{
     ActiveCertState, CertificateArtifactPushRequest, CertificateArtifactRemoveRequest,
     CustomCertBundle,
 };
@@ -99,6 +101,7 @@ impl GatewayCertificateStore {
         }
     }
 
+    #[cfg(test)]
     pub fn artifact_path(
         &self,
         active: &ActiveCertState,

@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use ployz::commands::PloyzctlCliError;
-use ployz::compose::{ComposeInput, UnsupportedFieldMode, parse_deploy_file};
+use ployz::deploy::compose::{ComposeInput, UnsupportedFieldMode, parse_deploy_file};
 use ployz_core::deploy::DeployRequest;
 
 const FIXTURE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/compose");

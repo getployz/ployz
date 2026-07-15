@@ -3,16 +3,16 @@ use instant_acme::{
     Account, AccountCredentials, AuthorizationStatus, ChallengeType, Identifier, NewAccount,
     NewOrder, OrderStatus, RetryPolicy,
 };
-use ployz_core::cert::{
+use ployz_core::certificate::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
 };
 use ployz_core::ids::{CertId, MachineId, OperationId};
-use ployz_core::ops::RouteHostname;
+use ployz_core::operation::RouteHostname;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::intent::certificate_intent::CertificateIntentStore;
-use crate::operations::log::OperationRepository;
+use crate::control::intent::certificate_intent::CertificateIntentStore;
+use crate::control::operation_evidence::OperationRepository;
 
 use super::gateway::GatewayCertificateClient;
 
@@ -125,8 +125,6 @@ impl AcmeIssueContext {
 pub enum AcmeIssuerError {
     #[error("certificate operation evidence write failed: {message}")]
     OperationEvidenceWrite { message: String },
-    #[error("ACME challenge publication failed: {message}")]
-    ChallengePublish { message: String },
     #[error("HTTP-01 challenge is not applied on gateways {missing_machine_ids:?}")]
     ChallengeReadiness { missing_machine_ids: Vec<MachineId> },
     #[error("ACME validation failed: {message}")]

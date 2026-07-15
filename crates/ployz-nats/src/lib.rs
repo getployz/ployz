@@ -8,6 +8,11 @@
 
 pub mod connect;
 pub mod operation_api_client;
+pub mod operation_event_subject;
+pub mod permissions;
+pub mod server_config;
 pub mod service_protocol;
 pub mod service_runtime;
 pub mod services;
+pub mod subjects;
+pub mod typescript;

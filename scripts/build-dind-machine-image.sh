@@ -229,7 +229,7 @@ fi
 cat <<EOF
   ployzd:         ${TARGET_DIR}/release/ployzd
   ployz:          ${TARGET_DIR}/release/ployz
-  lease worker:   ${TARGET_DIR}/release/ployz-lease-worker
+  lease worker:   ${TARGET_DIR}/release/ployz-test-lease-worker
   ployz-ebpf-ctl: ${TARGET_DIR}/release/ployz-ebpf-ctl
   ployz-ebpf-tc:  ${TARGET_DIR}/release/ployz-ebpf-tc
 EOF

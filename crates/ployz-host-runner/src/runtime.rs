@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use crate::executor::HostRunnerPlanFailure;
-use ployz_core::ops::FailureMessage;
+use crate::plan::HostRunnerPlanFailure;
+use ployz_core::operation::FailureMessage;
 
 pub(crate) const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
 pub(crate) const PLOYZ_NATS_CA_FILE_ENV: &str = "PLOYZ_NATS_CA_FILE";

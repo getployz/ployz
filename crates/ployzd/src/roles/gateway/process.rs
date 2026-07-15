@@ -4,39 +4,46 @@ use crate::adapters::credentials::{
     AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials,
 };
 use crate::config::GatewayProcessConfig;
-use crate::fact_cache::{FactCache, FactCacheError, RunningFactCache, start_fact_cache};
-use crate::intent::service::NatsIntentReader;
+use crate::control::intent::service::NatsIntentReader;
 use crate::process_support::{
     BackoffSchedule, LazyHandle, RecordedAttempt, RefreshDelay, bounded_role_shutdown,
     drain_refresh_wakes, record_attempt, shutdown_signal, sleep_or_shutdown,
     wait_for_refresh_delay,
 };
+use crate::recovery::IntentMirror;
+use crate::recovery::{IntentFailover, mirrored_server_pool, spawn_intent_failover_mirror};
+use crate::role_testimony::{
+    RoleTestimonyCache, RoleTestimonyCacheError, RunningRoleTestimonyCache,
+    start_role_testimony_cache,
+};
 use crate::roles::gateway::pingora::{
     GatewayPingoraFailureRecorder, GatewayTlsAccept, PingoraRouteRegistry,
     PingoraRouteRegistryError, PloyzGatewayProxy,
 };
-use crate::roles::gateway::projection::{GatewayProjection, GatewayProjectionUpdate};
+#[cfg(test)]
+use crate::roles::gateway::projection::GatewayProjection;
+use crate::roles::gateway::projection::GatewayProjectionUpdate;
 use crate::roles::gateway::route_table::{
     GatewayProjector, GatewayProjectorTick, GatewayServingState,
 };
 use crate::roles::gateway::source::GatewayCertificateStore;
 use crate::roles::gateway::source::load_gateway_projection_update_from_nats;
-use crate::roles::machine::intent_mirror::MachineIntentMirror;
-use crate::roles::nats_failover::{
-    IntentFailover, mirrored_server_pool, spawn_intent_failover_mirror,
-};
 use futures_util::StreamExt;
 use pingora::listeners::tls::TlsSettings;
 use pingora::server::configuration::ServerConf;
 use pingora::server::{RunArgs, Server, ShutdownSignal, ShutdownSignalWatch};
 use ployz_core::ids::MachineId;
-use ployz_core::ops::RoutePort;
-use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation};
-use ployz_core::subjects::{INTENT_CHANGED, gateway_status, machine_facts_scope};
+use ployz_core::machine::{
+    GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessHealth, GatewayServingStatus,
+    GatewayStatusObservation, GatewayStatusPublishFailure, GatewayWatchFailure,
+};
+use ployz_core::operation::RoutePort;
+
 use ployz_nats::connect::{NatsConnectError, connect_authenticated_pool};
 use ployz_nats::service_runtime::{
     NatsClient, NatsServiceRuntimeError, NatsServiceShutdownError, RunningNatsService,
 };
+use ployz_nats::subjects::{INTENT_CHANGED, gateway_status, machine_facts_scope};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -50,22 +57,20 @@ const GATEWAY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const GATEWAY_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 const GATEWAY_WATCH_RESTART_DELAY: Duration = Duration::from_secs(1);
 const GATEWAY_HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(100);
-const GATEWAY_LISTENER_READY_TIMEOUT: Duration = Duration::from_secs(2);
+const GATEWAY_LISTENER_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const GATEWAY_LISTENER_READY_POLL: Duration = Duration::from_millis(10);
 const GATEWAY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(9);
 
-mod service;
-
-pub use service::start_gateway_certificate_service;
+pub(crate) mod service;
 use service::start_gateway_role_service;
 
 pub struct RunningGatewayProcess {
-    runtime: Arc<Mutex<GatewayProjector>>,
-    health: Arc<Mutex<GatewayProcessHealth>>,
-    listen_addr: SocketAddr,
+    _runtime: Arc<Mutex<GatewayProjector>>,
+    _health: Arc<Mutex<GatewayProcessHealth>>,
+    _listen_addr: SocketAddr,
     shutdown: broadcast::Sender<()>,
     pingora_shutdown: watch::Sender<bool>,
-    facts_cache: RunningFactCache,
+    testimony_cache: RunningRoleTestimonyCache,
     gateway_service: RunningNatsService,
     _certificate_state_guard: Option<tempfile::TempDir>,
     tasks: Vec<JoinHandle<()>>,
@@ -76,7 +81,7 @@ impl RunningGatewayProcess {
         let Self {
             shutdown,
             pingora_shutdown,
-            facts_cache,
+            testimony_cache,
             gateway_service,
             _certificate_state_guard,
             mut tasks,
@@ -89,7 +94,7 @@ impl RunningGatewayProcess {
             .map(JoinHandle::abort_handle)
             .collect::<Vec<_>>();
         let cleanup = async {
-            facts_cache.shutdown().await;
+            testimony_cache.shutdown().await;
             let service_shutdown = gateway_service.shutdown().await;
             for task in &mut tasks {
                 let _ = task.await;
@@ -100,16 +105,18 @@ impl RunningGatewayProcess {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn health(&self) -> GatewayProcessHealth {
-        self.health
+        self._health
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn served_projection(&self) -> Option<GatewayProjection> {
-        self.runtime
+        self._runtime
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .route_table()
@@ -118,13 +125,15 @@ impl RunningGatewayProcess {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn listen_addr(&self) -> SocketAddr {
-        self.listen_addr
+        self._listen_addr
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn tls_listen_addr(&self) -> SocketAddr {
-        gateway_tls_listen_addr(self.listen_addr)
+        gateway_tls_listen_addr(self._listen_addr)
     }
 }
 
@@ -140,7 +149,7 @@ pub async fn start_gateway_process(
     )
     .await
     .map_err(GatewayProcessError::AwaitCredentials)?;
-    let mirror = MachineIntentMirror::beside_seed_file(&config.nats.seed_file);
+    let mirror = IntentMirror::beside_seed_file(&config.nats.seed_file);
     let pool = mirrored_server_pool(&mirror, &connect.url);
     let client = connect_authenticated_pool(&connect, &pool, GATEWAY_NATS_CONNECT_TIMEOUT)
         .await
@@ -159,6 +168,7 @@ pub async fn start_gateway_process(
     .await
 }
 
+#[cfg(test)]
 pub async fn start_gateway_process_with_client(
     client: NatsClient,
     refresh_interval: Duration,
@@ -216,7 +226,8 @@ async fn start_gateway_process_inner(
     let runtime = Arc::new(Mutex::new(GatewayProjector::new()));
     let registry = PingoraRouteRegistry::new();
     let certificate_store = GatewayCertificateStore::new(certificate_state_dir);
-    let facts_cache = start_fact_cache(client.clone())
+    let health = Arc::new(Mutex::new(GatewayProcessHealth::default()));
+    let testimony_cache = start_role_testimony_cache(client.clone())
         .await
         .map_err(GatewayProcessError::StartFactsCache)?;
     let gateway_service = match start_gateway_role_service(
@@ -225,27 +236,18 @@ async fn start_gateway_process_inner(
         certificate_store.clone(),
         registry.clone(),
         Arc::clone(&runtime),
+        Arc::clone(&health),
         listen_addr,
     )
     .await
     {
         Ok(service) => service,
         Err(error) => {
-            facts_cache.shutdown().await;
+            testimony_cache.shutdown().await;
             return Err(GatewayProcessError::StartCertificateService(error));
         }
     };
-    let facts = facts_cache.cache();
-    let health = Arc::new(Mutex::new(GatewayProcessHealth {
-        last_attempt: None,
-        consecutive_failures: 0,
-        last_http_failure: None,
-        consecutive_http_failures: 0,
-        last_watch_failure: None,
-        consecutive_watch_failures: 0,
-        last_status_publish_failure: None,
-        consecutive_status_publish_failures: 0,
-    }));
+    let facts = testimony_cache.cache();
     let (shutdown, _) = broadcast::channel(2);
     let mut tasks = Vec::new();
     if let Some(failover) = failover {
@@ -271,7 +273,7 @@ async fn start_gateway_process_inner(
         let _ = pingora_shutdown.send(true);
         let _ = http_task.await;
         let _ = gateway_service.shutdown().await;
-        facts_cache.shutdown().await;
+        testimony_cache.shutdown().await;
         return Err(error);
     }
     let tls_addr = gateway_tls_listen_addr(listen_addr);
@@ -281,7 +283,7 @@ async fn start_gateway_process_inner(
         let _ = pingora_shutdown.send(true);
         let _ = http_task.await;
         let _ = gateway_service.shutdown().await;
-        facts_cache.shutdown().await;
+        testimony_cache.shutdown().await;
         return Err(error);
     }
 
@@ -304,8 +306,9 @@ async fn start_gateway_process_inner(
                 attempt = source.refresh_with_timeout(&task_runtime, &task_registry) => attempt,
                 _ = refresh_shutdown.recv() => break,
             };
-            let observed = gateway_observation_from_attempt(&machine_id, listen_addr, &attempt);
-            backoff = record_gateway_attempt(&task_health, attempt, refresh_interval, backoff);
+            backoff = record_gateway_attempt(&task_health, &attempt, refresh_interval, backoff);
+            let observed =
+                gateway_observation_from_attempt(&machine_id, listen_addr, &attempt, &task_health);
             let status_publish = tokio::select! {
                 result = source.replace_gateway_status(&observed) => result,
                 _ = refresh_shutdown.recv() => break,
@@ -343,58 +346,21 @@ async fn start_gateway_process_inner(
     tasks.push(health_task);
 
     Ok(RunningGatewayProcess {
-        runtime,
-        health,
-        listen_addr,
+        _runtime: runtime,
+        _health: health,
+        _listen_addr: listen_addr,
         shutdown,
         pingora_shutdown,
-        facts_cache,
+        testimony_cache,
         gateway_service,
         _certificate_state_guard: certificate_state_guard,
         tasks,
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GatewayProcessHealth {
-    pub last_attempt: Option<GatewayProcessAttempt>,
-    pub consecutive_failures: u64,
-    pub last_http_failure: Option<GatewayHttpFailure>,
-    pub consecutive_http_failures: u64,
-    pub last_watch_failure: Option<GatewayWatchFailure>,
-    pub consecutive_watch_failures: u64,
-    pub last_status_publish_failure: Option<GatewayStatusPublishFailure>,
-    pub consecutive_status_publish_failures: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GatewayProcessAttempt {
-    Current { route_count: usize },
-    ServingLastKnownGood { route_count: usize, message: String },
-    Failed { message: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GatewayHttpFailure {
-    Accept { message: String },
-    Proxy { message: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GatewayWatchFailure {
-    Open { message: String },
-    Stream { message: String },
-    Ended { source: &'static str },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GatewayStatusPublishFailure {
-    Write { message: String },
-}
-
 struct GatewayProcessSource {
     client: NatsClient,
-    facts: FactCache,
+    facts: RoleTestimonyCache,
     stores: LazyHandle<GatewayProcessStores>,
     certificate_store: GatewayCertificateStore,
 }
@@ -402,7 +368,7 @@ struct GatewayProcessSource {
 impl GatewayProcessSource {
     fn new(
         client: NatsClient,
-        facts: FactCache,
+        facts: RoleTestimonyCache,
         certificate_store: GatewayCertificateStore,
     ) -> Self {
         Self {
@@ -608,7 +574,9 @@ fn watch_plain_change(
 ) -> GatewayWatchEvent {
     match event {
         Some(_) => GatewayWatchEvent::Changed,
-        None => GatewayWatchEvent::Failed(GatewayWatchFailure::Ended { source }),
+        None => GatewayWatchEvent::Failed(GatewayWatchFailure::Ended {
+            source: source.to_owned(),
+        }),
     }
 }
 
@@ -665,7 +633,7 @@ fn record_gateway_status_publish_result(
 
 fn record_gateway_attempt(
     health: &Mutex<GatewayProcessHealth>,
-    attempt: Result<GatewayProjectorTick, GatewayProcessError>,
+    attempt: &Result<GatewayProjectorTick, GatewayProcessError>,
     interval: Duration,
     current_backoff: Duration,
 ) -> Duration {
@@ -705,19 +673,20 @@ fn record_gateway_attempt(
     )
 }
 
-fn gateway_attempt_from_tick(tick: GatewayProjectorTick) -> GatewayProcessAttempt {
-    match tick.serving {
-        GatewayServingState::Current { route_count } => {
-            GatewayProcessAttempt::Current { route_count }
-        }
+fn gateway_attempt_from_tick(tick: &GatewayProjectorTick) -> GatewayProcessAttempt {
+    match &tick.serving {
+        GatewayServingState::Current { route_count } => GatewayProcessAttempt::Current {
+            route_count: *route_count,
+        },
         GatewayServingState::LastKnownGood { route_count, error } => {
             GatewayProcessAttempt::ServingLastKnownGood {
-                route_count,
+                route_count: *route_count,
                 message: format!("{error:?}"),
             }
         }
         GatewayServingState::Unavailable { error } => GatewayProcessAttempt::Failed {
             message: error
+                .as_ref()
                 .map(|error| format!("{error:?}"))
                 .unwrap_or_else(|| "gateway source unavailable".to_owned()),
         },
@@ -728,34 +697,29 @@ fn gateway_observation_from_attempt(
     machine_id: &MachineId,
     listen_addr: SocketAddr,
     attempt: &Result<GatewayProjectorTick, GatewayProcessError>,
+    health: &Mutex<GatewayProcessHealth>,
 ) -> GatewayStatusObservation {
-    match attempt {
+    let (serving, route_count) = match attempt {
         Ok(tick) => match &tick.serving {
-            GatewayServingState::Current { route_count } => GatewayStatusObservation {
-                machine_id: machine_id.clone(),
-                listen_addr,
-                serving: GatewayServingStatus::Current,
-                route_count: *route_count,
-            },
-            GatewayServingState::LastKnownGood { route_count, .. } => GatewayStatusObservation {
-                machine_id: machine_id.clone(),
-                listen_addr,
-                serving: GatewayServingStatus::LastKnownGood,
-                route_count: *route_count,
-            },
-            GatewayServingState::Unavailable { .. } => GatewayStatusObservation {
-                machine_id: machine_id.clone(),
-                listen_addr,
-                serving: GatewayServingStatus::Unavailable,
-                route_count: 0,
-            },
+            GatewayServingState::Current { route_count } => {
+                (GatewayServingStatus::Current, *route_count)
+            }
+            GatewayServingState::LastKnownGood { route_count, .. } => {
+                (GatewayServingStatus::LastKnownGood, *route_count)
+            }
+            GatewayServingState::Unavailable { .. } => (GatewayServingStatus::Unavailable, 0),
         },
-        Err(_) => GatewayStatusObservation {
-            machine_id: machine_id.clone(),
-            listen_addr,
-            serving: GatewayServingStatus::Unavailable,
-            route_count: 0,
-        },
+        Err(_) => (GatewayServingStatus::Unavailable, 0),
+    };
+    GatewayStatusObservation {
+        machine_id: machine_id.clone(),
+        listen_addr,
+        serving,
+        route_count,
+        process_health: health
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone(),
     }
 }
 
@@ -917,11 +881,12 @@ pub enum GatewayProcessError {
     ReadHttpListenerAddr(std::io::Error),
     #[error("gateway HTTP listener {addr} was not ready after {}s", timeout.as_secs())]
     HttpListenerNotReady { addr: SocketAddr, timeout: Duration },
-    #[error("failed to start runtime facts cache: {0}")]
-    StartFactsCache(FactCacheError),
+    #[error("failed to start role testimony cache: {0}")]
+    StartFactsCache(RoleTestimonyCacheError),
     #[error("failed to start gateway certificate service: {0}")]
     StartCertificateService(NatsServiceRuntimeError),
     #[error("failed to create isolated gateway certificate state: {0}")]
+    #[cfg(test)]
     CreateIsolatedCertificateState(std::io::Error),
     #[error("failed to encode gateway status: {0}")]
     EncodeGatewayStatus(serde_json::Error),

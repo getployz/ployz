@@ -5,11 +5,11 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use serde::{Deserialize, Serialize};
 
-use crate::cert::ActiveCertState;
+use crate::certificate::ActiveCertState;
 use crate::ids::RouteBindingId;
-use crate::ops::{RouteHostname, RouteHostnameError};
-use crate::reachability::is_public;
-use crate::state::ControlPlaneEpoch;
+use crate::intent::recovery::ControlPlaneEpoch;
+use crate::network::is_public;
+use crate::operation::{RouteHostname, RouteHostnameError};
 
 /// Durable operator choice for automatic hostname creation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

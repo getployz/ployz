@@ -19,7 +19,7 @@
     "./generated": "./src/generated.ts"
   },
   "scripts": {
-    "generate:types": "cargo run -p ployz-sdk-types --bin export-typescript > src/generated.ts",
+    "generate:types": "cargo run -p ployz-nats --bin export-typescript > src/generated.ts",
     "generate:fixture": "cargo run -p ployz-sdk-types --bin export-operation-contract > test/fixtures/operation-contract.json",
     "check:generated": "pnpm generate:types && pnpm generate:fixture && git diff --exit-code -- src/generated.ts test/fixtures/operation-contract.json",
     "typecheck": "tsc --noEmit",

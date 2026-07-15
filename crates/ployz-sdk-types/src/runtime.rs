@@ -16,6 +16,90 @@ pub struct RuntimeSnapshotRequest {}
 #[serde(deny_unknown_fields)]
 pub struct RuntimeSnapshotResult {
     pub snapshot: RuntimeSnapshot,
+    #[serde(default)]
+    pub control_health: Option<ControlHealth>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ControlHealth {
+    pub runtime_projection: ControlRuntimeProjectionHealth,
+    pub certificate_renewal: ControlCertificateRenewalHealth,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ControlRuntimeProjectionHealth {
+    pub projection: ControlRuntimeProjectionLoopHealth,
+    pub publisher: ControlRuntimeProjectionLoopHealth,
+    pub seed_service: ControlRuntimeProjectionServiceHealth,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ControlRuntimeProjectionLoopHealth {
+    pub running: bool,
+    pub consecutive_failures: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ControlRuntimeProjectionServiceHealth {
+    pub endpoint_tasks_started: usize,
+    pub endpoint_tasks_finished: usize,
+    pub request_timeouts: usize,
+    pub handler_failures: usize,
+    pub domain_failures: usize,
+    pub response_failures: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ControlCertificateRenewalHealth {
+    pub last_attempt: Option<ControlCertificateRenewalAttempt>,
+    pub consecutive_failures: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ControlCertificateRenewalAttempt {
+    Completed {
+        outcome: ControlCertificateRenewalOutcome,
+    },
+    Failed {
+        failure: ControlCertificateRenewalFailure,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "failure_kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ControlCertificateRenewalFailure {
+    IntentStore {
+        message: String,
+    },
+    RenewalEvidence {
+        failure: CertificateProvisionFailure,
+    },
+    OperationStatus {
+        message: String,
+    },
+    OperationEvidence {
+        message: String,
+    },
+    PloyzDnsTarget {
+        message: String,
+    },
+    Worker {
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ControlCertificateRenewalOutcome {
+    NoAction,
+    AwaitingPloyzWildcard,
+    Attempted { attempted: usize, failed: usize },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -4,10 +4,10 @@
 //! network probe (`public-ip-address`). They are split so a cold-cache `FactsGet` can
 //! answer from interfaces alone, never blocking on the echo.
 
-use ployz_core::dataplane::DEFAULT_WIREGUARD_LISTEN_PORT;
 use ployz_core::ids::MachineId;
-use ployz_core::reachability::{is_public, is_routable, mesh_sort_key};
-use ployz_core::state::MachineEndpointObservation;
+use ployz_core::machine::MachineEndpointObservation;
+use ployz_core::network::DEFAULT_WIREGUARD_LISTEN_PORT;
+use ployz_core::network::reachability::{is_public, is_routable, mesh_sort_key};
 use std::collections::BTreeSet;
 use std::net::{IpAddr, SocketAddr};
 

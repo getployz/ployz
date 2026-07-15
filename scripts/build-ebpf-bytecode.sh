@@ -22,6 +22,6 @@ cargo +"${TOOLCHAIN}" build \
   --release \
   --target bpfel-unknown-none \
   --target-dir "${TARGET_DIR}" \
-  --manifest-path "${ROOT_DIR}/ebpf/Cargo.toml"
+  --manifest-path "${ROOT_DIR}/ebpf/program/Cargo.toml"
 
 echo "${TARGET_DIR}/bpfel-unknown-none/release/ployz-ebpf-tc"

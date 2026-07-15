@@ -2,7 +2,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use ployz::commands::{PloyzctlCommand, TelemetryCommand, parse_invocation};
-use ployz::runtime::{CommandExit, PloyzctlRuntimeConfig, execute_command};
+use ployz::dispatcher::{CommandExit, PloyzctlRuntimeConfig, execute_command};
 use ployz_telemetry::{CommandOutcome, ConfigFile, Surface, Telemetry};
 
 /// `ployz host ...` dispatches before the async runtime exists: Host Runner

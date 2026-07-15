@@ -21,8 +21,43 @@ use crate::{
     ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
     VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
 };
-use ployz_core::ops::OperationEventReplayPage;
-use ployz_core::subjects::OperationApiEndpoint;
+use ployz_core::operation::OperationEventReplayPage;
+
+/// Transport-neutral identifier for one public operation API contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationApiEndpoint {
+    DeployReserve,
+    DeploySubmit,
+    InitFirstMachineActivate,
+    MachineAdd,
+    MachineUpdate,
+    MachineDrain,
+    MachineResume,
+    MachineList,
+    MachineInspect,
+    NetworkStatus,
+    NetworkResolve,
+    NetworkRepair,
+    MachineJoinRedeem,
+    MachineJoinReport,
+    ServiceList,
+    ServiceInspect,
+    ServiceRestart,
+    NamespaceRemove,
+    VolumeList,
+    VolumeRemove,
+    RuntimeSnapshot,
+    LogsTail,
+    OpsList,
+    OpsStatus,
+    OpsWatch,
+    CoreReplace,
+    CoreReplaceReport,
+    CredentialAdd,
+    CredentialList,
+    CredentialRemove,
+    IngressConfigure,
+}
 
 pub trait OperationApiContract {
     type Request;
@@ -444,26 +479,4 @@ impl OperationApiContract for OpsWatchApi {
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::OpsWatch;
     const REQUEST_ALIAS: Option<&'static str> = Some("OpsWatchRequest");
     const RESPONSE_ALIAS: &'static str = "OpsWatchResponse";
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ployz_core::subjects::OperationApiEndpointExecution;
-
-    #[test]
-    fn credential_contracts_bind_to_their_execution_classes() {
-        assert_eq!(
-            (
-                CredentialAddApi::ENDPOINT.execution(),
-                CredentialListApi::ENDPOINT.execution(),
-                CredentialRemoveApi::ENDPOINT.execution(),
-            ),
-            (
-                OperationApiEndpointExecution::AcceptsOperation,
-                OperationApiEndpointExecution::Query,
-                OperationApiEndpointExecution::AcceptsOperation,
-            )
-        );
-    }
 }

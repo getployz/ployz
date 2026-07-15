@@ -3355,7 +3355,6 @@ name = "ployz-e2e"
 version = "0.1.0"
 dependencies = [
  "async-nats",
- "async-trait",
  "base64",
  "bollard",
  "futures-util",
@@ -3366,8 +3365,6 @@ dependencies = [
  "ployz-nats",
  "ployz-sdk-types",
  "ployz-test-support",
- "ployzd",
- "rcgen",
  "serde_json",
  "tar",
  "tempfile",
@@ -3425,19 +3422,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ployz-lease-worker"
-version = "0.1.0"
-dependencies = [
- "nuid",
- "ployz-core",
- "rcgen",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
 name = "ployz-nats"
 version = "0.1.0"
 dependencies = [
@@ -3479,14 +3463,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "ployz-test-lease-worker"
+version = "0.1.0"
+dependencies = [
+ "nuid",
+ "ployz-core",
+ "rcgen",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "ployz-test-support"
 version = "0.1.0"
 dependencies = [
  "async-nats",
  "ployz-core",
- "ployz-host-runner",
  "ployz-nats",
  "ployz-sdk-types",
+ "rcgen",
  "serde_json",
  "tempfile",
  "tokio",
@@ -3514,13 +3511,15 @@ dependencies = [
  "local-ip-address",
  "nkeys",
  "nuid",
+ "openssl",
  "pingora",
+ "ployz",
  "ployz-core",
  "ployz-ebpf-common",
- "ployz-lease-worker",
  "ployz-nats",
  "ployz-sdk-types",
  "ployz-telemetry",
+ "ployz-test-lease-worker",
  "ployz-test-support",
  "public-ip-address",
  "rcgen",

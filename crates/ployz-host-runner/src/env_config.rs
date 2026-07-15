@@ -1,10 +1,10 @@
 use std::path::Path;
 
+use crate::plan::FirstMachineInstallTarget;
 use crate::release_manifest::{
     ReleaseManifest, default_release_manifest_url, persisted_release_manifest_url,
     read_release_manifest_text,
 };
-use crate::steps::FirstMachineInstallTarget;
 use ployz_core::ids::MachineId;
 use ployz_core::install::{
     AbsoluteInstallPath, DEFAULT_MACHINE_BOOTSTRAP_URL, FirstMachineInstallSpec, HostPortAssurance,
@@ -36,7 +36,7 @@ pub(crate) fn local_core_target_from_env() -> Result<FirstMachineInstallTarget, 
 
     let install = FirstMachineInstallSpec {
         machine_id,
-        dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+        dataplane_endpoint_supernet: ployz_core::network::MachineEndpointSupernet::default_v1(),
         gateway: env_gateway_role(PLOYZ_GATEWAY_ENV)?,
         host_port_assurance: env_host_port_assurance()?,
         machine_public_ip: local_core_machine_public_ip_from_env()?,

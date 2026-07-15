@@ -1,17 +1,17 @@
 use std::time::Duration;
 
 use futures_util::future::join_all;
-use ployz_core::cert::{
+use ployz_core::certificate::{
     AcmeHttp01Challenge, CertificateArtifactPushRequest, CertificateArtifactPushResponse,
     CertificateChallengeApplyRequest, CertificateChallengeApplyResponse,
     CertificateChallengeRemoveRequest, CertificateChallengeRemoveResponse,
     CertificateProvisionFailure, CustomCertBundle,
 };
 use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::machine_rpc::MachineRpcResponse;
-use ployz_core::ops::FailureMessage;
-use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
+use ployz_core::machine::rpc::MachineRpcResponse;
+use ployz_core::operation::FailureMessage;
 use ployz_nats::service_runtime::request_json;
+use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
 
 const GATEWAY_RPC_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -204,11 +204,11 @@ fn failure_message(message: impl Into<String>) -> FailureMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::cert::{
+    use ployz_core::certificate::{
         ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, CertificateArtifactPushOk,
         CustomCertBundle, GatewayCertificateRpcError, custom_bundle_digest,
     };
-    use ployz_core::ops::RouteHostname;
+    use ployz_core::operation::RouteHostname;
     use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};

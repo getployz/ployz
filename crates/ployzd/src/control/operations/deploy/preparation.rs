@@ -1,0 +1,285 @@
+//! Convert current cluster facts into a deploy execution command.
+
+use ployz_core::deploy::{
+    DeployCleanupContainer, DeployPreparationInput, DeployRequest, RegistryCredential,
+    auto_hostname_route_binding_commits, namespace_route_binding_removals,
+    namespace_serving_target_removals, prepare_deploy,
+};
+use ployz_core::ids::{MachineId, OperationId, RouteBindingId, ServiceId};
+use ployz_core::image::OciPlatform;
+use ployz_core::intent::RouteBindingState;
+use ployz_core::intent::ServingTargetEntry;
+use ployz_core::intent::VolumePinState;
+use ployz_core::machine::runtime::MachineContainerObservationSnapshot;
+use ployz_core::network::DataplaneMember;
+use ployz_core::operation::{RouteHostname, RouteTarget};
+
+use std::collections::BTreeMap;
+use std::time::Duration;
+
+use crate::certificate::GatewayCertificateTarget;
+
+use super::{DeployExecutionCommand, DeployServiceExecutionCommand};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutomaticHostnameMode {
+    Disabled,
+    Ployz { suffix: RouteHostname },
+    Custom { suffix: RouteHostname },
+}
+
+impl AutomaticHostnameMode {
+    #[must_use]
+    pub fn suffix(&self) -> Option<&RouteHostname> {
+        match self {
+            Self::Disabled => None,
+            Self::Ployz { suffix } | Self::Custom { suffix } => Some(suffix),
+        }
+    }
+
+    #[must_use]
+    pub const fn is_ployz(&self) -> bool {
+        matches!(self, Self::Ployz { .. })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployExecutionFacts {
+    pub namespace_route_bindings: Vec<RouteBindingState>,
+    pub namespace_serving_entries: Vec<ServingTargetEntry>,
+    pub namespace_volume_pins: Vec<VolumePinState>,
+    pub eligible_machines: Vec<MachineId>,
+    pub unusable_machines: Vec<ployz_core::operation::UnusableMachine>,
+    pub dataplane_members: Vec<DataplaneMember>,
+    pub observed_machines: Vec<MachineContainerObservationSnapshot>,
+    pub machine_platforms: BTreeMap<MachineId, OciPlatform>,
+    pub namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
+    pub automatic_hostname_mode: AutomaticHostnameMode,
+    pub gateway_certificate_targets: Vec<GatewayCertificateTarget>,
+    pub ployz_gateway_certificate_targets: Vec<GatewayCertificateTarget>,
+    pub step_timeout: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployExecutionInput {
+    pub(super) operation_id: OperationId,
+    pub(super) request: DeployRequest,
+    pub(super) facts: DeployExecutionFacts,
+    pub(super) registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
+}
+
+impl DeployExecutionInput {
+    #[must_use]
+    pub fn new(
+        operation_id: OperationId,
+        request: DeployRequest,
+        facts: DeployExecutionFacts,
+        registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
+    ) -> Self {
+        Self {
+            operation_id,
+            request,
+            facts,
+            registry_credentials,
+        }
+    }
+
+    #[must_use]
+    #[cfg(test)]
+    pub fn with_step_timeout(mut self, step_timeout: Duration) -> Self {
+        self.facts.step_timeout = step_timeout;
+        self
+    }
+}
+
+#[must_use]
+#[cfg(test)]
+pub fn prepare_deploy_execution_command(
+    operation_id: OperationId,
+    request: DeployRequest,
+    facts: DeployExecutionFacts,
+) -> DeployExecutionCommand {
+    prepare_deploy_execution_command_with_credentials(
+        operation_id,
+        request,
+        facts,
+        &BTreeMap::new(),
+    )
+}
+
+#[must_use]
+pub(super) fn prepare_deploy_execution_command_with_credentials(
+    operation_id: OperationId,
+    request: DeployRequest,
+    facts: DeployExecutionFacts,
+    registry_credentials: &BTreeMap<ServiceId, RegistryCredential>,
+) -> DeployExecutionCommand {
+    let service_requests = request.service_requests();
+    let mut mint_requests = service_requests.iter().collect::<Vec<_>>();
+    mint_requests.sort_by(|left, right| left.service_id.cmp(&right.service_id));
+    let mut declared_auto_bindings = Vec::new();
+    let mut occupied_bindings = facts.namespace_route_bindings.clone();
+    for service_request in mint_requests {
+        let commits = auto_hostname_route_binding_commits(
+            service_request,
+            facts.automatic_hostname_mode.suffix(),
+            &occupied_bindings,
+            mint_route_binding_id,
+        )
+        .expect("route bindings were validated while loading deploy facts");
+        occupied_bindings.extend(commits.iter().cloned());
+        declared_auto_bindings.extend(commits);
+    }
+    let namespace_declared_targets = request
+        .services
+        .iter()
+        .flat_map(|service| service.routes.iter())
+        .filter_map(|route| route.target.concrete_target())
+        .chain(
+            declared_auto_bindings
+                .iter()
+                .map(|binding| binding.target.clone()),
+        )
+        .collect::<Vec<_>>();
+    let declared_services = request
+        .services
+        .iter()
+        .map(|service| service.service_id.clone())
+        .collect::<Vec<_>>();
+    let route_binding_removal_targets = namespace_route_binding_removals(
+        &request.namespace_id,
+        &namespace_declared_targets,
+        &facts.namespace_route_bindings,
+    );
+    let route_binding_removals = facts
+        .namespace_route_bindings
+        .iter()
+        .filter(|binding| route_binding_removal_targets.contains(&binding.target))
+        .cloned()
+        .collect();
+    let serving_target_removals = namespace_serving_target_removals(
+        &request.namespace_id,
+        &declared_services,
+        &facts.namespace_serving_entries,
+    );
+    let draining_machines = facts
+        .unusable_machines
+        .iter()
+        .filter(|unusable| match unusable.reason {
+            ployz_core::machine::MachineUsabilityReason::Draining => true,
+            ployz_core::machine::MachineUsabilityReason::FactsUnavailable
+            | ployz_core::machine::MachineUsabilityReason::DataplaneUnavailable { .. } => false,
+        })
+        .map(|unusable| unusable.machine_id.clone())
+        .collect::<Vec<_>>();
+    let mut services = Vec::new();
+    for service_request in service_requests {
+        let mut prepared = prepare_deploy(
+            DeployPreparationInput {
+                request: service_request,
+                occupied_route_bindings: occupied_bindings.clone(),
+                eligible_machines: facts.eligible_machines.clone(),
+                draining_machines: draining_machines.clone(),
+                observed_machines: facts.observed_machines.clone(),
+            },
+            mint_route_binding_id,
+        )
+        .expect("route bindings were validated while loading deploy facts");
+        occupied_bindings.extend(prepared.route_commits.iter().cloned());
+        let is_promoted = facts.namespace_serving_entries.iter().any(|entry| {
+            entry.namespace_id == prepared.request.namespace_id
+                && entry.service_id == prepared.request.service_id
+                && entry.namespace_revision_entry_id == prepared.request.namespace_revision_entry_id
+        });
+        if !is_promoted {
+            prepared.existing_replicas.clear();
+        }
+        let mut route_commits = prepared.route_commits;
+        route_commits.extend(
+            declared_auto_bindings
+                .iter()
+                .filter(|binding| binding.service_id == prepared.request.service_id)
+                .cloned(),
+        );
+        services.push(DeployServiceExecutionCommand {
+            registry_credential: registry_credentials
+                .get(&prepared.request.service_id)
+                .cloned(),
+            request: prepared.request,
+            route_commits,
+            volume_pins: facts.namespace_volume_pins.clone(),
+            eligible_machines: prepared.eligible_machines,
+            existing_replicas: prepared.existing_replicas,
+            cleanup_candidates: prepared.cleanup_candidates,
+        });
+    }
+    let ployz_automatic_hostnames = facts.automatic_hostname_mode.is_ployz();
+    let exact_certificate_routes = exact_certificate_routes(&services, ployz_automatic_hostnames);
+
+    // Manifest omission removes a service: its containers are cleanup
+    // candidates on every deploy, not only when the manifest is empty.
+    // The candidates are already namespace-scoped at collection.
+    let namespace_cleanup_candidates = facts
+        .namespace_cleanup_candidates
+        .into_iter()
+        .filter(|candidate| !declared_services.contains(&candidate.identity.service_id))
+        .collect();
+
+    DeployExecutionCommand {
+        operation_id,
+        request,
+        services,
+        route_binding_removals,
+        serving_target_removals,
+        namespace_cleanup_candidates,
+        machine_platforms: facts.machine_platforms,
+        dataplane_members: facts.dataplane_members,
+        exact_certificate_routes,
+        ployz_automatic_hostnames,
+        gateway_certificate_targets: facts.gateway_certificate_targets,
+        ployz_gateway_certificate_targets: facts.ployz_gateway_certificate_targets,
+        unusable_machines: facts.unusable_machines,
+        step_timeout: facts.step_timeout,
+    }
+}
+
+fn exact_certificate_routes(
+    services: &[DeployServiceExecutionCommand],
+    ployz_automatic_hostnames: bool,
+) -> Vec<RouteBindingState> {
+    let mut routes = services
+        .iter()
+        .flat_map(DeployServiceExecutionCommand::route_binding_states)
+        .filter(|binding| {
+            !ployz_automatic_hostnames
+                || binding.origin != ployz_core::ingress::RouteBindingOrigin::Automatic
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    routes.sort_by(|left, right| left.id.cmp(&right.id));
+    routes.dedup_by(|left, right| left.id == right.id);
+    routes
+}
+
+pub(super) fn mint_route_binding_id(_target: &RouteTarget) -> RouteBindingId {
+    RouteBindingId::try_new(format!("route_{}", nuid::next()))
+        .expect("NUID route binding id is a valid subject token")
+}
+
+pub fn namespace_cleanup_candidates(
+    namespace_id: &ployz_core::ids::NamespaceId,
+    observed_machines: &[MachineContainerObservationSnapshot],
+) -> Vec<DeployCleanupContainer> {
+    observed_machines
+        .iter()
+        .flat_map(MachineContainerObservationSnapshot::containers)
+        .filter(|container| {
+            container.is_service() && container.identity.namespace_id == *namespace_id
+        })
+        .map(|container| DeployCleanupContainer {
+            machine_id: container.machine_id.clone(),
+            container_id: container.container_id.clone(),
+            identity: container.identity.clone(),
+        })
+        .collect()
+}

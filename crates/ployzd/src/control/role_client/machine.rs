@@ -1,0 +1,804 @@
+//! Request-side NATS adapters for machine-local services.
+
+use crate::roles::machine::MachineRuntimeUnavailableReason;
+use crate::roles::machine::protocol::{
+    MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
+    MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,
+    MachineContainerRemoveRpcRequest, MachineContainerResolveImageDomainError,
+    MachineContainerResolveImageRpcOk, MachineContainerResolveImageRpcRequest,
+    MachineContainerRestartDomainError, MachineContainerRestartRpcRequest, MachineContainerRpcOk,
+    MachineContainerRunDomainError, MachineContainerRunHookDomainError,
+    MachineContainerRunHookRpcOk, MachineContainerRunHookRpcRequest, MachineContainerRunRpcOk,
+    MachineContainerRunRpcRequest, MachineContainerStopDomainError, MachineContainerStopRpcRequest,
+    MachineDataplaneStatusDomainError, MachineDataplaneStatusRpcOk,
+    MachineDataplaneStatusRpcRequest, MachineFactsGetDomainError, MachineFactsGetRpcOk,
+    MachineFactsGetRpcRequest, MachineFactsRefreshDomainError, MachineFactsRefreshRpcOk,
+    MachineFactsRefreshRpcRequest, MachineLogsTailDomainError, MachineLogsTailResult,
+    MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineRpcResponder, MachineRpcResponse,
+    MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
+    MachineSubstrateUpdateDomainError, MachineSubstrateUpdateRpcOk,
+    MachineSubstrateUpdateRpcRequest, MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk,
+    MachineVolumeRemoveRpcRequest,
+};
+use futures_util::{StreamExt, stream};
+use ployz_core::deploy::VolumeName;
+use ployz_core::ids::{MachineId, NamespaceId, OperationId};
+use ployz_core::image::{ImageEnsureOk, ImageEnsureRequest, ImageRpcDomainError};
+use ployz_core::machine::MachineLifecycle;
+use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
+use ployz_core::network::{MachineDataplaneStatus, NetworkStatusMode};
+use ployz_core::operation::{MachineSubstrateVersions, MachineUpdateFailure};
+use ployz_nats::service_protocol::{NatsServiceError, NatsServiceErrorCode};
+use ployz_nats::service_runtime::{
+    NatsJsonServiceRequestError, NatsServiceRequestFailure, request_json,
+};
+use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use std::collections::BTreeMap;
+use std::time::Duration;
+
+pub const DEFAULT_MACHINE_RPC_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const MAX_CONCURRENT_MACHINE_READS: usize = 16;
+
+#[derive(Debug, Clone)]
+pub struct NatsMachineContainerRuntime {
+    client: async_nats::Client,
+    request_timeout: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct NatsMachineFactsReader {
+    pub(super) client: async_nats::Client,
+    pub(super) request_timeout: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct NatsMachineLogsTailer {
+    client: async_nats::Client,
+    request_timeout: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct NatsMachineSubstrateUpdater {
+    client: async_nats::Client,
+    request_timeout: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineImageEnsureError {
+    Domain {
+        machine_id: MachineId,
+        error: ImageRpcDomainError,
+    },
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineImageResolveError {
+    Rejected {
+        machine_id: MachineId,
+        message: ployz_core::operation::FailureMessage,
+    },
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineSubstrateUpdateError {
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
+    UpdateFailed {
+        machine_id: MachineId,
+        message: ployz_core::operation::FailureMessage,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineLogsTailError {
+    NotFound {
+        machine_id: MachineId,
+        container_id: ployz_core::ids::ContainerId,
+    },
+    ReadFailed {
+        machine_id: MachineId,
+        container_id: ployz_core::ids::ContainerId,
+        message: ployz_core::operation::FailureMessage,
+    },
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MachineFactsReadError {
+    #[error("machine {} rejected facts gather: {}", machine_id.as_str(), message.as_str())]
+    GatherFailed {
+        machine_id: MachineId,
+        message: ployz_core::operation::FailureMessage,
+    },
+    #[error(
+        "machine {} facts unavailable: {}",
+        machine_id.as_str(),
+        reason.failure_message().as_str()
+    )]
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MachineFactsRefreshError {
+    #[error("machine {} facts refresh failed: {}", machine_id.as_str(), message.as_str())]
+    RefreshFailed {
+        machine_id: MachineId,
+        message: ployz_core::operation::FailureMessage,
+    },
+    #[error(
+        "machine {} facts refresh unavailable: {}",
+        machine_id.as_str(),
+        reason.failure_message().as_str()
+    )]
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineContainerInspectError {
+    InspectFailed {
+        machine_id: MachineId,
+        container_id: ployz_core::ids::ContainerId,
+        message: ployz_core::operation::FailureMessage,
+    },
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MachineVolumeRemoveError {
+    #[error("machine {} volume remove unavailable: {}", machine_id.as_str(), message.as_str())]
+    Unavailable {
+        machine_id: MachineId,
+        message: ployz_core::operation::FailureMessage,
+    },
+    #[error("machine {} volume remove failed: {}", machine_id.as_str(), message.as_str())]
+    RemoveFailed {
+        machine_id: MachineId,
+        message: ployz_core::operation::FailureMessage,
+    },
+}
+
+/// Outcome of one machine RPC round trip: either the machine answered with a typed
+/// domain error, or the call never produced a usable answer.
+pub(crate) enum MachineCallError<E> {
+    Unavailable(MachineRuntimeUnavailableReason),
+    Domain(E),
+}
+
+/// One machine RPC round trip: encode the request, map transport failures, and
+/// reject answers from the wrong machine — exactly once for every endpoint.
+pub(crate) async fn call_machine<T, E>(
+    client: &async_nats::Client,
+    request_timeout: Duration,
+    machine_id: &MachineId,
+    endpoint: MachineServiceEndpoint,
+    request: &impl Serialize,
+) -> Result<T, MachineCallError<E>>
+where
+    T: DeserializeOwned + MachineRpcResponder,
+    E: DeserializeOwned,
+{
+    let subject = machine_service(machine_id, endpoint);
+    let response =
+        request_json::<_, MachineRpcResponse<T, E>>(client, subject, request, request_timeout)
+            .await
+            .map_err(|error| MachineCallError::Unavailable(unavailable_reason(error)))?;
+
+    match response {
+        MachineRpcResponse::Ok(value) => {
+            match wrong_response_machine(machine_id, value.responder_machine_id().clone()) {
+                Some(reason) => Err(MachineCallError::Unavailable(reason)),
+                None => Ok(value),
+            }
+        }
+        MachineRpcResponse::DomainError {
+            machine_id: actual_machine_id,
+            error,
+        } => match wrong_response_machine(machine_id, actual_machine_id) {
+            Some(reason) => Err(MachineCallError::Unavailable(reason)),
+            None => Err(MachineCallError::Domain(error)),
+        },
+    }
+}
+
+impl NatsMachineLogsTailer {
+    #[must_use]
+    pub fn new(client: async_nats::Client) -> Self {
+        Self {
+            client,
+            request_timeout: DEFAULT_MACHINE_RPC_TIMEOUT,
+        }
+    }
+
+    pub async fn tail_logs(
+        &self,
+        machine_id: &MachineId,
+        request: MachineLogsTailRpcRequest,
+    ) -> Result<MachineLogsTailResult, MachineLogsTailError> {
+        call_machine::<MachineLogsTailRpcOk, MachineLogsTailDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::LogsTail,
+            &request,
+        )
+        .await
+        .map(|ok| ok.value)
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => MachineLogsTailError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason,
+            },
+            MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
+        })
+    }
+}
+
+impl NatsMachineFactsReader {
+    #[must_use]
+    pub fn new(client: async_nats::Client) -> Self {
+        Self {
+            client,
+            request_timeout: DEFAULT_MACHINE_RPC_TIMEOUT,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
+        self.request_timeout = request_timeout;
+        self
+    }
+
+    pub async fn machine_facts(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<MachineFactsSnapshot, MachineFactsReadError> {
+        call_machine::<MachineFactsGetRpcOk, MachineFactsGetDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::FactsGet,
+            &MachineFactsGetRpcRequest {},
+        )
+        .await
+        .map(|ok| ok.facts)
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => MachineFactsReadError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason,
+            },
+            MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
+        })
+    }
+
+    pub async fn refresh_machine_facts(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<
+        ployz_core::machine::runtime::MachineFactsRefreshConfirmation,
+        MachineFactsRefreshError,
+    > {
+        call_machine::<MachineFactsRefreshRpcOk, MachineFactsRefreshDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::FactsRefresh,
+            &MachineFactsRefreshRpcRequest {},
+        )
+        .await
+        .map(|ok| ok.refresh)
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => MachineFactsRefreshError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason,
+            },
+            MachineCallError::Domain(MachineFactsRefreshDomainError::RefreshFailed { message }) => {
+                MachineFactsRefreshError::RefreshFailed {
+                    machine_id: machine_id.clone(),
+                    message,
+                }
+            }
+        })
+    }
+}
+
+pub(crate) struct MachinePlacementFacts {
+    pub machine_id: MachineId,
+    pub lifecycle: MachineLifecycle,
+    pub containers: Option<MachineContainerObservationSnapshot>,
+    pub platform: Option<ployz_core::image::OciPlatform>,
+    pub endpoints: Option<ployz_core::machine::MachineEndpointObservation>,
+}
+
+pub(crate) async fn read_machine_placement_facts(
+    facts_reader: &NatsMachineFactsReader,
+    machine_lifecycles: impl IntoIterator<Item = (MachineId, MachineLifecycle)>,
+) -> Vec<MachinePlacementFacts> {
+    let mut reads = stream::iter(machine_lifecycles)
+        .map(|(machine_id, lifecycle)| async move {
+            let facts = facts_reader.machine_facts(&machine_id).await.ok();
+            MachinePlacementFacts {
+                machine_id,
+                lifecycle,
+                containers: facts.as_ref().map(|facts| facts.containers().clone()),
+                platform: facts.as_ref().map(|facts| facts.platform().clone()),
+                endpoints: facts.and_then(|facts| facts.endpoints().cloned()),
+            }
+        })
+        .buffer_unordered(MAX_CONCURRENT_MACHINE_READS);
+
+    let mut facts = Vec::new();
+    while let Some(machine) = reads.next().await {
+        facts.push(machine);
+    }
+    facts.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
+    facts
+}
+
+pub(crate) async fn read_available_machine_facts(
+    facts_reader: &NatsMachineFactsReader,
+    machine_ids: impl IntoIterator<Item = MachineId>,
+) -> Vec<MachineFactsSnapshot> {
+    let mut reads = stream::iter(machine_ids)
+        .map(|machine_id| async move { facts_reader.machine_facts(&machine_id).await.ok() })
+        .buffer_unordered(MAX_CONCURRENT_MACHINE_READS);
+
+    let mut facts = Vec::new();
+    // Drain every read: an unavailable machine resolves to None and must be
+    // skipped, never end the gather, or one down machine would cancel the
+    // still-pending reads for healthy machines completing after it.
+    while let Some(snapshot) = reads.next().await {
+        if let Some(snapshot) = snapshot {
+            facts.push(snapshot);
+        }
+    }
+    facts.sort_by(|left, right| left.machine_id().cmp(right.machine_id()));
+    facts
+}
+
+pub(crate) async fn read_available_machine_facts_by_id(
+    facts_reader: &NatsMachineFactsReader,
+    machine_ids: impl IntoIterator<Item = MachineId>,
+) -> BTreeMap<MachineId, MachineFactsSnapshot> {
+    read_available_machine_facts(facts_reader, machine_ids)
+        .await
+        .into_iter()
+        .map(|facts| (facts.machine_id().clone(), facts))
+        .collect()
+}
+
+impl NatsMachineSubstrateUpdater {
+    #[must_use]
+    pub fn new(client: async_nats::Client) -> Self {
+        Self {
+            client,
+            request_timeout: DEFAULT_MACHINE_RPC_TIMEOUT,
+        }
+    }
+
+    pub async fn update_substrate(
+        &self,
+        machine_id: &MachineId,
+        request: MachineSubstrateUpdateRpcRequest,
+    ) -> Result<(), MachineSubstrateUpdateError> {
+        call_machine::<MachineSubstrateUpdateRpcOk, MachineSubstrateUpdateDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::SubstrateUpdate,
+            &request,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => MachineSubstrateUpdateError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason,
+            },
+            MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
+        })
+    }
+
+    pub async fn report_substrate_versions(
+        &self,
+        machine_id: &MachineId,
+        operation_id: &OperationId,
+    ) -> Result<MachineSubstrateVersions, MachineSubstrateUpdateError> {
+        call_machine::<MachineSubstrateReportRpcOk, MachineSubstrateUpdateDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::SubstrateReport,
+            &MachineSubstrateReportRpcRequest {
+                operation_id: operation_id.clone(),
+            },
+        )
+        .await
+        .map(|ok| ok.reported)
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => MachineSubstrateUpdateError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason,
+            },
+            MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
+        })
+    }
+}
+
+impl MachineSubstrateUpdateError {
+    #[must_use]
+    pub fn into_operation_failure(self) -> MachineUpdateFailure {
+        match self {
+            Self::Unavailable { machine_id, reason } => MachineUpdateFailure::MachineUnavailable {
+                machine_id,
+                message: ployz_core::operation::FailureMessage::try_new(format!("{reason:?}"))
+                    .expect("machine runtime unavailable reason is non-empty"),
+            },
+            Self::UpdateFailed {
+                machine_id,
+                message,
+            } => MachineUpdateFailure::UpdateRejected {
+                machine_id,
+                message,
+            },
+        }
+    }
+}
+
+impl NatsMachineFactsReader {
+    pub(crate) async fn read_dataplane_status(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<MachineDataplaneStatus, ployz_core::operation::FailureMessage> {
+        call_machine::<MachineDataplaneStatusRpcOk, MachineDataplaneStatusDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::DataplaneStatus,
+            &MachineDataplaneStatusRpcRequest {
+                mode: NetworkStatusMode::Snapshot,
+            },
+        )
+        .await
+        .map(|response| response.value)
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => reason.failure_message(),
+            MachineCallError::Domain(MachineDataplaneStatusDomainError::ReadFailed { message }) => {
+                message
+            }
+        })
+    }
+}
+
+impl NatsMachineContainerRuntime {
+    #[must_use]
+    pub fn new(client: async_nats::Client) -> Self {
+        Self {
+            client,
+            request_timeout: DEFAULT_MACHINE_RPC_TIMEOUT,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
+        self.request_timeout = request_timeout;
+        self
+    }
+
+    pub async fn inspect_container(
+        &self,
+        machine_id: &MachineId,
+        request: MachineContainerInspectRpcRequest,
+    ) -> Result<MachineContainerInspectRpcOk, MachineContainerInspectError> {
+        call_machine::<MachineContainerInspectRpcOk, MachineContainerInspectDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::ContainerInspect,
+            &request,
+        )
+        .await
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => MachineContainerInspectError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason,
+            },
+            MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
+        })
+    }
+
+    pub async fn remove_volume(
+        &self,
+        machine_id: &MachineId,
+        operation_id: OperationId,
+        namespace_id: &NamespaceId,
+        volume_name: &VolumeName,
+    ) -> Result<(), MachineVolumeRemoveError> {
+        let request = MachineVolumeRemoveRpcRequest {
+            operation_id,
+            namespace_id: namespace_id.clone(),
+            volume_name: volume_name.clone(),
+        };
+        call_machine::<MachineVolumeRemoveRpcOk, MachineVolumeRemoveDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::VolumeRemove,
+            &request,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => MachineVolumeRemoveError::Unavailable {
+                machine_id: machine_id.clone(),
+                message: reason.failure_message(),
+            },
+            MachineCallError::Domain(MachineVolumeRemoveDomainError::RemoveFailed { message }) => {
+                MachineVolumeRemoveError::RemoveFailed {
+                    machine_id: machine_id.clone(),
+                    message,
+                }
+            }
+        })
+    }
+
+    pub(crate) async fn request_resolve_image(
+        &self,
+        machine_id: &MachineId,
+        request: &MachineContainerResolveImageRpcRequest,
+    ) -> Result<
+        MachineContainerResolveImageRpcOk,
+        MachineCallError<MachineContainerResolveImageDomainError>,
+    > {
+        call_machine(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::ContainerResolveImage,
+            request,
+        )
+        .await
+    }
+
+    pub(crate) async fn request_ensure_image(
+        &self,
+        machine_id: &MachineId,
+        request: &ImageEnsureRequest,
+    ) -> Result<ImageEnsureOk, MachineCallError<ImageRpcDomainError>> {
+        call_machine(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::ImageEnsure,
+            request,
+        )
+        .await
+    }
+
+    pub(crate) async fn request_container_run(
+        &self,
+        machine_id: &MachineId,
+        request: &MachineContainerRunRpcRequest,
+    ) -> Result<MachineContainerRunRpcOk, MachineCallError<MachineContainerRunDomainError>> {
+        call_machine(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::ContainerRun,
+            request,
+        )
+        .await
+    }
+
+    pub(crate) async fn request_container_run_hook(
+        &self,
+        machine_id: &MachineId,
+        request: &MachineContainerRunHookRpcRequest,
+    ) -> Result<MachineContainerRunHookRpcOk, MachineCallError<MachineContainerRunHookDomainError>>
+    {
+        call_machine(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::ContainerRunHook,
+            request,
+        )
+        .await
+    }
+
+    pub(crate) async fn request_container_remove(
+        &self,
+        machine_id: &MachineId,
+        request: &MachineContainerRemoveRpcRequest,
+    ) -> Result<MachineContainerRpcOk, MachineCallError<MachineContainerRemoveDomainError>> {
+        call_machine(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::ContainerRemove,
+            request,
+        )
+        .await
+    }
+
+    pub(crate) async fn request_container_restart(
+        &self,
+        machine_id: &MachineId,
+        request: &MachineContainerRestartRpcRequest,
+    ) -> Result<MachineContainerRpcOk, MachineCallError<MachineContainerRestartDomainError>> {
+        call_machine(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::ContainerRestart,
+            request,
+        )
+        .await
+    }
+
+    pub(crate) async fn request_container_stop(
+        &self,
+        machine_id: &MachineId,
+        request: &MachineContainerStopRpcRequest,
+    ) -> Result<MachineContainerRpcOk, MachineCallError<MachineContainerStopDomainError>> {
+        call_machine(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::ContainerStop,
+            request,
+        )
+        .await
+    }
+}
+
+impl MachineLogsTailDomainError {
+    fn into_runtime_error(self, machine_id: MachineId) -> MachineLogsTailError {
+        match self {
+            Self::NotFound { container_id } => MachineLogsTailError::NotFound {
+                machine_id,
+                container_id,
+            },
+            Self::ReadFailed {
+                container_id,
+                message,
+            } => MachineLogsTailError::ReadFailed {
+                machine_id,
+                container_id,
+                message,
+            },
+        }
+    }
+}
+
+impl MachineSubstrateUpdateDomainError {
+    fn into_runtime_error(self, machine_id: MachineId) -> MachineSubstrateUpdateError {
+        match self {
+            Self::UpdateFailed { message } => MachineSubstrateUpdateError::UpdateFailed {
+                machine_id,
+                message,
+            },
+        }
+    }
+}
+
+impl MachineContainerInspectDomainError {
+    fn into_runtime_error(self, machine_id: MachineId) -> MachineContainerInspectError {
+        match self {
+            Self::InspectFailed {
+                container_id,
+                message,
+            } => MachineContainerInspectError::InspectFailed {
+                machine_id,
+                container_id,
+                message,
+            },
+        }
+    }
+}
+
+impl MachineFactsGetDomainError {
+    fn into_runtime_error(self, machine_id: MachineId) -> MachineFactsReadError {
+        match self {
+            Self::GatherFailed { message } => MachineFactsReadError::GatherFailed {
+                machine_id,
+                message,
+            },
+        }
+    }
+}
+
+pub(super) fn wrong_response_machine(
+    requested_machine_id: &MachineId,
+    actual_machine_id: MachineId,
+) -> Option<MachineRuntimeUnavailableReason> {
+    if actual_machine_id == *requested_machine_id {
+        return None;
+    }
+
+    Some(MachineRuntimeUnavailableReason::WrongResponder { actual_machine_id })
+}
+
+pub(crate) fn unavailable_reason(
+    error: NatsJsonServiceRequestError,
+) -> MachineRuntimeUnavailableReason {
+    match error {
+        NatsJsonServiceRequestError::EncodeRequest { message } => {
+            MachineRuntimeUnavailableReason::EncodeRequest { message }
+        }
+        NatsJsonServiceRequestError::Request { failure } => machine_request_failure_reason(failure),
+        NatsJsonServiceRequestError::Service { failure } => machine_service_failure_reason(failure),
+        NatsJsonServiceRequestError::ServiceProtocol { error } => {
+            MachineRuntimeUnavailableReason::MalformedServiceError {
+                message: error.to_string(),
+            }
+        }
+        NatsJsonServiceRequestError::DecodeResponse { message } => {
+            MachineRuntimeUnavailableReason::DecodeResponse { message }
+        }
+    }
+}
+
+fn machine_request_failure_reason(
+    failure: NatsServiceRequestFailure,
+) -> MachineRuntimeUnavailableReason {
+    match failure {
+        NatsServiceRequestFailure::TimedOut => MachineRuntimeUnavailableReason::RequestTimedOut,
+        NatsServiceRequestFailure::NoResponders => MachineRuntimeUnavailableReason::NoResponders,
+        NatsServiceRequestFailure::InvalidSubject => {
+            MachineRuntimeUnavailableReason::InvalidSubject
+        }
+        NatsServiceRequestFailure::MaxPayloadExceeded => {
+            MachineRuntimeUnavailableReason::MaxPayloadExceeded
+        }
+        NatsServiceRequestFailure::Other { message } => {
+            MachineRuntimeUnavailableReason::RequestFailed { message }
+        }
+    }
+}
+
+fn machine_service_failure_reason(error: NatsServiceError) -> MachineRuntimeUnavailableReason {
+    match error.code {
+        NatsServiceErrorCode::BadRequest => MachineRuntimeUnavailableReason::ServiceBadRequest {
+            message: error.message,
+        },
+        NatsServiceErrorCode::Conflict => MachineRuntimeUnavailableReason::ServiceConflict {
+            message: error.message,
+        },
+        NatsServiceErrorCode::ResponseTooLarge => {
+            MachineRuntimeUnavailableReason::ServiceResponseTooLarge
+        }
+        NatsServiceErrorCode::Unavailable => MachineRuntimeUnavailableReason::ServiceUnavailable {
+            message: error.message,
+        },
+        NatsServiceErrorCode::Timeout => MachineRuntimeUnavailableReason::ServiceTimedOut {
+            message: error.message,
+        },
+        NatsServiceErrorCode::Internal => MachineRuntimeUnavailableReason::ServiceInternal {
+            message: error.message,
+        },
+    }
+}

@@ -1,14 +1,18 @@
 use std::process::{Command, Output};
 
-use ployz::config::{CLUSTER_CONTEXT_FILE_NAME, ClusterContext, save_cluster_context};
-use ployz::runtime::{PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV, PLOYZ_NATS_URL_ENV};
+use ployz::dispatcher::{
+    PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV, PLOYZ_NATS_URL_ENV,
+};
+use ployz::machine::operator_context::{
+    CLUSTER_CONTEXT_FILE_NAME, ClusterContext, save_cluster_context,
+};
 use ployz_core::roles::GatewayRole;
-use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::connect::NatsClientUrl;
 use ployz_nats::service_runtime::{NatsServiceResponse, RunningNatsService, start_nats_service};
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
 };
+use ployz_nats::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_sdk_types::{
     InitFirstMachineActivateRequest, InitFirstMachineActivateResponse, InitFirstMachineActivated,
     OperationApiResponse,
@@ -23,7 +27,9 @@ async fn binary_init_can_activate_first_machine_without_running_host_runner() {
     let client = server.controller.clone();
     let env = CliNatsEnv::new(&server.server);
     let service_client = client.clone();
-    let spec = test_api_service(InitFirstMachineActivateApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(
+        InitFirstMachineActivateApi::ENDPOINT,
+    ));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(client, &spec)
         .await
@@ -174,7 +180,9 @@ async fn binary_env_nats_url_overrides_cluster_context() {
 /// Binds a stub activate-first-machine API that accepts machine `core_1`.
 async fn bind_activate_first_machine_service(client: async_nats::Client) -> RunningNatsService {
     let service_client = client.clone();
-    let spec = test_api_service(InitFirstMachineActivateApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(
+        InitFirstMachineActivateApi::ENDPOINT,
+    ));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(client, &spec)
         .await

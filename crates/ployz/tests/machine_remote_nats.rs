@@ -7,16 +7,15 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ployz::bootstrap_command::{BootstrapRelease, DEFAULT_BOOTSTRAP_URL, DEFAULT_RELEASE_CHANNEL};
 use ployz::commands::PloyzctlCommand;
-use ployz::commands::core::{CorePromoteCommand, CoreReplaceCommand};
-use ployz::commands::machine::{MachineAddRemoteCommand, MachineInitCommand};
-use ployz::config::{
-    ClusterContext, ClusterContextMachine, load_cluster_context, save_cluster_context,
+use ployz::dispatcher::{PloyzctlExecutionError, PloyzctlRuntimeConfig, execute_command};
+use ployz::machine::bootstrap::{BootstrapRelease, DEFAULT_BOOTSTRAP_URL, DEFAULT_RELEASE_CHANNEL};
+use ployz::machine::command::{MachineAddRemoteCommand, MachineInitCommand};
+use ployz::machine::local_release::LocalReleaseBundle;
+use ployz::machine::operator_context::{
+    ClusterContext, load_cluster_context, save_cluster_context,
 };
-use ployz::local_release::LocalReleaseBundle;
-use ployz::remote_machine_runtime::RemoteMachineExecutionError;
-use ployz::runtime::{PloyzctlExecutionError, PloyzctlRuntimeConfig, execute_command};
+use ployz::machine::runtime::{MachineExecutionError, remote::RemoteMachineExecutionError};
 use ployz::ssh::SshTarget;
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
@@ -25,42 +24,35 @@ use ployz_core::install::{
 };
 use ployz_core::machine::MachineAddFailure;
 use ployz_core::nats_config::NatsCaCertificatePem;
-use ployz_core::ops::MachineAddOperationState;
-use ployz_core::ops::{
-    CoreReplaceOperationState, FailureMessage, OperationEventReplayPage, OperationStatus,
-    OperationStatusSnapshot,
+use ployz_core::operation::MachineAddOperationState;
+use ployz_core::operation::{
+    FailureMessage, OperationEventReplayPage, OperationStatus, OperationStatusSnapshot,
 };
 use ployz_core::roles::{GatewayRole, InstallRolePolicy};
-use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
 };
+use ployz_nats::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_sdk_types::{
-    AcceptedOperation, CoreReplaceReportRequest, CoreReplaceReportResponse, CoreReplaceReported,
-    CoreReplaceRequest, CoreReplaceResponse, InitFirstMachineActivateError,
-    InitFirstMachineActivateRequest, InitFirstMachineActivateResponse, InitFirstMachineActivated,
-    MachineAddAccepted, MachineAddRequest, MachineAddResponse, MachineJoinToken, MachineName,
-    OperationApiResponse, OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
+    AcceptedOperation, InitFirstMachineActivateError, InitFirstMachineActivateRequest,
+    InitFirstMachineActivateResponse, InitFirstMachineActivated, MachineAddAccepted,
+    MachineAddRequest, MachineAddResponse, MachineJoinToken, MachineName, OperationApiResponse,
+    OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
     operation_api::{
-        CoreReplaceApi, CoreReplaceReportApi, InitFirstMachineActivateApi, MachineAddApi,
-        OperationApiContract, OpsStatusApi, OpsWatchApi,
+        InitFirstMachineActivateApi, MachineAddApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
     },
 };
 use ployz_test_support::fs::make_executable;
 use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
 use ployz_test_support::nats::TestNats;
 use sha2::{Digest as _, Sha256};
-use tokio::sync::Mutex;
 
 const TEST_SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const TEST_SEED: &str = "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM";
 const TEST_CA: &str = "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----";
 const FIRST_MACHINE_BOOTSTRAP_RESULT_BEGIN: &str = "ployz-first-machine-bootstrap-result begin";
 const FIRST_MACHINE_BOOTSTRAP_RESULT_END: &str = "ployz-first-machine-bootstrap-result end";
-const CORE_PROMOTE_RESULT_BEGIN: &str = "ployz-core-promote-result begin";
-const CORE_PROMOTE_RESULT_END: &str = "ployz-core-promote-result end";
-static ENV_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// One stand-in `ssh` that answers the machine-init phase commands and logs
 /// every remote command it received.
@@ -71,32 +63,6 @@ struct FakeSshMachine {
     stdin_log: PathBuf,
 }
 
-struct EnvVarGuard {
-    name: &'static str,
-    previous: Option<String>,
-}
-
-impl EnvVarGuard {
-    fn set(name: &'static str, value: &str) -> Self {
-        let previous = std::env::var(name).ok();
-        unsafe {
-            std::env::set_var(name, value);
-        }
-        Self { name, previous }
-    }
-}
-
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        unsafe {
-            match &self.previous {
-                Some(value) => std::env::set_var(self.name, value),
-                None => std::env::remove_var(self.name),
-            }
-        }
-    }
-}
-
 impl FakeSshMachine {
     /// `hostname` is the reported remote hostname; `installer_exit` shapes
     /// the Host Runner bootstrap phase outcome.
@@ -105,11 +71,6 @@ impl FakeSshMachine {
         let log = dir.path().join("commands.log");
         let stdin_log = dir.path().join("stdin.log");
         let program = dir.path().join("fake-ssh");
-        let promote_result_json = serde_json::to_string(&serde_json::json!({
-            "nats_urls": ["tls://203.0.113.20:4222", "tls://[2001:db8::20]:4222"],
-            "ca_pem": TEST_CA,
-        }))
-        .expect("promote result serializes");
         let script = format!(
             r#"#!/bin/sh
 cmd=""
@@ -132,19 +93,6 @@ case "$cmd" in
     ;;
   *'ployz host bootstrap core'* | *'ployz host bootstrap join'*)
     {installer_body}
-    ;;
-  *'internal-core-demote --successor-nats-url'*)
-    echo 'core replaced'
-    ;;
-  *'ployz host core-promote'*)
-    cat > {stdin_log}
-    printf '%s\n' \
-      '{promote_begin}' \
-      '{promote_result_json}' \
-      '{promote_end}'
-    ;;
-  'sudo cat /var/lib/ployz/join-material')
-    printf '%s\n' 'machine_id=machine_2' 'cluster_name=test'
     ;;
   'curl -fsSL -- '*)
     printf '%s\n' \
@@ -177,9 +125,6 @@ esac
             installer_body = installer_body,
             sha = TEST_SHA,
             seed = TEST_SEED,
-            promote_begin = CORE_PROMOTE_RESULT_BEGIN,
-            promote_result_json = promote_result_json,
-            promote_end = CORE_PROMOTE_RESULT_END,
         );
         fs::write(&program, script).expect("fake ssh writes");
         make_executable(&program);
@@ -197,10 +142,6 @@ esac
             .map(str::to_owned)
             .filter(|entry| !entry.trim().is_empty())
             .collect()
-    }
-
-    fn stdin_text(&self) -> String {
-        fs::read_to_string(&self.stdin_log).unwrap_or_default()
     }
 }
 
@@ -402,8 +343,7 @@ fn machine_join_bundle() -> MachineJoinBundle {
     };
     MachineJoinBundle {
         material: MachineJoinMaterial {
-            dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(
-            ),
+            dataplane_endpoint_supernet: ployz_core::network::MachineEndpointSupernet::default_v1(),
             cluster_name: MachineJoinClusterName::try_new("testcluster")
                 .expect("valid cluster name"),
             runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("tls://203.0.113.10:4222")
@@ -435,217 +375,6 @@ fn machine_join_secret_delivery() -> ployz_core::install::MachineJoinSecretDeliv
 }
 
 // ---------------------------------------------------------------------------
-// core promote USER@HOST / core demote USER@HOST
-// ---------------------------------------------------------------------------
-
-#[tokio::test(flavor = "multi_thread")]
-async fn core_promote_remote_runs_host_runner_command_and_updates_context() {
-    let _env_lock = ENV_LOCK.lock().await;
-    let _secret = EnvVarGuard::set("PLOYZ_RECOVERY_SECRET", "recover-secret");
-
-    let server = TestNats::start().await;
-    let ssh = FakeSshMachine::new("edge-2", "echo never");
-    let context = ContextDir::new();
-    let seed_dir = tempfile::TempDir::new().expect("seed dir");
-    let config = test_config(&server, &ssh, &context, seed_dir.path());
-    save_cluster_context(
-        &context.context_path,
-        &ClusterContext {
-            nats_url: server.server.client_url().clone(),
-            nats_ca_file: server.server.ca_path().to_owned(),
-            operator_seed_file: config
-                .nats_seed_file
-                .clone()
-                .expect("test config has operator seed"),
-            join_seed_file: config.join_seed_file.clone(),
-            machines: Vec::new(),
-        },
-    )
-    .expect("cluster context saves");
-
-    let output = execute_command(
-        PloyzctlCommand::CorePromote(CorePromoteCommand {
-            target: SshTarget::parse("root@203.0.113.20").expect("target parses"),
-        }),
-        &config,
-    )
-    .await
-    .expect("remote core promote succeeds");
-
-    assert_eq!(
-        output.stdout,
-        "core promoted on root@203.0.113.20\nnats tls://203.0.113.20:4222,tls://[2001:db8::20]:4222\nca-pem printed by remote Host Runner\n"
-    );
-    assert!(output.stderr.contains("context "));
-    assert!(
-        output
-            .stderr
-            .contains("now points at tls://203.0.113.20:4222")
-    );
-    assert_eq!(
-        ssh.commands(),
-        vec![
-            "sudo sh -c 'IFS= read -r PLOYZ_RECOVERY_SECRET; export PLOYZ_RECOVERY_SECRET; exec ployz host core-promote'"
-        ]
-    );
-    assert_eq!(ssh.stdin_text(), "recover-secret\n");
-    let saved = load_cluster_context(&context.context_path)
-        .expect("context reads")
-        .expect("context exists");
-    assert_eq!(saved.nats_url.as_str(), "tls://203.0.113.20:4222");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn core_replace_remote_runs_host_runner_command() {
-    let server = TestNats::start().await;
-    let client = server.controller.clone();
-    let spec = test_api_service(&[
-        CoreReplaceApi::ENDPOINT,
-        CoreReplaceReportApi::ENDPOINT,
-        OpsWatchApi::ENDPOINT,
-        OpsStatusApi::ENDPOINT,
-    ]);
-    let mut runtime = start_nats_service(client.clone(), &spec)
-        .await
-        .expect("service starts");
-    let expected_successor_url = server.server.client_url().clone();
-    runtime
-        .bind_endpoint(&endpoint(&spec, CoreReplaceApi::ENDPOINT), move |request| {
-            let expected_successor_url = expected_successor_url.clone();
-            async move {
-                let request: CoreReplaceRequest =
-                    serde_json::from_slice(&request.payload).expect("core replace decodes");
-                assert_eq!(request.machine_id, machine_id("machine_2"));
-                assert!(
-                    request
-                        .operation_id
-                        .as_str()
-                        .starts_with("op_core_replace_machine_2_")
-                );
-                assert_eq!(
-                    request.successor_nats_url.as_str(),
-                    expected_successor_url.as_str()
-                );
-                let response: CoreReplaceResponse = OperationApiResponse::Ok {
-                    value: accepted_operation(&request.operation_id, &request.machine_id),
-                };
-                NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
-            }
-        })
-        .await
-        .expect("core replace endpoint binds");
-    runtime
-        .bind_endpoint(
-            &endpoint(&spec, CoreReplaceReportApi::ENDPOINT),
-            |request| async move {
-                let request: CoreReplaceReportRequest =
-                    serde_json::from_slice(&request.payload).expect("core replace report decodes");
-                assert_eq!(request.machine_id, machine_id("machine_2"));
-                let response: CoreReplaceReportResponse = OperationApiResponse::Ok {
-                    value: CoreReplaceReported {
-                        operation_id: request.operation_id,
-                        machine_id: request.machine_id,
-                        last_event_sequence: event_sequence(2),
-                        outcome: request.outcome,
-                    },
-                };
-                NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
-            },
-        )
-        .await
-        .expect("core replace report endpoint binds");
-    runtime
-        .bind_endpoint(
-            &endpoint(&spec, OpsWatchApi::ENDPOINT),
-            |_request| async move {
-                let response: OpsWatchResponse = OperationApiResponse::Ok {
-                    value: OperationEventReplayPage::terminal(Vec::new()),
-                };
-                NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
-            },
-        )
-        .await
-        .expect("ops watch endpoint binds");
-    runtime
-        .bind_endpoint(
-            &endpoint(&spec, OpsStatusApi::ENDPOINT),
-            |request| async move {
-                let request: OpsStatusRequest =
-                    serde_json::from_slice(&request.payload).expect("status request decodes");
-                let response: OpsStatusResponse = OperationApiResponse::Ok {
-                    value: OperationStatusSnapshot::new(OperationStatus::CoreReplace {
-                        id: request.operation_id,
-                        machine_id: machine_id("machine_2"),
-                        successor_nats_url: MachineJoinRuntimeNatsUrl::try_new(
-                            "tls://203.0.113.20:4222",
-                        )
-                        .expect("valid URL"),
-                        state: CoreReplaceOperationState::Completed,
-                        last_event_sequence: event_sequence(2),
-                    }),
-                };
-                NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
-            },
-        )
-        .await
-        .expect("ops status endpoint binds");
-    client.flush().await.expect("service flushes");
-
-    let ssh = FakeSshMachine::new("stale-core", "echo never");
-    let context = ContextDir::new();
-    let seed_dir = tempfile::TempDir::new().expect("seed dir");
-    let config = test_config(&server, &ssh, &context, seed_dir.path());
-    save_cluster_context(
-        &context.context_path,
-        &ClusterContext {
-            nats_url: server.server.client_url().clone(),
-            nats_ca_file: server.server.ca_path().to_owned(),
-            operator_seed_file: config
-                .nats_seed_file
-                .clone()
-                .expect("test config has operator seed"),
-            join_seed_file: config.join_seed_file.clone(),
-            machines: vec![
-                ClusterContextMachine {
-                    machine_id: machine_id("machine_2"),
-                    ssh: Some(SshTarget::parse("root@203.0.113.10").expect("target parses")),
-                },
-                ClusterContextMachine {
-                    machine_id: machine_id("machine_1"),
-                    ssh: Some(SshTarget::parse("root@203.0.113.11").expect("target parses")),
-                },
-                ClusterContextMachine {
-                    machine_id: machine_id("machine_3"),
-                    ssh: Some(SshTarget::parse("root@203.0.113.12").expect("target parses")),
-                },
-            ],
-        },
-    )
-    .expect("cluster context saves");
-
-    let output = execute_command(
-        PloyzctlCommand::CoreReplace(CoreReplaceCommand {
-            target: SshTarget::parse("root@203.0.113.10").expect("target parses"),
-        }),
-        &config,
-    )
-    .await
-    .expect("remote core replace succeeds");
-
-    assert_eq!(output.stdout, "core demoted on root@203.0.113.10\n");
-    assert_eq!(
-        ssh.commands(),
-        vec![
-            "sudo cat /var/lib/ployz/join-material".to_owned(),
-            format!(
-                "sudo ployz host internal-core-demote --successor-nats-url '{}'",
-                server.server.client_url().as_str()
-            ),
-        ]
-    );
-}
-
-// ---------------------------------------------------------------------------
 // machine init (U4)
 // ---------------------------------------------------------------------------
 
@@ -656,8 +385,13 @@ async fn core_replace_remote_runs_host_runner_command() {
 async fn machine_init_installs_activates_and_writes_local_context() {
     let server = TestNats::start().await;
     let client = server.controller.clone();
-    let spec = test_api_service(&[InitFirstMachineActivateApi::ENDPOINT]);
-    let activate_endpoint = endpoint(&spec, InitFirstMachineActivateApi::ENDPOINT);
+    let spec = test_api_service(&[OperationApiEndpoint::from(
+        InitFirstMachineActivateApi::ENDPOINT,
+    )]);
+    let activate_endpoint = endpoint(
+        &spec,
+        OperationApiEndpoint::from(InitFirstMachineActivateApi::ENDPOINT),
+    );
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
         .expect("service starts");
@@ -768,8 +502,13 @@ async fn machine_init_installs_activates_and_writes_local_context() {
 async fn machine_init_stages_and_installs_a_local_release() {
     let server = TestNats::start().await;
     let client = server.controller.clone();
-    let spec = test_api_service(&[InitFirstMachineActivateApi::ENDPOINT]);
-    let activate_endpoint = endpoint(&spec, InitFirstMachineActivateApi::ENDPOINT);
+    let spec = test_api_service(&[OperationApiEndpoint::from(
+        InitFirstMachineActivateApi::ENDPOINT,
+    )]);
+    let activate_endpoint = endpoint(
+        &spec,
+        OperationApiEndpoint::from(InitFirstMachineActivateApi::ENDPOINT),
+    );
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
         .expect("service starts");
@@ -874,8 +613,13 @@ async fn machine_init_installer_failure_names_phase_and_output() {
 async fn machine_init_activation_failure_does_not_record_machine_ssh() {
     let server = TestNats::start().await;
     let client = server.controller.clone();
-    let spec = test_api_service(&[InitFirstMachineActivateApi::ENDPOINT]);
-    let activate_endpoint = endpoint(&spec, InitFirstMachineActivateApi::ENDPOINT);
+    let spec = test_api_service(&[OperationApiEndpoint::from(
+        InitFirstMachineActivateApi::ENDPOINT,
+    )]);
+    let activate_endpoint = endpoint(
+        &spec,
+        OperationApiEndpoint::from(InitFirstMachineActivateApi::ENDPOINT),
+    );
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
         .expect("service starts");
@@ -931,9 +675,9 @@ async fn machine_init_invalid_hostname_fails_before_install() {
 
     assert!(matches!(
         error,
-        PloyzctlExecutionError::RemoteMachine {
-            ref source
-        } if matches!(&**source, RemoteMachineExecutionError::MachineIdentity { .. })
+        PloyzctlExecutionError::Machine(MachineExecutionError::RemoteMachine {
+            ref source,
+        }) if matches!(&**source, RemoteMachineExecutionError::MachineIdentity { .. })
     ));
     let rendered = error.to_string();
     assert!(rendered.contains("sg.core.1"));
@@ -958,9 +702,9 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
     let server = TestNats::start().await;
     let client = server.controller.clone();
     let spec = test_api_service(&[
-        MachineAddApi::ENDPOINT,
-        OpsWatchApi::ENDPOINT,
-        OpsStatusApi::ENDPOINT,
+        OperationApiEndpoint::from(MachineAddApi::ENDPOINT),
+        OperationApiEndpoint::from(OpsWatchApi::ENDPOINT),
+        OperationApiEndpoint::from(OpsStatusApi::ENDPOINT),
     ]);
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
@@ -968,7 +712,7 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
 
     runtime
         .bind_endpoint(
-            &endpoint(&spec, MachineAddApi::ENDPOINT),
+            &endpoint(&spec, OperationApiEndpoint::from(MachineAddApi::ENDPOINT)),
             |request| async move {
                 let request: MachineAddRequest =
                     serde_json::from_slice(&request.payload).expect("machine add request decodes");
@@ -1012,7 +756,7 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
         .expect("machine add endpoint binds");
     runtime
         .bind_endpoint(
-            &endpoint(&spec, OpsWatchApi::ENDPOINT),
+            &endpoint(&spec, OperationApiEndpoint::from(OpsWatchApi::ENDPOINT)),
             |_request| async move {
                 let response: OpsWatchResponse = OperationApiResponse::Ok {
                     value: OperationEventReplayPage::terminal(Vec::new()),
@@ -1024,7 +768,7 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
         .expect("ops watch endpoint binds");
     runtime
         .bind_endpoint(
-            &endpoint(&spec, OpsStatusApi::ENDPOINT),
+            &endpoint(&spec, OperationApiEndpoint::from(OpsStatusApi::ENDPOINT)),
             |request| async move {
                 let request: OpsStatusRequest =
                     serde_json::from_slice(&request.payload).expect("status request decodes");
@@ -1120,13 +864,13 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
 async fn machine_add_remote_local_release_mismatch_reports_accepted_operation() {
     let server = TestNats::start().await;
     let client = server.controller.clone();
-    let spec = test_api_service(&[MachineAddApi::ENDPOINT]);
+    let spec = test_api_service(&[OperationApiEndpoint::from(MachineAddApi::ENDPOINT)]);
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
         .expect("service starts");
     runtime
         .bind_endpoint(
-            &endpoint(&spec, MachineAddApi::ENDPOINT),
+            &endpoint(&spec, OperationApiEndpoint::from(MachineAddApi::ENDPOINT)),
             |request| async move {
                 let request: MachineAddRequest =
                     serde_json::from_slice(&request.payload).expect("machine add request decodes");
@@ -1185,7 +929,8 @@ async fn machine_add_remote_local_release_mismatch_reports_accepted_operation() 
     .await
     .expect_err("mismatched local release fails remote machine add");
 
-    let PloyzctlExecutionError::RemoteMachine { source } = &error else {
+    let PloyzctlExecutionError::Machine(MachineExecutionError::RemoteMachine { source }) = &error
+    else {
         panic!("expected remote machine error, got {error:?}");
     };
     let RemoteMachineExecutionError::LocalReleaseAfterMachineAdd {
@@ -1212,13 +957,13 @@ async fn machine_add_remote_local_release_mismatch_reports_accepted_operation() 
 async fn machine_add_remote_installer_failure_carries_operation_and_phase() {
     let server = TestNats::start().await;
     let client = server.controller.clone();
-    let spec = test_api_service(&[MachineAddApi::ENDPOINT]);
+    let spec = test_api_service(&[OperationApiEndpoint::from(MachineAddApi::ENDPOINT)]);
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
         .expect("service starts");
     runtime
         .bind_endpoint(
-            &endpoint(&spec, MachineAddApi::ENDPOINT),
+            &endpoint(&spec, OperationApiEndpoint::from(MachineAddApi::ENDPOINT)),
             |request| async move {
                 let request: MachineAddRequest =
                     serde_json::from_slice(&request.payload).expect("machine add request decodes");
@@ -1275,7 +1020,8 @@ async fn machine_add_remote_installer_failure_carries_operation_and_phase() {
     .await
     .expect_err("failed join installer fails remote machine add");
 
-    let PloyzctlExecutionError::RemoteMachine { source } = &error else {
+    let PloyzctlExecutionError::Machine(MachineExecutionError::RemoteMachine { source }) = &error
+    else {
         panic!("expected remote machine error, got {error:?}");
     };
     let RemoteMachineExecutionError::RemoteJoinInstall { operation_id, .. } = &**source else {
@@ -1303,9 +1049,9 @@ async fn machine_add_remote_terminal_failure_does_not_record_machine_ssh() {
     let server = TestNats::start().await;
     let client = server.controller.clone();
     let spec = test_api_service(&[
-        MachineAddApi::ENDPOINT,
-        OpsWatchApi::ENDPOINT,
-        OpsStatusApi::ENDPOINT,
+        OperationApiEndpoint::from(MachineAddApi::ENDPOINT),
+        OperationApiEndpoint::from(OpsWatchApi::ENDPOINT),
+        OperationApiEndpoint::from(OpsStatusApi::ENDPOINT),
     ]);
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
@@ -1313,7 +1059,7 @@ async fn machine_add_remote_terminal_failure_does_not_record_machine_ssh() {
 
     runtime
         .bind_endpoint(
-            &endpoint(&spec, MachineAddApi::ENDPOINT),
+            &endpoint(&spec, OperationApiEndpoint::from(MachineAddApi::ENDPOINT)),
             |request| async move {
                 let request: MachineAddRequest =
                     serde_json::from_slice(&request.payload).expect("machine add request decodes");
@@ -1336,7 +1082,7 @@ async fn machine_add_remote_terminal_failure_does_not_record_machine_ssh() {
         .expect("machine add endpoint binds");
     runtime
         .bind_endpoint(
-            &endpoint(&spec, OpsWatchApi::ENDPOINT),
+            &endpoint(&spec, OperationApiEndpoint::from(OpsWatchApi::ENDPOINT)),
             |_request| async move {
                 let response: OpsWatchResponse = OperationApiResponse::Ok {
                     value: OperationEventReplayPage::terminal(Vec::new()),
@@ -1348,7 +1094,7 @@ async fn machine_add_remote_terminal_failure_does_not_record_machine_ssh() {
         .expect("ops watch endpoint binds");
     runtime
         .bind_endpoint(
-            &endpoint(&spec, OpsStatusApi::ENDPOINT),
+            &endpoint(&spec, OperationApiEndpoint::from(OpsStatusApi::ENDPOINT)),
             |request| async move {
                 let request: OpsStatusRequest =
                     serde_json::from_slice(&request.payload).expect("status request decodes");

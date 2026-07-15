@@ -44,7 +44,7 @@ agent can call with the same guarantees.
    ployz ops list
    ```
 
-Once DNS points a routed hostname at a machine, the gateway serves it. Lifecycle is operations too: `machine drain`,
+Once external DNS points a routed hostname at a gateway machine, the gateway serves it. Lifecycle is operations too: `machine drain`,
 `machine resume`, `ops watch <id>`, `inspect`.
 
 ## Features
@@ -60,7 +60,7 @@ Once DNS points a routed hostname at a machine, the gateway serves it. Lifecycle
   engine or progress bus.
 - **Disposable core** — machines own runtime truth via local fact ledgers, so a lost core is promoted from an existing
   machine, not restored from a consensus database.
-- **Built-in gateway** — routes external hostnames to your service containers, with DNS.
+- **Built-in gateway** — routes externally managed hostnames to your service containers; Ployz DNS resolves internal service names.
 
 ## Why Ployz?
 
@@ -76,7 +76,9 @@ Ployz takes the pragmatic middle for those of us not running at Google scale:
 
 ## How it works
 
-One daemon, one NATS control domain, local runtime execution:
+One `ployzd` artifact runs as separately supervised Control, Machine, Gateway,
+and DNS role processes around one NATS control domain and local runtime
+execution:
 
 ```text
 CLI / SDK / Cloud
@@ -103,3 +105,13 @@ while the core stays the runtime authority.
 
 Pre-1.0 and under active development; expect breaking changes. Bootstrap resolves the `alpha` channel to an exact,
 SHA-256-verified GitHub release and installs only `ployz host`. Ployz never tracks GitHub `latest`.
+
+## Contributing
+
+Start with the [contributor code map](docs/architecture/code-map.md). It explains
+the supervised runtime roles, state and dependency ownership, canonical module
+boundaries, where each kind of change belongs, and which test level proves it.
+
+Then read [VISION.md](VISION.md), [CONTEXT.md](CONTEXT.md), the accepted
+[ADRs](docs/adr/), and [AGENTS.md](AGENTS.md) before changing product or
+architecture behavior.

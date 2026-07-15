@@ -1,4 +1,4 @@
-use ployz_core::cert::{
+use ployz_core::certificate::{
     LeaseBearerToken, ManagedCertBundle, ManagedCertificateIssuanceFailureKind,
     ManagedLeaseAcquireRequest, ManagedLeaseAcquired, ManagedLeaseName, ManagedLeaseRenewRequest,
     ManagedLeaseRenewed,
@@ -13,7 +13,7 @@ pub struct LeaseWorkerUrl(String);
 impl LeaseWorkerUrl {
     #[must_use]
     pub fn default_worker() -> Self {
-        Self(ployz_core::cert::DEFAULT_LEASE_WORKER_URL.to_owned())
+        Self(ployz_core::certificate::DEFAULT_LEASE_WORKER_URL.to_owned())
     }
 
     pub fn try_new(value: impl Into<String>) -> Result<Self, LeaseWorkerUrlError> {
@@ -219,8 +219,8 @@ impl LeaseClientError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::cert::ManagedLeaseAcquisitionId;
-    use ployz_lease_worker::{StubLeaseWorker, serve};
+    use ployz_core::certificate::ManagedLeaseAcquisitionId;
+    use ployz_test_lease_worker::{StubLeaseWorker, serve};
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;

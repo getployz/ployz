@@ -1,119 +1,9 @@
-use std::path::PathBuf;
-
 use ployz_core::nats_config::{
-    CredentialGrant, CredentialName, CredentialRole, NatsAdvertisedHost, NatsAuthorizationGrant,
-    NatsInternalAuthority, NatsListener, NatsServerCertificatePem, NatsServerConfig,
-    NatsServerConfigError, NatsServerTlsFiles, NatsUserPublicKey, NatsUserSeed,
-    parse_authorized_users, render_authorized_users,
+    CredentialGrant, CredentialName, CredentialRole, NatsAuthorizationGrant, NatsInternalAuthority,
+    NatsServerCertificatePem, NatsServerConfigError, NatsUserPublicKey, NatsUserSeed,
 };
-use ployz_test_support::ids::machine_id;
 
 const CA_PEM: &str = "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n";
-
-#[test]
-fn single_machine_nats_config_renders_loopback_tls_disabled_jetstream_and_include() {
-    let config = loopback_config();
-
-    assert_eq!(config.client_host(), "127.0.0.1");
-    assert_eq!(config.port(), 4222);
-    assert_eq!(
-        config.render(),
-        "server_name: core_1\n\
-         host: 127.0.0.1\n\
-         port: 4222\n\
-         tls {\n  cert_file: \"/var/lib/ployz/nats/server.crt\"\n  key_file: \"/var/lib/ployz/nats/server.key\"\n}\n\
-         jetstream: disabled\n\
-         include \"authorized-users.conf\"\n"
-    );
-}
-
-#[test]
-fn external_listener_binds_all_interfaces_and_advertises_the_public_host() {
-    let config = NatsServerConfig::single_machine(
-        machine_id("core_1"),
-        NatsListener::External {
-            advertise_host: NatsAdvertisedHost::try_new("203.0.113.10")
-                .expect("valid advertised host"),
-        },
-        tls_files(),
-        PathBuf::from("authorized-users.conf"),
-    )
-    .expect("external nats config is valid");
-
-    assert_eq!(config.client_host(), "203.0.113.10");
-    let rendered = config.render();
-    assert!(rendered.contains("host: 0.0.0.0\n"));
-    assert!(rendered.contains("client_advertise: \"203.0.113.10:4222\"\n"));
-    assert!(rendered.contains("tls {\n"));
-}
-
-#[test]
-fn advertised_host_accepts_hostname_ipv4_and_bracketed_ipv6_only() {
-    assert!(NatsAdvertisedHost::try_new("core.example.test").is_ok());
-    assert!(NatsAdvertisedHost::try_new("203.0.113.10").is_ok());
-    assert!(NatsAdvertisedHost::try_new("[2001:db8::1]").is_ok());
-    assert!(NatsAdvertisedHost::try_new("").is_err());
-    assert!(NatsAdvertisedHost::try_new("under_score").is_err());
-    assert!(NatsAdvertisedHost::try_new("-leading.example").is_err());
-    assert!(NatsAdvertisedHost::try_new("[not-an-ipv6]").is_err());
-}
-
-#[test]
-fn single_machine_nats_config_requires_absolute_tls_paths() {
-    assert_eq!(
-        NatsServerConfig::single_machine(
-            machine_id("core_1"),
-            NatsListener::Loopback,
-            NatsServerTlsFiles {
-                cert_file: PathBuf::from("relative/server.crt"),
-                key_file: PathBuf::from("/var/lib/ployz/nats/server.key"),
-            },
-            PathBuf::from("authorized-users.conf"),
-        ),
-        Err(NatsServerConfigError::InvalidPath {
-            field: "tls.cert_file",
-            value: PathBuf::from("relative/server.crt"),
-        })
-    );
-}
-
-#[test]
-fn authorized_users_render_one_block_per_principal_with_own_inbox() {
-    let rendered = render_authorized_users(&[
-        NatsAuthorizationGrant::Internal {
-            authority: NatsInternalAuthority::Controller,
-            public_key: user_public_key('A'),
-        },
-        NatsAuthorizationGrant::Internal {
-            authority: NatsInternalAuthority::Join,
-            public_key: user_public_key('B'),
-        },
-    ]);
-
-    assert!(rendered.starts_with("authorization {\n  users [\n"));
-    assert!(rendered.ends_with("  ]\n}\n"));
-    assert!(rendered.contains(&format!("nkey: {}", user_public_key('A').as_str())));
-    assert!(rendered.contains(&format!("nkey: {}", user_public_key('B').as_str())));
-    assert!(rendered.contains("\"_INBOX_ctl.>\""));
-    assert!(rendered.contains("\"_INBOX_join.>\""));
-    assert!(!rendered.contains("\"_INBOX.>\""));
-    assert!(rendered.contains("\"plz.v1.rpc.join.command.machine.redeem\""));
-    assert!(rendered.contains("allow_responses: true"));
-}
-
-#[test]
-fn authorized_machine_user_uses_intent_service_without_core_kv_access() {
-    let rendered = render_authorized_users(&[NatsAuthorizationGrant::Internal {
-        authority: NatsInternalAuthority::Machine {
-            machine_id: machine_id("machine_7"),
-        },
-        public_key: user_public_key('C'),
-    }]);
-
-    assert!(rendered.contains("\"_INBOX_machine_machine_7.>\""));
-    assert!(rendered.contains("\"plz.v1.rpc.core.query.intent.get\""));
-    assert!(!rendered.contains("KV_KV_CORE"));
-}
 
 #[test]
 fn authorized_user_record_keys_include_user_public_key() {
@@ -151,22 +41,6 @@ fn credential_name_trims_unicode_text_and_rejects_blank_text() {
 }
 
 #[test]
-fn authorized_users_round_trip_named_credentials_and_internal_authorities() {
-    let grants = vec![
-        credential(generated_user_public_key(), "Ployz Cloud"),
-        NatsAuthorizationGrant::Internal {
-            authority: NatsInternalAuthority::Controller,
-            public_key: generated_user_public_key(),
-        },
-    ];
-
-    let parsed = parse_authorized_users(&render_authorized_users(&grants))
-        .expect("rendered authorizations parse");
-
-    assert_eq!(parsed, grants);
-}
-
-#[test]
 fn nats_user_key_material_is_validated_and_seed_debug_is_redacted() {
     let public = "UBCXCMGAZQZN55X5TTTWMB5CZNZIKJHEDZJOJ3TV63NKPJ6FRXSR2ZO4";
     let seed = "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM";
@@ -196,28 +70,6 @@ fn server_certificate_pem_requires_a_certificate_block() {
     );
     let pem = NatsServerCertificatePem::try_new(CA_PEM).expect("valid certificate pem");
     assert_eq!(pem.as_str(), CA_PEM);
-}
-
-fn loopback_config() -> NatsServerConfig {
-    NatsServerConfig::single_machine(
-        machine_id("core_1"),
-        NatsListener::Loopback,
-        tls_files(),
-        PathBuf::from("authorized-users.conf"),
-    )
-    .expect("single-machine nats config is valid")
-}
-
-fn tls_files() -> NatsServerTlsFiles {
-    NatsServerTlsFiles {
-        cert_file: PathBuf::from("/var/lib/ployz/nats/server.crt"),
-        key_file: PathBuf::from("/var/lib/ployz/nats/server.key"),
-    }
-}
-
-fn user_public_key(_fill: char) -> NatsUserPublicKey {
-    NatsUserPublicKey::try_new("UBCXCMGAZQZN55X5TTTWMB5CZNZIKJHEDZJOJ3TV63NKPJ6FRXSR2ZO4")
-        .expect("valid user public key")
 }
 
 fn generated_user_public_key() -> NatsUserPublicKey {

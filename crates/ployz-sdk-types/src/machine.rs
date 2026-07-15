@@ -131,7 +131,7 @@ pub struct MachineSnapshot {
 pub enum MachineTestimony {
     Answered {
         endpoints: Option<MachineEndpointObservation>,
-        gateway: Option<GatewayStatusObservation>,
+        gateway: Option<Box<GatewayStatusObservation>>,
         observed_container_count: usize,
         disk_space: MachineDiskSpace,
         /// When this machine last self-reported, as display evidence for the
@@ -222,7 +222,7 @@ pub struct MachineJoinRedeemed {
     pub roles: InstallRolePolicy,
     #[serde(default = "HostPortAssurance::keeper")]
     pub host_port_assurance: HostPortAssurance,
-    pub endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet,
+    pub endpoint_subnet: ployz_core::network::MachineEndpointSubnet,
     pub join_bundle: MachineJoinBundle,
     pub secret_delivery: MachineJoinSecretDelivery,
     pub joined_at: JoinTokenRedeemedAt,

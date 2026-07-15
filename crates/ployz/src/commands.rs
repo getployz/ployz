@@ -3,23 +3,18 @@
 use std::fmt;
 
 use clap::{Args, Parser, Subcommand};
-use ployz_core::state::MachineLifecycle;
+use ployz_core::machine::MachineLifecycle;
 
-pub mod compose;
-pub mod core;
-pub mod deploy;
-pub(crate) mod deploy_failure;
-pub(crate) mod deploy_render;
-pub mod ingress;
-pub mod init;
-pub mod logs;
-pub mod machine;
-pub mod namespace;
-pub mod network;
-pub mod ops;
-pub mod role_policy;
-pub mod service;
-pub mod volume;
+use crate::core::command as core;
+use crate::deploy::{command as deploy, compose_command as compose};
+use crate::ingress::command as ingress;
+use crate::logs::command as logs;
+use crate::machine::{command as machine, founder as init};
+use crate::namespace::command as namespace;
+use crate::network::command as network;
+use crate::operation::command as ops;
+use crate::service::command as service;
+use crate::volume::command as volume;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PloyzctlInvocation {
@@ -153,7 +148,7 @@ pub fn parse_command(
 
 #[derive(Debug, Subcommand)]
 enum CommandCli {
-    Login(service::EmptyCli),
+    Login(EmptyCli),
     Telemetry {
         #[command(subcommand)]
         command: TelemetryCli,
@@ -204,6 +199,9 @@ enum CommandCli {
         command: InternalCli,
     },
 }
+
+#[derive(Debug, Args)]
+struct EmptyCli {}
 
 #[derive(Debug, Subcommand)]
 enum TelemetryCli {
@@ -396,7 +394,7 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
             logs::logs_tail_command(command).map(PloyzctlCommand::LogsTail)
         }
         CommandCli::Ops { command } => match command {
-            OpsCli::List(command) => Ok(PloyzctlCommand::OpsList(ops::ops_list_command(command))),
+            OpsCli::List(command) => ops::ops_list_command(command).map(PloyzctlCommand::OpsList),
             OpsCli::Status(command) => {
                 ops::ops_status_command(command).map(PloyzctlCommand::OpsStatus)
             }

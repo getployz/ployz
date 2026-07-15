@@ -5,14 +5,14 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ployz_core::dataplane::INTERNAL_DNS_SUFFIX;
+use ployz_core::network::INTERNAL_DNS_SUFFIX;
 use tokio::net::UdpSocket;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
-use crate::fact_cache::FactCache;
-use ployz_core::internal_dns::{InternalServiceName, internal_dns_records};
-use ployz_core::state::IntentSnapshot;
+use crate::role_testimony::RoleTestimonyCache;
+use ployz_core::intent::IntentSnapshot;
+use ployz_core::network::internal_dns::{InternalServiceName, internal_dns_records};
 
 const DNS_HEADER_LEN: usize = 12;
 const DNS_PORT: u16 = 53;
@@ -290,7 +290,7 @@ impl InternalDnsIntentCache {
 
     fn records(
         &self,
-        snapshots: &[ployz_core::machine_runtime::MachineFactsSnapshot],
+        snapshots: &[ployz_core::machine::runtime::MachineFactsSnapshot],
     ) -> std::collections::BTreeMap<InternalServiceName, Vec<Ipv4Addr>> {
         self.intent
             .lock()
@@ -304,7 +304,7 @@ impl InternalDnsIntentCache {
 /// Spawns the machine-local resolver. Queries read cached facts and last-known-good
 /// intent; core availability, health, and gateway status are not query dependencies.
 pub(super) fn spawn_internal_resolver(
-    facts: FactCache,
+    facts: RoleTestimonyCache,
     intent: InternalDnsIntentCache,
     bind: SocketAddr,
     mut shutdown: broadcast::Receiver<()>,
@@ -383,7 +383,7 @@ pub(super) fn spawn_internal_resolver(
 }
 
 async fn response_for_request(
-    facts: &FactCache,
+    facts: &RoleTestimonyCache,
     intent: &InternalDnsIntentCache,
     upstream: IpAddr,
     packet: Vec<u8>,
@@ -470,20 +470,22 @@ fn load_upstream_nameserver(own_bind: IpAddr) -> IpAddr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::dataplane::MachineEndpointSubnet;
     use ployz_core::ids::{
         ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId,
         StepId,
     };
-    use ployz_core::machine_runtime::{
+    use ployz_core::intent::ActiveMachineState;
+    use ployz_core::intent::IntentSnapshot;
+    use ployz_core::intent::recovery::ControlPlaneEpoch;
+    use ployz_core::machine::MachineLifecycle;
+    use ployz_core::machine::runtime::{
         ContainerRuntimeState, MachineContainerObservationSnapshot, MachineDiskSpace,
         MachineFactsSnapshot, ManagedContainerIdentity, ManagedContainerKind,
         ManagedContainerObservation,
     };
+    use ployz_core::network::MachineEndpointSubnet;
     use ployz_core::roles::InstallRolePolicy;
-    use ployz_core::state::{
-        ActiveMachineState, ControlPlaneEpoch, IntentSnapshot, MachineLifecycle,
-    };
+
     use ployz_test_support::fixtures::serving_target_entry;
     use ployz_test_support::ids::{machine_id, machine_name, operation_id};
 
@@ -521,7 +523,7 @@ mod tests {
     async fn a_query_for_unknown_internal_name_returns_noerror_without_answers() {
         let packet = query_packet("missing.default.internal", DNS_TYPE_A);
         let response = response_for_request(
-            &FactCache::default(),
+            &RoleTestimonyCache::default(),
             &InternalDnsIntentCache::default(),
             IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
             packet,
@@ -534,7 +536,7 @@ mod tests {
 
     #[tokio::test]
     async fn aaaa_query_for_known_internal_name_returns_noerror_without_answers() {
-        let cache = FactCache::default();
+        let cache = RoleTestimonyCache::default();
         cache.record_machine_facts(facts(
             "machine_a",
             [observation(
@@ -564,7 +566,7 @@ mod tests {
         let bind = reservation.local_addr().expect("reserved address");
         drop(reservation);
 
-        let cache = FactCache::default();
+        let cache = RoleTestimonyCache::default();
         cache.record_machine_facts(facts(
             "machine_a",
             [observation(
@@ -645,7 +647,7 @@ mod tests {
 
     #[test]
     fn intent_cache_retains_last_known_good_when_refresh_is_unavailable() {
-        let cache = FactCache::default();
+        let cache = RoleTestimonyCache::default();
         cache.record_machine_facts(facts(
             "machine_a",
             [observation(
@@ -789,12 +791,12 @@ mod tests {
                 mesh_endpoints: Vec::new(),
                 endpoint_subnet: MachineEndpointSubnet::try_new("10.198.0.0/24")
                     .expect("endpoint subnet"),
-                wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+                wireguard_public_key: ployz_core::network::WireGuardPublicKey::try_new(format!(
                     "public-{machine}"
                 ))
                 .expect("public key"),
             }],
-            dataplane_projection: ployz_core::dataplane::DataplaneProjection::try_new(
+            dataplane_projection: ployz_core::network::DataplaneProjection::try_new(
                 Vec::new(),
                 None,
             )

@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crate::dataplane::{
+use crate::network::{
     DataplaneProjection, DataplaneProjectionMember, DataplaneProjectionRevisions,
     DataplaneProjectionTestimony, EbpfAttachmentStatus, EndpointBridgeStatus,
     MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS, MachineDataplaneStatus, WireGuardHandshakeStatus,
@@ -21,7 +21,7 @@ impl AdmissionScope {
     fn expected_revision(
         self,
         projection: &DataplaneProjection,
-    ) -> &crate::dataplane::DataplaneProjectionRevision {
+    ) -> &crate::network::DataplaneProjectionRevision {
         match self {
             Self::Target => projection.target_revision(),
             Self::Declared => projection.declared_revision(),
@@ -31,7 +31,7 @@ impl AdmissionScope {
     fn observed_revision(
         self,
         revisions: &DataplaneProjectionRevisions,
-    ) -> crate::dataplane::DataplaneProjectionRevision {
+    ) -> crate::network::DataplaneProjectionRevision {
         match self {
             Self::Target => revisions.target_revision.clone(),
             Self::Declared => revisions.declared_revision.clone(),

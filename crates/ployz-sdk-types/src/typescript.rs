@@ -1,6 +1,7 @@
 //! TypeScript contract export owned by the Rust SDK type crate.
 
 use crate::operation_api::OperationApiContract;
+use crate::operation_api::OperationApiEndpoint;
 use crate::{
     AbsoluteInstallPath, AcceptedOperation, AcmeChallengeToken, AcmeChallengeTtlSeconds,
     AcmeChallengeValue, AcmeHttp01Challenge, ActiveCertState, ActiveCertificateMetadata,
@@ -19,7 +20,10 @@ use crate::{
     CloudJoinerBootstrap, CloudJoinerBootstrapResult, ContainerCommand, ContainerEntrypoint,
     ContainerHealth, ContainerHealthcheck, ContainerHealthcheckTest, ContainerId,
     ContainerMountPath, ContainerResourceLimits, ContainerRestartPolicy, ContainerRuntimeSpec,
-    ContainerRuntimeState, ControlPlaneCommitScope, ControlPlaneEpoch, CoreReplaceError,
+    ContainerRuntimeState, ControlCertificateRenewalAttempt, ControlCertificateRenewalFailure,
+    ControlCertificateRenewalHealth, ControlCertificateRenewalOutcome, ControlHealth,
+    ControlPlaneCommitScope, ControlPlaneEpoch, ControlRuntimeProjectionHealth,
+    ControlRuntimeProjectionLoopHealth, ControlRuntimeProjectionServiceHealth, CoreReplaceError,
     CoreReplaceFailure, CoreReplaceOperationState, CoreReplaceReportError,
     CoreReplaceReportOutcome, CoreReplaceReportRequest, CoreReplaceReported, CoreReplaceRequest,
     CredentialAddError, CredentialAddRequest, CredentialGrant, CredentialGrantAction,
@@ -37,31 +41,34 @@ use crate::{
     DeployServicePlan, DeployServiceResult, DeployServiceSpec, DeploySubmitError,
     DeploySubmitRequest, DeploySubmitResponse, EbpfAttachmentStatus, EbpfForwardingReady,
     EbpfForwardingReadyEvidence, EndpointBridgeStatus, EnvName, EnvValue, EventSequence,
-    FailureMessage, FirstMachineInstallArtifacts, FirstMachineInstallSpec, GatewayRole,
-    GatewayServingStatus, GatewayStatusObservation, HealthCheckFailure, HealthcheckDurationNanos,
-    HealthcheckRetries, HealthcheckShellCommand, HostPortAssurance, ImageReference, ImageSource,
-    IngressConfiguration, IngressConfigureError, IngressConfigureFailure,
-    IngressConfigureOperationState, IngressConfigureRequest, IngressEndpointProjection,
-    IngressEndpointProjectionIdentity, IngressEndpointProjectionState, IngressEndpointSet,
-    IngressEndpointUnavailableReason, IngressRefreshCandidateEvidence,
+    FailureMessage, FirstMachineInstallArtifacts, FirstMachineInstallSpec, GatewayHttpFailure,
+    GatewayProcessAttempt, GatewayProcessHealth, GatewayRole, GatewayServingStatus,
+    GatewayStatusObservation, GatewayStatusPublishFailure, GatewayWatchFailure, HealthCheckFailure,
+    HealthcheckDurationNanos, HealthcheckRetries, HealthcheckShellCommand, HostPortAssurance,
+    ImageReference, ImageSource, IngressConfiguration, IngressConfigureError,
+    IngressConfigureFailure, IngressConfigureOperationState, IngressConfigureRequest,
+    IngressEndpointProjection, IngressEndpointProjectionIdentity, IngressEndpointProjectionState,
+    IngressEndpointSet, IngressEndpointUnavailableReason, IngressRefreshCandidateEvidence,
     IngressRefreshCandidatePublication, IngressRefreshEvidence, IngressRefreshExclusionReason,
     IngressRefreshFactsOutcome, IngressRefreshFailure, IngressRefreshGatewayOutcome,
     IngressRefreshInvalidationEvidence, IngressRefreshOperationState,
     InitFirstMachineActivateError, InitFirstMachineActivateRequest,
     InitFirstMachineActivateResponse, InitFirstMachineActivated, InstallArtifactSource,
     InstallArtifactSpec, InstallArtifactVersion, InstallRolePolicy, InstallSha256Digest,
-    InternalDnsFactGeneration, InternalDnsFactWatermark, InternalDnsResolverCacheIncarnation,
-    InternalDnsResolverStatus, InternalDnsStatus, InternalServiceName, IssuedJoinToken,
-    JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt, LinuxCapability, LogsTailError,
-    LogsTailLines, LogsTailRequest, LogsTailResult, LogsTailResultTarget, LogsTailTarget,
-    MAX_LOGS_TAIL_LINES, MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted, MachineAddError,
-    MachineAddFailure, MachineAddOperationState, MachineAddOperationStateName, MachineAddRequest,
-    MachineAddResponse, MachineBootstrapUrl, MachineCredentialProvisioningStep,
-    MachineDataplaneStatus, MachineDiskSpace, MachineEndpointObservation, MachineEndpointSubnet,
-    MachineEndpointSupernet, MachineFactsRefreshConfirmation, MachineId, MachineInspectError,
-    MachineInspectRequest, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
-    MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResponse,
-    MachineJoinRedeemResult, MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportFailure,
+    InternalDnsFactGeneration, InternalDnsFactWatermark, InternalDnsIntentHealth,
+    InternalDnsIntentRefreshHealth, InternalDnsIntentWatchHealth,
+    InternalDnsResolverCacheIncarnation, InternalDnsResolverStatus, InternalDnsStatus,
+    InternalServiceName, IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint,
+    JoinTokenRedeemedAt, LinuxCapability, LogsTailError, LogsTailLines, LogsTailRequest,
+    LogsTailResult, LogsTailResultTarget, LogsTailTarget, MAX_LOGS_TAIL_LINES,
+    MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddAccepted, MachineAddError, MachineAddFailure,
+    MachineAddOperationState, MachineAddOperationStateName, MachineAddRequest, MachineAddResponse,
+    MachineBootstrapUrl, MachineCredentialProvisioningStep, MachineDataplaneStatus,
+    MachineDiskSpace, MachineEndpointObservation, MachineEndpointSubnet, MachineEndpointSupernet,
+    MachineFactsRefreshConfirmation, MachineId, MachineInspectError, MachineInspectRequest,
+    MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial, MachineJoinRedeemError,
+    MachineJoinRedeemRequest, MachineJoinRedeemResponse, MachineJoinRedeemResult,
+    MachineJoinRedeemed, MachineJoinReportError, MachineJoinReportFailure,
     MachineJoinReportOutcome, MachineJoinReportRequest, MachineJoinReported,
     MachineJoinReportedFailure, MachineJoinReportedOutcome, MachineJoinRuntimeNatsUrl,
     MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinToken, MachineJoinTrustedNats,
@@ -113,15 +120,26 @@ use crate::{
     WireGuardStatus, WrappedCaKey, WrappedCoreSeeds,
 };
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
-use ployz_core::subjects::{
-    OperationApiEndpointExecution, RUNTIME_SNAPSHOT_SEED, RUNTIME_SNAPSHOT_STREAM,
-};
 use serde::Serialize;
 use serde_json::{Value, json};
 use ts_rs::{Config, TS};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NatsOperationApiEndpointMetadata {
+    pub name: &'static str,
+    pub subject: &'static str,
+    pub execution: &'static str,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct NatsTypescriptMetadata {
+    pub runtime_snapshot_seed: &'static str,
+    pub runtime_snapshot_stream: &'static str,
+    pub operation_api_endpoint: fn(OperationApiEndpoint) -> NatsOperationApiEndpointMetadata,
+}
+
 #[must_use]
-pub fn generated_typescript() -> String {
+pub fn generated_typescript(metadata: NatsTypescriptMetadata) -> String {
     let config = Config::new().with_large_int("number");
     let mut output = String::from("// Generated by ployz-sdk-types. Do not edit by hand.\n\n");
 
@@ -139,13 +157,15 @@ pub fn generated_typescript() -> String {
         "export const CLOUD_BOOTSTRAP_PROTOCOL_VERSION = {CLOUD_BOOTSTRAP_PROTOCOL_VERSION} as const;\n\n"
     ));
     output.push_str(&format!(
-        "export const RUNTIME_SNAPSHOT_SEED = {RUNTIME_SNAPSHOT_SEED:?} as const;\n\n"
+        "export const RUNTIME_SNAPSHOT_SEED = {:?} as const;\n\n",
+        metadata.runtime_snapshot_seed
     ));
     output.push_str(&format!(
-        "export const RUNTIME_SNAPSHOT_STREAM = {RUNTIME_SNAPSHOT_STREAM:?} as const;\n\n"
+        "export const RUNTIME_SNAPSHOT_STREAM = {:?} as const;\n\n",
+        metadata.runtime_snapshot_stream
     ));
     push_contract_decls(&mut output, &config);
-    push_operation_api_contracts(&mut output, &config);
+    push_operation_api_contracts(&mut output, &config, metadata.operation_api_endpoint);
 
     strip_trailing_whitespace(&output)
 }
@@ -365,6 +385,9 @@ macro_rules! exported_types {
             WireGuardMtuProbe,
             EbpfAttachmentStatus,
             InternalDnsStatus,
+            InternalDnsIntentHealth,
+            InternalDnsIntentRefreshHealth,
+            InternalDnsIntentWatchHealth,
             InternalDnsResolverStatus,
             InternalDnsResolverCacheIncarnation,
             InternalDnsFactGeneration,
@@ -413,6 +436,11 @@ macro_rules! exported_types {
             ServingTargetEntry,
             MachineEndpointObservation,
             GatewayServingStatus,
+            GatewayProcessHealth,
+            GatewayProcessAttempt,
+            GatewayHttpFailure,
+            GatewayWatchFailure,
+            GatewayStatusPublishFailure,
             GatewayStatusObservation,
             MachineDiskSpace,
             MachineSnapshot,
@@ -465,6 +493,14 @@ macro_rules! exported_types {
             VolumeRemoveError,
             RuntimeSnapshotRequest,
             RuntimeSnapshotResult,
+            ControlHealth,
+            ControlRuntimeProjectionHealth,
+            ControlRuntimeProjectionLoopHealth,
+            ControlRuntimeProjectionServiceHealth,
+            ControlCertificateRenewalHealth,
+            ControlCertificateRenewalAttempt,
+            ControlCertificateRenewalFailure,
+            ControlCertificateRenewalOutcome,
             RuntimeSnapshot,
             RuntimePloyzDnsTarget,
             RuntimePloyzDnsTargetAllocation,
@@ -575,7 +611,11 @@ fn push_decl<T: TS>(output: &mut String, config: &Config) {
     output.push_str("\n\n");
 }
 
-fn push_operation_api_contracts(output: &mut String, config: &Config) {
+fn push_operation_api_contracts(
+    output: &mut String,
+    config: &Config,
+    endpoint_metadata: fn(OperationApiEndpoint) -> NatsOperationApiEndpointMetadata,
+) {
     macro_rules! push_aliases {
         ($($contract:ty),+ $(,)?) => {
             $(push_operation_api_aliases_for::<$contract>(output, config);)+
@@ -586,7 +626,7 @@ fn push_operation_api_contracts(output: &mut String, config: &Config) {
     output.push_str("export const OPERATION_API_CONTRACTS = [\n");
     macro_rules! push_rows {
         ($($contract:ty),+ $(,)?) => {
-            $(push_operation_api_contract_row_for::<$contract>(output, config);)+
+            $(push_operation_api_contract_row_for::<$contract>(output, config, endpoint_metadata);)+
         };
     }
     crate::operation_api_contracts!(push_rows);
@@ -598,7 +638,7 @@ fn push_operation_api_contracts(output: &mut String, config: &Config) {
     output.push_str("export type OperationApiRequestByEndpoint = {\n");
     macro_rules! push_request_map {
         ($($contract:ty),+ $(,)?) => {
-            $(push_operation_api_request_map_row_for::<$contract>(output, config);)+
+            $(push_operation_api_request_map_row_for::<$contract>(output, config, endpoint_metadata);)+
         };
     }
     crate::operation_api_contracts!(push_request_map);
@@ -606,7 +646,7 @@ fn push_operation_api_contracts(output: &mut String, config: &Config) {
     output.push_str("export type OperationApiResponseByEndpoint = {\n");
     macro_rules! push_response_map {
         ($($contract:ty),+ $(,)?) => {
-            $(push_operation_api_response_map_row_for::<$contract>(output);)+
+            $(push_operation_api_response_map_row_for::<$contract>(output, endpoint_metadata);)+
         };
     }
     crate::operation_api_contracts!(push_response_map);
@@ -635,18 +675,22 @@ where
     ));
 }
 
-fn push_operation_api_contract_row_for<C>(output: &mut String, config: &Config)
-where
+fn push_operation_api_contract_row_for<C>(
+    output: &mut String,
+    config: &Config,
+    endpoint_metadata: fn(OperationApiEndpoint) -> NatsOperationApiEndpointMetadata,
+) where
     C: OperationApiContract,
     C::Request: TS,
     C::Success: TS,
     C::Error: TS,
 {
+    let endpoint = endpoint_metadata(C::ENDPOINT);
     output.push_str(&format!(
         "  {{ name: \"{}\", subject: \"{}\", execution: \"{}\", request: \"{}\", success: \"{}\", error: \"{}\", response: \"{}\" }},\n",
-        C::ENDPOINT.name(),
-        C::ENDPOINT.subject(),
-        operation_api_execution_name(C::ENDPOINT.execution()),
+        endpoint.name,
+        endpoint.subject,
+        endpoint.execution,
         operation_api_request_name_for::<C>(config),
         C::Success::name(config),
         C::Error::name(config),
@@ -654,25 +698,32 @@ where
     ));
 }
 
-fn push_operation_api_request_map_row_for<C>(output: &mut String, config: &Config)
-where
+fn push_operation_api_request_map_row_for<C>(
+    output: &mut String,
+    config: &Config,
+    endpoint_metadata: fn(OperationApiEndpoint) -> NatsOperationApiEndpointMetadata,
+) where
     C: OperationApiContract,
     C::Request: TS,
 {
+    let endpoint = endpoint_metadata(C::ENDPOINT);
     output.push_str(&format!(
         "  \"{}\": {};\n",
-        C::ENDPOINT.name(),
+        endpoint.name,
         operation_api_request_name_for::<C>(config),
     ));
 }
 
-fn push_operation_api_response_map_row_for<C>(output: &mut String)
-where
+fn push_operation_api_response_map_row_for<C>(
+    output: &mut String,
+    endpoint_metadata: fn(OperationApiEndpoint) -> NatsOperationApiEndpointMetadata,
+) where
     C: OperationApiContract,
 {
+    let endpoint = endpoint_metadata(C::ENDPOINT);
     output.push_str(&format!(
         "  \"{}\": {};\n",
-        C::ENDPOINT.name(),
+        endpoint.name,
         C::RESPONSE_ALIAS,
     ));
 }
@@ -683,14 +734,6 @@ where
     C::Request: TS,
 {
     C::REQUEST_ALIAS.map_or_else(|| C::Request::name(config), str::to_owned)
-}
-
-const fn operation_api_execution_name(execution: OperationApiEndpointExecution) -> &'static str {
-    match execution {
-        OperationApiEndpointExecution::AcceptsOperation => "accepts_operation",
-        OperationApiEndpointExecution::MutatesOperation => "mutates_operation",
-        OperationApiEndpointExecution::Query => "query",
-    }
 }
 
 #[must_use]
@@ -811,7 +854,7 @@ pub fn operation_contract_fixture() -> Value {
                 name: MachineName::try_new("edge_2").expect("valid machine name"),
                 roles: InstallRolePolicy::install_all().without_gateway(),
                 host_port_assurance: HostPortAssurance::External,
-                endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.2.0/24").expect("valid subnet"),
+                endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new("10.198.2.0/24").expect("valid subnet"),
                 join_bundle: machine_join_bundle(),
                 secret_delivery: machine_join_secret_delivery(),
                 joined_at: JoinTokenRedeemedAt::try_new(60).expect("valid redeemed timestamp"),
@@ -963,8 +1006,7 @@ fn machine_join_bundle() -> MachineJoinBundle {
     MachineJoinBundle {
         material: MachineJoinMaterial {
             cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
-            dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(
-            ),
+            dataplane_endpoint_supernet: ployz_core::network::MachineEndpointSupernet::default_v1(),
             runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
                 .expect("valid runtime nats url"),
             trusted_nats: trusted_nats(),

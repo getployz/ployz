@@ -1,15 +1,15 @@
 //! Machine-local NATS RPC protocol types.
 
-use ployz_core::dataplane::{
-    PloyzNativeMeshComponent, WireGuardEbpfPrepareError, WireGuardPublicKey,
-};
-use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredential};
-use ployz_core::ids::{ContainerId, MachineId, OperationId, StepId};
+use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredential, VolumeName};
+use ployz_core::ids::{ContainerId, MachineId, NamespaceId, OperationId, StepId};
 use ployz_core::image::{IMAGE_MESH_REGISTRY_PORT, ImageRepository, OciDigest};
 use ployz_core::install::InstallArtifactVersion;
-pub use ployz_core::machine_rpc::{MachineRpcResponder, MachineRpcResponse};
-use ployz_core::machine_runtime::{ManagedContainerIdentity, ManagedContainerObservation};
-use ployz_core::ops::{FailureMessage, MachineSubstrateVersions, OperatorHint};
+pub use ployz_core::machine::rpc::{MachineRpcResponder, MachineRpcResponse};
+use ployz_core::machine::runtime::{ManagedContainerIdentity, ManagedContainerObservation};
+use ployz_core::network::{
+    PloyzNativeMeshComponent, WireGuardEbpfPrepareError, WireGuardPublicKey,
+};
+use ployz_core::operation::{FailureMessage, MachineSubstrateVersions, OperatorHint};
 use serde::{Deserialize, Serialize};
 
 mod dataplane_status;
@@ -289,7 +289,8 @@ pub enum MachineContainerRemoveDomainError {
 #[serde(deny_unknown_fields)]
 pub struct MachineVolumeRemoveRpcRequest {
     pub operation_id: OperationId,
-    pub docker_volume_name: String,
+    pub namespace_id: NamespaceId,
+    pub volume_name: VolumeName,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -608,7 +609,7 @@ mod tests {
                 .expect("valid entry id"),
                 operation_id: operation_id("op_123"),
                 step_id: StepId::try_new("pre_start").expect("valid step id"),
-                kind: ployz_core::machine_runtime::ManagedContainerKind::Predeploy,
+                kind: ployz_core::machine::runtime::ManagedContainerKind::Predeploy,
             },
             timeout_millis: 1_000,
         };

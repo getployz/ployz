@@ -1,17 +1,18 @@
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr};
 
-use ployz_core::dataplane::MachineEndpointSubnet;
 use ployz_core::ids::{MachineId, NamespaceId, ServiceId};
 use ployz_core::ingress::{AutomaticHostnameConfiguration, PloyzDnsTargetIntent};
-use ployz_core::internal_dns::{InternalServiceName, internal_dns_records};
+use ployz_core::intent::recovery::ControlPlaneEpoch;
+use ployz_core::intent::{ActiveMachineState, IntentSnapshot};
 use ployz_core::machine::MachineName;
-use ployz_core::machine_runtime::{
+use ployz_core::machine::runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, MachineFactsSnapshot,
     ManagedContainerKind,
 };
-use ployz_core::roles::InstallRolePolicy;
-use ployz_core::state::{ActiveMachineState, ControlPlaneEpoch, IntentSnapshot, MachineLifecycle};
+use ployz_core::machine::{InstallRolePolicy, MachineLifecycle};
+use ployz_core::network::MachineEndpointSubnet;
+use ployz_core::network::internal_dns::{InternalServiceName, internal_dns_records};
 use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{machine_id, operation_id};
 use ployz_test_support::{containers, fixtures};
@@ -39,7 +40,7 @@ fn internal_dns_projection_returns_sorted_unique_running_service_ipv4_addresses(
             )
             .running_at(IpAddr::V4(Ipv4Addr::new(10, 198, 3, 10)))
             .build(),
-        ployz_core::machine_runtime::ManagedContainerObservation {
+        ployz_core::machine::ManagedContainerObservation {
             state: ContainerRuntimeState::Exited,
             ..containers::observation("machine_a", "ctr_exited")
                 .with(containers::identity("db").namespace("default"))
@@ -152,7 +153,7 @@ fn intent<const N: usize>(machines: [&str; N], entry: &str) -> IntentSnapshot {
         epoch: ControlPlaneEpoch::initial(),
         core_machine_id: machine_id("machine_a"),
         active_machines: machines.into_iter().map(active_machine).collect(),
-        dataplane_projection: ployz_core::dataplane::DataplaneProjection::try_new(Vec::new(), None)
+        dataplane_projection: ployz_core::network::DataplaneProjection::try_new(Vec::new(), None)
             .expect("empty projection"),
         route_bindings: Vec::new(),
         serving_target_entries: vec![serving_target_entry("db", entry)],
@@ -175,7 +176,7 @@ fn active_machine(id: &str) -> ActiveMachineState {
         mesh_endpoints: Vec::new(),
         endpoint_subnet: MachineEndpointSubnet::try_new("10.198.0.0/24")
             .expect("valid endpoint subnet"),
-        wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+        wireguard_public_key: ployz_core::network::WireGuardPublicKey::try_new(format!(
             "public-{id}"
         ))
         .expect("public key"),

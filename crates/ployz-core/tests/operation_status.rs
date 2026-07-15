@@ -1,4 +1,4 @@
-use ployz_core::ops::{NextEventSequenceError, OperationStatus};
+use ployz_core::operation::{NextEventSequenceError, OperationStatus};
 use ployz_test_support::ids::{event_sequence, namespace_id, operation_id, service_id};
 
 #[test]

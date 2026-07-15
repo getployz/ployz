@@ -3,17 +3,17 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-use crate::roles::gateway::client::{
-    GatewayStatusGetOk, GatewayStatusGetRequest, GatewayStatusGetResponse,
-};
 use crate::roles::gateway::pingora::PingoraRouteRegistry;
 use crate::roles::gateway::projection::{
     GatewayCertificateFailureAvailability, GatewayProjectionError,
 };
+use crate::roles::gateway::protocol::{
+    GatewayStatusGetOk, GatewayStatusGetRequest, GatewayStatusGetResponse,
+};
 use crate::roles::gateway::route_table::GatewayProjector;
 use crate::roles::gateway::source::{GatewayCertificateStore, GatewayCertificateStoreError};
 use crate::service_catalog::{gateway_role_service, machine_endpoint_spec};
-use ployz_core::cert::{
+use ployz_core::certificate::{
     CertificateArtifactPushOk, CertificateArtifactPushRequest, CertificateArtifactPushResponse,
     CertificateArtifactRemoveOk, CertificateArtifactRemoveRequest,
     CertificateArtifactRemoveResponse, CertificateChallengeApplyRequest,
@@ -23,14 +23,16 @@ use ployz_core::cert::{
     CertificateChallengeStatusResponse, GatewayCertificateRpcError,
 };
 use ployz_core::ids::MachineId;
-use ployz_core::ops::FailureMessage;
-use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation};
-use ployz_core::subjects::MachineServiceEndpoint;
+use ployz_core::machine::{GatewayProcessHealth, GatewayServingStatus, GatewayStatusObservation};
+use ployz_core::operation::FailureMessage;
+
 use ployz_nats::service_runtime::{
     NatsClient, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
     RunningNatsService, decode_json_request, start_nats_service,
 };
+use ployz_nats::subjects::MachineServiceEndpoint;
 
+#[cfg(test)]
 pub async fn start_gateway_certificate_service(
     client: NatsClient,
     machine_id: MachineId,
@@ -43,6 +45,7 @@ pub async fn start_gateway_certificate_service(
         certificate_store,
         registry,
         Arc::new(Mutex::new(GatewayProjector::new())),
+        Arc::new(Mutex::new(GatewayProcessHealth::default())),
         "0.0.0.0:0".parse().expect("static socket address"),
     )
     .await
@@ -54,6 +57,7 @@ pub(super) async fn start_gateway_role_service(
     certificate_store: GatewayCertificateStore,
     registry: PingoraRouteRegistry,
     gateway_runtime: Arc<Mutex<GatewayProjector>>,
+    gateway_health: Arc<Mutex<GatewayProcessHealth>>,
     listen_addr: SocketAddr,
 ) -> Result<RunningNatsService, NatsServiceRuntimeError> {
     let mut service = start_nats_service(client, &gateway_role_service(&machine_id)).await?;
@@ -139,13 +143,17 @@ pub(super) async fn start_gateway_role_service(
         return Err(error);
     }
     let status_spec = machine_endpoint_spec(&machine_id, MachineServiceEndpoint::GatewayStatusGet);
-    if let Err(error) = service
-        .bind_endpoint(&status_spec, move |request| {
-            let machine_id = machine_id.clone();
-            let runtime = Arc::clone(&gateway_runtime);
-            async move { handle_gateway_status_get(machine_id, listen_addr, &runtime, request) }
-        })
-        .await
+    if let Err(error) =
+        service
+            .bind_endpoint(&status_spec, move |request| {
+                let machine_id = machine_id.clone();
+                let runtime = Arc::clone(&gateway_runtime);
+                let health = Arc::clone(&gateway_health);
+                async move {
+                    handle_gateway_status_get(machine_id, listen_addr, &runtime, &health, request)
+                }
+            })
+            .await
     {
         let _ = service.shutdown().await;
         return Err(error);
@@ -157,12 +165,13 @@ fn handle_gateway_status_get(
     machine_id: MachineId,
     listen_addr: SocketAddr,
     runtime: &Mutex<GatewayProjector>,
+    health: &Mutex<GatewayProcessHealth>,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse {
     if let Err(response) = decode_json_request::<GatewayStatusGetRequest>(&request) {
         return response;
     }
-    let status = gateway_status_observation(&machine_id, listen_addr, runtime);
+    let status = gateway_status_observation(&machine_id, listen_addr, runtime, health);
     NatsServiceResponse::json_ok(&GatewayStatusGetResponse::Ok(GatewayStatusGetOk {
         observation: status,
     }))
@@ -172,6 +181,7 @@ pub(super) fn gateway_status_observation(
     machine_id: &MachineId,
     listen_addr: SocketAddr,
     runtime: &Mutex<GatewayProjector>,
+    health: &Mutex<GatewayProcessHealth>,
 ) -> GatewayStatusObservation {
     let runtime = runtime
         .lock()
@@ -196,6 +206,10 @@ pub(super) fn gateway_status_observation(
         listen_addr,
         serving,
         route_count,
+        process_health: health
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone(),
     }
 }
 

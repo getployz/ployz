@@ -26,6 +26,9 @@ the authority boundary for every caller.
 
 ## Ownership
 
+The path-level ownership and dependency map is maintained in
+[`code-map.md`](code-map.md). This section records only the NATS boundary:
+
 - `ployz-core`: domain models and product policy.
 - `ployz-nats`: NATS resources and API wrappers.
 - `ployzd`: process wiring, service handlers, controllers, machine services, and

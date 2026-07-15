@@ -22,9 +22,9 @@ use pingora::protocols::l4::socket::SocketAddr as PingoraSocketAddr;
 use pingora::protocols::tls::TlsRef;
 use pingora::proxy::{FailToProxy, ProxyHttp, Session};
 use pingora::upstreams::peer::HttpPeer;
-use ployz_core::cert::{AcmeHttp01Challenge, CertificateChallengeApplicationStatus};
+use ployz_core::certificate::{AcmeHttp01Challenge, CertificateChallengeApplicationStatus};
 use ployz_core::ingress::{CertificateOwner, RouteBindingOrigin};
-use ployz_core::ops::{RouteHostname, RouteHostnameError, RoutePort, RouteTarget};
+use ployz_core::operation::{RouteHostname, RouteHostnameError, RoutePort, RouteTarget};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
@@ -661,3 +661,7 @@ fn host_and_port(
 
     Ok((hostname, port))
 }
+
+#[cfg(test)]
+#[path = "pingora_tests.rs"]
+mod tests;

@@ -1,0 +1,194 @@
+use ployz_core::certificate::ActiveCertState;
+use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::image::{ImageEnsureOk, ImageEnsureRequest};
+use ployz_core::ingress::CertificateOwner;
+use ployz_core::intent::RouteBindingState;
+use ployz_core::intent::ServingTargetEntry;
+use ployz_core::intent::VolumePinState;
+use ployz_core::operation::ControlPlaneCommitScope;
+use ployz_core::operation::{
+    CertificateProvisionFailure, DeployEvidence, DeployTransition, RouteHostname, RouteTarget,
+};
+
+use std::future::Future;
+
+use crate::certificate::GatewayCertificateTarget;
+
+use crate::control::role_client::machine::{MachineImageEnsureError, MachineImageResolveError};
+use crate::roles::machine::protocol::{
+    MachineContainerRemoveRpcRequest, MachineContainerResolveImageRpcRequest,
+    MachineContainerRestartRpcRequest, MachineContainerRunHookRpcOk,
+    MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
+    MachineContainerStopRpcRequest, MachineRunContainerOutcome,
+};
+
+use super::{
+    DeployContainer, DeployHealthCheckError, DeployOperationRecordError,
+    MachineContainerRuntimeError, PreStartHookRuntimeError,
+};
+
+pub trait DeployOperationRecorder {
+    fn record_deploy_transition(
+        &mut self,
+        operation_id: &OperationId,
+        transition: DeployTransition,
+    ) -> impl Future<Output = Result<(), DeployOperationRecordError>> + Send;
+
+    fn record_deploy_evidence(
+        &mut self,
+        operation_id: &OperationId,
+        evidence: DeployEvidence,
+    ) -> impl Future<Output = Result<(), DeployOperationRecordError>> + Send;
+}
+
+pub trait MachineContainerRuntime {
+    fn resolve_image(
+        &mut self,
+        machine_id: &MachineId,
+        request: MachineContainerResolveImageRpcRequest,
+    ) -> impl Future<Output = Result<ployz_core::image::OciDigest, MachineImageResolveError>> + Send;
+
+    fn ensure_image(
+        &mut self,
+        machine_id: &MachineId,
+        request: ImageEnsureRequest,
+    ) -> impl Future<Output = Result<ImageEnsureOk, MachineImageEnsureError>> + Send;
+
+    fn run_container(
+        &mut self,
+        machine_id: &MachineId,
+        request: MachineContainerRunRpcRequest,
+    ) -> impl Future<Output = Result<MachineRunContainerOutcome, MachineContainerRuntimeError>> + Send;
+
+    fn run_pre_start_hook(
+        &mut self,
+        machine_id: &MachineId,
+        request: MachineContainerRunHookRpcRequest,
+    ) -> impl Future<Output = Result<MachineContainerRunHookRpcOk, PreStartHookRuntimeError>> + Send;
+
+    fn remove_pre_start_hook(
+        &mut self,
+        machine_id: &MachineId,
+        request: MachineContainerRemoveRpcRequest,
+    ) -> impl Future<Output = Result<(), PreStartHookRuntimeError>> + Send;
+
+    fn remove_container(
+        &mut self,
+        machine_id: &MachineId,
+        request: MachineContainerRemoveRpcRequest,
+    ) -> impl Future<Output = Result<(), MachineContainerRuntimeError>> + Send;
+
+    fn restart_container(
+        &mut self,
+        machine_id: &MachineId,
+        request: MachineContainerRestartRpcRequest,
+    ) -> impl Future<Output = Result<(), MachineContainerRuntimeError>> + Send;
+
+    fn stop_container(
+        &mut self,
+        machine_id: &MachineId,
+        request: MachineContainerStopRpcRequest,
+    ) -> impl Future<Output = Result<(), MachineContainerRuntimeError>> + Send;
+}
+
+pub trait DeployHealthChecker {
+    fn wait_healthy(
+        &mut self,
+        containers: &[DeployContainer],
+    ) -> impl Future<Output = Result<(), DeployHealthCheckError>> + Send;
+}
+
+pub trait CertificateProvisioner {
+    fn ensure(
+        &mut self,
+        owner_operation_id: &OperationId,
+        owner: CertificateOwner,
+        hostname: &RouteHostname,
+        targets: &[GatewayCertificateTarget],
+    ) -> impl Future<Output = Result<ActiveCertState, CertificateProvisionFailure>> + Send;
+
+    fn ensure_ployz_wildcard(
+        &mut self,
+        targets: &[GatewayCertificateTarget],
+    ) -> impl Future<Output = Result<ActiveCertState, CertificateProvisionFailure>> + Send;
+}
+
+#[derive(Debug)]
+pub struct DeployPhasePromotion {
+    pub scope: ControlPlaneCommitScope,
+    pub route_bindings: Vec<RouteBindingState>,
+    pub route_binding_removals: Vec<RouteTarget>,
+    pub first_serving_target_entry: ServingTargetEntry,
+    pub remaining_serving_target_entries: Vec<ServingTargetEntry>,
+}
+
+/// The one deploy commit port: every namespace-state write (route bindings
+/// and serving-target entries) goes through this seam, fenced by the
+/// Namespace Lock in the production adapter.
+pub trait NamespaceStateCommitter {
+    fn commit_deploy_phase(
+        &mut self,
+        promotion: DeployPhasePromotion,
+    ) -> impl Future<Output = Result<(), NamespaceCommitError>> + Send;
+
+    fn remove_route_binding(
+        &mut self,
+        target: RouteTarget,
+    ) -> impl Future<Output = Result<(), NamespaceCommitError>> + Send;
+
+    fn remove_serving_target_entry(
+        &mut self,
+        entry: ServingTargetEntry,
+    ) -> impl Future<Output = Result<(), NamespaceCommitError>> + Send;
+
+    fn replace_volume_pin(
+        &mut self,
+        state: VolumePinState,
+    ) -> impl Future<Output = Result<(), NamespaceCommitError>> + Send;
+}
+
+/// One error for every namespace-state commit; variants carry the subject
+/// each concern is keyed by (route targets vs commit scopes).
+#[derive(Debug)]
+pub enum NamespaceCommitError {
+    Route {
+        target: RouteTarget,
+        message: String,
+    },
+    ServingTarget {
+        scope: ControlPlaneCommitScope,
+        message: String,
+    },
+    #[cfg(test)]
+    ServingTargetLockLost { scope: ControlPlaneCommitScope },
+    VolumePin {
+        state: VolumePinState,
+        message: String,
+    },
+}
+
+impl DeployOperationRecorder for crate::control::sequencer::OperationControllers {
+    async fn record_deploy_transition(
+        &mut self,
+        operation_id: &OperationId,
+        transition: DeployTransition,
+    ) -> Result<(), DeployOperationRecordError> {
+        self.repository()
+            .record_deploy_transition(operation_id, transition)
+            .await
+            .map(|_| ())
+            .map_err(DeployOperationRecordError::RecordTransition)
+    }
+
+    async fn record_deploy_evidence(
+        &mut self,
+        operation_id: &OperationId,
+        evidence: DeployEvidence,
+    ) -> Result<(), DeployOperationRecordError> {
+        self.repository()
+            .record_deploy_evidence(operation_id, evidence)
+            .await
+            .map(|_| ())
+            .map_err(DeployOperationRecordError::RecordEvidence)
+    }
+}

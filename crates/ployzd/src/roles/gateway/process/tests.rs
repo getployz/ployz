@@ -20,7 +20,7 @@ fn retained_last_good_attempt_keeps_steady_refresh_interval() {
 
     let next = record_gateway_attempt(
         &health,
-        Ok(GatewayProjectorTick {
+        &Ok(GatewayProjectorTick {
             state: crate::roles::gateway::projection::GatewayProjectionState {
                 last_good: None,
                 last_error: Some(GatewayProjectionError::SourceUnavailable {
@@ -67,7 +67,7 @@ fn refresh_runtime_error_uses_exponential_backoff() {
 
     let next = record_gateway_attempt(
         &health,
-        Err(GatewayProcessError::RefreshTimedOut {
+        &Err(GatewayProcessError::RefreshTimedOut {
             timeout: Duration::from_secs(5),
         }),
         Duration::from_secs(1),
@@ -92,7 +92,7 @@ async fn pingora_shutdown_observes_signal_sent_before_recv() {
 #[test]
 fn gateway_status_reads_current_process_state() {
     let mut projector = GatewayProjector::new();
-    projector.apply_source_update(GatewayProjectionUpdate::SourceAvailable(Box::new(
+    projector.apply_source_update(GatewayProjectionUpdate::Available(Box::new(
         GatewayProjectionInput {
             certificate_bundles: Vec::new(),
             certificate_failures: Vec::new(),
@@ -107,12 +107,18 @@ fn gateway_status_reads_current_process_state() {
     let listen_addr = "192.0.2.7:80".parse().expect("listen address");
 
     assert_eq!(
-        gateway_status_observation(&machine_id, listen_addr, &runtime),
+        gateway_status_observation(
+            &machine_id,
+            listen_addr,
+            &runtime,
+            &Mutex::new(GatewayProcessHealth::default()),
+        ),
         GatewayStatusObservation {
             machine_id,
             listen_addr,
             serving: GatewayServingStatus::Current,
             route_count: 0,
+            process_health: GatewayProcessHealth::default(),
         }
     );
 }
@@ -120,7 +126,7 @@ fn gateway_status_reads_current_process_state() {
 #[test]
 fn gateway_status_reports_last_known_good_after_source_failure() {
     let mut projector = GatewayProjector::new();
-    projector.apply_source_update(GatewayProjectionUpdate::SourceAvailable(Box::new(
+    projector.apply_source_update(GatewayProjectionUpdate::Available(Box::new(
         GatewayProjectionInput {
             certificate_bundles: Vec::new(),
             certificate_failures: Vec::new(),
@@ -130,7 +136,7 @@ fn gateway_status_reports_last_known_good_after_source_failure() {
             observed_machines: Vec::new(),
         },
     )));
-    projector.apply_source_update(GatewayProjectionUpdate::SourceUnavailable(
+    projector.apply_source_update(GatewayProjectionUpdate::Unavailable(
         GatewayProjectionError::SourceUnavailable {
             message: "intent unavailable".to_owned(),
         },
@@ -143,6 +149,7 @@ fn gateway_status_reports_last_known_good_after_source_failure() {
             &machine_id,
             "192.0.2.7:80".parse().expect("listen address"),
             &runtime,
+            &Mutex::new(GatewayProcessHealth::default()),
         )
         .serving,
         GatewayServingStatus::LastKnownGood

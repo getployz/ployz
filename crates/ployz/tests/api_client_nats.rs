@@ -3,16 +3,17 @@ use ployz_core::deploy::{
     DeployRequest, DeployServiceSpec, ImageReference, ReplicaCount, VolumeName,
 };
 use ployz_core::install::InstallArtifactSpec;
+use ployz_core::intent::ActiveMachineState;
+use ployz_core::machine::GatewayServingStatus;
+use ployz_core::machine::GatewayStatusObservation;
 use ployz_core::machine::JoinTokenRedeemedAt;
-use ployz_core::ops::{
+use ployz_core::machine::MachineEndpointObservation;
+use ployz_core::machine::MachineLifecycle;
+use ployz_core::operation::{
     OperationEventReplayLimit, OperationEventReplayRequest, OperationIdempotencyKey,
 };
 use ployz_core::roles::InstallRolePolicy;
-use ployz_core::state::MachineLifecycle;
-use ployz_core::state::{
-    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation,
-};
-use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
+
 use ployz_nats::connect::connect_authenticated;
 use ployz_nats::service_runtime::{
     NatsServiceError, NatsServiceErrorCode, NatsServiceResponse, start_nats_service,
@@ -20,6 +21,7 @@ use ployz_nats::service_runtime::{
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
 };
+use ployz_nats::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_sdk_types::{
     AcceptedOperation, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse,
     MachineAddAccepted, MachineAddRequest, MachineAddResponse, MachineBootstrapUrl,
@@ -75,7 +77,7 @@ async fn secured_api_fixture() -> SecuredApiFixture {
 async fn operation_api_client_decodes_successful_envelope() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(DeploySubmitApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(DeploySubmitApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -116,7 +118,7 @@ async fn operation_api_client_decodes_successful_envelope() {
 async fn operation_api_client_routes_machine_add_success() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(MachineAddApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(MachineAddApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -161,7 +163,7 @@ async fn operation_api_client_routes_machine_add_success() {
 async fn operation_api_client_routes_machine_join_redeem_success() {
     let nats = secured_api_fixture().await;
     let client = nats.join_client.clone();
-    let spec = test_api_service(MachineJoinRedeemApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(MachineJoinRedeemApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -176,7 +178,7 @@ async fn operation_api_client_routes_machine_join_redeem_success() {
                     name: MachineName::try_new("edge_2").expect("valid machine name"),
                     roles: InstallRolePolicy::install_all().without_gateway(),
                     host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
-                    endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(
+                    endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new(
                         "10.198.2.0/24",
                     )
                     .expect("valid subnet"),
@@ -207,7 +209,7 @@ async fn operation_api_client_routes_machine_join_redeem_success() {
 async fn operation_api_client_routes_machine_list_success() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(MachineListApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(MachineListApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -238,7 +240,7 @@ async fn operation_api_client_routes_machine_list_success() {
 async fn operation_api_client_routes_machine_inspect_success() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(MachineInspectApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(MachineInspectApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -273,7 +275,7 @@ async fn operation_api_client_routes_machine_inspect_success() {
 async fn operation_api_client_routes_service_list_success() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(ServiceListApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(ServiceListApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -304,7 +306,7 @@ async fn operation_api_client_routes_service_list_success() {
 async fn operation_api_client_routes_volume_list_success() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(VolumeListApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(VolumeListApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -349,7 +351,7 @@ async fn operation_api_client_routes_volume_list_success() {
 async fn operation_api_client_routes_service_inspect_success() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(ServiceInspectApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(ServiceInspectApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -388,7 +390,7 @@ async fn operation_api_client_routes_service_inspect_success() {
 async fn operation_api_client_returns_service_error_headers_as_transport_failure() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(DeploySubmitApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(DeploySubmitApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -427,7 +429,7 @@ async fn operation_api_client_returns_service_error_headers_as_transport_failure
 async fn operation_api_client_returns_domain_error_envelope_as_domain_failure() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(DeploySubmitApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(DeploySubmitApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -468,7 +470,7 @@ async fn operation_api_client_returns_domain_error_envelope_as_domain_failure() 
 async fn operation_api_client_reports_decode_failure_for_invalid_payload() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(DeploySubmitApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(DeploySubmitApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -500,7 +502,7 @@ async fn operation_api_client_reports_decode_failure_for_invalid_payload() {
 async fn operation_api_client_routes_ops_status_domain_errors() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(OpsStatusApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(OpsStatusApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -541,7 +543,7 @@ async fn operation_api_client_routes_ops_status_domain_errors() {
 async fn operation_api_client_routes_ops_watch_decode_failures() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(OpsWatchApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(OpsWatchApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -643,8 +645,7 @@ fn machine_join_redeem_request() -> MachineJoinRedeemRequest {
 fn machine_join_bundle() -> MachineJoinBundle {
     MachineJoinBundle {
         material: ployz_core::install::MachineJoinMaterial {
-            dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(
-            ),
+            dataplane_endpoint_supernet: ployz_core::network::MachineEndpointSupernet::default_v1(),
             cluster_name: ployz_core::install::MachineJoinClusterName::try_new("prod")
                 .expect("valid cluster name"),
             runtime_nats_url: ployz_core::install::MachineJoinRuntimeNatsUrl::try_new(
@@ -716,9 +717,9 @@ fn machine_snapshot(machine_id: &str) -> MachineSnapshot {
             roles: ployz_core::roles::InstallRolePolicy::install_all(),
             control_endpoints: Vec::new(),
             mesh_endpoints: Vec::new(),
-            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
+            endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new("10.198.0.0/24")
                 .expect("valid endpoint subnet"),
-            wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+            wireguard_public_key: ployz_core::network::WireGuardPublicKey::try_new(format!(
                 "public-{}",
                 machine_id.as_str()
             ))
@@ -730,12 +731,13 @@ fn machine_snapshot(machine_id: &str) -> MachineSnapshot {
                 control_endpoints: vec!["203.0.113.10".parse().expect("valid public ip")],
                 mesh_endpoints: vec!["203.0.113.10:51820".parse().expect("valid mesh endpoint")],
             }),
-            gateway: Some(GatewayStatusObservation {
+            gateway: Some(Box::new(GatewayStatusObservation {
                 machine_id,
                 listen_addr: "127.0.0.1:8080".parse().expect("valid gateway listen addr"),
                 serving: GatewayServingStatus::Current,
                 route_count: 2,
-            }),
+                process_health: ployz_core::machine::GatewayProcessHealth::default(),
+            })),
             observed_container_count: 3,
             disk_space: ployz_test_support::fixtures::test_disk_space(),
             last_observed_at_unix_seconds: 60,

@@ -1,7 +1,8 @@
 use ployz_core::deploy::{
     DependencyCondition, DeployOrigin, DeployOriginError, DeployRequest, ServiceDependency,
 };
-use ployz_core::ops::{
+use ployz_core::machine::MachineUsabilityReason;
+use ployz_core::operation::{
     ArtifactUnavailableReason, ControlPlaneCommitScope, DeployFailureClass, DeployOperationFailure,
     DeployOperationState, DeployRunningStage, EventSequence, HealthCheckFailure,
     MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEvent, OperationEventReplayCursor,
@@ -9,7 +10,6 @@ use ployz_core::ops::{
     OperationKind, OperationStatus, OperatorHint, ReplayedOperationEvent, RetainedArtifact,
     RouteCutoverFailureReason, RouteTarget,
 };
-use ployz_core::state::MachineUsabilityReason;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
     cancellation_reason, container_id, event_replay_limit, event_sequence, failure_message,
@@ -131,7 +131,7 @@ fn deploy_failures_map_to_closed_failure_classes() {
     let cases = [
         (
             DeployOperationFailure::NoUsableMachines {
-                reasons: vec![ployz_core::ops::UnusableMachine {
+                reasons: vec![ployz_core::operation::UnusableMachine {
                     machine_id: machine_id("machine_7"),
                     reason: MachineUsabilityReason::Draining,
                 }],
@@ -140,7 +140,7 @@ fn deploy_failures_map_to_closed_failure_classes() {
         ),
         (
             DeployOperationFailure::NoUsableMachines {
-                reasons: vec![ployz_core::ops::UnusableMachine {
+                reasons: vec![ployz_core::operation::UnusableMachine {
                     machine_id: machine_id("machine_7"),
                     reason: MachineUsabilityReason::FactsUnavailable,
                 }],
@@ -629,7 +629,7 @@ fn machine_lifecycle_submitted_wire_shape_is_pinned() {
     let event = OperationEvent::MachineLifecycleSubmitted {
         operation_id: operation_id("op_123"),
         machine_id: machine_id("machine_7"),
-        target: ployz_core::state::MachineLifecycle::Draining,
+        target: ployz_core::machine::MachineLifecycle::Draining,
     };
 
     assert_eq!(
@@ -677,7 +677,7 @@ fn route_target(hostname: &str) -> RouteTarget {
 fn managed_container_observation_wire_shape_nests_identity() {
     // Observations persist in KV with deny_unknown_fields: this pin is the
     // wire contract for the nested identity shape.
-    let observation = ployz_core::machine_runtime::ManagedContainerObservation {
+    let observation = ployz_core::machine::ManagedContainerObservation {
         machine_id: machine_id("machine_a"),
         container_id: container_id("ctr_1"),
         identity: containers::identity("svc_api")
@@ -685,9 +685,9 @@ fn managed_container_observation_wire_shape_nests_identity() {
             .operation("op_1")
             .step("step_1")
             .build(),
-        state: ployz_core::machine_runtime::ContainerRuntimeState::Running {
+        state: ployz_core::machine::ContainerRuntimeState::Running {
             ip: None,
-            health: ployz_core::machine_runtime::ContainerHealth::None,
+            health: ployz_core::machine::ContainerHealth::None,
             started_at_unix_ms: Some(1_783_670_950_123),
         },
         health_status: None,

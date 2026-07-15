@@ -1,10 +1,30 @@
 //! Machine state and machine-add operation policy.
 
 mod dataplane_admission;
+pub mod lifecycle;
+pub mod roles;
+pub mod rpc;
+pub mod runtime;
+pub mod testimony;
 
 pub use dataplane_admission::{
     validate_declared_local_machine, validate_declared_machine, validate_placement_machine_peers,
     validate_target_machine,
+};
+pub use lifecycle::{
+    DataplaneUnavailableReason, MachineLifecycle, MachineUsabilityReason, placement_rejection,
+};
+pub use roles::{
+    DaemonProcessRole, FirstMachineNatsServer, FirstMachineProcessSet, GatewayRole,
+    InstallRolePolicy, JoinedMachineProcessSet, plan_first_machine_process_set,
+    plan_joined_machine_process_set,
+};
+pub use rpc::{MachineRpcResponder, MachineRpcResponse};
+pub use runtime::*;
+pub use testimony::{
+    GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessHealth, GatewayServingStatus,
+    GatewayStatusObservation, GatewayStatusPublishFailure, GatewayWatchFailure,
+    MachineEndpointObservation,
 };
 
 use serde::{Deserialize, Serialize};
@@ -12,10 +32,10 @@ use sha2::{Digest, Sha256};
 use std::fmt;
 
 use crate::ids::{MachineId, OperationId, SubjectToken, SubjectTokenError};
-use crate::ops::{
+use crate::intent::{ActiveMachineState, StagedMachineDataplaneState};
+use crate::operation::{
     FailureMessage, MachineAddOperationState, MachineAddOperationStateName, OperationIdempotencyKey,
 };
-use crate::state::{ActiveMachineState, StagedMachineDataplaneState};
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -188,8 +208,8 @@ pub struct DataplaneProjectionAdmissionEvidence {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DataplaneAdmissionPeer {
-    pub public_key: crate::dataplane::WireGuardPublicKey,
-    pub endpoint_subnet: crate::dataplane::WireGuardPeerEndpointSubnet,
+    pub public_key: crate::network::WireGuardPublicKey,
+    pub endpoint_subnet: crate::network::WireGuardPeerEndpointSubnet,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,7 +218,7 @@ pub struct DataplaneAdmissionPeer {
 pub enum WireGuardReadinessFailure {
     InterfaceMissing,
     InterfaceMtuUnavailable {
-        observed: crate::dataplane::WireGuardInterfaceMtu,
+        observed: crate::network::WireGuardInterfaceMtu,
     },
 }
 
@@ -210,20 +230,20 @@ pub enum DataplaneProjectionAdmissionFailure {
         message: FailureMessage,
     },
     UnusableProjection {
-        failure: crate::dataplane::DataplaneProjectionFailure,
+        failure: crate::network::DataplaneProjectionFailure,
     },
     AwaitingTargetRevision {
-        expected: crate::dataplane::DataplaneProjectionRevision,
-        observed: Option<crate::dataplane::DataplaneProjectionRevision>,
+        expected: crate::network::DataplaneProjectionRevision,
+        observed: Option<crate::network::DataplaneProjectionRevision>,
     },
     EndpointBridgeNotReady {
-        status: crate::dataplane::EndpointBridgeStatus,
+        status: crate::network::EndpointBridgeStatus,
     },
     WireGuardNotReady {
         failure: WireGuardReadinessFailure,
     },
     EbpfNotReady {
-        status: crate::dataplane::EbpfAttachmentStatus,
+        status: crate::network::EbpfAttachmentStatus,
     },
     PeerSetMismatch {
         expected: Vec<DataplaneAdmissionPeer>,
@@ -298,20 +318,6 @@ pub enum MachineCredentialProvisioningStep {
     MaterialReady,
 }
 
-impl MachineCredentialProvisioningStep {
-    /// The wire token used in event subjects and message ids.
-    #[must_use]
-    pub const fn as_subject_token(self) -> &'static str {
-        match self {
-            Self::Minted => "minted",
-            Self::Rendered => "rendered",
-            Self::Reloaded => "reloaded",
-            Self::Verified => "verified",
-            Self::MaterialReady => "material_ready",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineTransitionRejected {
     pub current: MachineAddOperationStateName,
@@ -337,7 +343,7 @@ pub fn redeem_pending_join_token(
 
 pub fn active_machine_from_completed_add(
     name: MachineName,
-    roles: crate::roles::InstallRolePolicy,
+    roles: InstallRolePolicy,
     staged: StagedMachineDataplaneState,
     operation: MachineAddOperationState,
 ) -> Result<ActiveMachineState, MachineTransitionRejected> {
@@ -355,7 +361,7 @@ pub fn active_machine_from_completed_add(
         wireguard_public_key,
     } = staged;
     Ok(ActiveMachineState {
-        lifecycle: crate::state::MachineLifecycle::Active,
+        lifecycle: MachineLifecycle::Active,
         machine_id,
         name,
         activated_by: operation_id,

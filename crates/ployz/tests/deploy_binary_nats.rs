@@ -1,23 +1,23 @@
 use std::process::{Command, Output};
 
-use ployz::deploy_history::{
+use ployz::deploy::history_store::{
     ClusterFingerprint, DeployHistory, DeployHistoryEntry, DeployHistoryTimestamp,
 };
-use ployz::runtime::{PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV};
+use ployz::dispatcher::{PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV};
 use ployz_core::deploy::{
     ContainerRuntimeSpec, DeployOrigin, DeployRequest, DeployServiceSpec, ImageReference,
     ImageSource, ReplicaCount,
 };
 use ployz_core::ids::{NamespaceId, ServiceId};
-use ployz_core::ops::{
+use ployz_core::operation::{
     DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, OperationEvent,
     OperationEventReplayPage, OperationStatus, OperationStatusSnapshot, ReplayedOperationEvent,
 };
-use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
 };
+use ployz_nats::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_sdk_types::{
     AcceptedOperation, DeployReservationExpiresAt, DeployReservationId, DeployReserveResponse,
     DeployReserved, DeploySubmitRequest, DeploySubmitResponse, OperationApiResponse,
@@ -35,17 +35,24 @@ async fn binary_deploy_calls_nats_service() {
     let client = server.controller.clone();
     let env = CliNatsEnv::new(&server.server);
     let service_client = client.clone();
-    let spec = test_api_service(&[DeployReserveApi::ENDPOINT, DeploySubmitApi::ENDPOINT]);
+    let spec = test_api_service(&[
+        OperationApiEndpoint::from(DeployReserveApi::ENDPOINT),
+        OperationApiEndpoint::from(DeploySubmitApi::ENDPOINT),
+    ]);
     let reserve_endpoint = spec
         .endpoints
         .iter()
-        .find(|endpoint| endpoint.subject == DeployReserveApi::ENDPOINT.subject())
+        .find(|endpoint| {
+            endpoint.subject == OperationApiEndpoint::from(DeployReserveApi::ENDPOINT).subject()
+        })
         .expect("deploy reserve endpoint is present")
         .clone();
     let submit_endpoint = spec
         .endpoints
         .iter()
-        .find(|endpoint| endpoint.subject == DeploySubmitApi::ENDPOINT.subject())
+        .find(|endpoint| {
+            endpoint.subject == OperationApiEndpoint::from(DeploySubmitApi::ENDPOINT).subject()
+        })
         .expect("deploy submit endpoint is present")
         .clone();
     let mut runtime = start_nats_service(client, &spec)
@@ -153,15 +160,18 @@ async fn binary_rollback_replays_the_selected_pinned_payload_as_a_new_deploy() {
 
     let service_client = client.clone();
     let spec = test_api_service(&[
-        DeployReserveApi::ENDPOINT,
-        DeploySubmitApi::ENDPOINT,
-        OpsWatchApi::ENDPOINT,
-        OpsStatusApi::ENDPOINT,
+        OperationApiEndpoint::from(DeployReserveApi::ENDPOINT),
+        OperationApiEndpoint::from(DeploySubmitApi::ENDPOINT),
+        OperationApiEndpoint::from(OpsWatchApi::ENDPOINT),
+        OperationApiEndpoint::from(OpsStatusApi::ENDPOINT),
     ]);
-    let reserve_endpoint = endpoint(&spec, DeployReserveApi::ENDPOINT);
-    let submit_endpoint = endpoint(&spec, DeploySubmitApi::ENDPOINT);
-    let watch_endpoint = endpoint(&spec, OpsWatchApi::ENDPOINT);
-    let status_endpoint = endpoint(&spec, OpsStatusApi::ENDPOINT);
+    let reserve_endpoint = endpoint(
+        &spec,
+        OperationApiEndpoint::from(DeployReserveApi::ENDPOINT),
+    );
+    let submit_endpoint = endpoint(&spec, OperationApiEndpoint::from(DeploySubmitApi::ENDPOINT));
+    let watch_endpoint = endpoint(&spec, OperationApiEndpoint::from(OpsWatchApi::ENDPOINT));
+    let status_endpoint = endpoint(&spec, OperationApiEndpoint::from(OpsStatusApi::ENDPOINT));
     let mut runtime = start_nats_service(client, &spec)
         .await
         .expect("service starts");
@@ -206,7 +216,7 @@ async fn binary_rollback_replays_the_selected_pinned_payload_as_a_new_deploy() {
         .expect("submit endpoint binds");
     runtime
         .bind_endpoint(&watch_endpoint, |request| async move {
-            let request: ployz_core::ops::OperationEventReplayRequest =
+            let request: ployz_core::operation::OperationEventReplayRequest =
                 serde_json::from_slice(&request.payload).expect("watch request decodes");
             assert_eq!(request.operation_id, operation_id("op_rollback"));
             assert_eq!(request.start_sequence, event_sequence(1));
@@ -292,15 +302,18 @@ async fn binary_foreground_deploy_exits_non_zero_when_operation_fails() {
     let env = CliNatsEnv::new(&server.server);
     let service_client = client.clone();
     let spec = test_api_service(&[
-        DeployReserveApi::ENDPOINT,
-        DeploySubmitApi::ENDPOINT,
-        OpsWatchApi::ENDPOINT,
-        OpsStatusApi::ENDPOINT,
+        OperationApiEndpoint::from(DeployReserveApi::ENDPOINT),
+        OperationApiEndpoint::from(DeploySubmitApi::ENDPOINT),
+        OperationApiEndpoint::from(OpsWatchApi::ENDPOINT),
+        OperationApiEndpoint::from(OpsStatusApi::ENDPOINT),
     ]);
-    let reserve_endpoint = endpoint(&spec, DeployReserveApi::ENDPOINT);
-    let submit_endpoint = endpoint(&spec, DeploySubmitApi::ENDPOINT);
-    let watch_endpoint = endpoint(&spec, OpsWatchApi::ENDPOINT);
-    let status_endpoint = endpoint(&spec, OpsStatusApi::ENDPOINT);
+    let reserve_endpoint = endpoint(
+        &spec,
+        OperationApiEndpoint::from(DeployReserveApi::ENDPOINT),
+    );
+    let submit_endpoint = endpoint(&spec, OperationApiEndpoint::from(DeploySubmitApi::ENDPOINT));
+    let watch_endpoint = endpoint(&spec, OperationApiEndpoint::from(OpsWatchApi::ENDPOINT));
+    let status_endpoint = endpoint(&spec, OperationApiEndpoint::from(OpsStatusApi::ENDPOINT));
     let mut runtime = start_nats_service(client, &spec)
         .await
         .expect("service starts");
@@ -329,7 +342,7 @@ async fn binary_foreground_deploy_exits_non_zero_when_operation_fails() {
         .expect("submit endpoint binds");
     runtime
         .bind_endpoint(&watch_endpoint, |request| async move {
-            let request: ployz_core::ops::OperationEventReplayRequest =
+            let request: ployz_core::operation::OperationEventReplayRequest =
                 serde_json::from_slice(&request.payload).expect("watch request decodes");
             assert_eq!(request.operation_id, operation_id("op_deploy_failed"));
             let response: OpsWatchResponse = OperationApiResponse::Ok {

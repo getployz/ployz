@@ -24,7 +24,7 @@ async-trait = "0.1"
 pingora = { version = "0.8.1", features = ["lb", "openssl", "proxy"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 ployz-core.workspace = true
-ployz-ebpf-common = { path = "../ployz-ebpf-common", features = ["validation"] }
+ployz-ebpf-common = { path = "../../ebpf/common", features = ["validation"] }
 ployz-nats.workspace = true
 ployz-sdk-types.workspace = true
 ployz-telemetry.workspace = true
@@ -51,7 +51,9 @@ wait-timeout.workspace = true
 rtnetlink.workspace = true
 
 [dev-dependencies]
-ployz-lease-worker = { path = "../ployz-lease-worker" }
+openssl = "0.10"
+ployz = { path = "../ployz" }
+ployz-test-lease-worker = { path = "../../testing/ployz-test-lease-worker" }
 ployz-test-support.workspace = true
 rcgen = { version = "0.14.8", features = ["crypto", "pem"] }
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
