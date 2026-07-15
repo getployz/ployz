@@ -1,4 +1,4 @@
-use ployz_core::subjects::OperationApiEndpoint;
+use ployz_sdk_types::operation_api::OperationApiEndpoint;
 use ployz_sdk_types::{
     AcceptedOperation, AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue,
     AcmeHttp01Challenge, ActiveCertState, ActiveCertificateMetadata,
@@ -628,7 +628,7 @@ where
 {
 }
 
-fn operation_api_contract_endpoints() -> Vec<ployz_core::subjects::OperationApiEndpoint> {
+fn operation_api_contract_endpoints() -> Vec<OperationApiEndpoint> {
     let mut endpoints = Vec::new();
     macro_rules! push_endpoints {
         ($($contract:ty),+ $(,)?) => {

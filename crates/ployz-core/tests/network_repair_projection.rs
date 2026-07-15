@@ -111,7 +111,7 @@ fn network_repair_dataplane_converged_evidence_advances_projection_cursor() {
 }
 
 #[test]
-fn network_repair_dataplane_converged_evidence_has_stable_singleton_subject() {
+fn network_repair_dataplane_converged_evidence_has_stable_singleton_key() {
     let event = OperationEvent::NetworkRepairDataplaneConverged {
         operation_id: operation_id("op_network_repair"),
         revision: dataplane_revision(),
@@ -119,11 +119,8 @@ fn network_repair_dataplane_converged_evidence_has_stable_singleton_subject() {
     };
 
     assert_eq!(
-        (event.subject_suffix(), event.singleton_subject()),
-        (
-            "network.repair.dataplane.converged".to_owned(),
-            Some("network.repair.dataplane.converged"),
-        )
+        event.singleton_evidence_key(),
+        Some("network.repair.dataplane.converged")
     );
 }
 

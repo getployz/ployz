@@ -1,7 +1,6 @@
 use ployz_core::nats_config::{
     CredentialGrant, CredentialName, CredentialRole, NatsAuthorizationGrant, NatsInternalAuthority,
     NatsServerCertificatePem, NatsServerConfigError, NatsUserPublicKey, NatsUserSeed,
-    parse_authorized_users,
 };
 
 const CA_PEM: &str = "-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n";
@@ -42,22 +41,6 @@ fn credential_name_trims_unicode_text_and_rejects_blank_text() {
 }
 
 #[test]
-fn authorized_users_round_trip_named_credentials_and_internal_authorities() {
-    let grants = vec![
-        credential(generated_user_public_key(), "Ployz Cloud"),
-        NatsAuthorizationGrant::Internal {
-            authority: NatsInternalAuthority::Controller,
-            public_key: generated_user_public_key(),
-        },
-    ];
-
-    let parsed = parse_authorized_users(&authorization_parse_fixture(&grants))
-        .expect("rendered authorizations parse");
-
-    assert_eq!(parsed, grants);
-}
-
-#[test]
 fn nats_user_key_material_is_validated_and_seed_debug_is_redacted() {
     let public = "UBCXCMGAZQZN55X5TTTWMB5CZNZIKJHEDZJOJ3TV63NKPJ6FRXSR2ZO4";
     let seed = "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM";
@@ -87,25 +70,6 @@ fn server_certificate_pem_requires_a_certificate_block() {
     );
     let pem = NatsServerCertificatePem::try_new(CA_PEM).expect("valid certificate pem");
     assert_eq!(pem.as_str(), CA_PEM);
-}
-
-fn authorization_parse_fixture(grants: &[NatsAuthorizationGrant]) -> String {
-    let mut rendered = String::new();
-    for grant in grants {
-        rendered.push_str(&format!(
-            "# ployz-principal: {}\n",
-            grant.principal().authority_key()
-        ));
-        if let NatsAuthorizationGrant::Credential(CredentialGrant { name, role, .. }) = grant {
-            rendered.push_str(&format!("# ployz-credential-name: {}\n", name.as_str()));
-            let role = match role {
-                CredentialRole::Operator => "operator",
-            };
-            rendered.push_str(&format!("# ployz-credential-role: {role}\n"));
-        }
-        rendered.push_str(&format!("nkey: {}\n", grant.public_key().as_str()));
-    }
-    rendered
 }
 
 fn generated_user_public_key() -> NatsUserPublicKey {

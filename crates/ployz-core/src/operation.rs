@@ -14,12 +14,19 @@ use crate::machine::{InstallRolePolicy, MachineLifecycle};
 use crate::machine::{IssuedJoinToken, MachineName};
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
+/// The product audience for durable progress from one operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperationProgressScope {
+    Namespace { namespace_id: NamespaceId },
+    Machine { machine_id: MachineId },
+    Cluster,
+}
+
 mod accessors;
 mod cert;
 mod core_replace;
 mod credential_grant;
 mod deploy;
-mod event_subjects;
 mod events;
 mod ingress_configure;
 mod ingress_refresh;

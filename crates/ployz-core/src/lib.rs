@@ -3,7 +3,7 @@
 //! Domain models and policy for the Ployz control plane.
 //!
 //! This crate owns product-shaped concepts: ids, operation state, deploy
-//! planning, machine models, subject names, and security role models. It must not
+//! planning, machine models, and security role models. It must not
 //! own process wiring, TLS NATS connections, Docker clients, or CLI
 //! presentation.
 
@@ -29,5 +29,4 @@ pub mod roles;
 pub mod security;
 pub mod state;
 pub(crate) mod state_key;
-pub mod subjects;
 pub(crate) mod wire;

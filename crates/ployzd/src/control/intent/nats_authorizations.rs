@@ -9,8 +9,8 @@
 use crate::control::store::{CoreStore, CoreStoreError, from_json, query_json_list, to_json};
 use ployz_core::nats_config::{
     CredentialGrant, CredentialRole, NatsAuthorizationGrant, NatsUserPublicKey,
-    parse_authorized_users,
 };
+use ployz_nats::permissions::parse_authorized_users;
 use rusqlite::{Connection, params};
 use std::path::Path;
 

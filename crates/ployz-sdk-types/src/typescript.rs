@@ -1,6 +1,7 @@
 //! TypeScript contract export owned by the Rust SDK type crate.
 
 use crate::operation_api::OperationApiContract;
+use crate::operation_api::OperationApiEndpoint;
 use crate::{
     AbsoluteInstallPath, AcceptedOperation, AcmeChallengeToken, AcmeChallengeTtlSeconds,
     AcmeChallengeValue, AcmeHttp01Challenge, ActiveCertState, ActiveCertificateMetadata,
@@ -113,7 +114,6 @@ use crate::{
     WireGuardStatus, WrappedCaKey, WrappedCoreSeeds,
 };
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
-use ployz_core::subjects::OperationApiEndpoint;
 use serde::Serialize;
 use serde_json::{Value, json};
 use ts_rs::{Config, TS};

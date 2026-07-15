@@ -16,6 +16,7 @@ use ployz_core::ops::{
     OperationEventReplayPage, OperationProjection, OperationStatus, StatusProjectionError,
     project_operation_event, validate_fresh_deploy_evidence,
 };
+use ployz_nats::operation_event_subject::operation_event_subject_suffix;
 use ployz_nats::subjects::{OperationProgressScope, operation_progress_subject};
 use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 
@@ -187,7 +188,7 @@ fn record_operation_event_in_txn(
         });
     };
     let status = *status;
-    let subject = event.singleton_subject();
+    let subject = event.singleton_evidence_key();
     if let Err(error) = insert_event(conn, &event, sequence) {
         if is_unique_constraint(&error)
             && singleton_event_exists(conn, event.operation_id(), subject)?
@@ -484,7 +485,7 @@ fn insert_event(
         params![
             event.operation_id().as_str(),
             sequence.get(),
-            event.singleton_subject(),
+            event.singleton_evidence_key(),
             to_json(event)?
         ],
     )?;
@@ -613,7 +614,11 @@ async fn publish_progress(
         return;
     };
     let scope = OperationProgressScope::from(status.progress_scope());
-    let subject = operation_progress_subject(&scope, event.operation_id(), &event.subject_suffix());
+    let subject = operation_progress_subject(
+        &scope,
+        event.operation_id(),
+        &operation_event_subject_suffix(&event),
+    );
     let _ = client.publish(subject, payload.into()).await;
 }
 

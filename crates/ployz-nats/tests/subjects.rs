@@ -1,15 +1,30 @@
 use ployz_core::ids::{CertId, MachineId, OperationId, SubjectTokenError};
-use ployz_core::machine::{MachineAddFailure, MachineLifecycle};
+use ployz_core::machine::{MachineAddFailure, MachineCredentialProvisioningStep, MachineLifecycle};
 use ployz_core::operation::{
     CancellationReason, DeployCompletionOutcome, DeployRunningStage, MachineSubstrateVersions,
     OperationEvent,
 };
-use ployz_core::subjects::{
+use ployz_nats::operation_event_subject::operation_event_subject_suffix;
+use ployz_nats::subjects::{
     MachineServiceEndpoint, OperationApiEndpoint, OperationApiEndpointExecution,
     OperationProgressScope, machine_container_facts, machine_facts, machine_service,
     operation_progress_watch,
 };
 use ployz_test_support::ids::{container_id, machine_id, namespace_id, operation_id};
+
+trait NatsEventSubject {
+    fn nats_subject(&self, scope: &OperationProgressScope) -> String;
+}
+
+impl NatsEventSubject for OperationEvent {
+    fn nats_subject(&self, scope: &OperationProgressScope) -> String {
+        ployz_nats::subjects::operation_progress_subject(
+            scope,
+            self.operation_id(),
+            &operation_event_subject_suffix(self),
+        )
+    }
+}
 
 /// Operation progress subject literals are externally observed contracts.
 #[test]
@@ -24,27 +39,27 @@ fn operation_event_subjects_are_pinned() {
         "plz.v1.progress.namespace.default.operation.op_123.>"
     );
     assert_eq!(
-        planning_started(&op_id).subject(&deploy_scope),
+        planning_started(&op_id).nats_subject(&deploy_scope),
         "plz.v1.progress.namespace.default.operation.op_123.deploy.planning.started"
     );
     assert_eq!(
-        deploy_running(&op_id, DeployRunningStage::ServingTargetCommit).subject(&deploy_scope),
+        deploy_running(&op_id, DeployRunningStage::ServingTargetCommit).nats_subject(&deploy_scope),
         "plz.v1.progress.namespace.default.operation.op_123.deploy.running.serving_target_commit"
     );
     assert_eq!(
-        container_started(&op_id).subject(&deploy_scope),
+        container_started(&op_id).nats_subject(&deploy_scope),
         "plz.v1.progress.namespace.default.operation.op_123.deploy.container.started.machine_7.ctr_1"
     );
     assert_eq!(
-        health_check_started(&op_id).subject(&deploy_scope),
+        health_check_started(&op_id).nats_subject(&deploy_scope),
         "plz.v1.progress.namespace.default.operation.op_123.deploy.health_check.started"
     );
     assert_eq!(
-        deploy_completed(&op_id).subject(&deploy_scope),
+        deploy_completed(&op_id).nats_subject(&deploy_scope),
         "plz.v1.progress.namespace.default.operation.op_123.deploy.completed"
     );
     assert_eq!(
-        cancelled(&op_id).subject(&deploy_scope),
+        cancelled(&op_id).nats_subject(&deploy_scope),
         "plz.v1.progress.namespace.default.operation.op_123.cancelled"
     );
 
@@ -53,49 +68,74 @@ fn operation_event_subjects_are_pinned() {
         machine_id: machine_id("machine_7"),
     };
     assert_eq!(
-        machine_add_joined(&op_id).subject(&machine_scope),
+        machine_add_joined(&op_id).nats_subject(&machine_scope),
         "plz.v1.progress.machine.machine_7.operation.op_machine.machine.add.joined"
     );
     assert_eq!(
-        machine_add_completed(&op_id).subject(&machine_scope),
+        machine_add_completed(&op_id).nats_subject(&machine_scope),
         "plz.v1.progress.machine.machine_7.operation.op_machine.machine.add.completed"
     );
     assert_eq!(
-        machine_add_failed(&op_id).subject(&machine_scope),
+        machine_add_failed(&op_id).nats_subject(&machine_scope),
         "plz.v1.progress.machine.machine_7.operation.op_machine.machine.add.failed"
     );
     assert_eq!(
-        machine_update_running(&op_id).subject(&machine_scope),
+        machine_update_running(&op_id).nats_subject(&machine_scope),
         "plz.v1.progress.machine.machine_7.operation.op_machine.machine.update.running"
     );
     assert_eq!(
-        machine_update_completed(&op_id).subject(&machine_scope),
+        machine_update_completed(&op_id).nats_subject(&machine_scope),
         "plz.v1.progress.machine.machine_7.operation.op_machine.machine.update.completed"
     );
 
     assert_eq!(
-        lifecycle_submitted(&op_id, MachineLifecycle::Draining).subject(&machine_scope),
+        lifecycle_submitted(&op_id, MachineLifecycle::Draining).nats_subject(&machine_scope),
         "plz.v1.progress.machine.machine_7.operation.op_machine.machine.lifecycle.drain.submitted"
     );
     assert_eq!(
-        lifecycle_submitted(&op_id, MachineLifecycle::Active).subject(&machine_scope),
+        lifecycle_submitted(&op_id, MachineLifecycle::Active).nats_subject(&machine_scope),
         "plz.v1.progress.machine.machine_7.operation.op_machine.machine.lifecycle.resume.submitted"
     );
     assert_eq!(
-        lifecycle_completed(&op_id).subject(&machine_scope),
+        lifecycle_completed(&op_id).nats_subject(&machine_scope),
         "plz.v1.progress.machine.machine_7.operation.op_machine.machine.lifecycle.completed"
     );
 
     let op_id = operation_id("op_cert");
     let cluster_scope = OperationProgressScope::Cluster;
     assert_eq!(
-        cert_submitted(&op_id).subject(&cluster_scope),
+        cert_submitted(&op_id).nats_subject(&cluster_scope),
         "plz.v1.progress.cluster.operation.op_cert.cert.submitted"
     );
     assert_eq!(
-        cert_validation_started(&op_id).subject(&cluster_scope),
+        cert_validation_started(&op_id).nats_subject(&cluster_scope),
         "plz.v1.progress.cluster.operation.op_cert.cert.validation.started"
     );
+}
+
+#[test]
+fn machine_credential_progress_tokens_are_pinned() {
+    let operation_id = operation_id("op_machine");
+    for (step, expected) in [
+        (MachineCredentialProvisioningStep::Minted, "minted"),
+        (MachineCredentialProvisioningStep::Rendered, "rendered"),
+        (MachineCredentialProvisioningStep::Reloaded, "reloaded"),
+        (MachineCredentialProvisioningStep::Verified, "verified"),
+        (
+            MachineCredentialProvisioningStep::MaterialReady,
+            "material_ready",
+        ),
+    ] {
+        let event = OperationEvent::MachineAddCredentialProvisioned {
+            operation_id: operation_id.clone(),
+            machine_id: machine_id("machine_7"),
+            step,
+        };
+        assert_eq!(
+            operation_event_subject_suffix(&event),
+            format!("machine.add.credential.{expected}")
+        );
+    }
 }
 
 #[test]

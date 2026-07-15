@@ -1,6 +1,4 @@
-use crate::subjects::OperationProgressScope;
-
-use super::{EventSequence, OperationId, OperationKind, OperationStatus};
+use super::{EventSequence, OperationId, OperationKind, OperationProgressScope, OperationStatus};
 
 impl OperationStatus {
     #[must_use]

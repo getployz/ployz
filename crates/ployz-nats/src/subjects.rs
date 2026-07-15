@@ -211,9 +211,9 @@ impl OperationApiEndpoint {
     }
 }
 
-impl From<ployz_core::subjects::OperationApiEndpoint> for OperationApiEndpoint {
-    fn from(endpoint: ployz_core::subjects::OperationApiEndpoint) -> Self {
-        use ployz_core::subjects::OperationApiEndpoint as Core;
+impl From<ployz_sdk_types::operation_api::OperationApiEndpoint> for OperationApiEndpoint {
+    fn from(endpoint: ployz_sdk_types::operation_api::OperationApiEndpoint) -> Self {
+        use ployz_sdk_types::operation_api::OperationApiEndpoint as Core;
 
         match endpoint {
             Core::DeployReserve => Self::DeployReserve,
@@ -258,16 +258,16 @@ pub enum OperationProgressScope {
     Cluster,
 }
 
-impl From<ployz_core::subjects::OperationProgressScope> for OperationProgressScope {
-    fn from(scope: ployz_core::subjects::OperationProgressScope) -> Self {
+impl From<ployz_core::operation::OperationProgressScope> for OperationProgressScope {
+    fn from(scope: ployz_core::operation::OperationProgressScope) -> Self {
         match scope {
-            ployz_core::subjects::OperationProgressScope::Namespace { namespace_id } => {
+            ployz_core::operation::OperationProgressScope::Namespace { namespace_id } => {
                 Self::Namespace { namespace_id }
             }
-            ployz_core::subjects::OperationProgressScope::Machine { machine_id } => {
+            ployz_core::operation::OperationProgressScope::Machine { machine_id } => {
                 Self::Machine { machine_id }
             }
-            ployz_core::subjects::OperationProgressScope::Cluster => Self::Cluster,
+            ployz_core::operation::OperationProgressScope::Cluster => Self::Cluster,
         }
     }
 }

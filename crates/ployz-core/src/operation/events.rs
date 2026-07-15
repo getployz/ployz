@@ -473,12 +473,12 @@ impl OperationEvent {
         }
     }
 
-    /// The subject key of operation evidence recorded once per operation
+    /// The key of operation evidence recorded once per operation
     /// phase. `None` for multi-instance evidence (per-container starts) and
     /// every non-evidence event. The store keys idempotent singleton evidence
     /// on this.
     #[must_use]
-    pub fn singleton_subject(&self) -> Option<&'static str> {
+    pub fn singleton_evidence_key(&self) -> Option<&'static str> {
         match self {
             Self::DeployPlanCreated { .. } => Some("deploy.plan.created"),
             Self::NetworkRepairDataplaneConverged { .. } => {

@@ -22,7 +22,42 @@ use crate::{
     VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
 };
 use ployz_core::operation::OperationEventReplayPage;
-use ployz_core::subjects::OperationApiEndpoint;
+
+/// Transport-neutral identifier for one public operation API contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationApiEndpoint {
+    DeployReserve,
+    DeploySubmit,
+    InitFirstMachineActivate,
+    MachineAdd,
+    MachineUpdate,
+    MachineDrain,
+    MachineResume,
+    MachineList,
+    MachineInspect,
+    NetworkStatus,
+    NetworkResolve,
+    NetworkRepair,
+    MachineJoinRedeem,
+    MachineJoinReport,
+    ServiceList,
+    ServiceInspect,
+    ServiceRestart,
+    NamespaceRemove,
+    VolumeList,
+    VolumeRemove,
+    RuntimeSnapshot,
+    LogsTail,
+    OpsList,
+    OpsStatus,
+    OpsWatch,
+    CoreReplace,
+    CoreReplaceReport,
+    CredentialAdd,
+    CredentialList,
+    CredentialRemove,
+    IngressConfigure,
+}
 
 pub trait OperationApiContract {
     type Request;

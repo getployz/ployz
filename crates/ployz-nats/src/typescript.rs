@@ -16,7 +16,7 @@ pub fn generated_typescript() -> String {
 }
 
 fn operation_api_endpoint(
-    endpoint: ployz_core::subjects::OperationApiEndpoint,
+    endpoint: ployz_sdk_types::operation_api::OperationApiEndpoint,
 ) -> NatsOperationApiEndpointMetadata {
     let endpoint = OperationApiEndpoint::from(endpoint);
     NatsOperationApiEndpointMetadata {

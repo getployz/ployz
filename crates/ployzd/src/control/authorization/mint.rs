@@ -336,7 +336,7 @@ impl MachineCredentialMint {
                 MachineAddFailure::CredentialEvidenceWriteFailed {
                     message: failure_message(&format!(
                         "failed to record credential step {}: {error:?}",
-                        step.as_subject_token()
+                        ployz_nats::operation_event_subject::machine_credential_provisioning_step_token(step)
                     )),
                 },
             )

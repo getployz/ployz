@@ -314,20 +314,6 @@ pub enum MachineCredentialProvisioningStep {
     MaterialReady,
 }
 
-impl MachineCredentialProvisioningStep {
-    /// The wire token used in event subjects and message ids.
-    #[must_use]
-    pub const fn as_subject_token(self) -> &'static str {
-        match self {
-            Self::Minted => "minted",
-            Self::Rendered => "rendered",
-            Self::Reloaded => "reloaded",
-            Self::Verified => "verified",
-            Self::MaterialReady => "material_ready",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineTransitionRejected {
     pub current: MachineAddOperationStateName,
