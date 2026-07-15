@@ -14,6 +14,24 @@ use ployz_core::operation::{
 };
 
 impl OperationRepository {
+    pub async fn record_interrupted_operation(
+        &self,
+        operation_id: &OperationId,
+        cause: OperationInterruptionCause,
+    ) -> Result<bool, super::OperationStatusStoreError> {
+        let operation_id = operation_id.clone();
+        let stored = self
+            .store
+            .call(move |conn| record_interrupted_operation_txn(conn, &operation_id, cause))
+            .await
+            .map_err(|error| index_error(&error))?;
+        let Some((event, status)) = stored else {
+            return Ok(false);
+        };
+        publish_progress(&self.progress, event, &status).await;
+        Ok(true)
+    }
+
     pub async fn record_interrupted_operations(
         &self,
         cause: OperationInterruptionCause,
@@ -137,6 +155,43 @@ impl OperationRepository {
             ReplayTxn::Page(page) => Ok(page),
         }
     }
+}
+
+fn record_interrupted_operation_txn(
+    conn: &mut rusqlite::Connection,
+    operation_id: &OperationId,
+    cause: OperationInterruptionCause,
+) -> Result<Option<(OperationEvent, OperationStatus)>, rusqlite::Error> {
+    let transaction = conn.transaction()?;
+    let Some(status) = select_status(&transaction, operation_id)? else {
+        return Err(interruption_record_error(
+            "operation disappeared during interruption recording",
+        ));
+    };
+    let Some(evidence) = status.interruption_evidence(cause) else {
+        return Ok(None);
+    };
+    let event = OperationEvent::OperationInterrupted {
+        operation_id: operation_id.clone(),
+        evidence,
+    };
+    let stored = match record_operation_event_in_txn(&transaction, operation_id, event.clone())? {
+        RecordTxn::Stored { status, .. } => Some((event, *status)),
+        RecordTxn::AlreadySatisfied { .. } => None,
+        RecordTxn::Missing => {
+            return Err(interruption_record_error(
+                "operation disappeared during interruption recording",
+            ));
+        }
+        RecordTxn::InvalidNextSequence(error) => {
+            return Err(interruption_record_error(&error.to_string()));
+        }
+        RecordTxn::Projection(error) => {
+            return Err(interruption_record_error(&error.to_string()));
+        }
+    };
+    transaction.commit()?;
+    Ok(stored)
 }
 
 fn record_interrupted_operations_txn(

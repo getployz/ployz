@@ -252,6 +252,7 @@ fn failure_allowed(current: &MachineAddOperationState, failure: &MachineAddFailu
             | MachineAddFailure::AuthorizationRenderFailed { .. }
             | MachineAddFailure::NatsReloadFailed { .. }
             | MachineAddFailure::MintedCredentialUnusable { .. }
+            | MachineAddFailure::ControlTaskInterrupted { .. }
             | MachineAddFailure::CredentialEvidenceWriteFailed { .. },
         )
         | (
@@ -273,6 +274,7 @@ fn failure_allowed(current: &MachineAddOperationState, failure: &MachineAddFailu
             | MachineAddFailure::AuthorizationRenderFailed { .. }
             | MachineAddFailure::NatsReloadFailed { .. }
             | MachineAddFailure::MintedCredentialUnusable { .. }
+            | MachineAddFailure::ControlTaskInterrupted { .. }
             | MachineAddFailure::CredentialEvidenceWriteFailed { .. },
         )
         | (

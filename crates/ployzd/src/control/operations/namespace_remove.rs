@@ -51,19 +51,21 @@ impl NamespaceRemoveOperation {
         }
     }
 
-    pub fn start(&self, accepted: AcceptedNamespaceRemoveSubmission) {
+    pub async fn start(&self, accepted: AcceptedNamespaceRemoveSubmission) {
         if !accepted.should_start_execution {
             return;
         }
 
         let operation_id = accepted.operation_id.clone();
         let runtime = self.clone();
-        super::report_task_admission(
+        super::finish_rejected_task_admission(
+            &self.controllers,
             &operation_id,
             self.task_registry.spawn(|| async move {
                 runtime.run(accepted).await;
             }),
-        );
+        )
+        .await;
     }
 
     pub async fn run(self, accepted: AcceptedNamespaceRemoveSubmission) {

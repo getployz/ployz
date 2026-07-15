@@ -469,7 +469,7 @@ where
     })
 }
 
-async fn recover_accepted_operations(
+pub(crate) async fn recover_accepted_operations(
     repository: &OperationRepository,
 ) -> Result<(), ManagedDnsTaskError> {
     for status in repository

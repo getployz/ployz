@@ -8,7 +8,11 @@ use crate::certificate::{AcmeIssueContext, AcmeIssuer, AcmeIssuerError, IssuedCe
 use crate::config::ControlProcessConfig;
 use crate::control::intent::machine_roster::MachineRosterStore;
 use crate::control::intent::namespace_intent::NamespaceIntentStore;
-use crate::control::operation_evidence::{NamespaceRemoveOperationSubmission, OperationRepository};
+use crate::control::operation_evidence::{
+    CertOperationSubmission, MachineAddOperationSubmission, MachineJoinIdentity,
+    ManagedDnsReconcileOperationSubmission, NamespaceRemoveOperationSubmission,
+    OperationRepository,
+};
 use crate::control::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
 };
@@ -30,18 +34,23 @@ use ployz_core::deploy::{
     DeployPlanningInput, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec,
     ImageReference, ReplicaCount, VolumeName, plan_namespace_deploy,
 };
-use ployz_core::ids::OperationId;
-use ployz_core::install::MachineBootstrapUrl;
+use ployz_core::ids::{CertId, OperationId};
+use ployz_core::install::{HostPortAssurance, MachineBootstrapUrl};
 use ployz_core::intent::{ActiveMachineState, VolumePinState};
 use ployz_core::machine::MachineName;
 use ployz_core::machine::roles::InstallRolePolicy;
 use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
-use ployz_core::machine::{MachineEndpointObservation, MachineLifecycle};
+use ployz_core::machine::{
+    IssuedJoinToken, JoinTokenExpiresAt, MachineAddFailure, MachineEndpointObservation,
+    MachineLifecycle, RawJoinToken,
+};
+use ployz_core::network::MachineEndpointSubnet;
 use ployz_core::operation::{
-    DeployCompletionOutcome, DeployOperationState, DeployPhaseNumber, DeployPhaseOutcome,
-    DeployRunningStage, DeployServiceResult, EventSequence, OperationEvent,
-    OperationEventReplayCursor, OperationEventReplayRequest, OperationInterruptionCause,
-    OperationStatus,
+    CertOperationState, CertificateProvisionFailure, DeployCompletionOutcome, DeployOperationState,
+    DeployPhaseNumber, DeployPhaseOutcome, DeployRunningStage, DeployServiceResult, EventSequence,
+    MachineAddOperationState, ManagedDnsReconcileFailureClass, ManagedDnsReconcileOperationState,
+    ManagedDnsReconcileSubject, OperationEvent, OperationEventReplayCursor,
+    OperationEventReplayRequest, OperationInterruptionCause, OperationStatus,
 };
 use ployz_nats::operation_api_client::OperationApiClientError;
 use ployz_nats::service_runtime::request_json;
@@ -66,6 +75,7 @@ use crate::tests::support::http::{
 };
 use crate::tests::support::nats::TestNats;
 use ployz_test_support::containers;
+use ployz_test_support::fixtures::machine_join_bundle;
 use ployz_test_support::ids::{
     event_replay_limit, event_sequence, idempotency_key, machine_id, namespace_id, route_hostname,
     route_port, service_id,
@@ -91,6 +101,47 @@ async fn graceful_shutdown_records_owned_operation_interruption() {
         })
         .await
         .expect("operation is accepted");
+    let cert_operation_id = OperationId::try_new("op_shutdown_cert").expect("operation id");
+    repository
+        .submit_cert(CertOperationSubmission {
+            operation_id: cert_operation_id.clone(),
+            cert_id: CertId::try_new("cert_shutdown").expect("certificate id"),
+        })
+        .await
+        .expect("certificate operation accepts");
+    let managed_dns_operation_id =
+        OperationId::try_new("op_shutdown_managed_dns").expect("operation id");
+    repository
+        .submit_managed_dns_reconcile(ManagedDnsReconcileOperationSubmission {
+            operation_id: managed_dns_operation_id.clone(),
+            subject: ManagedDnsReconcileSubject::Acquire,
+        })
+        .await
+        .expect("managed DNS operation accepts");
+    let machine_add_operation_id =
+        OperationId::try_new("op_shutdown_machine_add").expect("operation id");
+    let raw_join_token = RawJoinToken::try_new("shutdown-machine-token").expect("join token");
+    repository
+        .submit_machine_add(MachineAddOperationSubmission {
+            operation_id: machine_add_operation_id.clone(),
+            idempotency_key: idempotency_key("idem_shutdown_machine_add"),
+            identity: MachineJoinIdentity {
+                machine_id: machine_id("shutdown_machine"),
+                name: MachineName::try_new("shutdown-machine").expect("machine name"),
+                roles: InstallRolePolicy::install_all(),
+                host_port_assurance: HostPortAssurance::Keeper,
+                endpoint_subnet: MachineEndpointSubnet::try_new("10.198.90.0/24")
+                    .expect("endpoint subnet"),
+                join_bundle: machine_join_bundle(),
+                join_token: IssuedJoinToken::new(
+                    raw_join_token.fingerprint().expect("join fingerprint"),
+                    JoinTokenExpiresAt::try_new(4_102_444_800).expect("join expiry"),
+                ),
+                raw_join_token,
+            },
+        })
+        .await
+        .expect("machine-add operation accepts");
 
     runtime.shutdown().await.expect("control shuts down");
 
@@ -107,6 +158,41 @@ async fn graceful_shutdown_records_owned_operation_interruption() {
             },
             ..
         } if evidence.cause() == OperationInterruptionCause::ControlShutdown
+    ));
+    assert!(matches!(
+        repository
+            .get(&cert_operation_id)
+            .await
+            .expect("certificate status reads")
+            .expect("certificate status exists"),
+        OperationStatus::Cert {
+            state: CertOperationState::Failed { failure },
+            ..
+        } if matches!(failure.failure(), CertificateProvisionFailure::AcmeValidation { .. })
+    ));
+    assert!(matches!(
+        repository
+            .get(&managed_dns_operation_id)
+            .await
+            .expect("managed DNS status reads")
+            .expect("managed DNS status exists"),
+        OperationStatus::ManagedDnsReconcile {
+            state: ManagedDnsReconcileOperationState::Failed { failure },
+            ..
+        } if failure.class == ManagedDnsReconcileFailureClass::Interrupted
+    ));
+    assert!(matches!(
+        repository
+            .get(&machine_add_operation_id)
+            .await
+            .expect("machine-add status reads")
+            .expect("machine-add status exists"),
+        OperationStatus::MachineAdd {
+            state: MachineAddOperationState::Failed {
+                failure: MachineAddFailure::ControlTaskInterrupted { .. },
+            },
+            ..
+        }
     ));
 }
 

@@ -31,18 +31,20 @@ impl IngressConfigureOperation {
         }
     }
 
-    pub fn start(&self, accepted: AcceptedIngressConfigureSubmission) {
+    pub async fn start(&self, accepted: AcceptedIngressConfigureSubmission) {
         if !accepted.should_start_execution {
             return;
         }
         let operation_id = accepted.operation_id.clone();
         let worker = self.clone();
-        super::report_task_admission(
+        super::finish_rejected_task_admission(
+            &self.controllers,
             &operation_id,
             self.task_registry.spawn(|| async move {
                 worker.run(accepted).await;
             }),
-        );
+        )
+        .await;
     }
 
     async fn run(self, accepted: AcceptedIngressConfigureSubmission) {

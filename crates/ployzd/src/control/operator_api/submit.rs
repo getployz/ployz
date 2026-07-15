@@ -112,7 +112,7 @@ pub async fn credential_add(
         OperationProgressScope::Cluster,
         accepted.start_sequence,
     );
-    handlers.credential_grant().start(accepted);
+    handlers.credential_grant().start(accepted).await;
     Ok(operation)
 }
 
@@ -136,7 +136,7 @@ pub async fn credential_remove(
         OperationProgressScope::Cluster,
         accepted.start_sequence,
     );
-    handlers.credential_grant().start(accepted);
+    handlers.credential_grant().start(accepted).await;
     Ok(operation)
 }
 
@@ -161,7 +161,7 @@ pub async fn ingress_configure(
         OperationProgressScope::Cluster,
         accepted.start_sequence,
     );
-    handlers.ingress_configure().start(accepted);
+    handlers.ingress_configure().start(accepted).await;
     Ok(operation)
 }
 
@@ -307,7 +307,7 @@ pub async fn deploy_submit(
         scope,
         accepted.start_sequence,
     );
-    handlers.deploy_driver.start(accepted_execution);
+    handlers.deploy_driver.start(accepted_execution).await;
 
     Ok(operation)
 }
@@ -502,7 +502,7 @@ pub async fn service_restart(
         },
         accepted.start_sequence,
     );
-    handlers.service_restart().start(accepted);
+    handlers.service_restart().start(accepted).await;
     Ok(operation)
 }
 
@@ -567,7 +567,7 @@ pub async fn network_repair(
         OperationProgressScope::Cluster,
         accepted.start_sequence,
     );
-    handlers.network_repair().start(accepted);
+    handlers.network_repair().start(accepted).await;
     Ok(operation)
 }
 
@@ -633,7 +633,7 @@ pub async fn namespace_remove(
         },
         accepted.start_sequence,
     );
-    handlers.namespace_remove().start(accepted);
+    handlers.namespace_remove().start(accepted).await;
     Ok(operation)
 }
 
@@ -679,7 +679,7 @@ pub async fn volume_remove(
         },
         accepted.start_sequence,
     );
-    handlers.volume_remove().start(accepted);
+    handlers.volume_remove().start(accepted).await;
     Ok(operation)
 }
 
@@ -728,11 +728,14 @@ pub async fn machine_add(
                 message: "machine-add accepted raw join token is invalid".to_owned(),
             }
         })?;
-    handlers.machine_mint.start(MintRequest {
-        operation_id: accepted.operation_id.clone(),
-        machine_id: accepted.identity.machine_id.clone(),
-        idempotency_key,
-    });
+    handlers
+        .machine_mint
+        .start(MintRequest {
+            operation_id: accepted.operation_id.clone(),
+            machine_id: accepted.identity.machine_id.clone(),
+            idempotency_key,
+        })
+        .await;
     tokio::spawn({
         let handlers = handlers.clone();
         async move {
@@ -806,7 +809,7 @@ pub async fn machine_update(
         &accepted.machine_id,
         accepted.start_sequence,
     );
-    handlers.machine_update().start(accepted);
+    handlers.machine_update().start(accepted).await;
 
     Ok(operation)
 }
@@ -886,7 +889,7 @@ async fn machine_lifecycle(
         &accepted.machine_id,
         accepted.start_sequence,
     );
-    handlers.machine_lifecycle().start(accepted);
+    handlers.machine_lifecycle().start(accepted).await;
 
     Ok(operation)
 }

@@ -31,8 +31,12 @@ use crate::control::projection::ingress_endpoint::{
     IngressEndpointStartError, RunningIngressEndpointProjection, start_ingress_endpoint_projection,
 };
 use crate::control::projection::runtime::{RunningRuntimeProjection, start_runtime_projection};
-use crate::control::reconciler::certificate::CertificateRenewalTask;
-use crate::control::reconciler::managed_dns::start_managed_dns_task;
+use crate::control::reconciler::certificate::{
+    CertificateRenewalTask, recover_unfinished_operations,
+};
+use crate::control::reconciler::managed_dns::{
+    recover_accepted_operations, start_managed_dns_task,
+};
 use crate::control::role_client::machine::{
     NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
 };
@@ -70,44 +74,72 @@ pub struct RunningControlProcess {
     ingress_endpoint_projection: RunningIngressEndpointProjection,
     authorization: NatsAuthorizationWriter,
     operation_repository: OperationRepository,
+    certificate_manager: CertificateManager,
+    machine_mint: MachineCredentialMint,
 }
 
 const CONTROL_TASK_QUIESCE_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl RunningControlProcess {
     pub async fn shutdown(self) -> Result<(), ControlProcessShutdownError> {
-        let mut nats_service_error = self.operation_api.shutdown().await.err();
-        let quiesce_result = self
-            .control_tasks
+        let Self {
+            intent,
+            operation_api,
+            control_tasks,
+            testimony_cache,
+            runtime_projection,
+            ingress_endpoint_projection,
+            authorization,
+            operation_repository,
+            certificate_manager,
+            machine_mint,
+        } = self;
+        let mut nats_service_error = operation_api.shutdown().await.err();
+        let quiesce_result = control_tasks
             .abort_and_join(CONTROL_TASK_QUIESCE_TIMEOUT)
             .await;
+        let owner_recovery_result = if quiesce_result.is_ok() {
+            Some(
+                finish_aborted_owner_operations(
+                    &certificate_manager,
+                    &machine_mint,
+                    &operation_repository,
+                )
+                .await,
+            )
+        } else {
+            None
+        };
         let interruption_result = if quiesce_result.is_ok() {
             Some(
-                self.operation_repository
+                operation_repository
                     .record_interrupted_operations(OperationInterruptionCause::ControlShutdown)
                     .await,
             )
         } else {
             None
         };
-        if let Err(error) = self.ingress_endpoint_projection.shutdown().await
+        if let Err(error) = ingress_endpoint_projection.shutdown().await
             && nats_service_error.is_none()
         {
             nats_service_error = Some(error);
         }
-        if let Err(error) = self.runtime_projection.shutdown().await
+        if let Err(error) = runtime_projection.shutdown().await
             && nats_service_error.is_none()
         {
             nats_service_error = Some(error);
         }
-        if let Err(error) = self.intent.shutdown().await
+        if let Err(error) = intent.shutdown().await
             && nats_service_error.is_none()
         {
             nats_service_error = Some(error);
         }
-        self.testimony_cache.shutdown().await;
-        self.authorization.shutdown();
+        testimony_cache.shutdown().await;
+        authorization.shutdown();
         quiesce_result.map_err(ControlProcessShutdownError::TaskQuiesce)?;
+        if let Some(owner_recovery_result) = owner_recovery_result {
+            owner_recovery_result.map_err(ControlProcessShutdownError::OwnerOperationEvidence)?;
+        }
         if let Some(interruption_result) = interruption_result {
             interruption_result.map_err(ControlProcessShutdownError::OperationEvidence)?;
         }
@@ -118,12 +150,55 @@ impl RunningControlProcess {
     }
 }
 
+async fn finish_aborted_owner_operations(
+    certificate_manager: &CertificateManager,
+    machine_mint: &MachineCredentialMint,
+    operation_repository: &OperationRepository,
+) -> Result<(), OwnerOperationRecoveryError> {
+    let mut first_error = None;
+    if let Err(error) = recover_unfinished_operations(certificate_manager).await {
+        first_error = Some(OwnerOperationRecoveryError::new("certificate", error));
+    }
+    if let Err(error) = recover_accepted_operations(operation_repository).await
+        && first_error.is_none()
+    {
+        first_error = Some(OwnerOperationRecoveryError::new("managed DNS", error));
+    }
+    if let Err(error) = machine_mint.fail_unfinished_mints().await
+        && first_error.is_none()
+    {
+        first_error = Some(OwnerOperationRecoveryError::new("machine-add mint", error));
+    }
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("failed to finish aborted {owner} operations: {message}")]
+pub struct OwnerOperationRecoveryError {
+    owner: &'static str,
+    message: String,
+}
+
+impl OwnerOperationRecoveryError {
+    fn new(owner: &'static str, error: impl std::fmt::Display) -> Self {
+        Self {
+            owner,
+            message: error.to_string(),
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ControlProcessShutdownError {
     #[error("failed to stop control NATS service: {0}")]
     NatsService(NatsServiceShutdownError),
     #[error("failed to record interrupted operation evidence: {0}")]
     OperationEvidence(OperationStatusStoreError),
+    #[error(transparent)]
+    OwnerOperationEvidence(OwnerOperationRecoveryError),
     #[error("failed to quiesce control tasks: {0}")]
     TaskQuiesce(TaskRegistryQuiesceError),
 }
@@ -362,7 +437,7 @@ async fn start_control_process_with_client_reload_and_issuer(
     .map_err(ControlProcessError::StartControlTask)?;
     let certificate_renewal_health = CertificateRenewalTask::new(
         client.clone(),
-        certificate_manager,
+        certificate_manager.clone(),
         NatsMachineFactsReader::new(client.clone()),
         machine_roster.clone(),
         ployz_dns_target,
@@ -425,7 +500,7 @@ async fn start_control_process_with_client_reload_and_issuer(
                 volume_remove,
                 machine_update,
                 machine_lifecycle,
-                machine_mint,
+                machine_mint: machine_mint.clone(),
             },
             config.dataplane_endpoint_supernet.clone(),
             core_store.clone(),
@@ -457,6 +532,8 @@ async fn start_control_process_with_client_reload_and_issuer(
         ingress_endpoint_projection,
         authorization,
         operation_repository: repository,
+        certificate_manager,
+        machine_mint,
     })
 }
 

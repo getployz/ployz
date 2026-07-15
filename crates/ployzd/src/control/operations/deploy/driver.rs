@@ -358,19 +358,21 @@ impl DeployOperationDriver {
         }
     }
 
-    pub fn start(&self, accepted: AcceptedDeployExecution) {
+    pub async fn start(&self, accepted: AcceptedDeployExecution) {
         if !accepted.submission.should_start_execution {
             return;
         }
 
         let operation_id = accepted.submission.operation_id.clone();
         let runtime = self.clone();
-        super::super::report_task_admission(
+        super::super::finish_rejected_task_admission(
+            &self.stores.controllers,
             &operation_id,
             self.task_registry.spawn(|| async move {
                 let _outcome = runtime.run(accepted).await;
             }),
-        );
+        )
+        .await;
     }
 
     pub async fn run(

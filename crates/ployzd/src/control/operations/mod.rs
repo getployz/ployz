@@ -15,13 +15,22 @@ pub mod network_repair;
 pub mod service_restart;
 pub mod volume_remove;
 
-pub(super) fn report_task_admission(
+pub(super) async fn finish_rejected_task_admission(
+    controllers: &crate::control::sequencer::OperationControllers,
     operation_id: &OperationId,
     admission: Result<(), TaskAdmissionError>,
 ) {
-    if let Err(error) = admission {
+    if let Err(error) = admission
+        && let Err(record_error) = controllers
+            .repository()
+            .record_interrupted_operation(
+                operation_id,
+                ployz_core::operation::OperationInterruptionCause::ControlShutdown,
+            )
+            .await
+    {
         eprintln!(
-            "operation {} was accepted while control tasks were quiescing: {error}",
+            "operation {} task admission failed ({error}) and interruption evidence could not be recorded: {record_error}",
             operation_id.as_str()
         );
     }

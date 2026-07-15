@@ -80,6 +80,11 @@ pub enum MintResumeError {
     ReadStatus(OperationStatusStoreError),
     #[error("failed to admit resumed machine-add mint: {0}")]
     TaskAdmission(crate::tasks::TaskAdmissionError),
+    #[error("failed to record interrupted machine-add mint {}: {message}", .operation_id.as_str())]
+    RecordInterruption {
+        operation_id: OperationId,
+        message: String,
+    },
 }
 
 /// Bounded operation work that mints per-machine credentials after a
@@ -116,9 +121,23 @@ impl MachineCredentialMint {
         &self.machine_seed_file
     }
 
-    pub fn start(&self, request: MintRequest) {
-        let operation_id = request.operation_id.clone();
-        super::super::operations::report_task_admission(&operation_id, self.admit(request));
+    pub async fn start(&self, request: MintRequest) {
+        if let Err(error) = self.admit(request.clone()) {
+            let outcome = self
+                .fail(
+                    &request,
+                    MachineAddFailure::ControlTaskInterrupted {
+                        message: failure_message(&error.to_string()),
+                    },
+                )
+                .await;
+            if let MintOutcome::RecordingFailed { message } = outcome {
+                eprintln!(
+                    "machine-add operation {} task admission failed and terminal evidence could not be recorded: {message}",
+                    request.operation_id.as_str()
+                );
+            }
+        }
     }
 
     fn admit(&self, request: MintRequest) -> Result<(), crate::tasks::TaskAdmissionError> {
@@ -181,6 +200,52 @@ impl MachineCredentialMint {
             resumed.push(request);
         }
         Ok(resumed)
+    }
+
+    pub async fn fail_unfinished_mints(&self) -> Result<usize, MintResumeError> {
+        let submissions = self
+            .controllers
+            .repository()
+            .machine_add_submissions()
+            .await
+            .map_err(MintResumeError::ListSubmissions)?;
+        let mut failed = 0;
+        for submission in submissions {
+            let Some(status) = self
+                .controllers
+                .repository()
+                .get(&submission.operation_id)
+                .await
+                .map_err(MintResumeError::ReadStatus)?
+            else {
+                continue;
+            };
+            let OperationStatus::MachineAdd {
+                state: MachineAddOperationState::Pending { .. },
+                ..
+            } = status
+            else {
+                continue;
+            };
+            self.controllers
+                .repository()
+                .record_machine_add_failed(
+                    &submission.operation_id,
+                    &submission.identity.machine_id,
+                    MachineAddFailure::ControlTaskInterrupted {
+                        message: failure_message(
+                            "control stopped before credential mint reached terminal evidence",
+                        ),
+                    },
+                )
+                .await
+                .map_err(|error| MintResumeError::RecordInterruption {
+                    operation_id: submission.operation_id.clone(),
+                    message: error.to_string(),
+                })?;
+            failed += 1;
+        }
+        Ok(failed)
     }
 
     pub async fn run(&self, request: MintRequest) -> MintOutcome {

@@ -189,6 +189,8 @@ pub enum MachineAddFailure {
     NatsReloadFailed { message: FailureMessage },
     #[error("minted credential is unusable: {message}")]
     MintedCredentialUnusable { message: FailureMessage },
+    #[error("credential mint task was interrupted: {message}")]
+    ControlTaskInterrupted { message: FailureMessage },
     /// Credential provisioning progressed but its operation evidence could
     /// not be recorded; the mint fails terminally instead of stranding the
     /// operation non-terminal.
