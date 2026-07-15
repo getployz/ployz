@@ -22,10 +22,10 @@ use super::service::{SupervisorUnitSpec, SupervisorUnitTarget};
 use super::supervisor::{
     SupervisorBackend, SupervisorChange, SupervisorDirectories, execute_supervisor_commands,
 };
-use crate::assigned_substrate::{
+use crate::lifecycle::assigned_substrate::{
     AssignedHostPort, AssignedSubstrateState, write_assigned_substrate_state,
 };
-use crate::join::{
+use crate::lifecycle::machine_join::{
     JOIN_CORE_SEEDS_FILE, JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_NATS_CREDENTIALS_FILE,
     JOIN_RECOVERY_KEY_FILE, JOIN_TRUSTED_CA_FILE, render_redacted_join_material,
 };
@@ -784,8 +784,8 @@ fn render_assigned_host_ports(ports: &[AssignedHostPort]) -> String {
         .iter()
         .map(|port| {
             let protocol = match port.protocol {
-                crate::assigned_substrate::HostPortProtocol::Tcp => "tcp",
-                crate::assigned_substrate::HostPortProtocol::Udp => "udp",
+                crate::lifecycle::assigned_substrate::HostPortProtocol::Tcp => "tcp",
+                crate::lifecycle::assigned_substrate::HostPortProtocol::Udp => "udp",
             };
             format!("{}/{protocol}", port.port)
         })

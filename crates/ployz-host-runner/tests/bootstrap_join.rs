@@ -3,7 +3,7 @@ mod support;
 use ployz_core::roles::DaemonProcessRole;
 use ployz_host_runner::artifacts::{ArtifactKind, ArtifactTarget};
 use ployz_host_runner::executor::HostRunnerPlanFailure;
-use ployz_host_runner::join_executor::execute_host_runner_join;
+use ployz_host_runner::lifecycle::machine_join::execute_host_runner_join;
 use ployz_host_runner::steps::{
     ContainerRuntime, HostRunnerJoinTarget, HostRunnerStep, HostRunnerStepFailure,
     HostRunnerStepFailureReason, HostRunnerStepLabel, JoinMaterialError, JoinToken,

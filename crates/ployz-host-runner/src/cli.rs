@@ -9,7 +9,7 @@ use crate::execution::{
     ArtifactKind, ArtifactTargetError, DataplaneArtifactTargets, artifact_target,
 };
 use crate::execution::{NatsServerUnitTarget, SupervisorUnitFileError};
-use crate::join::{JoinTokenFileError, read_join_token_file};
+use crate::lifecycle::machine_join::{JoinTokenFileError, read_join_token_file};
 use crate::nats_identity::{
     CoreSeeds, NatsIdentityError, ServerCertificateSans, generate_cluster_nats_identity,
     wrap_core_seeds,

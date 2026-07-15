@@ -1,9 +1,12 @@
+//! Mechanics shared after interactive or noninteractive Cloud approval.
+
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use crate::cloud_bootstrap::{
+use super::super::machine_join::execution::execute_host_runner_join_with_redeemed;
+use super::{
     CloudBootstrapAttemptState, CloudBootstrapCallbackTarget, CloudBootstrapLocalState,
     cloud_joiner_connect_config, cloud_joiner_success_callback,
     inspect_cloud_bootstrap_local_state, load_existing_cloud_attempt, load_or_create_cloud_attempt,
@@ -14,7 +17,6 @@ use crate::execution::{
     HostRunnerCommandRunner, HostRunnerLocalConfig, HostRunnerLocalEffects, SupervisorBackend,
     SupervisorDirectories, SystemHostRunnerCommandRunner, detect_host_platform,
 };
-use crate::join_executor::execute_host_runner_join_with_redeemed;
 use crate::plan::{HostRunnerPlanFailure, HostRunnerPlanTerminal};
 use crate::plan::{HostRunnerStepFailureReason, HostRunnerTextRecorder, JoinToken};
 use crate::release_manifest::{
@@ -32,15 +34,16 @@ use ployz_nats::connect::{
 };
 use ployz_nats::operation_api_client::OperationApiClient;
 use ployz_sdk_types::{
-    CloudBootstrapCallbackAccepted, CloudBootstrapCallbackRequest, CloudBootstrapClientInfo,
-    CloudBootstrapDecision, CloudBootstrapEnvelope, CloudBootstrapFailure, CloudBootstrapIntent,
-    CloudBootstrapMachineFacts, CloudBootstrapOutcome, CloudBootstrapSessionCreateRequest,
-    CloudBootstrapSessionPollRequest, CloudBootstrapToken, CloudBootstrapTokenRedeemRequest,
-    CloudFounderBootstrap, CloudJoinerBootstrap, InitFirstMachineActivateRequest, MachineId,
+    CloudBootstrapCallbackAccepted, CloudBootstrapCallbackRequest, CloudBootstrapDecision,
+    CloudBootstrapEnvelope, CloudBootstrapFailure, CloudBootstrapIntent,
+    CloudBootstrapMachineFacts, CloudBootstrapOutcome, CloudFounderBootstrap, CloudJoinerBootstrap,
+    InitFirstMachineActivateRequest, MachineId,
 };
 
-use crate::first_machine::{read_cloud_founder_bootstrap_result, run_first_machine_install};
-use crate::join_client::{CloudJoinTokenConsumer, JoinRedeemer, JoinReporter};
+use super::super::founder_bootstrap::{
+    read_cloud_founder_bootstrap_result, run_first_machine_install,
+};
+use super::super::machine_join::client::{CloudJoinTokenConsumer, JoinRedeemer, JoinReporter};
 use crate::runtime::{
     CLOUD_BOOTSTRAP_MAX_POLLS, DEFAULT_NATS_CONNECT_TIMEOUT, HOST_RUNNER_STATE_DIR,
     failure_message, failure_summary,
@@ -49,95 +52,13 @@ use crate::runtime::{
 const CLOUD_FOUNDER_ACTIVATION_ATTEMPTS: u32 = 60;
 const CLOUD_FOUNDER_ACTIVATION_RETRY_DELAY: Duration = Duration::from_millis(500);
 
-pub(super) fn run_interactive_cloud_bootstrap(cloud_host: &str) -> ExitCode {
-    let Some(attempt) = prepare_cloud_bootstrap_attempt() else {
-        return ExitCode::FAILURE;
-    };
-    let client = CloudClient::new(cloud_host);
-    if let Some(exit_code) = resume_terminal_callback(&attempt, &client) {
-        return exit_code;
-    }
-
-    let machine = cloud_machine_facts();
-    let created = match client.post_json::<_, ployz_sdk_types::CloudBootstrapSessionCreated>(
-        "/api/bootstrap/sessions",
-        None,
-        &CloudBootstrapSessionCreateRequest {
-            attempt_id: attempt.attempt_id.clone(),
-            client: CloudBootstrapClientInfo::current(env!("CARGO_PKG_VERSION")),
-            machine: machine.clone(),
-        },
-    ) {
-        Ok(created) => created,
-        Err(error) => {
-            eprintln!("{error}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    println!("Open this link to connect this machine:");
-    println!("{}", created.browser_url);
-    println!("Waiting for approval...");
-
-    let poll_request = CloudBootstrapSessionPollRequest {
-        attempt_id: attempt.attempt_id.clone(),
-        session_secret: created.session_secret,
-        machine,
-    };
-    run_cloud_bootstrap_decisions(
-        &attempt,
-        &client,
-        CloudBootstrapFlow::InteractiveSession,
-        Duration::from_secs(created.poll_after_seconds.into()),
-        || {
-            client.post_json::<_, CloudBootstrapDecision>(
-                "/api/bootstrap/sessions/poll",
-                None,
-                &poll_request,
-            )
-        },
-    )
-}
-
-pub(super) fn run_token_cloud_bootstrap(
-    cloud_host: &str,
-    cloud_token: CloudBootstrapToken,
-) -> ExitCode {
-    let Some(attempt) = prepare_cloud_bootstrap_attempt() else {
-        return ExitCode::FAILURE;
-    };
-    let client = CloudClient::new(cloud_host);
-    if let Some(exit_code) = resume_terminal_callback(&attempt, &client) {
-        return exit_code;
-    }
-
-    let request = CloudBootstrapTokenRedeemRequest {
-        attempt_id: attempt.attempt_id.clone(),
-        client: CloudBootstrapClientInfo::current(env!("CARGO_PKG_VERSION")),
-        machine: cloud_machine_facts(),
-    };
-    run_cloud_bootstrap_decisions(
-        &attempt,
-        &client,
-        CloudBootstrapFlow::Token,
-        Duration::ZERO,
-        || {
-            client.post_json::<_, CloudBootstrapDecision>(
-                "/api/bootstrap/tokens/redeem",
-                Some(cloud_token.secret()),
-                &request,
-            )
-        },
-    )
-}
-
 #[derive(Clone, Copy)]
-enum CloudBootstrapFlow {
+pub(super) enum CloudBootstrapFlow {
     InteractiveSession,
-    Token,
+    NoninteractiveToken,
 }
 
-fn run_cloud_bootstrap_decisions<E>(
+pub(super) fn run_cloud_bootstrap_decisions<E>(
     attempt: &CloudBootstrapAttemptState,
     client: &CloudClient,
     flow: CloudBootstrapFlow,
@@ -196,7 +117,7 @@ impl CloudBootstrapFlow {
                 }
                 eprintln!("Cloud bootstrap session expired; rerun sudo ployz host bootstrap");
             }
-            Self::Token => eprintln!("Cloud Bootstrap Token expired"),
+            Self::NoninteractiveToken => eprintln!("Cloud Bootstrap Token expired"),
         }
         ExitCode::FAILURE
     }
@@ -206,7 +127,7 @@ impl CloudBootstrapFlow {
             Self::InteractiveSession => {
                 eprintln!("Cloud bootstrap approval timed out; rerun sudo ployz host bootstrap");
             }
-            Self::Token => {
+            Self::NoninteractiveToken => {
                 eprintln!("Cloud bootstrap timed out; rerun with a valid Cloud Bootstrap Token");
             }
         }
@@ -214,7 +135,7 @@ impl CloudBootstrapFlow {
     }
 }
 
-fn prepare_cloud_bootstrap_attempt() -> Option<CloudBootstrapAttemptState> {
+pub(super) fn prepare_cloud_bootstrap_attempt() -> Option<CloudBootstrapAttemptState> {
     let state_dir = std::path::Path::new(HOST_RUNNER_STATE_DIR);
     let mut runner = SystemHostRunnerCommandRunner::default();
     let supervisor = match runner.read_os_release().and_then(|os_release| {
@@ -274,7 +195,7 @@ fn prepare_cloud_bootstrap_attempt() -> Option<CloudBootstrapAttemptState> {
     Some(attempt)
 }
 
-fn resume_terminal_callback(
+pub(super) fn resume_terminal_callback(
     attempt: &CloudBootstrapAttemptState,
     client: &CloudClient,
 ) -> Option<ExitCode> {
@@ -805,7 +726,7 @@ fn failed_callback(
     }
 }
 
-fn cloud_machine_facts() -> CloudBootstrapMachineFacts {
+pub(super) fn cloud_machine_facts() -> CloudBootstrapMachineFacts {
     CloudBootstrapMachineFacts {
         hostname: gethostname::gethostname().into_string().ok(),
         os: std::env::consts::OS.to_owned(),

@@ -20,10 +20,12 @@ use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy, plan_first_machine
 use ployz_nats::connect::NatsClientUrl;
 use sha2::{Digest, Sha256};
 
-use crate::assigned_substrate::{AssignedHostPort, AssignedSubstrateState, SubstrateAssignment};
 use crate::execution::{
     ArtifactTarget, DataplaneArtifactTargets, NatsServerUnitTarget, PloyzdRoleEnvironmentFile,
     SupervisorUnitSpec, SupervisorUnitTarget,
+};
+use crate::lifecycle::assigned_substrate::{
+    AssignedHostPort, AssignedSubstrateState, SubstrateAssignment,
 };
 use crate::nats_identity::ClusterNatsIdentity;
 

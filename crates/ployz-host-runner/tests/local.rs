@@ -13,21 +13,21 @@ use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_host_runner::artifacts::{
     ArtifactKind, ArtifactSource, ArtifactTarget, DataplaneArtifactTargets,
 };
-use ployz_host_runner::assigned_substrate::{
-    AssignedSubstrateState, SubstrateAssignment, load_assigned_substrate_state,
-};
 use ployz_host_runner::command::{HostRunnerCommandOutput, HostRunnerCommandRunner};
 use ployz_host_runner::executor::{
     HostRunnerPlanFailure, HostRunnerPlanTerminal, HostRunnerStepEffects, HostRunnerStepEvent,
     HostRunnerStepRecorder, execute_host_runner_plan,
 };
-use ployz_host_runner::join::{
-    JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_NATS_CREDENTIALS_FILE, JOIN_RECOVERY_KEY_FILE,
-    JOIN_TRUSTED_CA_FILE,
+use ployz_host_runner::lifecycle::assigned_substrate::{
+    AssignedSubstrateState, SubstrateAssignment, load_assigned_substrate_state,
 };
-use ployz_host_runner::join_executor::{
+use ployz_host_runner::lifecycle::machine_join::{
     HostRunnerJoinRedeemer, HostRunnerJoinReporter, HostRunnerJoinTokenConsumer,
     RedeemedHostRunnerJoin, execute_host_runner_join,
+};
+use ployz_host_runner::lifecycle::machine_join::{
+    JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_NATS_CREDENTIALS_FILE, JOIN_RECOVERY_KEY_FILE,
+    JOIN_TRUSTED_CA_FILE,
 };
 use ployz_host_runner::local::{HostRunnerLocalConfig, HostRunnerLocalEffects};
 use ployz_host_runner::nats_identity::{

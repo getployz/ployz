@@ -3,15 +3,15 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use crate::assigned_substrate::{
-    AssignedSubstrateState, SubstrateAssignment, load_assigned_substrate_state,
-};
 use crate::cli::HostRunnerCorePromote;
 use crate::core_demote::repoint_non_core_roles;
 use crate::execution::SystemHostRunnerCommandRunner;
 use crate::execution::{ArtifactKind, ArtifactTarget, DataplaneArtifactTargets, artifact_target};
 use crate::execution::{HostRunnerLocalConfig, HostRunnerLocalEffects, SupervisorDirectories};
-use crate::join::{
+use crate::lifecycle::assigned_substrate::{
+    AssignedSubstrateState, SubstrateAssignment, load_assigned_substrate_state,
+};
+use crate::lifecycle::machine_join::{
     JOIN_CORE_SEEDS_FILE, JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_RECOVERY_KEY_FILE,
     JOIN_TRUSTED_CA_FILE, parse_dataplane_endpoint_supernet_from_join_material,
     parse_machine_id_from_join_material,
@@ -319,7 +319,9 @@ fn promoted_assigned_substrate(state_dir: &Path) -> Result<AssignedSubstrateStat
     let mut assigned = load_assigned_substrate_state(state_dir).map_err(|error| {
         format!(
             "cannot load assigned substrate state for core promotion: {error}; restore {} before retrying",
-            state_dir.join(crate::assigned_substrate::ASSIGNED_SUBSTRATE_FILE).display()
+            state_dir
+                .join(crate::lifecycle::assigned_substrate::ASSIGNED_SUBSTRATE_FILE)
+                .display()
         )
     })?;
     assigned.assignments.insert(SubstrateAssignment::NatsServer);
@@ -384,7 +386,7 @@ mod tests {
 
     use ployz_core::install::HostPortAssurance;
 
-    use crate::assigned_substrate::{
+    use crate::lifecycle::assigned_substrate::{
         AssignedSubstrateState, SubstrateAssignment, write_assigned_substrate_state,
     };
 

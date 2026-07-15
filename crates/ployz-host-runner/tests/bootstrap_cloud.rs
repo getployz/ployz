@@ -6,13 +6,13 @@ use ployz_core::install::{
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::ops::FailureMessage;
 use ployz_core::security::NatsPrincipal;
-use ployz_host_runner::cloud_bootstrap::{
+use ployz_host_runner::cloud_client::{endpoint_url, validate_same_origin_url};
+use ployz_host_runner::lifecycle::cloud_bootstrap::{
     CloudAttemptStateError, CloudBootstrapLocalState, cloud_joiner_connect_config,
     inspect_cloud_bootstrap_local_state, load_or_create_cloud_attempt,
     persist_cloud_terminal_callback, write_cloud_joiner_trusted_ca,
 };
-use ployz_host_runner::cloud_client::{endpoint_url, validate_same_origin_url};
-use ployz_host_runner::join::{JOIN_MATERIAL_DIR, JOIN_NATS_CREDENTIALS_FILE};
+use ployz_host_runner::lifecycle::machine_join::{JOIN_MATERIAL_DIR, JOIN_NATS_CREDENTIALS_FILE};
 use ployz_nats::connect::{NatsClientAuth, NatsTlsTrust};
 use ployz_sdk_types::{
     CloudBootstrapAttemptId, CloudBootstrapCallbackRequest, CloudBootstrapCallbackToken,

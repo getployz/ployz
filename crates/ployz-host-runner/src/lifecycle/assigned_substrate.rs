@@ -1,4 +1,4 @@
-//! Durable machine-local substrate requirements.
+//! Durable machine-local substrate guidance owned by this machine's keeper.
 
 use std::collections::BTreeSet;
 use std::fs;

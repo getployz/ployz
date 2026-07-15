@@ -13,7 +13,7 @@ use ployz_host_runner::artifacts::{ArtifactKind, ArtifactTarget, DataplaneArtifa
 use ployz_host_runner::executor::{
     HostRunnerStepEffects, HostRunnerStepEvent, HostRunnerStepRecorder,
 };
-use ployz_host_runner::join_executor::{
+use ployz_host_runner::lifecycle::machine_join::{
     HostRunnerJoinRedeemer, HostRunnerJoinReporter, HostRunnerJoinTokenConsumer,
     RedeemedHostRunnerJoin,
 };

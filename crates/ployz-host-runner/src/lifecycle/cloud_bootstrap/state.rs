@@ -12,8 +12,10 @@ use ployz_sdk_types::{
 };
 use serde::{Deserialize, Serialize};
 
+use super::super::machine_join::{
+    JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_NATS_CREDENTIALS_FILE,
+};
 use crate::execution::{FileMode, write_durable_file};
-use crate::join::{JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_NATS_CREDENTIALS_FILE};
 
 const CLOUD_ATTEMPT_FILE: &str = "cloud-bootstrap-attempt.json";
 
@@ -443,13 +445,9 @@ mod tests {
         let root = temp_root("preflight-material");
         let state_dir = root.join("state");
         let systemd_dir = root.join("systemd");
-        let material_dir = state_dir.join(crate::join::JOIN_MATERIAL_DIR);
+        let material_dir = state_dir.join(JOIN_MATERIAL_DIR);
         std::fs::create_dir_all(&material_dir).expect("material dir");
-        std::fs::write(
-            material_dir.join(crate::join::JOIN_NATS_CREDENTIALS_FILE),
-            "seed",
-        )
-        .expect("seed writes");
+        std::fs::write(material_dir.join(JOIN_NATS_CREDENTIALS_FILE), "seed").expect("seed writes");
 
         let state = super::inspect_cloud_bootstrap_local_state(&state_dir, &systemd_dir)
             .expect("preflight inspects");

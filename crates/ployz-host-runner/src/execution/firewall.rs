@@ -4,7 +4,7 @@ use ployz_core::ops::FailureMessage;
 
 use super::command::HostRunnerCommandRunner;
 use super::supervisor::SupervisorBackend;
-use crate::assigned_substrate::{AssignedHostPort, HostPortProtocol};
+use crate::lifecycle::assigned_substrate::{AssignedHostPort, HostPortProtocol};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FirewallBackend {

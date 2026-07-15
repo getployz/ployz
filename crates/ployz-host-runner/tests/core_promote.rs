@@ -6,7 +6,9 @@ use ployz_core::install::{
 };
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_host_runner::artifacts::ArtifactKind;
-use ployz_host_runner::assigned_substrate::{AssignedSubstrateState, SubstrateAssignment};
+use ployz_host_runner::lifecycle::assigned_substrate::{
+    AssignedSubstrateState, SubstrateAssignment,
+};
 use ployz_host_runner::steps::{
     CorePromoteTarget, FirstMachineInstallTarget, HostRunnerStep, core_promote_plan,
 };

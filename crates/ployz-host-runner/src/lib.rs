@@ -6,11 +6,7 @@
 //! and join material storage. It does not own product truth.
 
 pub mod artifacts;
-pub mod assigned_substrate;
-mod bootstrap;
 pub mod cli;
-pub mod cloud_bootstrap;
-mod cloud_bootstrap_runner;
 pub mod cloud_client;
 pub mod command;
 pub mod core_demote;
@@ -20,12 +16,9 @@ mod env_config;
 pub mod execution;
 pub mod executor;
 pub mod firewall;
-mod first_machine;
 pub mod fsx;
 pub mod host_platform;
-pub mod join;
-mod join_client;
-pub mod join_executor;
+pub mod lifecycle;
 pub mod local;
 pub mod nats_identity;
 pub mod plan;
@@ -34,7 +27,6 @@ pub mod release_manifest;
 pub mod report;
 mod runtime;
 pub mod steps;
-mod substrate_update;
 pub mod supervisor;
 pub mod systemd;
 
@@ -65,13 +57,15 @@ pub fn run_host_runner_command(command: HostRunnerCommand) -> ExitCode {
     }
 
     match command {
-        HostRunnerCommand::Start(startup) => join_client::run_start_command(startup),
-        HostRunnerCommand::Bootstrap(bootstrap) => bootstrap::run_bootstrap_command(bootstrap),
+        HostRunnerCommand::Start(startup) => {
+            lifecycle::machine_join::client::run_start_command(startup)
+        }
+        HostRunnerCommand::Bootstrap(bootstrap) => lifecycle::run_bootstrap_command(bootstrap),
         HostRunnerCommand::SubstrateUpdate(update) => {
-            substrate_update::run_substrate_update_command(update)
+            lifecycle::substrate_update::run_substrate_update_command(update)
         }
         HostRunnerCommand::FirstMachineInstall(target) => {
-            first_machine::run_first_machine_install_command(*target)
+            lifecycle::founder_bootstrap::run_first_machine_install_command(*target)
         }
         HostRunnerCommand::CorePromote(promote) => core_promote::run_core_promote_command(promote),
         HostRunnerCommand::CoreDemote(demote) => {

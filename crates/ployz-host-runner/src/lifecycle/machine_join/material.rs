@@ -1,4 +1,4 @@
-//! Host Runner bootstrap join material handling.
+//! Redacted machine-local join material and token-file handling.
 
 use std::fs;
 use std::path::{Path, PathBuf};

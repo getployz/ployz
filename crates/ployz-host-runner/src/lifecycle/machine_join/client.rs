@@ -1,17 +1,19 @@
+//! Machine Join transport clients and keeper startup resume.
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use super::execution::{
+    HostRunnerJoinRedeemer, HostRunnerJoinReporter, HostRunnerJoinTokenConsumer,
+    RedeemedHostRunnerJoin, execute_host_runner_join,
+};
+use super::{JOIN_MATERIAL_DIR, remove_join_token_file};
 use crate::cli::HostRunnerStartup;
 use crate::execution::{ArtifactKind, DataplaneArtifactTargets, artifact_target};
 use crate::execution::{
     HostRunnerLocalConfig, HostRunnerLocalEffects, SupervisorDirectories,
     SystemHostRunnerCommandRunner,
-};
-use crate::join::JOIN_MATERIAL_DIR;
-use crate::join_executor::{
-    HostRunnerJoinRedeemer, HostRunnerJoinReporter, HostRunnerJoinTokenConsumer,
-    RedeemedHostRunnerJoin, execute_host_runner_join,
 };
 use crate::plan::HostRunnerPlanTerminal;
 use crate::plan::{
@@ -372,7 +374,7 @@ struct StartupJoinTokenConsumer {
 
 impl HostRunnerJoinTokenConsumer for StartupJoinTokenConsumer {
     fn consume_join_token(&mut self) -> Result<(), FailureMessage> {
-        crate::join::remove_join_token_file(&self.join_token_file).map_err(|error| {
+        remove_join_token_file(&self.join_token_file).map_err(|error| {
             FailureMessage::try_new(error.to_string()).expect("join token file error is non-empty")
         })
     }

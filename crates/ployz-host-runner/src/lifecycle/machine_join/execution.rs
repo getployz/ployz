@@ -1,4 +1,4 @@
-//! Direct Host Runner join execution.
+//! Machine Join keeps Redemption acceptance before local work and Report as later evidence.
 
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::ops::FailureMessage;

@@ -1,7 +1,9 @@
+//! Explicit non-keeper Substrate Update with preflight before activation.
+
 use std::path::Path;
 use std::process::ExitCode;
 
-use crate::assigned_substrate::load_assigned_substrate_state;
+use super::assigned_substrate::load_assigned_substrate_state;
 use crate::cli::{HostRunnerSubstrateUpdate, HostRunnerSubstrateUpdateSource};
 use crate::execution::supervisor::execute_supervisor_commands;
 use crate::execution::{

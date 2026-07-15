@@ -1,5 +1,8 @@
+//! Founder Bootstrap forms a new control plane and activates its first machine.
+
 use std::process::ExitCode;
 
+use crate::env_config::local_core_target_from_env;
 use crate::execution::{
     HostRunnerLocalConfig, HostRunnerLocalEffects, SupervisorDirectories,
     SystemHostRunnerCommandRunner,
@@ -14,6 +17,45 @@ use crate::runtime::{
     FIRST_MACHINE_BOOTSTRAP_RESULT_BEGIN, FIRST_MACHINE_BOOTSTRAP_RESULT_END,
     HOST_RUNNER_STATE_DIR, failure_summary,
 };
+
+pub(crate) fn run_local_founder_bootstrap() -> ExitCode {
+    let target = match local_core_target_from_env() {
+        Ok(target) => target,
+        Err(message) => {
+            eprintln!("{message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let machine_id = target.machine_id.clone();
+    let nats_material = target.nats_material.clone();
+    let runtime_nats_url = target.machine_join_runtime_nats_url().clone();
+    let stdout = std::io::stdout();
+    let mut recorder = HostRunnerTextRecorder::new(stdout.lock());
+    let execution = run_first_machine_install(target, &mut recorder);
+    match execution.terminal {
+        HostRunnerPlanTerminal::Completed => {
+            drop(recorder);
+            match print_first_machine_bootstrap_result(
+                &machine_id,
+                &runtime_nats_url,
+                &nats_material,
+            ) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(message) => {
+                    eprintln!("{message}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        HostRunnerPlanTerminal::Failed(failure) => {
+            eprintln!(
+                "ployz host bootstrap core failed: {}",
+                failure_summary(&failure)
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
 
 pub(crate) fn run_first_machine_install_command(target: FirstMachineInstallTarget) -> ExitCode {
     let machine_id = target.machine_id.clone();

@@ -103,13 +103,13 @@ fn render_step_label(step: &HostRunnerStepLabel) -> String {
     }
 }
 
-fn render_host_ports(ports: &[crate::assigned_substrate::AssignedHostPort]) -> String {
+fn render_host_ports(ports: &[crate::lifecycle::assigned_substrate::AssignedHostPort]) -> String {
     ports
         .iter()
         .map(|port| {
             let protocol = match port.protocol {
-                crate::assigned_substrate::HostPortProtocol::Tcp => "tcp",
-                crate::assigned_substrate::HostPortProtocol::Udp => "udp",
+                crate::lifecycle::assigned_substrate::HostPortProtocol::Tcp => "tcp",
+                crate::lifecycle::assigned_substrate::HostPortProtocol::Udp => "udp",
             };
             format!("{}/{protocol}", port.port)
         })
@@ -181,7 +181,7 @@ fn failure_message(message: impl Into<String>) -> FailureMessage {
 mod tests {
     use super::super::execution::HostRunnerStepEvent;
     use super::super::steps::HostRunnerStepLabel;
-    use crate::assigned_substrate::{AssignedHostPort, HostPortProtocol};
+    use crate::lifecycle::assigned_substrate::{AssignedHostPort, HostPortProtocol};
 
     use super::render_step_event;
 

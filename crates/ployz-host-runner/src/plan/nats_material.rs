@@ -16,7 +16,7 @@ use ployz_core::roles::DaemonProcessRole;
 use ployz_nats::connect::NatsClientUrl;
 
 use crate::execution::NatsServerUnitTarget;
-use crate::join::{JOIN_NATS_CREDENTIALS_FILE, JOIN_TRUSTED_CA_FILE};
+use crate::lifecycle::machine_join::{JOIN_NATS_CREDENTIALS_FILE, JOIN_TRUSTED_CA_FILE};
 use crate::nats_identity::{ClusterNatsIdentity, NatsServerKeyPem};
 
 pub(super) const DEFAULT_NATS_PORT: u16 = 4222;
