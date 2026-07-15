@@ -1,4 +1,4 @@
-use ployz_core::machine_runtime::{
+use ployz_core::machine::runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot,
     MachineContainerObservationSnapshotError, ManagedContainerIdentity,
     ManagedContainerObservation,

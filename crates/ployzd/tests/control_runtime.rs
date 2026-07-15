@@ -14,18 +14,18 @@ use ployz_core::ids::{MachineId, RouteBindingId};
 use ployz_core::image::OciDigest;
 use ployz_core::ingress::RouteBindingOrigin;
 use ployz_core::install::{InstallArtifactVersion, MachineBootstrapUrl};
-use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
-use ployz_core::ops::{
+use ployz_core::intent::{ActiveMachineState, RouteBindingState, VolumePinState};
+use ployz_core::machine::MachineLifecycle;
+use ployz_core::machine::roles::InstallRolePolicy;
+use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
+use ployz_core::machine::{
+    GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation,
+};
+use ployz_core::operation::{
     DeployCompletionOutcome, DeployOperationState, MachineSubstrateVersions, OperationEvent,
     OperationEventReplayLimit, OperationStatus, RouteTarget,
 };
-use ployz_core::roles::InstallRolePolicy;
 use ployz_core::security::NatsPrincipal;
-use ployz_core::state::MachineLifecycle;
-use ployz_core::state::{
-    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation,
-    RouteBindingState, VolumePinState,
-};
 use ployz_core::subjects::{
     INTENT_CHANGED, MachineServiceEndpoint, OperationApiEndpoint, RUNTIME_SNAPSHOT_SEED,
     RUNTIME_SNAPSHOT_STREAM, gateway_status, machine_facts as machine_facts_subject,
@@ -231,7 +231,7 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
         matches!(
             status,
             OperationStatus::MachineAdd {
-                state: ployz_core::ops::MachineAddOperationState::Completed,
+                state: ployz_core::operation::MachineAddOperationState::Completed,
                 ..
             }
         ),
@@ -803,7 +803,7 @@ async fn control_runtime_records_typed_planning_failure_when_tag_cannot_resolve(
         state:
             DeployOperationState::Failed {
                 failure:
-                    ployz_core::ops::DeployOperationFailure::ImageResolutionFailed {
+                    ployz_core::operation::DeployOperationFailure::ImageResolutionFailed {
                         service_id,
                         machine_id,
                         image,
@@ -896,7 +896,7 @@ async fn control_runtime_records_machine_update_without_mutating_roster_intent()
     let status =
         wait_for_terminal_status(&nats.api(), &accepted.operation_id, Duration::from_secs(4)).await;
     let OperationStatus::MachineUpdate {
-        state: ployz_core::ops::MachineUpdateOperationState::Completed { reported },
+        state: ployz_core::operation::MachineUpdateOperationState::Completed { reported },
         ..
     } = status
     else {
@@ -1051,17 +1051,17 @@ impl AcmeIssuer for FixtureAcmeIssuer {
     async fn issue_http01(
         &self,
         context: &AcmeIssueContext,
-        hostname: &ployz_core::ops::RouteHostname,
+        hostname: &ployz_core::operation::RouteHostname,
     ) -> Result<IssuedCertificate, AcmeIssuerError> {
-        let challenge = ployz_core::cert::AcmeHttp01Challenge::try_new(
+        let challenge = ployz_core::certificate::AcmeHttp01Challenge::try_new(
             hostname.clone(),
-            ployz_core::cert::AcmeChallengeToken::try_new("control-runtime-token")
+            ployz_core::certificate::AcmeChallengeToken::try_new("control-runtime-token")
                 .expect("challenge token"),
-            ployz_core::cert::AcmeChallengeValue::try_new(
+            ployz_core::certificate::AcmeChallengeValue::try_new(
                 "control-runtime-token.fixture-thumbprint",
             )
             .expect("challenge value"),
-            ployz_core::cert::AcmeChallengeTtlSeconds::try_new(900).expect("challenge ttl"),
+            ployz_core::certificate::AcmeChallengeTtlSeconds::try_new(900).expect("challenge ttl"),
         )
         .expect("challenge");
         context.publish_challenge(challenge).await?;
@@ -1102,7 +1102,7 @@ async fn wait_for_dataplane_projection(nats: &TestNats, machine_id: &MachineId) 
             &nats.connected.controller,
             machine_service(machine_id, MachineServiceEndpoint::DataplaneStatus),
             &MachineDataplaneStatusRpcRequest {
-                mode: ployz_core::dataplane::NetworkStatusMode::Snapshot,
+                mode: ployz_core::network::NetworkStatusMode::Snapshot,
             },
             Duration::from_millis(250),
         )
@@ -1112,7 +1112,7 @@ async fn wait_for_dataplane_projection(nats: &TestNats, machine_id: &MachineId) 
             Ok(MachineRpcResponse::Ok(ok))
                 if matches!(
                     ok.value.projection.testimony,
-                    ployz_core::dataplane::DataplaneProjectionTestimony::Applied { .. }
+                    ployz_core::network::DataplaneProjectionTestimony::Applied { .. }
                 )
         ) {
             return;
@@ -1133,10 +1133,10 @@ fn active_machine(value: &str) -> ActiveMachineState {
         machine_id: machine_id(value),
         name: ployz_sdk_types::MachineName::try_new(value).expect("valid machine name"),
         activated_by: operation_id("op_machine_add"),
-        roles: ployz_core::roles::InstallRolePolicy::install_all(),
-        endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
+        roles: ployz_core::machine::roles::InstallRolePolicy::install_all(),
+        endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new("10.198.0.0/24")
             .expect("valid endpoint subnet"),
-        wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+        wireguard_public_key: ployz_core::network::WireGuardPublicKey::try_new(format!(
             "public-{value}"
         ))
         .expect("public key"),
@@ -1280,7 +1280,7 @@ fn machine_facts(
     .expect("machine facts are valid")
 }
 
-fn test_disk_space() -> ployz_core::machine_runtime::MachineDiskSpace {
+fn test_disk_space() -> ployz_core::machine::runtime::MachineDiskSpace {
     ployz_test_support::fixtures::test_disk_space()
 }
 

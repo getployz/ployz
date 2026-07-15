@@ -222,7 +222,7 @@ pub struct MachineJoinRedeemed {
     pub roles: InstallRolePolicy,
     #[serde(default = "HostPortAssurance::keeper")]
     pub host_port_assurance: HostPortAssurance,
-    pub endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet,
+    pub endpoint_subnet: ployz_core::network::MachineEndpointSubnet,
     pub join_bundle: MachineJoinBundle,
     pub secret_delivery: MachineJoinSecretDelivery,
     pub joined_at: JoinTokenRedeemedAt,

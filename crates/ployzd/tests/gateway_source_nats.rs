@@ -1,10 +1,10 @@
 use ployz_core::ids::RouteBindingId;
 use ployz_core::ingress::RouteBindingOrigin;
-use ployz_core::machine_runtime::{
+use ployz_core::intent::RouteBindingState;
+use ployz_core::machine::runtime::{
     MachineContainerObservationSnapshot, MachineFactsSnapshot, ManagedContainerObservation,
 };
-use ployz_core::ops::RouteTarget;
-use ployz_core::state::RouteBindingState;
+use ployz_core::operation::RouteTarget;
 use ployz_test_support::containers;
 use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{
@@ -150,7 +150,7 @@ fn machine_facts(snapshot: MachineContainerObservationSnapshot) -> MachineFactsS
     .expect("machine facts are valid")
 }
 
-fn test_disk_space() -> ployz_core::machine_runtime::MachineDiskSpace {
+fn test_disk_space() -> ployz_core::machine::runtime::MachineDiskSpace {
     ployz_test_support::fixtures::test_disk_space()
 }
 

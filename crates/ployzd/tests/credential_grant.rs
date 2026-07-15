@@ -4,7 +4,9 @@ use async_nats::connection::State;
 use ployz_core::nats_config::{
     CredentialGrant, CredentialName, CredentialRole, MintedNatsUser, NatsUserPublicKey,
 };
-use ployz_core::ops::{CredentialGrantFailure, CredentialGrantOperationState, OperationStatus};
+use ployz_core::operation::{
+    CredentialGrantFailure, CredentialGrantOperationState, OperationStatus,
+};
 use ployz_nats::connect::connect_authenticated;
 use ployz_sdk_types::{CredentialAddRequest, CredentialListRequest, CredentialRemoveRequest};
 use ployz_test_support::ids::operation_id;

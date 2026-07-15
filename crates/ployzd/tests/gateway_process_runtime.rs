@@ -1,18 +1,18 @@
 use futures_util::StreamExt;
-use ployz_core::cert::{
+use ployz_core::certificate::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
     CertificateChallengeApplicationStatus, CertificateChallengeApplyRequest,
     CertificateChallengeApplyResponse, CertificateChallengeStatusRequest,
     CertificateChallengeStatusResponse,
 };
-use ployz_core::machine_rpc::MachineRpcResponse;
-use ployz_core::machine_runtime::{
+use ployz_core::intent::recovery::ControlPlaneEpoch;
+use ployz_core::intent::{IntentSnapshot, RouteBindingState};
+use ployz_core::machine::GatewayServingStatus;
+use ployz_core::machine::rpc::MachineRpcResponse;
+use ployz_core::machine::runtime::{
     MachineContainerObservationSnapshot, MachineFactsSnapshot, ManagedContainerObservation,
 };
-use ployz_core::ops::RouteTarget;
-use ployz_core::state::{
-    ControlPlaneEpoch, GatewayServingStatus, IntentSnapshot, RouteBindingState,
-};
+use ployz_core::operation::RouteTarget;
 use ployz_core::subjects::{
     INTENT_GET, MachineServiceEndpoint, gateway_status, machine_facts, machine_service,
 };
@@ -382,7 +382,7 @@ async fn wait_until_gateway_status_current(status_sub: &mut async_nats::Subscrib
         if let Ok(Some(message)) =
             tokio::time::timeout(Duration::from_millis(50), status_sub.next()).await
         {
-            let status: ployz_core::state::GatewayStatusObservation =
+            let status: ployz_core::machine::GatewayStatusObservation =
                 serde_json::from_slice(&message.payload).expect("gateway status decodes");
             if status.serving == GatewayServingStatus::Current && status.route_count == 1 {
                 return;
@@ -469,7 +469,7 @@ impl TestNats {
                     epoch: ControlPlaneEpoch::initial(),
                     core_machine_id: machine_id("machine_a"),
                     active_machines: Vec::new(),
-                    dataplane_projection: ployz_core::dataplane::DataplaneProjection::try_new(
+                    dataplane_projection: ployz_core::network::DataplaneProjection::try_new(
                         Vec::new(),
                         None,
                     )
@@ -516,7 +516,7 @@ impl TestNats {
     }
 }
 
-fn test_disk_space() -> ployz_core::machine_runtime::MachineDiskSpace {
+fn test_disk_space() -> ployz_core::machine::runtime::MachineDiskSpace {
     ployz_test_support::fixtures::test_disk_space()
 }
 

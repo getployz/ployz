@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use ployz_core::state::IntentSnapshot;
+use ployz_core::intent::IntentSnapshot;
 use ployz_core::subjects::INTENT_GET;
 use ployz_nats::service_runtime::{NatsJsonServiceRequestError, request_json};
 

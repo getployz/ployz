@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use ployz_core::ops::{
+use ployz_core::operation::{
     DeployCompletionOutcome, DeployOperationState, NetworkRepairOperationState, OperationStatus,
 };
 use ployz_e2e::dind::{self, exec_in_container};

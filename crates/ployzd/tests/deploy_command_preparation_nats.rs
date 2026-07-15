@@ -3,13 +3,13 @@ use ployz_core::deploy::{
     ImageReference, ReplicaCount,
 };
 use ployz_core::ids::{NamespaceRevisionEntryId, OperationId};
+use ployz_core::intent::ActiveMachineState;
+use ployz_core::machine::MachineLifecycle;
 use ployz_core::machine::MachineName;
-use ployz_core::machine_runtime::{
+use ployz_core::machine::runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
-use ployz_core::ops::RouteHostname;
-use ployz_core::state::ActiveMachineState;
-use ployz_core::state::MachineLifecycle;
+use ployz_core::operation::RouteHostname;
 use ployz_nats::service_runtime::request_json;
 use ployz_test_support::containers;
 use ployz_test_support::fixtures::serving_target_entry;
@@ -208,9 +208,9 @@ async fn nats_preparation_excludes_draining_machines_from_placement() {
     );
     assert_eq!(
         command.unusable_machines(),
-        [ployz_core::ops::UnusableMachine {
+        [ployz_core::operation::UnusableMachine {
             machine_id: machine_id("edge_3"),
-            reason: ployz_core::state::MachineUsabilityReason::Draining,
+            reason: ployz_core::machine::MachineUsabilityReason::Draining,
         }]
     );
 }
@@ -419,7 +419,7 @@ impl TestNats {
                     ployz_core::subjects::MachineServiceEndpoint::DataplaneStatus,
                 ),
                 &MachineDataplaneStatusRpcRequest {
-                    mode: ployz_core::dataplane::NetworkStatusMode::Snapshot,
+                    mode: ployz_core::network::NetworkStatusMode::Snapshot,
                 },
                 Duration::from_millis(250),
             )
@@ -429,7 +429,7 @@ impl TestNats {
                 Ok(MachineRpcResponse::Ok(ok))
                     if matches!(
                         ok.value.projection.testimony,
-                        ployz_core::dataplane::DataplaneProjectionTestimony::Applied { .. }
+                        ployz_core::network::DataplaneProjectionTestimony::Applied { .. }
                     )
             ) {
                 return;
@@ -446,7 +446,7 @@ impl TestNats {
 #[derive(Clone)]
 struct StaticRunner {
     existing: Vec<ExistingManagedContainer>,
-    endpoint_subnet: Arc<Mutex<Option<ployz_core::dataplane::MachineEndpointSubnet>>>,
+    endpoint_subnet: Arc<Mutex<Option<ployz_core::network::MachineEndpointSubnet>>>,
 }
 
 impl StaticRunner {
@@ -485,7 +485,7 @@ impl MachineContainerRunner for StaticRunner {
 
     async fn ensure_projection_endpoint_network(
         &self,
-        expected_subnet: &ployz_core::dataplane::MachineEndpointSubnet,
+        expected_subnet: &ployz_core::network::MachineEndpointSubnet,
     ) -> Result<(), MachineContainerRunnerError> {
         *self
             .endpoint_subnet
@@ -494,14 +494,14 @@ impl MachineContainerRunner for StaticRunner {
         Ok(())
     }
 
-    async fn read_endpoint_network_status(&self) -> ployz_core::dataplane::EndpointBridgeStatus {
+    async fn read_endpoint_network_status(&self) -> ployz_core::network::EndpointBridgeStatus {
         self.endpoint_subnet
             .lock()
             .expect("endpoint subnet lock is not poisoned")
             .clone()
             .map_or(
-                ployz_core::dataplane::EndpointBridgeStatus::Missing,
-                |subnet| ployz_core::dataplane::EndpointBridgeStatus::Ready { subnet },
+                ployz_core::network::EndpointBridgeStatus::Missing,
+                |subnet| ployz_core::network::EndpointBridgeStatus::Ready { subnet },
             )
     }
 
@@ -544,7 +544,7 @@ impl MachineContainerRunner for StaticRunner {
     async fn stop_managed_container(
         &self,
         container_id: &ployz_core::ids::ContainerId,
-        _expected_identity: &ployz_core::machine_runtime::ManagedContainerIdentity,
+        _expected_identity: &ployz_core::machine::runtime::ManagedContainerIdentity,
     ) -> Result<(), MachineContainerRunnerError> {
         Err(MachineContainerRunnerError::Stop {
             container_id: container_id.clone(),
@@ -555,7 +555,7 @@ impl MachineContainerRunner for StaticRunner {
     async fn restart_managed_container(
         &self,
         container_id: &ployz_core::ids::ContainerId,
-        _expected_identity: &ployz_core::machine_runtime::ManagedContainerIdentity,
+        _expected_identity: &ployz_core::machine::runtime::ManagedContainerIdentity,
     ) -> Result<(), MachineContainerRunnerError> {
         Err(MachineContainerRunnerError::Restart {
             container_id: container_id.clone(),
@@ -566,7 +566,7 @@ impl MachineContainerRunner for StaticRunner {
     async fn remove_managed_container(
         &self,
         container_id: &ployz_core::ids::ContainerId,
-        _expected_identity: &ployz_core::machine_runtime::ManagedContainerIdentity,
+        _expected_identity: &ployz_core::machine::runtime::ManagedContainerIdentity,
     ) -> Result<(), MachineContainerRunnerError> {
         Err(MachineContainerRunnerError::Remove {
             container_id: container_id.clone(),
@@ -690,7 +690,7 @@ fn target_namespace_revision_entry_id() -> NamespaceRevisionEntryId {
     service.namespace_revision_entry_id(&namespace_id("default"))
 }
 
-fn promoted_target_entry() -> ployz_core::state::ServingTargetEntry {
+fn promoted_target_entry() -> ployz_core::intent::ServingTargetEntry {
     let mut entry = serving_target_entry("svc_api", "unused");
     entry.namespace_revision_entry_id = target_namespace_revision_entry_id();
     entry
@@ -749,15 +749,15 @@ fn active_machine(machine_id: &str) -> ActiveMachineState {
         control_endpoints: Vec::new(),
         mesh_endpoints: vec![std::net::SocketAddr::from((
             [203, 0, 113, ordinal],
-            ployz_core::dataplane::DEFAULT_WIREGUARD_LISTEN_PORT,
+            ployz_core::network::DEFAULT_WIREGUARD_LISTEN_PORT,
         ))],
         lifecycle: MachineLifecycle::Active,
         machine_id: machine_id.clone(),
         name: MachineName::try_new(machine_id.as_str()).expect("valid machine name"),
         activated_by: operation_id("op_machine_add"),
-        roles: ployz_core::roles::InstallRolePolicy::install_all(),
-        endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(
-            ployz_core::dataplane::default_endpoint_subnet(&machine_id),
+        roles: ployz_core::machine::roles::InstallRolePolicy::install_all(),
+        endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new(
+            ployz_core::network::default_endpoint_subnet(&machine_id),
         )
         .expect("valid endpoint subnet"),
         wireguard_public_key: test_wireguard_public_key(&machine_id),

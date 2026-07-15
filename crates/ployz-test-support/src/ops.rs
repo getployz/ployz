@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use ployz_core::ids::OperationId;
-use ployz_core::ops::OperationStatus;
+use ployz_core::operation::OperationStatus;
 use ployz_nats::operation_api_client::OperationApiClient;
 use ployz_sdk_types::OpsStatusRequest;
 

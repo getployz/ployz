@@ -6,15 +6,16 @@
 //! fixture's real `nats-server`, including the ADR-0015 single-writer
 //! fence and the ADR-0001 authority-file durability rules.
 
+use ployz_core::intent::IntentSnapshot;
+use ployz_core::intent::recovery::{ControlPlaneEpoch, PendingMachineJoinRecoverySnapshot};
+use ployz_core::machine::roles::InstallRolePolicy;
 use ployz_core::machine::{JoinTokenRedeemedAt, MachineAddFailure, RawJoinToken};
 use ployz_core::nats_config::{
     CredentialGrant, CredentialName, CredentialRole, NatsAuthorizationGrant, NatsInternalAuthority,
     NatsUserPublicKey, parse_authorized_users, render_authorized_users,
 };
-use ployz_core::ops::MachineAddOperationState;
-use ployz_core::ops::OperationStatus;
-use ployz_core::roles::InstallRolePolicy;
-use ployz_core::state::{ControlPlaneEpoch, IntentSnapshot, PendingMachineJoinRecoverySnapshot};
+use ployz_core::operation::MachineAddOperationState;
+use ployz_core::operation::OperationStatus;
 use ployz_core::subjects::{OPERATION_PROGRESS_SCOPE, OperationApiEndpoint};
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_sdk_types::{
@@ -150,7 +151,7 @@ async fn completed_machine_join_records_machine_derived_endpoint_subnet() {
     let _guard = lock_machine_add_mint_test().await;
     let nats = TestNats::start().await;
     let config = nats.control_config().with_dataplane_endpoint_supernet(
-        ployz_core::dataplane::MachineEndpointSupernet::try_new("10.199.0.0/16")
+        ployz_core::network::MachineEndpointSupernet::try_new("10.199.0.0/16")
             .expect("valid endpoint supernet"),
     );
     let runtime = nats.start_control(&config).await;
@@ -178,7 +179,7 @@ async fn completed_machine_join_records_machine_derived_endpoint_subnet() {
     // so intent matches the machine's dataplane without a delivery channel.
     assert_eq!(
         machine.active.endpoint_subnet.as_string(),
-        ployz_core::dataplane::default_endpoint_subnet(&machine.active.machine_id)
+        ployz_core::network::default_endpoint_subnet(&machine.active.machine_id)
     );
     let expected_mesh_endpoint = "192.0.2.10:51820".parse().expect("mesh endpoint");
     assert_eq!(machine.active.mesh_endpoints, vec![expected_mesh_endpoint]);
@@ -548,7 +549,7 @@ async fn promoted_core_recovers_pending_join_without_old_operation_log() {
             epoch: ControlPlaneEpoch::initial().next(),
             core_machine_id: ployz_test_support::ids::machine_id("machine_a"),
             active_machines: Vec::new(),
-            dataplane_projection: ployz_core::dataplane::DataplaneProjection::try_new(
+            dataplane_projection: ployz_core::network::DataplaneProjection::try_new(
                 Vec::new(),
                 None,
             )

@@ -1,9 +1,9 @@
 use ployz_core::ids::RouteBindingId;
 use ployz_core::ingress::{CertificateOwner, RouteBindingOrigin};
-use ployz_core::machine_runtime::{
+use ployz_core::machine::runtime::{
     MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
-use ployz_core::ops::RouteTarget;
+use ployz_core::operation::RouteTarget;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, route_hostname,

@@ -11,7 +11,7 @@ use super::contracts::MANAGED_LABEL;
 use super::formation::CoreContext;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::MachineCredentialProvisioningStep;
-use ployz_core::ops::{
+use ployz_core::operation::{
     DeployCompletionOutcome, DeployRunningStage, OperationEvent, OperationEventReplayCursor,
     OperationEventReplayPage, OperationEventReplayRequest, OperationStatus,
 };

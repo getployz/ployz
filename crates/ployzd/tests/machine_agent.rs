@@ -1,4 +1,4 @@
-use ployz_core::machine_runtime::ManagedContainerIdentity;
+use ployz_core::machine::runtime::ManagedContainerIdentity;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{container_id, operation_id, step_id};
 use ployzd::roles::machine::runner::{
@@ -122,7 +122,7 @@ fn existing_container(
         identity,
         ExistingManagedContainerState::Running {
             ip: None,
-            health: ployz_core::machine_runtime::ContainerHealth::None,
+            health: ployz_core::machine::runtime::ContainerHealth::None,
             started_at_unix_ms: None,
         },
     )

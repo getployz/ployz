@@ -2,7 +2,7 @@ use super::*;
 use ployz::commands::parse_command;
 use ployz::deploy_history::{ClusterFingerprint, DeployHistory, DeployHistoryEntry};
 use ployz::runtime::{PloyzctlRuntimeConfig, execute_command};
-use ployz_core::ops::{DeployFailureClass, DeployRunningStage, HealthCheckFailure};
+use ployz_core::operation::{DeployFailureClass, DeployRunningStage, HealthCheckFailure};
 use support::dind::formation::ProductCliHarness;
 
 const POSTGRES_IMAGE: &str = "postgres:15-alpine";

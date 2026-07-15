@@ -3,14 +3,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use ployz_core::cert::{
+use ployz_core::certificate::{
     CertificateArtifactPushOk, CertificateArtifactPushRequest, CertificateArtifactPushResponse,
     LeaseBearerToken, ManagedCertBundle, ManagedLeaseAcquireRequest, ManagedLeaseAcquisitionId,
 };
 use ployz_core::ids::{MachineId, RouteBindingId};
 use ployz_core::ingress::CertificateOwner;
-use ployz_core::machine_rpc::MachineRpcResponse;
-use ployz_core::ops::{CertOperationState, OperationStatus, RouteHostname};
+use ployz_core::machine::rpc::MachineRpcResponse;
+use ployz_core::operation::{CertOperationState, OperationStatus, RouteHostname};
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_lease_worker::{LeaseWorkerRequest, LeaseWorkerResponse, StubLeaseWorker};
 use ployzd::certificate::task::{CertificateRenewalOutcome, run_once_at};

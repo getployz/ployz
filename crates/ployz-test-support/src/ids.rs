@@ -6,7 +6,7 @@ use ployz_core::ids::{
     OperationId, ServiceId, StepId,
 };
 use ployz_core::machine::{JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineName, RawJoinToken};
-use ployz_core::ops::{
+use ployz_core::operation::{
     CancellationReason, EventSequence, FailureMessage, OperationEventReplayLimit,
     OperationIdempotencyKey, RouteHostname, RoutePort,
 };

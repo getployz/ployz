@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
-use ployz_core::cert::ManagedLeaseRenewRequest;
+use ployz_core::certificate::ManagedLeaseRenewRequest;
 use ployz_core::ingress::{
     AutomaticHostnameConfiguration, IngressConfiguration, IngressEndpointProjection,
     IngressEndpointProjectionState, IngressEndpointSet, PloyzDnsTargetIntent,
 };
-use ployz_core::ops::{
+use ployz_core::intent::recovery::ControlPlaneEpoch;
+use ployz_core::operation::{
     ManagedDnsReconcileOperationState, ManagedDnsReconcileSubject, OperationStatus,
 };
-use ployz_core::state::ControlPlaneEpoch;
 use ployz_lease_worker::{StubLeaseWorker, serve};
 use ployzd::core_store::CoreStore;
 use ployzd::intent::ingress_intent::{

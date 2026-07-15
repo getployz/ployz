@@ -3,13 +3,13 @@ mod fixtures;
 
 use fixtures::*;
 use ployz_core::deploy::{ContainerCommand, ContainerRestartPolicy, ReplicaCount};
-use ployz_core::machine_runtime::ManagedContainerKind;
-use ployz_core::ops::{
+use ployz_core::intent::{ServingTargetEntry, VolumePinState};
+use ployz_core::machine::runtime::ManagedContainerKind;
+use ployz_core::operation::{
     CertificateProvisionFailure, DeployCompletionOutcome, DeployEvidence, DeployOperationFailure,
     DeployPhaseOutcome, DeployRunningStage, DeployServiceResult, DeployTransition, FailureMessage,
     PreStartHookFailure, RouteHostname, RouteTarget,
 };
-use ployz_core::state::{ServingTargetEntry, VolumePinState};
 use ployz_test_support::ids::{failure_message, namespace_id};
 use ployzd::operations::deploy::{
     CertificateProvisioner, DeployCleanupResult, DeployExecutionError, DeployExecutionInput,
@@ -768,7 +768,7 @@ async fn deploy_worker_reports_cleanup_failure_without_failing_successful_deploy
             .records
             .contains(&RecordedOperation::CleanupFinished {
                 removed: Vec::new(),
-                failed: vec![ployz_core::ops::DeployCleanupFailure {
+                failed: vec![ployz_core::operation::DeployCleanupFailure {
                     target: cleanup_target,
                     message: failure_message("container remove failed: busy"),
                 }],
@@ -1505,7 +1505,9 @@ async fn deploy_worker_times_out_hanging_steps() {
         recorder.records.last(),
         Some(&RecordedOperation::Transition(DeployTransition::Failed {
             failure: DeployOperationFailure::HealthCheckFailed {
-                health_check: ployz_core::ops::HealthCheckFailure::TimedOut { timeout_seconds: 1 },
+                health_check: ployz_core::operation::HealthCheckFailure::TimedOut {
+                    timeout_seconds: 1
+                },
                 retained_artifacts: Vec::new(),
             }
         }))
@@ -1655,7 +1657,7 @@ async fn deploy_worker_records_retained_artifacts_when_namespace_lock_is_lost_be
         recorder.records.last(),
         Some(&RecordedOperation::Transition(DeployTransition::Failed {
             failure: DeployOperationFailure::ControlPlaneCommitFailed {
-                scope: ployz_core::ops::ControlPlaneCommitScope::DeployPhase {
+                scope: ployz_core::operation::ControlPlaneCommitScope::DeployPhase {
                     namespace_revision_id: target_namespace_revision_id(1),
                     phase: phase_number(1),
                 },

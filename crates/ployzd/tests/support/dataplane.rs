@@ -1,12 +1,12 @@
 use futures_util::StreamExt;
-use ployz_core::dataplane::{
+use ployz_core::ids::MachineId;
+use ployz_core::network::{
     DataplaneProjectionRevisions, DataplaneProjectionTestimony, EbpfAttachmentStatus,
     EndpointBridgeStatus, MachineDataplaneStatus, NativeDataplaneProjectionStatus,
     WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardHandshakeStatus, WireGuardInterfaceMtu,
     WireGuardMtuProbe, WireGuardPeerEndpointSubnet, WireGuardPeerStatus, WireGuardRttStatus,
     WireGuardStatus,
 };
-use ployz_core::ids::MachineId;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployzd::intent::service::NatsIntentReader;
 use ployzd::roles::machine::protocol::{

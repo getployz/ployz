@@ -300,7 +300,7 @@ fn sdk_exports_operation_api_wire_types() {
             name: MachineName::try_new("edge_2").expect("valid machine name"),
             roles: InstallRolePolicy::install_all().without_gateway(),
             host_port_assurance: HostPortAssurance::External,
-            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.2.0/24")
+            endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new("10.198.2.0/24")
                 .expect("valid subnet"),
             join_bundle: machine_join_bundle(),
             secret_delivery: machine_join_secret_delivery(),
@@ -982,8 +982,7 @@ where
 fn machine_join_bundle() -> MachineJoinBundle {
     MachineJoinBundle {
         material: MachineJoinMaterial {
-            dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(
-            ),
+            dataplane_endpoint_supernet: ployz_core::network::MachineEndpointSupernet::default_v1(),
             cluster_name: ployz_core::install::MachineJoinClusterName::try_new("prod")
                 .expect("valid cluster name"),
             runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")

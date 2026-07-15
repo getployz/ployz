@@ -1,14 +1,14 @@
 use pingora::protocols::l4::socket::SocketAddr as PingoraSocketAddr;
-use ployz_core::cert::{
+use ployz_core::certificate::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
     CertificateChallengeApplicationStatus, CustomCertBundle, LeaseBearerToken,
     ManagedLeaseAcquireRequest, ManagedLeaseAcquisitionId, custom_bundle_digest,
 };
-use ployz_core::cert::{LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle, ManagedLeaseName};
+use ployz_core::certificate::{LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle, ManagedLeaseName};
 use ployz_core::ids::RouteBindingId;
 use ployz_core::ingress::{CertificateOwner, RouteBindingOrigin};
-use ployz_core::ops::{RouteHostnameError, RouteTarget};
+use ployz_core::operation::{RouteHostnameError, RouteTarget};
 use ployz_lease_worker::{LeaseWorkerRequest, LeaseWorkerResponse, StubLeaseWorker};
 use ployz_test_support::ids::{cert_id, container_id, machine_id, route_hostname, route_port};
 use ployzd::roles::gateway::pingora::{

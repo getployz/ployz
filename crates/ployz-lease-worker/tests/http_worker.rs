@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use ployz_core::cert::{ManagedCertBundle, ManagedLeaseAcquired, ManagedLeaseRenewed};
+use ployz_core::certificate::{ManagedCertBundle, ManagedLeaseAcquired, ManagedLeaseRenewed};
 use ployz_lease_worker::{Clock, ClockError, StubLeaseWorker, serve};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};

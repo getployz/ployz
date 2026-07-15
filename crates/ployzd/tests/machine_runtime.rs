@@ -1,6 +1,6 @@
 use ployz_core::deploy::ImageReference;
-use ployz_core::machine_runtime::ManagedContainerIdentity;
-use ployz_core::machine_runtime::{ContainerRuntimeState, ManagedContainerKind};
+use ployz_core::machine::runtime::ManagedContainerIdentity;
+use ployz_core::machine::runtime::{ContainerRuntimeState, ManagedContainerKind};
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
     machine_id, namespace_revision_entry_id, operation_id, service_id, step_id,
@@ -146,7 +146,7 @@ fn assert_observed_running(
         &observation.state,
         ContainerRuntimeState::Running {
             ip: Some(ip),
-            health: ployz_core::machine_runtime::ContainerHealth::None,
+            health: ployz_core::machine::runtime::ContainerHealth::None,
             started_at_unix_ms: Some(_),
         } if *ip == std::net::Ipv4Addr::LOCALHOST
     ));

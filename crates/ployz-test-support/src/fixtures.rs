@@ -10,9 +10,9 @@ use ployz_core::install::{
     InstallSha256Digest, MachineJoinBundle, MachineJoinClusterName, MachineJoinMaterial,
     MachineJoinRuntimeNatsUrl, MachineJoinTemplate, MachineJoinTrustedNats,
 };
-use ployz_core::machine_runtime::MachineDiskSpace;
+use ployz_core::intent::ServingTargetEntry;
+use ployz_core::machine::runtime::MachineDiskSpace;
 use ployz_core::nats_config::NatsCaCertificatePem;
-use ployz_core::state::ServingTargetEntry;
 
 use crate::ids::{
     namespace_id, namespace_revision_entry_id, route_hostname, route_port, service_id,
@@ -66,7 +66,7 @@ pub fn install_artifact(source: &str, install_path: &str) -> InstallArtifactSpec
 pub fn machine_join_material(runtime_nats_url: &str, ca_pem: &str) -> MachineJoinMaterial {
     MachineJoinMaterial {
         cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
-        dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+        dataplane_endpoint_supernet: ployz_core::network::MachineEndpointSupernet::default_v1(),
         runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new(runtime_nats_url)
             .expect("valid runtime nats url"),
         trusted_nats: MachineJoinTrustedNats {

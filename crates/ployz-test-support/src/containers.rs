@@ -7,7 +7,7 @@
 
 use std::net::IpAddr;
 
-use ployz_core::machine_runtime::{
+use ployz_core::machine::runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerHealthStatus,
     ManagedContainerIdentity, ManagedContainerKind, ManagedContainerObservation,
 };

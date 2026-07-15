@@ -1,4 +1,4 @@
-use ployz_core::cert::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
+use ployz_core::certificate::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
 use ployz_core::deploy::{
     ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerMountPath,
     DependencyCondition, DeployCleanupContainer, DeployRequest, DeployRoute, DeployRouteTarget,
@@ -10,15 +10,15 @@ use ployz_core::ids::{
     RouteBindingId, ServiceId,
 };
 use ployz_core::ingress::{AutomaticHostnameLabel, RouteBindingOrigin};
-use ployz_core::machine_runtime::{
+use ployz_core::intent::{RouteBindingState, ServingTargetEntry, VolumePinState};
+use ployz_core::machine::runtime::{
     MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
-use ployz_core::ops::{
+use ployz_core::operation::{
     CertificateProvisionFailure, DeployCleanupFailure, DeployEvidence, DeployRunningStage,
     DeployTransition, FailureMessage, OperatorHint, RetainedArtifact, RouteHostname, RoutePort,
     RouteTarget,
 };
-use ployz_core::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
 pub(crate) use ployz_test_support::containers;
 use ployz_test_support::fixtures::serving_target_entry;
 pub(crate) use ployz_test_support::ids::{
@@ -26,8 +26,8 @@ pub(crate) use ployz_test_support::ids::{
     service_id,
 };
 
-pub(super) fn phase_number(value: u16) -> ployz_core::ops::DeployPhaseNumber {
-    ployz_core::ops::DeployPhaseNumber::try_new(value).expect("positive phase number")
+pub(super) fn phase_number(value: u16) -> ployz_core::operation::DeployPhaseNumber {
+    ployz_core::operation::DeployPhaseNumber::try_new(value).expect("positive phase number")
 }
 use ployzd::certificate::GatewayCertificateTarget;
 use ployzd::operations::deploy::{
@@ -337,7 +337,7 @@ impl NamespaceStateCommitter for RecordingNamespaceState {
                 Ok(())
             }
             ServingCommitBehavior::LoseLock => Err(NamespaceCommitError::ServingTargetLockLost {
-                scope: ployz_core::ops::ControlPlaneCommitScope::ServiceEntry {
+                scope: ployz_core::operation::ControlPlaneCommitScope::ServiceEntry {
                     service_id: entry.service_id,
                     namespace_revision_entry_id: entry.namespace_revision_entry_id,
                 },
@@ -453,9 +453,9 @@ impl RecordingHealth {
             failure: Some(DeployHealthCheckError::Unhealthy {
                 machine_id: self::machine_id(machine_id),
                 container_id: self::container_id(container_id),
-                message: ployz_core::ops::FailureMessage::try_new("probe failed")
+                message: ployz_core::operation::FailureMessage::try_new("probe failed")
                     .expect("valid failure message"),
-                log_hint: ployz_core::ops::OperatorHint::try_new(format!(
+                log_hint: ployz_core::operation::OperatorHint::try_new(format!(
                     "ployz logs {container_id}"
                 ))
                 .expect("valid log hint"),
@@ -1213,9 +1213,9 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
             namespace_serving_entries: Vec::new(),
             namespace_volume_pins: Vec::new(),
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
-            dataplane_members: vec![ployz_core::dataplane::DataplaneMember {
+            dataplane_members: vec![ployz_core::network::DataplaneMember {
                 machine_id: machine_id("machine_seed"),
-                endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(
+                endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new(
                     "10.198.99.0/24",
                 )
                 .expect("valid seed subnet"),

@@ -1,12 +1,13 @@
 use futures_util::StreamExt;
 use ployz_core::deploy::VolumeName;
-use ployz_core::machine::{IssuedJoinToken, JoinTokenExpiresAt, RawJoinToken};
-use ployz_core::roles::InstallRolePolicy;
-use ployz_core::state::{
-    ActiveMachineState, ControlPlaneEpoch, IntentSnapshot, MachineLifecycle,
-    PendingMachineJoinRecoverySnapshot, RouteBindingState, StagedMachineDataplaneState,
+use ployz_core::intent::recovery::{ControlPlaneEpoch, PendingMachineJoinRecoverySnapshot};
+use ployz_core::intent::{
+    ActiveMachineState, IntentSnapshot, RouteBindingState, StagedMachineDataplaneState,
     VolumePinState,
 };
+use ployz_core::machine::MachineLifecycle;
+use ployz_core::machine::roles::InstallRolePolicy;
+use ployz_core::machine::{IssuedJoinToken, JoinTokenExpiresAt, RawJoinToken};
 use ployz_core::subjects::{INTENT_CHANGED, PENDING_MACHINE_JOINS_CHANGED};
 use ployz_test_support::fixtures::{machine_join_bundle, serving_target_entry};
 use ployz_test_support::ids::{
@@ -38,9 +39,9 @@ async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
             name: ployz_core::machine::MachineName::try_new("machine_a")
                 .expect("valid machine name"),
             activated_by: operation_id("op_machine_add"),
-            roles: ployz_core::roles::InstallRolePolicy::install_all(),
+            roles: ployz_core::machine::roles::InstallRolePolicy::install_all(),
             lifecycle: MachineLifecycle::Active,
-            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
+            endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new("10.198.0.0/24")
                 .expect("valid endpoint subnet"),
             wireguard_public_key: wireguard_public_key("public-machine-a"),
         })
@@ -126,7 +127,7 @@ async fn machine_reads_core_stamped_projection_with_one_staged_joiner() {
                 name: machine_name("machine-a"),
                 roles: InstallRolePolicy::install_all(),
                 host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
-                endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(
+                endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new(
                     "10.198.1.0/24",
                 )
                 .expect("subnet"),
@@ -152,7 +153,7 @@ async fn machine_reads_core_stamped_projection_with_one_staged_joiner() {
         .stage_machine_dataplane(StagedMachineDataplaneState {
             operation_id: operation,
             machine_id: machine.clone(),
-            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.1.0/24")
+            endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new("10.198.1.0/24")
                 .expect("subnet"),
             mesh_endpoints: vec!["192.0.2.1:51820".parse().expect("endpoint")],
             wireguard_public_key: wireguard_public_key("public-machine-a"),
@@ -185,7 +186,7 @@ async fn machine_reads_core_stamped_projection_with_one_staged_joiner() {
             &operation_id("op_add_machine_a"),
             &machine,
             ployz_core::machine::MachineAddFailure::BootstrapFailed {
-                message: ployz_core::ops::FailureMessage::try_new("failed")
+                message: ployz_core::operation::FailureMessage::try_new("failed")
                     .expect("failure message"),
             },
         )
@@ -223,7 +224,7 @@ async fn intent_runtime_publishes_redeemable_pending_machine_joins() {
                 name: machine_name("machine-a"),
                 roles: InstallRolePolicy::install_all(),
                 host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
-                endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(
+                endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new(
                     "10.198.2.0/24",
                 )
                 .expect("valid subnet"),
@@ -283,9 +284,9 @@ async fn intent_reader_overlays_machine_lifecycle_evidence() {
             name: ployz_core::machine::MachineName::try_new("machine_a")
                 .expect("valid machine name"),
             activated_by: operation_id("op_machine_add"),
-            roles: ployz_core::roles::InstallRolePolicy::install_all(),
+            roles: ployz_core::machine::roles::InstallRolePolicy::install_all(),
             lifecycle: MachineLifecycle::Draining,
-            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
+            endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new("10.198.0.0/24")
                 .expect("valid endpoint subnet"),
             wireguard_public_key: wireguard_public_key("public-machine-a"),
         })
@@ -330,7 +331,8 @@ async fn intent_reader_gets_namespace_intent_from_file() {
             id: route_binding_id("api.example.com"),
             namespace_id: ployz_test_support::ids::namespace_id("default"),
             target: route_target("api.example.com", 443),
-            endpoint_port: ployz_core::ops::RoutePort::try_new(8080).expect("valid route port"),
+            endpoint_port: ployz_core::operation::RoutePort::try_new(8080)
+                .expect("valid route port"),
             service_id: service_id("svc_api"),
             origin: ployz_core::ingress::RouteBindingOrigin::Declared,
         })
@@ -405,7 +407,7 @@ async fn namespace_intent_store_commits_a_deploy_phase_atomically() {
         id: route_binding_id("api.example.com"),
         namespace_id: ployz_test_support::ids::namespace_id("default"),
         target: route_target("api.example.com", 443),
-        endpoint_port: ployz_core::ops::RoutePort::try_new(8080).expect("valid route port"),
+        endpoint_port: ployz_core::operation::RoutePort::try_new(8080).expect("valid route port"),
         service_id: service_id("svc_api"),
         origin: ployz_core::ingress::RouteBindingOrigin::Declared,
     };
@@ -413,7 +415,7 @@ async fn namespace_intent_store_commits_a_deploy_phase_atomically() {
         id: route_binding_id("old.example.com"),
         namespace_id: ployz_test_support::ids::namespace_id("default"),
         target: route_target("old.example.com", 443),
-        endpoint_port: ployz_core::ops::RoutePort::try_new(8080).expect("valid route port"),
+        endpoint_port: ployz_core::operation::RoutePort::try_new(8080).expect("valid route port"),
         service_id: service_id("svc_api"),
         origin: ployz_core::ingress::RouteBindingOrigin::Declared,
     };
@@ -449,13 +451,13 @@ async fn temp_namespace_intent() -> NamespaceIntentStore {
     )
 }
 
-fn wireguard_public_key(value: &str) -> ployz_core::dataplane::WireGuardPublicKey {
-    ployz_core::dataplane::WireGuardPublicKey::try_new(value).expect("wireguard public key")
+fn wireguard_public_key(value: &str) -> ployz_core::network::WireGuardPublicKey {
+    ployz_core::network::WireGuardPublicKey::try_new(value).expect("wireguard public key")
 }
 
-fn route_target(hostname: &str, _port: u16) -> ployz_core::ops::RouteTarget {
-    ployz_core::ops::RouteTarget::new(
-        ployz_core::ops::RouteHostname::try_new(hostname).expect("valid route hostname"),
+fn route_target(hostname: &str, _port: u16) -> ployz_core::operation::RouteTarget {
+    ployz_core::operation::RouteTarget::new(
+        ployz_core::operation::RouteHostname::try_new(hostname).expect("valid route hostname"),
     )
 }
 

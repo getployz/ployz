@@ -8,7 +8,7 @@ use std::process::{Child, Stdio};
 #[cfg(unix)]
 use std::time::{Duration, Instant};
 
-use ployz_core::dataplane::MachineEndpointSubnet;
+use ployz_core::network::MachineEndpointSubnet;
 use ployz_core::security::NatsPrincipal;
 #[cfg(unix)]
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};

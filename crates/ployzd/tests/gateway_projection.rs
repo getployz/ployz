@@ -1,15 +1,15 @@
-use ployz_core::cert::{
+use ployz_core::certificate::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, CustomCertBundle,
     custom_bundle_digest,
 };
 use ployz_core::ids::{CertId, RouteBindingId};
 use ployz_core::ingress::{CertificateOwner, RouteBindingOrigin};
-use ployz_core::machine_runtime::{
+use ployz_core::machine::runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
     ManagedContainerObservation,
 };
-use ployz_core::ops::RouteTarget;
+use ployz_core::operation::RouteTarget;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, route_hostname,

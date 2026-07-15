@@ -2,9 +2,11 @@
 //! commit operator intent to the machine's roster row.
 
 use ployz_core::install::{DEFAULT_MACHINE_BOOTSTRAP_URL, MachineBootstrapUrl};
+use ployz_core::machine::MachineLifecycle;
 use ployz_core::machine::active_machine_from_completed_add;
-use ployz_core::ops::{MachineLifecycleFailure, MachineLifecycleOperationState, OperationStatus};
-use ployz_core::state::MachineLifecycle;
+use ployz_core::operation::{
+    MachineLifecycleFailure, MachineLifecycleOperationState, OperationStatus,
+};
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::operation_api::admission::{
     MachineAddBootstrapConfig, MachineLifecycleSubmitCommand, OperationControllers,
@@ -136,19 +138,19 @@ async fn drain_of_unknown_machine_fails_without_writing_evidence() {
 async fn seed_active_machine(machine_roster: &MachineRosterStore, machine: &str) {
     let active = active_machine_from_completed_add(
         ployz_core::machine::MachineName::try_new(machine).expect("valid machine name"),
-        ployz_core::roles::InstallRolePolicy::install_all(),
-        ployz_core::state::StagedMachineDataplaneState {
+        ployz_core::machine::roles::InstallRolePolicy::install_all(),
+        ployz_core::intent::StagedMachineDataplaneState {
             operation_id: operation_id("op_add"),
             machine_id: machine_id(machine),
-            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
+            endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new("10.198.0.0/24")
                 .expect("valid endpoint subnet"),
             mesh_endpoints: vec!["192.0.2.10:51820".parse().expect("mesh endpoint")],
-            wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+            wireguard_public_key: ployz_core::network::WireGuardPublicKey::try_new(format!(
                 "public-{machine}"
             ))
             .expect("public key"),
         },
-        ployz_core::ops::MachineAddOperationState::Completed,
+        ployz_core::operation::MachineAddOperationState::Completed,
     )
     .expect("completed add activates");
     machine_roster

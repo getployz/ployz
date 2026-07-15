@@ -1,5 +1,5 @@
 use ployz_core::install::{DEFAULT_MACHINE_BOOTSTRAP_URL, MachineBootstrapUrl};
-use ployz_core::ops::{
+use ployz_core::operation::{
     ManagedDnsReconcileSubject, ManagedDnsReconcileTransition, OperationStatusSnapshot,
 };
 use ployz_sdk_types::{OpsListError, OpsListRequest};

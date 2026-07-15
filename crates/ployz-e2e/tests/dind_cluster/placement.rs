@@ -7,20 +7,20 @@ use super::{
     terminal_operation_events, wait_for_machine_observations, wait_for_terminal_deploy_status,
     with_evidence,
 };
-use ployz_core::dataplane::{
-    DataplaneProjection, DataplaneProjectionMember, DataplaneProjectionTestimony,
-    EbpfAttachmentStatus, EndpointBridgeStatus, MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS,
-    WireGuardDetectedMtu, WireGuardHandshakeStatus, WireGuardInterfaceMtu, WireGuardRttStatus,
-};
 use ployz_core::deploy::{
     ContainerRuntimeSpec, DeployPlan, DeployPlanStep, DeployRequest, DeployServiceSpec,
     ImageReference, ImageSource, ReplicaCount,
 };
-use ployz_core::ops::{
+use ployz_core::intent::ActiveMachineState;
+use ployz_core::network::{
+    DataplaneProjection, DataplaneProjectionMember, DataplaneProjectionTestimony,
+    EbpfAttachmentStatus, EndpointBridgeStatus, MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS,
+    WireGuardDetectedMtu, WireGuardHandshakeStatus, WireGuardInterfaceMtu, WireGuardRttStatus,
+};
+use ployz_core::operation::{
     DeployCompletionOutcome, DeployOperationState, OperationEvent, OperationStatus,
 };
 use ployz_core::security::NatsPrincipal;
-use ployz_core::state::ActiveMachineState;
 use ployz_e2e::dind;
 use ployz_sdk_types::{NetworkDataplaneTestimony, NetworkStatusMachine, NetworkStatusRequest};
 use ployz_test_support::ids::{machine_id, namespace_id, service_id};
@@ -340,7 +340,7 @@ fn peer<'a>(
     machine: &'a NetworkStatusMachine,
     projection: &DataplaneProjection,
     peer_machine: &str,
-) -> Option<&'a ployz_core::dataplane::WireGuardPeerStatus> {
+) -> Option<&'a ployz_core::network::WireGuardPeerStatus> {
     let expected_key = &projection_member(projection, peer_machine).wireguard_public_key;
     let NetworkDataplaneTestimony::Answered { value } = &machine.dataplane else {
         return None;

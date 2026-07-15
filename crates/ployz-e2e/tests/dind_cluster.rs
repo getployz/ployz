@@ -27,10 +27,6 @@ mod support;
 use futures_util::StreamExt;
 use ployz::compose::{ComposeInput, UnsupportedFieldMode, parse_deploy_file};
 use ployz::image_push::{prepare_deploy_images, push_local_image};
-use ployz_core::dataplane::{
-    DEFAULT_WIREGUARD_LISTEN_PORT, MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS,
-    WireGuardHandshakeStatus,
-};
 use ployz_core::deploy::{
     ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerMountPath,
     ContainerResourceLimits, ContainerRestartPolicy, ContainerRuntimeSpec, DependencyCondition,
@@ -43,12 +39,16 @@ use ployz_core::ids::MachineId;
 use ployz_core::machine::{
     DataplaneProjectionAdmissionFailure, MachineAddFailure, MachineCredentialProvisioningStep,
 };
-use ployz_core::ops::{
+use ployz_core::network::{
+    DEFAULT_WIREGUARD_LISTEN_PORT, MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS,
+    WireGuardHandshakeStatus,
+};
+use ployz_core::operation::{
     ArtifactUnavailableReason, DeployCompletionOutcome, DeployOperationFailure,
     DeployOperationState, NamespaceRemoveOperationState, OperationEvent, OperationStatus,
     PreStartHookFailure, VolumeRemoveOperationState,
 };
-use ployz_core::ops::{MachineAddOperationState, ManagedDnsReconcileOperationState};
+use ployz_core::operation::{MachineAddOperationState, ManagedDnsReconcileOperationState};
 use ployz_core::permissions::inbox_subscribe_scope;
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{MachineServiceEndpoint, OPERATOR_RUNTIME_SNAPSHOT, machine_service};
@@ -231,18 +231,18 @@ async fn assert_init_and_activate_first_machine(core: &CoreContext) {
                             ployz_sdk_types::NetworkDataplaneTestimony::Answered { value }
                                 if matches!(
                                     &value.projection.testimony,
-                                    ployz_core::dataplane::DataplaneProjectionTestimony::Applied {
+                                    ployz_core::network::DataplaneProjectionTestimony::Applied {
                                         revisions,
                                     } if revisions.declared_revision
                                         == *intent.dataplane_projection.declared_revision()
                                 )
                                 && matches!(
                                     &value.projection.endpoint_bridge,
-                                    ployz_core::dataplane::EndpointBridgeStatus::Ready { .. }
+                                    ployz_core::network::EndpointBridgeStatus::Ready { .. }
                                 )
                                 && value.wireguard.interface == "ployz-wg0"
                                 && value.ebpf_attachment
-                                    == ployz_core::dataplane::EbpfAttachmentStatus::Attached
+                                    == ployz_core::network::EbpfAttachmentStatus::Attached
                         )
             ),
             "first-machine dataplane testimony is not ready for declared projection: {status:?}"

@@ -10,8 +10,8 @@ use ployz::commands::machine::{MachineAddRemoteCommand, MachineIdentity, Machine
 use ployz::runtime::{PloyzctlRuntimeConfig, execute_command};
 use ployz::ssh::SshTarget;
 use ployz_core::install::{MachineBootstrapUrl, MachineJoinClusterName};
+use ployz_core::machine::roles::InstallRolePolicy;
 use ployz_core::nats_config::NatsUserSeed;
-use ployz_core::roles::InstallRolePolicy;
 use ployz_core::security::NatsPrincipal;
 use ployz_e2e::bollard::Docker;
 use ployz_e2e::dind::{

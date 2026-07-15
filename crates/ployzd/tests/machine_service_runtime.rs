@@ -1,15 +1,15 @@
 use futures_util::StreamExt;
-use ployz_core::dataplane::{
+use ployz_core::deploy::ImageReference;
+use ployz_core::ids::ContainerId;
+use ployz_core::machine::runtime::{
+    ContainerRuntimeState, MachineContainerFactDelta, MachineFactsSnapshot,
+    ManagedContainerIdentity, ManagedContainerKind,
+};
+use ployz_core::network::{
     EbpfAttachmentStatus, EbpfForwardingReady, EbpfForwardingReadyEvidence, MachineDataplaneStatus,
     PloyzNativeMeshReady, WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardEbpfPrepareError,
     WireGuardInterfaceMtu, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
     WireGuardStatus,
-};
-use ployz_core::deploy::ImageReference;
-use ployz_core::ids::ContainerId;
-use ployz_core::machine_runtime::{
-    ContainerRuntimeState, MachineContainerFactDelta, MachineFactsSnapshot,
-    ManagedContainerIdentity, ManagedContainerKind,
 };
 use ployz_core::subjects::{
     MachineServiceEndpoint, machine_container_facts, machine_facts, machine_service,
@@ -1130,7 +1130,7 @@ async fn machine_dataplane_status_service_returns_local_testimony() {
             MachineServiceEndpoint::DataplaneStatus,
         ),
         &MachineDataplaneStatusRpcRequest {
-            mode: ployz_core::dataplane::NetworkStatusMode::ProbePathMtu,
+            mode: ployz_core::network::NetworkStatusMode::ProbePathMtu,
         },
         Duration::from_secs(1),
     )
@@ -1358,13 +1358,13 @@ impl MachineContainerRunner for RecordingRunner {
 
     async fn ensure_projection_endpoint_network(
         &self,
-        _expected_subnet: &ployz_core::dataplane::MachineEndpointSubnet,
+        _expected_subnet: &ployz_core::network::MachineEndpointSubnet,
     ) -> Result<(), MachineContainerRunnerError> {
         self.ensure_endpoint_network().await
     }
 
-    async fn read_endpoint_network_status(&self) -> ployz_core::dataplane::EndpointBridgeStatus {
-        ployz_core::dataplane::EndpointBridgeStatus::Missing
+    async fn read_endpoint_network_status(&self) -> ployz_core::network::EndpointBridgeStatus {
+        ployz_core::network::EndpointBridgeStatus::Missing
     }
 
     async fn resolve_registry_image(
@@ -1527,8 +1527,8 @@ impl RecordingWireGuardEbpfState {
 #[derive(Default)]
 struct RecordingWireGuardEbpfInner {
     prepare_count: usize,
-    endpoint_routes: Vec<ployz_core::dataplane::WireGuardEbpfEndpointRoute>,
-    peers: Vec<ployz_core::dataplane::WireGuardPeer>,
+    endpoint_routes: Vec<ployz_core::network::WireGuardEbpfEndpointRoute>,
+    peers: Vec<ployz_core::network::WireGuardPeer>,
 }
 
 #[derive(Clone)]
@@ -1549,7 +1549,7 @@ impl RecordingWireGuardEbpf {
 impl LocalWireGuardEbpfPreparer for RecordingWireGuardEbpf {
     async fn read_ployz_native_mesh_status(
         &self,
-        _mode: ployz_core::dataplane::NetworkStatusMode,
+        _mode: ployz_core::network::NetworkStatusMode,
     ) -> Result<MachineDataplaneStatus, String> {
         Ok(machine_dataplane_status())
     }
@@ -1562,8 +1562,8 @@ impl LocalWireGuardEbpfPreparer for RecordingWireGuardEbpf {
 
     async fn prepare_ployz_native_mesh(
         &self,
-        endpoint_routes: &[ployz_core::dataplane::WireGuardEbpfEndpointRoute],
-        peers: &[ployz_core::dataplane::WireGuardPeer],
+        endpoint_routes: &[ployz_core::network::WireGuardEbpfEndpointRoute],
+        peers: &[ployz_core::network::WireGuardPeer],
     ) -> Result<PloyzNativeMeshReady, WireGuardEbpfPrepareError> {
         let mut state = self
             .state
@@ -1583,8 +1583,8 @@ impl LocalWireGuardEbpfPreparer for RecordingWireGuardEbpf {
 
     async fn prepare_wireguard(
         &self,
-        endpoint_routes: &[ployz_core::dataplane::WireGuardEbpfEndpointRoute],
-        peers: &[ployz_core::dataplane::WireGuardPeer],
+        endpoint_routes: &[ployz_core::network::WireGuardEbpfEndpointRoute],
+        peers: &[ployz_core::network::WireGuardPeer],
     ) -> Result<WireGuardReady, WireGuardEbpfPrepareError> {
         self.prepare_ployz_native_mesh(endpoint_routes, peers)
             .await
@@ -1593,11 +1593,11 @@ impl LocalWireGuardEbpfPreparer for RecordingWireGuardEbpf {
 }
 
 fn machine_dataplane_status() -> MachineDataplaneStatus {
-    let mut projection = ployz_core::dataplane::NativeDataplaneProjectionStatus::unavailable(
-        ployz_core::ops::FailureMessage::try_new("dataplane projection has not been fetched")
+    let mut projection = ployz_core::network::NativeDataplaneProjectionStatus::unavailable(
+        ployz_core::operation::FailureMessage::try_new("dataplane projection has not been fetched")
             .expect("failure message"),
     );
-    projection.endpoint_bridge = ployz_core::dataplane::EndpointBridgeStatus::Missing;
+    projection.endpoint_bridge = ployz_core::network::EndpointBridgeStatus::Missing;
     MachineDataplaneStatus {
         projection,
         wireguard: WireGuardStatus {
@@ -1729,8 +1729,8 @@ fn hook_request() -> MachineContainerRunHookRpcRequest {
     }
 }
 
-fn inspect_hint(container_id: &str) -> ployz_core::ops::OperatorHint {
-    ployz_core::ops::OperatorHint::try_new(format!("ployz container inspect {container_id}"))
+fn inspect_hint(container_id: &str) -> ployz_core::operation::OperatorHint {
+    ployz_core::operation::OperatorHint::try_new(format!("ployz container inspect {container_id}"))
         .expect("valid inspect hint")
 }
 
@@ -1751,7 +1751,7 @@ fn existing_container(
         labels,
         ExistingManagedContainerState::Running {
             ip: None,
-            health: ployz_core::machine_runtime::ContainerHealth::None,
+            health: ployz_core::machine::runtime::ContainerHealth::None,
             started_at_unix_ms: None,
         },
     )

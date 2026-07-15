@@ -4,11 +4,11 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::{NamespaceRevisionEntryId, RouteBindingId};
 use ployz_core::ingress::{AutomaticHostnameLabel, RouteBindingOrigin};
-use ployz_core::machine_runtime::{
+use ployz_core::intent::RouteBindingState;
+use ployz_core::machine::runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
-use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
-use ployz_core::state::RouteBindingState;
+use ployz_core::operation::{RouteHostname, RoutePort, RouteTarget};
 use ployz_test_support::containers;
 use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{

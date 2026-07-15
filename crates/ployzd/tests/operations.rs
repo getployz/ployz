@@ -12,15 +12,16 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::OperationId;
 use ployz_core::install::MachineBootstrapUrl;
+use ployz_core::intent::ActiveMachineState;
 use ployz_core::machine::MachineName;
-use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
-use ployz_core::ops::{
+use ployz_core::machine::roles::InstallRolePolicy;
+use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
+use ployz_core::machine::{MachineEndpointObservation, MachineLifecycle};
+use ployz_core::operation::{
     DeployCompletionOutcome, DeployOperationState, DeployPhaseNumber, DeployPhaseOutcome,
     DeployRunningStage, DeployServiceResult, EventSequence, OperationEvent,
     OperationEventReplayCursor, OperationEventReplayRequest, OperationStatus,
 };
-use ployz_core::roles::InstallRolePolicy;
-use ployz_core::state::{ActiveMachineState, MachineEndpointObservation, MachineLifecycle};
 use ployz_core::subjects::{MachineServiceEndpoint, machine_facts, machine_service};
 use ployz_nats::operation_api_client::OperationApiClientError;
 use ployz_nats::service_runtime::request_json;
@@ -885,7 +886,7 @@ async fn publish_machine_facts(
             control_endpoints: vec![public_ip],
             mesh_endpoints: vec![std::net::SocketAddr::new(
                 public_ip,
-                ployz_core::dataplane::DEFAULT_WIREGUARD_LISTEN_PORT,
+                ployz_core::network::DEFAULT_WIREGUARD_LISTEN_PORT,
             )],
         }),
         test_disk_space(),
@@ -905,7 +906,7 @@ async fn publish_machine_facts(
     client.flush().await.expect("flush machine facts");
 }
 
-fn test_disk_space() -> ployz_core::machine_runtime::MachineDiskSpace {
+fn test_disk_space() -> ployz_core::machine::runtime::MachineDiskSpace {
     ployz_test_support::fixtures::test_disk_space()
 }
 
@@ -963,8 +964,8 @@ async fn start_control_with_deploy_roster(
     let store = CoreStore::open(config.core_db_path.clone()).await?;
     let roster = MachineRosterStore::new(store);
     for (index, machine_id) in config.deploy_machines.iter().enumerate() {
-        let endpoint_subnet = ployz_core::dataplane::MachineEndpointSubnet::try_new(
-            ployz_core::dataplane::default_endpoint_subnet(machine_id),
+        let endpoint_subnet = ployz_core::network::MachineEndpointSubnet::try_new(
+            ployz_core::network::default_endpoint_subnet(machine_id),
         )?;
         roster
             .replace_active_machine(&ActiveMachineState {
@@ -976,7 +977,7 @@ async fn start_control_with_deploy_roster(
                 control_endpoints: Vec::new(),
                 mesh_endpoints: vec![std::net::SocketAddr::new(
                     public_ip(u8::try_from(index + 1)?),
-                    ployz_core::dataplane::DEFAULT_WIREGUARD_LISTEN_PORT,
+                    ployz_core::network::DEFAULT_WIREGUARD_LISTEN_PORT,
                 )],
                 endpoint_subnet,
                 wireguard_public_key: test_wireguard_public_key(machine_id),
@@ -995,14 +996,15 @@ impl AcmeIssuer for FixtureAcmeIssuer {
     async fn issue_http01(
         &self,
         context: &AcmeIssueContext,
-        hostname: &ployz_core::ops::RouteHostname,
+        hostname: &ployz_core::operation::RouteHostname,
     ) -> Result<IssuedCertificate, AcmeIssuerError> {
-        let challenge = ployz_core::cert::AcmeHttp01Challenge::try_new(
+        let challenge = ployz_core::certificate::AcmeHttp01Challenge::try_new(
             hostname.clone(),
-            ployz_core::cert::AcmeChallengeToken::try_new("e2e-token").expect("challenge token"),
-            ployz_core::cert::AcmeChallengeValue::try_new("e2e-token.fixture-thumbprint")
+            ployz_core::certificate::AcmeChallengeToken::try_new("e2e-token")
+                .expect("challenge token"),
+            ployz_core::certificate::AcmeChallengeValue::try_new("e2e-token.fixture-thumbprint")
                 .expect("challenge value"),
-            ployz_core::cert::AcmeChallengeTtlSeconds::try_new(900).expect("challenge ttl"),
+            ployz_core::certificate::AcmeChallengeTtlSeconds::try_new(900).expect("challenge ttl"),
         )
         .expect("challenge");
         context.publish_challenge(challenge).await?;
@@ -1027,7 +1029,7 @@ async fn wait_for_dataplane_projection(nats: &TestNats, machine_id: &ployz_core:
             &nats.controller_client(),
             machine_service(machine_id, MachineServiceEndpoint::DataplaneStatus),
             &MachineDataplaneStatusRpcRequest {
-                mode: ployz_core::dataplane::NetworkStatusMode::Snapshot,
+                mode: ployz_core::network::NetworkStatusMode::Snapshot,
             },
             Duration::from_millis(250),
         )
@@ -1037,7 +1039,7 @@ async fn wait_for_dataplane_projection(nats: &TestNats, machine_id: &ployz_core:
             Ok(MachineRpcResponse::Ok(ok))
                 if matches!(
                     ok.value.projection.testimony,
-                    ployz_core::dataplane::DataplaneProjectionTestimony::Applied { .. }
+                    ployz_core::network::DataplaneProjectionTestimony::Applied { .. }
                 )
         ) {
             return;

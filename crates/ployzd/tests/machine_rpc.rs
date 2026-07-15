@@ -1,6 +1,6 @@
 use ployz_core::deploy::ImageReference;
 use ployz_core::ids::{ContainerId, MachineId};
-use ployz_core::machine_runtime::ManagedContainerIdentity;
+use ployz_core::machine::runtime::ManagedContainerIdentity;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, start_nats_service};
 use ployz_test_support::containers;
@@ -497,7 +497,7 @@ async fn start_substrate_report_service(
                     serde_json::to_vec(&MachineSubstrateReportRpcResponse::Ok(
                         MachineSubstrateReportRpcOk {
                             machine_id,
-                            reported: ployz_core::ops::MachineSubstrateVersions {
+                            reported: ployz_core::operation::MachineSubstrateVersions {
                                 ployzd: Some(
                                     ployz_core::install::InstallArtifactVersion::try_new("0.2.0")
                                         .expect("test version is valid"),
@@ -596,8 +596,8 @@ fn remove_request(container_id: &str) -> MachineContainerRemoveRpcRequest {
     }
 }
 
-fn inspect_hint(container_id: &str) -> ployz_core::ops::OperatorHint {
-    ployz_core::ops::OperatorHint::try_new(format!("ployz container inspect {container_id}"))
+fn inspect_hint(container_id: &str) -> ployz_core::operation::OperatorHint {
+    ployz_core::operation::OperatorHint::try_new(format!("ployz container inspect {container_id}"))
         .expect("valid inspect hint")
 }
 

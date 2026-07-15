@@ -21,7 +21,7 @@ use crate::{
     ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
     VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
 };
-use ployz_core::ops::OperationEventReplayPage;
+use ployz_core::operation::OperationEventReplayPage;
 use ployz_core::subjects::OperationApiEndpoint;
 
 pub trait OperationApiContract {

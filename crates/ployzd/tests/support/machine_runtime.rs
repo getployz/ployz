@@ -1,4 +1,11 @@
-use ployz_core::dataplane::{
+use ployz_core::deploy::{ImageReference, RegistryCredential};
+use ployz_core::ids::{ContainerId, MachineId};
+use ployz_core::image::OciDigest;
+use ployz_core::machine::runtime::ManagedContainerIdentity;
+use ployz_core::machine::runtime::{
+    ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerObservation,
+};
+use ployz_core::network::{
     DataplaneProjectionFailure, DataplaneProjectionTestimony, EbpfAttachmentStatus,
     EbpfForwardingReady, EbpfForwardingReadyEvidence, EndpointBridgeStatus, MachineDataplaneStatus,
     MachineEndpointSubnet, NativeDataplaneProjectionStatus, PloyzNativeMeshReady,
@@ -6,13 +13,6 @@ use ployz_core::dataplane::{
     WireGuardHandshakeStatus, WireGuardInterfaceMtu, WireGuardMtuProbe, WireGuardPeer,
     WireGuardPeerEndpointSubnet, WireGuardPeerStatus, WireGuardPublicKey, WireGuardReady,
     WireGuardReadyEvidence, WireGuardRttStatus, WireGuardStatus,
-};
-use ployz_core::deploy::{ImageReference, RegistryCredential};
-use ployz_core::ids::{ContainerId, MachineId};
-use ployz_core::image::OciDigest;
-use ployz_core::machine_runtime::ManagedContainerIdentity;
-use ployz_core::machine_runtime::{
-    ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
 use ployzd::roles::machine::protocol::MachineImagePull;
 use ployzd::roles::machine::runner::{
@@ -197,7 +197,7 @@ impl MachineContainerRunner for ObservingContainerRunner {
             .with_container_replaced(ManagedContainerObservation {
                 state: ContainerRuntimeState::Running {
                     ip: Some(std::net::Ipv4Addr::LOCALHOST.into()),
-                    health: ployz_core::machine_runtime::ContainerHealth::None,
+                    health: ployz_core::machine::runtime::ContainerHealth::None,
                     started_at_unix_ms: Some(current_unix_ms()),
                 },
                 ..observation
@@ -332,7 +332,7 @@ impl MachineContainerRunner for ObservingContainerRunner {
             .with_container_replaced(ManagedContainerObservation {
                 state: ContainerRuntimeState::Running {
                     ip: Some(std::net::Ipv4Addr::LOCALHOST.into()),
-                    health: ployz_core::machine_runtime::ContainerHealth::None,
+                    health: ployz_core::machine::runtime::ContainerHealth::None,
                     started_at_unix_ms: Some(current_unix_ms()),
                 },
                 ..existing
@@ -428,9 +428,9 @@ pub fn test_wireguard_public_key(machine_id: &MachineId) -> WireGuardPublicKey {
 impl MachinePloyzNativeMeshPreparer for ReadyWireGuardEbpf {
     async fn read_ployz_native_mesh_status(
         &self,
-        _mode: ployz_core::dataplane::NetworkStatusMode,
+        _mode: ployz_core::network::NetworkStatusMode,
     ) -> Result<MachineDataplaneStatus, String> {
-        let message = ployz_core::ops::FailureMessage::try_new(
+        let message = ployz_core::operation::FailureMessage::try_new(
             "projection testimony is supplied by the machine projection task",
         )
         .expect("test failure message");
@@ -486,7 +486,7 @@ impl MachinePloyzNativeMeshPreparer for ReadyWireGuardEbpf {
 
     async fn prepare_ployz_native_mesh(
         &self,
-        _endpoint_routes: &[ployz_core::dataplane::WireGuardEbpfEndpointRoute],
+        _endpoint_routes: &[ployz_core::network::WireGuardEbpfEndpointRoute],
         peers: &[WireGuardPeer],
     ) -> Result<PloyzNativeMeshReady, WireGuardEbpfPrepareError> {
         *self
@@ -512,8 +512,8 @@ impl MachinePloyzNativeMeshPreparer for ReadyWireGuardEbpf {
 
     async fn prepare_wireguard(
         &self,
-        endpoint_routes: &[ployz_core::dataplane::WireGuardEbpfEndpointRoute],
-        peers: &[ployz_core::dataplane::WireGuardPeer],
+        endpoint_routes: &[ployz_core::network::WireGuardEbpfEndpointRoute],
+        peers: &[ployz_core::network::WireGuardPeer],
     ) -> Result<WireGuardReady, WireGuardEbpfPrepareError> {
         self.prepare_ployz_native_mesh(endpoint_routes, peers)
             .await

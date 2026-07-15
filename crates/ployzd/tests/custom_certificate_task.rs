@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use ployz_core::cert::{
+use ployz_core::certificate::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, CertificateArtifactPushOk,
     CertificateArtifactPushRequest, CertificateArtifactPushResponse,
@@ -16,8 +16,8 @@ use ployz_core::cert::{
 use ployz_core::ids::{MachineId, RouteBindingId};
 use ployz_core::ingress::{ActiveCertificateMetadata, CertificateOwner};
 use ployz_core::install::{AbsoluteInstallPath, InstallSha256Digest};
-use ployz_core::machine_rpc::MachineRpcResponse;
-use ployz_core::ops::{
+use ployz_core::machine::rpc::MachineRpcResponse;
+use ployz_core::operation::{
     CertOperationFailure, CertOperationState, CertificateProvisionFailure, FailureMessage,
     OperationStatus, RouteHostname,
 };

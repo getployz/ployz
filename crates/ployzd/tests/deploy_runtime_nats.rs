@@ -7,12 +7,13 @@ use fixtures::*;
 use futures_util::StreamExt;
 use ployz_core::deploy::{DeployRequest, DeployServiceSpec, ReplicaCount};
 use ployz_core::install::MachineBootstrapUrl;
+use ployz_core::intent::ActiveMachineState;
+use ployz_core::machine::MachineLifecycle;
 use ployz_core::machine::MachineName;
-use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
-use ployz_core::ops::{
+use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
+use ployz_core::operation::{
     DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, OperationStatus,
 };
-use ployz_core::state::{ActiveMachineState, MachineLifecycle};
 use ployz_core::subjects::{INTENT_CHANGED, MachineServiceEndpoint, machine_service};
 use ployz_test_support::ids::idempotency_key;
 use ployzd::certificate::{CertificateManager, CertificateManagerConfig};
@@ -287,7 +288,7 @@ async fn duplicate_driver_execution_does_not_release_the_original_namespace_lock
         .repository()
         .record_deploy_transition(
             &operation_id("op_123"),
-            ployz_core::ops::DeployTransition::Planning,
+            ployz_core::operation::DeployTransition::Planning,
         )
         .await
         .expect("deploy already started");
@@ -394,13 +395,13 @@ async fn missing_machine_responder_marks_deploy_failed_without_committing_active
                     },
                 ..
             }) if *reasons == vec![
-                ployz_core::ops::UnusableMachine {
+                ployz_core::operation::UnusableMachine {
                     machine_id: machine_id("machine_a"),
-                    reason: ployz_core::state::MachineUsabilityReason::FactsUnavailable,
+                    reason: ployz_core::machine::MachineUsabilityReason::FactsUnavailable,
                 },
-                ployz_core::ops::UnusableMachine {
+                ployz_core::operation::UnusableMachine {
                     machine_id: machine_id("machine_slow"),
-                    reason: ployz_core::state::MachineUsabilityReason::FactsUnavailable,
+                    reason: ployz_core::machine::MachineUsabilityReason::FactsUnavailable,
                 },
             ]
         ),
@@ -682,13 +683,13 @@ fn active_machine(machine: &str, subnet: &str) -> ActiveMachineState {
         machine_id: machine_id(machine),
         name: MachineName::try_new(machine).expect("valid machine name"),
         activated_by: operation_id("op_machine_add"),
-        roles: ployz_core::roles::InstallRolePolicy::install_all(),
+        roles: ployz_core::machine::roles::InstallRolePolicy::install_all(),
         lifecycle: MachineLifecycle::Active,
         control_endpoints: Vec::new(),
         mesh_endpoints: vec!["192.0.2.1:51820".parse().expect("mesh endpoint")],
-        endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(subnet)
+        endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new(subnet)
             .expect("endpoint subnet"),
-        wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+        wireguard_public_key: ployz_core::network::WireGuardPublicKey::try_new(format!(
             "public-{machine}"
         ))
         .expect("wireguard key"),
@@ -772,7 +773,7 @@ fn empty_machine_facts(machine_id: &ployz_core::ids::MachineId) -> MachineFactsS
     .expect("empty machine facts are valid")
 }
 
-fn test_disk_space() -> ployz_core::machine_runtime::MachineDiskSpace {
+fn test_disk_space() -> ployz_core::machine::runtime::MachineDiskSpace {
     ployz_test_support::fixtures::test_disk_space()
 }
 

@@ -1,4 +1,4 @@
-use ployz_core::dataplane::{
+use ployz_core::network::{
     EbpfForwardingReadyEvidence, PloyzNativeMeshComponent, WireGuardEbpfEndpointRoute,
     WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey,
 };

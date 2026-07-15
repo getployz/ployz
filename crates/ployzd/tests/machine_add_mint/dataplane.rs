@@ -1,10 +1,11 @@
 use super::*;
 use futures_util::StreamExt;
-use ployz_core::dataplane::WireGuardPublicKey;
-use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
+use ployz_core::intent::StagedMachineDataplaneState;
+use ployz_core::machine::MachineEndpointObservation;
+use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::nats_config::NatsUserSeed;
+use ployz_core::network::WireGuardPublicKey;
 use ployz_core::security::NatsPrincipal;
-use ployz_core::state::{MachineEndpointObservation, StagedMachineDataplaneState};
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::connect::connect_authenticated;
 use ployz_sdk_types::{InitFirstMachineActivateRequest, MachineJoinToken};
@@ -123,8 +124,8 @@ async fn completed_report_can_repair_activation_before_secret_scrub() {
         .stage_machine_dataplane(StagedMachineDataplaneState {
             operation_id: operation_id("op_repair_scrub"),
             machine_id: machine_id("machine_rs"),
-            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(
-                ployz_core::dataplane::default_endpoint_subnet(&machine_id("machine_rs")),
+            endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new(
+                ployz_core::network::default_endpoint_subnet(&machine_id("machine_rs")),
             )
             .expect("endpoint subnet"),
             mesh_endpoints: vec!["192.0.2.10:51820".parse().expect("mesh endpoint")],
@@ -185,8 +186,8 @@ async fn first_machine_activation_repairs_completed_operation_without_roster() {
         .stage_machine_dataplane(StagedMachineDataplaneState {
             operation_id: operation_id("op_init_core_1"),
             machine_id: machine_id("core_1"),
-            endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new(
-                ployz_core::dataplane::default_endpoint_subnet(&machine_id("core_1")),
+            endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new(
+                ployz_core::network::default_endpoint_subnet(&machine_id("core_1")),
             )
             .expect("endpoint subnet"),
             mesh_endpoints: vec!["192.0.2.10:51820".parse().expect("mesh endpoint")],

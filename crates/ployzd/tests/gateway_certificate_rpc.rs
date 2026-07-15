@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use ployz_core::cert::{
+use ployz_core::certificate::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
     CertificateArtifactPushRequest, CertificateArtifactPushResponse,
@@ -12,9 +12,9 @@ use ployz_core::cert::{
 use ployz_core::ids::RouteBindingId;
 use ployz_core::ingress::{CertificateOwner, RouteBindingOrigin};
 use ployz_core::install::{AbsoluteInstallPath, InstallSha256Digest};
-use ployz_core::machine_rpc::MachineRpcResponse;
-use ployz_core::ops::RouteTarget;
-use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation};
+use ployz_core::machine::rpc::MachineRpcResponse;
+use ployz_core::machine::{GatewayServingStatus, GatewayStatusObservation};
+use ployz_core::operation::RouteTarget;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_runtime::{NatsServiceResponse, request_json, start_nats_service};
 use ployz_nats::services::EndpointExecution;
