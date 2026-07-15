@@ -10,7 +10,9 @@ use crate::roles::dns::protocol::{
 };
 use crate::service_catalog::{dns_role_service_base, machine_endpoint_spec};
 use ployz_core::ids::MachineId;
-use ployz_core::network::internal_dns::{InternalDnsResolverStatus, InternalDnsStatus};
+use ployz_core::network::internal_dns::{
+    InternalDnsIntentHealth, InternalDnsResolverStatus, InternalDnsStatus,
+};
 use ployz_nats::service_runtime::{
     NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError, RunningNatsService,
     decode_json_request, start_nats_service,
@@ -22,6 +24,7 @@ pub(crate) async fn start_dns_role_service(
     machine_id: MachineId,
     facts: RoleTestimonyCache,
     resolver_health: Option<Arc<Mutex<InternalResolverHealth>>>,
+    intent_health: Arc<Mutex<InternalDnsIntentHealth>>,
 ) -> Result<RunningNatsService, NatsServiceRuntimeError> {
     let mut service = start_nats_service(client, &dns_role_service_base(&machine_id)).await?;
     let endpoint = machine_endpoint_spec(&machine_id, MachineServiceEndpoint::DnsResolve);
@@ -40,7 +43,10 @@ pub(crate) async fn start_dns_role_service(
             let machine_id = machine_id.clone();
             let facts = facts.clone();
             let resolver_health = resolver_health.clone();
-            async move { status_from_local_cache(machine_id, facts, resolver_health, request) }
+            let intent_health = Arc::clone(&intent_health);
+            async move {
+                status_from_local_cache(machine_id, facts, resolver_health, intent_health, request)
+            }
         })
         .await?;
     Ok(service)
@@ -50,6 +56,7 @@ fn status_from_local_cache(
     machine_id: MachineId,
     facts: RoleTestimonyCache,
     resolver_health: Option<Arc<Mutex<InternalResolverHealth>>>,
+    intent_health: Arc<Mutex<InternalDnsIntentHealth>>,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse {
     if let Err(response) = decode_json_request::<DnsStatusRpcRequest>(&request) {
@@ -78,6 +85,10 @@ fn status_from_local_cache(
         value: InternalDnsStatus {
             resolver,
             fact_watermarks: facts.machine_fact_watermarks(),
+            intent_health: intent_health
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
         },
     })
 }
@@ -126,9 +137,14 @@ async fn resolve_from_bound_resolver(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use ployz_core::ids::{NamespaceId, ServiceId};
     use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
-    use ployz_core::network::internal_dns::{InternalDnsResolverStatus, InternalServiceName};
+    use ployz_core::network::internal_dns::{
+        InternalDnsIntentHealth, InternalDnsIntentRefreshHealth, InternalDnsIntentWatchHealth,
+        InternalDnsResolverStatus, InternalServiceName,
+    };
     use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse};
     use ployz_test_support::ids::machine_id;
 
@@ -182,6 +198,12 @@ mod tests {
             dns_machine_id.clone(),
             cache,
             None,
+            Arc::new(Mutex::new(InternalDnsIntentHealth {
+                refresh: InternalDnsIntentRefreshHealth::RequestFailed {
+                    message: "intent service unavailable".to_owned(),
+                },
+                watch: InternalDnsIntentWatchHealth::SubscriptionClosed,
+            })),
             NatsServiceRequest {
                 headers: None,
                 payload: serde_json::to_vec(&DnsStatusRpcRequest {}).expect("request"),
@@ -195,6 +217,15 @@ mod tests {
         assert_eq!(
             status.value.resolver,
             InternalDnsResolverStatus::NotConfigured
+        );
+        assert_eq!(
+            status.value.intent_health,
+            InternalDnsIntentHealth {
+                refresh: InternalDnsIntentRefreshHealth::RequestFailed {
+                    message: "intent service unavailable".to_owned(),
+                },
+                watch: InternalDnsIntentWatchHealth::SubscriptionClosed,
+            }
         );
         let [watermark] = status.value.fact_watermarks.as_slice() else {
             panic!("expected one fact watermark");

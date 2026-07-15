@@ -22,6 +22,9 @@ use crate::roles::dns::InternalResolverHealth;
 use crate::roles::dns::internal::{InternalDnsIntentCache, spawn_internal_resolver};
 use crate::roles::dns::service::start_dns_role_service;
 use futures_util::StreamExt;
+use ployz_core::network::internal_dns::{
+    InternalDnsIntentHealth, InternalDnsIntentRefreshHealth, InternalDnsIntentWatchHealth,
+};
 use ployz_nats::connect::{NatsConnectError, connect_authenticated_pool};
 use ployz_nats::service_runtime::{
     NatsClient, NatsServiceRuntimeError, NatsServiceShutdownError, RunningNatsService,
@@ -120,6 +123,7 @@ pub async fn start_dns_process_with_client(
     );
     let (shutdown, _) = broadcast::channel(2);
     let mut tasks = Vec::new();
+    let intent_health = Arc::new(Mutex::new(InternalDnsIntentHealth::pending()));
     let internal_resolver_health = internal_resolver_bind.map(|bind| {
         let health = Arc::new(Mutex::new(InternalResolverHealth::AwaitingBind {
             attempts: 0,
@@ -138,6 +142,7 @@ pub async fn start_dns_process_with_client(
         machine_id,
         testimony_cache.cache(),
         internal_resolver_health.clone(),
+        Arc::clone(&intent_health),
     )
     .await
     {
@@ -160,6 +165,7 @@ pub async fn start_dns_process_with_client(
     }
     let (refresh_wake, refresh_wake_rx) = mpsc::channel(1);
     let mut refresh_shutdown = shutdown.subscribe();
+    let refresh_health = Arc::clone(&intent_health);
     let refresh_task = tokio::spawn(async move {
         let mut backoff = refresh_interval;
         let mut refresh_wake_rx = refresh_wake_rx;
@@ -169,16 +175,32 @@ pub async fn start_dns_process_with_client(
             match tokio::time::timeout(DNS_REFRESH_TIMEOUT, intent_reader.intent()).await {
                 Ok(Ok(intent)) => {
                     internal_dns_intent.record_if_available(Some(intent));
+                    record_dns_intent_refresh_health(
+                        &refresh_health,
+                        InternalDnsIntentRefreshHealth::Current,
+                    );
                     backoff = refresh_interval;
                 }
                 Ok(Err(error)) => {
                     eprintln!("ployzd internal DNS warning: phase=intent-refresh error={error}");
+                    record_dns_intent_refresh_health(
+                        &refresh_health,
+                        InternalDnsIntentRefreshHealth::RequestFailed {
+                            message: error.to_string(),
+                        },
+                    );
                     backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
                 }
                 Err(_) => {
                     eprintln!(
                         "ployzd internal DNS warning: phase=intent-refresh error=timed-out timeout_seconds={}",
                         DNS_REFRESH_TIMEOUT.as_secs()
+                    );
+                    record_dns_intent_refresh_health(
+                        &refresh_health,
+                        InternalDnsIntentRefreshHealth::TimedOut {
+                            timeout_seconds: DNS_REFRESH_TIMEOUT.as_secs(),
+                        },
                     );
                     backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
                 }
@@ -192,8 +214,10 @@ pub async fn start_dns_process_with_client(
         }
     });
     let mut watch_shutdown = shutdown.subscribe();
+    let watch_health = Arc::clone(&intent_health);
     let watch_task = tokio::spawn(async move {
-        wake_dns_refresh_on_intent_changed(client, refresh_wake, &mut watch_shutdown).await;
+        wake_dns_refresh_on_intent_changed(client, refresh_wake, watch_health, &mut watch_shutdown)
+            .await;
     });
 
     tasks.push(refresh_task);
@@ -210,6 +234,7 @@ pub async fn start_dns_process_with_client(
 async fn wake_dns_refresh_on_intent_changed(
     client: NatsClient,
     refresh_wake: mpsc::Sender<()>,
+    health: Arc<Mutex<InternalDnsIntentHealth>>,
     shutdown: &mut broadcast::Receiver<()>,
 ) {
     loop {
@@ -221,12 +246,19 @@ async fn wake_dns_refresh_on_intent_changed(
             Ok(changed) => changed,
             Err(error) => {
                 eprintln!("ployzd internal DNS warning: phase=intent-watch error={error}");
+                record_dns_intent_watch_health(
+                    &health,
+                    InternalDnsIntentWatchHealth::OpenFailed {
+                        message: error.to_string(),
+                    },
+                );
                 if sleep_or_shutdown(DNS_WATCH_RESTART_DELAY, shutdown).await {
                     break;
                 }
                 continue;
             }
         };
+        record_dns_intent_watch_health(&health, InternalDnsIntentWatchHealth::Watching);
         let _ = refresh_wake.try_send(());
 
         loop {
@@ -236,6 +268,10 @@ async fn wake_dns_refresh_on_intent_changed(
                         eprintln!(
                             "ployzd internal DNS warning: phase=intent-watch error=subscription-closed"
                         );
+                        record_dns_intent_watch_health(
+                            &health,
+                            InternalDnsIntentWatchHealth::SubscriptionClosed,
+                        );
                         break;
                     }
                     let _ = refresh_wake.try_send(());
@@ -244,6 +280,26 @@ async fn wake_dns_refresh_on_intent_changed(
             }
         }
     }
+}
+
+fn record_dns_intent_refresh_health(
+    health: &Mutex<InternalDnsIntentHealth>,
+    refresh: InternalDnsIntentRefreshHealth,
+) {
+    health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .refresh = refresh;
+}
+
+fn record_dns_intent_watch_health(
+    health: &Mutex<InternalDnsIntentHealth>,
+    watch: InternalDnsIntentWatchHealth,
+) {
+    health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .watch = watch;
 }
 
 pub async fn run_dns_until_shutdown(config: &DnsProcessConfig) -> Result<(), DnsProcessError> {
@@ -270,4 +326,49 @@ pub enum DnsProcessError {
     ShutdownSignal(std::io::Error),
     #[error("failed to stop DNS role service: {0:?}")]
     ShutdownRoleService(NatsServiceShutdownError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{record_dns_intent_refresh_health, record_dns_intent_watch_health};
+    use ployz_core::network::internal_dns::{
+        InternalDnsIntentHealth, InternalDnsIntentRefreshHealth, InternalDnsIntentWatchHealth,
+    };
+    use std::sync::Mutex;
+
+    #[test]
+    fn intent_loop_health_recovers_independently() {
+        let health = Mutex::new(InternalDnsIntentHealth::pending());
+        record_dns_intent_refresh_health(
+            &health,
+            InternalDnsIntentRefreshHealth::RequestFailed {
+                message: "intent unavailable".to_owned(),
+            },
+        );
+        record_dns_intent_watch_health(&health, InternalDnsIntentWatchHealth::SubscriptionClosed);
+        record_dns_intent_watch_health(&health, InternalDnsIntentWatchHealth::Watching);
+
+        assert_eq!(
+            *health
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            InternalDnsIntentHealth {
+                refresh: InternalDnsIntentRefreshHealth::RequestFailed {
+                    message: "intent unavailable".to_owned(),
+                },
+                watch: InternalDnsIntentWatchHealth::Watching,
+            }
+        );
+
+        record_dns_intent_refresh_health(&health, InternalDnsIntentRefreshHealth::Current);
+        assert_eq!(
+            *health
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            InternalDnsIntentHealth {
+                refresh: InternalDnsIntentRefreshHealth::Current,
+                watch: InternalDnsIntentWatchHealth::Watching,
+            }
+        );
+    }
 }

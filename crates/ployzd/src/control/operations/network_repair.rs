@@ -20,7 +20,7 @@ use ployz_core::machine::runtime::MachineFactsRefreshConfirmation;
 use ployz_core::machine::validate_declared_machine;
 use ployz_core::network::DataplaneProjection;
 use ployz_core::network::internal_dns::{
-    InternalDnsFactWatermark, InternalDnsResolverStatus, InternalDnsStatus,
+    InternalDnsFactWatermark, InternalDnsIntentHealth, InternalDnsResolverStatus, InternalDnsStatus,
 };
 use ployz_core::operation::{
     FailureMessage, NetworkRepairDnsRefreshProblem, NetworkRepairEvidence, NetworkRepairFailure,
@@ -830,6 +830,7 @@ mod tests {
                         bound: "10.198.2.1:53".parse().expect("resolver address"),
                     },
                     fact_watermarks: vec![fact_watermark("machine_a", 42, 1)],
+                    intent_health: InternalDnsIntentHealth::pending(),
                 },
             }),
             &expected_machine_ids,
@@ -842,6 +843,7 @@ mod tests {
                 value: InternalDnsStatus {
                     resolver: InternalDnsResolverStatus::AwaitingBind { attempts: 2 },
                     fact_watermarks: vec![fact_watermark("machine_a", 42, 2)],
+                    intent_health: InternalDnsIntentHealth::pending(),
                 },
             }),
             &expected_machine_ids,
@@ -879,6 +881,7 @@ mod tests {
                 value: InternalDnsStatus {
                     resolver: InternalDnsResolverStatus::AwaitingBind { attempts: 1 },
                     fact_watermarks: vec![fact_watermark("machine_a", 42, 1)],
+                    intent_health: InternalDnsIntentHealth::pending(),
                 },
             }),
         )
@@ -905,6 +908,7 @@ mod tests {
                         bound: "10.198.2.1:53".parse().expect("resolver address"),
                     },
                     fact_watermarks: vec![fact_watermark("machine_a", 42, 3)],
+                    intent_health: InternalDnsIntentHealth::pending(),
                 },
             }),
             &[machine_id("machine_a")],
@@ -939,6 +943,7 @@ mod tests {
                         "cache_after_restart",
                         1,
                     )],
+                    intent_health: InternalDnsIntentHealth::pending(),
                 },
             }),
             &[machine_id("machine_a")],

@@ -19,6 +19,62 @@ pub const INTERNAL_DNS_SUFFIX: &str = "internal";
 pub struct InternalDnsStatus {
     pub resolver: InternalDnsResolverStatus,
     pub fact_watermarks: Vec<InternalDnsFactWatermark>,
+    #[serde(default)]
+    pub intent_health: InternalDnsIntentHealth,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct InternalDnsIntentHealth {
+    pub refresh: InternalDnsIntentRefreshHealth,
+    pub watch: InternalDnsIntentWatchHealth,
+}
+
+impl InternalDnsIntentHealth {
+    #[must_use]
+    pub const fn unknown() -> Self {
+        Self {
+            refresh: InternalDnsIntentRefreshHealth::Unknown,
+            watch: InternalDnsIntentWatchHealth::Unknown,
+        }
+    }
+
+    #[must_use]
+    pub const fn pending() -> Self {
+        Self {
+            refresh: InternalDnsIntentRefreshHealth::Pending,
+            watch: InternalDnsIntentWatchHealth::Pending,
+        }
+    }
+}
+
+impl Default for InternalDnsIntentHealth {
+    fn default() -> Self {
+        Self::unknown()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum InternalDnsIntentRefreshHealth {
+    Unknown,
+    Pending,
+    Current,
+    RequestFailed { message: String },
+    TimedOut { timeout_seconds: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum InternalDnsIntentWatchHealth {
+    Unknown,
+    Pending,
+    Watching,
+    OpenFailed { message: String },
+    SubscriptionClosed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -235,4 +291,44 @@ pub fn internal_dns_records(
         addresses.dedup();
     }
     records
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        InternalDnsIntentHealth, InternalDnsIntentRefreshHealth, InternalDnsIntentWatchHealth,
+        InternalDnsStatus,
+    };
+
+    #[test]
+    fn legacy_status_without_intent_health_decodes_as_unknown() {
+        let status = serde_json::from_value::<InternalDnsStatus>(serde_json::json!({
+            "resolver": { "status": "not_configured" },
+            "fact_watermarks": []
+        }))
+        .expect("legacy internal DNS status");
+
+        assert_eq!(status.intent_health, InternalDnsIntentHealth::unknown());
+    }
+
+    #[test]
+    fn intent_loop_failures_have_distinct_wire_shapes() {
+        let health = InternalDnsIntentHealth {
+            refresh: InternalDnsIntentRefreshHealth::TimedOut { timeout_seconds: 5 },
+            watch: InternalDnsIntentWatchHealth::OpenFailed {
+                message: "subscription unavailable".to_owned(),
+            },
+        };
+
+        assert_eq!(
+            serde_json::to_value(health).expect("intent health"),
+            serde_json::json!({
+                "refresh": { "status": "timed_out", "timeout_seconds": 5 },
+                "watch": {
+                    "status": "open_failed",
+                    "message": "subscription unavailable"
+                }
+            })
+        );
+    }
 }

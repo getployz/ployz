@@ -61,8 +61,10 @@ pub use ployz_core::nats_config::{
     NatsCaCertificatePem, NatsInternalAuthority, NatsUserPublicKey, NatsUserSeed,
 };
 pub use ployz_core::network::internal_dns::{
-    InternalDnsFactGeneration, InternalDnsFactWatermark, InternalDnsResolverCacheIncarnation,
-    InternalDnsResolverStatus, InternalDnsStatus, InternalServiceName, InternalServiceNameError,
+    InternalDnsFactGeneration, InternalDnsFactWatermark, InternalDnsIntentHealth,
+    InternalDnsIntentRefreshHealth, InternalDnsIntentWatchHealth,
+    InternalDnsResolverCacheIncarnation, InternalDnsResolverStatus, InternalDnsStatus,
+    InternalServiceName, InternalServiceNameError,
 };
 pub use ployz_core::network::{
     DataplaneMember, DataplaneProjection, DataplaneProjectionComponent, DataplaneProjectionFailure,

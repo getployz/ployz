@@ -417,7 +417,9 @@ mod tests {
     use ployz_core::machine::MachineLifecycle;
     use ployz_core::machine::MachineName;
     use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
-    use ployz_core::network::internal_dns::{InternalDnsResolverStatus, InternalDnsStatus};
+    use ployz_core::network::internal_dns::{
+        InternalDnsIntentHealth, InternalDnsResolverStatus, InternalDnsStatus,
+    };
     use ployz_core::network::{
         EbpfAttachmentStatus, MachineDataplaneStatus, MachineEndpointSubnet,
         WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardInterfaceMtu, WireGuardStatus,
@@ -658,6 +660,7 @@ mod tests {
                 value: InternalDnsStatus {
                     resolver: InternalDnsResolverStatus::NotConfigured,
                     fact_watermarks: Vec::new(),
+                    intent_health: InternalDnsIntentHealth::pending(),
                 },
             }),
         );
@@ -779,6 +782,7 @@ mod tests {
             Some(Arc::new(Mutex::new(InternalResolverHealth::Serving {
                 bound,
             }))),
+            Arc::new(Mutex::new(InternalDnsIntentHealth::pending())),
         )
         .await
         .expect("DNS role service");
@@ -823,6 +827,7 @@ mod tests {
             machine_a.clone(),
             RoleTestimonyCache::default(),
             None,
+            Arc::new(Mutex::new(InternalDnsIntentHealth::pending())),
         )
         .await
         .expect("DNS role service");
