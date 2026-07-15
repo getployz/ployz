@@ -291,6 +291,23 @@ fn owner_status_selection_skips_other_owner_corruption_and_reports_owned_corrupt
         select_owned_operation_statuses(&connection, &["cert_provision_submitted"]).is_err(),
         "selected-owner corruption remains visible"
     );
+
+    upsert_status(
+        &connection,
+        &operation_id("op_cert"),
+        &namespace_remove_status("op_cert"),
+    )
+    .expect("restore readable owned status");
+    connection
+        .execute(
+            "UPDATE operation_events SET event_json = 'not json' WHERE operation_id = ?1",
+            ["op_cert"],
+        )
+        .expect("corrupt owned submission event");
+    assert!(
+        select_owned_operation_statuses(&connection, &["cert_provision_submitted"]).is_err(),
+        "malformed submission evidence remains visible"
+    );
 }
 
 #[tokio::test]
@@ -319,6 +336,22 @@ async fn interruption_recovery_is_uncapped_idempotent_and_excludes_other_owners(
                 },
             )?;
             seed_submission_event(conn, "op_terminal", "namespace_remove_submitted")?;
+            let storage_id = operation_id("op_storage_prepare");
+            upsert_status(
+                conn,
+                &storage_id,
+                &OperationStatus::machine_storage_prepare_accepted(
+                    storage_id.clone(),
+                    ployz_test_support::ids::machine_id("machine-storage"),
+                    None,
+                    EventSequence::first(),
+                ),
+            )?;
+            seed_submission_event(
+                conn,
+                "op_storage_prepare",
+                "machine_storage_prepare_submitted",
+            )?;
             let cert_id = operation_id("op_cert_owned_elsewhere");
             upsert_status(
                 conn,
@@ -339,7 +372,7 @@ async fn interruption_recovery_is_uncapped_idempotent_and_excludes_other_owners(
         .record_interrupted_operations(OperationInterruptionCause::PriorCoreProcessLoss)
         .await
         .expect("recover interrupted operations");
-    assert_eq!(first.recorded, 102);
+    assert_eq!(first.recorded, 103);
 
     let recovered = repository
         .get(&operation_id("op_interrupted_000"))
@@ -353,6 +386,14 @@ async fn interruption_recovery_is_uncapped_idempotent_and_excludes_other_owners(
             ..
         }
     ));
+    assert!(
+        repository
+            .get(&operation_id("op_storage_prepare"))
+            .await
+            .expect("read recovered storage preparation")
+            .expect("recovered storage preparation exists")
+            .is_terminal()
+    );
     let (status_json, event_json) = store
         .call(|conn| {
             let status_json = conn.query_row(

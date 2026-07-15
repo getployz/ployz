@@ -223,6 +223,7 @@ fn record_interrupted_operations_txn(
             "credential_grant_submitted",
             "ingress_configure_submitted",
             "machine_update_submitted",
+            "machine_storage_prepare_submitted",
             "machine_lifecycle_submitted",
             "network_repair_submitted",
             "service_restart_submitted",
