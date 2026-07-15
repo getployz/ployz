@@ -459,8 +459,8 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
         } => format!(
             "image {} has no {}/{} image for {}",
             requested_image(target, service_id).unwrap_or("requested image"),
-            target_platform.os,
-            target_platform.architecture,
+            target_platform.os(),
+            target_platform.architecture(),
             machine_id.as_str()
         ),
         DeployOperationFailure::UnsupportedTargetPlatform {
@@ -471,11 +471,11 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
         } => format!(
             "image {} platform {}/{} is incompatible with {} platform {}/{}",
             requested_image(target, service_id).unwrap_or("requested image"),
-            image_platform.os,
-            image_platform.architecture,
+            image_platform.os(),
+            image_platform.architecture(),
             machine_id.as_str(),
-            target_platform.os,
-            target_platform.architecture
+            target_platform.os(),
+            target_platform.architecture()
         ),
         DeployOperationFailure::RuntimeUnavailable { message, .. } => {
             format!("container runtime unavailable: {}", message.as_str())

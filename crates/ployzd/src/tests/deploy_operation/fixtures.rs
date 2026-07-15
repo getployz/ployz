@@ -1237,10 +1237,8 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
             image_source: ployz_core::deploy::ImageSource::PushedToSeed(
                 ployz_core::deploy::PushedImageReceipt::try_new([
                     (
-                        ployz_core::image::OciPlatform {
-                            os: "linux".to_owned(),
-                            architecture: "amd64".to_owned(),
-                        },
+                        ployz_core::image::OciPlatform::try_new("linux", "amd64")
+                            .expect("platform"),
                         ployz_core::deploy::PlatformImage {
                             seed: machine_id("machine_seed"),
                             manifest_digest: ployz_core::image::OciDigest::try_new(format!(
@@ -1256,10 +1254,8 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
                         },
                     ),
                     (
-                        ployz_core::image::OciPlatform {
-                            os: "linux".to_owned(),
-                            architecture: "arm64".to_owned(),
-                        },
+                        ployz_core::image::OciPlatform::try_new("linux", "arm64")
+                            .expect("platform"),
                         ployz_core::deploy::PlatformImage {
                             seed: machine_id("machine_arm_seed"),
                             manifest_digest: ployz_core::image::OciDigest::try_new(format!(
@@ -1284,14 +1280,8 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
             routes: Vec::new(),
         }],
     };
-    let amd64 = ployz_core::image::OciPlatform {
-        os: "linux".to_owned(),
-        architecture: "amd64".to_owned(),
-    };
-    let arm64 = ployz_core::image::OciPlatform {
-        os: "linux".to_owned(),
-        architecture: "arm64".to_owned(),
-    };
+    let amd64 = ployz_core::image::OciPlatform::try_new("linux", "amd64").expect("platform");
+    let arm64 = ployz_core::image::OciPlatform::try_new("linux", "arm64").expect("platform");
     deploy_execution_input(
         operation_id("op_123"),
         request,

@@ -14,17 +14,17 @@ pub use ployz_core::deploy::{
     DeployServiceSpec, EnvName, EnvNameError, EnvValue, EnvValueError, HealthcheckDurationNanos,
     HealthcheckRetries, HealthcheckShellCommand, ImageReference, ImageReferenceError, ImageSource,
     LinuxCapability, MemoryBytes, NanoCpus, PidsLimit, PlatformImage, PreStartHook,
-    PreStartHookStep, PushedImageReceipt, RegistryCredential, RegistryCredentialError,
-    RegistryCredentialSecret, RegistryCredentialUsername, ReplicaCount, ReplicaCountError,
-    ReplicaSlot, ServiceDependency, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod,
-    VolumeMaxSizeBytes, VolumeMaxSizeError, VolumeName, VolumeNameError, VolumeSpec, ZfsPoolName,
-    ZfsPoolNameError,
+    PreStartHookStep, PushedImageReceipt, PushedImageReceiptError, RegistryCredential,
+    RegistryCredentialError, RegistryCredentialSecret, RegistryCredentialUsername, ReplicaCount,
+    ReplicaCountError, ReplicaSlot, ServiceDependency, ServiceEnvironment, ServiceVolumeMount,
+    StopGracePeriod, VolumeMaxSizeBytes, VolumeMaxSizeError, VolumeName, VolumeNameError,
+    VolumeSpec, ZfsPoolName, ZfsPoolNameError,
 };
 pub use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
     OperationId, RouteBindingId, ServiceId, StepId, SubjectTokenError,
 };
-pub use ployz_core::image::{OciDigest, OciPlatform};
+pub use ployz_core::image::{OciDigest, OciPlatform, OciPlatformError};
 pub use ployz_core::ingress::{
     ActiveCertificateMetadata, AutomaticHostnameConfiguration, AutomaticHostnameLabel,
     AutomaticHostnameLabelError, AutomaticHostnameSuffix, CertificateOwner, IngressConfiguration,

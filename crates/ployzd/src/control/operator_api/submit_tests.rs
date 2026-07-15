@@ -79,10 +79,8 @@ fn pushed_image_digest_must_match_the_index_digest() {
                 image,
                 image_source: ImageSource::PushedToSeed(
                     ployz_core::deploy::PushedImageReceipt::try_new([(
-                        ployz_core::image::OciPlatform {
-                            os: "linux".to_owned(),
-                            architecture: "amd64".to_owned(),
-                        },
+                        ployz_core::image::OciPlatform::try_new("linux", "amd64")
+                            .expect("platform"),
                         ployz_core::deploy::PlatformImage {
                             seed: MachineId::try_new("machine_a").expect("valid machine id"),
                             manifest_digest: OciDigest::sha256(b"manifest"),

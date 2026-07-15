@@ -703,6 +703,14 @@ fn machine_join_secret_delivery() -> MachineJoinSecretDelivery {
 #[test]
 fn sdk_exports_constructor_error_types() {
     assert!(matches!(
+        ployz_sdk_types::PushedImageReceipt::try_new([]),
+        Err(ployz_sdk_types::PushedImageReceiptError::Empty)
+    ));
+    assert!(matches!(
+        ployz_sdk_types::OciPlatform::try_new("linux", "amd 64"),
+        Err(ployz_sdk_types::OciPlatformError::InvalidCharacter { .. })
+    ));
+    assert!(matches!(
         ImageReference::try_new(""),
         Err(ImageReferenceError::Empty)
     ));

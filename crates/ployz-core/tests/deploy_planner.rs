@@ -138,10 +138,7 @@ fn pushed_image_source<const N: usize>(platforms: [(char, &str, &str); N]) -> Im
     let receipt =
         PushedImageReceipt::try_new(platforms.into_iter().map(|(digest, architecture, seed)| {
             (
-                OciPlatform {
-                    os: "linux".to_owned(),
-                    architecture: architecture.to_owned(),
-                },
+                OciPlatform::try_new("linux", architecture).expect("platform"),
                 PlatformImage {
                     seed: machine_id(seed),
                     manifest_digest: oci_digest(digest),

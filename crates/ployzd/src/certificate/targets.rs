@@ -81,10 +81,8 @@ mod tests {
                         [],
                     )
                     .expect("valid empty snapshot"),
-                    platform: ployz_core::image::OciPlatform {
-                        os: "linux".to_owned(),
-                        architecture: "amd64".to_owned(),
-                    },
+                    platform: ployz_core::image::OciPlatform::try_new("linux", "amd64")
+                        .expect("platform"),
                     endpoints: Some(MachineEndpointObservation {
                         machine_id: foreign_id,
                         control_endpoints: vec!["203.0.113.50".parse().expect("valid IP")],

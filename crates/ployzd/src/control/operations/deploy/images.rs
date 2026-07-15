@@ -54,6 +54,51 @@ pub(super) fn dataplane_membership(
         .collect()
 }
 
+pub(super) fn validate_pushed_platforms(
+    command: &DeployExecutionCommand,
+    plan: &DeployPlan,
+) -> Result<(), Box<DeployExecutionError>> {
+    for phase in &plan.phases {
+        for service_plan in &phase.services {
+            let Some(service) = command
+                .services()
+                .iter()
+                .find(|service| service.service.service_id == service_plan.service_id)
+            else {
+                return Err(Box::new(DeployExecutionError::PlanInconsistent {
+                    service_id: service_plan.service_id.clone(),
+                }));
+            };
+            let ImageSource::PushedToSeed(receipt) = &service.service.image_source else {
+                continue;
+            };
+            let target_machines = service_plan
+                .pre_start
+                .iter()
+                .map(|pre_start| &pre_start.machine_id)
+                .chain(service_plan.steps.iter().map(|step| match step {
+                    DeployPlanStep::UseExistingContainer { machine_id, .. }
+                    | DeployPlanStep::RunContainer { machine_id, .. } => machine_id,
+                }));
+            for machine_id in target_machines {
+                let target_platform = command
+                    .target_platform(machine_id)
+                    .map_err(|error| Box::new(error.into_execution_error()))?;
+                if receipt.platform(target_platform).is_none() {
+                    return Err(Box::new(DeployExecutionError::Image {
+                        failure: Box::new(DeployOperationFailure::PlatformImageUnavailable {
+                            service_id: service.service.service_id.clone(),
+                            machine_id: machine_id.clone(),
+                            target_platform: target_platform.clone(),
+                        }),
+                    }));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) async fn resolve_registry_images<R, N>(
     command: &DeployExecutionCommand,
     request: &mut VolumeDeclaredDeployRequest,
@@ -202,14 +247,9 @@ where
                 DeployPlanStep::UseExistingContainer { machine_id, .. }
                 | DeployPlanStep::RunContainer { machine_id, .. } => machine_id,
             };
-            let Some(target_platform) = command.machine_platform(machine_id) else {
-                return Err(DeployExecutionError::InvalidImagePull {
-                    message: format!(
-                        "target machine {} did not report a platform",
-                        machine_id.as_str()
-                    ),
-                });
-            };
+            let target_platform = command
+                .target_platform(machine_id)
+                .map_err(|error| error.into_execution_error())?;
             target_platforms
                 .entry(target_platform.clone())
                 .or_insert_with(|| machine_id.clone());
@@ -233,7 +273,7 @@ where
                 image_id: platform_image.image_id.clone(),
                 platform: target_platform.clone(),
             };
-            let ensured = tokio::time::timeout(
+            tokio::time::timeout(
                 command.step_timeout(),
                 machine_runtime.ensure_image(&platform_image.seed, request),
             )
@@ -254,16 +294,6 @@ where
                     error,
                 )
             })?;
-            if ensured.platform != target_platform {
-                return Err(DeployExecutionError::Image {
-                    failure: Box::new(DeployOperationFailure::UnsupportedTargetPlatform {
-                        service_id: service.service.service_id.clone(),
-                        machine_id,
-                        image_platform: ensured.platform,
-                        target_platform,
-                    }),
-                });
-            }
             record_evidence(
                 command,
                 recorder,
@@ -340,7 +370,7 @@ pub(super) fn machine_image_pull(
     namespace_id: &ployz_core::ids::NamespaceId,
     service: &DeployServiceExecutionCommand,
     machine_id: &ployz_core::ids::MachineId,
-    target_platform: Option<&ployz_core::image::OciPlatform>,
+    target_platform: &ployz_core::image::OciPlatform,
     dataplane_members: &[DataplaneMember],
 ) -> Result<MachineImagePull, DeployExecutionError> {
     match &service.service.image_source {
@@ -349,14 +379,6 @@ pub(super) fn machine_image_pull(
             credential: service.registry_credential().cloned(),
         }),
         ImageSource::PushedToSeed(receipt) => {
-            let Some(target_platform) = target_platform else {
-                return Err(DeployExecutionError::InternalInvariant {
-                    message: format!(
-                        "pushed-image target {} has no answered machine facts",
-                        machine_id.as_str()
-                    ),
-                });
-            };
             let Some(platform_image) = receipt.platform(target_platform) else {
                 return Err(DeployExecutionError::Image {
                     failure: Box::new(DeployOperationFailure::PlatformImageUnavailable {
@@ -395,10 +417,10 @@ fn deploy_failure_message(message: impl Into<String>) -> FailureMessage {
 mod tests {
     use super::*;
     use ployz_core::deploy::{
-        ContainerRuntimeSpec, DeployServiceSpec, ImageReference, PlatformImage, PushedImageReceipt,
-        ReplicaCount,
+        ContainerRuntimeSpec, DeployPhasePlan, DeployRequest, DeployServiceSpec, ImageReference,
+        PlatformImage, PushedImageReceipt, ReplicaCount, ReplicaSlot, VolumeDeclaredDeployRequest,
     };
-    use ployz_core::ids::{MachineId, NamespaceId, ServiceId};
+    use ployz_core::ids::{MachineId, NamespaceId, NamespaceRevisionId, OperationId, ServiceId};
     use ployz_core::image::{OciDigest, OciPlatform};
 
     #[test]
@@ -411,7 +433,7 @@ mod tests {
             &NamespaceId::try_new("default").expect("namespace id"),
             &service,
             &target_machine,
-            Some(&arm64),
+            &arm64,
             &[],
         )
         .expect_err("missing platform must fail");
@@ -423,6 +445,73 @@ mod tests {
                     service_id: ServiceId::try_new("api").expect("service id"),
                     machine_id: target_machine,
                     target_platform: arm64,
+                }
+        ));
+    }
+
+    #[test]
+    fn pushed_platforms_are_validated_across_all_phases_before_execution() {
+        let service = pushed_service();
+        let target_machine = machine_id("machine_arm");
+        let target_platform = platform("arm64");
+        let request = VolumeDeclaredDeployRequest::try_new(DeployRequest {
+            namespace_id: NamespaceId::try_new("default").expect("namespace id"),
+            origin: None,
+            volumes: BTreeMap::new(),
+            services: vec![service.service.clone()],
+        })
+        .expect("deploy request");
+        let command = DeployExecutionCommand {
+            operation_id: OperationId::try_new("op_platform_validation").expect("operation id"),
+            request,
+            services: vec![service],
+            route_binding_removals: Vec::new(),
+            serving_target_removals: Vec::new(),
+            namespace_cleanup_candidates: Vec::new(),
+            machine_platforms: [(target_machine.clone(), target_platform.clone())]
+                .into_iter()
+                .collect(),
+            dataplane_members: Vec::new(),
+            exact_certificate_routes: Vec::new(),
+            ployz_automatic_hostnames: false,
+            gateway_certificate_targets: Vec::new(),
+            ployz_gateway_certificate_targets: Vec::new(),
+            unusable_machines: Vec::new(),
+            step_timeout: std::time::Duration::from_secs(1),
+        };
+        let plan = DeployPlan {
+            namespace_id: command.request.namespace_id().clone(),
+            namespace_revision_id: NamespaceRevisionId::try_new("revision_platform_validation")
+                .expect("revision id"),
+            phases: vec![
+                DeployPhasePlan {
+                    services: Vec::new(),
+                },
+                DeployPhasePlan {
+                    services: vec![DeployServicePlan {
+                        service_id: ServiceId::try_new("api").expect("service id"),
+                        steps: vec![DeployPlanStep::RunContainer {
+                            machine_id: target_machine.clone(),
+                            slot: ReplicaSlot::try_new(1).expect("replica slot"),
+                        }],
+                        pre_start: None,
+                    }],
+                },
+            ],
+            volume_pin_commits: Vec::new(),
+            cleanup_containers: Vec::new(),
+        };
+
+        let error = validate_pushed_platforms(&command, &plan)
+            .expect_err("later-phase missing platform must fail prevalidation");
+
+        assert!(matches!(
+            *error,
+            DeployExecutionError::Image { failure }
+                if *failure == DeployOperationFailure::PlatformImageUnavailable {
+                    service_id: ServiceId::try_new("api").expect("service id"),
+                    machine_id: target_machine,
+                    target_platform,
                 }
         ));
     }
@@ -468,9 +557,6 @@ mod tests {
     }
 
     fn platform(architecture: &str) -> OciPlatform {
-        OciPlatform {
-            os: "linux".to_owned(),
-            architecture: architecture.to_owned(),
-        }
+        OciPlatform::try_new("linux", architecture).expect("platform")
     }
 }

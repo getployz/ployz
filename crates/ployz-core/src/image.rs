@@ -322,24 +322,122 @@ pub enum ImageUploadIdError {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "OciPlatformWire", into = "OciPlatformWire")]
 pub struct OciPlatform {
-    pub os: String,
-    pub architecture: String,
+    os: String,
+    architecture: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OciPlatformWire {
+    os: String,
+    architecture: String,
 }
 
 impl OciPlatform {
+    pub fn try_new(
+        os: impl Into<String>,
+        architecture: impl Into<String>,
+    ) -> Result<Self, OciPlatformError> {
+        let os = normalize_platform_component("os", os.into())?;
+        let architecture = normalize_platform_component("architecture", architecture.into())?;
+        let architecture = match architecture.as_str() {
+            "x86_64" | "x86-64" => "amd64".to_owned(),
+            "aarch64" => "arm64".to_owned(),
+            _ => architecture,
+        };
+        Ok(Self { os, architecture })
+    }
+
     #[must_use]
     pub fn current() -> Self {
-        Self {
-            os: std::env::consts::OS.to_owned(),
-            architecture: match std::env::consts::ARCH {
-                "x86_64" => "amd64",
-                "aarch64" => "arm64",
-                architecture => architecture,
-            }
-            .to_owned(),
-        }
+        Self::try_new(std::env::consts::OS, std::env::consts::ARCH)
+            .expect("Rust target OS and architecture form a valid OCI platform")
+    }
+
+    #[must_use]
+    pub fn os(&self) -> &str {
+        &self.os
+    }
+
+    #[must_use]
+    pub fn architecture(&self) -> &str {
+        &self.architecture
+    }
+}
+
+impl TryFrom<OciPlatformWire> for OciPlatform {
+    type Error = OciPlatformError;
+
+    fn try_from(value: OciPlatformWire) -> Result<Self, Self::Error> {
+        Self::try_new(value.os, value.architecture)
+    }
+}
+
+impl From<OciPlatform> for OciPlatformWire {
+    fn from(value: OciPlatform) -> Self {
+        let OciPlatform { os, architecture } = value;
+        Self { os, architecture }
+    }
+}
+
+fn normalize_platform_component(
+    field: &'static str,
+    value: String,
+) -> Result<String, OciPlatformError> {
+    let value = value.to_ascii_lowercase();
+    if value.is_empty() {
+        return Err(OciPlatformError::Empty { field });
+    }
+    if value.chars().any(|character| {
+        !character.is_ascii_lowercase()
+            && !character.is_ascii_digit()
+            && !matches!(character, '-' | '_' | '.' | '+')
+    }) {
+        return Err(OciPlatformError::InvalidCharacter { field, value });
+    }
+    Ok(value)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum OciPlatformError {
+    #[error("OCI platform {field} must not be empty")]
+    Empty { field: &'static str },
+    #[error("OCI platform {field} contains an invalid character: {value:?}")]
+    InvalidCharacter { field: &'static str, value: String },
+}
+
+#[cfg(test)]
+mod oci_platform_tests {
+    use super::*;
+
+    #[test]
+    fn platform_normalizes_case_and_architecture_aliases() {
+        assert_eq!(
+            OciPlatform::try_new("LINUX", "x86_64").expect("platform"),
+            OciPlatform::try_new("linux", "amd64").expect("platform")
+        );
+        assert_eq!(
+            OciPlatform::try_new("Linux", "AARCH64").expect("platform"),
+            OciPlatform::try_new("linux", "arm64").expect("platform")
+        );
+    }
+
+    #[test]
+    fn platform_wire_cannot_bypass_validation() {
+        assert!(
+            serde_json::from_str::<OciPlatform>(r#"{"os":"","architecture":"amd64"}"#).is_err()
+        );
+        assert!(
+            serde_json::from_str::<OciPlatform>(r#"{"os":"linux","architecture":"amd 64"}"#)
+                .is_err()
+        );
+        assert_eq!(
+            serde_json::from_str::<OciPlatform>(r#"{"os":"LINUX","architecture":"x86_64"}"#)
+                .expect("normalized platform"),
+            OciPlatform::try_new("linux", "amd64").expect("platform")
+        );
     }
 }
 

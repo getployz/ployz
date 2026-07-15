@@ -652,7 +652,9 @@ async fn read_platform(
         }
     })?;
     let OciImageConfig { architecture, os } = config;
-    Ok(OciPlatform { os, architecture })
+    OciPlatform::try_new(os, architecture).map_err(|error| ImageRpcDomainError::InvalidRequest {
+        message: failure_message(format!("invalid image platform: {error}")),
+    })
 }
 
 async fn release_manifest_leases(
@@ -782,9 +784,6 @@ mod tests {
     }
 
     fn platform(architecture: &str) -> OciPlatform {
-        OciPlatform {
-            os: "linux".to_owned(),
-            architecture: architecture.to_owned(),
-        }
+        OciPlatform::try_new("linux", architecture).expect("platform")
     }
 }

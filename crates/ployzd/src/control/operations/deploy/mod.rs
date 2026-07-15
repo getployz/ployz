@@ -34,7 +34,9 @@ pub use failure::{
     PreStartHookRuntimeError,
 };
 use failure::{DeployExecutionFailure, fail_deploy};
-use images::{dataplane_membership, machine_image_pull, resolve_registry_images};
+use images::{
+    dataplane_membership, machine_image_pull, resolve_registry_images, validate_pushed_platforms,
+};
 use phase::{CoarsePhaseProgress, DeployRun};
 pub use ports::{
     CertificateProvisioner, DeployHealthChecker, DeployOperationRecorder, DeployPhasePromotion,
@@ -211,6 +213,7 @@ where
     )
     .await
     .map_err(|source| run.fail(source))?;
+    validate_pushed_platforms(command, &plan).map_err(|source| run.fail(*source))?;
     let dataplane_membership = dataplane_membership(command, &plan);
     if !plan.volume_pin_commits.is_empty() {
         commit_volume_pins(command, &plan, &mut *ports.namespace_state)
@@ -438,7 +441,9 @@ where
             command.request.namespace_id(),
             service,
             &step.machine_id,
-            command.machine_platform(&step.machine_id),
+            command
+                .target_platform(&step.machine_id)
+                .map_err(|error| error.into_execution_error())?,
             dataplane_members,
         )?,
         runtime,
@@ -885,7 +890,9 @@ where
             command.request.namespace_id(),
             service,
             machine_id,
-            command.machine_platform(machine_id),
+            command
+                .target_platform(machine_id)
+                .map_err(|error| error.into_execution_error())?,
             dataplane_members,
         )?,
         runtime: service.service.runtime.clone(),

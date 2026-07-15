@@ -374,6 +374,31 @@ fn certificate_stage_marks_containers_healthy_and_routes_as_provisioning() {
 #[test]
 fn pushed_image_stays_pending_until_availability_is_verified() {
     let operation_id = operation_id();
+    let mut target = direct_image_target();
+    let [service] = target.services.as_mut_slice() else {
+        panic!("direct-image target must contain one service");
+    };
+    service.image_source = ImageSource::PushedToSeed(
+        PushedImageReceipt::try_new([
+            (
+                platform(),
+                PlatformImage {
+                    seed: machine_id("hetzner-1"),
+                    manifest_digest: OciDigest::sha256(b"manifest"),
+                    image_id: OciDigest::sha256(b"image-config"),
+                },
+            ),
+            (
+                OciPlatform::try_new("linux", "arm64").expect("platform"),
+                PlatformImage {
+                    seed: machine_id("hetzner-2"),
+                    manifest_digest: OciDigest::sha256(b"arm-manifest"),
+                    image_id: OciDigest::sha256(b"arm-image-config"),
+                },
+            ),
+        ])
+        .expect("multi-platform pushed receipt"),
+    );
     let mut direct_plan = plan();
     let [phase] = direct_plan.phases.as_mut_slice() else {
         panic!("direct-image plan must contain one phase");
@@ -386,7 +411,7 @@ fn pushed_image_stays_pending_until_availability_is_verified() {
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
                 reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
-                target: direct_image_target(),
+                target,
             },
         ),
         replay(
@@ -412,11 +437,25 @@ fn pushed_image_stays_pending_until_availability_is_verified() {
     tree.ingest_page(&[replay(
         4,
         OperationEvent::DeployImageAvailabilityVerified {
-            operation_id,
+            operation_id: operation_id.clone(),
             service_id: service_id("web"),
             seed: machine_id("hetzner-1"),
             platform: platform(),
             manifest_digest: OciDigest::sha256(b"manifest"),
+        },
+    )]);
+
+    assert!(render_frame(&tree).contains("ghcr.io/acme/web:1 — redistributing"));
+    assert!(!render_frame(&tree).contains("✓ ghcr.io/acme/web:1"));
+
+    tree.ingest_page(&[replay(
+        5,
+        OperationEvent::DeployImageAvailabilityVerified {
+            operation_id,
+            service_id: service_id("web"),
+            seed: machine_id("hetzner-2"),
+            platform: OciPlatform::try_new("linux", "arm64").expect("platform"),
+            manifest_digest: OciDigest::sha256(b"arm-manifest"),
         },
     )]);
 
@@ -428,10 +467,7 @@ fn pushed_image_stays_pending_until_availability_is_verified() {
 }
 
 fn platform() -> OciPlatform {
-    OciPlatform {
-        os: "linux".to_owned(),
-        architecture: "amd64".to_owned(),
-    }
+    OciPlatform::try_new("linux", "amd64").expect("platform")
 }
 
 #[test]

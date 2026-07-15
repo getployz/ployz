@@ -93,6 +93,7 @@ impl PushedImageReceipt {
         &self.index_digest
     }
 
+    #[must_use]
     pub fn platforms(&self) -> impl ExactSizeIterator<Item = (&OciPlatform, &PlatformImage)> {
         self.platforms.iter()
     }
@@ -109,8 +110,8 @@ pub enum PushedImageReceiptError {
     Empty,
     #[error(
         "pushed image receipt contains duplicate platform {}/{}",
-        platform.os,
-        platform.architecture
+        platform.os(),
+        platform.architecture()
     )]
     DuplicatePlatform { platform: OciPlatform },
     #[error("pushed image receipt index digest mismatch: expected {expected}, got {actual}")]
@@ -192,11 +193,11 @@ fn receipt_index_digest(platforms: &BTreeMap<OciPlatform, PlatformImage>) -> Oci
         PushedImageReceipt::INDEX_ENCODING_VERSION.as_bytes(),
     );
     for (platform, image) in platforms {
-        receipt_index_frame(&mut hasher, "platform_os", platform.os.as_bytes());
+        receipt_index_frame(&mut hasher, "platform_os", platform.os().as_bytes());
         receipt_index_frame(
             &mut hasher,
             "platform_architecture",
-            platform.architecture.as_bytes(),
+            platform.architecture().as_bytes(),
         );
         receipt_index_frame(
             &mut hasher,
@@ -210,9 +211,9 @@ fn receipt_index_digest(platforms: &BTreeMap<OciPlatform, PlatformImage>) -> Oci
 }
 
 fn receipt_index_frame(hasher: &mut Sha256, label: &str, value: &[u8]) {
-    hasher.update(label.len().to_be_bytes());
+    hasher.update((label.len() as u64).to_be_bytes());
     hasher.update(label.as_bytes());
-    hasher.update(value.len().to_be_bytes());
+    hasher.update((value.len() as u64).to_be_bytes());
     hasher.update(value);
 }
 
@@ -456,9 +457,16 @@ mod tests {
         let source = pushed_source();
 
         let encoded = serde_json::to_value(&source).expect("receipt serializes");
-        assert_eq!(encoded["source"], "pushed_to_seed");
+        assert_eq!(
+            encoded.get("source"),
+            Some(&serde_json::json!("pushed_to_seed"))
+        );
         assert!(encoded.get("index_digest").is_some());
-        assert!(encoded["platforms"].is_array());
+        assert!(
+            encoded
+                .get("platforms")
+                .is_some_and(serde_json::Value::is_array)
+        );
         assert!(encoded.get("receipt").is_none());
         assert_eq!(
             serde_json::from_value::<ImageSource>(encoded).expect("receipt deserializes"),
@@ -470,14 +478,20 @@ mod tests {
     fn pushed_receipt_rejects_empty_and_duplicate_platforms() {
         let source = pushed_source();
         let mut encoded = serde_json::to_value(source).expect("receipt serializes");
-        encoded["platforms"] = serde_json::json!([]);
+        let Some(platforms) = encoded.get_mut("platforms") else {
+            panic!("receipt wire includes platforms");
+        };
+        *platforms = serde_json::json!([]);
         assert!(serde_json::from_value::<ImageSource>(encoded.clone()).is_err());
 
         let duplicate = serde_json::json!([
             [platform("amd64"), platform_image('b')],
             [platform("amd64"), platform_image('c')]
         ]);
-        encoded["platforms"] = duplicate;
+        let Some(platforms) = encoded.get_mut("platforms") else {
+            panic!("receipt wire includes platforms");
+        };
+        *platforms = duplicate;
         assert!(serde_json::from_value::<ImageSource>(encoded).is_err());
     }
 
@@ -502,7 +516,10 @@ mod tests {
     #[test]
     fn pushed_receipt_rejects_forged_index_digest() {
         let mut encoded = serde_json::to_value(pushed_source()).expect("receipt serializes");
-        encoded["platforms"][0][1]["image_id"] = serde_json::json!(digest('d'));
+        let Some(image_id) = encoded.pointer_mut("/platforms/0/1/image_id") else {
+            panic!("receipt wire includes the platform image id");
+        };
+        *image_id = serde_json::json!(digest('d'));
 
         assert!(matches!(
             serde_json::from_value::<ImageSource>(encoded),
@@ -526,6 +543,10 @@ mod tests {
                 .expect("receipt");
 
         assert_eq!(left.index_digest(), right.index_digest());
+        assert_eq!(
+            left.index_digest().as_str(),
+            "sha256:d66f93797a558cc78021e66cba67c1e1212f082847582dd283a613f2d4d96308"
+        );
     }
 
     fn pushed_source() -> ImageSource {
@@ -536,10 +557,7 @@ mod tests {
     }
 
     fn platform(architecture: &str) -> OciPlatform {
-        OciPlatform {
-            os: "linux".to_owned(),
-            architecture: architecture.to_owned(),
-        }
+        OciPlatform::try_new("linux", architecture).expect("platform")
     }
 
     fn platform_image(value: char) -> PlatformImage {

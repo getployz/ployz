@@ -35,11 +35,7 @@ const LAYER_GZIP_LEVEL: u32 = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImagePushReceipt {
-    pub seed: MachineId,
-    pub platform: OciPlatform,
-    pub index_digest: OciDigest,
-    pub manifest_digest: OciDigest,
-    pub config_digest: OciDigest,
+    receipt: PushedImageReceipt,
     pub uploaded: BlobTransferReceipt,
     pub reused: BlobTransferReceipt,
 }
@@ -47,27 +43,20 @@ pub struct ImagePushReceipt {
 impl ImagePushReceipt {
     #[must_use]
     pub fn image_source(&self) -> ImageSource {
-        let receipt = PushedImageReceipt::try_new([(
-            self.platform.clone(),
-            PlatformImage {
-                seed: self.seed.clone(),
-                manifest_digest: self.manifest_digest.clone(),
-                image_id: self.config_digest.clone(),
-            },
-        )])
-        .expect("an image push receipt contains one platform");
-        debug_assert_eq!(receipt.index_digest(), &self.index_digest);
-        ImageSource::PushedToSeed(receipt)
+        ImageSource::PushedToSeed(self.receipt.clone())
     }
 
     #[must_use]
     pub fn render(&self) -> String {
+        let Some((_, image)) = self.receipt.platforms().next() else {
+            unreachable!("validated pushed image receipts contain a platform");
+        };
         format!(
             "pushed {} layers, {} bytes; {} layers already on {}\n",
             self.uploaded.count(),
             self.uploaded.bytes,
             self.reused.count(),
-            self.seed.as_str(),
+            image.seed.as_str(),
         )
     }
 }
@@ -241,11 +230,7 @@ pub async fn push_local_image(
     )])
     .expect("a successful image push contains one platform");
     Ok(ImagePushReceipt {
-        seed: seed.clone(),
-        platform: pushed.platform,
-        index_digest: receipt.index_digest().clone(),
-        manifest_digest: pushed.manifest_digest,
-        config_digest: pushed.image_id,
+        receipt,
         uploaded: transfer_receipt(uploaded)?,
         reused: transfer_receipt(reused)?,
     })
@@ -278,7 +263,7 @@ pub async fn prepare_deploy_images(
             push_local_image(&api.nats_client(), &docker, seed, service.image.clone()).await?;
         service.image = service
             .image
-            .with_digest(&receipt.index_digest)
+            .with_digest(receipt.receipt.index_digest())
             .map_err(|error| ImagePushError::UnexpectedResponse {
                 message: error.to_string(),
             })?;
@@ -412,10 +397,11 @@ fn prepare_docker_save(bytes: &[u8]) -> Result<PreparedImage, ImagePushError> {
         manifest_digest: OciDigest::sha256(&manifest_bytes),
         manifest_bytes,
         config_digest,
-        platform: OciPlatform {
-            os: platform.os,
-            architecture: platform.architecture,
-        },
+        platform: OciPlatform::try_new(platform.os, platform.architecture).map_err(|error| {
+            ImagePushError::InvalidDockerExport {
+                message: format!("invalid image platform: {error}"),
+            }
+        })?,
         blobs,
     })
 }
@@ -719,10 +705,7 @@ mod tests {
     fn single_platform_receipt_index_has_a_stable_digest() {
         let manifest =
             OciDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("manifest digest");
-        let platform = OciPlatform {
-            os: "linux".to_owned(),
-            architecture: "amd64".to_owned(),
-        };
+        let platform = OciPlatform::try_new("linux", "amd64").expect("platform");
 
         assert_eq!(
             PushedImageReceipt::try_new([(

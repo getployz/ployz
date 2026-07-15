@@ -83,9 +83,16 @@ impl DeployExecutionCommand {
         &self.unusable_machines
     }
 
-    #[must_use]
-    pub fn machine_platform(&self, machine_id: &MachineId) -> Option<&OciPlatform> {
-        self.machine_platforms.get(machine_id)
+    pub(super) fn target_platform(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<&OciPlatform, MissingTargetPlatform> {
+        let Some(platform) = self.machine_platforms.get(machine_id) else {
+            return Err(MissingTargetPlatform {
+                machine_id: machine_id.clone(),
+            });
+        };
+        Ok(platform)
     }
 
     #[must_use]
@@ -123,6 +130,21 @@ impl DeployExecutionCommand {
             DEFAULT_STEP_TIMEOUT
         } else {
             self.step_timeout
+        }
+    }
+}
+
+pub(super) struct MissingTargetPlatform {
+    machine_id: MachineId,
+}
+
+impl MissingTargetPlatform {
+    pub(super) fn into_execution_error(self) -> super::DeployExecutionError {
+        super::DeployExecutionError::InternalInvariant {
+            message: format!(
+                "placed target machine {} has no answered platform facts",
+                self.machine_id.as_str()
+            ),
         }
     }
 }

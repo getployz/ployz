@@ -3,11 +3,13 @@ use ployz_core::deploy::{
     DeployRouteTarget, ImageSource,
 };
 use ployz_core::ids::{OperationId, ServiceId};
+use ployz_core::image::OciPlatform;
 use ployz_core::operation::{
     CancellationReason, DeployCleanupFailure, DeployCompletionOutcome, DeployOperationFailure,
     DeployRunningStage, OperationEvent, OperationInterruptionEvidence, OperationKind,
     ReplayedOperationEvent,
 };
+use std::collections::BTreeSet;
 
 use super::failure::{
     DeployFailureView, FailureSafety, artifact_unavailable_reason, failure_cause,
@@ -25,7 +27,7 @@ pub(crate) struct DeployTree {
 struct ObservedDeploy {
     operation_id: OperationId,
     target: DeployRequest,
-    verified_image_services: Vec<ServiceId>,
+    verified_image_platforms: BTreeSet<(ServiceId, OciPlatform)>,
     work: DeployWork,
     result: DeployResult,
 }
@@ -90,7 +92,7 @@ impl DeployTree {
                 self.deploy = Some(ObservedDeploy {
                     operation_id: operation_id.clone(),
                     target: target.clone(),
-                    verified_image_services: Vec::new(),
+                    verified_image_platforms: BTreeSet::new(),
                     work: DeployWork::Planning,
                     result: DeployResult::Active,
                 });
@@ -181,14 +183,14 @@ impl DeployTree {
                 operation_id,
                 service_id,
                 seed,
-                platform: _,
+                platform,
                 manifest_digest: _,
             } => {
                 let image = self.requested_image(service_id).map(str::to_owned);
-                if let Some(deploy) = &mut self.deploy
-                    && !deploy.verified_image_services.contains(service_id)
-                {
-                    deploy.verified_image_services.push(service_id.clone());
+                if let Some(deploy) = &mut self.deploy {
+                    deploy
+                        .verified_image_platforms
+                        .insert((service_id.clone(), platform.clone()));
                 }
                 if let Some(image) = image {
                     self.plain_lines.push(format!(
@@ -532,8 +534,20 @@ impl DeployTree {
             .filter(|service| service.image.as_str() == image)
             .all(|service| match &service.image_source {
                 ImageSource::Registry => true,
-                ImageSource::PushedToSeed(_) => {
-                    deploy.verified_image_services.contains(&service.service_id)
+                ImageSource::PushedToSeed(receipt) => {
+                    deploy
+                        .verified_image_platforms
+                        .iter()
+                        .filter(|(service_id, _)| service_id == &service.service_id)
+                        .count()
+                        >= receipt.platforms().len()
+                        || matches!(
+                            deploy.work,
+                            DeployWork::Planned {
+                                stage: PlannedStage::Running(stage),
+                                ..
+                            } if stage != DeployRunningStage::EnsuringImages
+                        )
                 }
             })
     }
