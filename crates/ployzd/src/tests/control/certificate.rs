@@ -29,8 +29,9 @@ use ployz_core::ingress::{ActiveCertificateMetadata, CertificateOwner};
 use ployz_core::install::{AbsoluteInstallPath, InstallSha256Digest};
 use ployz_core::machine::rpc::MachineRpcResponse;
 use ployz_core::operation::{
-    CertOperationFailure, CertOperationState, CertificateProvisionFailure, FailureMessage,
-    OperationStatus, RouteHostname,
+    CertInterruptionStage, CertOperationFailure, CertOperationState,
+    CertificateInterruptionNextAction, CertificateProvisionFailure, FailureMessage,
+    OperationInterruptionCause, OperationStatus, RouteHostname,
 };
 use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_test_support::ids::{cert_id, operation_id, route_hostname};
@@ -434,7 +435,7 @@ async fn startup_recovery_fails_unfinished_operations() {
         Arc::new(BlockingFailureIssuer::default()),
     );
 
-    recover_unfinished_operations(&manager)
+    recover_unfinished_operations(&manager, OperationInterruptionCause::PriorCoreProcessLoss)
         .await
         .expect("recover unfinished certificate operation");
 
@@ -458,7 +459,11 @@ async fn startup_recovery_fails_unfinished_operations() {
     assert_eq!(failure.cert_id(), &cert_id);
     assert!(matches!(
         failure.failure(),
-        CertificateProvisionFailure::AcmeValidation { .. }
+        CertificateProvisionFailure::CoreInterrupted {
+            cause: OperationInterruptionCause::PriorCoreProcessLoss,
+            last_durable_stage: CertInterruptionStage::Accepted,
+            next_action: CertificateInterruptionNextAction::RetryFromCurrentIntent,
+        }
     ));
     assert_eq!(failure.retained_active_cert(), None);
 }

@@ -156,7 +156,12 @@ async fn finish_aborted_owner_operations(
     operation_repository: &OperationRepository,
 ) -> Result<(), OwnerOperationRecoveryError> {
     let mut first_error = None;
-    if let Err(error) = recover_unfinished_operations(certificate_manager).await {
+    if let Err(error) = recover_unfinished_operations(
+        certificate_manager,
+        OperationInterruptionCause::CoreShutdown,
+    )
+    .await
+    {
         first_error = Some(OwnerOperationRecoveryError::new("certificate", error));
     }
     if let Err(error) = recover_accepted_operations(operation_repository).await
@@ -400,7 +405,7 @@ async fn start_control_process_with_client_reload_and_issuer(
     );
     // Startup reconciliation (one bounded pass, owned by control start): a
     // control crash between machine-add acceptance and material-ready
-    // leaves the mint without a worker. Resume those mints now, before the
+    // leaves the mint without a worker. Finish those mints now, before the
     // operation API takes new requests.
     machine_mint
         .resume_unfinished_mints()

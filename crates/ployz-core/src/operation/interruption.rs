@@ -135,10 +135,29 @@ pub enum OperationInterruptionNextAction {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
+#[cfg_attr(
+    feature = "typescript",
+    ts(
+        type = "{ cause: OperationInterruptionCause, last_durable_stage: OperationInterruptionStage, kind: OperationKind, uncertain_work: OperationInterruptionUncertainWork, next_action: OperationInterruptionNextAction }"
+    )
+)]
+#[serde(
+    try_from = "OperationInterruptionEvidenceWire",
+    into = "OperationInterruptionEvidenceWire"
+)]
 pub struct OperationInterruptionEvidence {
     cause: OperationInterruptionCause,
     last_durable_stage: OperationInterruptionStage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OperationInterruptionEvidenceWire {
+    cause: OperationInterruptionCause,
+    last_durable_stage: OperationInterruptionStage,
+    kind: OperationKind,
+    uncertain_work: OperationInterruptionUncertainWork,
+    next_action: OperationInterruptionNextAction,
 }
 
 impl OperationInterruptionEvidence {
@@ -177,6 +196,37 @@ impl OperationInterruptionEvidence {
         self.last_durable_stage.kind()
     }
 }
+
+impl TryFrom<OperationInterruptionEvidenceWire> for OperationInterruptionEvidence {
+    type Error = OperationInterruptionEvidenceWireError;
+
+    fn try_from(wire: OperationInterruptionEvidenceWire) -> Result<Self, Self::Error> {
+        let evidence = Self::new(wire.cause, wire.last_durable_stage);
+        if wire.kind != evidence.kind()
+            || wire.uncertain_work != evidence.uncertain_work()
+            || wire.next_action != evidence.next_action()
+        {
+            return Err(OperationInterruptionEvidenceWireError);
+        }
+        Ok(evidence)
+    }
+}
+
+impl From<OperationInterruptionEvidence> for OperationInterruptionEvidenceWire {
+    fn from(evidence: OperationInterruptionEvidence) -> Self {
+        Self {
+            cause: evidence.cause(),
+            last_durable_stage: evidence.last_durable_stage(),
+            kind: evidence.kind(),
+            uncertain_work: evidence.uncertain_work(),
+            next_action: evidence.next_action(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("interruption evidence derived fields do not match its durable stage")]
+pub struct OperationInterruptionEvidenceWireError;
 
 impl OperationStatus {
     #[must_use]

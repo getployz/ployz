@@ -94,16 +94,19 @@ pub use ployz_core::operation::{
     NonEmptyTextError, OperationEvent, OperationEventRecordedAtUnixMs,
     OperationEventRecordedAtUnixMsError, OperationEventReplayCursor, OperationEventReplayLimit,
     OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
-    OperationIdempotencyKey, OperationKind, OperationStatus, OperationStatusSnapshot,
+    OperationIdempotencyKey, OperationInterruptionCause, OperationInterruptionEvidence,
+    OperationInterruptionNextAction, OperationInterruptionStage,
+    OperationInterruptionUncertainWork, OperationKind, OperationStatus, OperationStatusSnapshot,
     OperationSubject, OperatorHint, ReplayedOperationEvent, RetainedArtifact,
     RouteCutoverFailureReason, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
     RouteTarget, ServiceRestartFailure, ServiceRestartOperationState, ServiceRestartRunningStage,
     UnusableMachine, VolumeRemoveFailure, VolumeRemoveOperationState, VolumeRemoveRunningStage,
 };
 pub use ployz_core::operation::{
-    CertOperationFailure, CertOperationFailureError, CertOperationState, CertRunningStage,
-    ControlPlaneCommitScope, CoreReplaceFailure, CoreReplaceOperationState, DeployCleanupFailure,
-    DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, DeployPhaseNumber,
+    CertInterruptionStage, CertOperationFailure, CertOperationFailureError, CertOperationState,
+    CertRunningStage, CertificateInterruptionNextAction, ControlPlaneCommitScope,
+    CoreReplaceFailure, CoreReplaceOperationState, DeployCleanupFailure, DeployCompletionOutcome,
+    DeployInterruptionStage, DeployOperationFailure, DeployOperationState, DeployPhaseNumber,
     DeployPhaseNumberError, DeployPhaseOutcome, DeployRunningStage, DeployServiceResult,
     PreStartHookFailure,
 };

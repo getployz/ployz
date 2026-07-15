@@ -45,8 +45,9 @@ mod volume_remove;
 
 pub use accessors::NextEventSequenceError;
 pub use cert::{
-    CertOperationFailure, CertOperationFailureError, CertOperationState, CertRunningStage,
-    CertTransition, CertificateProvisionFailure, CertificateProvisionWarning,
+    CertInterruptionStage, CertOperationFailure, CertOperationFailureError, CertOperationState,
+    CertRunningStage, CertTransition, CertificateInterruptionNextAction,
+    CertificateProvisionFailure, CertificateProvisionWarning,
 };
 pub use core_replace::{CoreReplaceFailure, CoreReplaceOperationState, CoreReplaceTransition};
 pub use credential_grant::{

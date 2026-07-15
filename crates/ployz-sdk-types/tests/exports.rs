@@ -777,6 +777,18 @@ fn sdk_exports_operational_health_wire_types() {
     assert_wire_type::<ControlCertificateRenewalOutcome>();
 }
 
+#[test]
+fn sdk_exports_interruption_wire_types() {
+    assert_wire_type::<ployz_sdk_types::OperationInterruptionCause>();
+    assert_wire_type::<ployz_sdk_types::OperationInterruptionEvidence>();
+    assert_wire_type::<ployz_sdk_types::OperationInterruptionStage>();
+    assert_wire_type::<ployz_sdk_types::DeployInterruptionStage>();
+    assert_wire_type::<ployz_sdk_types::OperationInterruptionUncertainWork>();
+    assert_wire_type::<ployz_sdk_types::OperationInterruptionNextAction>();
+    assert_wire_type::<ployz_sdk_types::CertInterruptionStage>();
+    assert_wire_type::<ployz_sdk_types::CertificateInterruptionNextAction>();
+}
+
 fn assert_wire_type<T>()
 where
     T: serde::Serialize + for<'de> serde::Deserialize<'de> + TS,

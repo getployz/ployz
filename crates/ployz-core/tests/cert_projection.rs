@@ -4,8 +4,9 @@ use ployz_core::certificate::{
 use ployz_core::ids::{CertId, MachineId, OperationId, RouteBindingId};
 use ployz_core::ingress::{ActiveCertificateMetadata, CertificateOwner};
 use ployz_core::operation::{
-    CertOperationFailure, CertOperationFailureError, CertOperationState, EventSequence,
-    FailureMessage, OperationEvent, OperationProjection, OperationStatus, RouteHostname,
+    CertInterruptionStage, CertOperationFailure, CertOperationFailureError, CertOperationState,
+    CertificateInterruptionNextAction, EventSequence, FailureMessage, OperationEvent,
+    OperationInterruptionCause, OperationProjection, OperationStatus, RouteHostname,
     project_operation_event,
 };
 
@@ -111,6 +112,11 @@ fn provision_failures() -> Vec<CertificateProvisionFailure> {
             missing_machine_ids: vec![machine_id()],
         },
         CertificateProvisionFailure::AcmeValidation { message: message() },
+        CertificateProvisionFailure::CoreInterrupted {
+            cause: OperationInterruptionCause::PriorCoreProcessLoss,
+            last_durable_stage: CertInterruptionStage::Accepted,
+            next_action: CertificateInterruptionNextAction::RetryFromCurrentIntent,
+        },
         CertificateProvisionFailure::GatewayArtifactPush {
             machine_id: machine_id(),
             message: message(),

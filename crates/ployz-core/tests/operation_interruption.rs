@@ -63,13 +63,47 @@ fn running_deploy_interruption_preserves_typed_stage_and_retry_contract() {
             .and_then(serde_json::Value::as_str),
         Some("deploy")
     );
-    assert!(encoded.get("uncertain_work").is_none());
-    assert!(encoded.get("next_action").is_none());
     assert_eq!(
-        serde_json::from_value::<ployz_core::operation::OperationInterruptionEvidence>(encoded)
-            .expect("interruption evidence deserializes"),
+        encoded.get("kind").and_then(serde_json::Value::as_str),
+        Some("deploy")
+    );
+    assert_eq!(
+        encoded
+            .get("uncertain_work")
+            .and_then(serde_json::Value::as_str),
+        Some("intent_and_runtime")
+    );
+    assert_eq!(
+        encoded
+            .get("next_action")
+            .and_then(serde_json::Value::as_str),
+        Some("retry_from_observed_reality")
+    );
+    assert_eq!(
+        serde_json::from_value::<ployz_core::operation::OperationInterruptionEvidence>(
+            encoded.clone(),
+        )
+        .expect("interruption evidence deserializes"),
         evidence
     );
+    for (field, forged) in [
+        ("kind", serde_json::json!("cert")),
+        ("uncertain_work", serde_json::json!("runtime")),
+        ("next_action", serde_json::json!("inspect_then_resubmit")),
+    ] {
+        let mut forged_evidence = encoded.clone();
+        forged_evidence
+            .as_object_mut()
+            .expect("evidence is an object")
+            .insert(field.to_owned(), forged);
+        assert!(
+            serde_json::from_value::<ployz_core::operation::OperationInterruptionEvidence>(
+                forged_evidence,
+            )
+            .is_err(),
+            "forged {field} is rejected"
+        );
+    }
 
     let event = OperationEvent::OperationInterrupted {
         operation_id: status.id().clone(),

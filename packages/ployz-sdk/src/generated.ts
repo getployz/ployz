@@ -334,7 +334,23 @@ export type CertOperationState = { "state": "accepted" } | { "state": "running",
 
 export type CertRunningStage = "challenge_published" | "validation_started";
 
+export type CertInterruptionStage = { "state": "accepted" } | { "state": "running", stage: CertRunningStage, };
+
+export type CertificateInterruptionNextAction = "retry_from_current_intent";
+
 export type OperationKind = "deploy" | "cert" | "machine_add" | "machine_update" | "machine_lifecycle" | "core_replace" | "credential_grant" | "network_repair" | "service_restart" | "managed_dns_reconcile" | "ingress_configure" | "namespace_remove" | "volume_remove";
+
+export type OperationInterruptionCause = "core_shutdown" | "prior_core_process_loss";
+
+export type OperationInterruptionEvidence = { cause: OperationInterruptionCause, last_durable_stage: OperationInterruptionStage, kind: OperationKind, uncertain_work: OperationInterruptionUncertainWork, next_action: OperationInterruptionNextAction };
+
+export type OperationInterruptionStage = { "kind": "deploy", stage: DeployInterruptionStage, } | { "kind": "credential_grant_accepted" } | { "kind": "ingress_configure_accepted" } | { "kind": "machine_update_accepted" } | { "kind": "machine_update_running" } | { "kind": "machine_lifecycle_accepted" } | { "kind": "network_repair_accepted" } | { "kind": "network_repair_running", stage: NetworkRepairRunningStage, } | { "kind": "service_restart_accepted" } | { "kind": "service_restart_running", stage: ServiceRestartRunningStage, } | { "kind": "namespace_remove_accepted" } | { "kind": "namespace_remove_running", stage: NamespaceRemoveRunningStage, } | { "kind": "volume_remove_accepted" } | { "kind": "volume_remove_running", stage: VolumeRemoveRunningStage, };
+
+export type DeployInterruptionStage = { "state": "accepted" } | { "state": "planning" } | { "state": "running", stage: DeployRunningStage, };
+
+export type OperationInterruptionUncertainWork = "intent" | "runtime" | "intent_and_runtime";
+
+export type OperationInterruptionNextAction = "retry_from_observed_reality" | "inspect_then_resubmit";
 
 export type MachineLifecycle = "active" | "draining";
 
@@ -450,7 +466,7 @@ export type RouteCutoverFailureReason = { "reason": "gateway_unavailable", machi
 
 export type ControlPlaneCommitScope = { "scope": "deploy_phase", namespace_revision_id: NamespaceRevisionId, phase: DeployPhaseNumber, } | { "scope": "service_entry", service_id: ServiceId, namespace_revision_entry_id: NamespaceRevisionEntryId, } | { "scope": "namespace", namespace_revision_id: NamespaceRevisionId, } | { "scope": "volume_pin", namespace_id: NamespaceId, volume_name: VolumeName, };
 
-export type CertificateProvisionFailure = { "class": "operation_evidence_write", message: FailureMessage, } | { "class": "dns_preflight", message: FailureMessage, } | { "class": "challenge_publish", message: FailureMessage, } | { "class": "challenge_readiness", missing_machine_ids: Array<MachineId>, } | { "class": "acme_validation", message: FailureMessage, } | { "class": "gateway_artifact_push", machine_id: MachineId, message: FailureMessage, } | { "class": "active_cert_commit", attempted_active_cert: ActiveCertState, message: FailureMessage, };
+export type CertificateProvisionFailure = { "class": "operation_evidence_write", message: FailureMessage, } | { "class": "dns_preflight", message: FailureMessage, } | { "class": "challenge_publish", message: FailureMessage, } | { "class": "challenge_readiness", missing_machine_ids: Array<MachineId>, } | { "class": "acme_validation", message: FailureMessage, } | { "class": "core_interrupted", cause: OperationInterruptionCause, last_durable_stage: CertInterruptionStage, next_action: CertificateInterruptionNextAction, } | { "class": "gateway_artifact_push", machine_id: MachineId, message: FailureMessage, } | { "class": "active_cert_commit", attempted_active_cert: ActiveCertState, message: FailureMessage, };
 
 export type CertificateProvisionWarning = { "warning": "dns_preflight_mismatch", message: FailureMessage, } | { "warning": "challenge_cleanup_incomplete", missing_machine_ids: Array<MachineId>, };
 

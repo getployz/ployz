@@ -5,9 +5,7 @@ use futures_util::StreamExt;
 use ployz_core::certificate::ActiveCertState;
 use ployz_core::ids::{CertId, MachineId};
 use ployz_core::ingress::{ActiveCertificateMetadata, CertificateOwner};
-use ployz_core::operation::{
-    CertOperationFailure, CertificateProvisionFailure, FailureMessage, OperationStatus,
-};
+use ployz_core::operation::{CertOperationFailure, CertificateProvisionFailure, OperationStatus};
 use ployz_core::roles::GatewayRole;
 use ployz_nats::subjects::INTENT_CHANGED;
 use ployz_sdk_types::{
@@ -74,7 +72,12 @@ impl CertificateRenewalTask {
     }
 
     async fn run_loop(mut self, health: CertificateRenewalHealth) {
-        if let Err(error) = recover_unfinished_operations(&self.manager).await {
+        if let Err(error) = recover_unfinished_operations(
+            &self.manager,
+            ployz_core::operation::OperationInterruptionCause::PriorCoreProcessLoss,
+        )
+        .await
+        {
             eprintln!("ployzd certificate recovery warning: {error}");
             record_renewal_attempt(&health, &Err(error));
         }
@@ -370,19 +373,36 @@ async fn run_once_with_roster_at(
 
 pub async fn recover_unfinished_operations(
     manager: &CertificateManager,
+    cause: ployz_core::operation::OperationInterruptionCause,
 ) -> Result<(), CertificateRenewalTaskError> {
     let statuses = manager.repository().unfinished_cert_operations().await?;
     if statuses.is_empty() {
         return Ok(());
     }
     for status in statuses {
-        let OperationStatus::Cert { id, cert_id, .. } = status else {
+        let OperationStatus::Cert {
+            id, cert_id, state, ..
+        } = status
+        else {
             continue;
         };
         let retained_active_cert = manager.store().active_for_cert_id(&cert_id).await?;
-        let failure = CertificateProvisionFailure::AcmeValidation {
-            message: FailureMessage::try_new("certificate task restarted before terminal evidence")
-                .expect("static certificate recovery failure is non-empty"),
+        let last_durable_stage = match state {
+            ployz_core::operation::CertOperationState::Accepted => {
+                ployz_core::operation::CertInterruptionStage::Accepted
+            }
+            ployz_core::operation::CertOperationState::Running { stage } => {
+                ployz_core::operation::CertInterruptionStage::Running { stage }
+            }
+            ployz_core::operation::CertOperationState::Completed
+            | ployz_core::operation::CertOperationState::Failed { .. }
+            | ployz_core::operation::CertOperationState::Cancelled { .. } => continue,
+        };
+        let failure = CertificateProvisionFailure::CoreInterrupted {
+            cause,
+            last_durable_stage,
+            next_action:
+                ployz_core::operation::CertificateInterruptionNextAction::RetryFromCurrentIntent,
         };
         let failure = recovery_failure(
             cert_id,

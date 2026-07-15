@@ -20,6 +20,8 @@ use crate::control::sequencer::OperationControllers;
 use super::writer::{NatsAuthorizationHandle, RenderFailure};
 use crate::tasks::TaskSpawner;
 
+const MINT_STARTUP_RECOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Where the mint worker test-connects with a freshly minted seed.
 #[derive(Debug, Clone)]
 pub struct MintVerifyEndpoint {
@@ -78,10 +80,13 @@ pub enum MintResumeError {
     ReadSecretDelivery(OperationStatusStoreError),
     #[error("failed to read machine-add status: {0:?}")]
     ReadStatus(OperationStatusStoreError),
-    #[error("failed to admit resumed machine-add mint: {0}")]
-    TaskAdmission(crate::tasks::TaskAdmissionError),
     #[error("failed to record interrupted machine-add mint {}: {message}", .operation_id.as_str())]
     RecordInterruption {
+        operation_id: OperationId,
+        message: String,
+    },
+    #[error("resumed machine-add mint {} did not record terminal evidence: {message}", .operation_id.as_str())]
+    RecoveryRecordingFailed {
         operation_id: OperationId,
         message: String,
     },
@@ -150,9 +155,9 @@ impl MachineCredentialMint {
     /// One bounded startup pass owned by control start: a control crash
     /// between machine-add acceptance and material-ready leaves the mint
     /// without a worker. Every accepted, still-pending machine-add that
-    /// lacks a minted-material record gets its mint resumed as owned
-    /// operation work; the per-key mint claim makes the resumed run
-    /// converge on any partially minted material.
+    /// lacks a minted-material record gets its mint completed before startup
+    /// proceeds; the per-key mint claim makes the resumed run converge on any
+    /// partially minted material.
     pub async fn resume_unfinished_mints(&self) -> Result<Vec<MintRequest>, MintResumeError> {
         let submissions = self
             .controllers
@@ -195,8 +200,29 @@ impl MachineCredentialMint {
                 machine_id: submission.identity.machine_id,
                 idempotency_key: submission.idempotency_key,
             };
-            self.admit(request.clone())
-                .map_err(MintResumeError::TaskAdmission)?;
+            let recovery =
+                tokio::time::timeout(MINT_STARTUP_RECOVERY_TIMEOUT, self.run(request.clone()))
+                    .await;
+            let outcome = match recovery {
+                Ok(outcome) => outcome,
+                Err(_) => {
+                    self.fail(
+                        &request,
+                        MachineAddFailure::ControlTaskInterrupted {
+                            message: failure_message(
+                                "prior core process mint recovery timed out; retry machine add",
+                            ),
+                        },
+                    )
+                    .await
+                }
+            };
+            if let MintOutcome::RecordingFailed { message } = outcome {
+                return Err(MintResumeError::RecoveryRecordingFailed {
+                    operation_id: request.operation_id,
+                    message,
+                });
+            }
             resumed.push(request);
         }
         Ok(resumed)

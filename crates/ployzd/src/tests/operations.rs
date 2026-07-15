@@ -46,8 +46,9 @@ use ployz_core::machine::{
 };
 use ployz_core::network::MachineEndpointSubnet;
 use ployz_core::operation::{
-    CertOperationState, CertificateProvisionFailure, DeployCompletionOutcome, DeployOperationState,
-    DeployPhaseNumber, DeployPhaseOutcome, DeployRunningStage, DeployServiceResult, EventSequence,
+    CertInterruptionStage, CertOperationState, CertificateInterruptionNextAction,
+    CertificateProvisionFailure, DeployCompletionOutcome, DeployOperationState, DeployPhaseNumber,
+    DeployPhaseOutcome, DeployRunningStage, DeployServiceResult, EventSequence,
     MachineAddOperationState, ManagedDnsReconcileFailureClass, ManagedDnsReconcileOperationState,
     ManagedDnsReconcileSubject, OperationEvent, OperationEventReplayCursor,
     OperationEventReplayRequest, OperationInterruptionCause, OperationStatus,
@@ -168,7 +169,14 @@ async fn graceful_shutdown_records_owned_operation_interruption() {
         OperationStatus::Cert {
             state: CertOperationState::Failed { failure },
             ..
-        } if matches!(failure.failure(), CertificateProvisionFailure::AcmeValidation { .. })
+        } if matches!(
+            failure.failure(),
+            CertificateProvisionFailure::CoreInterrupted {
+                cause: OperationInterruptionCause::CoreShutdown,
+                last_durable_stage: CertInterruptionStage::Accepted,
+                next_action: CertificateInterruptionNextAction::RetryFromCurrentIntent,
+            }
+        )
     ));
     assert!(matches!(
         repository

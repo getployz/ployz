@@ -81,6 +81,7 @@ impl<'a> DeployFailureView<'a> {
                 | CertificateProvisionFailure::DnsPreflight { .. }
                 | CertificateProvisionFailure::ChallengePublish { .. }
                 | CertificateProvisionFailure::AcmeValidation { .. }
+                | CertificateProvisionFailure::CoreInterrupted { .. }
                 | CertificateProvisionFailure::ActiveCertCommit { .. } => {}
             },
             DeployOperationFailure::RouteCutoverFailed { reason, .. } => match reason {

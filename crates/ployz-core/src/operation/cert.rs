@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::certificate::ActiveCertState;
 use crate::ids::{CertId, MachineId, OperationId};
 
+use super::OperationInterruptionCause;
 use super::events::OperationSubjectRef;
 use super::projection::{
     OperationProjection, ProjectionOperationState, StatusProjectionError, verify_subject,
@@ -34,6 +35,11 @@ pub enum CertificateProvisionFailure {
     AcmeValidation {
         message: FailureMessage,
     },
+    CoreInterrupted {
+        cause: OperationInterruptionCause,
+        last_durable_stage: CertInterruptionStage,
+        next_action: CertificateInterruptionNextAction,
+    },
     GatewayArtifactPush {
         machine_id: MachineId,
         message: FailureMessage,
@@ -42,6 +48,21 @@ pub enum CertificateProvisionFailure {
         attempted_active_cert: ActiveCertState,
         message: FailureMessage,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CertInterruptionStage {
+    Accepted,
+    Running { stage: CertRunningStage },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum CertificateInterruptionNextAction {
+    RetryFromCurrentIntent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

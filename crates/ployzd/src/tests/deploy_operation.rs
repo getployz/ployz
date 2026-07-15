@@ -14,9 +14,11 @@ use ployz_core::deploy::{ContainerCommand, ContainerRestartPolicy, ReplicaCount}
 use ployz_core::intent::{ServingTargetEntry, VolumePinState};
 use ployz_core::machine::runtime::ManagedContainerKind;
 use ployz_core::operation::{
-    CertificateProvisionFailure, DeployCompletionOutcome, DeployEvidence, DeployOperationFailure,
-    DeployPhaseOutcome, DeployRunningStage, DeployServiceResult, DeployTransition, FailureMessage,
-    PreStartHookFailure, RouteHostname, RouteTarget,
+    CertInterruptionStage, CertificateInterruptionNextAction, CertificateProvisionFailure,
+    DeployCompletionOutcome, DeployEvidence, DeployOperationFailure, DeployOperationState,
+    DeployPhaseOutcome, DeployRunningStage, DeployServiceResult, DeployTransition, EventSequence,
+    FailureMessage, OperationEvent, OperationInterruptionCause, OperationProjection,
+    OperationStatus, PreStartHookFailure, RouteHostname, RouteTarget, project_operation_event,
 };
 use ployz_test_support::ids::{failure_message, namespace_id};
 use std::time::Duration;
@@ -613,7 +615,41 @@ async fn deploy_worker_commits_volume_pin_and_mounts_volume() {
 }
 
 #[tokio::test]
-async fn deploy_worker_reuses_running_target_containers_from_observed_reality() {
+async fn interrupted_deploy_retry_converges_from_observed_running_container() {
+    let interrupted = OperationStatus::Deploy {
+        id: operation_id("op_interrupted"),
+        namespace_id: namespace_id("default"),
+        service_id: service_id("svc_api"),
+        origin: None,
+        state: DeployOperationState::Running {
+            stage: DeployRunningStage::StartingContainers,
+        },
+        last_event_sequence: EventSequence::try_new(4).expect("event sequence"),
+    };
+    let evidence = interrupted
+        .interruption_evidence(OperationInterruptionCause::PriorCoreProcessLoss)
+        .expect("running deploy has interruption evidence");
+    let projected = project_operation_event(
+        &interrupted,
+        OperationEvent::OperationInterrupted {
+            operation_id: interrupted.id().clone(),
+            evidence,
+        },
+        EventSequence::try_new(5).expect("event sequence"),
+    )
+    .expect("process loss terminalizes the first attempt");
+    assert!(matches!(
+        projected,
+        OperationProjection::StatusChanged { status }
+            if matches!(
+                *status,
+                OperationStatus::Deploy {
+                    state: DeployOperationState::Interrupted { .. },
+                    ..
+                }
+            )
+    ));
+
     let mut recorder = RecordingOperations::default();
     let mut runtime = RecordingRuntime::with_containers(["ctr_new"]);
     let mut health = RecordingHealth::healthy();
@@ -646,6 +682,13 @@ async fn deploy_worker_reuses_running_target_containers_from_observed_reality() 
         panic!("expected one runtime request");
     };
     assert_eq!(*request_machine_id, machine_id("machine_a"));
+    assert_eq!(
+        namespace_state
+            .serving_requests
+            .first()
+            .map(|entry| entry.desired_replicas),
+        Some(ReplicaCount::try_new(2).expect("replica count"))
+    );
     assert_eq!(
         health.checked,
         vec![vec![DeployContainerForAssert::new("machine_a", "ctr_new")]]
@@ -1369,6 +1412,11 @@ async fn custom_https_certificate_failure_leaves_route_uncommitted() {
             missing_machine_ids: vec![machine_id("gateway_a")],
         },
         CertificateProvisionFailure::AcmeValidation { message: message() },
+        CertificateProvisionFailure::CoreInterrupted {
+            cause: OperationInterruptionCause::PriorCoreProcessLoss,
+            last_durable_stage: CertInterruptionStage::Accepted,
+            next_action: CertificateInterruptionNextAction::RetryFromCurrentIntent,
+        },
         CertificateProvisionFailure::GatewayArtifactPush {
             machine_id: machine_id("gateway_a"),
             message: message(),
