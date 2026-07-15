@@ -420,6 +420,31 @@ fn select_status(
     )
 }
 
+fn select_owned_operation_statuses(
+    conn: &Connection,
+    submission_events: &[&str],
+) -> Result<Vec<OperationStatus>, rusqlite::Error> {
+    let mut statement = conn.prepare(
+        "SELECT operations.status_json
+         FROM operations
+         WHERE EXISTS (
+             SELECT 1 FROM operation_events
+             WHERE operation_events.operation_id = operations.operation_id
+               AND operation_events.sequence = 1
+               AND json_extract(operation_events.event_json, '$.event') = ?1
+         )
+         ORDER BY operations.operation_id",
+    )?;
+    let mut statuses = Vec::new();
+    for submission_event in submission_events {
+        let rows = statement.query_map([submission_event], |row| row.get::<_, String>(0))?;
+        for row in rows {
+            statuses.push(from_json(&row?)?);
+        }
+    }
+    Ok(statuses)
+}
+
 const OPS_LIST_READ_LIMIT: usize = 101;
 
 fn select_all_statuses_newest_first(

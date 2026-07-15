@@ -15,9 +15,9 @@ impl OperationRepository {
     ) -> Result<Vec<OperationStatus>, super::OperationStatusStoreError> {
         self.store
             .call(|conn| {
-                let statuses = crate::control::store::query_json_list(
+                let statuses = super::select_owned_operation_statuses(
                     conn,
-                    "SELECT status_json FROM operations ORDER BY operation_id",
+                    &["managed_dns_reconcile_submitted"],
                 )?;
                 Ok(statuses
                     .into_iter()

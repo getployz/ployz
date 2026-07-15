@@ -599,6 +599,22 @@ async fn promoted_core_recovers_pending_join_without_old_operation_log() {
         ployz_core::install::HostPortAssurance::External,
     )
     .await;
+    let repository = operation_repository_for_test(&nats).await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if repository
+                .machine_add_secret_delivery(&idempotency_key("idem_recover_join_255"))
+                .await
+                .expect("secret delivery reads")
+                .is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("credential material becomes durable before promotion");
     runtime
         .shutdown()
         .await

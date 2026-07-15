@@ -1,6 +1,6 @@
 use super::{
     NamespaceRemoveOperationSubmission, OperationRepository, select_all_statuses_newest_first,
-    select_status, to_durable_operation_json, upsert_status,
+    select_owned_operation_statuses, select_status, to_durable_operation_json, upsert_status,
 };
 use crate::control::store::{CoreStore, from_json};
 use crate::tasks::TaskRegistry;
@@ -215,6 +215,84 @@ fn namespace_remove_status(id: &str) -> OperationStatus {
     )
 }
 
+fn seed_submission_event(
+    conn: &Connection,
+    operation_id: &str,
+    submission_event: &str,
+) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "INSERT INTO operation_events
+            (operation_id, sequence, recorded_at_unix_ms, event_json)
+         VALUES (?1, 1, 1, ?2)",
+        rusqlite::params![operation_id, format!(r#"{{"event":"{submission_event}"}}"#)],
+    )?;
+    Ok(())
+}
+
+#[test]
+fn owner_status_selection_skips_other_owner_corruption_and_reports_owned_corruption() {
+    let connection = Connection::open_in_memory().expect("open operation database");
+    connection
+        .execute_batch(
+            "CREATE TABLE operations (
+                operation_id TEXT PRIMARY KEY,
+                status_json TEXT NOT NULL
+            );
+            CREATE TABLE operation_events (
+                operation_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                recorded_at_unix_ms INTEGER NOT NULL,
+                event_json TEXT NOT NULL,
+                subject TEXT
+            );",
+        )
+        .expect("create operation tables");
+    connection
+        .execute(
+            "INSERT INTO operations (operation_id, status_json) VALUES (?1, 'not json')",
+            ["op_machine_corrupt"],
+        )
+        .expect("insert corrupt machine-add status");
+    seed_submission_event(&connection, "op_machine_corrupt", "machine_add_submitted")
+        .expect("insert machine-add discriminator");
+    upsert_status(
+        &connection,
+        &operation_id("op_cert"),
+        &namespace_remove_status("op_cert"),
+    )
+    .expect("insert readable owned status");
+    seed_submission_event(&connection, "op_cert", "cert_provision_submitted")
+        .expect("insert certificate discriminator");
+
+    assert_eq!(
+        select_owned_operation_statuses(&connection, &["cert_provision_submitted"])
+            .expect("unrelated corrupt status is skipped")
+            .len(),
+        1
+    );
+    assert!(
+        select_owned_operation_statuses(&connection, &["managed_dns_reconcile_submitted"])
+            .expect("unrelated corrupt status is skipped")
+            .is_empty()
+    );
+    assert!(
+        select_owned_operation_statuses(&connection, &["namespace_remove_submitted"])
+            .expect("unrelated corrupt status is skipped")
+            .is_empty()
+    );
+
+    connection
+        .execute(
+            "UPDATE operations SET status_json = 'not json' WHERE operation_id = ?1",
+            ["op_cert"],
+        )
+        .expect("corrupt owned status");
+    assert!(
+        select_owned_operation_statuses(&connection, &["cert_provision_submitted"]).is_err(),
+        "selected-owner corruption remains visible"
+    );
+}
+
 #[tokio::test]
 async fn interruption_recovery_is_uncapped_idempotent_and_excludes_other_owners() {
     let nats = ployz_test_support::nats::TestNats::start().await;
@@ -227,6 +305,7 @@ async fn interruption_recovery_is_uncapped_idempotent_and_excludes_other_owners(
             for index in 0..102 {
                 let id = format!("op_interrupted_{index:03}");
                 upsert_status(conn, &operation_id(&id), &namespace_remove_status(&id))?;
+                seed_submission_event(conn, &id, "namespace_remove_submitted")?;
             }
             let terminal_id = operation_id("op_terminal");
             upsert_status(
@@ -239,6 +318,7 @@ async fn interruption_recovery_is_uncapped_idempotent_and_excludes_other_owners(
                     last_event_sequence: EventSequence::first(),
                 },
             )?;
+            seed_submission_event(conn, "op_terminal", "namespace_remove_submitted")?;
             let cert_id = operation_id("op_cert_owned_elsewhere");
             upsert_status(
                 conn,
@@ -249,6 +329,7 @@ async fn interruption_recovery_is_uncapped_idempotent_and_excludes_other_owners(
                     EventSequence::first(),
                 ),
             )?;
+            seed_submission_event(conn, "op_cert_owned_elsewhere", "cert_provision_submitted")?;
             Ok(())
         })
         .await
@@ -335,7 +416,8 @@ async fn quiesced_running_worker_cannot_race_interruption_sealing() {
                         },
                         last_event_sequence: EventSequence::first(),
                     },
-                )
+                )?;
+                seed_submission_event(conn, operation_id.as_str(), "namespace_remove_submitted")
             }
         })
         .await

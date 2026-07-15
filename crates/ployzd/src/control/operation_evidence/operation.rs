@@ -2,10 +2,10 @@
 use super::select_all_statuses;
 use super::{
     InterruptedOperationsSummary, OperationRepository, RecordOperationEventError,
-    RecordOperationEventOutcome, RecordTxn, ReplayOperationEventsError, ReplayTxn, from_json,
-    index_error, publish_progress, read_event_error, record_operation_event_in_txn,
-    record_operation_event_txn, replay_operation_events_txn, select_all_statuses_newest_first,
-    select_status, select_statuses_before,
+    RecordOperationEventOutcome, RecordTxn, ReplayOperationEventsError, ReplayTxn, index_error,
+    publish_progress, read_event_error, record_operation_event_in_txn, record_operation_event_txn,
+    replay_operation_events_txn, select_all_statuses_newest_first, select_status,
+    select_statuses_before,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::operation::{
@@ -216,15 +216,20 @@ fn record_interrupted_operations_txn(
     cause: OperationInterruptionCause,
 ) -> Result<Vec<(OperationEvent, OperationStatus)>, rusqlite::Error> {
     let transaction = conn.transaction()?;
-    let statuses = {
-        let mut statement = transaction.prepare("SELECT status_json FROM operations")?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        let mut statuses = Vec::new();
-        for row in rows {
-            statuses.push(from_json::<OperationStatus>(&row?)?);
-        }
-        statuses
-    };
+    let statuses = super::select_owned_operation_statuses(
+        &transaction,
+        &[
+            "deploy_submitted",
+            "credential_grant_submitted",
+            "ingress_configure_submitted",
+            "machine_update_submitted",
+            "machine_lifecycle_submitted",
+            "network_repair_submitted",
+            "service_restart_submitted",
+            "namespace_remove_submitted",
+            "volume_remove_submitted",
+        ],
+    )?;
     let mut stored = Vec::new();
     for status in statuses {
         let Some(evidence) = status.interruption_evidence(cause) else {
