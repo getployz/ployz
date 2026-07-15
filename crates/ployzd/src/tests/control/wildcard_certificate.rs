@@ -15,7 +15,7 @@ use crate::roles::gateway::projection::{
 use crate::roles::gateway::route_table::{GatewayProjector, GatewayServingState};
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use ployz_core::certificateificate::{
+use ployz_core::certificate::{
     CertificateArtifactPushOk, CertificateArtifactPushRequest, CertificateArtifactPushResponse,
     LeaseBearerToken, ManagedCertBundle, ManagedLeaseAcquireRequest, ManagedLeaseAcquisitionId,
 };

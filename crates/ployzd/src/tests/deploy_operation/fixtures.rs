@@ -1,6 +1,4 @@
-use ployz_core::certificateificate::{
-    ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
-};
+use ployz_core::certificate::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
 use ployz_core::deploy::{
     ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerMountPath,
     DependencyCondition, DeployCleanupContainer, DeployRequest, DeployRoute, DeployRouteTarget,
