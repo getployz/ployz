@@ -17,8 +17,6 @@ use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::NatsClientUrl;
 use ployz_test_support::ids::machine_id;
 
-mod dns;
-
 /// Syntactically valid NKey user seed for config tests (not a real key).
 const TEST_SEED: &str = "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM";
 static TEMP_SEED_COUNTER: AtomicUsize = AtomicUsize::new(0);
