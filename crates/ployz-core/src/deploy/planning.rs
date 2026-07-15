@@ -185,6 +185,12 @@ pub enum DeployPlanError {
         service_id: ServiceId,
         volume_name: VolumeName,
     },
+    VolumePinIncompatible {
+        service_id: ServiceId,
+        volume_name: VolumeName,
+        declaration: VolumeSpec,
+        pin_kind: crate::intent::VolumeKind,
+    },
 }
 
 pub fn prepare_deploy(
@@ -264,9 +270,9 @@ fn existing_replicas(
             !draining_machines.contains(&container.machine_id)
                 && container.state.is_running()
                 && container.identity.is_service_entry(
-                    &request.namespace_id,
+                    request.namespace_id(),
                     &request.service_id,
-                    &request.namespace_revision_entry_id,
+                    &request.namespace_revision_entry_id(),
                 )
         })
         .map(|container| ExistingServiceReplica {
@@ -285,7 +291,7 @@ fn cleanup_candidates(
         .flat_map(MachineContainerObservationSnapshot::containers)
         .filter(|container| {
             container.is_service()
-                && container.identity.namespace_id == request.namespace_id
+                && container.identity.namespace_id == *request.namespace_id()
                 && container.identity.service_id == request.service_id
         })
         .map(|container| DeployCleanupContainer {
@@ -314,7 +320,7 @@ fn route_binding_commits(
         }
         if let Some(existing) = occupied.iter().find(|binding| binding.target == target) {
             if existing.origin == RouteBindingOrigin::Declared
-                && existing.namespace_id == request.namespace_id
+                && existing.namespace_id == *request.namespace_id()
                 && existing.service_id == request.service_id
             {
                 bindings.push(RouteBindingState {
@@ -330,7 +336,7 @@ fn route_binding_commits(
         }
         bindings.push(RouteBindingState {
             id: new_route_binding_id(&target),
-            namespace_id: request.namespace_id.clone(),
+            namespace_id: request.namespace_id().clone(),
             target,
             endpoint_port: route.endpoint_port,
             service_id: request.service_id.clone(),
@@ -353,7 +359,7 @@ pub fn validate_deploy_route_bindings(
 ) -> Result<Vec<RouteBindingState>, DeployRouteBindingValidationError> {
     let mut occupied = existing.to_vec();
     let mut commits = Vec::new();
-    let mut services = request.services().iter().collect::<Vec<_>>();
+    let mut services = request.services();
     services.sort_by(|left, right| left.service_id.cmp(&right.service_id));
     let duplicate_service_id = services.windows(2).find_map(|pair| {
         let [first, second] = pair else {
@@ -366,7 +372,7 @@ pub fn validate_deploy_route_bindings(
     }
     for service in services {
         let automatic = auto_hostname_route_binding_commits(
-            service,
+            &service,
             automatic_hostname_suffix,
             &occupied,
             &mut new_route_binding_id,
@@ -374,7 +380,7 @@ pub fn validate_deploy_route_bindings(
         occupied.extend(automatic.iter().cloned());
         commits.extend(automatic);
 
-        let declared = route_binding_commits(service, &occupied, &mut new_route_binding_id)?;
+        let declared = route_binding_commits(&service, &occupied, &mut new_route_binding_id)?;
         occupied.extend(declared.iter().cloned());
         commits.extend(declared);
     }
@@ -433,7 +439,7 @@ pub fn auto_hostname_route_binding_commits(
         }
         if let Some(existing) = occupied.iter().find(|binding| binding.target == target) {
             if existing.origin == RouteBindingOrigin::Automatic
-                && existing.namespace_id == request.namespace_id
+                && existing.namespace_id == *request.namespace_id()
                 && existing.service_id == request.service_id
             {
                 bindings.push(RouteBindingState {
@@ -449,7 +455,7 @@ pub fn auto_hostname_route_binding_commits(
         }
         bindings.push(RouteBindingState {
             id: new_route_binding_id(&target),
-            namespace_id: request.namespace_id.clone(),
+            namespace_id: request.namespace_id().clone(),
             target,
             endpoint_port: route.endpoint_port,
             service_id: request.service_id.clone(),
@@ -528,7 +534,7 @@ fn dependency_ordered_phases(
                 input.request.service_id.clone(),
                 input
                     .request
-                    .runtime()
+                    .runtime
                     .healthcheck
                     .as_ref()
                     .is_some_and(ContainerHealthcheck::reports_docker_health),
@@ -703,8 +709,8 @@ fn plan_deploy_service(
     });
 
     Ok(DeploySingleServicePlan {
-        service_id: input.request.service_id,
-        namespace_revision_id: input.request.namespace_revision_id,
+        service_id: input.request.service_id.clone(),
+        namespace_revision_id: input.request.namespace_revision_id(),
         steps,
         pre_start,
         volume_pin_commits: volume_placement.commits,
@@ -723,7 +729,7 @@ fn volume_placement(
     eligible_machines: &[MachineId],
     volume_pins: &[VolumePinState],
 ) -> Result<VolumePlacement, DeployPlanError> {
-    if request.declared_volume_mounts().is_empty() {
+    if request.runtime.volume_mounts.is_empty() {
         return Ok(VolumePlacement {
             machine_id: None,
             commits: Vec::new(),
@@ -735,11 +741,20 @@ fn volume_placement(
     for declared in request.declared_volume_mounts() {
         let volume_name = &declared.mount().volume_name;
         let spec = declared.spec();
-        match volume_pins
-            .iter()
-            .find(|pin| pin.namespace_id == request.namespace_id && pin.volume_name == *volume_name)
-        {
-            Some(pin) => pinned_machines.push(pin.machine_id.clone()),
+        match volume_pins.iter().find(|pin| {
+            pin.namespace_id() == request.namespace_id() && pin.volume_name() == volume_name
+        }) {
+            Some(pin) if volume_pin_matches_declaration(spec, pin.kind()) => {
+                pinned_machines.push(pin.machine_id().clone());
+            }
+            Some(pin) => {
+                return Err(DeployPlanError::VolumePinIncompatible {
+                    service_id: request.service_id.clone(),
+                    volume_name: volume_name.clone(),
+                    declaration: spec.clone(),
+                    pin_kind: pin.kind().clone(),
+                });
+            }
             None if matches!(spec, VolumeSpec::Plain) => {
                 new_plain_volumes.push(volume_name.clone());
             }
@@ -779,6 +794,24 @@ fn volume_placement(
     }
 }
 
+fn volume_pin_matches_declaration(
+    declaration: &VolumeSpec,
+    pin_kind: &crate::intent::VolumeKind,
+) -> bool {
+    match (declaration, pin_kind) {
+        (VolumeSpec::Plain, crate::intent::VolumeKind::Plain) => true,
+        (
+            VolumeSpec::Provisioned { max_size_bytes },
+            crate::intent::VolumeKind::Provisioned {
+                max_size_bytes: pinned_size,
+                ..
+            },
+        ) => max_size_bytes == pinned_size,
+        (VolumeSpec::Plain, crate::intent::VolumeKind::Provisioned { .. })
+        | (VolumeSpec::Provisioned { .. }, crate::intent::VolumeKind::Plain) => false,
+    }
+}
+
 fn plain_volume_pin_commits(
     request: &DeployServiceRequest,
     machine_id: &MachineId,
@@ -786,11 +819,12 @@ fn plain_volume_pin_commits(
 ) -> Vec<VolumePinState> {
     volume_names
         .iter()
-        .map(|volume_name| VolumePinState {
-            namespace_id: request.namespace_id.clone(),
-            volume_name: volume_name.clone(),
-            machine_id: machine_id.clone(),
-            kind: crate::intent::VolumeKind::Plain,
+        .map(|volume_name| {
+            VolumePinState::plain(
+                request.namespace_id().clone(),
+                volume_name.clone(),
+                machine_id.clone(),
+            )
         })
         .collect()
 }

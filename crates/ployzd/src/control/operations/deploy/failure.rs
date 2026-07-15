@@ -36,7 +36,7 @@ fn failure_commit_scope(command: &DeployExecutionCommand) -> ControlPlaneCommitS
     };
     ControlPlaneCommitScope::ServiceEntry {
         service_id: service.request.service_id.clone(),
-        namespace_revision_entry_id: service.request.namespace_revision_entry_id.clone(),
+        namespace_revision_entry_id: service.request.namespace_revision_entry_id(),
     }
 }
 
@@ -551,6 +551,18 @@ impl DeployExecutionError {
                     volume_name.as_str()
                 )),
             },
+            Self::Plan(DeployPlanError::VolumePinIncompatible {
+                service_id,
+                volume_name,
+                ..
+            }) => DeployOperationFailure::PlanningFailed {
+                service_id: service_id.clone(),
+                namespace_revision_id: failure_namespace_revision_id(command),
+                message: failure_message(format!(
+                    "stored pin is incompatible with declared volume {}",
+                    volume_name.as_str()
+                )),
+            },
             Self::Plan(DeployPlanError::UnknownServiceDependency {
                 service_id,
                 dependency,
@@ -690,8 +702,8 @@ impl NamespaceCommitError {
             Self::VolumePin { state, message } => {
                 DeployOperationFailure::ControlPlaneCommitFailed {
                     scope: ControlPlaneCommitScope::VolumePin {
-                        namespace_id: state.namespace_id.clone(),
-                        volume_name: state.volume_name.clone(),
+                        namespace_id: state.namespace_id().clone(),
+                        volume_name: state.volume_name().clone(),
                     },
                     message: failure_message(format!(
                         "volume pin state could not be committed: {message}"

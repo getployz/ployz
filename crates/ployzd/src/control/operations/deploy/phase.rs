@@ -287,10 +287,7 @@ where
                     slot,
                 } => containers.push(DeployContainer {
                     service_id: service.request.service_id.clone(),
-                    namespace_revision_entry_id: service
-                        .request
-                        .namespace_revision_entry_id
-                        .clone(),
+                    namespace_revision_entry_id: service.request.namespace_revision_entry_id(),
                     machine_id: machine_id.clone(),
                     container_id: container_id.clone(),
                     step_id: deploy_step_id(*slot).map_err(|source| {

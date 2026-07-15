@@ -151,6 +151,13 @@ impl DatasetName {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    #[must_use]
+    pub fn matches_volume(&self, namespace_id: &NamespaceId, volume_name: &VolumeName) -> bool {
+        self.0
+            .rsplit_once('/')
+            .is_some_and(|(_, leaf)| leaf == volume_name.stable_storage_name(namespace_id))
+    }
 }
 
 impl TryFrom<String> for DatasetName {

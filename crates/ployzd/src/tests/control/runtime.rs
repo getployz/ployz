@@ -321,12 +321,11 @@ async fn control_runtime_serves_active_service_queries() {
         .await
         .expect("service state stores");
     namespace_intent
-        .replace_volume_pin(VolumePinState {
-            namespace_id: namespace_id("default"),
-            volume_name: VolumeName::try_new("data").expect("valid volume name"),
-            machine_id: machine_id("core_1"),
-            kind: ployz_core::intent::VolumeKind::Plain,
-        })
+        .replace_volume_pin(VolumePinState::plain(
+            namespace_id("default"),
+            VolumeName::try_new("data").expect("valid volume name"),
+            machine_id("core_1"),
+        ))
         .await
         .expect("volume pin stores");
     let api = nats.api();

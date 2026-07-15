@@ -116,7 +116,7 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
     facts: DeployExecutionFacts,
     registry_credentials: &BTreeMap<ServiceId, RegistryCredential>,
 ) -> DeployExecutionCommand {
-    let (request, service_requests) = request.into_parts();
+    let service_requests = request.services();
     let mut mint_requests = service_requests.iter().collect::<Vec<_>>();
     mint_requests.sort_by(|left, right| left.service_id.cmp(&right.service_id));
     let mut declared_auto_bindings = Vec::new();
@@ -189,9 +189,10 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         .expect("route bindings were validated while loading deploy facts");
         occupied_bindings.extend(prepared.route_commits.iter().cloned());
         let is_promoted = facts.namespace_serving_entries.iter().any(|entry| {
-            entry.namespace_id == prepared.request.namespace_id
+            entry.namespace_id == *prepared.request.namespace_id()
                 && entry.service_id == prepared.request.service_id
-                && entry.namespace_revision_entry_id == prepared.request.namespace_revision_entry_id
+                && entry.namespace_revision_entry_id
+                    == prepared.request.namespace_revision_entry_id()
         });
         if !is_promoted {
             prepared.existing_replicas.clear();

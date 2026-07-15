@@ -196,7 +196,7 @@ where
         };
         let request = ImageEnsureRequest {
             repository: ImageRepository::for_service(
-                &service.request.namespace_id,
+                service.request.namespace_id(),
                 &service.request.service_id,
             ),
             manifest_digest: manifest_digest.clone(),
@@ -323,7 +323,7 @@ pub(super) fn machine_image_pull(
             Ok(MachineImagePull::MeshSeed {
                 seed_host,
                 repository: ImageRepository::for_service(
-                    &service.request.namespace_id,
+                    service.request.namespace_id(),
                     &service.request.service_id,
                 ),
                 manifest_digest: manifest_digest.clone(),

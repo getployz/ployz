@@ -32,7 +32,7 @@ pub async fn load_deploy_execution_facts_from_nats(
     step_timeout: Duration,
 ) -> Result<DeployExecutionFacts, DeployFactLoadError> {
     let intent = read_intent(intent_reader).await?;
-    let allocation = if normalized_auto_hostname_service(request).is_some()
+    let allocation = if has_auto_hostname_service(request)
         && matches!(
             &intent.automatic_hostname_configuration,
             AutomaticHostnameConfiguration::Ployz
@@ -79,7 +79,7 @@ fn resolve_automatic_hostname_mode(
     configuration: Option<&AutomaticHostnameConfiguration>,
     allocation: Option<&PloyzDnsTargetAllocation>,
 ) -> Result<AutomaticHostnameMode, DeployFactLoadError> {
-    if normalized_auto_hostname_service(request).is_none() {
+    if !has_auto_hostname_service(request) {
         return Ok(AutomaticHostnameMode::Disabled);
     }
     let Some(configuration) = configuration else {
@@ -112,10 +112,8 @@ fn resolve_automatic_hostname_mode(
     }
 }
 
-fn normalized_auto_hostname_service(
-    request: &NormalizedDeployRequest,
-) -> Option<&ployz_core::deploy::DeployServiceRequest> {
-    request.services().iter().find(|service| {
+fn has_auto_hostname_service(request: &NormalizedDeployRequest) -> bool {
+    request.services().iter().any(|service| {
         service
             .routes
             .iter()
@@ -136,7 +134,7 @@ pub async fn validate_deploy_route_admission(
             .map_err(|error| DeployFactLoadError::IngressState {
                 message: error.to_string(),
             })?;
-    let allocation = if normalized_auto_hostname_service(request).is_some()
+    let allocation = if has_auto_hostname_service(request)
         && configuration.as_ref().is_some_and(|configuration| {
             matches!(
                 configuration.automatic_hostnames(),
@@ -203,7 +201,7 @@ async fn deploy_execution_facts(
     let namespace_volume_pins = intent
         .volume_pins
         .into_iter()
-        .filter(|pin| pin.namespace_id == *request.namespace_id())
+        .filter(|pin| pin.namespace_id() == request.namespace_id())
         .collect::<Vec<_>>();
     let placement_facts = read_machine_placement_facts(facts_reader, machine_lifecycles).await;
     let dataplane_statuses = gather_dataplane_statuses(

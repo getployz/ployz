@@ -328,10 +328,9 @@ fn validate_internal_dns_name(
 }
 
 fn validate_registry_credentials(command: &DeploySubmitCommand) -> Result<(), DeploySubmitError> {
+    let services = command.target.services();
     for service_id in command.registry_credentials.keys() {
-        let Some(service) = command
-            .target
-            .services()
+        let Some(service) = services
             .iter()
             .find(|service| service.service_id == *service_id)
         else {
@@ -360,14 +359,14 @@ fn validate_registry_credentials(command: &DeploySubmitCommand) -> Result<(), De
         let Some(pinned_digest) = service.image.pinned_digest() else {
             return Err(invalid_pushed_image(
                 command,
-                service,
+                &service,
                 "must be digest-pinned",
             ));
         };
         if &pinned_digest != manifest_digest {
             return Err(invalid_pushed_image(
                 command,
-                service,
+                &service,
                 "digest must match its pushed manifest digest",
             ));
         }
@@ -409,7 +408,8 @@ async fn validate_pushed_image_seeds(
     handlers: &OperationApiHandlers,
     command: &DeploySubmitCommand,
 ) -> Result<(), DeploySubmitError> {
-    let seeds = command.target.services().iter().filter_map(|service| {
+    let services = command.target.services();
+    let seeds = services.iter().filter_map(|service| {
         let ImageSource::PushedToSeed { seed, .. } = &service.image_source else {
             return None;
         };

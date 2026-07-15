@@ -1,15 +1,14 @@
 use ployz_core::deploy::{
     ContainerCommand, ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest,
-    ContainerMountPath, ContainerRuntimeSpec, DatasetName, DeclaredVolumeMount,
-    DependencyCondition, DeployCleanupContainer, DeployPhasePlan, DeployPlan, DeployPlanError,
-    DeployPlanStep, DeployPlanningInput, DeployPreparationInput, DeployRoute, DeployRouteTarget,
-    DeployServicePlan, DeployServiceRequest, EnvName, EnvValue, ExistingServiceReplica,
-    HealthcheckShellCommand, ImageReference, ImageSource, PreStartHook, PreStartHookStep,
-    ReplicaCount, ReplicaSlot, ServiceDependency, ServiceEnvironment, ServiceVolumeMount,
-    StopGracePeriod, VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName,
-    auto_hostname_route_binding_commits, namespace_revision_id_for,
-    namespace_route_binding_removals, namespace_serving_target_removals, plan_namespace_deploy,
-    prepare_deploy, validate_deploy_route_bindings,
+    ContainerMountPath, ContainerRuntimeSpec, DatasetName, DependencyCondition,
+    DeployCleanupContainer, DeployPhasePlan, DeployPlan, DeployPlanError, DeployPlanStep,
+    DeployPlanningInput, DeployPreparationInput, DeployRoute, DeployRouteTarget, DeployServicePlan,
+    DeployServiceRequest, EnvName, EnvValue, ExistingServiceReplica, HealthcheckShellCommand,
+    ImageReference, ImageSource, PreStartHook, PreStartHookStep, ReplicaCount, ReplicaSlot,
+    ServiceDependency, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeMaxSizeBytes,
+    VolumeName, VolumeSpec, ZfsPoolName, auto_hostname_route_binding_commits,
+    namespace_revision_id_for, namespace_route_binding_removals, namespace_serving_target_removals,
+    plan_namespace_deploy, prepare_deploy, validate_deploy_route_bindings,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::image::OciDigest;
@@ -23,8 +22,7 @@ use ployz_core::operation::{RouteHostname, RoutePort, RouteTarget};
 use ployz_test_support::containers;
 use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{
-    container_id, machine_id, namespace_id, namespace_revision_entry_id, namespace_revision_id,
-    route_hostname, service_id,
+    container_id, machine_id, namespace_id, namespace_revision_id, route_hostname, service_id,
 };
 use std::collections::BTreeMap;
 
@@ -336,8 +334,10 @@ fn deploy_plan_requires_eligible_machine() {
 #[test]
 fn service_dependencies_reorder_namespace_plan_stably() {
     let mut worker = planning_input(1, [machine_id("machine_a")]);
-    worker.request.service_id = service_id("svc_worker");
-    worker.request.depends_on = vec![dependency("svc_api", DependencyCondition::Started)];
+    update_request(&mut worker.request, |request| {
+        request.service_id = service_id("svc_worker");
+        request.depends_on = vec![dependency("svc_api", DependencyCondition::Started)];
+    });
     let api = planning_input(1, [machine_id("machine_a")]);
 
     let plan = plan_namespace_deploy(
@@ -361,11 +361,15 @@ fn service_dependencies_reorder_namespace_plan_stably() {
 #[test]
 fn namespace_plan_groups_all_simultaneously_eligible_services_into_deterministic_phases() {
     let mut worker = planning_input(1, [machine_id("machine_a")]);
-    worker.request.service_id = service_id("svc_worker");
-    worker.request.depends_on = vec![dependency("svc_api", DependencyCondition::Started)];
+    update_request(&mut worker.request, |request| {
+        request.service_id = service_id("svc_worker");
+        request.depends_on = vec![dependency("svc_api", DependencyCondition::Started)];
+    });
     let api = planning_input(1, [machine_id("machine_a")]);
     let mut database = planning_input(1, [machine_id("machine_a")]);
-    database.request.service_id = service_id("svc_database");
+    update_request(&mut database.request, |request| {
+        request.service_id = service_id("svc_database");
+    });
 
     let plan = plan_namespace_deploy(
         namespace_id("default"),
@@ -397,8 +401,10 @@ fn namespace_plan_groups_all_simultaneously_eligible_services_into_deterministic
 fn healthy_dependency_requires_an_executable_healthcheck() {
     let database = planning_input(1, [machine_id("machine_a")]);
     let mut api = planning_input(1, [machine_id("machine_a")]);
-    api.request.service_id = service_id("svc_web");
-    api.request.depends_on = vec![dependency("svc_api", DependencyCondition::Healthy)];
+    update_request(&mut api.request, |request| {
+        request.service_id = service_id("svc_web");
+        request.depends_on = vec![dependency("svc_api", DependencyCondition::Healthy)];
+    });
 
     assert_eq!(
         plan_namespace_deploy(
@@ -417,7 +423,9 @@ fn healthy_dependency_requires_an_executable_healthcheck() {
 #[test]
 fn unknown_service_dependency_fails_planning() {
     let mut api = planning_input(1, [machine_id("machine_a")]);
-    api.request.depends_on = vec![dependency("svc_missing", DependencyCondition::Started)];
+    update_request(&mut api.request, |request| {
+        request.depends_on = vec![dependency("svc_missing", DependencyCondition::Started)];
+    });
 
     assert_eq!(
         plan_namespace_deploy(
@@ -449,10 +457,14 @@ fn namespace_revision_identity_includes_hooks_and_dependencies() {
 #[test]
 fn service_dependency_cycle_reports_sorted_unplaced_services() {
     let mut api = planning_input(1, [machine_id("machine_a")]);
-    api.request.depends_on = vec![dependency("svc_worker", DependencyCondition::Started)];
+    update_request(&mut api.request, |request| {
+        request.depends_on = vec![dependency("svc_worker", DependencyCondition::Started)];
+    });
     let mut worker = planning_input(1, [machine_id("machine_a")]);
-    worker.request.service_id = service_id("svc_worker");
-    worker.request.depends_on = vec![dependency("svc_api", DependencyCondition::Started)];
+    update_request(&mut worker.request, |request| {
+        request.service_id = service_id("svc_worker");
+        request.depends_on = vec![dependency("svc_api", DependencyCondition::Started)];
+    });
 
     assert_eq!(
         plan_namespace_deploy(
@@ -470,7 +482,9 @@ fn service_dependency_cycle_reports_sorted_unplaced_services() {
 #[test]
 fn pre_start_hook_step_uses_first_run_container_machine() {
     let mut input = planning_input(2, [machine_id("machine_a"), machine_id("machine_b")]);
-    input.request.pre_start = Some(pre_start_hook());
+    update_request(&mut input.request, |request| {
+        request.pre_start = Some(pre_start_hook());
+    });
 
     let plan = plan_single_service(input).expect("plan succeeds");
     let [phase] = plan.phases.as_slice() else {
@@ -491,7 +505,9 @@ fn pre_start_hook_step_uses_first_run_container_machine() {
 #[test]
 fn pre_start_hook_step_is_absent_when_all_containers_are_reused() {
     let mut input = planning_input(1, []);
-    input.request.pre_start = Some(pre_start_hook());
+    update_request(&mut input.request, |request| {
+        request.pre_start = Some(pre_start_hook());
+    });
     input.existing_replicas = vec![existing_replica("machine_b", "ctr_existing")];
 
     let plan = plan_single_service(input).expect("existing reality satisfies target");
@@ -566,6 +582,70 @@ fn provisioned_volume_with_a_dataset_backed_pin_can_be_placed() {
 }
 
 #[test]
+fn plain_declaration_rejects_a_provisioned_pin() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    declare_plain_volume_mounts(&mut input.request, vec![volume_mount("data", "/data")]);
+    input.volume_pins = vec![provisioned_volume_pin("data", "machine_a")];
+
+    assert!(matches!(
+        plan_single_service(input),
+        Err(DeployPlanError::VolumePinIncompatible {
+            declaration: VolumeSpec::Plain,
+            pin_kind: ployz_core::intent::VolumeKind::Provisioned { .. },
+            ..
+        })
+    ));
+}
+
+#[test]
+fn provisioned_declaration_rejects_a_plain_pin() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    declare_volume_mounts(
+        &mut input.request,
+        vec![(
+            volume_mount("data", "/data"),
+            VolumeSpec::Provisioned {
+                max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("non-zero size"),
+            },
+        )],
+    );
+    input.volume_pins = vec![volume_pin("data", "machine_a")];
+
+    assert!(matches!(
+        plan_single_service(input),
+        Err(DeployPlanError::VolumePinIncompatible {
+            declaration: VolumeSpec::Provisioned { .. },
+            pin_kind: ployz_core::intent::VolumeKind::Plain,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn provisioned_declaration_rejects_a_different_pinned_size() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    declare_volume_mounts(
+        &mut input.request,
+        vec![(
+            volume_mount("data", "/data"),
+            VolumeSpec::Provisioned {
+                max_size_bytes: VolumeMaxSizeBytes::try_new(2048).expect("non-zero size"),
+            },
+        )],
+    );
+    input.volume_pins = vec![provisioned_volume_pin("data", "machine_a")];
+
+    assert!(matches!(
+        plan_single_service(input),
+        Err(DeployPlanError::VolumePinIncompatible {
+            declaration: VolumeSpec::Provisioned { .. },
+            pin_kind: ployz_core::intent::VolumeKind::Provisioned { .. },
+            ..
+        })
+    ));
+}
+
+#[test]
 fn volume_backed_service_uses_existing_pin() {
     let mut input = planning_input(2, [machine_id("machine_a"), machine_id("machine_b")]);
     declare_plain_volume_mounts(
@@ -632,7 +712,9 @@ fn namespace_volume_pin_commits_are_visible_to_later_service_plans() {
     let mut first = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
     declare_plain_volume_mounts(&mut first.request, vec![volume_mount("data", "/data")]);
     let mut second = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
-    second.request.service_id = service_id("svc_worker");
+    update_request(&mut second.request, |request| {
+        request.service_id = service_id("svc_worker");
+    });
     declare_plain_volume_mounts(
         &mut second.request,
         vec![
@@ -682,9 +764,11 @@ fn service_with_volumes_on_different_pinned_machines_fails_planning() {
 
 #[test]
 fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
+    let request = deploy_request(2);
+    let entry_id = request.namespace_revision_entry_id();
     let prepared = prepare_deploy(
         DeployPreparationInput {
-            request: deploy_request(2),
+            request,
             occupied_route_bindings: Vec::new(),
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
             draining_machines: Vec::new(),
@@ -695,7 +779,7 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
                         "machine_b",
                         "ctr_target",
                         "svc_api",
-                        "entry_1",
+                        entry_id.as_str(),
                         ManagedContainerKind::Service,
                         ContainerRuntimeState::running_unroutable(),
                     ),
@@ -711,7 +795,7 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
                         "machine_b",
                         "ctr_job",
                         "svc_api",
-                        "entry_1",
+                        entry_id.as_str(),
                         ManagedContainerKind::Job,
                         ContainerRuntimeState::running_unroutable(),
                     ),
@@ -719,7 +803,7 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
                         "machine_b",
                         "ctr_exited",
                         "svc_api",
-                        "entry_1",
+                        entry_id.as_str(),
                         ManagedContainerKind::Service,
                         ContainerRuntimeState::Exited,
                     ),
@@ -742,9 +826,9 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
     assert_eq!(
         prepared.cleanup_candidates,
         vec![
-            cleanup_container_with_entry("machine_b", "ctr_target", "entry_1"),
+            cleanup_container_with_entry("machine_b", "ctr_target", entry_id.as_str()),
             cleanup_container_with_entry("machine_b", "ctr_old", "entry_old"),
-            cleanup_container_with_entry("machine_b", "ctr_exited", "entry_1"),
+            cleanup_container_with_entry("machine_b", "ctr_exited", entry_id.as_str()),
         ]
     );
 }
@@ -812,7 +896,8 @@ fn deploy_preparation_evacuates_draining_machine_replicas() {
 #[test]
 fn routed_deploy_preparation_reuses_matching_identity_regardless_of_endpoint_port() {
     let mut request = deploy_request(2);
-    request.routes = vec![deploy_route("api.example.com", 8080)];
+    set_routes(&mut request, vec![deploy_route("api.example.com", 8080)]);
+    let entry_id = request.namespace_revision_entry_id();
 
     let prepared = prepare_deploy(
         DeployPreparationInput {
@@ -827,7 +912,7 @@ fn routed_deploy_preparation_reuses_matching_identity_regardless_of_endpoint_por
                         "machine_b",
                         "ctr_wrong_port",
                         "svc_api",
-                        "entry_1",
+                        entry_id.as_str(),
                         ManagedContainerKind::Service,
                         ContainerRuntimeState::running_at(endpoint_ip("10.0.0.2")),
                     ),
@@ -835,7 +920,7 @@ fn routed_deploy_preparation_reuses_matching_identity_regardless_of_endpoint_por
                         "machine_b",
                         "ctr_target",
                         "svc_api",
-                        "entry_1",
+                        entry_id.as_str(),
                         ManagedContainerKind::Service,
                         ContainerRuntimeState::running_at(endpoint_ip("10.0.0.3")),
                     ),
@@ -858,10 +943,13 @@ fn routed_deploy_preparation_reuses_matching_identity_regardless_of_endpoint_por
 #[test]
 fn deploy_preparation_commits_multiple_routes_per_service() {
     let mut request = deploy_request(1);
-    request.routes = vec![
-        deploy_route("api.example.com", 8080),
-        deploy_route("www.example.com", 8080),
-    ];
+    set_routes(
+        &mut request,
+        vec![
+            deploy_route("api.example.com", 8080),
+            deploy_route("www.example.com", 8080),
+        ],
+    );
 
     let prepared = prepare_deploy(
         DeployPreparationInput {
@@ -901,7 +989,7 @@ fn deploy_preparation_commits_multiple_routes_per_service() {
 #[test]
 fn declared_route_reroute_reuses_the_binding_identity_and_updates_endpoint_port() {
     let mut request = deploy_request(1);
-    request.routes = vec![deploy_route("api.example.com", 9090)];
+    set_routes(&mut request, vec![deploy_route("api.example.com", 9090)]);
     let mut existing = route_binding_state("api.example.com", "svc_api");
     existing.id = route_binding_id("route_existing");
 
@@ -928,10 +1016,13 @@ fn declared_route_reroute_reuses_the_binding_identity_and_updates_endpoint_port(
 fn declared_route_rejects_duplicate_target_regardless_of_endpoint_port() {
     for duplicate_port in [8080, 9090] {
         let mut request = deploy_request(1);
-        request.routes = vec![
-            deploy_route("api.example.com", 8080),
-            deploy_route("api.example.com", duplicate_port),
-        ];
+        set_routes(
+            &mut request,
+            vec![
+                deploy_route("api.example.com", 8080),
+                deploy_route("api.example.com", duplicate_port),
+            ],
+        );
 
         let error = prepare_deploy(
             DeployPreparationInput {
@@ -955,7 +1046,7 @@ fn declared_route_rejects_duplicate_target_regardless_of_endpoint_port() {
 #[test]
 fn declared_route_reroute_rejects_other_owners_and_automatic_bindings() {
     let mut request = deploy_request(1);
-    request.routes = vec![deploy_route("api.example.com", 9090)];
+    set_routes(&mut request, vec![deploy_route("api.example.com", 9090)]);
 
     let mut other_service = route_binding_state("api.example.com", "svc_worker");
     other_service.id = route_binding_id("route_other_service");
@@ -1041,7 +1132,7 @@ fn namespace_serving_removals_unpublish_omitted_services_only() {
 #[test]
 fn deploy_preparation_updates_endpoint_port_without_container_plan_changes() {
     let mut request = deploy_request(1);
-    request.routes = vec![deploy_route("api.example.com", 8080)];
+    set_routes(&mut request, vec![deploy_route("api.example.com", 8080)]);
 
     let prepared = prepare_deploy(
         DeployPreparationInput {
@@ -1087,7 +1178,7 @@ fn namespace_route_removals_keep_targets_reassigned_to_another_service() {
 #[test]
 fn automatic_route_commit_uses_the_exact_requested_label() {
     let mut request = deploy_request(1);
-    request.routes = vec![automatic_deploy_route("api", 8080)];
+    set_routes(&mut request, vec![automatic_deploy_route("api", 8080)]);
 
     let commits = auto_hostname_route_binding_commits(
         &request,
@@ -1106,7 +1197,7 @@ fn automatic_route_commit_uses_the_exact_requested_label() {
 #[test]
 fn automatic_route_reroute_reuses_the_binding_identity_and_updates_endpoint_port() {
     let mut request = deploy_request(1);
-    request.routes = vec![automatic_deploy_route("api", 9090)];
+    set_routes(&mut request, vec![automatic_deploy_route("api", 9090)]);
     let mut existing = route_binding_state("api.apps.example.com", "svc_api");
     existing.id = route_binding_id("route_existing");
     existing.origin = RouteBindingOrigin::Automatic;
@@ -1130,10 +1221,13 @@ fn automatic_route_reroute_reuses_the_binding_identity_and_updates_endpoint_port
 fn automatic_route_rejects_duplicate_target_regardless_of_endpoint_port() {
     for duplicate_port in [8080, 9090] {
         let mut request = deploy_request(1);
-        request.routes = vec![
-            automatic_deploy_route("api", 8080),
-            automatic_deploy_route("api", duplicate_port),
-        ];
+        set_routes(
+            &mut request,
+            vec![
+                automatic_deploy_route("api", 8080),
+                automatic_deploy_route("api", duplicate_port),
+            ],
+        );
 
         let error = auto_hostname_route_binding_commits(
             &request,
@@ -1184,7 +1278,7 @@ fn deploy_route_validation_rejects_duplicate_service_ids() {
 #[test]
 fn automatic_route_rejects_a_declared_hostname_collision() {
     let mut request = deploy_request(1);
-    request.routes = vec![automatic_deploy_route("api", 8080)];
+    set_routes(&mut request, vec![automatic_deploy_route("api", 8080)]);
     let existing = route_binding_state("api.apps.example.com", "svc_api");
 
     let error = auto_hostname_route_binding_commits(
@@ -1406,10 +1500,8 @@ fn route_binding_state(hostname: &str, service: &str) -> RouteBindingState {
 }
 
 fn deploy_request(replicas: u16) -> DeployServiceRequest {
-    DeployServiceRequest::try_from_spec(
+    normalized_service(
         namespace_id("default"),
-        namespace_revision_id("rev_1"),
-        namespace_revision_entry_id("entry_1"),
         ployz_core::deploy::DeployServiceSpec {
             service_id: service_id("svc_api"),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
@@ -1420,9 +1512,28 @@ fn deploy_request(replicas: u16) -> DeployServiceRequest {
             depends_on: Vec::new(),
             routes: Vec::new(),
         },
-        &BTreeMap::new(),
+        BTreeMap::new(),
     )
-    .expect("planner fixture service normalizes")
+}
+
+fn normalized_service(
+    namespace_id: ployz_core::ids::NamespaceId,
+    service: ployz_core::deploy::DeployServiceSpec,
+    volumes: BTreeMap<VolumeName, VolumeSpec>,
+) -> DeployServiceRequest {
+    let services =
+        ployz_core::deploy::NormalizedDeployRequest::try_new(ployz_core::deploy::DeployRequest {
+            namespace_id,
+            origin: None,
+            volumes,
+            services: vec![service],
+        })
+        .expect("planner fixture service normalizes")
+        .services();
+    let [service] = services.as_slice() else {
+        panic!("planner fixture has one service");
+    };
+    service.clone()
 }
 
 /// Plans one service through the namespace planner, the only production
@@ -1494,30 +1605,53 @@ fn declare_volume_mounts(
     request: &mut DeployServiceRequest,
     mounts: Vec<(ServiceVolumeMount, VolumeSpec)>,
 ) {
-    request.replace_declared_volume_mounts(
-        mounts
-            .into_iter()
-            .map(|(mount, spec)| DeclaredVolumeMount::new(mount, spec))
-            .collect(),
-    );
+    let mut service = (**request).clone();
+    service.runtime.volume_mounts = mounts.iter().map(|(mount, _)| mount.clone()).collect();
+    let volumes = mounts
+        .into_iter()
+        .map(|(mount, spec)| (mount.volume_name, spec))
+        .collect();
+    *request = normalized_service(request.namespace_id().clone(), service, volumes);
+}
+
+fn update_request(
+    request: &mut DeployServiceRequest,
+    update: impl FnOnce(&mut ployz_core::deploy::DeployServiceSpec),
+) {
+    let namespace_id = request.namespace_id().clone();
+    let volumes = request
+        .declared_volume_mounts()
+        .map(|declared| {
+            (
+                declared.mount().volume_name.clone(),
+                declared.spec().clone(),
+            )
+        })
+        .collect();
+    let mut service = (**request).clone();
+    update(&mut service);
+    *request = normalized_service(namespace_id, service, volumes);
+}
+
+fn set_routes(request: &mut DeployServiceRequest, routes: Vec<DeployRoute>) {
+    update_request(request, |request| request.routes = routes);
 }
 
 fn volume_pin(volume_name: &str, machine_id: &str) -> VolumePinState {
-    VolumePinState {
-        namespace_id: namespace_id("default"),
-        volume_name: VolumeName::try_new(volume_name).expect("valid volume name"),
-        machine_id: self::machine_id(machine_id),
-        kind: ployz_core::intent::VolumeKind::Plain,
-    }
+    VolumePinState::plain(
+        namespace_id("default"),
+        VolumeName::try_new(volume_name).expect("valid volume name"),
+        self::machine_id(machine_id),
+    )
 }
 
 fn provisioned_volume_pin(volume_name: &str, machine_id: &str) -> VolumePinState {
     let volume_name = VolumeName::try_new(volume_name).expect("valid volume name");
-    VolumePinState {
-        namespace_id: namespace_id("default"),
-        volume_name: volume_name.clone(),
-        machine_id: self::machine_id(machine_id),
-        kind: ployz_core::intent::VolumeKind::Provisioned {
+    VolumePinState::try_new(
+        namespace_id("default"),
+        volume_name.clone(),
+        self::machine_id(machine_id),
+        ployz_core::intent::VolumeKind::Provisioned {
             dataset: DatasetName::for_volume(
                 &ZfsPoolName::try_new("tank").expect("pool name"),
                 &namespace_id("default"),
@@ -1526,7 +1660,8 @@ fn provisioned_volume_pin(volume_name: &str, machine_id: &str) -> VolumePinState
             .expect("dataset name"),
             max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("non-zero size"),
         },
-    }
+    )
+    .expect("dataset identity matches pin")
 }
 
 fn deploy_route(hostname: &str, endpoint_port: u16) -> DeployRoute {

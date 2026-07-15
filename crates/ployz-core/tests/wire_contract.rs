@@ -6,7 +6,6 @@ use ployz_core::deploy::{
     NormalizedDeployRequest, ReplicaCount, ServiceDependency, ServiceVolumeMount,
     VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName, ZfsPoolNameError,
 };
-use ployz_core::ids::{NamespaceRevisionEntryId, NamespaceRevisionId};
 use ployz_core::intent::{VolumeKind, VolumePinState};
 use ployz_core::machine::MachineUsabilityReason;
 use ployz_core::operation::{
@@ -491,18 +490,8 @@ fn deploy_request_requires_a_declaration_for_every_mounted_volume() {
 #[test]
 fn planner_service_constructor_rejects_an_undeclared_mount() {
     let request = request_with_volume_mount(BTreeMap::new());
-    let [service] = request.services.as_slice() else {
-        panic!("request has one service");
-    };
-
-    let error = ployz_core::deploy::DeployServiceRequest::try_from_spec(
-        request.namespace_id,
-        NamespaceRevisionId::try_new("rev_test").expect("revision id"),
-        NamespaceRevisionEntryId::try_new("entry_test").expect("entry id"),
-        service.clone(),
-        &request.volumes,
-    )
-    .expect_err("planner input rejects an undeclared mount");
+    let error = NormalizedDeployRequest::try_new(request)
+        .expect_err("planner views are unavailable for an undeclared mount");
 
     assert_eq!(error.service_id, service_id("svc_api"));
     assert_eq!(error.volume_name, volume_name("data"));
@@ -534,10 +523,11 @@ fn normalized_service_requests_retain_mounted_volume_declarations() {
     let request = NormalizedDeployRequest::try_new(request).expect("request normalizes");
     assert_eq!(request.to_request(), original);
     let services = request.services();
-    let [service] = services else {
+    let [service] = services.as_slice() else {
         panic!("request has one service");
     };
-    let [declared] = service.declared_volume_mounts() else {
+    let declared = service.declared_volume_mounts().collect::<Vec<_>>();
+    let [declared] = declared.as_slice() else {
         panic!("service has one declared volume mount");
     };
     assert_eq!(declared.mount().volume_name, volume_name("data"));
@@ -564,12 +554,13 @@ fn normalized_image_replacement_preserves_volume_invariants_without_revalidation
     service.image = resolved;
 
     assert_eq!(normalized.to_request(), request);
-    let [service] = normalized.services() else {
+    let services = normalized.services();
+    let [service] = services.as_slice() else {
         panic!("request has one service");
     };
-    assert_eq!(service.declared_volume_mounts().len(), 1);
+    assert_eq!(service.declared_volume_mounts().count(), 1);
     assert_eq!(
-        service.namespace_revision_id,
+        service.namespace_revision_id(),
         normalized.namespace_revision_id()
     );
 }
@@ -596,16 +587,16 @@ fn volume_pin_legacy_json_defaults_to_plain_kind() {
     )
     .expect("legacy pin decodes");
 
-    assert_eq!(pin.kind, VolumeKind::Plain);
+    assert_eq!(pin.kind(), &VolumeKind::Plain);
 }
 
 #[test]
 fn provisioned_volume_pin_round_trips_with_dataset_and_size() {
-    let pin = VolumePinState {
-        namespace_id: namespace_id("default"),
-        volume_name: volume_name("data"),
-        machine_id: machine_id("machine_a"),
-        kind: VolumeKind::Provisioned {
+    let pin = VolumePinState::try_new(
+        namespace_id("default"),
+        volume_name("data"),
+        machine_id("machine_a"),
+        VolumeKind::Provisioned {
             dataset: DatasetName::for_volume(
                 &ZfsPoolName::try_new("tank").expect("pool name"),
                 &namespace_id("default"),
@@ -614,7 +605,8 @@ fn provisioned_volume_pin_round_trips_with_dataset_and_size() {
             .expect("dataset name fits"),
             max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("nonzero volume size"),
         },
-    };
+    )
+    .expect("dataset identity matches pin");
 
     let json = serde_json::to_string(&pin).expect("pin serializes");
 
@@ -622,6 +614,18 @@ fn provisioned_volume_pin_round_trips_with_dataset_and_size() {
         serde_json::from_str::<VolumePinState>(&json).expect("pin decodes"),
         pin
     );
+}
+
+#[test]
+fn provisioned_volume_pin_rejects_foreign_dataset_identity_on_load() {
+    let json = r#"{
+        "namespace_id":"default",
+        "volume_name":"data",
+        "machine_id":"machine_a",
+        "kind":{"kind":"provisioned","dataset":"tank/ployz/volumes/ployz-n5-other-v4-data","max_size_bytes":1024}
+    }"#;
+
+    assert!(serde_json::from_str::<VolumePinState>(json).is_err());
 }
 
 #[test]

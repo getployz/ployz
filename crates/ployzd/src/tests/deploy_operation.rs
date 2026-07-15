@@ -595,12 +595,11 @@ async fn deploy_worker_commits_volume_pin_and_mounts_volume() {
 
     assert_eq!(
         namespace_state.volume_pin_requests,
-        vec![VolumePinState {
-            namespace_id: namespace_id("default"),
-            volume_name: volume_name("postgres_data"),
-            machine_id: machine_id("machine_a"),
-            kind: ployz_core::intent::VolumeKind::Plain,
-        }]
+        vec![VolumePinState::plain(
+            namespace_id("default"),
+            volume_name("postgres_data"),
+            machine_id("machine_a"),
+        )]
     );
     let [(request_machine_id, request)] = runtime.requests.as_slice() else {
         panic!("expected one runtime request");

@@ -49,15 +49,14 @@ pub struct RouteBindingState {
 }
 
 /// Core-owned named-volume placement intent.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct VolumePinState {
-    pub namespace_id: NamespaceId,
-    pub volume_name: VolumeName,
-    pub machine_id: MachineId,
-    #[serde(default = "plain_volume_kind")]
-    pub kind: VolumeKind,
+    namespace_id: NamespaceId,
+    volume_name: VolumeName,
+    machine_id: MachineId,
+    kind: VolumeKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +72,106 @@ pub enum VolumeKind {
 
 fn plain_volume_kind() -> VolumeKind {
     VolumeKind::Plain
+}
+
+impl VolumePinState {
+    pub fn try_new(
+        namespace_id: NamespaceId,
+        volume_name: VolumeName,
+        machine_id: MachineId,
+        kind: VolumeKind,
+    ) -> Result<Self, VolumePinStateError> {
+        if let VolumeKind::Provisioned { dataset, .. } = &kind
+            && !dataset.matches_volume(&namespace_id, &volume_name)
+        {
+            return Err(VolumePinStateError::DatasetIdentityMismatch {
+                namespace_id,
+                volume_name,
+                dataset: dataset.clone(),
+            });
+        }
+        Ok(Self {
+            namespace_id,
+            volume_name,
+            machine_id,
+            kind,
+        })
+    }
+
+    #[must_use]
+    pub fn plain(
+        namespace_id: NamespaceId,
+        volume_name: VolumeName,
+        machine_id: MachineId,
+    ) -> Self {
+        Self {
+            namespace_id,
+            volume_name,
+            machine_id,
+            kind: VolumeKind::Plain,
+        }
+    }
+
+    #[must_use]
+    pub fn namespace_id(&self) -> &NamespaceId {
+        &self.namespace_id
+    }
+
+    #[must_use]
+    pub fn volume_name(&self) -> &VolumeName {
+        &self.volume_name
+    }
+
+    #[must_use]
+    pub fn machine_id(&self) -> &MachineId {
+        &self.machine_id
+    }
+
+    #[must_use]
+    pub fn kind(&self) -> &VolumeKind {
+        &self.kind
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum VolumePinStateError {
+    #[error(
+        "dataset {} does not belong to volume {}/{}",
+        .dataset.as_str(),
+        .namespace_id.as_str(),
+        .volume_name.as_str()
+    )]
+    DatasetIdentityMismatch {
+        namespace_id: NamespaceId,
+        volume_name: VolumeName,
+        dataset: DatasetName,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VolumePinStateWire {
+    namespace_id: NamespaceId,
+    volume_name: VolumeName,
+    machine_id: MachineId,
+    #[serde(default = "plain_volume_kind")]
+    kind: VolumeKind,
+}
+
+impl<'de> Deserialize<'de> for VolumePinState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = VolumePinStateWire::deserialize(deserializer)?;
+        Self::try_new(
+            wire.namespace_id,
+            wire.volume_name,
+            wire.machine_id,
+            wire.kind,
+        )
+        .map_err(serde::de::Error::custom)
+    }
 }
 
 /// Core-owned active-machine roster value.

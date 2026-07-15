@@ -418,14 +418,14 @@ where
         });
     };
     let step_id = StepId::try_new("pre_start").map_err(DeployExecutionError::StepId)?;
-    let mut runtime = service.request.runtime().clone();
+    let mut runtime = service.request.runtime.clone();
     runtime.command = Some(pre_start.command.clone());
     runtime.healthcheck = None;
     runtime.restart_policy = ContainerRestartPolicy::No;
     let identity = ManagedContainerIdentity {
-        namespace_id: service.request.namespace_id.clone(),
+        namespace_id: service.request.namespace_id().clone(),
         service_id: service.request.service_id.clone(),
-        namespace_revision_entry_id: service.request.namespace_revision_entry_id.clone(),
+        namespace_revision_entry_id: service.request.namespace_revision_entry_id(),
         operation_id: command.operation_id.clone(),
         step_id,
         kind: ManagedContainerKind::Predeploy,
@@ -613,7 +613,7 @@ fn container_stop_failed_artifact(
 fn requires_docker_healthcheck(service: &DeployServiceExecutionCommand) -> bool {
     service
         .request
-        .runtime()
+        .runtime
         .healthcheck
         .as_ref()
         .is_some_and(ployz_core::deploy::ContainerHealthcheck::reports_docker_health)
@@ -873,11 +873,11 @@ where
     let requires_docker_healthcheck = requires_docker_healthcheck(service);
     let request = MachineContainerRunRpcRequest {
         pull: machine_image_pull(service, dataplane_members)?,
-        runtime: service.request.runtime().clone(),
+        runtime: service.request.runtime.clone(),
         container: ManagedContainerIdentity {
-            namespace_id: service.request.namespace_id.clone(),
+            namespace_id: service.request.namespace_id().clone(),
             service_id: service.request.service_id.clone(),
-            namespace_revision_entry_id: service.request.namespace_revision_entry_id.clone(),
+            namespace_revision_entry_id: service.request.namespace_revision_entry_id(),
             operation_id: command.operation_id.clone(),
             step_id: step_id.clone(),
             kind: ManagedContainerKind::Service,
@@ -902,10 +902,7 @@ where
             (
                 DeployContainer {
                     service_id: service.request.service_id.clone(),
-                    namespace_revision_entry_id: service
-                        .request
-                        .namespace_revision_entry_id
-                        .clone(),
+                    namespace_revision_entry_id: service.request.namespace_revision_entry_id(),
                     machine_id: machine_id.clone(),
                     container_id: outcome.container_id().clone(),
                     step_id,

@@ -64,11 +64,9 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
         ployz_core::deploy::NormalizedDeployRequest::try_new(resolved_request.clone())
             .expect("request normalizes")
             .services()
-            .iter()
-            .next()
+            .first()
             .expect("resolved fixture has one service")
-            .namespace_revision_entry_id
-            .clone();
+            .namespace_revision_entry_id();
 
     let outcome = run_deploy_operation(
         accepted,

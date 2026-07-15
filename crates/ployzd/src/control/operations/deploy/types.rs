@@ -1,5 +1,5 @@
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployRequest, DeployServiceRequest, ExistingServiceReplica,
+    DeployCleanupContainer, DeployServiceRequest, ExistingServiceReplica, NormalizedDeployRequest,
     RegistryCredential,
 };
 use ployz_core::ids::{
@@ -25,7 +25,7 @@ const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(180);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployExecutionCommand {
     pub(super) operation_id: OperationId,
-    pub(super) request: DeployRequest,
+    pub(super) request: NormalizedDeployRequest,
     pub(super) services: Vec<DeployServiceExecutionCommand>,
     pub(super) route_binding_removals: Vec<RouteBindingState>,
     pub(super) serving_target_removals: Vec<ServingTargetEntry>,
@@ -155,7 +155,7 @@ impl DeployServiceExecutionCommand {
     pub fn serving_target_entry_state(&self) -> ServingTargetEntry {
         let mut volume_names = self
             .request
-            .runtime()
+            .runtime
             .volume_mounts
             .iter()
             .map(|mount| mount.volume_name.clone())
@@ -163,9 +163,9 @@ impl DeployServiceExecutionCommand {
         volume_names.sort();
         volume_names.dedup();
         ServingTargetEntry {
-            namespace_id: self.request.namespace_id.clone(),
+            namespace_id: self.request.namespace_id().clone(),
             service_id: self.request.service_id.clone(),
-            namespace_revision_entry_id: self.request.namespace_revision_entry_id.clone(),
+            namespace_revision_entry_id: self.request.namespace_revision_entry_id(),
             image: self.request.image.clone(),
             desired_replicas: self.request.replicas,
             volume_names,

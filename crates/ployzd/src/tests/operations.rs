@@ -251,8 +251,7 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
         ployz_core::deploy::NormalizedDeployRequest::try_new(resolved_target.clone())
             .expect("request normalizes")
             .services()
-            .iter()
-            .next()
+            .first()
             .expect("resolved deploy target has one service")
             .clone();
     assert_eq!(
@@ -263,7 +262,7 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
         .await?
         .active
         .namespace_revision_entry_id,
-        resolved_service_target.namespace_revision_entry_id.clone()
+        resolved_service_target.namespace_revision_entry_id()
     );
     assert_eq!(
         operation_events(&api, deploy_operation.clone(), accepted.start_sequence).await?,
