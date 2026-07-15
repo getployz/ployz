@@ -130,7 +130,7 @@ where
     };
     let reusable_interrupted_operation_ids = match reusable_interrupted_deploy_operation_ids(
         stores.controllers.repository(),
-        &request.namespace_id,
+        normalized_request.namespace_id(),
         &facts.observed_machines,
     )
     .await
@@ -141,8 +141,8 @@ where
                 &stores.controllers,
                 &accepted,
                 DeployOperationFailure::PlanningFailed {
-                    service_id: request.status_service_id(),
-                    namespace_revision_id: request.namespace_revision_id(),
+                    service_id: normalized_request.status_service_id(),
+                    namespace_revision_id: normalized_request.namespace_revision_id(),
                     message: FailureMessage::try_new(source.to_string())
                         .expect("rendered recovery evidence failure is non-empty"),
                 },

@@ -238,11 +238,11 @@ async fn startup_recovers_process_loss_without_mutating_committed_intent() {
         })
         .await
         .expect("operation is accepted");
-    let volume_pin = VolumePinState {
-        namespace_id: namespace_id("team-a"),
-        volume_name: VolumeName::try_new("uploads").expect("volume name"),
-        machine_id: machine_id("edge_1"),
-    };
+    let volume_pin = VolumePinState::plain(
+        namespace_id("team-a"),
+        VolumeName::try_new("uploads").expect("volume name"),
+        machine_id("edge_1"),
+    );
     let intent = NamespaceIntentStore::new(store);
     intent
         .replace_volume_pin(volume_pin.clone())

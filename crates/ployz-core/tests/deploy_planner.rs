@@ -377,6 +377,7 @@ fn deploy_preparation_rejects_a_service_id_outside_the_validated_request() {
                 eligible_machines: Vec::new(),
                 draining_machines: Vec::new(),
                 observed_machines: Vec::new(),
+                existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
             },
             route_binding_id_for,
         ),
@@ -976,11 +977,14 @@ fn deploy_preparation_marks_interrupted_replicas_for_creation_gating() {
 
 #[test]
 fn promoted_entry_still_gates_replica_from_interrupted_provenance() {
+    let request = deploy_request(2);
+    let entry_id = request.namespace_revision_entry_id(&namespace_id("default"));
+    let normalized = normalized_services(vec![request.clone()], BTreeMap::new());
     let mut completed = observed_container(
         "machine_a",
         "ctr_completed",
         "svc_api",
-        "entry_1",
+        entry_id.as_str(),
         ManagedContainerKind::Service,
         ContainerRuntimeState::running_unroutable(),
     );
@@ -989,14 +993,15 @@ fn promoted_entry_still_gates_replica_from_interrupted_provenance() {
         "machine_b",
         "ctr_interrupted",
         "svc_api",
-        "entry_1",
+        entry_id.as_str(),
         ManagedContainerKind::Service,
         ContainerRuntimeState::running_unroutable(),
     );
     interrupted.identity.operation_id = operation_id("op_interrupted");
     let prepared = prepare_deploy(
         DeployPreparationInput {
-            request: deploy_request(2),
+            request: &normalized,
+            service_id: request.service_id,
             occupied_route_bindings: Vec::new(),
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
             draining_machines: Vec::new(),

@@ -256,7 +256,7 @@ async fn interrupted_deploy_retry_gathers_and_reuses_retained_runtime_work() {
             operation_id: operation_id("op_retry"),
             idempotency_key: idempotency_key("idem_deploy_retry"),
             reservation_id: reserve_deploy(&restarted_controllers).await,
-            target: deploy_request(2),
+            target: normalized_deploy_request(2),
         })
         .await
         .expect("retry deploy accepted by restarted sequencer");
@@ -359,7 +359,7 @@ async fn interrupted_scale_up_replica_is_regated_under_a_promoted_entry() {
             operation_id: operation_id("op_initial"),
             idempotency_key: idempotency_key("idem_initial"),
             reservation_id: reserve_deploy(&controllers).await,
-            target: deploy_request(1),
+            target: normalized_deploy_request(1),
         })
         .await
         .expect("initial deploy accepted");
@@ -416,7 +416,7 @@ async fn interrupted_scale_up_replica_is_regated_under_a_promoted_entry() {
             operation_id: operation_id("op_scale_up"),
             idempotency_key: idempotency_key("idem_scale_up"),
             reservation_id: reserve_deploy(&controllers).await,
-            target: deploy_request(2),
+            target: normalized_deploy_request(2),
         })
         .await
         .expect("scale-up deploy accepted");
@@ -502,7 +502,7 @@ async fn interrupted_scale_up_replica_is_regated_under_a_promoted_entry() {
             operation_id: operation_id("op_scale_retry"),
             idempotency_key: idempotency_key("idem_scale_retry"),
             reservation_id: reserve_deploy(&restarted_controllers).await,
-            target: deploy_request(2),
+            target: normalized_deploy_request(2),
         })
         .await
         .expect("scale-up retry accepted");
