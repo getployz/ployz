@@ -854,6 +854,8 @@ fn volume_placement(
             }
         }
     }
+    new_plain_volumes.sort();
+    new_plain_volumes.dedup();
     pinned_machines.sort();
     pinned_machines.dedup();
     match pinned_machines.as_slice() {

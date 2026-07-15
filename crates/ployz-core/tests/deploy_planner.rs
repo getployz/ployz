@@ -22,11 +22,10 @@ use ployz_core::machine::runtime::{
 use ployz_core::operation::{RouteHostname, RoutePort, RouteTarget};
 use ployz_test_support::containers;
 use ployz_test_support::fixtures::serving_target_entry;
-use ployz_test_support::ids::{
-    container_id, machine_id, namespace_id, namespace_revision_id, route_hostname, service_id,
-};
+use ployz_test_support::ids::{container_id, machine_id, namespace_id, route_hostname, service_id};
 use std::collections::BTreeMap;
 
+#[derive(Clone)]
 struct DeployPlanningInput {
     service: DeployServiceSpec,
     volumes: BTreeMap<VolumeName, VolumeSpec>,
@@ -239,13 +238,11 @@ fn namespace_revision_entry_identity_frames_environment_values() {
 
 #[test]
 fn new_service_plan_runs_replicas_across_eligible_machines() {
+    let input = planning_input(3, [machine_id("machine_a"), machine_id("machine_b")]);
     assert_eq!(
-        plan_single_service(planning_input(
-            3,
-            [machine_id("machine_a"), machine_id("machine_b")]
-        ))
-        .expect("plan succeeds"),
+        plan_single_service(&input).expect("plan succeeds"),
         deploy_plan(
+            &input,
             vec![
                 run_step("machine_a", 1),
                 run_step("machine_b", 2),
@@ -262,8 +259,9 @@ fn service_plan_reuses_running_target_entry_containers() {
     input.existing_replicas = vec![existing_replica("machine_b", "ctr_existing")];
 
     assert_eq!(
-        plan_single_service(input).expect("plan succeeds"),
+        plan_single_service(&input).expect("plan succeeds"),
         deploy_plan(
+            &input,
             vec![
                 use_existing_step("machine_b", "ctr_existing", 1),
                 run_step("machine_a", 2),
@@ -283,8 +281,9 @@ fn service_plan_counts_duplicate_observations_once() {
     ];
 
     assert_eq!(
-        plan_single_service(input).expect("plan succeeds"),
+        plan_single_service(&input).expect("plan succeeds"),
         deploy_plan(
+            &input,
             vec![
                 use_existing_step("machine_b", "ctr_existing", 1),
                 run_step("machine_a", 2),
@@ -300,8 +299,9 @@ fn service_plan_does_not_require_eligible_machines_when_reality_already_satisfie
     input.existing_replicas = vec![existing_replica("machine_b", "ctr_existing")];
 
     assert_eq!(
-        plan_single_service(input).expect("existing reality satisfies target"),
+        plan_single_service(&input).expect("existing reality satisfies target"),
         deploy_plan(
+            &input,
             vec![use_existing_step("machine_b", "ctr_existing", 1)],
             Vec::new()
         )
@@ -322,8 +322,9 @@ fn service_plan_cleans_up_unselected_service_containers_after_success() {
     ];
 
     assert_eq!(
-        plan_single_service(input).expect("plan succeeds"),
+        plan_single_service(&input).expect("plan succeeds"),
         deploy_plan(
+            &input,
             vec![use_existing_step("machine_b", "ctr_target_extra", 1)],
             vec![
                 cleanup_container("machine_b", "ctr_old"),
@@ -336,7 +337,7 @@ fn service_plan_cleans_up_unselected_service_containers_after_success() {
 #[test]
 fn deploy_plan_requires_eligible_machine() {
     assert_eq!(
-        plan_single_service(planning_input(1, [])),
+        plan_single_service(&planning_input(1, [])),
         Err(DeployPlanError::NoEligibleMachines)
     );
 }
@@ -511,7 +512,7 @@ fn pre_start_hook_step_uses_first_run_container_machine() {
         request.pre_start = Some(pre_start_hook());
     });
 
-    let plan = plan_single_service(input).expect("plan succeeds");
+    let plan = plan_single_service(&input).expect("plan succeeds");
     let [phase] = plan.phases.as_slice() else {
         panic!("plan contains one phase");
     };
@@ -535,7 +536,7 @@ fn pre_start_hook_step_is_absent_when_all_containers_are_reused() {
     });
     input.existing_replicas = vec![existing_replica("machine_b", "ctr_existing")];
 
-    let plan = plan_single_service(input).expect("existing reality satisfies target");
+    let plan = plan_single_service(&input).expect("existing reality satisfies target");
     let [phase] = plan.phases.as_slice() else {
         panic!("plan contains one phase");
     };
@@ -555,10 +556,33 @@ fn volume_backed_service_pins_to_first_eligible_machine() {
     );
 
     assert_eq!(
-        plan_single_service(input).expect("plan succeeds"),
+        plan_single_service(&input).expect("plan succeeds"),
         deploy_plan_with_volume_pins(
+            &input,
             vec![run_step("machine_a", 1), run_step("machine_a", 2)],
             vec![volume_pin("postgres_data", "machine_a")],
+            Vec::new(),
+        )
+    );
+}
+
+#[test]
+fn duplicate_plain_volume_mounts_emit_one_pin_commit() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    declare_plain_volume_mounts(
+        &mut input,
+        vec![
+            volume_mount("data", "/data"),
+            volume_mount("data", "/var/lib/data"),
+        ],
+    );
+
+    assert_eq!(
+        plan_single_service(&input).expect("duplicate mounts share one placement pin"),
+        deploy_plan_with_volume_pins(
+            &input,
+            vec![run_step("machine_a", 1)],
+            vec![volume_pin("data", "machine_a")],
             Vec::new(),
         )
     );
@@ -578,7 +602,7 @@ fn provisioned_volume_without_a_dataset_backed_pin_fails_before_plain_pin_commit
     );
 
     assert_eq!(
-        plan_single_service(input),
+        plan_single_service(&input),
         Err(DeployPlanError::ProvisionedVolumeRequiresProvisioning {
             service_id: service_id("svc_api"),
             volume_name: VolumeName::try_new("data").expect("volume name"),
@@ -601,8 +625,8 @@ fn provisioned_volume_with_a_dataset_backed_pin_can_be_placed() {
     input.volume_pins = vec![provisioned_volume_pin("data", "machine_a")];
 
     assert_eq!(
-        plan_single_service(input).expect("dataset-backed pin is placeable"),
-        deploy_plan(vec![run_step("machine_a", 1)], Vec::new())
+        plan_single_service(&input).expect("dataset-backed pin is placeable"),
+        deploy_plan(&input, vec![run_step("machine_a", 1)], Vec::new())
     );
 }
 
@@ -613,7 +637,7 @@ fn plain_declaration_rejects_a_provisioned_pin() {
     input.volume_pins = vec![provisioned_volume_pin("data", "machine_a")];
 
     assert!(matches!(
-        plan_single_service(input),
+        plan_single_service(&input),
         Err(DeployPlanError::VolumePinIncompatible {
             declaration: VolumeSpec::Plain,
             pin_kind: ployz_core::intent::VolumeKind::Provisioned { .. },
@@ -637,7 +661,7 @@ fn provisioned_declaration_rejects_a_plain_pin() {
     input.volume_pins = vec![volume_pin("data", "machine_a")];
 
     assert!(matches!(
-        plan_single_service(input),
+        plan_single_service(&input),
         Err(DeployPlanError::VolumePinIncompatible {
             declaration: VolumeSpec::Provisioned { .. },
             pin_kind: ployz_core::intent::VolumeKind::Plain,
@@ -661,8 +685,8 @@ fn provisioned_declaration_allows_growing_a_pinned_maximum() {
     input.volume_pins = vec![provisioned_volume_pin("data", "machine_a")];
 
     assert_eq!(
-        plan_single_service(input).expect("larger declaration is grow-only"),
-        deploy_plan(vec![run_step("machine_a", 1)], Vec::new())
+        plan_single_service(&input).expect("larger declaration is grow-only"),
+        deploy_plan(&input, vec![run_step("machine_a", 1)], Vec::new())
     );
 }
 
@@ -681,7 +705,7 @@ fn provisioned_declaration_rejects_shrinking_a_pinned_maximum() {
     input.volume_pins = vec![provisioned_volume_pin("data", "machine_a")];
 
     assert_eq!(
-        plan_single_service(input),
+        plan_single_service(&input),
         Err(DeployPlanError::ProvisionedVolumeShrink {
             service_id: service_id("svc_api"),
             volume_name: VolumeName::try_new("data").expect("volume name"),
@@ -701,8 +725,9 @@ fn volume_backed_service_uses_existing_pin() {
     input.volume_pins = vec![volume_pin("postgres_data", "machine_b")];
 
     assert_eq!(
-        plan_single_service(input).expect("plan succeeds"),
+        plan_single_service(&input).expect("plan succeeds"),
         deploy_plan(
+            &input,
             vec![run_step("machine_b", 1), run_step("machine_b", 2)],
             Vec::new()
         )
@@ -719,7 +744,7 @@ fn volume_backed_service_fails_when_existing_pin_is_not_eligible() {
     input.volume_pins = vec![volume_pin("postgres_data", "machine_b")];
 
     assert_eq!(
-        plan_single_service(input),
+        plan_single_service(&input),
         Err(DeployPlanError::NoEligibleMachines)
     );
 }
@@ -742,8 +767,9 @@ fn volume_backed_service_reuses_only_replicas_on_pinned_machine() {
     ];
 
     assert_eq!(
-        plan_single_service(input).expect("plan succeeds"),
+        plan_single_service(&input).expect("plan succeeds"),
         deploy_plan(
+            &input,
             vec![
                 use_existing_step("machine_b", "ctr_pinned", 1),
                 run_step("machine_b", 2),
@@ -795,7 +821,7 @@ fn service_with_volumes_on_different_pinned_machines_fails_planning() {
     ];
 
     assert_eq!(
-        plan_single_service(input),
+        plan_single_service(&input),
         Err(DeployPlanError::ConflictingVolumePins {
             service_id: service_id("svc_api"),
             machines: vec![machine_id("machine_a"), machine_id("machine_b")],
@@ -913,29 +939,25 @@ fn deploy_preparation_evacuates_draining_machine_replicas() {
         )]
     );
 
-    let plan = plan_inputs(
-        vec![DeployPlanningInput {
-            service: prepared.service,
-            volumes: BTreeMap::new(),
-            eligible_machines: prepared.eligible_machines,
-            existing_replicas: prepared.existing_replicas,
-            cleanup_candidates: prepared.cleanup_candidates,
-            volume_pins: Vec::new(),
-        }],
-        Vec::new(),
-    )
-    .expect("plan succeeds");
-    assert_eq!(
-        plan,
-        deploy_plan(
-            vec![run_step("machine_a", 1)],
-            vec![cleanup_container_with_entry(
-                "machine_b",
-                "ctr_target",
-                "entry_1"
-            )],
-        )
+    let input = DeployPlanningInput {
+        service: prepared.service,
+        volumes: BTreeMap::new(),
+        eligible_machines: prepared.eligible_machines,
+        existing_replicas: prepared.existing_replicas,
+        cleanup_candidates: prepared.cleanup_candidates,
+        volume_pins: Vec::new(),
+    };
+    let expected = deploy_plan(
+        &input,
+        vec![run_step("machine_a", 1)],
+        vec![cleanup_container_with_entry(
+            "machine_b",
+            "ctr_target",
+            "entry_1",
+        )],
     );
+    let plan = plan_inputs(vec![input], Vec::new()).expect("plan succeeds");
+    assert_eq!(plan, expected);
 }
 
 #[test]
@@ -1583,8 +1605,8 @@ fn deploy_request(replicas: u16) -> DeployServiceSpec {
 
 /// Plans one service through the namespace planner, the only production
 /// entry point.
-fn plan_single_service(input: DeployPlanningInput) -> Result<DeployPlan, DeployPlanError> {
-    plan_inputs(vec![input], Vec::new())
+fn plan_single_service(input: &DeployPlanningInput) -> Result<DeployPlan, DeployPlanError> {
+    plan_inputs(vec![input.clone()], Vec::new())
 }
 
 fn plan_inputs(
@@ -1618,10 +1640,6 @@ fn plan_inputs(
             .collect(),
         cleanup,
     )
-    .map(|mut plan| {
-        plan.namespace_revision_id = namespace_revision_id("rev_1");
-        plan
-    })
 }
 
 fn normalized_services(
@@ -1638,20 +1656,25 @@ fn normalized_services(
 }
 
 fn deploy_plan(
+    input: &DeployPlanningInput,
     steps: Vec<DeployPlanStep>,
     cleanup_containers: Vec<DeployCleanupContainer>,
 ) -> DeployPlan {
-    deploy_plan_with_volume_pins(steps, Vec::new(), cleanup_containers)
+    deploy_plan_with_volume_pins(input, steps, Vec::new(), cleanup_containers)
 }
 
 fn deploy_plan_with_volume_pins(
+    input: &DeployPlanningInput,
     steps: Vec<DeployPlanStep>,
     volume_pin_commits: Vec<VolumePinState>,
     cleanup_containers: Vec<DeployCleanupContainer>,
 ) -> DeployPlan {
     DeployPlan {
         namespace_id: namespace_id("default"),
-        namespace_revision_id: namespace_revision_id("rev_1"),
+        namespace_revision_id: namespace_revision_id_for(
+            &namespace_id("default"),
+            std::slice::from_ref(&input.service),
+        ),
         phases: vec![DeployPhasePlan {
             services: vec![DeployServicePlan {
                 service_id: service_id("svc_api"),

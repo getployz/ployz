@@ -271,17 +271,32 @@ fn parse_top_level_volume_declaration(
                 ));
                 valid = false;
             }
-            "driver" | "driver_opts" | "name" | "labels" => {
-                let message = match key {
-                    "driver" => "custom volume drivers are not supported; remove driver",
-                    "driver_opts" => "volume driver options are not supported; remove driver_opts",
-                    "name" => {
-                        "volume name overrides are not supported; use the top-level volume key"
-                    }
-                    "labels" => "volume labels are not supported; remove labels",
-                    _ => unreachable!("matched diagnostic key"),
-                };
-                findings.push(ComposeFinding::invalid(path.field(key), message));
+            "driver" => {
+                findings.push(ComposeFinding::invalid(
+                    path.field(key),
+                    "custom volume drivers are not supported; remove driver",
+                ));
+                valid = false;
+            }
+            "driver_opts" => {
+                findings.push(ComposeFinding::invalid(
+                    path.field(key),
+                    "volume driver options are not supported; remove driver_opts",
+                ));
+                valid = false;
+            }
+            "name" => {
+                findings.push(ComposeFinding::invalid(
+                    path.field(key),
+                    "volume name overrides are not supported; use the top-level volume key",
+                ));
+                valid = false;
+            }
+            "labels" => {
+                findings.push(ComposeFinding::invalid(
+                    path.field(key),
+                    "volume labels are not supported; remove labels",
+                ));
                 valid = false;
             }
             other => {
