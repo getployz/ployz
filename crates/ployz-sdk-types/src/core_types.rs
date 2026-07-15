@@ -110,8 +110,8 @@ pub use ployz_core::operation::{
     CertInterruptionStage, CertOperationFailure, CertOperationFailureError, CertOperationState,
     CertRunningStage, CertificateInterruptionNextAction, ControlPlaneCommitScope,
     CoreReplaceFailure, CoreReplaceOperationState, DeployCleanupFailure, DeployCompletionOutcome,
-    DeployImageCleanup, DeployImageCleanupOutcome, DeployInterruptionStage, DeployOperationFailure,
-    DeployOperationState, DeployPhaseNumber, DeployPhaseNumberError, DeployPhaseOutcome,
-    DeployRunningStage, DeployServiceResult, PreStartHookFailure,
+    DeployImageCleanup, DeployInterruptionStage, DeployOperationFailure, DeployOperationState,
+    DeployPhaseNumber, DeployPhaseNumberError, DeployPhaseOutcome, DeployRunningStage,
+    DeployServiceResult, PreStartHookFailure,
 };
 pub use ployz_core::security::NatsPrincipal;

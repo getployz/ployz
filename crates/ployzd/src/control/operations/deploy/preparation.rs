@@ -298,11 +298,6 @@ pub fn namespace_cleanup_candidates(
             machine_id: container.machine_id.clone(),
             container_id: container.container_id.clone(),
             identity: container.identity.clone(),
-            state: container.state.clone(),
-            created_at_unix_seconds: container.created_at_unix_seconds,
-            resolved_image_identity: container.resolved_image_identity.clone(),
-            image_reclamation:
-                ployz_core::deploy::DeployImageReclamation::IneligibleNamespaceOmitted,
         })
         .collect()
 }

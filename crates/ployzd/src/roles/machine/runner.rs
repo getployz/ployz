@@ -58,6 +58,10 @@ pub enum MachineContainerRunnerError {
     ImagePull {
         message: String,
     },
+    ImageRemove {
+        image_identity: OciDigest,
+        message: String,
+    },
     Start {
         container_id: ContainerId,
         message: String,
@@ -117,16 +121,10 @@ pub enum MachineLogTimestamps {
 pub trait MachineContainerRunner {
     fn remove_image(
         &self,
-        _image_identity: &OciDigest,
+        image_identity: &OciDigest,
     ) -> impl Future<
         Output = Result<ployz_core::image::ImageRemoveOutcome, MachineContainerRunnerError>,
-    > + Send {
-        async {
-            Err(MachineContainerRunnerError::ImagePull {
-                message: "image removal is unavailable".to_owned(),
-            })
-        }
-    }
+    > + Send;
 
     fn existing_managed_containers(
         &self,

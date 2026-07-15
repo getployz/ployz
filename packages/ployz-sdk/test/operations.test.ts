@@ -364,6 +364,7 @@ test("sdk maps raw deploy input to the wire request", () => {
           service_id: "svc_api",
           image: "ghcr.io/acme/api:rev-2",
           replicas: 1,
+          keep: 0,
           runtime: {
             command: null,
             entrypoint: null,
@@ -394,13 +395,14 @@ test("sdk maps raw deploy input to the wire request", () => {
             service_id: "svc_api",
             image: "ghcr.io/acme/api:rev-2",
             replicas: 1,
+            keep: 0,
             runtime: {
-            command: null,
-            entrypoint: null,
-            environment: {},
-            stop_grace_period: 10,
-            volume_mounts: [],
-          },
+              command: null,
+              entrypoint: null,
+              environment: {},
+              stop_grace_period: 10,
+              volume_mounts: [],
+            },
             routes: [
               {
                 target: {
@@ -1223,6 +1225,7 @@ function deployInput() {
     serviceId: "svc_api",
     image: "ghcr.io/acme/api:rev-2",
     replicas: 1,
+    keep: 0,
   };
 }
 

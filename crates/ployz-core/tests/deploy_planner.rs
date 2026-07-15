@@ -5,10 +5,11 @@ use ployz_core::deploy::{
     DeployPlanningInput as CoreDeployPlanningInput, DeployPreparationInput, DeployRoute,
     DeployRouteTarget, DeployServicePlan, DeployServiceSpec, EnvName, EnvValue,
     ExistingReplicaCreationGate, ExistingReplicaPolicy, ExistingServiceReplica,
-    HealthcheckShellCommand, ImageReference, ImageSource, PlatformImage, PreStartHook,
-    PreStartHookStep, PushedImageReceipt, ReplicaCount, ReplicaSlot, ServiceDependency,
-    ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeMaxSizeBytes, VolumeName,
-    VolumeSpec, ZfsPoolName, auto_hostname_route_binding_commits, namespace_revision_id_for,
+    HealthcheckShellCommand, ImageReference, ImageSource, ObservedCleanupCandidate, PlatformImage,
+    PreStartHook, PreStartHookStep, PushedImageReceipt, ReplicaCount, ReplicaSlot,
+    ServiceDependency, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod,
+    VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName,
+    auto_hostname_route_binding_commits, namespace_revision_id_for,
     namespace_route_binding_removals, namespace_serving_target_removals, plan_namespace_deploy,
     prepare_deploy, validate_deploy_route_bindings,
 };
@@ -34,7 +35,7 @@ struct DeployPlanningInput {
     volumes: BTreeMap<VolumeName, VolumeSpec>,
     eligible_machines: Vec<MachineId>,
     existing_replicas: Vec<ExistingServiceReplica>,
-    cleanup_candidates: Vec<DeployCleanupContainer>,
+    cleanup_candidates: Vec<ObservedCleanupCandidate>,
     volume_pins: Vec<VolumePinState>,
 }
 
@@ -343,9 +344,9 @@ fn service_plan_cleans_up_unselected_service_containers_after_success() {
         existing_replica("machine_b", "ctr_target_extra"),
     ];
     input.cleanup_candidates = vec![
-        cleanup_container("machine_b", "ctr_target_keep"),
-        cleanup_container("machine_b", "ctr_target_extra"),
-        cleanup_container("machine_b", "ctr_old"),
+        cleanup_container_observed("machine_b", "ctr_target_keep", true, None),
+        cleanup_container_observed("machine_b", "ctr_target_extra", true, None),
+        cleanup_container_observed("machine_b", "ctr_old", true, None),
     ];
 
     assert_eq!(
@@ -376,10 +377,11 @@ fn service_keep_retains_newest_stopped_superseded_containers_without_counting_ru
     assert_eq!(
         plan.cleanup_containers,
         vec![
-            cleanup_container_observed("machine_a", "ctr_running_scale_down", true, Some(30)),
-            cleanup_container_observed("machine_a", "ctr_stopped_old", false, Some(10)),
+            cleanup_container("machine_a", "ctr_running_scale_down"),
+            cleanup_container("machine_a", "ctr_stopped_old"),
         ]
     );
+    assert_eq!(plan.image_reclamations.len(), 1);
 }
 
 #[test]
@@ -395,13 +397,9 @@ fn service_keep_treats_missing_created_time_as_newest_retained_evidence() {
 
     assert_eq!(
         plan.cleanup_containers,
-        vec![cleanup_container_observed(
-            "machine_a",
-            "ctr_known",
-            false,
-            Some(20)
-        )]
+        vec![cleanup_container("machine_a", "ctr_known")]
     );
+    assert_eq!(plan.image_reclamations.len(), 1);
 }
 
 #[test]
@@ -417,7 +415,20 @@ fn service_keep_zero_retains_no_stopped_superseded_containers() {
 
     let plan = plan_single_service(&input).expect("retention plan succeeds");
 
-    assert_eq!(plan.cleanup_containers, input.cleanup_candidates);
+    assert_eq!(
+        plan.cleanup_containers,
+        input
+            .cleanup_candidates
+            .iter()
+            .map(|candidate| candidate.target.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(matches!(
+        plan.image_reclamations.as_slice(),
+        [ployz_core::deploy::DeployImageReclamation::Remove { target, image_identity }]
+            if target.container_id == container_id("ctr_stopped")
+                && image_identity == &OciDigest::sha256(b"ctr_stopped")
+    ));
 }
 
 #[test]
@@ -435,12 +446,7 @@ fn service_keep_breaks_created_time_ties_deterministically_after_excluding_selec
 
     assert_eq!(
         plan.cleanup_containers,
-        vec![cleanup_container_observed(
-            "machine_b",
-            "ctr_b",
-            false,
-            Some(10)
-        )]
+        vec![cleanup_container("machine_b", "ctr_b")]
     );
 }
 
@@ -898,8 +904,8 @@ fn volume_backed_service_reuses_only_replicas_on_pinned_machine() {
         existing_replica("machine_b", "ctr_pinned"),
     ];
     input.cleanup_candidates = vec![
-        cleanup_container("machine_a", "ctr_off_pin"),
-        cleanup_container("machine_b", "ctr_pinned"),
+        cleanup_container_observed("machine_a", "ctr_off_pin", true, None),
+        cleanup_container_observed("machine_b", "ctr_pinned", true, None),
     ];
 
     assert_eq!(
@@ -1031,17 +1037,12 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
         prepared.existing_replicas,
         vec![existing_replica("machine_b", "ctr_target")]
     );
-    let mut exited_cleanup =
-        cleanup_container_with_entry("machine_b", "ctr_exited", entry_id.as_str());
-    exited_cleanup.state = ContainerRuntimeState::Exited;
-    exited_cleanup.image_reclamation =
-        ployz_core::deploy::DeployImageReclamation::EligibleSuperseded;
     assert_eq!(
         prepared.cleanup_candidates,
         vec![
-            cleanup_container_with_entry("machine_b", "ctr_target", entry_id.as_str()),
-            cleanup_container_with_entry("machine_b", "ctr_old", "entry_old"),
-            exited_cleanup,
+            observed_cleanup_candidate("machine_b", "ctr_target", entry_id.as_str(), true, None),
+            observed_cleanup_candidate("machine_b", "ctr_old", "entry_old", true, None),
+            observed_cleanup_candidate("machine_b", "ctr_exited", entry_id.as_str(), false, None),
         ]
     );
 }
@@ -1179,10 +1180,12 @@ fn deploy_preparation_evacuates_draining_machine_replicas() {
     assert_eq!(prepared.existing_replicas, Vec::new());
     assert_eq!(
         prepared.cleanup_candidates,
-        vec![cleanup_container_with_entry(
+        vec![observed_cleanup_candidate(
             "machine_b",
             "ctr_target",
-            "entry_1"
+            "entry_1",
+            true,
+            None,
         )]
     );
 
@@ -1945,6 +1948,7 @@ fn deploy_plan_with_volume_pins(
         }],
         volume_pin_commits,
         cleanup_containers,
+        image_reclamations: Vec::new(),
     }
 }
 
@@ -2099,14 +2103,6 @@ fn cleanup_container_with_entry(
             .operation("op_existing")
             .step(container)
             .build(),
-        state: ployz_core::machine::runtime::ContainerRuntimeState::running_unroutable(),
-        created_at_unix_seconds: None,
-        resolved_image_identity: None,
-        image_reclamation: if namespace_revision_entry == "entry_old" {
-            ployz_core::deploy::DeployImageReclamation::EligibleSuperseded
-        } else {
-            ployz_core::deploy::DeployImageReclamation::IneligibleRunningPolicy
-        },
     }
 }
 
@@ -2115,19 +2111,34 @@ fn cleanup_container_observed(
     container: &str,
     running: bool,
     created_at_unix_seconds: Option<i64>,
-) -> DeployCleanupContainer {
-    let mut target = cleanup_container(machine, container);
-    target.state = if running {
-        ployz_core::machine::runtime::ContainerRuntimeState::running_unroutable()
-    } else {
-        ployz_core::machine::runtime::ContainerRuntimeState::Exited
-    };
-    target.created_at_unix_seconds = created_at_unix_seconds;
-    target.resolved_image_identity = Some(format!("sha256:{container}"));
-    if !running {
-        target.image_reclamation = ployz_core::deploy::DeployImageReclamation::EligibleSuperseded;
+) -> ObservedCleanupCandidate {
+    let target = cleanup_container(machine, container);
+    ObservedCleanupCandidate {
+        state: if running {
+            ployz_core::machine::runtime::ContainerRuntimeState::running_unroutable()
+        } else {
+            ployz_core::machine::runtime::ContainerRuntimeState::Exited
+        },
+        created_at_unix_seconds,
+        resolved_image_identity: Some(OciDigest::sha256(container.as_bytes())),
+        image_reclamation_eligible: !running,
+        target,
     }
-    target
+}
+
+fn observed_cleanup_candidate(
+    machine: &str,
+    container: &str,
+    entry: &str,
+    running: bool,
+    created_at_unix_seconds: Option<i64>,
+) -> ObservedCleanupCandidate {
+    let mut candidate =
+        cleanup_container_observed(machine, container, running, created_at_unix_seconds);
+    candidate.target = cleanup_container_with_entry(machine, container, entry);
+    candidate.resolved_image_identity = None;
+    candidate.image_reclamation_eligible = !running || entry == "entry_old";
+    candidate
 }
 
 fn observed_machine(

@@ -543,7 +543,7 @@ where
         Err(error) => return invalid_request(machine_id, error),
     };
     let ImageRemoveRequest {
-        operation_id: _,
+        operation_id,
         image_identity,
     } = request;
     match docker.remove_image(&image_identity).await {
@@ -554,7 +554,11 @@ where
         Err(error) => image_error(
             machine_id,
             ImageRpcDomainError::StorageFailed {
-                message: failure_message(runner_error_message(error)),
+                message: failure_message(format!(
+                    "operation {} image removal failed: {}",
+                    operation_id.as_str(),
+                    runner_error_message(error)
+                )),
             },
         ),
     }
@@ -727,6 +731,7 @@ fn runner_error_message(
         | MachineContainerRunnerError::EnsureEndpointNetwork { message }
         | MachineContainerRunnerError::Create { message }
         | MachineContainerRunnerError::ImagePull { message }
+        | MachineContainerRunnerError::ImageRemove { message, .. }
         | MachineContainerRunnerError::Start { message, .. }
         | MachineContainerRunnerError::Wait { message, .. }
         | MachineContainerRunnerError::Stop { message, .. }

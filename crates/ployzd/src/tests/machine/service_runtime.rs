@@ -1345,6 +1345,13 @@ impl RecordingRunner {
 }
 
 impl MachineContainerRunner for RecordingRunner {
+    async fn remove_image(
+        &self,
+        _image_identity: &ployz_core::image::OciDigest,
+    ) -> Result<ployz_core::image::ImageRemoveOutcome, MachineContainerRunnerError> {
+        Ok(ployz_core::image::ImageRemoveOutcome::AlreadyAbsent)
+    }
+
     async fn existing_managed_containers(
         &self,
     ) -> Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError> {

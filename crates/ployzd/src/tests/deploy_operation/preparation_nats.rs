@@ -477,6 +477,13 @@ impl StaticRunner {
 }
 
 impl MachineContainerRunner for StaticRunner {
+    async fn remove_image(
+        &self,
+        _image_identity: &ployz_core::image::OciDigest,
+    ) -> Result<ployz_core::image::ImageRemoveOutcome, MachineContainerRunnerError> {
+        Ok(ployz_core::image::ImageRemoveOutcome::AlreadyAbsent)
+    }
+
     async fn existing_managed_containers(
         &self,
     ) -> Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError> {
@@ -776,7 +783,7 @@ fn cleanup_container(
     machine_id: &str,
     container_id: &str,
     namespace_revision_entry_id: &str,
-) -> DeployCleanupContainer {
+) -> ployz_core::deploy::ObservedCleanupCandidate {
     cleanup_container_with_entry(
         machine_id,
         container_id,
@@ -788,23 +795,21 @@ fn cleanup_container_with_entry(
     machine_id: &str,
     container_id: &str,
     namespace_revision_entry_id: NamespaceRevisionEntryId,
-) -> DeployCleanupContainer {
-    DeployCleanupContainer {
-        machine_id: self::machine_id(machine_id),
-        container_id: self::container_id(container_id),
-        identity: containers::identity("svc_api")
-            .entry(namespace_revision_entry_id.as_str())
-            .operation("op_existing")
-            .step(&format!("existing_{container_id}"))
-            .build(),
+) -> ployz_core::deploy::ObservedCleanupCandidate {
+    ployz_core::deploy::ObservedCleanupCandidate {
+        target: DeployCleanupContainer {
+            machine_id: self::machine_id(machine_id),
+            container_id: self::container_id(container_id),
+            identity: containers::identity("svc_api")
+                .entry(namespace_revision_entry_id.as_str())
+                .operation("op_existing")
+                .step(&format!("existing_{container_id}"))
+                .build(),
+        },
         state: ployz_core::machine::runtime::ContainerRuntimeState::running_unroutable(),
         created_at_unix_seconds: None,
         resolved_image_identity: None,
-        image_reclamation: if namespace_revision_entry_id.as_str() == "entry_old" {
-            ployz_core::deploy::DeployImageReclamation::EligibleSuperseded
-        } else {
-            ployz_core::deploy::DeployImageReclamation::IneligibleRunningPolicy
-        },
+        image_reclamation_eligible: namespace_revision_entry_id.as_str() == "entry_old",
     }
 }
 
@@ -812,9 +817,9 @@ fn stopped_cleanup_container(
     machine_id: &str,
     container_id: &str,
     namespace_revision_entry_id: &str,
-) -> DeployCleanupContainer {
+) -> ployz_core::deploy::ObservedCleanupCandidate {
     let mut target = cleanup_container(machine_id, container_id, namespace_revision_entry_id);
     target.state = ployz_core::machine::runtime::ContainerRuntimeState::Exited;
-    target.image_reclamation = ployz_core::deploy::DeployImageReclamation::EligibleSuperseded;
+    target.image_reclamation_eligible = true;
     target
 }

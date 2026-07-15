@@ -18,6 +18,7 @@ use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 pub mod images;
 pub mod planning;
 pub mod request;
+mod retention;
 pub mod revision;
 pub mod routes;
 pub mod runtime;
@@ -32,6 +33,7 @@ pub use request::{
     DeployServiceSpec, DeployVolumeDeclarationError, PreStartHook, ReplicaCount, ReplicaCountError,
     ServiceDependency, VolumeDeclaredDeployRequest,
 };
+pub use retention::{DeployCleanupContainer, DeployImageReclamation, ObservedCleanupCandidate};
 pub use revision::{
     canonical_capabilities, namespace_revision_entry_id_for, namespace_revision_id_for,
 };

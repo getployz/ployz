@@ -1733,10 +1733,6 @@ pub(super) fn cleanup_container_with_entry(
             .operation("op_existing")
             .step(&format!("existing_{container_id}"))
             .build(),
-        state: ployz_core::machine::runtime::ContainerRuntimeState::running_unroutable(),
-        created_at_unix_seconds: None,
-        resolved_image_identity: None,
-        image_reclamation: ployz_core::deploy::DeployImageReclamation::EligibleSuperseded,
     }
 }
 

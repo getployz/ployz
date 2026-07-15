@@ -843,11 +843,10 @@ async fn deploy_worker_reclaims_only_the_image_of_successfully_removed_supersede
         outcome.completion_outcome(),
         DeployCompletionOutcome::Completed
     );
-    let expected = ployz_core::operation::DeployImageCleanup {
+    let expected = ployz_core::operation::DeployImageCleanup::RetainedInUse {
         machine_id: machine_id("machine_b"),
         service_id: service_id("svc_api"),
-        image_identity: Some(ployz_core::image::OciDigest::sha256(b"old image")),
-        outcome: ployz_core::operation::DeployImageCleanupOutcome::RetainedInUse,
+        image_identity: ployz_core::image::OciDigest::sha256(b"old image"),
     };
     assert!(recorder.records.iter().any(|record| matches!(
         record,
@@ -876,9 +875,7 @@ async fn empty_deploy_removes_running_namespace_containers() {
     .await
     .expect("empty deploy succeeds");
 
-    let mut cleanup_target = cleanup_container("machine_b", "ctr_old", "entry_old");
-    cleanup_target.image_reclamation =
-        ployz_core::deploy::DeployImageReclamation::IneligibleNamespaceOmitted;
+    let cleanup_target = cleanup_container("machine_b", "ctr_old", "entry_old");
     assert_eq!(
         runtime.removals,
         vec![(

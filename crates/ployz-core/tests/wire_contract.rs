@@ -977,10 +977,6 @@ fn deploy_cleanup_container_wire_shape_nests_identity() {
             .operation("op_old")
             .step("step_old")
             .build(),
-        state: ployz_core::machine::runtime::ContainerRuntimeState::Exited,
-        created_at_unix_seconds: None,
-        resolved_image_identity: None,
-        image_reclamation: ployz_core::deploy::DeployImageReclamation::EligibleSuperseded,
     };
 
     assert_eq!(
@@ -996,8 +992,6 @@ fn deploy_cleanup_container_wire_shape_nests_identity() {
                 "step_id": "step_old",
                 "kind": "service",
             },
-            "state": { "state": "exited" },
-            "image_reclamation": "eligible_superseded",
         })
     );
     let legacy = serde_json::json!({
@@ -1014,10 +1008,7 @@ fn deploy_cleanup_container_wire_shape_nests_identity() {
     });
     let legacy: ployz_core::deploy::DeployCleanupContainer =
         serde_json::from_value(legacy).expect("legacy cleanup evidence deserializes");
-    assert_eq!(
-        legacy.image_reclamation,
-        ployz_core::deploy::DeployImageReclamation::IneligibleRunningPolicy
-    );
+    assert_eq!(legacy, cleanup);
 }
 
 #[test]

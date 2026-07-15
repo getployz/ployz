@@ -8,7 +8,7 @@ pub struct DeployPlanningInput {
     pub service_id: ServiceId,
     pub eligible_machines: Vec<MachineId>,
     pub existing_replicas: Vec<ExistingServiceReplica>,
-    pub cleanup_candidates: Vec<DeployCleanupContainer>,
+    pub cleanup_candidates: Vec<ObservedCleanupCandidate>,
     pub volume_pins: Vec<VolumePinState>,
 }
 
@@ -46,41 +46,6 @@ pub enum ExistingReplicaPolicy {
     ExcludeUnpromoted,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct DeployCleanupContainer {
-    pub machine_id: MachineId,
-    pub container_id: ContainerId,
-    pub identity: ManagedContainerIdentity,
-    #[serde(default = "default_cleanup_container_state")]
-    pub state: crate::machine::runtime::ContainerRuntimeState,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub created_at_unix_seconds: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resolved_image_identity: Option<String>,
-    #[serde(default = "default_image_reclamation")]
-    pub image_reclamation: DeployImageReclamation,
-}
-
-fn default_cleanup_container_state() -> crate::machine::runtime::ContainerRuntimeState {
-    crate::machine::runtime::ContainerRuntimeState::Exited
-}
-
-const fn default_image_reclamation() -> DeployImageReclamation {
-    DeployImageReclamation::IneligibleRunningPolicy
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(rename_all = "snake_case")]
-pub enum DeployImageReclamation {
-    EligibleSuperseded,
-    IneligibleRunningPolicy,
-    IneligibleNamespaceOmitted,
-    IneligibleFailedPhase,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployPreparationInput<'a> {
     pub request: &'a VolumeDeclaredDeployRequest,
@@ -105,7 +70,7 @@ pub struct PreparedDeploy {
     pub route_commits: Vec<RouteBindingState>,
     pub eligible_machines: Vec<MachineId>,
     pub existing_replicas: Vec<ExistingServiceReplica>,
-    pub cleanup_candidates: Vec<DeployCleanupContainer>,
+    pub cleanup_candidates: Vec<ObservedCleanupCandidate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +84,8 @@ pub struct DeployPlan {
     pub volume_pin_commits: Vec<VolumePinState>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cleanup_containers: Vec<DeployCleanupContainer>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image_reclamations: Vec<DeployImageReclamation>,
 }
 
 impl DeployPlan {
@@ -399,7 +366,7 @@ fn cleanup_candidates(
     service: &DeployServiceSpec,
     observed_machines: &[MachineContainerObservationSnapshot],
     draining_machines: &[MachineId],
-) -> Vec<DeployCleanupContainer> {
+) -> Vec<ObservedCleanupCandidate> {
     observed_machines
         .iter()
         .flat_map(MachineContainerObservationSnapshot::containers)
@@ -408,22 +375,22 @@ fn cleanup_candidates(
                 && container.identity.namespace_id == *namespace_id
                 && container.identity.service_id == service.service_id
         })
-        .map(|container| DeployCleanupContainer {
-            machine_id: container.machine_id.clone(),
-            container_id: container.container_id.clone(),
-            identity: container.identity.clone(),
+        .map(|container| ObservedCleanupCandidate {
+            target: DeployCleanupContainer {
+                machine_id: container.machine_id.clone(),
+                container_id: container.container_id.clone(),
+                identity: container.identity.clone(),
+            },
             state: container.state.clone(),
             created_at_unix_seconds: container.created_at_unix_seconds,
-            resolved_image_identity: container.resolved_image_identity.clone(),
-            image_reclamation: if !container.state.is_running()
+            resolved_image_identity: container
+                .resolved_image_identity
+                .as_ref()
+                .and_then(|identity| crate::image::OciDigest::try_new(identity.clone()).ok()),
+            image_reclamation_eligible: !container.state.is_running()
                 || (!draining_machines.contains(&container.machine_id)
                     && container.identity.namespace_revision_entry_id
-                        != service.namespace_revision_entry_id(namespace_id))
-            {
-                DeployImageReclamation::EligibleSuperseded
-            } else {
-                DeployImageReclamation::IneligibleRunningPolicy
-            },
+                        != service.namespace_revision_entry_id(namespace_id)),
         })
         .collect()
 }
@@ -625,6 +592,7 @@ pub fn plan_namespace_deploy(
     let mut phase_plans = Vec::new();
     let mut cleanup_containers = cleanup_containers;
     let mut volume_pin_commits = Vec::new();
+    let mut image_reclamations = Vec::new();
     let mut working_volume_pins = phases
         .iter()
         .flatten()
@@ -638,6 +606,7 @@ pub fn plan_namespace_deploy(
             let plan = plan_deploy_service(request, input)?;
             working_volume_pins.extend(plan.volume_pin_commits.clone());
             volume_pin_commits.extend(plan.volume_pin_commits);
+            image_reclamations.extend(plan.image_reclamations);
             services.push(DeployServicePlan {
                 service_id: plan.service_id,
                 steps: plan.steps,
@@ -654,6 +623,7 @@ pub fn plan_namespace_deploy(
         phases: phase_plans,
         volume_pin_commits,
         cleanup_containers,
+        image_reclamations,
     })
 }
 
@@ -762,6 +732,7 @@ pub struct DeploySingleServicePlan {
     pub pre_start: Option<PreStartHookStep>,
     pub volume_pin_commits: Vec<VolumePinState>,
     pub cleanup_containers: Vec<DeployCleanupContainer>,
+    pub image_reclamations: Vec<DeployImageReclamation>,
 }
 
 fn plan_deploy_service(
@@ -830,33 +801,11 @@ fn plan_deploy_service(
             DeployPlanStep::RunContainer { .. } => None,
         })
         .collect::<Vec<_>>();
-    let mut cleanup_containers = input.cleanup_candidates;
-    cleanup_containers.retain(|candidate| !selected_containers.contains(&&candidate.container_id));
-    if let Some(keep) = service.keep {
-        let mut retained = cleanup_containers
-            .iter()
-            .filter(|candidate| !candidate.state.is_running())
-            .collect::<Vec<_>>();
-        retained.sort_by(|left, right| {
-            match (left.created_at_unix_seconds, right.created_at_unix_seconds) {
-                (None, Some(_)) => std::cmp::Ordering::Less,
-                (Some(_), None) => std::cmp::Ordering::Greater,
-                (left, right) => right.cmp(&left),
-            }
-            .then_with(|| left.machine_id.cmp(&right.machine_id))
-            .then_with(|| left.container_id.cmp(&right.container_id))
-        });
-        let retained = retained
-            .into_iter()
-            .take(usize::from(keep.get()))
-            .map(|candidate| (candidate.machine_id.clone(), candidate.container_id.clone()))
-            .collect::<std::collections::BTreeSet<_>>();
-        cleanup_containers.retain(|candidate| {
-            candidate.state.is_running()
-                || !retained
-                    .contains(&(candidate.machine_id.clone(), candidate.container_id.clone()))
-        });
-    }
+    let (mut cleanup_containers, image_reclamations) = super::retention::plan_cleanup(
+        input.cleanup_candidates,
+        &selected_containers,
+        service.keep,
+    );
     cleanup_containers.sort_by(|left, right| {
         left.machine_id
             .cmp(&right.machine_id)
@@ -881,6 +830,7 @@ fn plan_deploy_service(
         pre_start,
         volume_pin_commits: volume_placement.commits,
         cleanup_containers,
+        image_reclamations,
     })
 }
 

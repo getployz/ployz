@@ -158,7 +158,10 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
     ) -> Result<ployz_core::image::ImageRemoveOutcome, MachineContainerRunnerError> {
         DockerManagedContainerRunner::remove_image(self, image_identity)
             .await
-            .map_err(|message| MachineContainerRunnerError::ImagePull { message })
+            .map_err(|message| MachineContainerRunnerError::ImageRemove {
+                image_identity: image_identity.clone(),
+                message,
+            })
     }
 
     async fn existing_managed_containers(
@@ -1090,6 +1093,103 @@ mod tests {
 
         assert!(!options.force);
         assert!(!options.noprune);
+    }
+
+    #[tokio::test]
+    async fn image_reclamation_maps_docker_success() {
+        assert_remove_image_outcome(200, ployz_core::image::ImageRemoveOutcome::Removed).await;
+    }
+
+    #[tokio::test]
+    async fn image_reclamation_maps_docker_not_found() {
+        assert_remove_image_outcome(404, ployz_core::image::ImageRemoveOutcome::AlreadyAbsent)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn image_reclamation_maps_docker_conflict_to_retained_in_use() {
+        assert_remove_image_outcome(409, ployz_core::image::ImageRemoveOutcome::RetainedInUse)
+            .await;
+    }
+
+    async fn assert_remove_image_outcome(
+        status: u16,
+        expected: ployz_core::image::ImageRemoveOutcome,
+    ) {
+        let (runner, request, _socket_dir) = remove_image_runner(status).await;
+        let digest = OciDigest::sha256(b"superseded image");
+
+        let outcome = runner
+            .remove_image(&digest)
+            .await
+            .expect("Docker image removal returns a typed outcome");
+
+        assert_eq!(outcome, expected);
+        let request = request.await.expect("Docker stub records request");
+        assert!(request.starts_with("DELETE "), "{request}");
+        assert!(request.contains("force=false"), "{request}");
+        assert!(request.contains("noprune=false"), "{request}");
+    }
+
+    async fn remove_image_runner(
+        status: u16,
+    ) -> (
+        DockerManagedContainerRunner,
+        tokio::sync::oneshot::Receiver<String>,
+        tempfile::TempDir,
+    ) {
+        let socket_dir = tempfile::TempDir::new().expect("Docker API stub directory");
+        let socket_path = socket_dir.path().join("docker.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind Docker API stub");
+        let (request_tx, request_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept Docker API request");
+            let mut request = Vec::new();
+            let mut buffer = [0; 512];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).await.expect("read Docker request");
+                assert_ne!(read, 0, "Docker request ended before headers");
+                request.extend_from_slice(
+                    buffer
+                        .get(..read)
+                        .expect("read length is bounded by buffer"),
+                );
+            }
+            request_tx
+                .send(String::from_utf8(request).expect("Docker request is UTF-8"))
+                .expect("test receives Docker request");
+            let (reason, body) = match status {
+                200 => ("OK", "[]"),
+                404 => ("Not Found", r#"{"message":"not found"}"#),
+                409 => ("Conflict", r#"{"message":"image is in use"}"#),
+                _ => panic!("unsupported Docker stub status"),
+            };
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("write Docker response");
+        });
+        let docker = Docker::connect_with_socket(
+            socket_path.to_str().expect("UTF-8 Docker socket path"),
+            5,
+            bollard::API_DEFAULT_VERSION,
+        )
+        .expect("connect Docker API stub");
+        (
+            DockerManagedContainerRunner {
+                docker: DockerHandle::Connected(docker),
+                endpoint_network_subnet: TEST_ENDPOINT_SUBNET.to_owned(),
+                endpoint_bridge_ifname: "br-test".to_owned(),
+                endpoint_wg_ifname: "wg-test".to_owned(),
+                endpoint_mtu_policy: WireGuardMtuPolicy::Fixed(1_420),
+            },
+            request_rx,
+            socket_dir,
+        )
     }
 
     #[tokio::test]

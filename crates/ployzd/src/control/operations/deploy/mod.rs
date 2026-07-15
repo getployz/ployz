@@ -20,8 +20,8 @@ use ployz_core::ids::{OperationId, StepId, SubjectTokenError};
 use ployz_core::machine::runtime::ManagedContainerKind;
 use ployz_core::operation::{
     ControlPlaneCommitScope, DeployCleanupFailure, DeployEvidence, DeployImageCleanup,
-    DeployImageCleanupOutcome, DeployPhaseNumber, DeployPhaseOutcome, DeployRunningStage,
-    DeployServiceResult, DeployTransition, FailureMessage, OperatorHint, RetainedArtifact,
+    DeployPhaseNumber, DeployPhaseOutcome, DeployRunningStage, DeployServiceResult,
+    DeployTransition, FailureMessage, OperatorHint, RetainedArtifact,
 };
 
 #[cfg(test)]
@@ -342,14 +342,20 @@ where
     }
     let (cleanup, image_cleanup) =
         cleanup_superseded_containers(command, &mut *ports.machine_runtime, &plan).await;
-    let terminal_event =
-        record_terminal_state(command, &mut *ports.recorder, &cleanup, image_cleanup).await;
+    let terminal_event = record_terminal_state(
+        command,
+        &mut *ports.recorder,
+        &cleanup,
+        image_cleanup.clone(),
+    )
+    .await;
 
     let outcome = DeployExecutionOutcome {
         namespace_id: plan.namespace_id,
         namespace_revision_id: plan.namespace_revision_id,
         containers,
         cleanup,
+        image_cleanup,
         terminal_event,
     };
 
@@ -538,90 +544,14 @@ where
         }
     }
 
-    let image_cleanup = reclaim_removed_images(command, machine_runtime, &cleanup).await;
+    let image_cleanup = images::reclaim_removed_images(
+        command,
+        machine_runtime,
+        &cleanup,
+        &plan.image_reclamations,
+    )
+    .await;
     (cleanup, image_cleanup)
-}
-
-async fn reclaim_removed_images<N>(
-    command: &DeployExecutionCommand,
-    machine_runtime: &mut N,
-    cleanup: &[DeployCleanupResult],
-) -> Vec<DeployImageCleanup>
-where
-    N: MachineContainerRuntime,
-{
-    let mut image_cleanup = Vec::new();
-    let mut attempted_images = std::collections::BTreeSet::new();
-    for target in cleanup.iter().filter_map(|result| match result {
-        DeployCleanupResult::Removed(target) => Some(target),
-        DeployCleanupResult::Failed { .. } => None,
-    }) {
-        let reclaim_enabled = target.image_reclamation
-            == ployz_core::deploy::DeployImageReclamation::EligibleSuperseded
-            && command
-                .request
-                .service(&target.identity.service_id)
-                .is_some_and(|service| service.keep.is_some());
-        if !reclaim_enabled {
-            continue;
-        }
-        let Some(image_identity) = target
-            .resolved_image_identity
-            .as_ref()
-            .and_then(|identity| ployz_core::image::OciDigest::try_new(identity.clone()).ok())
-        else {
-            image_cleanup.push(DeployImageCleanup {
-                machine_id: target.machine_id.clone(),
-                service_id: target.identity.service_id.clone(),
-                image_identity: None,
-                outcome: DeployImageCleanupOutcome::MissingIdentity,
-            });
-            continue;
-        };
-        if !attempted_images.insert((target.machine_id.clone(), image_identity.clone())) {
-            continue;
-        }
-        let request = ployz_core::image::ImageRemoveRequest {
-            operation_id: command.operation_id.clone(),
-            image_identity: image_identity.clone(),
-        };
-        let result = tokio::time::timeout(
-            command.step_timeout(),
-            machine_runtime.remove_image(&target.machine_id, request),
-        )
-        .await;
-        let outcome = match result {
-            Ok(Ok(ok)) => match ok.outcome {
-                ployz_core::image::ImageRemoveOutcome::Removed => {
-                    DeployImageCleanupOutcome::Removed
-                }
-                ployz_core::image::ImageRemoveOutcome::AlreadyAbsent => {
-                    DeployImageCleanupOutcome::AlreadyAbsent
-                }
-                ployz_core::image::ImageRemoveOutcome::RetainedInUse => {
-                    DeployImageCleanupOutcome::RetainedInUse
-                }
-            },
-            Ok(Err(error)) => DeployImageCleanupOutcome::Failed {
-                message: FailureMessage::try_new(format!("image reclamation failed: {error:?}"))
-                    .expect("generated image reclamation failure is non-empty"),
-            },
-            Err(_) => DeployImageCleanupOutcome::Failed {
-                message: FailureMessage::try_new(format!(
-                    "image reclamation timed out after {} seconds",
-                    command.step_timeout().as_secs()
-                ))
-                .expect("generated image reclamation timeout is non-empty"),
-            },
-        };
-        image_cleanup.push(DeployImageCleanup {
-            machine_id: target.machine_id.clone(),
-            service_id: target.identity.service_id.clone(),
-            image_identity: Some(image_identity),
-            outcome,
-        });
-    }
-    image_cleanup
 }
 
 async fn cleanup_failed_phase_containers<N>(
@@ -639,10 +569,6 @@ where
             machine_id: container.machine_id.clone(),
             container_id: container.container_id.clone(),
             identity: retained_container_identity(command, container),
-            state: ployz_core::machine::runtime::ContainerRuntimeState::Exited,
-            created_at_unix_seconds: None,
-            resolved_image_identity: None,
-            image_reclamation: ployz_core::deploy::DeployImageReclamation::IneligibleFailedPhase,
         };
         let stop = machine_runtime.stop_container(
             &container.machine_id,
@@ -794,10 +720,11 @@ where
 {
     let image_warning = images.iter().any(|image| {
         matches!(
-            image.outcome,
-            DeployImageCleanupOutcome::MissingIdentity | DeployImageCleanupOutcome::Failed { .. }
+            image,
+            DeployImageCleanup::MissingIdentity { .. } | DeployImageCleanup::Failed { .. }
         )
     });
+    let outcome = DeployCleanupResult::completion_outcome(cleanup, &images);
     if !cleanup.is_empty() || !images.is_empty() {
         let record_cleanup =
             record_evidence(command, recorder, cleanup_evidence(cleanup, images)).await;
@@ -806,11 +733,6 @@ where
         }
     }
 
-    let outcome = if image_warning {
-        ployz_core::operation::DeployCompletionOutcome::CompletedWithWarnings
-    } else {
-        DeployCleanupResult::completion_outcome(cleanup)
-    };
     match record_stage(command, recorder, DeployTransition::Completed { outcome }).await {
         Ok(()) => DeployTerminalEvent::Recorded,
         Err(_) => DeployTerminalEvent::Missing,

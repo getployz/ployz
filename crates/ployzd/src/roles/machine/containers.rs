@@ -208,6 +208,7 @@ where
                 | Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. })
                 | Err(error @ MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. })
                 | Err(error @ MachineContainerRunnerError::ImagePull { .. })
+                | Err(error @ MachineContainerRunnerError::ImageRemove { .. })
                 | Err(error @ MachineContainerRunnerError::Start { .. })
                 | Err(error @ MachineContainerRunnerError::Wait { .. })
                 | Err(error @ MachineContainerRunnerError::Stop { .. })
@@ -267,6 +268,7 @@ where
             | Ok(Err(error @ MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. }))
             | Ok(Err(error @ MachineContainerRunnerError::Create { .. }))
             | Ok(Err(error @ MachineContainerRunnerError::ImagePull { .. }))
+            | Ok(Err(error @ MachineContainerRunnerError::ImageRemove { .. }))
             | Ok(Err(error @ MachineContainerRunnerError::Start { .. }))
             | Ok(Err(error @ MachineContainerRunnerError::Stop { .. }))
             | Ok(Err(error @ MachineContainerRunnerError::Restart { .. }))
@@ -297,6 +299,7 @@ where
                     )
                     | Err(error @ MachineContainerRunnerError::Create { .. })
                     | Err(error @ MachineContainerRunnerError::ImagePull { .. })
+                    | Err(error @ MachineContainerRunnerError::ImageRemove { .. })
                     | Err(error @ MachineContainerRunnerError::Start { .. })
                     | Err(error @ MachineContainerRunnerError::Wait { .. })
                     | Err(error @ MachineContainerRunnerError::Restart { .. })
@@ -347,6 +350,7 @@ fn hook_start_error(
         | MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. }
         | MachineContainerRunnerError::Create { .. }
         | MachineContainerRunnerError::ImagePull { .. }
+        | MachineContainerRunnerError::ImageRemove { .. }
         | MachineContainerRunnerError::Wait { .. }
         | MachineContainerRunnerError::Stop { .. }
         | MachineContainerRunnerError::Restart { .. }

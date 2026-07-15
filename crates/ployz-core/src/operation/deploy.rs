@@ -598,24 +598,33 @@ pub struct DeployCleanupFailure {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct DeployImageCleanup {
-    pub machine_id: MachineId,
-    pub service_id: ServiceId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image_identity: Option<OciDigest>,
-    pub outcome: DeployImageCleanupOutcome,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
-pub enum DeployImageCleanupOutcome {
-    Removed,
-    AlreadyAbsent,
-    RetainedInUse,
-    MissingIdentity,
-    Failed { message: FailureMessage },
+pub enum DeployImageCleanup {
+    Removed {
+        machine_id: MachineId,
+        service_id: ServiceId,
+        image_identity: OciDigest,
+    },
+    AlreadyAbsent {
+        machine_id: MachineId,
+        service_id: ServiceId,
+        image_identity: OciDigest,
+    },
+    RetainedInUse {
+        machine_id: MachineId,
+        service_id: ServiceId,
+        image_identity: OciDigest,
+    },
+    MissingIdentity {
+        machine_id: MachineId,
+        service_id: ServiceId,
+    },
+    Failed {
+        machine_id: MachineId,
+        service_id: ServiceId,
+        image_identity: OciDigest,
+        message: FailureMessage,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -6,8 +6,8 @@ use ployz_core::ids::{OperationId, ServiceId};
 use ployz_core::image::OciPlatform;
 use ployz_core::operation::{
     CancellationReason, DeployCleanupFailure, DeployCompletionOutcome, DeployImageCleanup,
-    DeployImageCleanupOutcome, DeployOperationFailure, DeployRunningStage, OperationEvent,
-    OperationInterruptionEvidence, OperationKind, ReplayedOperationEvent,
+    DeployOperationFailure, DeployRunningStage, OperationEvent, OperationInterruptionEvidence,
+    OperationKind, ReplayedOperationEvent,
 };
 use std::collections::BTreeSet;
 
@@ -264,15 +264,13 @@ impl DeployTree {
                     ));
                 }
                 for image in images {
+                    let (machine_id, image_identity, text, _) = image_cleanup_parts(image);
                     self.plain_lines.push(format!(
                         "deploy {}: image cleanup — {} on {}: {}",
                         operation_id.as_str(),
-                        image
-                            .image_identity
-                            .as_ref()
-                            .map_or("unknown", ployz_core::image::OciDigest::as_str),
-                        image.machine_id.as_str(),
-                        image_cleanup_text(&image.outcome)
+                        image_identity.map_or("unknown", ployz_core::image::OciDigest::as_str),
+                        machine_id.as_str(),
+                        text
                     ));
                 }
                 if let Some(ObservedDeploy {
@@ -1023,36 +1021,54 @@ fn render_cleanup_lines(
                 failure.message.as_str()
             ),
         }))
-        .chain(images.iter().map(|image| TreeLine::Settled {
-            text: format!(
-                "{} image {} on {} — {}",
-                if matches!(
-                    image.outcome,
-                    DeployImageCleanupOutcome::Failed { .. }
-                        | DeployImageCleanupOutcome::MissingIdentity
-                ) {
-                    "✗"
-                } else {
-                    "✓"
-                },
-                image
-                    .image_identity
-                    .as_ref()
-                    .map_or("unknown", ployz_core::image::OciDigest::as_str),
-                image.machine_id.as_str(),
-                image_cleanup_text(&image.outcome)
-            ),
+        .chain(images.iter().map(|image| {
+            let (machine_id, image_identity, text, warning) = image_cleanup_parts(image);
+            TreeLine::Settled {
+                text: format!(
+                    "{} image {} on {} — {}",
+                    if warning { "✗" } else { "✓" },
+                    image_identity.map_or("unknown", ployz_core::image::OciDigest::as_str),
+                    machine_id.as_str(),
+                    text
+                ),
+            }
         }))
         .collect()
 }
 
-fn image_cleanup_text(outcome: &DeployImageCleanupOutcome) -> &str {
-    match outcome {
-        DeployImageCleanupOutcome::Removed => "removed",
-        DeployImageCleanupOutcome::AlreadyAbsent => "already absent",
-        DeployImageCleanupOutcome::RetainedInUse => "retained in use",
-        DeployImageCleanupOutcome::MissingIdentity => "missing observed image identity",
-        DeployImageCleanupOutcome::Failed { message } => message.as_str(),
+fn image_cleanup_parts(
+    image: &DeployImageCleanup,
+) -> (
+    &ployz_core::ids::MachineId,
+    Option<&ployz_core::image::OciDigest>,
+    &str,
+    bool,
+) {
+    match image {
+        DeployImageCleanup::Removed {
+            machine_id,
+            image_identity,
+            ..
+        } => (machine_id, Some(image_identity), "removed", false),
+        DeployImageCleanup::AlreadyAbsent {
+            machine_id,
+            image_identity,
+            ..
+        } => (machine_id, Some(image_identity), "already absent", false),
+        DeployImageCleanup::RetainedInUse {
+            machine_id,
+            image_identity,
+            ..
+        } => (machine_id, Some(image_identity), "retained in use", false),
+        DeployImageCleanup::MissingIdentity { machine_id, .. } => {
+            (machine_id, None, "missing observed image identity", true)
+        }
+        DeployImageCleanup::Failed {
+            machine_id,
+            image_identity,
+            message,
+            ..
+        } => (machine_id, Some(image_identity), message.as_str(), true),
     }
 }
 

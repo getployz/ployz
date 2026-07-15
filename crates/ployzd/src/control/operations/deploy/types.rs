@@ -1,6 +1,6 @@
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployServiceSpec, ExistingServiceReplica, RegistryCredential,
-    VolumeDeclaredDeployRequest,
+    DeployCleanupContainer, DeployServiceSpec, ExistingServiceReplica, ObservedCleanupCandidate,
+    RegistryCredential, VolumeDeclaredDeployRequest,
 };
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
@@ -12,7 +12,7 @@ use ployz_core::intent::ServingTargetEntry;
 use ployz_core::intent::VolumePinState;
 use ployz_core::network::DataplaneMember;
 use ployz_core::operation::{
-    DeployCompletionOutcome, FailureMessage, OperatorHint, RetainedArtifact,
+    DeployCompletionOutcome, DeployImageCleanup, FailureMessage, OperatorHint, RetainedArtifact,
 };
 
 use std::collections::BTreeMap;
@@ -48,7 +48,7 @@ pub struct DeployServiceExecutionCommand {
     pub(super) volume_pins: Vec<VolumePinState>,
     pub(super) eligible_machines: Vec<MachineId>,
     pub(super) existing_replicas: Vec<ExistingServiceReplica>,
-    pub(super) cleanup_candidates: Vec<DeployCleanupContainer>,
+    pub(super) cleanup_candidates: Vec<ObservedCleanupCandidate>,
 }
 
 impl DeployExecutionCommand {
@@ -163,7 +163,7 @@ impl DeployServiceExecutionCommand {
 
     #[must_use]
     #[cfg(test)]
-    pub fn cleanup_candidates(&self) -> &[DeployCleanupContainer] {
+    pub fn cleanup_candidates(&self) -> &[ObservedCleanupCandidate] {
         &self.cleanup_candidates
     }
 
@@ -206,6 +206,7 @@ pub struct DeployExecutionOutcome {
     pub namespace_revision_id: NamespaceRevisionId,
     pub containers: Vec<DeployContainer>,
     pub cleanup: Vec<DeployCleanupResult>,
+    pub image_cleanup: Vec<DeployImageCleanup>,
     pub terminal_event: DeployTerminalEvent,
 }
 
@@ -213,7 +214,7 @@ impl DeployExecutionOutcome {
     #[must_use]
     #[cfg(test)]
     pub fn completion_outcome(&self) -> DeployCompletionOutcome {
-        DeployCleanupResult::completion_outcome(&self.cleanup)
+        DeployCleanupResult::completion_outcome(&self.cleanup, &self.image_cleanup)
     }
 }
 
@@ -227,10 +228,17 @@ pub enum DeployCleanupResult {
 }
 
 impl DeployCleanupResult {
-    pub(super) fn completion_outcome(cleanup: &[Self]) -> DeployCompletionOutcome {
-        if cleanup
-            .iter()
-            .any(|result| matches!(result, Self::Failed { .. }))
+    pub(super) fn completion_outcome(
+        cleanup: &[Self],
+        images: &[DeployImageCleanup],
+    ) -> DeployCompletionOutcome {
+        if Self::has_failure(cleanup)
+            || images.iter().any(|image| {
+                matches!(
+                    image,
+                    DeployImageCleanup::MissingIdentity { .. } | DeployImageCleanup::Failed { .. }
+                )
+            })
         {
             DeployCompletionOutcome::CompletedWithWarnings
         } else {

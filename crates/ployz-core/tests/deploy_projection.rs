@@ -596,6 +596,7 @@ fn plan_created_event() -> OperationEvent {
             }],
             volume_pin_commits: Vec::new(),
             cleanup_containers: Vec::new(),
+            image_reclamations: Vec::new(),
         },
     }
 }

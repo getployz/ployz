@@ -37,6 +37,11 @@ pub(crate) fn runner_error(error: MachineContainerRunnerError) -> NatsServiceRes
         MachineContainerRunnerError::ImagePull { message } => NatsServiceResponse::transport_error(
             NatsServiceError::internal(format!("image pull failed: {message}")),
         ),
+        MachineContainerRunnerError::ImageRemove { message, .. } => {
+            NatsServiceResponse::transport_error(NatsServiceError::internal(format!(
+                "image remove failed: {message}"
+            )))
+        }
         MachineContainerRunnerError::Start { message, .. } => NatsServiceResponse::transport_error(
             NatsServiceError::internal(format!("container start failed: {message}")),
         ),
@@ -92,6 +97,7 @@ pub(crate) fn container_start_error(
         | MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. }
         | MachineContainerRunnerError::Create { .. }
         | MachineContainerRunnerError::ImagePull { .. }
+        | MachineContainerRunnerError::ImageRemove { .. }
         | MachineContainerRunnerError::Wait { .. }
         | MachineContainerRunnerError::Stop { .. }
         | MachineContainerRunnerError::Restart { .. }
