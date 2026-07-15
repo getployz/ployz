@@ -252,7 +252,7 @@ async fn start_join_dataplane_responder(
     client: async_nats::Client,
     machine_id: ployz_core::ids::MachineId,
 ) {
-    support::dataplane::start_applied_status_responder(
+    crate::support::dataplane::start_applied_status_responder(
         client.clone(),
         client.clone(),
         machine_id.clone(),

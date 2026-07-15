@@ -2,8 +2,8 @@
 //! commit operator intent to the machine's roster row.
 
 use ployz_core::install::{DEFAULT_MACHINE_BOOTSTRAP_URL, MachineBootstrapUrl};
-use ployz_core::machine::active_machine_from_completed_add;
 use ployz_core::machine::MachineLifecycle;
+use ployz_core::machine::active_machine_from_completed_add;
 use ployz_core::operation::{
     MachineLifecycleFailure, MachineLifecycleOperationState, OperationStatus,
 };
@@ -18,8 +18,6 @@ use ployzd::tasks::TaskRegistry;
 use ployz_test_support::ids::{machine_id, operation_id};
 
 #[path = "support/mod.rs"]
-mod support;
-
 #[tokio::test]
 async fn drain_records_lifecycle_evidence_and_resume_reverts() {
     let nats = ployz_test_support::nats::TestNats::start().await;

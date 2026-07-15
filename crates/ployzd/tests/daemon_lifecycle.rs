@@ -29,6 +29,9 @@ use ployzd::role_cli::{DaemonProcessRole, parse_role_args};
 #[cfg(unix)]
 use wait_timeout::ChildExt;
 
+#[path = "daemon_lifecycle/dns.rs"]
+mod dns;
+
 /// Syntactically valid NKey user seed for config tests (not a real key).
 const TEST_SEED: &str = "SUACH75SWCM5D2JMJM6EKLR2WDARVGZT4QC6LX3AGHSWOMVAKERABBBRWM";
 static TEMP_SEED_COUNTER: AtomicUsize = AtomicUsize::new(0);

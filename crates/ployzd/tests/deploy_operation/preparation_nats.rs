@@ -39,9 +39,7 @@ use ployzd::roles::machine::service::{RunningMachineRoleRuntime, start_machine_r
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-mod support;
-
-use support::machine_runtime::{ReadyWireGuardEbpf, test_wireguard_public_key};
+use crate::support::machine_runtime::{ReadyWireGuardEbpf, test_wireguard_public_key};
 
 #[tokio::test]
 async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
@@ -632,7 +630,7 @@ async fn test_nats() -> TestNats {
     let core_store = ployzd::control::store::CoreStore::open_in_memory()
         .await
         .expect("open core store");
-    support::intent::initialize_disabled_ingress(&core_store).await;
+    crate::support::intent::initialize_disabled_ingress(&core_store).await;
     let namespace_intent = NamespaceIntentStore::new(core_store.clone());
     let machine_roster = MachineRosterStore::new(core_store.clone());
     let intent = start_intent_service(

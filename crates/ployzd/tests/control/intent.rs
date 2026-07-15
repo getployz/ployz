@@ -22,14 +22,12 @@ use ployzd::control::operation_evidence::{
 use ployzd::control::store::CoreStore;
 use std::time::Duration;
 
-mod support;
-
 #[tokio::test]
 async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
     let nats =
         ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_a")]).await;
     let core_store = CoreStore::open_in_memory().await.expect("core store opens");
-    support::intent::initialize_disabled_ingress(&core_store).await;
+    crate::support::intent::initialize_disabled_ingress(&core_store).await;
     let machine_roster = MachineRosterStore::new(core_store.clone());
     machine_roster
         .replace_active_machine(&ActiveMachineState {
@@ -85,7 +83,7 @@ async fn intent_runtime_rebroadcasts_full_intent_on_the_drumbeat() {
 async fn intent_reader_gets_current_intent() {
     let nats = ployz_test_support::nats::TestNats::start().await;
     let core_store = CoreStore::open_in_memory().await.expect("core store opens");
-    support::intent::initialize_disabled_ingress(&core_store).await;
+    crate::support::intent::initialize_disabled_ingress(&core_store).await;
     let _runtime = start_intent_service(
         nats.controller.clone(),
         machine_id("machine_a"),
@@ -114,7 +112,7 @@ async fn machine_reads_core_stamped_projection_with_one_staged_joiner() {
         ployz_test_support::nats::TestNats::start_with_machines(std::slice::from_ref(&machine))
             .await;
     let core_store = CoreStore::open_in_memory().await.expect("core store");
-    support::intent::initialize_disabled_ingress(&core_store).await;
+    crate::support::intent::initialize_disabled_ingress(&core_store).await;
     let repository = OperationRepository::open(core_store.clone(), nats.controller.clone());
     let raw_join_token = RawJoinToken::try_new("join_machine_a").expect("join token");
     let operation = operation_id("op_add_machine_a");
@@ -206,7 +204,7 @@ async fn intent_runtime_publishes_redeemable_pending_machine_joins() {
     let nats =
         ployz_test_support::nats::TestNats::start_with_machines(&[machine_id("machine_a")]).await;
     let core_store = CoreStore::open_in_memory().await.expect("core store opens");
-    support::intent::initialize_disabled_ingress(&core_store).await;
+    crate::support::intent::initialize_disabled_ingress(&core_store).await;
     let repository = OperationRepository::open(core_store.clone(), nats.controller.clone());
     let raw_join_token = RawJoinToken::try_new("join_pending_machine_a").expect("valid token");
     let join_token = IssuedJoinToken::new(
@@ -274,7 +272,7 @@ async fn intent_runtime_publishes_redeemable_pending_machine_joins() {
 async fn intent_reader_overlays_machine_lifecycle_evidence() {
     let nats = ployz_test_support::nats::TestNats::start().await;
     let core_store = CoreStore::open_in_memory().await.expect("core store opens");
-    support::intent::initialize_disabled_ingress(&core_store).await;
+    crate::support::intent::initialize_disabled_ingress(&core_store).await;
     let machine_roster = MachineRosterStore::new(core_store.clone());
     machine_roster
         .replace_active_machine(&ActiveMachineState {
@@ -347,7 +345,7 @@ async fn intent_reader_gets_namespace_intent_from_file() {
         .await
         .expect("volume pin stores");
     let core_store = CoreStore::open_in_memory().await.expect("core store opens");
-    support::intent::initialize_disabled_ingress(&core_store).await;
+    crate::support::intent::initialize_disabled_ingress(&core_store).await;
     let _runtime = start_intent_service(
         nats.controller.clone(),
         machine_id("machine_a"),

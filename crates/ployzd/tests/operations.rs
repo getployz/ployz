@@ -50,6 +50,17 @@ use ployzd::roles::machine::service::{
 
 mod support;
 
+#[path = "operations/credential_grant.rs"]
+mod credential_grant;
+#[path = "operations/deploy_runtime.rs"]
+mod deploy_runtime;
+#[path = "operations/machine_lifecycle.rs"]
+mod machine_lifecycle;
+#[path = "operations/ops_list.rs"]
+mod ops_list;
+#[path = "operations/service_contract.rs"]
+mod service_contract;
+
 use ployz_test_support::ops::wait_for_terminal_status;
 use support::machine_runtime::{
     ObservingContainerRunner, ReadyWireGuardEbpf, test_wireguard_public_key,

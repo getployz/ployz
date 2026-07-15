@@ -12,9 +12,7 @@ use ployz_sdk_types::{CredentialAddRequest, CredentialListRequest, CredentialRem
 use ployz_test_support::ids::operation_id;
 use ployz_test_support::ops::{poll_until, wait_for_terminal_status};
 
-mod support;
-
-use support::control::TestNats;
+use crate::support::control::TestNats;
 
 #[tokio::test]
 async fn operator_can_add_list_rename_and_remove_a_live_credential() {

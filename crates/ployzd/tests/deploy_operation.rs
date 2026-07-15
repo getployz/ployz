@@ -1,5 +1,11 @@
 #[path = "deploy_operation/fixtures.rs"]
 mod fixtures;
+mod support;
+
+#[path = "deploy_operation/preparation.rs"]
+mod preparation;
+#[path = "deploy_operation/preparation_nats.rs"]
+mod preparation_nats;
 
 use fixtures::*;
 use ployz_core::deploy::{ContainerCommand, ContainerRestartPolicy, ReplicaCount};

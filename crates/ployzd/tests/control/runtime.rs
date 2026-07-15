@@ -2,9 +2,10 @@
 //! bootstrap, operation API serving, deploy submit/commit, routed deploys
 //! through the gateway, and drift refusal.
 //!
-//! Machine-add credential minting has its own suite in
-//! `machine_add_mint.rs`; the shared fixture lives in `support::control`.
+//! Machine-add credential minting has its own scenario module; the shared
+//! fixture lives in `crate::support::control`.
 
+use crate::support::machine_runtime::{ObservingContainerRunner, ReadyWireGuardEbpf};
 use futures_util::StreamExt;
 use ployz_core::deploy::{
     DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageReference,
@@ -66,19 +67,16 @@ use ployzd::roles::machine::service::{
 use ployzd::service_catalog::machine_role_service;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
-use support::machine_runtime::{ObservingContainerRunner, ReadyWireGuardEbpf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-mod support;
-
+use crate::support::control::{TestNats, machine_join_template, redeem_when_ready};
 use ployz_test_support::containers;
 use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{
     event_sequence, idempotency_key, machine_id, namespace_id, namespace_revision_entry_id,
     operation_id, route_hostname, route_port, service_id,
 };
-use support::control::{TestNats, machine_join_template, redeem_when_ready};
 
 #[tokio::test]
 async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
@@ -966,7 +964,7 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
     )
     .await
     .expect("gateway runtime starts");
-    let upstream = support::TestHttpUpstream::start("smoke").await;
+    let upstream = crate::support::TestHttpUpstream::start("smoke").await;
     let api = nats.api();
 
     let request = reserved_deploy_request(

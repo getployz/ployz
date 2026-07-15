@@ -1,7 +1,6 @@
 #[allow(dead_code)]
-#[path = "deploy_operation/fixtures.rs"]
+#[path = "../deploy_operation/fixtures.rs"]
 mod fixtures;
-mod support;
 
 use fixtures::*;
 use futures_util::StreamExt;
@@ -645,7 +644,7 @@ async fn test_nats() -> TestNats {
     let intent_core_store = ployzd::control::store::CoreStore::open_in_memory()
         .await
         .expect("open intent core store");
-    support::intent::initialize_disabled_ingress(&intent_core_store).await;
+    crate::support::intent::initialize_disabled_ingress(&intent_core_store).await;
     let machine_roster = MachineRosterStore::new(intent_core_store.clone());
     machine_roster
         .replace_active_machine(&active_machine("machine_a", "10.198.1.0/24"))
@@ -723,7 +722,7 @@ async fn start_facts_subscription(
     intent_client: async_nats::Client,
     machine_id: ployz_core::ids::MachineId,
 ) -> tokio::task::JoinHandle<()> {
-    support::dataplane::start_applied_status_responder(
+    crate::support::dataplane::start_applied_status_responder(
         client.clone(),
         intent_client,
         machine_id.clone(),

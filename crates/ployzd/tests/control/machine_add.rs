@@ -29,13 +29,12 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
-#[path = "machine_add_mint/dataplane.rs"]
+#[path = "machine_add/dataplane.rs"]
 mod dataplane;
-mod support;
 
+use crate::support::control::{RecordingReload, TestNats, redeem_when_ready};
 use ployz_test_support::ids::{idempotency_key, machine_id, operation_id};
 use ployz_test_support::ops::wait_for_terminal_status;
-use support::control::{RecordingReload, TestNats, redeem_when_ready};
 
 use ployzd::control::operation_evidence::{OperationRepository, OperationStatusWrite};
 use ployzd::control::store::CoreStore;
