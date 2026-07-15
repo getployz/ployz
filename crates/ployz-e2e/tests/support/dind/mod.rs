@@ -4,6 +4,7 @@
 //! assertion/polling helpers the scenario bodies share.
 
 pub mod assert;
+pub mod contracts;
 pub mod formation;
 pub mod join;
 

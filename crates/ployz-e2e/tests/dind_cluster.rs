@@ -69,11 +69,6 @@ use ployz_test_support::ids::{
 };
 use ployz_test_support::nats::SecuredTestNats;
 use ployz_test_support::ops::wait_for_terminal_status;
-use ployzd::adapters::docker::labels::{
-    CONTAINER_TYPE_LABEL, NAMESPACE_ID_LABEL, NAMESPACE_REVISION_ENTRY_LABEL, OPERATION_ID_LABEL,
-    SERVICE_ID_LABEL,
-};
-use ployzd::intent::service::NatsIntentReader;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -83,6 +78,10 @@ use support::dind::assert::{
     decode_base64, gateway_http_get, gateway_https_get_unverified, managed_workload_containers,
     next_permission_violation, operation_events, operation_status, terminal_operation_events,
     wait_for_inspect, wait_for_machine_observations, wait_for_terminal_deploy_status,
+};
+use support::dind::contracts::{
+    CONTAINER_TYPE_LABEL, NAMESPACE_ID_LABEL, NAMESPACE_REVISION_ENTRY_LABEL, OPERATION_ID_LABEL,
+    SERVICE_ID_LABEL, read_intent,
 };
 use support::dind::formation::{
     CoreContext, add_and_join_edge, connect_core_client, finish, host_client_config,
@@ -212,8 +211,7 @@ async fn assert_init_and_activate_first_machine(core: &CoreContext) {
         )
         .await
         .expect("connect controller for first-machine intent read");
-        let intent = NatsIntentReader::new(controller)
-            .intent()
+        let intent = read_intent(&controller, CONNECT_TIMEOUT)
             .await
             .expect("read first-machine intent");
         let status = core
@@ -326,8 +324,9 @@ async fn assert_auto_hostname_https_survives_core_stop(core: &CoreContext) {
         )
         .await
         .expect("connect controller for intent read");
-        let reader = NatsIntentReader::new(client);
-        let intent = reader.intent().await.expect("read auto-hostname intent");
+        let intent = read_intent(&client, CONNECT_TIMEOUT)
+            .await
+            .expect("read auto-hostname intent");
         let binding = intent
             .route_bindings
             .iter()
@@ -363,7 +362,9 @@ async fn assert_auto_hostname_https_survives_core_stop(core: &CoreContext) {
                 ..
             }
         ));
-        let intent_after = reader.intent().await.expect("read redeployed intent");
+        let intent_after = read_intent(&client, CONNECT_TIMEOUT)
+            .await
+            .expect("read redeployed intent");
         assert!(intent_after.route_bindings.iter().any(|binding| {
             binding.namespace_id == namespace_id("auto_https")
                 && binding.target.hostname.as_str() == hostname
@@ -1677,8 +1678,7 @@ async fn scenario_cross_machine_deploy(core: &CoreContext, edge: &DindMachine) -
     )
     .await
     .expect("connect controller for smoke route intent read");
-    let intent = NatsIntentReader::new(client)
-        .intent()
+    let intent = read_intent(&client, CONNECT_TIMEOUT)
         .await
         .expect("read smoke route intent");
     let hostname = intent

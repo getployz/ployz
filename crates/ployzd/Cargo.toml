@@ -51,6 +51,8 @@ wait-timeout.workspace = true
 rtnetlink.workspace = true
 
 [dev-dependencies]
+openssl = "0.10"
+ployz = { path = "../ployz" }
 ployz-lease-worker = { path = "../ployz-lease-worker" }
 ployz-test-support.workspace = true
 rcgen = { version = "0.14.8", features = ["crypto", "pem"] }

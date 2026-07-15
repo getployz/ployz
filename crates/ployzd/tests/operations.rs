@@ -1,3 +1,5 @@
+//! Daemon-owned in-process operation scenarios over real NATS.
+
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;

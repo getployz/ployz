@@ -1,5 +1,12 @@
 use std::time::{Duration, Instant};
 
+use super::{
+    CONNECT_TIMEOUT, CoreContext, DEPLOY_TERMINAL_BUDGET, DindMachine, NAMESPACE_ID_LABEL,
+    WORKLOAD_IMAGE, add_and_join_edge, assert_unit_active, connect_core_client, finish,
+    init_core_cluster, managed_workload_containers, read_intent, reserved_deploy_request,
+    terminal_operation_events, wait_for_machine_observations, wait_for_terminal_deploy_status,
+    with_evidence,
+};
 use ployz_core::dataplane::{
     DataplaneProjection, DataplaneProjectionMember, DataplaneProjectionTestimony,
     EbpfAttachmentStatus, EndpointBridgeStatus, MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS,
@@ -17,15 +24,6 @@ use ployz_core::state::ActiveMachineState;
 use ployz_e2e::dind;
 use ployz_sdk_types::{NetworkDataplaneTestimony, NetworkStatusMachine, NetworkStatusRequest};
 use ployz_test_support::ids::{machine_id, namespace_id, service_id};
-use ployzd::intent::service::NatsIntentReader;
-
-use super::{
-    CoreContext, DEPLOY_TERMINAL_BUDGET, DindMachine, NAMESPACE_ID_LABEL, WORKLOAD_IMAGE,
-    add_and_join_edge, assert_unit_active, connect_core_client, finish, init_core_cluster,
-    managed_workload_containers, reserved_deploy_request, terminal_operation_events,
-    wait_for_machine_observations, wait_for_terminal_deploy_status, with_evidence,
-};
-
 /// Placement uses durable intent plus fresh machine testimony, fixes its peer
 /// validation set for one pass, and does not require RTT.
 #[tokio::test]
@@ -58,8 +56,9 @@ async fn group_placement_peer_health() {
         )
         .await
         .expect("connect controller for placement intent");
-        let intent_reader = NatsIntentReader::new(controller);
-        let intent = intent_reader.intent().await.expect("read placement intent");
+        let intent = read_intent(&controller, CONNECT_TIMEOUT)
+            .await
+            .expect("read placement intent");
         assert_declared_machines(&intent.dataplane_projection, &intent.active_machines);
         wait_for_ready_dataplane(&core, &intent.dataplane_projection).await;
 
@@ -95,8 +94,7 @@ async fn group_placement_peer_health() {
             );
         }
 
-        let silent_intent = intent_reader
-            .intent()
+        let silent_intent = read_intent(&controller, CONNECT_TIMEOUT)
             .await
             .expect("read intent with silent edge");
         assert_declared_machines(

@@ -3355,7 +3355,6 @@ name = "ployz-e2e"
 version = "0.1.0"
 dependencies = [
  "async-nats",
- "async-trait",
  "base64",
  "bollard",
  "futures-util",
@@ -3366,8 +3365,6 @@ dependencies = [
  "ployz-nats",
  "ployz-sdk-types",
  "ployz-test-support",
- "ployzd",
- "rcgen",
  "serde_json",
  "tar",
  "tempfile",
@@ -3514,7 +3511,9 @@ dependencies = [
  "local-ip-address",
  "nkeys",
  "nuid",
+ "openssl",
  "pingora",
+ "ployz",
  "ployz-core",
  "ployz-ebpf-common",
  "ployz-lease-worker",

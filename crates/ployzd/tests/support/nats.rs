@@ -1,6 +1,6 @@
-//! Secured NATS fixture for e2e tests: wraps the shared connected
+//! Secured NATS fixture for daemon integration tests: wraps the shared connected
 //! [`ployz_test_support::nats::TestNats`] with the control-process config
-//! the e2e scenarios launch ployzd with.
+//! the daemon scenarios launch ployzd with.
 
 use ployz_core::ids::MachineId;
 use ployzd::adapters::nats_authorization::SignalNatsReloadRunner;

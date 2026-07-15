@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
+use super::contracts::MANAGED_LABEL;
+use super::formation::CoreContext;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::MachineCredentialProvisioningStep;
 use ployz_core::ops::{
@@ -16,9 +18,6 @@ use ployz_core::ops::{
 use ployz_e2e::dind::DindMachine;
 use ployz_nats::connect::{NatsConnectConfig, authenticated_connect_options};
 use ployz_sdk_types::{MachineInspectRequest, MachineSnapshot, MachineTestimony, OpsStatusRequest};
-use ployzd::adapters::docker::labels::MANAGED_LABEL;
-
-use super::formation::CoreContext;
 use ployz_test_support::ids::{event_replay_limit, event_sequence, machine_id};
 
 /// Per-request budget for HTTP probes against a published gateway port.

@@ -1,3 +1,5 @@
+//! HTTP fixtures for daemon-owned integration tests.
+
 use std::error::Error;
 use std::io::{Read, Write};
 use std::net::SocketAddr;

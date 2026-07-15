@@ -2,8 +2,10 @@
 
 pub mod control;
 pub mod dataplane;
+pub mod http;
 pub mod intent;
 pub mod machine_runtime;
+pub mod nats;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;

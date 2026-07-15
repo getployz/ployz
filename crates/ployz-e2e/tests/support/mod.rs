@@ -4,9 +4,3 @@
 #![allow(dead_code)]
 
 pub mod dind;
-pub mod http;
-/// The ployzd-coupled in-memory machine runner, shared with ployzd's own
-/// integration tests (single source under ployzd/tests/support).
-#[path = "../../../ployzd/tests/support/machine_runtime.rs"]
-pub mod machine_runtime;
-pub mod nats;

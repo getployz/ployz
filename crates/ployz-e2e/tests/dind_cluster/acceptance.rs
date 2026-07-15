@@ -113,9 +113,7 @@ async fn step_2_deploy_real_application(
     )
     .await
     .expect("connect controller for acceptance intent");
-    let intent_reader = NatsIntentReader::new(client);
-    let database_intent = intent_reader
-        .intent()
+    let database_intent = read_intent(&client, CONNECT_TIMEOUT)
         .await
         .expect("read database Deploy intent");
     let [database_target] = database_intent.serving_target_entries.as_slice() else {
@@ -205,8 +203,7 @@ async fn step_2_deploy_real_application(
     }));
     assert_service_name_database_reachability(core, first_app.0, &first_app.1).await;
 
-    let intent = intent_reader
-        .intent()
+    let intent = read_intent(&client, CONNECT_TIMEOUT)
         .await
         .expect("read acceptance route intent");
     let hostname = intent
