@@ -436,6 +436,16 @@ fn pushed_image_stays_pending_until_availability_is_verified() {
 
     tree.ingest_page(&[replay(
         4,
+        OperationEvent::DeployRunning {
+            operation_id: operation_id.clone(),
+            stage: DeployRunningStage::StartingContainers,
+        },
+    )]);
+
+    assert!(!render_frame(&tree).contains("✓ ghcr.io/acme/web:1"));
+
+    tree.ingest_page(&[replay(
+        5,
         OperationEvent::DeployImageAvailabilityVerified {
             operation_id: operation_id.clone(),
             service_id: service_id("web"),
@@ -445,11 +455,10 @@ fn pushed_image_stays_pending_until_availability_is_verified() {
         },
     )]);
 
-    assert!(render_frame(&tree).contains("ghcr.io/acme/web:1 — redistributing"));
     assert!(!render_frame(&tree).contains("✓ ghcr.io/acme/web:1"));
 
     tree.ingest_page(&[replay(
-        5,
+        6,
         OperationEvent::DeployImageAvailabilityVerified {
             operation_id,
             service_id: service_id("web"),

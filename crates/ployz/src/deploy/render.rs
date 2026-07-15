@@ -541,13 +541,6 @@ impl DeployTree {
                         .filter(|(service_id, _)| service_id == &service.service_id)
                         .count()
                         >= receipt.platforms().len()
-                        || matches!(
-                            deploy.work,
-                            DeployWork::Planned {
-                                stage: PlannedStage::Running(stage),
-                                ..
-                            } if stage != DeployRunningStage::EnsuringImages
-                        )
                 }
             })
     }
