@@ -36,7 +36,7 @@ fn running_deploy_interruption_preserves_typed_stage_and_retry_contract() {
         .expect("worker-owned deploy is recoverable");
 
     assert_eq!(
-        evidence.last_durable_stage,
+        evidence.last_durable_stage(),
         OperationInterruptionStage::Deploy {
             stage: DeployInterruptionStage::Running {
                 stage: DeployRunningStage::StartingContainers,
@@ -44,12 +44,22 @@ fn running_deploy_interruption_preserves_typed_stage_and_retry_contract() {
         }
     );
     assert_eq!(
-        evidence.uncertain_work,
+        evidence.uncertain_work(),
         OperationInterruptionUncertainWork::IntentAndRuntime
     );
     assert_eq!(
-        evidence.next_action,
+        evidence.next_action(),
         OperationInterruptionNextAction::RetryFromObservedReality
+    );
+    let encoded = serde_json::to_value(&evidence).expect("interruption evidence serializes");
+    assert_eq!(encoded["cause"], "prior_process_loss");
+    assert_eq!(encoded["last_durable_stage"]["kind"], "deploy");
+    assert_eq!(encoded["uncertain_work"], "intent_and_runtime");
+    assert_eq!(encoded["next_action"], "retry_from_observed_reality");
+    assert_eq!(
+        serde_json::from_value::<ployz_core::operation::OperationInterruptionEvidence>(encoded)
+            .expect("interruption evidence deserializes"),
+        evidence
     );
 
     let event = OperationEvent::OperationInterrupted {

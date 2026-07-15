@@ -3,6 +3,7 @@ use super::{
     select_status, upsert_status,
 };
 use crate::control::store::CoreStore;
+use crate::tasks::TaskRegistry;
 use ployz_core::operation::{
     EventSequence, NamespaceRemoveOperationState, NamespaceRemoveRunningStage,
     NamespaceRemoveTransition, OperationEventReplayRequest, OperationInterruptionCause,
@@ -10,6 +11,7 @@ use ployz_core::operation::{
 };
 use ployz_test_support::ids::{event_replay_limit, event_sequence, namespace_id, operation_id};
 use rusqlite::Connection;
+use std::time::Duration;
 
 #[tokio::test]
 async fn replay_preserves_recorded_timestamps_for_ordered_events() {
@@ -221,4 +223,75 @@ async fn interruption_recovery_is_uncapped_idempotent_and_excludes_other_owners(
         .await
         .expect("repeat recovery");
     assert_eq!(second.recorded, 0);
+}
+
+#[tokio::test]
+async fn quiesced_running_worker_cannot_race_interruption_sealing() {
+    let nats = ployz_test_support::nats::TestNats::start().await;
+    let store = CoreStore::open_in_memory()
+        .await
+        .expect("open operation store");
+    let repository = OperationRepository::open(store.clone(), nats.controller);
+    let operation_id = operation_id("op_running_worker");
+    store
+        .call({
+            let operation_id = operation_id.clone();
+            move |conn| {
+                upsert_status(
+                    conn,
+                    &operation_id,
+                    &OperationStatus::NamespaceRemove {
+                        id: operation_id.clone(),
+                        namespace_id: namespace_id("team-a"),
+                        state: NamespaceRemoveOperationState::Running {
+                            stage: NamespaceRemoveRunningStage::RemovingContainers,
+                        },
+                        last_event_sequence: EventSequence::first(),
+                    },
+                )
+            }
+        })
+        .await
+        .expect("seed running operation");
+
+    let tasks = TaskRegistry::default();
+    let worker_repository = repository.clone();
+    let worker_operation_id = operation_id.clone();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    tasks.spawn(async move {
+        let _ = started_tx.send(());
+        if release_rx.await.is_ok() {
+            worker_repository
+                .record_namespace_remove_transition(
+                    &worker_operation_id,
+                    NamespaceRemoveTransition::Completed,
+                )
+                .await
+                .expect("worker completion records");
+        }
+    });
+    started_rx.await.expect("worker starts");
+
+    TaskRegistry::quiesce_all(&[&tasks], Duration::from_secs(1))
+        .await
+        .expect("worker quiesces");
+    assert!(release_tx.send(()).is_err(), "worker receiver must be gone");
+    repository
+        .record_interrupted_operations(OperationInterruptionCause::ControlShutdown)
+        .await
+        .expect("interruption seals after quiescence");
+
+    let status = repository
+        .get(&operation_id)
+        .await
+        .expect("status reads")
+        .expect("status exists");
+    assert!(matches!(
+        status,
+        OperationStatus::NamespaceRemove {
+            state: NamespaceRemoveOperationState::Interrupted { .. },
+            ..
+        }
+    ));
 }

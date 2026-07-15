@@ -1322,7 +1322,7 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
             OperationEvent::OperationInterrupted {
                 operation_id,
                 evidence,
-            } => match evidence.last_durable_stage {
+            } => match evidence.last_durable_stage() {
                 super::OperationInterruptionStage::Deploy { .. } => Self::Deploy {
                     operation_id,
                     event: DeployEvent::Interrupted(evidence),

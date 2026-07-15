@@ -46,7 +46,7 @@ use crate::role_testimony::{
     start_role_testimony_cache,
 };
 use crate::seed::{SeedCoreError, seed_core_from_snapshot};
-use crate::tasks::TaskRegistry;
+use crate::tasks::{TaskRegistry, TaskRegistryQuiesceError};
 use ployz_core::intent::recovery::ControlPlaneEpoch;
 use ployz_core::intent::recovery::PendingMachineJoinRecovery;
 use ployz_core::operation::OperationInterruptionCause;
@@ -85,22 +85,40 @@ pub struct RunningControlProcess {
     operation_repository: OperationRepository,
 }
 
+const CONTROL_TASK_QUIESCE_TIMEOUT: Duration = Duration::from_secs(5);
+
 impl RunningControlProcess {
     pub async fn shutdown(self) -> Result<(), ControlProcessShutdownError> {
         let mut nats_service_error = self.operation_api.shutdown().await.err();
-        self.credential_grant_tasks.abort_all();
-        self.ingress_configure_tasks.abort_all();
-        self.deploy_tasks.abort_all();
-        self.service_restart_tasks.abort_all();
-        self.namespace_remove_tasks.abort_all();
-        self.network_repair_tasks.abort_all();
-        self.volume_remove_tasks.abort_all();
-        self.machine_update_tasks.abort_all();
-        self.machine_lifecycle_tasks.abort_all();
-        let interruption_result = self
-            .operation_repository
-            .record_interrupted_operations(OperationInterruptionCause::ControlShutdown)
-            .await;
+        let quiesce_result = TaskRegistry::quiesce_all(
+            &[
+                &self.credential_grant_tasks,
+                &self.ingress_configure_tasks,
+                &self.deploy_tasks,
+                &self.service_restart_tasks,
+                &self.namespace_remove_tasks,
+                &self.network_repair_tasks,
+                &self.volume_remove_tasks,
+                &self.machine_update_tasks,
+                &self.machine_lifecycle_tasks,
+                &self.mint_tasks,
+                &self.reachability_tasks,
+                &self.managed_dns_tasks,
+                &self.certificate_issuance_tasks,
+                &self.certificate_renewal_tasks,
+            ],
+            CONTROL_TASK_QUIESCE_TIMEOUT,
+        )
+        .await;
+        let interruption_result = if quiesce_result.is_ok() {
+            Some(
+                self.operation_repository
+                    .record_interrupted_operations(OperationInterruptionCause::ControlShutdown)
+                    .await,
+            )
+        } else {
+            None
+        };
         if let Err(error) = self.ingress_endpoint_projection.shutdown().await
             && nats_service_error.is_none()
         {
@@ -116,14 +134,12 @@ impl RunningControlProcess {
         {
             nats_service_error = Some(error);
         }
-        self.mint_tasks.abort_all();
-        self.reachability_tasks.abort_all();
-        self.managed_dns_tasks.abort_all();
-        self.certificate_issuance_tasks.abort_all();
-        self.certificate_renewal_tasks.abort_all();
         self.testimony_cache.shutdown().await;
         self.authorization.shutdown();
-        interruption_result.map_err(ControlProcessShutdownError::OperationEvidence)?;
+        quiesce_result.map_err(ControlProcessShutdownError::TaskQuiesce)?;
+        if let Some(interruption_result) = interruption_result {
+            interruption_result.map_err(ControlProcessShutdownError::OperationEvidence)?;
+        }
         if let Some(error) = nats_service_error {
             return Err(ControlProcessShutdownError::NatsService(error));
         }
@@ -137,6 +153,8 @@ pub enum ControlProcessShutdownError {
     NatsService(NatsServiceShutdownError),
     #[error("failed to record interrupted operation evidence: {0}")]
     OperationEvidence(OperationStatusStoreError),
+    #[error("failed to quiesce control tasks: {0}")]
+    TaskQuiesce(TaskRegistryQuiesceError),
 }
 
 /// Record each machine's advertised endpoints onto the roster from the machine

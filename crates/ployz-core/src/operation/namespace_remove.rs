@@ -11,7 +11,11 @@ use super::projection::{
 };
 use super::routes::RouteTarget;
 use super::text::{CancellationReason, FailureMessage, OperatorHint};
-use super::{EventSequence, OperationInterruptionEvidence, OperationKind, OperationStatus};
+use super::{
+    EventSequence, OperationInterruptionCause, OperationInterruptionEvidence,
+    OperationInterruptionNextAction, OperationInterruptionStage,
+    OperationInterruptionUncertainWork, OperationKind, OperationStatus,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -52,6 +56,37 @@ impl NamespaceRemoveOperationState {
             | Self::Interrupted { .. } => true,
             Self::Accepted | Self::Running { .. } => false,
         }
+    }
+
+    pub(super) fn interruption_evidence(
+        &self,
+        cause: OperationInterruptionCause,
+    ) -> Option<OperationInterruptionEvidence> {
+        let last_durable_stage = match self {
+            Self::Accepted => OperationInterruptionStage::NamespaceRemoveAccepted,
+            Self::Running { stage } => {
+                OperationInterruptionStage::NamespaceRemoveRunning { stage: *stage }
+            }
+            Self::Completed
+            | Self::Failed { .. }
+            | Self::Cancelled { .. }
+            | Self::Interrupted { .. } => return None,
+        };
+        Some(OperationInterruptionEvidence::new(
+            cause,
+            last_durable_stage,
+            OperationInterruptionUncertainWork::IntentAndRuntime,
+            OperationInterruptionNextAction::InspectThenResubmit,
+        ))
+    }
+
+    pub(super) const fn terminal_interruption_evidence(
+        &self,
+    ) -> Option<&OperationInterruptionEvidence> {
+        let Self::Interrupted { evidence } = self else {
+            return None;
+        };
+        Some(evidence)
     }
 }
 

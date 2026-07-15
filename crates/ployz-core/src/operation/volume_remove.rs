@@ -12,7 +12,11 @@ use super::projection::{
 };
 use super::text::CancellationReason;
 use super::text::FailureMessage;
-use super::{EventSequence, OperationInterruptionEvidence, OperationKind, OperationStatus};
+use super::{
+    EventSequence, OperationInterruptionCause, OperationInterruptionEvidence,
+    OperationInterruptionNextAction, OperationInterruptionStage,
+    OperationInterruptionUncertainWork, OperationKind, OperationStatus,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -45,6 +49,34 @@ impl VolumeRemoveOperationState {
             Self::Completed | Self::Failed { .. } | Self::Interrupted { .. } => true,
             Self::Accepted | Self::Running { .. } => false,
         }
+    }
+
+    pub(super) fn interruption_evidence(
+        &self,
+        cause: OperationInterruptionCause,
+    ) -> Option<OperationInterruptionEvidence> {
+        let last_durable_stage = match self {
+            Self::Accepted => OperationInterruptionStage::VolumeRemoveAccepted,
+            Self::Running { stage } => {
+                OperationInterruptionStage::VolumeRemoveRunning { stage: *stage }
+            }
+            Self::Completed | Self::Failed { .. } | Self::Interrupted { .. } => return None,
+        };
+        Some(OperationInterruptionEvidence::new(
+            cause,
+            last_durable_stage,
+            OperationInterruptionUncertainWork::IntentAndRuntime,
+            OperationInterruptionNextAction::InspectThenResubmit,
+        ))
+    }
+
+    pub(super) const fn terminal_interruption_evidence(
+        &self,
+    ) -> Option<&OperationInterruptionEvidence> {
+        let Self::Interrupted { evidence } = self else {
+            return None;
+        };
+        Some(evidence)
     }
 }
 

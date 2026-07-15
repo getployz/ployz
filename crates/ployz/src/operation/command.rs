@@ -12,6 +12,7 @@ use ployz_core::operation::{
 use ployz_core::roles::GatewayRole;
 use ployz_sdk_types::{AcceptedOperation, OpsListRequest, OpsListResult, OpsStatusRequest};
 
+use super::interruption::render_interruption;
 use crate::certificate::presentation::provision_failure_detail;
 use crate::commands::PloyzctlCliError;
 use crate::deploy::failure::DeployFailureView;
@@ -549,62 +550,8 @@ const fn volume_remove_state(state: &ployz_sdk_types::VolumeRemoveOperationState
 }
 
 fn status_failure_detail(status: &OperationStatus) -> Option<String> {
-    let interruption = match status {
-        OperationStatus::Deploy {
-            state: DeployOperationState::Interrupted { evidence },
-            ..
-        }
-        | OperationStatus::CredentialGrant {
-            state: CredentialGrantOperationState::Interrupted { evidence },
-            ..
-        }
-        | OperationStatus::MachineUpdate {
-            state: MachineUpdateOperationState::Interrupted { evidence },
-            ..
-        } => Some(evidence),
-        OperationStatus::IngressConfigure {
-            state: ployz_sdk_types::IngressConfigureOperationState::Interrupted { evidence },
-            ..
-        }
-        | OperationStatus::MachineLifecycle {
-            state: ployz_sdk_types::MachineLifecycleOperationState::Interrupted { evidence },
-            ..
-        }
-        | OperationStatus::NetworkRepair {
-            state: ployz_sdk_types::NetworkRepairOperationState::Interrupted { evidence },
-            ..
-        }
-        | OperationStatus::ServiceRestart {
-            state: ployz_sdk_types::ServiceRestartOperationState::Interrupted { evidence },
-            ..
-        }
-        | OperationStatus::NamespaceRemove {
-            state: ployz_sdk_types::NamespaceRemoveOperationState::Interrupted { evidence },
-            ..
-        }
-        | OperationStatus::VolumeRemove {
-            state: ployz_sdk_types::VolumeRemoveOperationState::Interrupted { evidence },
-            ..
-        } => Some(evidence),
-        OperationStatus::Deploy { .. }
-        | OperationStatus::Cert { .. }
-        | OperationStatus::MachineAdd { .. }
-        | OperationStatus::MachineUpdate { .. }
-        | OperationStatus::MachineLifecycle { .. }
-        | OperationStatus::CoreReplace { .. }
-        | OperationStatus::CredentialGrant { .. }
-        | OperationStatus::NetworkRepair { .. }
-        | OperationStatus::ServiceRestart { .. }
-        | OperationStatus::ManagedDnsReconcile { .. }
-        | OperationStatus::IngressConfigure { .. }
-        | OperationStatus::NamespaceRemove { .. }
-        | OperationStatus::VolumeRemove { .. } => None,
-    };
-    if let Some(evidence) = interruption {
-        return Some(format!(
-            "interruption {}",
-            serde_json::to_string(evidence).unwrap_or_else(|_| "evidence unavailable".to_owned())
-        ));
+    if let Some(evidence) = status.terminal_interruption_evidence() {
+        return Some(format!("interruption {}", render_interruption(evidence)));
     }
     match status {
         OperationStatus::Deploy {
@@ -923,8 +870,7 @@ fn render_replayed_event_text(
             "{} {} {}",
             event.sequence.get(),
             label,
-            serde_json::to_string(evidence)
-                .unwrap_or_else(|_| "interruption evidence unavailable".to_owned())
+            render_interruption(evidence)
         ),
         OperationEvent::CredentialGrantFailed { failure, .. } => format!(
             "{} {} {}",

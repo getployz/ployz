@@ -41,7 +41,7 @@ use ployz_core::operation::{
     DeployCompletionOutcome, DeployOperationState, DeployPhaseNumber, DeployPhaseOutcome,
     DeployRunningStage, DeployServiceResult, EventSequence, OperationEvent,
     OperationEventReplayCursor, OperationEventReplayRequest, OperationInterruptionCause,
-    OperationInterruptionEvidence, OperationStatus,
+    OperationStatus,
 };
 use ployz_nats::operation_api_client::OperationApiClientError;
 use ployz_nats::service_runtime::request_json;
@@ -103,13 +103,10 @@ async fn graceful_shutdown_records_owned_operation_interruption() {
         status,
         OperationStatus::NamespaceRemove {
             state: ployz_core::operation::NamespaceRemoveOperationState::Interrupted {
-                evidence: OperationInterruptionEvidence {
-                    cause: OperationInterruptionCause::ControlShutdown,
-                    ..
-                },
+                evidence,
             },
             ..
-        }
+        } if evidence.cause() == OperationInterruptionCause::ControlShutdown
     ));
 }
 
@@ -153,13 +150,10 @@ async fn startup_recovers_process_loss_without_mutating_committed_intent() {
         status,
         OperationStatus::NamespaceRemove {
             state: ployz_core::operation::NamespaceRemoveOperationState::Interrupted {
-                evidence: OperationInterruptionEvidence {
-                    cause: OperationInterruptionCause::PriorProcessLoss,
-                    ..
-                },
+                evidence,
             },
             ..
-        }
+        } if evidence.cause() == OperationInterruptionCause::PriorProcessLoss
     ));
     assert_eq!(
         intent.load().await.expect("intent loads").volume_pins,

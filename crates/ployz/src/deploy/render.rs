@@ -12,6 +12,7 @@ use ployz_core::operation::{
 use super::failure::{
     DeployFailureView, FailureSafety, artifact_unavailable_reason, failure_cause,
 };
+use crate::operation::interruption::render_interruption;
 
 const SPINNER_FRAMES: [char; 8] = ['⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽', '⣾'];
 
@@ -58,11 +59,6 @@ enum DeployResult {
     Interrupted {
         evidence: OperationInterruptionEvidence,
     },
-}
-
-fn interruption_detail(evidence: &OperationInterruptionEvidence) -> String {
-    serde_json::to_string(evidence)
-        .unwrap_or_else(|_| "interruption evidence unavailable".to_owned())
 }
 
 impl DeployTree {
@@ -335,7 +331,7 @@ impl DeployTree {
                 self.plain_lines.push(format!(
                     "deploy {}: interrupted — {}",
                     operation_id.as_str(),
-                    interruption_detail(evidence)
+                    render_interruption(evidence)
                 ));
                 if let Some(deploy) = &mut self.deploy {
                     deploy.result = DeployResult::Interrupted {
@@ -692,7 +688,7 @@ pub(crate) fn render_terminal(tree: &DeployTree) -> String {
             format!("Deploy cancelled — {}.\n", reason.as_str())
         }
         DeployResult::Interrupted { evidence } => {
-            format!("Deploy interrupted — {}.\n", interruption_detail(evidence))
+            format!("Deploy interrupted — {}.\n", render_interruption(evidence))
         }
     }
 }

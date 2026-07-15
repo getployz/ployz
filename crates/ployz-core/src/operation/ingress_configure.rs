@@ -9,7 +9,11 @@ use super::events::OperationEvent;
 use super::projection::{
     OperationProjection, ProjectionOperationState, StatusProjectionError, project_transition,
 };
-use super::{EventSequence, FailureMessage, OperationInterruptionEvidence, OperationStatus};
+use super::{
+    EventSequence, FailureMessage, OperationInterruptionCause, OperationInterruptionEvidence,
+    OperationInterruptionNextAction, OperationInterruptionStage,
+    OperationInterruptionUncertainWork, OperationStatus,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -29,6 +33,30 @@ impl IngressConfigureOperationState {
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
         !matches!(self, Self::Accepted)
+    }
+
+    pub(super) fn interruption_evidence(
+        &self,
+        cause: OperationInterruptionCause,
+    ) -> Option<OperationInterruptionEvidence> {
+        match self {
+            Self::Accepted => Some(OperationInterruptionEvidence::new(
+                cause,
+                OperationInterruptionStage::IngressConfigureAccepted,
+                OperationInterruptionUncertainWork::Intent,
+                OperationInterruptionNextAction::InspectThenResubmit,
+            )),
+            Self::Completed | Self::Failed { .. } | Self::Interrupted { .. } => None,
+        }
+    }
+
+    pub(super) const fn terminal_interruption_evidence(
+        &self,
+    ) -> Option<&OperationInterruptionEvidence> {
+        let Self::Interrupted { evidence } = self else {
+            return None;
+        };
+        Some(evidence)
     }
 }
 

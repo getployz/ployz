@@ -131,6 +131,36 @@ impl DeployOperationState {
             Self::Accepted | Self::Planning | Self::Running { .. } => false,
         }
     }
+
+    pub(super) fn interruption_evidence(
+        &self,
+        cause: super::OperationInterruptionCause,
+    ) -> Option<super::OperationInterruptionEvidence> {
+        let stage = match self {
+            Self::Accepted => super::DeployInterruptionStage::Accepted,
+            Self::Planning => super::DeployInterruptionStage::Planning,
+            Self::Running { stage } => super::DeployInterruptionStage::Running { stage: *stage },
+            Self::Completed { .. }
+            | Self::Failed { .. }
+            | Self::Cancelled { .. }
+            | Self::Interrupted { .. } => return None,
+        };
+        Some(super::OperationInterruptionEvidence::new(
+            cause,
+            super::OperationInterruptionStage::Deploy { stage },
+            super::OperationInterruptionUncertainWork::IntentAndRuntime,
+            super::OperationInterruptionNextAction::RetryFromObservedReality,
+        ))
+    }
+
+    pub(super) const fn terminal_interruption_evidence(
+        &self,
+    ) -> Option<&super::OperationInterruptionEvidence> {
+        let Self::Interrupted { evidence } = self else {
+            return None;
+        };
+        Some(evidence)
+    }
 }
 
 /// One machine's placement rejection, carried on NoUsableMachines evidence.

@@ -1,10 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    DeployOperationState, DeployRunningStage, MachineUpdateOperationState,
-    NamespaceRemoveOperationState, NamespaceRemoveRunningStage, NetworkRepairOperationState,
-    NetworkRepairRunningStage, OperationKind, OperationStatus, ServiceRestartOperationState,
-    ServiceRestartRunningStage, VolumeRemoveOperationState, VolumeRemoveRunningStage,
+    DeployRunningStage, NamespaceRemoveRunningStage, NetworkRepairRunningStage, OperationKind,
+    OperationStatus, ServiceRestartRunningStage, VolumeRemoveRunningStage,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,21 +90,50 @@ pub enum OperationInterruptionNextAction {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct OperationInterruptionEvidence {
-    pub cause: OperationInterruptionCause,
-    pub last_durable_stage: OperationInterruptionStage,
-    pub uncertain_work: OperationInterruptionUncertainWork,
-    pub next_action: OperationInterruptionNextAction,
+    cause: OperationInterruptionCause,
+    last_durable_stage: OperationInterruptionStage,
+    uncertain_work: OperationInterruptionUncertainWork,
+    next_action: OperationInterruptionNextAction,
 }
 
 impl OperationInterruptionEvidence {
-    #[must_use]
-    pub const fn kind(&self) -> OperationKind {
-        self.last_durable_stage.kind()
+    pub(super) const fn new(
+        cause: OperationInterruptionCause,
+        last_durable_stage: OperationInterruptionStage,
+        uncertain_work: OperationInterruptionUncertainWork,
+        next_action: OperationInterruptionNextAction,
+    ) -> Self {
+        Self {
+            cause,
+            last_durable_stage,
+            uncertain_work,
+            next_action,
+        }
     }
 
     #[must_use]
-    pub fn matches_status(&self, status: &OperationStatus) -> bool {
-        status.interruption_evidence(self.cause).as_ref() == Some(self)
+    pub const fn cause(&self) -> OperationInterruptionCause {
+        self.cause
+    }
+
+    #[must_use]
+    pub const fn last_durable_stage(&self) -> OperationInterruptionStage {
+        self.last_durable_stage
+    }
+
+    #[must_use]
+    pub const fn uncertain_work(&self) -> OperationInterruptionUncertainWork {
+        self.uncertain_work
+    }
+
+    #[must_use]
+    pub const fn next_action(&self) -> OperationInterruptionNextAction {
+        self.next_action
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> OperationKind {
+        self.last_durable_stage.kind()
     }
 }
 
@@ -116,158 +143,39 @@ impl OperationStatus {
         &self,
         cause: OperationInterruptionCause,
     ) -> Option<OperationInterruptionEvidence> {
-        let (last_durable_stage, uncertain_work, next_action) = match self {
-            Self::Deploy { state, .. } => {
-                let stage = match state {
-                    DeployOperationState::Accepted => DeployInterruptionStage::Accepted,
-                    DeployOperationState::Planning => DeployInterruptionStage::Planning,
-                    DeployOperationState::Running { stage } => {
-                        DeployInterruptionStage::Running { stage: *stage }
-                    }
-                    DeployOperationState::Completed { .. }
-                    | DeployOperationState::Failed { .. }
-                    | DeployOperationState::Cancelled { .. }
-                    | DeployOperationState::Interrupted { .. } => return None,
-                };
-                (
-                    OperationInterruptionStage::Deploy { stage },
-                    OperationInterruptionUncertainWork::IntentAndRuntime,
-                    OperationInterruptionNextAction::RetryFromObservedReality,
-                )
-            }
-            Self::CredentialGrant { state, .. } => match state {
-                super::CredentialGrantOperationState::Accepted => (
-                    OperationInterruptionStage::CredentialGrantAccepted,
-                    OperationInterruptionUncertainWork::Intent,
-                    OperationInterruptionNextAction::InspectThenResubmit,
-                ),
-                super::CredentialGrantOperationState::Completed
-                | super::CredentialGrantOperationState::Failed { .. }
-                | super::CredentialGrantOperationState::Cancelled { .. }
-                | super::CredentialGrantOperationState::Interrupted { .. } => return None,
-            },
-            Self::IngressConfigure { state, .. } => match state {
-                super::IngressConfigureOperationState::Accepted => (
-                    OperationInterruptionStage::IngressConfigureAccepted,
-                    OperationInterruptionUncertainWork::Intent,
-                    OperationInterruptionNextAction::InspectThenResubmit,
-                ),
-                super::IngressConfigureOperationState::Completed
-                | super::IngressConfigureOperationState::Failed { .. }
-                | super::IngressConfigureOperationState::Interrupted { .. } => return None,
-            },
-            Self::MachineUpdate { state, .. } => match state {
-                MachineUpdateOperationState::Accepted => (
-                    OperationInterruptionStage::MachineUpdateAccepted,
-                    OperationInterruptionUncertainWork::Runtime,
-                    OperationInterruptionNextAction::InspectThenResubmit,
-                ),
-                MachineUpdateOperationState::Running => (
-                    OperationInterruptionStage::MachineUpdateRunning,
-                    OperationInterruptionUncertainWork::Runtime,
-                    OperationInterruptionNextAction::InspectThenResubmit,
-                ),
-                MachineUpdateOperationState::Completed { .. }
-                | MachineUpdateOperationState::Failed { .. }
-                | MachineUpdateOperationState::Cancelled { .. }
-                | MachineUpdateOperationState::Interrupted { .. } => return None,
-            },
-            Self::MachineLifecycle { state, .. } => match state {
-                super::MachineLifecycleOperationState::Accepted => (
-                    OperationInterruptionStage::MachineLifecycleAccepted,
-                    OperationInterruptionUncertainWork::Intent,
-                    OperationInterruptionNextAction::InspectThenResubmit,
-                ),
-                super::MachineLifecycleOperationState::Completed
-                | super::MachineLifecycleOperationState::Failed { .. }
-                | super::MachineLifecycleOperationState::Cancelled { .. }
-                | super::MachineLifecycleOperationState::Interrupted { .. } => return None,
-            },
-            Self::NetworkRepair { state, .. } => {
-                let last_durable_stage = match state {
-                    NetworkRepairOperationState::Accepted => {
-                        OperationInterruptionStage::NetworkRepairAccepted
-                    }
-                    NetworkRepairOperationState::Running { stage } => {
-                        OperationInterruptionStage::NetworkRepairRunning { stage: *stage }
-                    }
-                    NetworkRepairOperationState::Completed
-                    | NetworkRepairOperationState::Failed { .. }
-                    | NetworkRepairOperationState::Cancelled { .. }
-                    | NetworkRepairOperationState::Interrupted { .. } => return None,
-                };
-                (
-                    last_durable_stage,
-                    OperationInterruptionUncertainWork::IntentAndRuntime,
-                    OperationInterruptionNextAction::InspectThenResubmit,
-                )
-            }
-            Self::ServiceRestart { state, .. } => {
-                let last_durable_stage = match state {
-                    ServiceRestartOperationState::Accepted => {
-                        OperationInterruptionStage::ServiceRestartAccepted
-                    }
-                    ServiceRestartOperationState::Running { stage } => {
-                        OperationInterruptionStage::ServiceRestartRunning { stage: *stage }
-                    }
-                    ServiceRestartOperationState::Completed
-                    | ServiceRestartOperationState::Failed { .. }
-                    | ServiceRestartOperationState::Cancelled { .. }
-                    | ServiceRestartOperationState::Interrupted { .. } => return None,
-                };
-                (
-                    last_durable_stage,
-                    OperationInterruptionUncertainWork::Runtime,
-                    OperationInterruptionNextAction::InspectThenResubmit,
-                )
-            }
-            Self::NamespaceRemove { state, .. } => {
-                let last_durable_stage = match state {
-                    NamespaceRemoveOperationState::Accepted => {
-                        OperationInterruptionStage::NamespaceRemoveAccepted
-                    }
-                    NamespaceRemoveOperationState::Running { stage } => {
-                        OperationInterruptionStage::NamespaceRemoveRunning { stage: *stage }
-                    }
-                    NamespaceRemoveOperationState::Completed
-                    | NamespaceRemoveOperationState::Failed { .. }
-                    | NamespaceRemoveOperationState::Cancelled { .. }
-                    | NamespaceRemoveOperationState::Interrupted { .. } => return None,
-                };
-                (
-                    last_durable_stage,
-                    OperationInterruptionUncertainWork::IntentAndRuntime,
-                    OperationInterruptionNextAction::InspectThenResubmit,
-                )
-            }
-            Self::VolumeRemove { state, .. } => {
-                let last_durable_stage = match state {
-                    VolumeRemoveOperationState::Accepted => {
-                        OperationInterruptionStage::VolumeRemoveAccepted
-                    }
-                    VolumeRemoveOperationState::Running { stage } => {
-                        OperationInterruptionStage::VolumeRemoveRunning { stage: *stage }
-                    }
-                    VolumeRemoveOperationState::Completed
-                    | VolumeRemoveOperationState::Failed { .. }
-                    | VolumeRemoveOperationState::Interrupted { .. } => return None,
-                };
-                (
-                    last_durable_stage,
-                    OperationInterruptionUncertainWork::IntentAndRuntime,
-                    OperationInterruptionNextAction::InspectThenResubmit,
-                )
-            }
+        match self {
+            Self::Deploy { state, .. } => state.interruption_evidence(cause),
+            Self::CredentialGrant { state, .. } => state.interruption_evidence(cause),
+            Self::IngressConfigure { state, .. } => state.interruption_evidence(cause),
+            Self::MachineUpdate { state, .. } => state.interruption_evidence(cause),
+            Self::MachineLifecycle { state, .. } => state.interruption_evidence(cause),
+            Self::NetworkRepair { state, .. } => state.interruption_evidence(cause),
+            Self::ServiceRestart { state, .. } => state.interruption_evidence(cause),
+            Self::NamespaceRemove { state, .. } => state.interruption_evidence(cause),
+            Self::VolumeRemove { state, .. } => state.interruption_evidence(cause),
             Self::Cert { .. }
             | Self::MachineAdd { .. }
             | Self::CoreReplace { .. }
-            | Self::ManagedDnsReconcile { .. } => return None,
-        };
-        Some(OperationInterruptionEvidence {
-            cause,
-            last_durable_stage,
-            uncertain_work,
-            next_action,
-        })
+            | Self::ManagedDnsReconcile { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn terminal_interruption_evidence(&self) -> Option<&OperationInterruptionEvidence> {
+        match self {
+            Self::Deploy { state, .. } => state.terminal_interruption_evidence(),
+            Self::CredentialGrant { state, .. } => state.terminal_interruption_evidence(),
+            Self::IngressConfigure { state, .. } => state.terminal_interruption_evidence(),
+            Self::MachineUpdate { state, .. } => state.terminal_interruption_evidence(),
+            Self::MachineLifecycle { state, .. } => state.terminal_interruption_evidence(),
+            Self::NetworkRepair { state, .. } => state.terminal_interruption_evidence(),
+            Self::ServiceRestart { state, .. } => state.terminal_interruption_evidence(),
+            Self::NamespaceRemove { state, .. } => state.terminal_interruption_evidence(),
+            Self::VolumeRemove { state, .. } => state.terminal_interruption_evidence(),
+            Self::Cert { .. }
+            | Self::MachineAdd { .. }
+            | Self::CoreReplace { .. }
+            | Self::ManagedDnsReconcile { .. } => None,
+        }
     }
 }

@@ -10,7 +10,11 @@ use super::projection::{
     OperationProjection, ProjectionOperationState, StatusProjectionError, project_transition,
 };
 use super::text::{CancellationReason, FailureMessage};
-use super::{EventSequence, OperationInterruptionEvidence, OperationStatus};
+use super::{
+    EventSequence, OperationInterruptionCause, OperationInterruptionEvidence,
+    OperationInterruptionNextAction, OperationInterruptionStage,
+    OperationInterruptionUncertainWork, OperationStatus,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -47,6 +51,33 @@ impl CredentialGrantOperationState {
             | Self::Interrupted { .. } => true,
             Self::Accepted => false,
         }
+    }
+
+    pub(super) fn interruption_evidence(
+        &self,
+        cause: OperationInterruptionCause,
+    ) -> Option<OperationInterruptionEvidence> {
+        match self {
+            Self::Accepted => Some(OperationInterruptionEvidence::new(
+                cause,
+                OperationInterruptionStage::CredentialGrantAccepted,
+                OperationInterruptionUncertainWork::Intent,
+                OperationInterruptionNextAction::InspectThenResubmit,
+            )),
+            Self::Completed
+            | Self::Failed { .. }
+            | Self::Cancelled { .. }
+            | Self::Interrupted { .. } => None,
+        }
+    }
+
+    pub(super) const fn terminal_interruption_evidence(
+        &self,
+    ) -> Option<&OperationInterruptionEvidence> {
+        let Self::Interrupted { evidence } = self else {
+            return None;
+        };
+        Some(evidence)
     }
 }
 

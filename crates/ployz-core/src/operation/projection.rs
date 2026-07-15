@@ -244,11 +244,11 @@ pub fn project_operation_event(
     event: OperationEvent,
     event_sequence: EventSequence,
 ) -> Result<OperationProjection, StatusProjectionError> {
-    let interruption_matches = match &event {
-        OperationEvent::OperationInterrupted { evidence, .. } => {
-            Some(evidence.matches_status(current))
-        }
-        _ => None,
+    let interruption_matches = if let OperationEvent::OperationInterrupted { evidence, .. } = &event
+    {
+        Some(current.interruption_evidence(evidence.cause()).as_ref() == Some(evidence))
+    } else {
+        None
     };
     let event = ClassifiedOperationEvent::from(event);
     let event_operation_id = event.operation_id();
