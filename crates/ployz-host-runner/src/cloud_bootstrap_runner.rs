@@ -10,9 +10,11 @@ use crate::cloud_bootstrap::{
     persist_cloud_terminal_callback, reset_cloud_attempt, write_cloud_joiner_trusted_ca,
 };
 use crate::cloud_client::CloudClient;
-use crate::command::{HostRunnerCommandRunner, SystemHostRunnerCommandRunner};
+use crate::execution::{
+    HostRunnerCommandRunner, HostRunnerLocalConfig, HostRunnerLocalEffects, SupervisorBackend,
+    SupervisorDirectories, SystemHostRunnerCommandRunner, detect_host_platform,
+};
 use crate::join_executor::execute_host_runner_join_with_redeemed;
-use crate::local::{HostRunnerLocalConfig, HostRunnerLocalEffects};
 use crate::plan::{HostRunnerPlanFailure, HostRunnerPlanTerminal};
 use crate::plan::{HostRunnerStepFailureReason, HostRunnerTextRecorder, JoinToken};
 use crate::release_manifest::{
@@ -216,8 +218,8 @@ fn prepare_cloud_bootstrap_attempt() -> Option<CloudBootstrapAttemptState> {
     let state_dir = std::path::Path::new(HOST_RUNNER_STATE_DIR);
     let mut runner = SystemHostRunnerCommandRunner::default();
     let supervisor = match runner.read_os_release().and_then(|os_release| {
-        crate::host_platform::detect_host_platform(&os_release)
-            .map(|profile| crate::supervisor::SupervisorBackend::from(profile.supervisor()))
+        detect_host_platform(&os_release)
+            .map(|profile| SupervisorBackend::from(profile.supervisor()))
             .map_err(|error| {
                 ployz_core::ops::FailureMessage::try_new(error.to_string())
                     .expect("host platform failure message is non-empty")
@@ -229,7 +231,7 @@ fn prepare_cloud_bootstrap_attempt() -> Option<CloudBootstrapAttemptState> {
             return None;
         }
     };
-    let supervisor_dirs = crate::supervisor::SupervisorDirectories::host_defaults();
+    let supervisor_dirs = SupervisorDirectories::host_defaults();
     let local_state =
         match inspect_cloud_bootstrap_local_state(state_dir, supervisor_dirs.directory(supervisor))
         {
@@ -620,7 +622,7 @@ fn run_cloud_joiner_bootstrap(
     let mut token_consumer = CloudJoinTokenConsumer;
     let mut effects = HostRunnerLocalEffects::new(
         HostRunnerLocalConfig {
-            supervisor_dirs: crate::supervisor::SupervisorDirectories::host_defaults(),
+            supervisor_dirs: SupervisorDirectories::host_defaults(),
             state_dir: HOST_RUNNER_STATE_DIR.into(),
             docker_daemon_config: "/etc/docker/daemon.json".into(),
             docker_repository_dir: "/etc/yum.repos.d".into(),

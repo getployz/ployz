@@ -1,17 +1,17 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use crate::artifacts::{ArtifactKind, artifact_target};
 use crate::assigned_substrate::load_assigned_substrate_state;
 use crate::cli::{HostRunnerSubstrateUpdate, HostRunnerSubstrateUpdateSource};
-use crate::command::{HostRunnerCommandRunner, SystemHostRunnerCommandRunner};
-use crate::fsx::{FileMode, write_durable_file};
-use crate::host_platform::detect_host_platform;
-use crate::local::{HostRunnerLocalConfig, HostRunnerLocalEffects};
+use crate::execution::supervisor::execute_supervisor_commands;
+use crate::execution::{
+    ArtifactKind, FileMode, HostRunnerCommandRunner, HostRunnerLocalConfig, HostRunnerLocalEffects,
+    SupervisorBackend, SupervisorDirectories, SupervisorUnitTarget, SystemHostRunnerCommandRunner,
+    artifact_target, detect_host_platform, write_durable_file,
+};
 use crate::plan::{HostPrerequisite, HostRunnerStep, HostRunnerStepPlan, HostRunnerTextRecorder};
 use crate::plan::{HostRunnerPlanTerminal, execute_host_runner_plan};
 use crate::release_manifest::{ReleaseManifest, release_manifest_url};
-use crate::supervisor::{SupervisorBackend, SupervisorDirectories, execute_supervisor_commands};
 use ployz_core::ids::OperationId;
 use ployz_core::install::InstallArtifactVersion;
 use ployz_core::ops::FailureMessage;
@@ -129,7 +129,7 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
     let mut recorder = HostRunnerTextRecorder::new(stdout.lock());
     let mut effects = HostRunnerLocalEffects::new(
         HostRunnerLocalConfig {
-            supervisor_dirs: crate::supervisor::SupervisorDirectories::host_defaults(),
+            supervisor_dirs: SupervisorDirectories::host_defaults(),
             state_dir: HOST_RUNNER_STATE_DIR.into(),
             docker_daemon_config: "/etc/docker/daemon.json".into(),
             docker_repository_dir: "/etc/yum.repos.d".into(),
@@ -246,7 +246,7 @@ fn installed_update_units(
     supervisor: SupervisorBackend,
 ) -> Result<Vec<InstalledUpdateUnit>, std::io::Error> {
     let mut units = Vec::new();
-    let nats = supervisor.service_name(&crate::systemd::SupervisorUnitTarget::NatsServer);
+    let nats = supervisor.service_name(&SupervisorUnitTarget::NatsServer);
     if supervisor_dir.join(&nats).is_file() {
         units.push(InstalledUpdateUnit::Nats);
     }
@@ -256,11 +256,7 @@ fn installed_update_units(
         let Some(file_name) = file_name.to_str() else {
             continue;
         };
-        let managed = file_name.starts_with("ployzd-")
-            && match supervisor {
-                SupervisorBackend::Systemd => file_name.ends_with(".service"),
-                SupervisorBackend::OpenRc => !file_name.contains('.'),
-            };
+        let managed = supervisor.is_managed_ployzd_service_file(file_name);
         if managed {
             units.push(InstalledUpdateUnit::Ployzd(file_name.to_owned()));
         }
@@ -277,12 +273,9 @@ fn restart_installed_update_units(
 ) -> Result<(), FailureMessage> {
     let services = units
         .iter()
-        .map(|unit| match (supervisor, unit) {
-            (SupervisorBackend::Systemd, InstalledUpdateUnit::Nats) => {
-                "nats-server.service".to_owned()
-            }
-            (SupervisorBackend::OpenRc, InstalledUpdateUnit::Nats) => "nats-server".to_owned(),
-            (_, InstalledUpdateUnit::Ployzd(service)) => service.clone(),
+        .map(|unit| match unit {
+            InstalledUpdateUnit::Nats => supervisor.service_name(&SupervisorUnitTarget::NatsServer),
+            InstalledUpdateUnit::Ployzd(service) => service.clone(),
         })
         .collect::<Vec<_>>();
     execute_supervisor_commands(runner, supervisor.restart_installed_commands(&services))
@@ -297,7 +290,7 @@ mod tests {
     use std::fs;
 
     use super::{InstalledUpdateUnit, installed_update_units};
-    use crate::supervisor::SupervisorBackend;
+    use crate::execution::SupervisorBackend;
 
     #[test]
     fn installed_update_units_discovers_nats_and_ployzd_units() {

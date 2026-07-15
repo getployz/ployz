@@ -8,7 +8,7 @@ use super::execution::{HostRunnerStepEvent, HostRunnerStepRecorder};
 use super::steps::{
     ContainerRuntime, HostPrerequisite, HostRunnerStepFailureReason, HostRunnerStepLabel,
 };
-use crate::artifacts::{ArtifactKind, ArtifactTarget};
+use crate::execution::{ArtifactKind, ArtifactTarget};
 
 pub struct HostRunnerTextRecorder<W> {
     writer: W,

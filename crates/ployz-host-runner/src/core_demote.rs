@@ -1,10 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::command::HostRunnerCommandRunner;
-use crate::host_platform::detect_host_platform;
-use crate::supervisor::{SupervisorBackend, SupervisorChange, execute_supervisor_commands};
-use crate::systemd::SupervisorUnitTarget;
+use crate::execution::supervisor::execute_supervisor_commands;
+use crate::execution::{
+    HostRunnerCommandOutput, HostRunnerCommandRunner, SupervisorBackend, SupervisorChange,
+    SupervisorUnitTarget, detect_host_platform,
+};
 use ployz_core::ids::MachineId;
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::DaemonProcessRole;
@@ -259,12 +260,12 @@ mod tests {
             &mut self,
             program: &str,
             args: &[&str],
-        ) -> Result<crate::command::HostRunnerCommandOutput, FailureMessage> {
+        ) -> Result<HostRunnerCommandOutput, FailureMessage> {
             if program != "systemctl" {
                 self.openrc_calls
                     .push(format!("{program} {}", args.join(" ")));
                 let success = !(program == "rc-service" && args.get(1) == Some(&"status"));
-                return Ok(crate::command::HostRunnerCommandOutput {
+                return Ok(HostRunnerCommandOutput {
                     success,
                     exit_code: Some(if success { 0 } else { 3 }),
                     stdout: String::new(),
@@ -287,7 +288,7 @@ mod tests {
                 && args.get(1) == Some(&"--quiet")
                 && !self.active_systemctl.contains(&call);
             let success = !failed && !inactive;
-            Ok(crate::command::HostRunnerCommandOutput {
+            Ok(HostRunnerCommandOutput {
                 success,
                 exit_code: Some(if success { 0 } else { 1 }),
                 stdout: String::new(),

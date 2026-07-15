@@ -2,15 +2,17 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use crate::artifacts::{ArtifactKind, DataplaneArtifactTargets, artifact_target};
 use crate::cli::HostRunnerStartup;
-use crate::command::SystemHostRunnerCommandRunner;
+use crate::execution::{ArtifactKind, DataplaneArtifactTargets, artifact_target};
+use crate::execution::{
+    HostRunnerLocalConfig, HostRunnerLocalEffects, SupervisorDirectories,
+    SystemHostRunnerCommandRunner,
+};
 use crate::join::JOIN_MATERIAL_DIR;
 use crate::join_executor::{
     HostRunnerJoinRedeemer, HostRunnerJoinReporter, HostRunnerJoinTokenConsumer,
     RedeemedHostRunnerJoin, execute_host_runner_join,
 };
-use crate::local::{HostRunnerLocalConfig, HostRunnerLocalEffects};
 use crate::plan::HostRunnerPlanTerminal;
 use crate::plan::{
     HostRunnerJoinMaterial, HostRunnerJoinTarget, HostRunnerTextRecorder, JoinToken,
@@ -78,7 +80,7 @@ pub(crate) fn run_join_with_consumer(
     let mut reporter = JoinReporter::from_env(token.clone());
     let mut effects = HostRunnerLocalEffects::new(
         HostRunnerLocalConfig {
-            supervisor_dirs: crate::supervisor::SupervisorDirectories::host_defaults(),
+            supervisor_dirs: SupervisorDirectories::host_defaults(),
             state_dir: HOST_RUNNER_STATE_DIR.into(),
             docker_daemon_config: "/etc/docker/daemon.json".into(),
             docker_repository_dir: "/etc/yum.repos.d".into(),

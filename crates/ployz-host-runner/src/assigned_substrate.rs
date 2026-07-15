@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use ployz_core::install::HostPortAssurance;
 use serde::{Deserialize, Serialize};
 
-use crate::fsx::{FileMode, write_durable_file};
+use crate::execution::{FileMode, write_durable_file};
 
 pub const ASSIGNED_SUBSTRATE_FILE: &str = "assigned-substrate.json";
 

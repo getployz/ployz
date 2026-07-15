@@ -17,6 +17,7 @@ pub mod core_demote;
 mod core_demote_command;
 mod core_promote;
 mod env_config;
+pub mod execution;
 pub mod executor;
 pub mod firewall;
 mod first_machine;

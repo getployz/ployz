@@ -1,7 +1,9 @@
 use std::process::ExitCode;
 
-use crate::command::SystemHostRunnerCommandRunner;
-use crate::local::{HostRunnerLocalConfig, HostRunnerLocalEffects};
+use crate::execution::{
+    HostRunnerLocalConfig, HostRunnerLocalEffects, SupervisorDirectories,
+    SystemHostRunnerCommandRunner,
+};
 use crate::plan::{FirstMachineInstallTarget, HostRunnerTextRecorder, first_machine_install_plan};
 use crate::plan::{HostRunnerPlanTerminal, execute_host_runner_plan};
 use ployz_core::ids::MachineId;
@@ -97,7 +99,7 @@ pub(crate) fn run_first_machine_install(
     let plan = first_machine_install_plan(target);
     let mut effects = HostRunnerLocalEffects::new(
         HostRunnerLocalConfig {
-            supervisor_dirs: crate::supervisor::SupervisorDirectories::host_defaults(),
+            supervisor_dirs: SupervisorDirectories::host_defaults(),
             state_dir: HOST_RUNNER_STATE_DIR.into(),
             docker_daemon_config: "/etc/docker/daemon.json".into(),
             docker_repository_dir: "/etc/yum.repos.d".into(),

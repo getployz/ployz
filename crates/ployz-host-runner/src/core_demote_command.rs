@@ -1,8 +1,8 @@
 use std::process::ExitCode;
 
 use crate::cli::HostRunnerCoreDemote;
-use crate::command::SystemHostRunnerCommandRunner;
 use crate::core_demote::{CoreDemoteTarget, demote_local_core};
+use crate::execution::SystemHostRunnerCommandRunner;
 
 pub(crate) fn run_core_demote_command(demote: HostRunnerCoreDemote) -> ExitCode {
     let mut runner = SystemHostRunnerCommandRunner::default();

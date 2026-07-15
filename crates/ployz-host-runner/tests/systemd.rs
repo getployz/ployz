@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use ployz_core::roles::DaemonProcessRole;
-use ployz_host_runner::artifacts::{ArtifactKind, ArtifactTarget};
-use ployz_host_runner::systemd::{
+use ployz_host_runner::execution::artifacts::{ArtifactKind, ArtifactTarget};
+use ployz_host_runner::execution::service::{
     NatsServerUnit, NatsServerUnitTarget, PloyzdRoleEnvironmentFile, PloyzdRoleUnit,
     SupervisorUnitFileError, role_unit_name,
 };

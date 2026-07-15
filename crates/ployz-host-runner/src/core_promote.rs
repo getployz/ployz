@@ -3,19 +3,19 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use crate::artifacts::{ArtifactKind, ArtifactTarget, DataplaneArtifactTargets, artifact_target};
 use crate::assigned_substrate::{
     AssignedSubstrateState, SubstrateAssignment, load_assigned_substrate_state,
 };
 use crate::cli::HostRunnerCorePromote;
-use crate::command::SystemHostRunnerCommandRunner;
 use crate::core_demote::repoint_non_core_roles;
+use crate::execution::SystemHostRunnerCommandRunner;
+use crate::execution::{ArtifactKind, ArtifactTarget, DataplaneArtifactTargets, artifact_target};
+use crate::execution::{HostRunnerLocalConfig, HostRunnerLocalEffects, SupervisorDirectories};
 use crate::join::{
     JOIN_CORE_SEEDS_FILE, JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_RECOVERY_KEY_FILE,
     JOIN_TRUSTED_CA_FILE, parse_dataplane_endpoint_supernet_from_join_material,
     parse_machine_id_from_join_material,
 };
-use crate::local::{HostRunnerLocalConfig, HostRunnerLocalEffects};
 use crate::plan::{CorePromoteTarget, HostRunnerTextRecorder, core_promote_plan};
 use crate::plan::{HostRunnerPlanTerminal, execute_host_runner_plan};
 use crate::release_manifest::release_manifest_url;
@@ -123,7 +123,7 @@ pub(crate) fn run_core_promote_command(promote: HostRunnerCorePromote) -> ExitCo
     let plan = core_promote_plan(target);
     let mut effects = HostRunnerLocalEffects::new(
         HostRunnerLocalConfig {
-            supervisor_dirs: crate::supervisor::SupervisorDirectories::host_defaults(),
+            supervisor_dirs: SupervisorDirectories::host_defaults(),
             state_dir: HOST_RUNNER_STATE_DIR.into(),
             docker_daemon_config: "/etc/docker/daemon.json".into(),
             docker_repository_dir: "/etc/yum.repos.d".into(),

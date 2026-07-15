@@ -12,7 +12,7 @@ use ployz_sdk_types::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::fsx::{FileMode, write_durable_file};
+use crate::execution::{FileMode, write_durable_file};
 use crate::join::{JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_NATS_CREDENTIALS_FILE};
 
 const CLOUD_ATTEMPT_FILE: &str = "cloud-bootstrap-attempt.json";
