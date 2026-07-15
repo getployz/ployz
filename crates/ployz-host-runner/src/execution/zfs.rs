@@ -17,9 +17,10 @@ use state::load_prepared_storage_state;
 #[cfg(test)]
 use command::{COMMAND_TIMEOUT, INSTALL_TIMEOUT};
 #[cfg(test)]
-use ployz_core::storage::{PLOYZ_OWNED_ZFS_BACKING_FILE, PLOYZ_OWNED_ZFS_POOL, ZfsDatasetRoot};
-#[cfg(test)]
-use state::VOLUME_MOUNTPOINT;
+use ployz_core::storage::{
+    PLOYZ_OWNED_ZFS_BACKING_FILE, PLOYZ_OWNED_ZFS_POOL,
+    PROVISIONED_VOLUME_MOUNTPOINT as VOLUME_MOUNTPOINT, ZfsDatasetRoot,
+};
 
 #[cfg(test)]
 mod tests;

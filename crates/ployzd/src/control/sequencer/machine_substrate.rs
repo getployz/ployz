@@ -7,7 +7,7 @@ use std::sync::Arc;
 use ployz_core::deploy::ZfsPoolName;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::InstallArtifactVersion;
-use tokio::sync::Mutex;
+use std::sync::Mutex;
 
 use super::{OperationControllers, SubmitCommandError};
 use crate::control::operation_evidence::{
@@ -97,7 +97,7 @@ impl OperationControllers {
             Err(_) => true,
         };
         if release && matches!(claim, MachineSubstrateClaim::Acquired) {
-            self.release_machine(&machine_id, &operation_id).await;
+            drop(self.machine_substrate_lease(machine_id, operation_id));
         }
         result
     }
@@ -107,7 +107,11 @@ impl OperationControllers {
         machine_id: &MachineId,
         operation_id: &OperationId,
     ) -> MachineSubstrateClaim {
-        let mut owners = self.machine_substrate_locks.owners.lock().await;
+        let mut owners = self
+            .machine_substrate_locks
+            .owners
+            .lock()
+            .expect("Machine Substrate Lock is not poisoned");
         match owners.get(machine_id) {
             Some(owner) if owner == operation_id => MachineSubstrateClaim::AlreadyOwned,
             Some(owner) => MachineSubstrateClaim::Busy {
@@ -120,10 +124,38 @@ impl OperationControllers {
         }
     }
 
+    pub(crate) fn machine_substrate_lease(
+        &self,
+        machine_id: MachineId,
+        operation_id: OperationId,
+    ) -> MachineSubstrateLease {
+        MachineSubstrateLease {
+            owners: self.machine_substrate_locks.owners.clone(),
+            machine_id,
+            operation_id,
+        }
+    }
+
+    #[cfg(test)]
     pub async fn release_machine(&self, machine_id: &MachineId, operation_id: &OperationId) {
-        let mut owners = self.machine_substrate_locks.owners.lock().await;
-        if owners.get(machine_id) == Some(operation_id) {
-            owners.remove(machine_id);
+        drop(self.machine_substrate_lease(machine_id.clone(), operation_id.clone()));
+    }
+}
+
+pub(crate) struct MachineSubstrateLease {
+    owners: Arc<Mutex<BTreeMap<MachineId, OperationId>>>,
+    machine_id: MachineId,
+    operation_id: OperationId,
+}
+
+impl Drop for MachineSubstrateLease {
+    fn drop(&mut self) {
+        let mut owners = self
+            .owners
+            .lock()
+            .expect("Machine Substrate Lock is not poisoned");
+        if owners.get(&self.machine_id) == Some(&self.operation_id) {
+            owners.remove(&self.machine_id);
         }
     }
 }

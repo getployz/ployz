@@ -360,6 +360,16 @@ pub enum MachineUpdateError {
         operation_id: OperationId,
         machine_id: MachineId,
     },
+    #[error(
+        "machine substrate for {} is busy with operation {}",
+        .machine_id.as_str(),
+        .owner_operation_id.as_str()
+    )]
+    MachineSubstrateBusy {
+        operation_id: OperationId,
+        machine_id: MachineId,
+        owner_operation_id: OperationId,
+    },
     #[error("machine update {} unavailable: {message}", .operation_id.as_str())]
     Unavailable {
         operation_id: OperationId,
@@ -383,6 +393,16 @@ pub enum MachineStoragePrepareError {
     NoSuchMachine {
         operation_id: OperationId,
         machine_id: MachineId,
+    },
+    #[error(
+        "machine substrate for {} is busy with operation {}",
+        .machine_id.as_str(),
+        .owner_operation_id.as_str()
+    )]
+    MachineSubstrateBusy {
+        operation_id: OperationId,
+        machine_id: MachineId,
+        owner_operation_id: OperationId,
     },
     #[error("machine storage prepare {} unavailable: {message}", .operation_id.as_str())]
     Unavailable {

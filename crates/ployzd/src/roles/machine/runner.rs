@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredential};
+use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredential, VolumeName};
 use ployz_core::ids::ContainerId;
 use ployz_core::image::OciDigest;
 use ployz_core::machine::runtime::ContainerHealth;
@@ -37,6 +37,7 @@ pub enum ExistingManagedContainerState {
 pub struct CreateManagedContainer {
     pub pull: MachineImagePull,
     pub runtime: ContainerRuntimeSpec,
+    pub provisioned_volumes: Vec<VolumeName>,
     pub identity: ManagedContainerIdentity,
 }
 

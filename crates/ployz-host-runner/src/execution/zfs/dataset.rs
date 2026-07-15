@@ -3,11 +3,14 @@
 use std::path::Path;
 
 use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes};
-use ployz_core::storage::{PreparedStorageOrigin, StorageEffectFailure as ZfsEffectError};
+use ployz_core::storage::{
+    PROVISIONED_VOLUME_MOUNTPOINT, PreparedStorageOrigin, PreparedStorageState,
+    StorageEffectFailure as ZfsEffectError,
+};
 use serde::{Deserialize, Serialize};
 
 use super::command::{COMMAND_TIMEOUT, EffectClass, checked, parse_last_u64, parse_u64};
-use super::state::{VOLUME_MOUNTPOINT, load_and_verify, verify_child};
+use super::state::{load_and_verify, verify_child};
 use crate::execution::HostRunnerCommandRunner;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,7 +31,9 @@ pub struct PoolCapacityFacts {
 #[serde(deny_unknown_fields)]
 pub struct DatasetFacts {
     pub used_bytes: u64,
-    pub last_write_unix_seconds: u64,
+    /// Modification time of the dataset mount directory itself. This is
+    /// directory metadata testimony, not a recursive signal of file writes.
+    pub mount_directory_modified_unix_seconds: u64,
 }
 
 pub fn create_dataset(
@@ -39,6 +44,7 @@ pub fn create_dataset(
 ) -> Result<(), ZfsEffectError> {
     let state = load_and_verify(runner, state_directory)?;
     verify_child(&state, dataset)?;
+    admit_quota(runner, &state, dataset, quota.get())?;
     checked(
         runner,
         "zfs",
@@ -78,6 +84,7 @@ pub fn grow_dataset_quota(
         });
     }
     if requested.get() > current {
+        admit_quota(runner, &state, dataset, requested.get())?;
         checked(
             runner,
             "zfs",
@@ -114,8 +121,8 @@ pub fn gather_dataset_facts(
         .ok_or_else(|| ZfsEffectError::GatherParse {
             message: format!("dataset {} has no leaf", dataset.as_str()),
         })?;
-    let path = format!("{VOLUME_MOUNTPOINT}/{leaf}");
-    let last_write = checked(
+    let path = format!("{PROVISIONED_VOLUME_MOUNTPOINT}/{leaf}");
+    let directory_modified = checked(
         runner,
         "stat",
         &["-c", "%Y", &path],
@@ -124,9 +131,9 @@ pub fn gather_dataset_facts(
     )?;
     Ok(DatasetFacts {
         used_bytes: parse_u64("dataset used bytes", used.stdout.trim())?,
-        last_write_unix_seconds: parse_u64(
-            "dataset last-write timestamp",
-            last_write.stdout.trim(),
+        mount_directory_modified_unix_seconds: parse_u64(
+            "dataset mount-directory modification timestamp",
+            directory_modified.stdout.trim(),
         )?,
     })
 }
@@ -153,6 +160,13 @@ pub fn gather_pool_capacity(
     state_directory: &Path,
 ) -> Result<PoolCapacityFacts, ZfsEffectError> {
     let state = load_and_verify(runner, state_directory)?;
+    gather_pool_capacity_for_state(runner, &state)
+}
+
+fn gather_pool_capacity_for_state(
+    runner: &mut impl HostRunnerCommandRunner,
+    state: &PreparedStorageState,
+) -> Result<PoolCapacityFacts, ZfsEffectError> {
     let available = match state.origin() {
         PreparedStorageOrigin::OwnedImage { backing_file } => {
             let path = backing_file.to_string_lossy();
@@ -208,7 +222,7 @@ pub fn gather_pool_capacity(
             DatasetName::try_new(name.trim()).map_err(|error| ZfsEffectError::GatherParse {
                 message: error.to_string(),
             })?;
-        verify_child(&state, &dataset)?;
+        verify_child(state, &dataset)?;
         child_quotas.push(DatasetQuotaFact {
             dataset,
             quota_bytes: parse_u64("child quota", quota.trim())?,
@@ -219,4 +233,29 @@ pub fn gather_pool_capacity(
         available_bytes: available,
         child_quotas,
     })
+}
+
+fn admit_quota(
+    runner: &mut impl HostRunnerCommandRunner,
+    state: &PreparedStorageState,
+    dataset: &DatasetName,
+    requested: u64,
+) -> Result<(), ZfsEffectError> {
+    let facts = gather_pool_capacity_for_state(runner, state)?;
+    let requested_total = facts
+        .child_quotas
+        .iter()
+        .filter(|fact| fact.dataset != *dataset)
+        .try_fold(requested, |total, fact| total.checked_add(fact.quota_bytes))
+        .ok_or(ZfsEffectError::QuotaCapacityExceeded {
+            available: facts.available_bytes,
+            requested_total: u64::MAX,
+        })?;
+    if requested_total > facts.available_bytes {
+        return Err(ZfsEffectError::QuotaCapacityExceeded {
+            available: facts.available_bytes,
+            requested_total,
+        });
+    }
+    Ok(())
 }

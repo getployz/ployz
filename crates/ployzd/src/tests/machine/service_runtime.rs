@@ -207,6 +207,7 @@ async fn machine_role_service_creates_missing_container() {
                 reference: image("registry.example/api:rev_2"),
             },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+            provisioned_volumes: Vec::new(),
             identity: managed_identity(),
         }]
     );
@@ -397,6 +398,7 @@ async fn machine_role_service_creates_when_sibling_service_uses_same_operation_s
                 reference: image("registry.example/api:rev_2"),
             },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+            provisioned_volumes: Vec::new(),
             identity: managed_identity(),
         }]
     );
@@ -1723,6 +1725,7 @@ fn run_request() -> MachineContainerRunRpcRequest {
             reference: image("registry.example/api:rev_2"),
         },
         runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+        provisioned_volumes: Vec::new(),
         container: managed_container_spec(),
     }
 }
@@ -1737,6 +1740,7 @@ fn hook_request() -> MachineContainerRunHookRpcRequest {
             reference: image("registry.example/api:rev_2"),
         },
         runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+        provisioned_volumes: Vec::new(),
         container,
         timeout_millis: 1_000,
     }

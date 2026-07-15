@@ -18,7 +18,7 @@ use bollard::models::{
     ContainerCreateBody, ContainerSummary, ContainerSummaryHealthStatusEnum,
     ContainerSummaryNetworkSettings, ContainerSummaryStateEnum, EndpointSettings, HealthConfig,
     HealthStatusEnum, HostConfig, Mount, MountType, NetworkingConfig, RestartPolicy,
-    RestartPolicyNameEnum, VolumeCreateRequest,
+    RestartPolicyNameEnum,
 };
 use bollard::query_parameters::{
     CreateImageOptionsBuilder, InspectContainerOptions, ListContainersOptionsBuilder,
@@ -44,6 +44,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+
+use super::provisioned_volume::ensure_provisioned_volumes;
+#[cfg(test)]
+use super::provisioned_volume::local_bind_volume_request;
 
 const DEFAULT_LOG_TAIL_LINES: u16 = 200;
 const MAX_LOG_TAIL_LINES: u16 = 1_000;
@@ -343,10 +347,11 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
             MachineImagePull::MeshSeed { .. } => None,
         };
         self.pull_image(&pull_reference, credential).await?;
-        ensure_local_bind_volumes(
+        ensure_provisioned_volumes(
             docker,
             &command.identity.namespace_id,
             &command.runtime.volume_mounts,
+            &command.provisioned_volumes,
         )
         .await?;
         // Every service container joins the already-converged endpoint
@@ -574,42 +579,6 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
                 message: error.to_string(),
             }),
         }
-    }
-}
-
-async fn ensure_local_bind_volumes(
-    docker: &Docker,
-    namespace_id: &ployz_core::ids::NamespaceId,
-    mounts: &[ployz_core::deploy::ServiceVolumeMount],
-) -> Result<(), MachineContainerRunnerError> {
-    for mount in mounts {
-        docker
-            .create_volume(local_bind_volume_request(namespace_id, &mount.volume_name))
-            .await
-            .map_err(|error| MachineContainerRunnerError::Create {
-                message: error.to_string(),
-            })?;
-    }
-    Ok(())
-}
-
-fn local_bind_volume_request(
-    namespace_id: &ployz_core::ids::NamespaceId,
-    volume_name: &ployz_core::deploy::VolumeName,
-) -> VolumeCreateRequest {
-    let storage_name = docker_volume_name(namespace_id, volume_name);
-    VolumeCreateRequest {
-        name: Some(storage_name.clone()),
-        driver: Some("local".to_owned()),
-        driver_opts: Some(HashMap::from([
-            (
-                "device".to_owned(),
-                format!("/var/lib/ployz/volumes/{storage_name}"),
-            ),
-            ("o".to_owned(), "bind".to_owned()),
-            ("type".to_owned(), "none".to_owned()),
-        ])),
-        ..Default::default()
     }
 }
 
@@ -1388,6 +1357,7 @@ mod tests {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime: ContainerRuntimeSpec::image_defaults(),
+                provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -1409,6 +1379,7 @@ mod tests {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime: runtime_spec(),
+                provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -1432,6 +1403,7 @@ mod tests {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime: ContainerRuntimeSpec::image_defaults(),
+                provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -1472,6 +1444,7 @@ mod tests {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime,
+                provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -1507,6 +1480,7 @@ mod tests {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime,
+                provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -1524,6 +1498,7 @@ mod tests {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime: ContainerRuntimeSpec::image_defaults(),
+                provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -1547,6 +1522,7 @@ mod tests {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime,
+                provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -1593,11 +1569,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_dataset_bind_fails_without_creating_the_source_path() {
-        let (runner, attempts, _socket_dir) = registry_runner_with_responses(vec![(
-            500,
-            r#"{"message":"bind source path does not exist"}"#.to_owned(),
-        )])
+    async fn missing_dataset_bind_fails_at_container_start_without_creating_the_source_path() {
+        let (runner, attempts, _socket_dir) = registry_runner_with_responses(vec![
+            (
+                201,
+                r#"{"Name":"bound-volume","Driver":"local","Mountpoint":"","Labels":{},"Scope":"local","Options":{}}"#
+                    .to_owned(),
+            ),
+            (
+                500,
+                r#"{"message":"bind source path does not exist"}"#.to_owned(),
+            ),
+        ])
         .await;
         let namespace_id =
             NamespaceId::try_new(format!("missing-{}", nuid::next())).expect("generated namespace");
@@ -1611,19 +1594,28 @@ mod tests {
         assert!(!std::path::Path::new(source).exists());
 
         let docker = runner.docker().await.expect("stub Docker client");
-        let error = ensure_local_bind_volumes(
+        ensure_provisioned_volumes(
             docker,
             &namespace_id,
             &[ServiceVolumeMount {
-                volume_name,
+                volume_name: volume_name.clone(),
                 target: ContainerMountPath::try_new("/data").expect("mount target"),
             }],
+            &[volume_name],
         )
         .await
-        .expect_err("Docker rejects a missing bind source");
+        .expect("Docker records the local-driver volume without creating its source");
+        let error = docker
+            .start_container("container", None)
+            .await
+            .expect_err("Docker rejects the missing source when mounting the volume");
 
-        assert!(matches!(error, MachineContainerRunnerError::Create { .. }));
-        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(
+            error
+                .to_string()
+                .contains("bind source path does not exist")
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
         assert!(!std::path::Path::new(source).exists());
     }
 
@@ -1639,6 +1631,7 @@ mod tests {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime: ContainerRuntimeSpec::image_defaults(),
+                provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,

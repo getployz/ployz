@@ -458,8 +458,42 @@ where
 
 fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutionPolicy {
     let mut policy = EndpointExecutionPolicy::default();
-    if endpoint == MachineServiceEndpoint::DataplaneStatus {
-        policy.request_timeout = DATAPLANE_STATUS_ENDPOINT_TIMEOUT;
+    match endpoint {
+        MachineServiceEndpoint::DataplaneStatus => {
+            policy.request_timeout = DATAPLANE_STATUS_ENDPOINT_TIMEOUT;
+        }
+        MachineServiceEndpoint::StoragePrepare => {
+            policy.request_timeout = ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT;
+        }
+        MachineServiceEndpoint::Inspect
+        | MachineServiceEndpoint::FactsGet
+        | MachineServiceEndpoint::FactsRefresh
+        | MachineServiceEndpoint::DnsResolve
+        | MachineServiceEndpoint::DnsStatus
+        | MachineServiceEndpoint::ContainerInspect
+        | MachineServiceEndpoint::ContainerResolveImage
+        | MachineServiceEndpoint::ContainerRun
+        | MachineServiceEndpoint::ContainerRunHook
+        | MachineServiceEndpoint::ContainerRestart
+        | MachineServiceEndpoint::ContainerStop
+        | MachineServiceEndpoint::ContainerRemove
+        | MachineServiceEndpoint::VolumeRemove
+        | MachineServiceEndpoint::DataplanePublicKey
+        | MachineServiceEndpoint::SubstrateUpdate
+        | MachineServiceEndpoint::SubstrateReport
+        | MachineServiceEndpoint::StoragePrepareReport
+        | MachineServiceEndpoint::LogsTail
+        | MachineServiceEndpoint::ImageBlobCheck
+        | MachineServiceEndpoint::ImageBlobPush
+        | MachineServiceEndpoint::ImageManifestPush
+        | MachineServiceEndpoint::ImageEnsure
+        | MachineServiceEndpoint::CertificateArtifactStatus
+        | MachineServiceEndpoint::CertificateArtifactPush
+        | MachineServiceEndpoint::CertificateArtifactRemove
+        | MachineServiceEndpoint::CertificateChallengeApply
+        | MachineServiceEndpoint::CertificateChallengeRemove
+        | MachineServiceEndpoint::CertificateChallengeStatus
+        | MachineServiceEndpoint::GatewayStatusGet => {}
     }
     policy
 }
@@ -511,6 +545,16 @@ mod tests {
                 > dataplane_status_budget(ployz_core::network::NetworkStatusMode::Snapshot)
                 && policy.request_timeout
                     > dataplane_status_budget(ployz_core::network::NetworkStatusMode::ProbePathMtu,)
+        );
+    }
+
+    #[test]
+    fn storage_prepare_endpoint_covers_the_supervised_child_budget() {
+        let policy = machine_endpoint_policy(MachineServiceEndpoint::StoragePrepare);
+
+        assert_eq!(
+            policy.request_timeout,
+            ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT
         );
     }
 }

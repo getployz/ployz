@@ -43,27 +43,19 @@ impl MachineUpdateOperation {
         }
 
         let operation_id = accepted.operation_id.clone();
+        let lease = self
+            .controllers
+            .machine_substrate_lease(accepted.machine_id.clone(), accepted.operation_id.clone());
         let runtime = self.clone();
-        let machine_id = accepted.machine_id.clone();
-        let admission = self.task_registry.spawn(|| async move {
+        let admission = self.task_registry.spawn(move || async move {
+            let _lease = lease;
             runtime.run(accepted).await;
         });
-        let rejected = admission.is_err();
         super::finish_rejected_task_admission(&self.controllers, &operation_id, admission).await;
-        if rejected {
-            self.controllers
-                .release_machine(&machine_id, &operation_id)
-                .await;
-        }
     }
 
     pub async fn run(self, accepted: AcceptedMachineUpdateSubmission) {
-        let operation_id = accepted.operation_id.clone();
-        let machine_id = accepted.machine_id.clone();
         self.clone().run_inner(accepted).await;
-        self.controllers
-            .release_machine(&machine_id, &operation_id)
-            .await;
     }
 
     async fn run_inner(self, accepted: AcceptedMachineUpdateSubmission) {

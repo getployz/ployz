@@ -9,6 +9,8 @@ use crate::roles::machine::protocol::{
     MachineSubstrateUpdateRpcResponse,
 };
 use atomic_write_file::AtomicWriteFile;
+#[cfg(unix)]
+use atomic_write_file::unix::OpenOptionsExt as AtomicOpenOptionsExt;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::InstallArtifactVersion;
 use ployz_core::operation::{FailureMessage, MachineSubstrateVersions};
@@ -16,17 +18,27 @@ use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decod
 use serde::Deserialize;
 use std::io::ErrorKind;
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt as StdOpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use ployz_core::storage::{
     MACHINE_STORAGE_PREPARE_BUDGET, MachineStoragePreparationEvidence, PreparedStorageState,
-    StorageEffectFailure,
+    StorageEffectFailure, StorageOperationEvidenceFile,
 };
 
 const SUBSTRATE_VERSION_FILE: &str = "/var/lib/ployz/substrate-version.json";
 const STORAGE_OPERATION_DIRECTORY: &str = "/var/lib/ployz/storage-operations";
+const MACHINE_SUBSTRATE_LOCK_FILE: &str = "/var/lib/ployz/machine-substrate.lock";
+
+fn privileged_substrate_lock() -> Arc<tokio::sync::Mutex<()>> {
+    static LOCK: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
+    LOCK.get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
 
 pub(crate) async fn handle_storage_prepare(
     machine_id: MachineId,
@@ -37,13 +49,26 @@ pub(crate) async fn handle_storage_prepare(
         Ok(request) => request,
         Err(response) => return response,
     };
+    let Ok(_machine_substrate_guard) = privileged_substrate_lock().try_lock_owned() else {
+        return machine_domain_error(MachineStoragePrepareRpcResponse::DomainError {
+            machine_id,
+            error: MachineStoragePrepareDomainError::PreparationFailed {
+                failure: StorageEffectFailure::ProcessFailed {
+                    message: "another privileged machine substrate effect is running".to_owned(),
+                },
+            },
+        });
+    };
     let prepare = supervise_storage_prepare(
         &request.operation_id,
         Path::new(STORAGE_OPERATION_DIRECTORY),
         MACHINE_STORAGE_PREPARE_BUDGET,
         || {
-            let mut command = tokio::process::Command::new("ployz");
+            let mut command = tokio::process::Command::new("flock");
             command
+                .arg("--nonblock")
+                .arg(MACHINE_SUBSTRATE_LOCK_FILE)
+                .arg("ployz")
                 .arg("host")
                 .arg("storage-prepare")
                 .arg("--operation-id")
@@ -83,7 +108,7 @@ pub(crate) async fn handle_storage_prepare_report(
         Ok(request) => request,
         Err(response) => return response,
     };
-    match read_storage_prepare_evidence(&request.operation_id) {
+    match StorageEvidenceRepository::host_default().read_pool(&request.operation_id) {
         Ok(pool) => machine_success(MachineStoragePrepareReportRpcResponse::Ok(
             MachineStoragePrepareReportRpcOk { machine_id, pool },
         )),
@@ -94,46 +119,115 @@ pub(crate) async fn handle_storage_prepare_report(
     }
 }
 
-fn read_storage_prepare_evidence(
-    operation_id: &OperationId,
-) -> Result<Option<ployz_core::deploy::ZfsPoolName>, StorageEffectFailure> {
-    read_storage_prepare_evidence_at(Path::new(STORAGE_OPERATION_DIRECTORY), operation_id)
-}
-
+#[cfg(test)]
 fn read_storage_prepare_evidence_at(
     directory: &Path,
     operation_id: &OperationId,
 ) -> Result<Option<ployz_core::deploy::ZfsPoolName>, StorageEffectFailure> {
-    let path = directory.join(format!("{}.json", operation_id.as_str()));
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(StorageEffectFailure::ProcessFailed {
-                message: format!("failed to read {}: {error}", path.display()),
-            });
-        }
-    };
-    let evidence: MachineStoragePreparationEvidence =
-        serde_json::from_slice(&bytes).map_err(|error| StorageEffectFailure::ProcessFailed {
-            message: format!("failed to decode {}: {error}", path.display()),
-        })?;
-    match evidence {
-        MachineStoragePreparationEvidence::Completed {
-            operation_id: recorded,
-            prepared,
-        } if recorded == *operation_id => Ok(Some(prepared.pool().clone())),
-        MachineStoragePreparationEvidence::Failed {
-            operation_id: recorded,
-            failure,
-        } if recorded == *operation_id => Err(failure),
-        MachineStoragePreparationEvidence::Completed { .. }
-        | MachineStoragePreparationEvidence::Failed { .. } => {
-            Err(StorageEffectFailure::ProcessFailed {
-                message: "storage preparation evidence names another operation".to_owned(),
-            })
+    StorageEvidenceRepository::new(directory).read_pool(operation_id)
+}
+
+struct StorageEvidenceRepository<'a> {
+    directory: &'a Path,
+}
+
+impl<'a> StorageEvidenceRepository<'a> {
+    fn new(directory: &'a Path) -> Self {
+        Self { directory }
+    }
+
+    fn host_default() -> Self {
+        Self::new(Path::new(STORAGE_OPERATION_DIRECTORY))
+    }
+
+    fn file(&self, operation_id: &OperationId) -> StorageOperationEvidenceFile {
+        StorageOperationEvidenceFile::in_evidence_directory(self.directory, operation_id.clone())
+    }
+
+    fn read_optional(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<MachineStoragePreparationEvidence>, StorageEffectFailure> {
+        let file = self.file(operation_id);
+        let bytes = match std::fs::read(file.path()) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(StorageEffectFailure::ProcessFailed {
+                    message: format!("failed to read {}: {error}", file.path().display()),
+                });
+            }
+        };
+        let evidence: MachineStoragePreparationEvidence =
+            serde_json::from_slice(&bytes).map_err(|error| {
+                StorageEffectFailure::ProcessFailed {
+                    message: format!("failed to decode {}: {error}", file.path().display()),
+                }
+            })?;
+        file.validate(&evidence)?;
+        Ok(Some(evidence))
+    }
+
+    fn read_pool(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<ployz_core::deploy::ZfsPoolName>, StorageEffectFailure> {
+        match self.read_optional(operation_id)? {
+            Some(MachineStoragePreparationEvidence::Completed { prepared, .. }) => {
+                Ok(Some(prepared.pool().clone()))
+            }
+            Some(MachineStoragePreparationEvidence::Failed { failure, .. }) => Err(failure),
+            None => Ok(None),
         }
     }
+
+    fn persist_failure(
+        &self,
+        operation_id: &OperationId,
+        failure: &StorageEffectFailure,
+    ) -> Result<(), StorageEffectFailure> {
+        std::fs::create_dir_all(self.directory).map_err(|error| {
+            StorageEffectFailure::ProcessFailed {
+                message: format!("failed to create {}: {error}", self.directory.display()),
+            }
+        })?;
+        #[cfg(unix)]
+        std::fs::set_permissions(self.directory, std::fs::Permissions::from_mode(0o700)).map_err(
+            |error| StorageEffectFailure::ProcessFailed {
+                message: format!("failed to protect {}: {error}", self.directory.display()),
+            },
+        )?;
+        let file = self.file(operation_id);
+        let bytes = serde_json::to_vec_pretty(&MachineStoragePreparationEvidence::Failed {
+            operation_id: operation_id.clone(),
+            failure: failure.clone(),
+        })
+        .map_err(|error| StorageEffectFailure::ProcessFailed {
+            message: format!("failed to encode terminal evidence: {error}"),
+        })?;
+        let mut atomic = open_secret_atomic(file.path()).map_err(|error| {
+            StorageEffectFailure::ProcessFailed {
+                message: format!("failed to create {}: {error}", file.path().display()),
+            }
+        })?;
+        atomic
+            .write_all(&bytes)
+            .and_then(|()| atomic.commit())
+            .map_err(|error| StorageEffectFailure::ProcessFailed {
+                message: format!("failed to commit {}: {error}", file.path().display()),
+            })?;
+        Ok(())
+    }
+}
+
+fn open_secret_atomic(path: &Path) -> std::io::Result<AtomicWriteFile> {
+    let mut options = AtomicWriteFile::options();
+    #[cfg(unix)]
+    {
+        AtomicOpenOptionsExt::preserve_mode(&mut options, false);
+        StdOpenOptionsExt::mode(&mut options, 0o600);
+    }
+    options.open(path)
 }
 
 async fn supervise_storage_prepare<F>(
@@ -146,7 +240,7 @@ where
     F: FnOnce() -> std::io::Result<tokio::process::Child>,
 {
     if let Some(evidence) =
-        read_optional_typed_storage_prepare_evidence(evidence_directory, operation_id)?
+        StorageEvidenceRepository::new(evidence_directory).read_optional(operation_id)?
     {
         return match evidence {
             MachineStoragePreparationEvidence::Completed { prepared, .. } => Ok(prepared),
@@ -163,22 +257,27 @@ where
             let failure = StorageEffectFailure::ProcessFailed {
                 message: format!("failed waiting for storage preparation: {error}"),
             };
-            persist_storage_prepare_failure(evidence_directory, operation_id, &failure)?;
+            StorageEvidenceRepository::new(evidence_directory)
+                .persist_failure(operation_id, &failure)?;
             return Err(failure);
         }
         Err(_) => {
             terminate_storage_prepare_child(&mut child).await?;
             let failure = StorageEffectFailure::OperationTimedOut;
-            persist_storage_prepare_failure(evidence_directory, operation_id, &failure)?;
+            StorageEvidenceRepository::new(evidence_directory)
+                .persist_failure(operation_id, &failure)?;
             return Err(failure);
         }
     };
     let Some(evidence) =
-        read_optional_typed_storage_prepare_evidence(evidence_directory, operation_id)?
+        StorageEvidenceRepository::new(evidence_directory).read_optional(operation_id)?
     else {
-        return Err(StorageEffectFailure::ProcessFailed {
+        let failure = StorageEffectFailure::ProcessFailed {
             message: "storage preparation exited without terminal evidence".to_owned(),
-        });
+        };
+        StorageEvidenceRepository::new(evidence_directory)
+            .persist_failure(operation_id, &failure)?;
+        return Err(failure);
     };
     match evidence {
         MachineStoragePreparationEvidence::Completed { prepared, .. } if status.success() => {
@@ -189,7 +288,8 @@ where
             let failure = StorageEffectFailure::ProcessFailed {
                 message: format!("storage preparation exited with {status}"),
             };
-            persist_storage_prepare_failure(evidence_directory, operation_id, &failure)?;
+            StorageEvidenceRepository::new(evidence_directory)
+                .persist_failure(operation_id, &failure)?;
             Err(failure)
         }
     }
@@ -206,62 +306,6 @@ async fn terminate_storage_prepare_child(
         })
 }
 
-fn read_optional_typed_storage_prepare_evidence(
-    directory: &Path,
-    operation_id: &OperationId,
-) -> Result<Option<MachineStoragePreparationEvidence>, StorageEffectFailure> {
-    let path = directory.join(format!("{}.json", operation_id.as_str()));
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(StorageEffectFailure::ProcessFailed {
-                message: format!("failed to read {}: {error}", path.display()),
-            });
-        }
-    };
-    let evidence =
-        serde_json::from_slice::<MachineStoragePreparationEvidence>(&bytes).map_err(|error| {
-            StorageEffectFailure::ProcessFailed {
-                message: format!("failed to decode {}: {error}", path.display()),
-            }
-        })?;
-    if evidence.operation_id() != operation_id {
-        return Err(StorageEffectFailure::ProcessFailed {
-            message: "storage preparation evidence names another operation".to_owned(),
-        });
-    }
-    Ok(Some(evidence))
-}
-
-fn persist_storage_prepare_failure(
-    directory: &Path,
-    operation_id: &OperationId,
-    failure: &StorageEffectFailure,
-) -> Result<(), StorageEffectFailure> {
-    std::fs::create_dir_all(directory).map_err(|error| StorageEffectFailure::ProcessFailed {
-        message: format!("failed to create {}: {error}", directory.display()),
-    })?;
-    let path = directory.join(format!("{}.json", operation_id.as_str()));
-    let bytes = serde_json::to_vec_pretty(&MachineStoragePreparationEvidence::Failed {
-        operation_id: operation_id.clone(),
-        failure: failure.clone(),
-    })
-    .map_err(|error| StorageEffectFailure::ProcessFailed {
-        message: format!("failed to encode timeout evidence: {error}"),
-    })?;
-    let mut file = AtomicWriteFile::options().open(&path).map_err(|error| {
-        StorageEffectFailure::ProcessFailed {
-            message: format!("failed to create {}: {error}", path.display()),
-        }
-    })?;
-    file.write_all(&bytes)
-        .and_then(|()| file.commit())
-        .map_err(|error| StorageEffectFailure::ProcessFailed {
-            message: format!("failed to commit {}: {error}", path.display()),
-        })
-}
-
 pub(crate) async fn handle_substrate_update(
     machine_id: MachineId,
     _state: (),
@@ -271,42 +315,53 @@ pub(crate) async fn handle_substrate_update(
         Ok(request) => request,
         Err(response) => return response,
     };
-    let update = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("ployz")
-            .arg("host")
-            .arg("substrate-update")
-            .arg("--operation-id")
-            .arg(request.operation_id.as_str())
-            .arg("--version")
-            .arg(request.target_version.as_str())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-    })
-    .await;
-
-    match update {
-        Ok(Ok(_child)) => machine_success(MachineSubstrateUpdateRpcResponse::Ok(
-            MachineSubstrateUpdateRpcOk { machine_id },
-        )),
-        Ok(Err(error)) => machine_domain_error(MachineSubstrateUpdateRpcResponse::DomainError {
+    let Ok(machine_substrate_guard) = privileged_substrate_lock().try_lock_owned() else {
+        return machine_domain_error(MachineSubstrateUpdateRpcResponse::DomainError {
             machine_id,
             error: MachineSubstrateUpdateDomainError::UpdateFailed {
-                message: FailureMessage::try_new(format!(
-                    "failed to run ployz host substrate-update: {error}"
-                ))
-                .expect("process failure message is non-empty"),
+                message: FailureMessage::try_new(
+                    "another privileged machine substrate effect is running",
+                )
+                .expect("busy message is non-empty"),
             },
-        }),
-        Err(error) => machine_domain_error(MachineSubstrateUpdateRpcResponse::DomainError {
-            machine_id,
-            error: MachineSubstrateUpdateDomainError::UpdateFailed {
-                message: FailureMessage::try_new(format!("substrate update task failed: {error}"))
-                    .expect("task failure message is non-empty"),
-            },
-        }),
-    }
+        });
+    };
+    let child = tokio::process::Command::new("flock")
+        .arg("--nonblock")
+        .arg(MACHINE_SUBSTRATE_LOCK_FILE)
+        .arg("ployz")
+        .arg("host")
+        .arg("substrate-update")
+        .arg("--operation-id")
+        .arg(request.operation_id.as_str())
+        .arg("--version")
+        .arg(request.target_version.as_str())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn();
+    let mut child = match child {
+        Ok(child) => child,
+        Err(error) => {
+            return machine_domain_error(MachineSubstrateUpdateRpcResponse::DomainError {
+                machine_id,
+                error: MachineSubstrateUpdateDomainError::UpdateFailed {
+                    message: FailureMessage::try_new(format!(
+                        "failed to run ployz host substrate-update: {error}"
+                    ))
+                    .expect("process failure message is non-empty"),
+                },
+            });
+        }
+    };
+    tokio::spawn(async move {
+        let _machine_substrate_guard = machine_substrate_guard;
+        let _ = child.wait().await;
+    });
+    machine_success(MachineSubstrateUpdateRpcResponse::Ok(
+        MachineSubstrateUpdateRpcOk { machine_id },
+    ))
 }
 
 pub(crate) async fn handle_substrate_report(
@@ -374,6 +429,8 @@ fn read_substrate_update_evidence(
 #[cfg(test)]
 mod storage_tests {
     use std::cell::Cell;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     use super::*;
 
@@ -430,13 +487,33 @@ mod storage_tests {
         };
         assert!(!Path::new(&format!("/proc/{pid}")).exists());
         assert!(matches!(
-            read_optional_typed_storage_prepare_evidence(directory.path(), &operation_id)
+            StorageEvidenceRepository::new(directory.path())
+                .read_optional(&operation_id)
                 .expect("timeout evidence is readable"),
             Some(MachineStoragePreparationEvidence::Failed {
                 failure: StorageEffectFailure::OperationTimedOut,
                 ..
             })
         ));
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                std::fs::metadata(directory.path())
+                    .expect("evidence directory metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(
+                std::fs::metadata(directory.path().join("op_storage_timeout.json"))
+                    .expect("evidence file metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
 
         let replay = supervise_storage_prepare(
             &operation_id,

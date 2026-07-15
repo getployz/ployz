@@ -109,6 +109,8 @@ pub enum MachineContainerInspectDomainError {
 pub struct MachineContainerRunRpcRequest {
     pub pull: MachineImagePull,
     pub runtime: ContainerRuntimeSpec,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provisioned_volumes: Vec<ployz_core::deploy::VolumeName>,
     /// The identity the machine stamps onto the created container; the
     /// wire shape is identical to the dissolved per-RPC run spec.
     pub container: ManagedContainerIdentity,
@@ -168,6 +170,8 @@ pub type MachineContainerRunRpcResponse =
 pub struct MachineContainerRunHookRpcRequest {
     pub pull: MachineImagePull,
     pub runtime: ContainerRuntimeSpec,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provisioned_volumes: Vec<ployz_core::deploy::VolumeName>,
     pub container: ManagedContainerIdentity,
     pub timeout_millis: u64,
 }
@@ -651,6 +655,7 @@ mod tests {
                     .expect("valid image"),
             },
             runtime: ContainerRuntimeSpec::image_defaults(),
+            provisioned_volumes: Vec::new(),
             container: ManagedContainerIdentity {
                 namespace_id: ployz_core::ids::NamespaceId::try_new("default")
                     .expect("valid namespace id"),

@@ -10,6 +10,8 @@ use crate::ids::OperationId;
 
 pub const PLOYZ_OWNED_ZFS_POOL: &str = "ployz";
 pub const PLOYZ_OWNED_ZFS_BACKING_FILE: &str = "/var/lib/ployz/zfs/ployz.img";
+pub const PROVISIONED_VOLUME_MOUNTPOINT: &str = "/var/lib/ployz/volumes";
+pub const STORAGE_OPERATION_EVIDENCE_DIRECTORY: &str = "storage-operations";
 const MACHINE_STORAGE_PREPARE_BUDGET_SECONDS: u64 = 30 * 60;
 const MACHINE_STORAGE_PREPARE_TERMINATION_GRACE_SECONDS: u64 = 30;
 pub const MACHINE_STORAGE_PREPARE_BUDGET: Duration =
@@ -191,6 +193,13 @@ pub enum StorageEffectFailure {
         current: u64,
         requested: u64,
     },
+    #[error(
+        "quota admission exceeds available capacity: available={available} requested_total={requested_total}"
+    )]
+    QuotaCapacityExceeded {
+        available: u64,
+        requested_total: u64,
+    },
     #[error("destructive ZFS effect refused: {message}")]
     DestructiveEffect { message: String },
     #[error("storage preparation exceeded its operation budget")]
@@ -219,6 +228,56 @@ impl MachineStoragePreparationEvidence {
             Self::Completed { operation_id, .. } | Self::Failed { operation_id, .. } => {
                 operation_id
             }
+        }
+    }
+}
+
+/// One operation-scoped preparation evidence file. This is the shared source
+/// for path construction and operation-id validation on both sides of the
+/// privileged process boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorageOperationEvidenceFile {
+    operation_id: OperationId,
+    path: PathBuf,
+}
+
+impl StorageOperationEvidenceFile {
+    #[must_use]
+    pub fn in_state_directory(state_directory: &Path, operation_id: OperationId) -> Self {
+        Self::in_evidence_directory(
+            &state_directory.join(STORAGE_OPERATION_EVIDENCE_DIRECTORY),
+            operation_id,
+        )
+    }
+
+    #[must_use]
+    pub fn in_evidence_directory(directory: &Path, operation_id: OperationId) -> Self {
+        let path = directory.join(format!("{}.json", operation_id.as_str()));
+        Self { operation_id, path }
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    #[must_use]
+    pub fn directory(&self) -> &Path {
+        self.path
+            .parent()
+            .expect("evidence path always has a parent")
+    }
+
+    pub fn validate<'a>(
+        &self,
+        evidence: &'a MachineStoragePreparationEvidence,
+    ) -> Result<&'a MachineStoragePreparationEvidence, StorageEffectFailure> {
+        if evidence.operation_id() == &self.operation_id {
+            Ok(evidence)
+        } else {
+            Err(StorageEffectFailure::ProcessFailed {
+                message: "storage preparation evidence names another operation".to_owned(),
+            })
         }
     }
 }

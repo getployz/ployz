@@ -33,7 +33,7 @@ pub enum DockerInstall {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ZfsInstall {
     UbuntuPackages,
-    RockyPackages { major_release: Option<String> },
+    RockyPackages { major_release: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,13 +247,15 @@ fn profile(
 ) -> HostPlatformProfile {
     let zfs_install = match distribution {
         LinuxDistribution::Ubuntu => Some(ZfsInstall::UbuntuPackages),
-        LinuxDistribution::Rocky => Some(ZfsInstall::RockyPackages {
-            major_release: version_id
-                .as_deref()
-                .and_then(|version| version.split('.').next())
-                .filter(|major| !major.is_empty())
-                .map(str::to_owned),
-        }),
+        LinuxDistribution::Rocky => version_id
+            .as_deref()
+            .and_then(|version| version.split('.').next())
+            .filter(|major| {
+                !major.is_empty() && major.chars().all(|character| character.is_ascii_digit())
+            })
+            .map(|major_release| ZfsInstall::RockyPackages {
+                major_release: major_release.to_owned(),
+            }),
         LinuxDistribution::Arch
         | LinuxDistribution::Debian
         | LinuxDistribution::Raspbian
@@ -306,9 +308,12 @@ mod tests {
         assert_eq!(
             rocky.zfs_install(),
             Some(&ZfsInstall::RockyPackages {
-                major_release: Some("9".to_owned()),
+                major_release: "9".to_owned(),
             })
         );
+
+        let unversioned_rocky = detect_host_platform("ID=rocky\n").expect("Rocky base profile");
+        assert_eq!(unversioned_rocky.zfs_install(), None);
 
         for os_release in ["ID=debian\nVERSION_ID=13\n", "ID=arch\n"] {
             let profile = detect_host_platform(os_release).expect("supported non-ZFS profile");

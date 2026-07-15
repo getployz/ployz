@@ -62,6 +62,7 @@ where
                 .create_managed_container(CreateManagedContainer {
                     pull: request.pull,
                     runtime: request.runtime,
+                    provisioned_volumes: request.provisioned_volumes,
                     identity,
                 })
                 .await
@@ -189,6 +190,7 @@ where
                 .create_managed_container(CreateManagedContainer {
                     pull: request.pull,
                     runtime: request.runtime,
+                    provisioned_volumes: request.provisioned_volumes,
                     identity,
                 })
                 .await

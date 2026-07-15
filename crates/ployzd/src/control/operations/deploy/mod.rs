@@ -463,6 +463,7 @@ where
             dataplane_members,
         )?,
         runtime,
+        provisioned_volumes: provisioned_volume_names(service),
         container: identity.clone(),
         timeout_millis: hook_execution_timeout(command).as_millis() as u64,
     };
@@ -884,6 +885,7 @@ where
             dataplane_members,
         )?,
         runtime: service.service.runtime.clone(),
+        provisioned_volumes: provisioned_volume_names(service),
         container: ManagedContainerIdentity {
             namespace_id: command.request.namespace_id().clone(),
             service_id: service.service.service_id.clone(),
@@ -926,6 +928,22 @@ where
             )
         })
         .map_err(DeployExecutionError::RunContainer)
+}
+
+fn provisioned_volume_names(
+    service: &DeployServiceExecutionCommand,
+) -> Vec<ployz_core::deploy::VolumeName> {
+    let mut names = service
+        .volume_pins
+        .iter()
+        .filter_map(|pin| match pin.kind() {
+            ployz_core::intent::VolumeKind::Provisioned { .. } => Some(pin.volume_name().clone()),
+            ployz_core::intent::VolumeKind::Plain => None,
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    names
 }
 
 fn deploy_step_id(slot: ReplicaSlot) -> Result<StepId, SubjectTokenError> {

@@ -157,6 +157,7 @@ fn run_request(step: &str) -> MachineContainerRunRpcRequest {
             reference: image("ghcr.io/acme/api:rev-2"),
         },
         runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+        provisioned_volumes: Vec::new(),
         container: managed_identity(step),
     }
 }

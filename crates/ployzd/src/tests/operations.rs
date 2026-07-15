@@ -1053,6 +1053,7 @@ fn machine_rpc_probe_request() -> MachineContainerRunRpcRequest {
             reference: image("ghcr.io/acme/api:probe"),
         },
         runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+        provisioned_volumes: Vec::new(),
         container: containers::identity("svc_probe")
             .entry("rev_probe")
             .operation("op_probe")

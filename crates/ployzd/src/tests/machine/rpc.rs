@@ -67,6 +67,7 @@ async fn nats_machine_runtime_calls_container_run_service() {
                 reference: image("registry.example/api:rev_2"),
             },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+            provisioned_volumes: Vec::new(),
             container: managed_identity()
         }]
     );
@@ -642,6 +643,7 @@ fn run_request() -> MachineContainerRunRpcRequest {
             reference: image("registry.example/api:rev_2"),
         },
         runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+        provisioned_volumes: Vec::new(),
         container: managed_identity(),
     }
 }

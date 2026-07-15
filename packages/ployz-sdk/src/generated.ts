@@ -887,13 +887,13 @@ export type MachineUpdateRequest = { operation_id: OperationId, machine_id: Mach
 
 export type MachineStoragePrepareOperationState = { "state": "accepted" } | { "state": "preparing" } | { "state": "completed", pool: ZfsPoolName, } | { "state": "failed", failure: MachineStoragePrepareFailure, } | { "state": "cancelled", reason: CancellationReason, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
 
-export type StorageEffectFailure = { "kind": "unsupported_platform" } | { "kind": "installation", message: string, } | { "kind": "pool_list", message: string, } | { "kind": "ambiguous_pools", candidates: Array<ZfsPoolName>, } | { "kind": "explicit_pool_absent", pool: ZfsPoolName, } | { "kind": "sparse_pool", message: string, } | { "kind": "dataset", message: string, } | { "kind": "prepared_state_unavailable", message: string, } | { "kind": "prepared_state_mismatch", message: string, } | { "kind": "gather_parse", message: string, } | { "kind": "quota_shrink", dataset: DatasetName, current: number, requested: number, } | { "kind": "destructive_effect", message: string, } | { "kind": "operation_timed_out" } | { "kind": "process_failed", message: string, };
+export type StorageEffectFailure = { "kind": "unsupported_platform" } | { "kind": "installation", message: string, } | { "kind": "pool_list", message: string, } | { "kind": "ambiguous_pools", candidates: Array<ZfsPoolName>, } | { "kind": "explicit_pool_absent", pool: ZfsPoolName, } | { "kind": "sparse_pool", message: string, } | { "kind": "dataset", message: string, } | { "kind": "prepared_state_unavailable", message: string, } | { "kind": "prepared_state_mismatch", message: string, } | { "kind": "gather_parse", message: string, } | { "kind": "quota_shrink", dataset: DatasetName, current: number, requested: number, } | { "kind": "quota_capacity_exceeded", available: number, requested_total: number, } | { "kind": "destructive_effect", message: string, } | { "kind": "operation_timed_out" } | { "kind": "process_failed", message: string, };
 
 export type MachineStoragePrepareFailure = { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "preparation_rejected", machine_id: MachineId, failure: StorageEffectFailure, } | { "kind": "evidence_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "state_commit_failed", machine_id: MachineId, message: FailureMessage, };
 
 export type MachineStoragePrepareRequest = { operation_id: OperationId, machine_id: MachineId, pool?: ZfsPoolName | null, };
 
-export type MachineStoragePrepareError = { "error": "no_such_machine", operation_id: OperationId, machine_id: MachineId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+export type MachineStoragePrepareError = { "error": "no_such_machine", operation_id: OperationId, machine_id: MachineId, } | { "error": "machine_substrate_busy", operation_id: OperationId, machine_id: MachineId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
 export type MachineLifecycleRequest = { operation_id: OperationId, machine_id: MachineId, };
 
@@ -929,7 +929,7 @@ export type IngressConfigureRequest = { operation_id: OperationId, configuration
 
 export type IngressConfigureError = { "error": "invalid_configuration", message: string, } | { "error": "resource_busy", owner: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
-export type MachineUpdateError = { "error": "no_such_machine", operation_id: OperationId, machine_id: MachineId, } | { "error": "current_machine_unsupported", operation_id: OperationId, machine_id: MachineId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
+export type MachineUpdateError = { "error": "no_such_machine", operation_id: OperationId, machine_id: MachineId, } | { "error": "current_machine_unsupported", operation_id: OperationId, machine_id: MachineId, } | { "error": "machine_substrate_busy", operation_id: OperationId, machine_id: MachineId, owner_operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, } | { "error": "duplicate_sequence_mismatch", operation_id: OperationId, sequence: EventSequence, };
 
 export type OpsStatusError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, };
 

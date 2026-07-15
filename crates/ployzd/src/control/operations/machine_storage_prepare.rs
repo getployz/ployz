@@ -45,27 +45,19 @@ impl MachineStoragePrepareOperation {
             return;
         }
         let operation_id = accepted.operation_id.clone();
-        let machine_id = accepted.machine_id.clone();
+        let lease = self
+            .controllers
+            .machine_substrate_lease(accepted.machine_id.clone(), accepted.operation_id.clone());
         let runtime = self.clone();
-        let admission = self.task_registry.spawn(|| async move {
+        let admission = self.task_registry.spawn(move || async move {
+            let _lease = lease;
             runtime.run(accepted).await;
         });
-        let rejected = admission.is_err();
         super::finish_rejected_task_admission(&self.controllers, &operation_id, admission).await;
-        if rejected {
-            self.controllers
-                .release_machine(&machine_id, &operation_id)
-                .await;
-        }
     }
 
     async fn run(self, accepted: AcceptedMachineStoragePrepareSubmission) {
-        let operation_id = accepted.operation_id.clone();
-        let machine_id = accepted.machine_id.clone();
         self.clone().run_inner(accepted).await;
-        self.controllers
-            .release_machine(&machine_id, &operation_id)
-            .await;
     }
 
     async fn run_inner(self, accepted: AcceptedMachineStoragePrepareSubmission) {
@@ -92,7 +84,6 @@ impl MachineStoragePrepareOperation {
             .await;
             return;
         }
-        let deadline = Instant::now() + ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT;
         let pool = match self
             .updater
             .prepare_storage(
@@ -120,72 +111,19 @@ impl MachineStoragePrepareOperation {
                 .await;
                 return;
             }
-            Err(MachineStoragePrepareError::Unavailable {
-                machine_id,
-                reason: MachineRuntimeUnavailableReason::NoResponders,
-            }) => {
-                self.record_failed(
-                    &operation_id,
-                    &machine_id,
-                    MachineStoragePrepareFailure::MachineUnavailable {
-                        machine_id: machine_id.clone(),
-                        message: MachineRuntimeUnavailableReason::NoResponders.failure_message(),
-                    },
-                )
-                .await;
-                return;
-            }
-            Err(MachineStoragePrepareError::Unavailable { .. }) => loop {
+            Err(MachineStoragePrepareError::Unavailable { reason, .. }) => {
                 match self
-                    .updater
-                    .report_storage_prepare(&machine_id, &operation_id)
+                    .recover_prepare_report(&operation_id, &machine_id, reason)
                     .await
                 {
-                    Ok(Some(pool)) => break pool,
-                    Ok(None) if Instant::now() < deadline => {
-                        tokio::time::sleep(REPORT_POLL_INTERVAL).await;
-                    }
-                    Ok(None) => {
-                        self.record_failed(
-                        &operation_id,
-                        &machine_id,
-                        MachineStoragePrepareFailure::EvidenceUnavailable {
-                            machine_id: machine_id.clone(),
-                            message: storage_failure_message(
-                                "storage preparation did not produce terminal evidence before the deadline",
-                            ),
-                        },
-                    )
-                    .await;
-                        return;
-                    }
-                    Err(MachineStoragePrepareError::Unavailable { .. })
-                        if Instant::now() < deadline =>
-                    {
-                        tokio::time::sleep(REPORT_POLL_INTERVAL).await;
-                    }
-                    Err(MachineStoragePrepareError::PreparationFailed {
-                        machine_id,
-                        failure,
-                    }) => {
-                        self.record_failed(
-                            &operation_id,
-                            &machine_id,
-                            MachineStoragePrepareFailure::PreparationRejected {
-                                machine_id: machine_id.clone(),
-                                failure,
-                            },
-                        )
-                        .await;
-                        return;
-                    }
-                    Err(error) => {
-                        self.record_failed(&operation_id, &machine_id, operation_failure(error))
+                    Ok(pool) => pool,
+                    Err(failure) => {
+                        self.record_failed(&operation_id, &machine_id, failure)
                             .await;
                         return;
                     }
                 }
-            },
+            }
         };
         if let Err(error) = self
             .controllers
@@ -206,6 +144,45 @@ impl MachineStoragePrepareOperation {
                 },
             )
             .await;
+        }
+    }
+
+    async fn recover_prepare_report(
+        &self,
+        operation_id: &OperationId,
+        machine_id: &MachineId,
+        initial_reason: MachineRuntimeUnavailableReason,
+    ) -> Result<ployz_core::deploy::ZfsPoolName, MachineStoragePrepareFailure> {
+        if !storage_report_retryable(&initial_reason) {
+            return Err(MachineStoragePrepareFailure::MachineUnavailable {
+                machine_id: machine_id.clone(),
+                message: initial_reason.failure_message(),
+            });
+        }
+        // Recovery gets its own full evidence deadline after the long-running
+        // prepare RPC has returned without a usable response.
+        let deadline = storage_report_deadline(Instant::now());
+        loop {
+            match self
+                .updater
+                .report_storage_prepare(machine_id, operation_id)
+                .await
+            {
+                Ok(Some(pool)) => return Ok(pool),
+                Ok(None) if Instant::now() < deadline => {}
+                Ok(None) => {
+                    return Err(MachineStoragePrepareFailure::EvidenceUnavailable {
+                        machine_id: machine_id.clone(),
+                        message: storage_failure_message(
+                            "storage preparation did not produce terminal evidence before the recovery deadline",
+                        ),
+                    });
+                }
+                Err(MachineStoragePrepareError::Unavailable { reason, .. })
+                    if storage_report_retryable(&reason) && Instant::now() < deadline => {}
+                Err(error) => return Err(operation_failure(error)),
+            }
+            tokio::time::sleep(REPORT_POLL_INTERVAL).await;
         }
     }
 
@@ -254,4 +231,55 @@ fn event_failure(error: RecordOperationEventError) -> FailureMessage {
 
 fn storage_failure_message(message: &str) -> FailureMessage {
     FailureMessage::try_new(message).expect("storage failure message is non-empty")
+}
+
+fn storage_report_deadline(now: Instant) -> Instant {
+    now + ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT
+}
+
+fn storage_report_retryable(reason: &MachineRuntimeUnavailableReason) -> bool {
+    match reason {
+        MachineRuntimeUnavailableReason::RequestTimedOut
+        | MachineRuntimeUnavailableReason::RequestFailed { .. }
+        | MachineRuntimeUnavailableReason::ServiceUnavailable { .. }
+        | MachineRuntimeUnavailableReason::ServiceTimedOut { .. }
+        | MachineRuntimeUnavailableReason::ServiceInternal { .. } => true,
+        MachineRuntimeUnavailableReason::EncodeRequest { .. }
+        | MachineRuntimeUnavailableReason::NoResponders
+        | MachineRuntimeUnavailableReason::InvalidSubject
+        | MachineRuntimeUnavailableReason::MaxPayloadExceeded
+        | MachineRuntimeUnavailableReason::ServiceBadRequest { .. }
+        | MachineRuntimeUnavailableReason::ServiceConflict { .. }
+        | MachineRuntimeUnavailableReason::ServiceResponseTooLarge
+        | MachineRuntimeUnavailableReason::MalformedServiceError { .. }
+        | MachineRuntimeUnavailableReason::DecodeResponse { .. }
+        | MachineRuntimeUnavailableReason::WrongResponder { .. } => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn report_recovery_uses_a_fresh_full_deadline() {
+        let now = Instant::now();
+        assert_eq!(
+            storage_report_deadline(now).duration_since(now),
+            ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn report_recovery_fails_fast_for_permanent_unavailability() {
+        assert!(!storage_report_retryable(
+            &MachineRuntimeUnavailableReason::NoResponders
+        ));
+        assert!(!storage_report_retryable(
+            &MachineRuntimeUnavailableReason::InvalidSubject
+        ));
+        assert!(storage_report_retryable(
+            &MachineRuntimeUnavailableReason::RequestTimedOut
+        ));
+    }
 }

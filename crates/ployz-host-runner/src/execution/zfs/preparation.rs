@@ -7,14 +7,15 @@ use std::path::Path;
 use ployz_core::deploy::ZfsPoolName;
 use ployz_core::ids::OperationId;
 use ployz_core::storage::{
-    MachineStoragePreparationEvidence as StoragePreparationEvidence, PreparedStorageState,
-    StorageEffectFailure as ZfsEffectError, ZfsDatasetRoot,
+    MachineStoragePreparationEvidence as StoragePreparationEvidence, PROVISIONED_VOLUME_MOUNTPOINT,
+    PreparedStorageState, StorageEffectFailure as ZfsEffectError, StorageOperationEvidenceFile,
+    ZfsDatasetRoot,
 };
 
 use super::command::{COMMAND_TIMEOUT, EffectClass, INSTALL_TIMEOUT, checked};
 use super::state::{
-    PREPARED_STORAGE_FILE, VOLUME_MOUNTPOINT, imported_pools, load_and_verify,
-    persist_prepared_storage_state, select_pool,
+    PREPARED_STORAGE_FILE, imported_pools, load_and_verify, persist_prepared_storage_state,
+    select_pool,
 };
 use crate::execution::{
     FileMode, HostPlatformProfile, HostRunnerCommandRunner, ZfsInstall, write_durable_file,
@@ -34,57 +35,49 @@ pub fn prepare_storage_for_operation(
     state_directory: &Path,
     docker_drop_in_directory: &Path,
 ) -> Result<PreparedStorageState, ZfsEffectError> {
-    let evidence_directory = state_directory.join("storage-operations");
-    let evidence_file = format!("{}.json", operation_id.as_str());
-    let evidence_path = evidence_directory.join(&evidence_file);
-    if evidence_path.exists() {
-        let bytes = std::fs::read(&evidence_path).map_err(|error| {
+    let evidence_file =
+        StorageOperationEvidenceFile::in_state_directory(state_directory, operation_id.clone());
+    if evidence_file.path().exists() {
+        let bytes = std::fs::read(evidence_file.path()).map_err(|error| {
             ZfsEffectError::PreparedStateUnavailable {
-                message: format!("failed to read {}: {error}", evidence_path.display()),
+                message: format!("failed to read {}: {error}", evidence_file.path().display()),
             }
         })?;
         let evidence: StoragePreparationEvidence =
             serde_json::from_slice(&bytes).map_err(|error| {
                 ZfsEffectError::PreparedStateUnavailable {
-                    message: format!("failed to parse {}: {error}", evidence_path.display()),
+                    message: format!(
+                        "failed to parse {}: {error}",
+                        evidence_file.path().display()
+                    ),
                 }
             })?;
+        evidence_file.validate(&evidence)?;
         return match evidence {
-            StoragePreparationEvidence::Completed {
-                operation_id: recorded,
-                prepared,
-            } if recorded == *operation_id => Ok(prepared),
-            StoragePreparationEvidence::Failed {
-                operation_id: recorded,
-                failure,
-            } if recorded == *operation_id => Err(failure),
-            StoragePreparationEvidence::Completed { .. }
-            | StoragePreparationEvidence::Failed { .. } => {
-                Err(ZfsEffectError::PreparedStateMismatch {
-                    message: "operation-scoped preparation evidence names another operation"
-                        .to_owned(),
-                })
-            }
+            StoragePreparationEvidence::Completed { prepared, .. } => Ok(prepared),
+            StoragePreparationEvidence::Failed { failure, .. } => Err(failure),
         };
     }
 
-    std::fs::create_dir_all(&evidence_directory).map_err(|error| {
+    std::fs::create_dir_all(evidence_file.directory()).map_err(|error| {
         ZfsEffectError::PreparedStateUnavailable {
             message: format!(
                 "failed to create operation evidence directory {}: {error}",
-                evidence_directory.display()
+                evidence_file.directory().display()
             ),
         }
     })?;
     #[cfg(unix)]
-    std::fs::set_permissions(&evidence_directory, std::fs::Permissions::from_mode(0o700)).map_err(
-        |error| ZfsEffectError::PreparedStateUnavailable {
-            message: format!(
-                "failed to protect operation evidence directory {}: {error}",
-                evidence_directory.display()
-            ),
-        },
-    )?;
+    std::fs::set_permissions(
+        evidence_file.directory(),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .map_err(|error| ZfsEffectError::PreparedStateUnavailable {
+        message: format!(
+            "failed to protect operation evidence directory {}: {error}",
+            evidence_file.directory().display()
+        ),
+    })?;
     let result = prepare_storage(
         runner,
         profile,
@@ -108,8 +101,12 @@ pub fn prepare_storage_for_operation(
         }
     })?;
     write_durable_file(
-        &evidence_directory,
-        &evidence_file,
+        evidence_file.directory(),
+        evidence_file
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("evidence filename is UTF-8"),
         FileMode::Secret0600,
         &bytes,
     )
@@ -162,8 +159,8 @@ pub fn prepare_storage(
         EffectClass::Dataset,
     )?;
     let parent = format!("{}/ployz", pool.as_str());
-    ensure_dataset(runner, &parent, None)?;
-    ensure_dataset(runner, dataset_root.as_str(), Some(VOLUME_MOUNTPOINT))?;
+    ensure_dataset(runner, &parent, "none")?;
+    ensure_dataset(runner, dataset_root.as_str(), PROVISIONED_VOLUME_MOUNTPOINT)?;
     let state = PreparedStorageState::try_new(pool, origin, dataset_root).map_err(|error| {
         ZfsEffectError::PreparedStateUnavailable {
             message: error.to_string(),
@@ -231,13 +228,8 @@ fn install_zfs(
             )?;
         }
         Some(ZfsInstall::RockyPackages { major_release }) => {
-            let major = major_release
-                .as_deref()
-                .ok_or_else(|| ZfsEffectError::Installation {
-                    message: "Rocky VERSION_ID has no major release".to_owned(),
-                })?;
             let release =
-                format!("https://zfsonlinux.org/epel/zfs-release-3-0.el{major}.noarch.rpm");
+                format!("https://zfsonlinux.org/epel/zfs-release-3-0.el{major_release}.noarch.rpm");
             checked(
                 runner,
                 "dnf",
@@ -276,31 +268,36 @@ fn install_zfs(
 fn ensure_dataset(
     runner: &mut impl HostRunnerCommandRunner,
     dataset: &str,
-    mountpoint: Option<&str>,
+    expected_mountpoint: &str,
 ) -> Result<(), ZfsEffectError> {
     let listed = runner
         .command_with_timeout(
             "zfs",
-            &["list", "-H", "-o", "name", dataset],
+            &["list", "-H", "-o", "name,mountpoint", dataset],
             COMMAND_TIMEOUT,
         )
         .map_err(|error| ZfsEffectError::Dataset {
             message: error.to_string(),
         })?;
-    if listed.success && listed.stdout.trim() == dataset {
-        return Ok(());
+    if listed.success {
+        let expected = format!("{dataset}\t{expected_mountpoint}");
+        if listed.stdout.trim() == expected {
+            return Ok(());
+        }
+        return Err(ZfsEffectError::PreparedStateMismatch {
+            message: format!(
+                "dataset {dataset} has unexpected name/mountpoint row {:?}, expected {expected:?}",
+                listed.stdout.trim()
+            ),
+        });
     }
     if !listed.success && listed.exit_code != Some(1) {
         return Err(ZfsEffectError::Dataset {
             message: listed.failure,
         });
     }
-    let mut args = vec!["create", "-p"];
-    let mount_property;
-    if let Some(mountpoint) = mountpoint {
-        mount_property = format!("mountpoint={mountpoint}");
-        args.extend(["-o", mount_property.as_str()]);
-    }
+    let mount_property = format!("mountpoint={expected_mountpoint}");
+    let mut args = vec!["create", "-p", "-o", mount_property.as_str()];
     args.push(dataset);
     checked(runner, "zfs", &args, COMMAND_TIMEOUT, EffectClass::Dataset)?;
     Ok(())

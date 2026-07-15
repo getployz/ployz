@@ -44,6 +44,28 @@ pub async fn machine_storage_prepare(
         .submit_machine_storage_prepare(request.into())
         .await
         .map_err(|error| {
+            let error = match error {
+                crate::control::sequencer::SubmitCommandError::MachineSubstrateBusy {
+                    machine_id,
+                    owner,
+                } => {
+                    return MachineStoragePrepareError::MachineSubstrateBusy {
+                        operation_id: operation_id.clone(),
+                        machine_id,
+                        owner_operation_id: owner,
+                    };
+                }
+                error @ crate::control::sequencer::SubmitCommandError::Clock { .. }
+                | error @ crate::control::sequencer::SubmitCommandError::NamespaceBusy { .. }
+                | error @ crate::control::sequencer::SubmitCommandError::IngressBusy { .. }
+                | error @ crate::control::sequencer::SubmitCommandError::ReservationNotFound {
+                    ..
+                }
+                | error @ crate::control::sequencer::SubmitCommandError::ReservationExpired {
+                    ..
+                }
+                | error @ crate::control::sequencer::SubmitCommandError::Submit(_) => error,
+            };
             match super::error_map::unfenced_submit_failure("machine-storage-prepare", error) {
                 super::error_map::UnfencedSubmitFailure::Unavailable { message } => {
                     MachineStoragePrepareError::Unavailable {

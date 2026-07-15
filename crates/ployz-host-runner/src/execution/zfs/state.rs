@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 use ployz_core::deploy::{DatasetName, ZfsPoolName};
 use ployz_core::storage::{
-    PLOYZ_OWNED_ZFS_BACKING_FILE, PLOYZ_OWNED_ZFS_POOL, PreparedStorageOrigin,
-    PreparedStorageState, StorageEffectFailure as ZfsEffectError,
+    PLOYZ_OWNED_ZFS_BACKING_FILE, PLOYZ_OWNED_ZFS_POOL, PROVISIONED_VOLUME_MOUNTPOINT,
+    PreparedStorageOrigin, PreparedStorageState, StorageEffectFailure as ZfsEffectError,
 };
 
 use super::command::{COMMAND_TIMEOUT, EffectClass, checked, parse_last_u64};
@@ -14,7 +14,6 @@ use crate::execution::{FileMode, HostRunnerCommandRunner, write_durable_file};
 
 pub(super) const PREPARED_STORAGE_FILE: &str = "prepared-storage.json";
 pub(super) const STORAGE_DIRECTORY: &str = "/var/lib/ployz/zfs";
-pub(super) const VOLUME_MOUNTPOINT: &str = "/var/lib/ployz/volumes";
 
 pub(super) fn load_prepared_storage_state(
     state_directory: &Path,
@@ -201,10 +200,10 @@ pub(super) fn load_and_verify(
         COMMAND_TIMEOUT,
         EffectClass::Mismatch,
     )?;
-    if observed.stdout.trim() != VOLUME_MOUNTPOINT {
+    if observed.stdout.trim() != PROVISIONED_VOLUME_MOUNTPOINT {
         return Err(ZfsEffectError::PreparedStateMismatch {
             message: format!(
-                "dataset root {} has mountpoint {:?}, expected {VOLUME_MOUNTPOINT}",
+                "dataset root {} has mountpoint {:?}, expected {PROVISIONED_VOLUME_MOUNTPOINT}",
                 state.dataset_root().as_str(),
                 observed.stdout.trim()
             ),
