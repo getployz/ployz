@@ -9,7 +9,6 @@
 mod adapters {
     pub(crate) mod atomic_file;
     pub mod credentials;
-    pub mod nats_authorization;
     pub mod nats_server;
 }
 mod certificate;
@@ -18,7 +17,6 @@ mod control;
 mod recovery;
 mod role_testimony;
 mod roles {
-    pub mod control;
     pub mod dns {
         mod internal;
         pub use internal::InternalResolverHealth;
@@ -36,7 +34,6 @@ mod roles {
         pub mod source;
     }
     pub mod machine;
-    pub mod nats_failover;
 }
 pub mod dispatch;
 mod lease;

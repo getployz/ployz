@@ -25,7 +25,6 @@ use crate::control::sequencer::MachineAddBootstrapConfig;
 use crate::lease::LeaseWorkerUrl;
 pub use crate::lease::LeaseWorkerUrlError;
 use crate::role_cli::DaemonProcessRole;
-pub(crate) use ployz_core::cert::DEFAULT_LEASE_WORKER_URL;
 pub(crate) use ployz_core::install::DEFAULT_MACHINE_BOOTSTRAP_URL;
 
 pub(crate) const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";

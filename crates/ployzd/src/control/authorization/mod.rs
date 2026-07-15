@@ -14,15 +14,12 @@ mod reload;
 mod writer;
 
 pub use machine_seed::{MachineSeedWriteError, write_machine_seed_file};
-pub use mint::{
-    MachineCredentialMint, MintOutcome, MintRequest, MintResumeError, MintVerifyEndpoint,
-};
+pub use mint::{MachineCredentialMint, MintRequest, MintResumeError, MintVerifyEndpoint};
 pub use reload::{
-    HostNatsReloadRunner, NatsReloadEvidence, NatsReloadFailure, NatsReloadOutcome,
-    NatsReloadRunner, SignalNatsReloadRunner,
+    HostNatsReloadRunner, NatsReloadEvidence, NatsReloadOutcome, NatsReloadRunner,
+    SignalNatsReloadRunner,
 };
 pub use writer::{
-    AuthorizedUsersFileError, CredentialMutationChange, CredentialMutationFailure,
-    CredentialMutationRejection, CredentialMutationResult, NatsAuthorizationHandle,
-    NatsAuthorizationWriter, RenderFailure, RenderPrepareFailure, RenderedAuthorization,
+    CredentialMutationChange, CredentialMutationFailure, CredentialMutationRejection,
+    NatsAuthorizationHandle, NatsAuthorizationWriter, RenderFailure, RenderPrepareFailure,
 };

@@ -14,13 +14,13 @@ use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{
     NatsConnectConfig, authenticated_connect_options, connect_authenticated,
 };
+use ployz_nats::permissions::{inbox_prefix, inbox_subscribe_scope};
 use ployz_nats::subjects::{
     INTENT_CHANGED, INTENT_GET, MachineServiceEndpoint, OPERATOR_INIT_FIRST_MACHINE_ACTIVATE,
     PENDING_MACHINE_JOINS_CHANGED, RUNTIME_SNAPSHOT_SEED, RUNTIME_SNAPSHOT_STREAM, gateway_status,
     gateway_status_scope, machine_container_facts, machine_facts, machine_facts_scope,
     machine_service, machine_service_command_scope, machine_service_query_scope,
 };
-use ployz_nats::permissions::{inbox_prefix, inbox_subscribe_scope};
 use ployz_test_support::nats::SecuredTestNats;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);

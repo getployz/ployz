@@ -16,8 +16,6 @@ mod endpoints;
 pub mod execution;
 mod facts;
 mod images;
-/// Compatibility facade for the former Machine-owned recovery mirror.
-pub mod intent_mirror;
 mod logs;
 pub mod process;
 pub(crate) mod projection;

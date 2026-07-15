@@ -3,13 +3,13 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::config::{
-    DEFAULT_GATEWAY_CERTIFICATE_STATE_DIR, DaemonProcessConfig, DaemonProcessConfigError,
-    DaemonProcessConfigInner, PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV,
-    PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV, PLOYZ_DATAPLANE_WG_IFNAME_ENV, PLOYZ_DATAPLANE_WG_MTU_ENV,
-    PLOYZ_DEPLOY_MACHINES_ENV, PLOYZ_EBPF_BYTECODE_ENV, PLOYZ_EBPF_CTL_ENV,
-    PLOYZ_GATEWAY_LISTEN_ADDR_ENV, PLOYZ_JOIN_NKEY_SEED_FILE_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV,
-    PLOYZ_MACHINE_ID_ENV, PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_NATS_CA_FILE_ENV,
-    PLOYZ_NATS_NKEY_SEED_FILE_ENV, PLOYZ_NATS_URL_ENV, load_daemon_process_config,
+    DEFAULT_GATEWAY_CERTIFICATE_STATE_DIR, DaemonProcessConfigError, DaemonProcessConfigInner,
+    PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV, PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV,
+    PLOYZ_DATAPLANE_WG_IFNAME_ENV, PLOYZ_DATAPLANE_WG_MTU_ENV, PLOYZ_DEPLOY_MACHINES_ENV,
+    PLOYZ_EBPF_BYTECODE_ENV, PLOYZ_EBPF_CTL_ENV, PLOYZ_GATEWAY_LISTEN_ADDR_ENV,
+    PLOYZ_JOIN_NKEY_SEED_FILE_ENV, PLOYZ_MACHINE_BOOTSTRAP_URL_ENV, PLOYZ_MACHINE_ID_ENV,
+    PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV, PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV,
+    PLOYZ_NATS_URL_ENV, load_daemon_process_config,
 };
 use crate::role_cli::{DaemonProcessRole, parse_role_args};
 use ployz_core::network::MachineEndpointSubnet;
@@ -283,7 +283,7 @@ fn control_role_loads_optional_machine_join_secret_delivery() {
     let DaemonProcessConfigInner::Control(config) = config.inner() else {
         panic!("control role should produce control config");
     };
-    let Some(material) = config.machine_bootstrap.join_material else {
+    let Some(ref material) = config.machine_bootstrap.join_material else {
         panic!("machine join material should load");
     };
     assert_eq!(
