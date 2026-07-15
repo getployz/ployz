@@ -27,13 +27,15 @@ pub struct OpsStatusCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpsListCommand {
     pub active_only: bool,
+    pub before: Option<OperationId>,
 }
 
 impl OpsListCommand {
     #[must_use]
-    pub const fn into_request(self) -> OpsListRequest {
+    pub fn into_request(self) -> OpsListRequest {
         OpsListRequest {
             active_only: self.active_only,
+            before: self.before,
         }
     }
 }
@@ -79,10 +81,15 @@ pub(crate) fn ops_status_command(
     Ok(OpsStatusCommand { operation_id })
 }
 
-pub(crate) const fn ops_list_command(parsed: OpsListCli) -> OpsListCommand {
-    OpsListCommand {
+pub(crate) fn ops_list_command(parsed: OpsListCli) -> Result<OpsListCommand, PloyzctlCliError> {
+    let before = parsed
+        .before
+        .map(|operation_id| parse_operation_id_for("--before", &operation_id))
+        .transpose()?;
+    Ok(OpsListCommand {
         active_only: parsed.active,
-    }
+        before,
+    })
 }
 
 pub(crate) fn ops_watch_command(parsed: OpsWatchCli) -> Result<OpsWatchCommand, PloyzctlCliError> {
@@ -107,6 +114,8 @@ pub(crate) struct OpsStatusCli {
 pub(crate) struct OpsListCli {
     #[arg(long)]
     active: bool,
+    #[arg(long)]
+    before: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -117,8 +126,15 @@ pub(crate) struct OpsWatchCli {
 }
 
 fn parse_operation_id(operation_id: &str) -> Result<OperationId, PloyzctlCliError> {
+    parse_operation_id_for("<operation_id>", operation_id)
+}
+
+fn parse_operation_id_for(
+    flag: &'static str,
+    operation_id: &str,
+) -> Result<OperationId, PloyzctlCliError> {
     OperationId::try_new(operation_id.to_owned()).map_err(|error| PloyzctlCliError::InvalidValue {
-        flag: "<operation_id>",
+        flag,
         message: error.to_string(),
     })
 }
@@ -165,6 +181,21 @@ impl ListOutput {
         } else {
             rendered + "\n"
         }
+    }
+
+    #[must_use]
+    pub fn render_more_hint(&self, active_only: bool) -> String {
+        if !self.result.has_more {
+            return String::new();
+        }
+        let Some(oldest) = self.result.operations.last() else {
+            return String::new();
+        };
+        let active = if active_only { " --active" } else { "" };
+        format!(
+            "More operations available:\n  ployz ops list{active} --before {}\n",
+            oldest.status.id().as_str()
+        )
     }
 }
 

@@ -2,8 +2,8 @@
 members = [
     "crates/ployz-core",
     "crates/ployz-nats",
-    "crates/ployz-ebpf-common",
-    "crates/ployz-ebpf-ctl",
+    "ebpf/common",
+    "ebpf/control",
     "crates/ployz-host-runner",
     "crates/ployz-test-support",
     "crates/ployz-e2e",

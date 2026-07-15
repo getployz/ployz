@@ -243,7 +243,10 @@ curl -fsSI -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/v
 
         let operations = core
             .api
-            .ops_list(&OpsListRequest { active_only: false })
+            .ops_list(&OpsListRequest {
+                active_only: false,
+                before: None,
+            })
             .await
             .expect("list failed rollback")
             .operations;

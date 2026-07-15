@@ -196,6 +196,7 @@ export interface PloyzLogsTailInput {
 
 export interface PloyzOpsListInput {
   activeOnly?: boolean;
+  before?: string;
 }
 
 export class PloyzClient {
@@ -478,6 +479,7 @@ export function logsTailRequest(input: string | PloyzLogsTailInput): LogsTailReq
 export function opsListRequest(input: PloyzOpsListInput = {}): OpsListRequest {
   return {
     active_only: input.activeOnly ?? false,
+    before: input.before === undefined ? null : operationId(input.before),
   };
 }
 

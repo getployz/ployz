@@ -1,6 +1,6 @@
 use ployz_core::dataplane::{
     EbpfForwardingReadyEvidence, PloyzNativeMeshComponent, WireGuardEbpfEndpointRoute,
-    WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey, WireGuardReadyEvidence,
+    WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey,
 };
 use ployz_test_support::ids::machine_id;
 use ployzd::adapters::docker::runner::DockerManagedContainerRunner;
@@ -67,12 +67,22 @@ async fn local_privileged_docker_dataplane_prepares_wireguard_ebpf_and_routes() 
     )
     .with_command_timeout(Duration::from_secs(20));
 
+    let endpoint_routes = endpoint_routes();
+    let edge_endpoint_subnet = endpoint_routes
+        .iter()
+        .find(|route| route.machine_id == machine_id("edge_2"))
+        .expect("edge endpoint route exists")
+        .endpoint_subnet
+        .clone();
     let ready = preparer
-        .prepare_ployz_native_mesh(&endpoint_routes(), &[edge_peer_with_public_key(peer_key)])
+        .prepare_ployz_native_mesh(
+            &endpoint_routes,
+            &[edge_peer_with_public_key(peer_key.clone())],
+        )
         .await
         .expect("host dataplane prepares through real commands");
 
-    assert_wireguard_peer_evidence(&ready.wireguard.evidence);
+    assert_wireguard_peer_configured(DEFAULT_DATAPLANE_WG_IFNAME, &peer_key);
     assert!(ready.ebpf_forwarding.evidence.iter().any(|evidence| {
         matches!(
             evidence,
@@ -81,7 +91,11 @@ async fn local_privileged_docker_dataplane_prepares_wireguard_ebpf_and_routes() 
         )
     }));
     assert_ebpf_attached_evidence(&ready.ebpf_forwarding.evidence, &ebpf_ctl);
-    assert_edge_route_evidence(&ready.ebpf_forwarding.evidence, &ebpf_ctl);
+    assert_edge_route_evidence(
+        &ready.ebpf_forwarding.evidence,
+        &ebpf_ctl,
+        &edge_endpoint_subnet,
+    );
 }
 
 #[tokio::test]
@@ -168,14 +182,23 @@ fn edge_peer_with_public_key(public_key: WireGuardPublicKey) -> WireGuardPeer {
     }
 }
 
-fn assert_wireguard_peer_evidence(evidence: &[WireGuardReadyEvidence]) {
-    assert!(evidence.iter().any(|evidence| {
-        matches!(
-            evidence,
-            WireGuardReadyEvidence::Command { program, args }
-                if program == "wg" && args.iter().any(|arg| arg == "peer")
-        )
-    }));
+fn assert_wireguard_peer_configured(interface: &str, peer_key: &WireGuardPublicKey) {
+    let output = Command::new("wg")
+        .args(["show", interface, "peers"])
+        .output()
+        .expect("read configured WireGuard peers");
+    assert!(
+        output.status.success(),
+        "wg show {interface} peers failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .any(|configured| configured == peer_key.as_str()),
+        "configured WireGuard peers do not contain {}",
+        peer_key.as_str()
+    );
 }
 
 fn assert_ebpf_attached_evidence(evidence: &[EbpfForwardingReadyEvidence], ebpf_ctl: &Path) {
@@ -189,13 +212,22 @@ fn assert_ebpf_attached_evidence(evidence: &[EbpfForwardingReadyEvidence], ebpf_
     }));
 }
 
-fn assert_edge_route_evidence(evidence: &[EbpfForwardingReadyEvidence], ebpf_ctl: &Path) {
+fn assert_edge_route_evidence(
+    evidence: &[EbpfForwardingReadyEvidence],
+    ebpf_ctl: &Path,
+    endpoint_subnet: &str,
+) {
     assert!(evidence.iter().any(|evidence| {
         matches!(
             evidence,
             EbpfForwardingReadyEvidence::Command { program, args }
                 if program == &ebpf_ctl.display().to_string()
-                    && args.as_slice() == ["route", "add-ifname", "10.42.2.0/24", DEFAULT_DATAPLANE_WG_IFNAME]
+                    && args.ends_with(&[
+                        "route".to_owned(),
+                        "add-ifname".to_owned(),
+                        endpoint_subnet.to_owned(),
+                        DEFAULT_DATAPLANE_WG_IFNAME.to_owned(),
+                    ])
         )
     }));
 }

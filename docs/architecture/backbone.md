@@ -33,7 +33,7 @@ core is a rendezvous and a rebuildable index; the machines are the facts.
 2. **The machine fact ledger is machine truth** (ADR-0018). Each machine
    keeps a local SQLite ledger of durable machine-owned facts: route
    attachments applied there, served certificate material, assigned substrate
-   state, Host Runner state, last-known-good gateway/DNS projections. Facts that
+   state, Host Runner state, and last-known-good gateway projections. Facts that
    cannot live in immutable container labels — anything applied after deploy
    — live here. The ledger is authoritative for its machine and is never
    cluster truth.
@@ -76,13 +76,13 @@ The fact ledger stays simple because these rules are absolute:
 
 - Core unreachable: every operation fails fast with a typed
   control-plane-unreachable error. No partial acceptance, no local queueing.
-- Data plane: workloads, gateway, and DNS keep serving last-known-good state
-  with freshness visible (ADR-0009). Core loss degrades management, not
-  service.
+- Data plane: workloads and the gateway keep serving last-known-good state;
+  internal DNS keeps resolving from its latest intent and machine-fact caches.
+  Core loss degrades management, not service.
 - Core loss: an operator promotes an existing joined machine into the new
   Control-Plane Core through a local recovery command (ADR-0019). Machines
   reconnect or rejoin, publish fresh facts from Docker and their fact ledgers
-  — containers, route attachments, served cert material, gateway/DNS
+  — containers, route attachments, served cert material, gateway
   last-known-good state, and local role authority. Core assurance adopts
   preserved or operator-restored intent evidence and treats missing intent as
   lost, not inferred (ADR-0028/0029). Recovery restores running reality and

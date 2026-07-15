@@ -706,12 +706,23 @@ pub async fn ops_list(
     controllers: &OperationControllers,
     request: OpsListRequest,
 ) -> Result<OpsListResult, OpsListError> {
-    let statuses = controllers
-        .operation_statuses_newest_first()
-        .await
-        .map_err(|error| OpsListError::Unavailable {
-            message: error.to_string(),
-        })?;
+    let statuses = match request.before {
+        Some(before) => controllers
+            .operation_statuses_before(&before, request.active_only)
+            .await
+            .map_err(|error| OpsListError::Unavailable {
+                message: error.to_string(),
+            })?
+            .ok_or(OpsListError::NoSuchOperation {
+                operation_id: before,
+            })?,
+        None => controllers
+            .operation_statuses_newest_first(request.active_only)
+            .await
+            .map_err(|error| OpsListError::Unavailable {
+                message: error.to_string(),
+            })?,
+    };
     Ok(bounded_ops_list(statuses, request.active_only))
 }
 

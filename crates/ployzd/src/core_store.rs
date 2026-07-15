@@ -429,8 +429,11 @@ mod tests {
         let store = CoreStore::open(path.clone()).await.expect("first open");
         let tables: Vec<String> = store
             .call(|conn| {
-                let mut statement = conn
-                    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")?;
+                let mut statement = conn.prepare(
+                    "SELECT name FROM sqlite_master
+                     WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                     ORDER BY name",
+                )?;
                 let names = statement
                     .query_map([], |row| row.get::<_, String>(0))?
                     .collect::<Result<Vec<_>, _>>()?;

@@ -396,7 +396,7 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
             logs::logs_tail_command(command).map(PloyzctlCommand::LogsTail)
         }
         CommandCli::Ops { command } => match command {
-            OpsCli::List(command) => Ok(PloyzctlCommand::OpsList(ops::ops_list_command(command))),
+            OpsCli::List(command) => ops::ops_list_command(command).map(PloyzctlCommand::OpsList),
             OpsCli::Status(command) => {
                 ops::ops_status_command(command).map(PloyzctlCommand::OpsStatus)
             }

@@ -328,6 +328,21 @@ fn cli_dispatches_ops_status_request() {
 }
 
 #[test]
+fn cli_dispatches_ops_list_before_request() {
+    let command =
+        parse_command(["ops", "list", "--active", "--before", "op_deploy_abc"].map(str::to_owned))
+            .expect("ops list before parses");
+
+    let PloyzctlCommand::OpsList(command) = command else {
+        panic!("expected ops list command");
+    };
+
+    let request = command.into_request();
+    assert!(request.active_only);
+    assert_eq!(request.before, Some(operation_id("op_deploy_abc")));
+}
+
+#[test]
 fn cli_dispatches_core_promote_remote() {
     let command = parse_command(["core", "promote", "root@203.0.113.10"].map(str::to_owned))
         .expect("core promote command parses");
@@ -1087,6 +1102,26 @@ fn ops_list_renders_deploy_origin() {
     assert_eq!(
         output,
         "op_deploy deploy service svc_api accepted origin manual release\n"
+    );
+}
+
+#[test]
+fn ops_list_renders_copyable_active_continuation_hint() {
+    let output = ListOutput::from_result(OpsListResult {
+        operations: vec![OperationStatusSnapshot::new(
+            OperationStatus::ManagedDnsReconcile {
+                id: operation_id("op_oldest_on_page"),
+                subject: ManagedDnsReconcileSubject::Acquire,
+                state: ManagedDnsReconcileOperationState::Accepted,
+                last_event_sequence: event_sequence(1),
+            },
+        )],
+        has_more: true,
+    });
+
+    assert_eq!(
+        output.render_more_hint(true),
+        "More operations available:\n  ployz ops list --active --before op_oldest_on_page\n"
     );
 }
 

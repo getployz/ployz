@@ -266,7 +266,10 @@ async fn assert_init_and_activate_first_machine(core: &CoreContext) {
         while Instant::now() < deadline {
             last_operations = core
                 .api
-                .ops_list(&OpsListRequest { active_only: false })
+                .ops_list(&OpsListRequest {
+                    active_only: false,
+                    before: None,
+                })
                 .await
                 .expect("list operations")
                 .operations;

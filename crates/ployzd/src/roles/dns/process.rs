@@ -1,27 +1,22 @@
 //! Process wiring for the DNS role.
 //!
-//! `ployzd dns` is a supervised watcher process: it consumes route binding
-//! state, gateway observations, and machine facts from NATS, keeps a
-//! last-known-good public answer table and machine fact cache, and exposes
-//! typed health. It owns no command surface.
+//! `ployzd dns` is a supervised machine-local resolver: it consumes serving
+//! intent and machine facts from NATS, answers internal service names, forwards
+//! other queries upstream, and exposes machine-scoped resolve and status RPC.
 
 use crate::adapters::credentials::{
     AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials,
 };
 use crate::config::DnsProcessConfig;
-use crate::fact_cache::{FactCache, FactCacheError, RunningFactCache, start_fact_cache};
+use crate::fact_cache::{FactCacheError, RunningFactCache, start_fact_cache};
 use crate::intent::service::NatsIntentReader;
 use crate::process_support::{
-    BackoffSchedule, RecordedAttempt, RefreshDelay, bounded_role_shutdown, drain_refresh_wakes,
-    record_attempt, shutdown_signal, sleep_or_shutdown, wait_for_refresh_delay,
+    RefreshDelay, bounded_role_shutdown, drain_refresh_wakes, shutdown_signal, sleep_or_shutdown,
+    wait_for_refresh_delay,
 };
 use crate::roles::dns::InternalResolverHealth;
 use crate::roles::dns::internal::{InternalDnsIntentCache, spawn_internal_resolver};
-use crate::roles::dns::projection::{
-    DnsProjection, DnsProjector, DnsProjectorTick, DnsServingState,
-};
 use crate::roles::dns::service::start_dns_role_service;
-use crate::roles::dns::source::load_dns_source_refresh_from_nats;
 use crate::roles::machine::intent_mirror::MachineIntentMirror;
 use crate::roles::nats_failover::{
     IntentFailover, mirrored_server_pool, spawn_intent_failover_mirror,
@@ -45,8 +40,6 @@ const DNS_WATCH_RESTART_DELAY: Duration = Duration::from_secs(1);
 const DNS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct RunningDnsProcess {
-    runtime: Arc<Mutex<DnsProjector>>,
-    health: Arc<Mutex<DnsProcessHealth>>,
     internal_resolver_health: Option<Arc<Mutex<InternalResolverHealth>>>,
     shutdown: broadcast::Sender<()>,
     role_service: RunningNatsService,
@@ -77,25 +70,6 @@ impl RunningDnsProcess {
             service_shutdown
         };
         bounded_role_shutdown("DNS", DNS_SHUTDOWN_TIMEOUT, &abort_handles, cleanup).await
-    }
-
-    #[must_use]
-    pub fn health(&self) -> DnsProcessHealth {
-        self.health
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-    }
-
-    /// The last-known-good DNS projection this process serves, if any.
-    #[must_use]
-    pub fn served_projection(&self) -> Option<DnsProjection> {
-        self.runtime
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .answers()
-            .current()
-            .cloned()
     }
 
     #[must_use]
@@ -145,16 +119,10 @@ pub async fn start_dns_process_with_client(
     failover: Option<IntentFailover>,
     internal_resolver_bind: Option<SocketAddr>,
 ) -> Result<RunningDnsProcess, DnsProcessError> {
-    let runtime = Arc::new(Mutex::new(DnsProjector::new()));
-    let health = Arc::new(Mutex::new(DnsProcessHealth {
-        last_attempt: None,
-        consecutive_failures: 0,
-        intent_watch: DnsIntentWatchHealth::Starting,
-    }));
     let facts_cache = start_fact_cache(client.clone())
         .await
         .map_err(DnsProcessError::StartFactsCache)?;
-    let stores = open_dns_process_stores(client.clone(), facts_cache.cache());
+    let intent_reader = NatsIntentReader::new(client.clone());
     let internal_dns_intent = InternalDnsIntentCache::default();
     internal_dns_intent.record_if_available(
         failover
@@ -202,21 +170,30 @@ pub async fn start_dns_process_with_client(
         ));
     }
     let (refresh_wake, refresh_wake_rx) = mpsc::channel(1);
-    let task_runtime = Arc::clone(&runtime);
-    let task_health = Arc::clone(&health);
     let mut refresh_shutdown = shutdown.subscribe();
     let refresh_task = tokio::spawn(async move {
         let mut backoff = refresh_interval;
-        let source = DnsProcessSource::new(stores, internal_dns_intent);
         let mut refresh_wake_rx = refresh_wake_rx;
 
         loop {
             drain_refresh_wakes(&mut refresh_wake_rx);
-            let attempt = tokio::select! {
-                attempt = source.refresh_with_timeout(&task_runtime) => attempt,
-                _ = refresh_shutdown.recv() => break,
-            };
-            backoff = record_dns_attempt(&task_health, attempt, refresh_interval, backoff);
+            match tokio::time::timeout(DNS_REFRESH_TIMEOUT, intent_reader.intent()).await {
+                Ok(Ok(intent)) => {
+                    internal_dns_intent.record_if_available(Some(intent));
+                    backoff = refresh_interval;
+                }
+                Ok(Err(error)) => {
+                    eprintln!("ployzd internal DNS warning: phase=intent-refresh error={error}");
+                    backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
+                }
+                Err(_) => {
+                    eprintln!(
+                        "ployzd internal DNS warning: phase=intent-refresh error=timed-out timeout_seconds={}",
+                        DNS_REFRESH_TIMEOUT.as_secs()
+                    );
+                    backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
+                }
+            }
 
             match wait_for_refresh_delay(backoff, &mut refresh_wake_rx, &mut refresh_shutdown).await
             {
@@ -225,19 +202,15 @@ pub async fn start_dns_process_with_client(
             }
         }
     });
-    let watch_health = Arc::clone(&health);
     let mut watch_shutdown = shutdown.subscribe();
     let watch_task = tokio::spawn(async move {
-        wake_dns_refresh_on_intent_changed(client, refresh_wake, watch_health, &mut watch_shutdown)
-            .await;
+        wake_dns_refresh_on_intent_changed(client, refresh_wake, &mut watch_shutdown).await;
     });
 
     tasks.push(refresh_task);
     tasks.push(watch_task);
 
     Ok(RunningDnsProcess {
-        runtime,
-        health,
         internal_resolver_health,
         shutdown,
         role_service,
@@ -249,7 +222,6 @@ pub async fn start_dns_process_with_client(
 async fn wake_dns_refresh_on_intent_changed(
     client: NatsClient,
     refresh_wake: mpsc::Sender<()>,
-    health: Arc<Mutex<DnsProcessHealth>>,
     shutdown: &mut broadcast::Receiver<()>,
 ) {
     loop {
@@ -258,17 +230,9 @@ async fn wake_dns_refresh_on_intent_changed(
             _ = shutdown.recv() => break,
         };
         let mut changed = match opened {
-            Ok(changed) => {
-                record_dns_intent_watch(&health, DnsIntentWatchHealth::Watching);
-                changed
-            }
+            Ok(changed) => changed,
             Err(error) => {
-                record_dns_intent_watch(
-                    &health,
-                    DnsIntentWatchHealth::Retrying {
-                        message: error.to_string(),
-                    },
-                );
+                eprintln!("ployzd internal DNS warning: phase=intent-watch error={error}");
                 if sleep_or_shutdown(DNS_WATCH_RESTART_DELAY, shutdown).await {
                     break;
                 }
@@ -281,11 +245,8 @@ async fn wake_dns_refresh_on_intent_changed(
             tokio::select! {
                 change = changed.next() => {
                     if change.is_none() {
-                        record_dns_intent_watch(
-                            &health,
-                            DnsIntentWatchHealth::Retrying {
-                                message: "intent.changed subscription closed".to_owned(),
-                            },
+                        eprintln!(
+                            "ployzd internal DNS warning: phase=intent-watch error=subscription-closed"
                         );
                         break;
                     }
@@ -294,152 +255,6 @@ async fn wake_dns_refresh_on_intent_changed(
                 _ = shutdown.recv() => return,
             }
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DnsProcessHealth {
-    pub last_attempt: Option<DnsProcessAttempt>,
-    pub consecutive_failures: u64,
-    pub intent_watch: DnsIntentWatchHealth,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DnsIntentWatchHealth {
-    Starting,
-    Watching,
-    Retrying { message: String },
-}
-
-fn record_dns_intent_watch(health: &Mutex<DnsProcessHealth>, state: DnsIntentWatchHealth) {
-    health
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .intent_watch = state;
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DnsProcessAttempt {
-    Current {
-        record_count: usize,
-    },
-    ServingLastKnownGood {
-        record_count: usize,
-        message: String,
-    },
-    Failed {
-        message: String,
-    },
-}
-
-struct DnsProcessSource {
-    stores: DnsProcessStores,
-    internal_dns_intent: InternalDnsIntentCache,
-}
-
-impl DnsProcessSource {
-    fn new(stores: DnsProcessStores, internal_dns_intent: InternalDnsIntentCache) -> Self {
-        Self {
-            stores,
-            internal_dns_intent,
-        }
-    }
-
-    async fn refresh_with_timeout(
-        &self,
-        runtime: &Mutex<DnsProjector>,
-    ) -> Result<DnsProjectorTick, DnsProcessError> {
-        tokio::time::timeout(DNS_REFRESH_TIMEOUT, self.refresh(runtime))
-            .await
-            .map_err(|_| DnsProcessError::RefreshTimedOut {
-                timeout: DNS_REFRESH_TIMEOUT,
-            })?
-    }
-
-    async fn refresh(
-        &self,
-        runtime: &Mutex<DnsProjector>,
-    ) -> Result<DnsProjectorTick, DnsProcessError> {
-        let refresh =
-            load_dns_source_refresh_from_nats(&self.stores.intent_reader, &self.stores.facts).await;
-        self.internal_dns_intent.record_if_available(refresh.intent);
-        let mut runtime = runtime
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-
-        Ok(runtime.apply_source_update(refresh.projection))
-    }
-}
-
-struct DnsProcessStores {
-    intent_reader: NatsIntentReader,
-    facts: FactCache,
-}
-
-fn open_dns_process_stores(client: NatsClient, facts: FactCache) -> DnsProcessStores {
-    DnsProcessStores {
-        intent_reader: NatsIntentReader::new(client),
-        facts,
-    }
-}
-
-fn record_dns_attempt(
-    health: &Mutex<DnsProcessHealth>,
-    attempt: Result<DnsProjectorTick, DnsProcessError>,
-    interval: Duration,
-    current_backoff: Duration,
-) -> Duration {
-    let mut health = health
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let DnsProcessHealth {
-        last_attempt,
-        consecutive_failures,
-        ..
-    } = &mut *health;
-    let recorded = match attempt {
-        Ok(tick) => {
-            let attempt = dns_attempt_from_tick(tick);
-            if matches!(attempt, DnsProcessAttempt::Current { .. }) {
-                RecordedAttempt::Healthy(attempt)
-            } else {
-                // Last-known-good serving counts as a failure streak but
-                // keeps the steady refresh interval.
-                RecordedAttempt::Degraded(attempt)
-            }
-        }
-        Err(error) => RecordedAttempt::Failed(DnsProcessAttempt::Failed {
-            message: error.to_string(),
-        }),
-    };
-
-    record_attempt(
-        last_attempt,
-        consecutive_failures,
-        recorded,
-        BackoffSchedule {
-            interval,
-            cap: Duration::from_secs(30),
-        },
-        current_backoff,
-    )
-}
-
-fn dns_attempt_from_tick(tick: DnsProjectorTick) -> DnsProcessAttempt {
-    match tick.serving {
-        DnsServingState::Current { record_count } => DnsProcessAttempt::Current { record_count },
-        DnsServingState::LastKnownGood {
-            record_count,
-            error,
-        } => DnsProcessAttempt::ServingLastKnownGood {
-            record_count,
-            message: format!("{error:?}"),
-        },
-        DnsServingState::Unavailable { error } => DnsProcessAttempt::Failed {
-            message: error
-                .map(|error| format!("{error:?}"))
-                .unwrap_or_else(|| "DNS source unavailable".to_owned()),
-        },
     }
 }
 
@@ -463,74 +278,8 @@ pub enum DnsProcessError {
     StartFactsCache(FactCacheError),
     #[error("failed to start DNS role query service: {0}")]
     StartRoleService(NatsServiceRuntimeError),
-    #[error("DNS projection refresh timed out after {}s", timeout.as_secs())]
-    RefreshTimedOut { timeout: Duration },
     #[error("failed to wait for shutdown: {0}")]
     ShutdownSignal(std::io::Error),
     #[error("failed to stop DNS role service: {0:?}")]
     ShutdownRoleService(NatsServiceShutdownError),
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::roles::dns::projection::{DnsProjectionError, DnsProjectionState};
-
-    #[test]
-    fn retained_last_good_attempt_keeps_steady_refresh_interval() {
-        let health = Mutex::new(DnsProcessHealth {
-            last_attempt: None,
-            consecutive_failures: 0,
-            intent_watch: DnsIntentWatchHealth::Starting,
-        });
-        let interval = Duration::from_secs(1);
-
-        let next = record_dns_attempt(
-            &health,
-            Ok(DnsProjectorTick {
-                state: DnsProjectionState::unavailable(),
-                served: None,
-                serving: DnsServingState::LastKnownGood {
-                    record_count: 1,
-                    error: DnsProjectionError::InvalidSource {
-                        message: "nats unavailable".to_owned(),
-                    },
-                },
-            }),
-            interval,
-            Duration::from_secs(30),
-        );
-
-        assert_eq!(next, interval);
-        assert_eq!(
-            health
-                .lock()
-                .expect("dns health lock is not poisoned")
-                .last_attempt,
-            Some(DnsProcessAttempt::ServingLastKnownGood {
-                record_count: 1,
-                message: "InvalidSource { message: \"nats unavailable\" }".to_owned(),
-            })
-        );
-    }
-
-    #[test]
-    fn refresh_runtime_error_uses_exponential_backoff() {
-        let health = Mutex::new(DnsProcessHealth {
-            last_attempt: None,
-            consecutive_failures: 0,
-            intent_watch: DnsIntentWatchHealth::Starting,
-        });
-
-        let next = record_dns_attempt(
-            &health,
-            Err(DnsProcessError::RefreshTimedOut {
-                timeout: Duration::from_secs(5),
-            }),
-            Duration::from_secs(1),
-            Duration::from_secs(2),
-        );
-
-        assert_eq!(next, Duration::from_secs(4));
-    }
 }

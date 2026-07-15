@@ -788,11 +788,11 @@ export type MachineJoinReported = { operation_id: OperationId, machine_id: Machi
 
 export type MachineJoinReportError = { "error": "invalid_join_token" } | { "error": "unknown_join_token" } | { "error": "operation_not_joining", operation_id: OperationId, current: MachineAddOperationStateName, } | { "error": "unavailable", message: string, };
 
-export type OpsListRequest = { active_only: boolean, };
+export type OpsListRequest = { active_only: boolean, before: OperationId | null, };
 
 export type OpsListResult = { operations: Array<OperationStatusSnapshot>, has_more: boolean, };
 
-export type OpsListError = { "error": "unavailable", message: string, };
+export type OpsListError = { "error": "no_such_operation", operation_id: OperationId, } | { "error": "unavailable", message: string, };
 
 export type OpsStatusRequest = { operation_id: OperationId, };
 

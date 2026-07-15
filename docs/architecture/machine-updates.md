@@ -124,8 +124,8 @@ the old gateway drain within its grace period.
 
 DNS activation uses the DNS role's graceful upgrade support. Host Runner stages the
 new DNS artifact, starts the new DNS process in upgrade mode, verifies that it
-can load current or last-known-good serving state, verifies local UDP and TCP
-answers, transfers or overlaps listener ownership, and lets the old DNS process
+can load current internal serving intent, verifies local UDP and TCP answers and
+upstream forwarding, transfers or overlaps listener ownership, and lets the old DNS process
 drain within its grace period. The listener should remain available throughout
 the activation path; if the new process cannot serve the expected answers,
 Host Runner leaves the old process serving and records failure evidence.

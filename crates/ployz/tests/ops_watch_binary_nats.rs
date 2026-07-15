@@ -6,8 +6,9 @@ use ployz::runtime::{PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV};
 use ployz_core::deploy::{DeployServiceSpec, ImageReference, ReplicaCount};
 use ployz_core::ids::NamespaceId;
 use ployz_core::ops::{
-    DeployOperationState, OperationEvent, OperationEventReplayPage, OperationEventReplayRequest,
-    OperationStatus, OperationStatusSnapshot, ReplayedOperationEvent,
+    DeployOperationState, ManagedDnsReconcileOperationState, ManagedDnsReconcileSubject,
+    OperationEvent, OperationEventReplayPage, OperationEventReplayRequest, OperationStatus,
+    OperationStatusSnapshot, ReplayedOperationEvent,
 };
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
@@ -15,8 +16,9 @@ use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
 };
 use ployz_sdk_types::{
-    OperationApiResponse, OpsStatusRequest, OpsStatusResponse, OpsWatchResponse,
-    operation_api::{OperationApiContract, OpsStatusApi, OpsWatchApi},
+    OperationApiResponse, OpsListRequest, OpsListResponse, OpsListResult, OpsStatusRequest,
+    OpsStatusResponse, OpsWatchResponse,
+    operation_api::{OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi},
 };
 use ployz_test_support::ids::{event_sequence, operation_id, service_id};
 use ployz_test_support::nats::{SecuredTestNats, TestNats};
@@ -126,6 +128,64 @@ async fn binary_ops_watch_replays_terminal_event_after_a_caught_up_page() {
     assert_eq!(stdout(&output), "1 deploy.submitted\n2 deploy.completed\n");
     assert_eq!(stderr(&output), "");
     assert_eq!(watch_calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn binary_ops_list_prints_continuation_hint_to_stderr() {
+    let server = TestNats::start().await;
+    let client = server.controller.clone();
+    let env = CliNatsEnv::new(&server.server);
+    let spec = test_api_service(&[OpsListApi::ENDPOINT]);
+    let list_endpoint = endpoint(&spec, OpsListApi::ENDPOINT);
+    let mut runtime = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("service starts");
+
+    runtime
+        .bind_endpoint(&list_endpoint, |request| async move {
+            let request: OpsListRequest =
+                serde_json::from_slice(&request.payload).expect("list request decodes");
+            assert!(!request.active_only);
+            assert_eq!(request.before, None);
+            let response: OpsListResponse = OperationApiResponse::Ok {
+                value: OpsListResult {
+                    operations: vec![OperationStatusSnapshot::new(
+                        OperationStatus::ManagedDnsReconcile {
+                            id: operation_id("op_oldest_on_page"),
+                            subject: ManagedDnsReconcileSubject::Acquire,
+                            state: ManagedDnsReconcileOperationState::Accepted,
+                            last_event_sequence: event_sequence(1),
+                        },
+                    )],
+                    has_more: true,
+                },
+            };
+            NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+        })
+        .await
+        .expect("list endpoint binds");
+    client.flush().await.expect("service flushes");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .arg("--nats")
+        .arg(server.server.client_url().as_str())
+        .env_remove("HOME")
+        .env_remove("XDG_CONFIG_HOME")
+        .env(PLOYZ_NATS_CA_FILE_ENV, server.server.ca_path())
+        .env(PLOYZ_NATS_NKEY_SEED_FILE_ENV, env.user_seed_path())
+        .args(["ops", "list"])
+        .output()
+        .expect("ployz binary runs");
+
+    assert!(output.status.success());
+    assert_eq!(
+        stdout(&output),
+        "op_oldest_on_page managed-dns-reconcile Ployz DNS target acquisition accepted\n"
+    );
+    assert_eq!(
+        stderr(&output),
+        "More operations available:\n  ployz ops list --before op_oldest_on_page\n"
+    );
 }
 
 struct CliNatsEnv {

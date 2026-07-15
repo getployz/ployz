@@ -15,4 +15,3 @@ object = { version = "0.37.3", default-features = false, features = ["read"], op
 
 [lib]
 path = "src/lib.rs"
-doctest = false

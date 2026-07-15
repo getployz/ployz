@@ -12,7 +12,7 @@ npm-debug.log*
 !.claude/skills/**
 skills-lock.json
 .env.targets
-ebpf/target/
+ebpf/program/target/
 legacy/target/
 legacy/ebpf/target/
 .idea/

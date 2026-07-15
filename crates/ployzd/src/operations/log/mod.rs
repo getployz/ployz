@@ -401,13 +401,61 @@ fn select_status(
     )
 }
 
+const OPS_LIST_READ_LIMIT: usize = 101;
+
 fn select_all_statuses_newest_first(
     conn: &mut Connection,
+    active_only: bool,
 ) -> Result<Vec<OperationStatus>, rusqlite::Error> {
-    query_json_list(
-        conn,
-        "SELECT status_json FROM operations ORDER BY created_order DESC",
-    )
+    let mut statement =
+        conn.prepare("SELECT status_json FROM operations ORDER BY created_order DESC")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    collect_list_statuses(rows, active_only)
+}
+
+fn select_statuses_before(
+    conn: &mut Connection,
+    before: &OperationId,
+    active_only: bool,
+) -> Result<Option<Vec<OperationStatus>>, rusqlite::Error> {
+    let created_order = conn
+        .query_row(
+            "SELECT created_order FROM operations WHERE operation_id = ?1",
+            [before.as_str()],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    let Some(created_order) = created_order else {
+        return Ok(None);
+    };
+    let mut statement = conn.prepare(
+        "SELECT status_json FROM operations
+         WHERE created_order < ?1
+         ORDER BY created_order DESC",
+    )?;
+    let rows = statement.query_map([created_order], |row| row.get::<_, String>(0))?;
+    Ok(Some(collect_list_statuses(rows, active_only)?))
+}
+
+fn collect_list_statuses<F>(
+    rows: rusqlite::MappedRows<'_, F>,
+    active_only: bool,
+) -> Result<Vec<OperationStatus>, rusqlite::Error>
+where
+    F: FnMut(&rusqlite::Row<'_>) -> Result<String, rusqlite::Error>,
+{
+    let mut statuses = Vec::new();
+    for row in rows {
+        let status: OperationStatus = from_json(&row?)?;
+        if active_only && status.is_terminal() {
+            continue;
+        }
+        statuses.push(status);
+        if statuses.len() == OPS_LIST_READ_LIMIT {
+            break;
+        }
+    }
+    Ok(statuses)
 }
 
 fn select_all_statuses(conn: &mut Connection) -> Result<Vec<OperationStatus>, rusqlite::Error> {
@@ -446,71 +494,6 @@ fn insert_event(
         ],
     )?;
     Ok(())
-}
-
-#[cfg(test)]
-mod operation_query_tests {
-    use super::{select_all_statuses_newest_first, select_status, upsert_status};
-    use ployz_core::ops::{EventSequence, OperationStatus};
-    use ployz_test_support::ids::{namespace_id, operation_id};
-    use rusqlite::Connection;
-
-    #[test]
-    fn newest_status_order_is_durable_and_old_status_remains_addressable() {
-        let directory = tempfile::tempdir().expect("temp directory");
-        let path = directory.path().join("operation-order.db");
-        let connection = Connection::open(&path).expect("open operation database");
-        connection
-            .execute_batch(
-                "CREATE TABLE operations (
-                    created_order INTEGER PRIMARY KEY AUTOINCREMENT,
-                    operation_id  TEXT NOT NULL UNIQUE,
-                    status_json   TEXT NOT NULL
-                );",
-            )
-            .expect("create operations table");
-
-        let oldest_id = operation_id("op_z_oldest");
-        upsert_status(
-            &connection,
-            &oldest_id,
-            &namespace_remove_status("op_z_oldest"),
-        )
-        .expect("insert oldest operation");
-        for index in 0..100 {
-            let id = format!("op_{index:03}");
-            upsert_status(
-                &connection,
-                &operation_id(&id),
-                &namespace_remove_status(&id),
-            )
-            .expect("insert newer operation");
-        }
-        drop(connection);
-
-        let mut reopened = Connection::open(&path).expect("reopen operation database");
-        let newest =
-            select_all_statuses_newest_first(&mut reopened).expect("read operations newest first");
-
-        assert_eq!(newest[0].id().as_str(), "op_099");
-        assert_eq!(newest[99].id().as_str(), "op_000");
-        assert_eq!(newest[100].id(), &oldest_id);
-        assert_eq!(
-            select_status(&reopened, &oldest_id)
-                .expect("read old operation status")
-                .expect("old operation remains stored")
-                .id(),
-            &oldest_id
-        );
-    }
-
-    fn namespace_remove_status(id: &str) -> OperationStatus {
-        OperationStatus::namespace_remove_accepted(
-            operation_id(id),
-            namespace_id("team-a"),
-            EventSequence::first(),
-        )
-    }
 }
 
 fn singleton_event_exists(
@@ -641,3 +624,6 @@ async fn publish_progress(
     );
     let _ = client.publish(subject, payload.into()).await;
 }
+
+#[cfg(test)]
+mod operation_query_tests;

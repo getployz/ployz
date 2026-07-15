@@ -231,10 +231,15 @@ test("logs tail returns recent container evidence", async () => {
 test("ops list returns operation snapshots", async () => {
   const transport = new RecordingTransport(defaultFixture());
   const client = new PloyzClient(transport);
-  const result: OpsListResult = await client.opsList({ activeOnly: true });
+  const result: OpsListResult = await client.opsList({
+    activeOnly: true,
+    before: "op_before",
+  });
 
   assert.deepEqual(result, { operations: [], has_more: false });
-  assert.deepEqual(transport.opsListRequests, [opsListRequest({ activeOnly: true })]);
+  assert.deepEqual(transport.opsListRequests, [
+    { active_only: true, before: operationId("op_before") },
+  ]);
 });
 
 test("machine join redeem returns joined machine facts", async () => {
@@ -481,9 +486,15 @@ test("sdk maps current-state query inputs to wire requests", () => {
     service_id: "svc_api",
   });
   assert.deepEqual(runtimeSnapshotRequest(), {});
-  assert.deepEqual(opsListRequest(), { active_only: false });
-  assert.deepEqual(opsListRequest({ activeOnly: true }), { active_only: true });
-  assert.deepEqual(opsListRequest({ activeOnly: false }), { active_only: false });
+  assert.deepEqual(opsListRequest(), { active_only: false, before: null });
+  assert.deepEqual(opsListRequest({ activeOnly: true }), {
+    active_only: true,
+    before: null,
+  });
+  assert.deepEqual(opsListRequest({ activeOnly: false }), {
+    active_only: false,
+    before: null,
+  });
   assert.deepEqual(logsTailRequest("ctr_failed"), {
     target: { target: "container", container_id: "ctr_failed" },
   });

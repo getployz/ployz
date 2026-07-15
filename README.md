@@ -44,7 +44,7 @@ agent can call with the same guarantees.
    ployz ops list
    ```
 
-Once DNS points a routed hostname at a machine, the gateway serves it. Lifecycle is operations too: `machine drain`,
+Once external DNS points a routed hostname at a gateway machine, the gateway serves it. Lifecycle is operations too: `machine drain`,
 `machine resume`, `ops watch <id>`, `inspect`.
 
 ## Features
@@ -60,7 +60,7 @@ Once DNS points a routed hostname at a machine, the gateway serves it. Lifecycle
   engine or progress bus.
 - **Disposable core** — machines own runtime truth via local fact ledgers, so a lost core is promoted from an existing
   machine, not restored from a consensus database.
-- **Built-in gateway** — routes external hostnames to your service containers, with DNS.
+- **Built-in gateway** — routes externally managed hostnames to your service containers; Ployz DNS resolves internal service names.
 
 ## Why Ployz?
 

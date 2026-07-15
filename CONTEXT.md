@@ -92,10 +92,6 @@ _Avoid_: Hostname provisioning workflow, DNS provider operation, route reconcili
 A gateway's local application of one route binding against the current serving target and runtime observations. Route projections can succeed or fail independently, and failures are reported as gateway observations. If a route binding points at a service that is not currently serveable, the route remains attached and the gateway returns an unavailable response for that route.
 _Avoid_: Route binding, gateway config, active route
 
-**Route DNS Projection**:
-A DNS process's local serving of route binding hostnames to the gateway answers that can serve them. It is separate from machine-name DNS provided by a mesh such as Tailscale MagicDNS.
-_Avoid_: MagicDNS route backend, machine name DNS, tailnet device DNS
-
 **Ingress Endpoint Projection**:
 The canonical complete view of public IPv4 and IPv6 endpoints that DNS consumers may publish for cluster ingress. Its gather candidates are current accepted machines assigned the gateway role, including draining machines because draining does not stop existing serving; a candidate is publishable only when its gateway process gives fresh serving testimony and fresh machine facts supply an address. Explicit intent with no candidates makes the projection unavailable and authorizes withdrawal, while silence from declared gateways does not imply an empty endpoint set.
 _Avoid_: Route DNS projection, gateway membership, DNS provider state, inferred liveness
@@ -165,8 +161,8 @@ A machine whose fresh machine-local facts and recent observations show dataplane
 _Avoid_: Local-only service placement, cleanup reachability, generic health, stored capability flag
 
 **Serving Unpublish**:
-Removing a service from a namespace's serveable surfaces before cleanup, including gateway route eligibility and DNS publication. Role-process convergence is observed as warning evidence; Docker cleanup decides whether the service is actually removed.
-_Avoid_: Route removal, DNS removal, service deletion
+Removing a service from a namespace's gateway route eligibility before cleanup. Gateway convergence is observed as warning evidence; Docker cleanup decides whether the service is actually removed.
+_Avoid_: Route removal, service deletion
 
 **Route Protection**:
 An explicit gateway-ingress access rule attached to a route binding that controls whether a requester may enter through that route, including public access. It changes gateway entry behavior for that route without changing the service, namespace, serving target, or internal service reachability.
@@ -281,7 +277,7 @@ A local operator action on an existing joined machine that makes that machine th
 _Avoid_: Cloud failover, founder failover, provisioned replacement core
 
 **Reachable Machine**:
-A machine observed to accept inbound control-plane connections at a public address, so peers can dial into it. Reachability is observed from connection source addresses, never declared at install. It is the eligibility basis for core promotion candidacy and peer dial-in, and the same observation later informs which machines suit public roles such as DNS answers; it is not machine lifecycle, placement eligibility, or a configured attribute.
+A machine observed to accept inbound control-plane connections at a public address, so peers can dial into it. Reachability is observed from connection source addresses, never declared at install. It is the eligibility basis for core promotion candidacy and peer dial-in; it is not machine lifecycle, placement eligibility, or a configured attribute.
 _Avoid_: Stable machine, public machine, gateway node, declared reachability
 
 **Local Authority**:
@@ -297,7 +293,7 @@ The bounded runtime view collected for one explicit mutating operation. It uses 
 _Avoid_: Background reconciliation, stored desired state, unbounded live scan, stale-observation cleanup
 
 **Passive Runtime Projection**:
-A read-side or data-plane view built from durable control-plane state and fresh NATS observations, without live machine RPC. Gateways, DNS, Cloud subscriptions, and CLI watch surfaces use passive runtime projections to stay current without owning mutations.
+A read-side or data-plane view built from durable control-plane state and fresh NATS observations, without live machine RPC. Gateways, internal DNS, Cloud subscriptions, and CLI watch surfaces use passive runtime projections to stay current without owning mutations.
 _Avoid_: Mutating operation snapshot, live RPC requirement, hidden reconciliation
 
 **Managed Container Identity**:
@@ -637,5 +633,5 @@ A gateway process with a fresh gateway observation. Known gateways are used for 
 _Avoid_: Gateway member, route owner, gateway quorum
 
 **DNS Observation**:
-Runtime state reported by a DNS process about the records or serving state it has applied. DNS observations are diagnostic feedback and do not decide deploy success.
+Runtime state reported by a DNS process about its internal resolver. DNS observations are diagnostic feedback and do not decide deploy success.
 _Avoid_: Machine observation

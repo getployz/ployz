@@ -11,8 +11,9 @@ use std::sync::Once;
 use std::time::Duration;
 
 use ployz_core::nats_config::NatsUserSeed;
-use ployz_core::permissions::inbox_prefix;
 use ployz_core::security::NatsPrincipal;
+
+use crate::permissions::inbox_prefix;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NatsClientEndpoint {

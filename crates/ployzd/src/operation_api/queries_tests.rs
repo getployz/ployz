@@ -27,9 +27,12 @@ fn operation_list_returns_newest_hundred_with_more_evidence() {
     let result = bounded_ops_list(statuses, false);
 
     assert!(result.has_more);
-    assert_eq!(result.operations.len(), 100);
-    assert_eq!(result.operations[0].status.id().as_str(), "op_100");
-    assert_eq!(result.operations[99].status.id().as_str(), "op_001");
+    let [first, middle @ .., last] = result.operations.as_slice() else {
+        panic!("expected a full operation page");
+    };
+    assert_eq!(middle.len(), 98);
+    assert_eq!(first.status.id().as_str(), "op_100");
+    assert_eq!(last.status.id().as_str(), "op_001");
 }
 
 #[test]
@@ -43,9 +46,12 @@ fn operation_list_applies_active_filter_before_cap() {
     let result = bounded_ops_list(statuses, true);
 
     assert!(result.has_more);
-    assert_eq!(result.operations.len(), 100);
-    assert_eq!(result.operations[0].status.id().as_str(), "op_100");
-    assert_eq!(result.operations[99].status.id().as_str(), "op_001");
+    let [first, middle @ .., last] = result.operations.as_slice() else {
+        panic!("expected a full operation page");
+    };
+    assert_eq!(middle.len(), 98);
+    assert_eq!(first.status.id().as_str(), "op_100");
+    assert_eq!(last.status.id().as_str(), "op_001");
 }
 
 fn namespace_remove_status(index: usize, terminal: bool) -> OperationStatus {

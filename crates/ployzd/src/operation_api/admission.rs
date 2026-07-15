@@ -792,8 +792,21 @@ impl OperationControllers {
 
     pub async fn operation_statuses_newest_first(
         &self,
+        active_only: bool,
     ) -> Result<Vec<OperationStatus>, OperationStatusStoreError> {
-        self.repository.operation_statuses_newest_first().await
+        self.repository
+            .operation_statuses_newest_first(active_only)
+            .await
+    }
+
+    pub async fn operation_statuses_before(
+        &self,
+        before: &OperationId,
+        active_only: bool,
+    ) -> Result<Option<Vec<OperationStatus>>, OperationStatusStoreError> {
+        self.repository
+            .operation_statuses_before(before, active_only)
+            .await
     }
 
     async fn claim_namespace(

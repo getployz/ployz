@@ -314,17 +314,27 @@ fn response_within_max_payload(
     max_payload: usize,
 ) -> NatsServiceResponse {
     match response {
-        NatsServiceResponse::Ok { payload } | NatsServiceResponse::DomainError { payload }
-            if payload.len() > max_payload =>
-        {
-            NatsServiceResponse::transport_error(NatsServiceError::response_too_large())
+        NatsServiceResponse::Ok { payload } => {
+            if payload.len() > max_payload {
+                NatsServiceResponse::transport_error(NatsServiceError::response_too_large())
+            } else {
+                NatsServiceResponse::Ok { payload }
+            }
         }
-        NatsServiceResponse::TransportError { error }
-            if service_error_wire_len(&error) > max_payload =>
-        {
-            NatsServiceResponse::transport_error(NatsServiceError::response_too_large())
+        NatsServiceResponse::DomainError { payload } => {
+            if payload.len() > max_payload {
+                NatsServiceResponse::transport_error(NatsServiceError::response_too_large())
+            } else {
+                NatsServiceResponse::DomainError { payload }
+            }
         }
-        response => response,
+        NatsServiceResponse::TransportError { error } => {
+            if service_error_wire_len(&error) > max_payload {
+                NatsServiceResponse::transport_error(NatsServiceError::response_too_large())
+            } else {
+                NatsServiceResponse::TransportError { error }
+            }
+        }
     }
 }
 

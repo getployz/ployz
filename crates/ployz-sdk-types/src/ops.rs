@@ -9,6 +9,8 @@ pub type OpsListResponse = OperationApiResponse<OpsListResult, OpsListError>;
 pub struct OpsListRequest {
     #[serde(default)]
     pub active_only: bool,
+    #[serde(default)]
+    pub before: Option<OperationId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -61,6 +63,8 @@ pub enum OpsStatusError {
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 #[derive(thiserror::Error)]
 pub enum OpsListError {
+    #[error("no such operation {}", .operation_id.as_str())]
+    NoSuchOperation { operation_id: OperationId },
     #[error("operation list unavailable: {message}")]
     Unavailable { message: String },
 }

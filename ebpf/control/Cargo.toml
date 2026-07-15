@@ -12,7 +12,7 @@ workspace = true
 [dependencies]
 clap.workspace = true
 ipnet = "2"
-ployz-ebpf-common = { path = "../ployz-ebpf-common", features = ["validation"] }
+ployz-ebpf-common = { path = "../common", features = ["validation"] }
 serde_json.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]

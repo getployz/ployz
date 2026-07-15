@@ -27,6 +27,12 @@ impl PloyzctlExecutionOutput {
         }
     }
 
+    #[must_use]
+    pub fn with_stderr(mut self, stderr: String) -> Self {
+        self.stderr = stderr;
+        self
+    }
+
     /// Records the terminal outcome of a followed operation on the output: a
     /// failed or cancelled operation exits non-zero, a successful one (or one
     /// whose outcome could not be determined) leaves the exit unchanged.

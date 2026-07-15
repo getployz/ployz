@@ -448,12 +448,15 @@ pub async fn execute_command(
             ))
         }
         PloyzctlCommand::OpsList(command) => {
-            render_api_call(
-                config,
-                async |api| api.ops_list(&command.into_request()).await,
-                |result| crate::commands::ops::ListOutput::from_result(result).render(),
-            )
-            .await
+            let active_only = command.active_only;
+            let api = operation_api_client(config).await?;
+            let result = api
+                .ops_list(&command.into_request())
+                .await
+                .map_err(api_error)?;
+            let output = crate::commands::ops::ListOutput::from_result(result);
+            Ok(PloyzctlExecutionOutput::stdout(output.render())
+                .with_stderr(output.render_more_hint(active_only)))
         }
         PloyzctlCommand::OpsWatch(command) => {
             let api = operation_api_client(config).await?;

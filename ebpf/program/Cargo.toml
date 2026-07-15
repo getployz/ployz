@@ -13,7 +13,7 @@ path = "src/main.rs"
 [dependencies]
 aya-ebpf = "0.1"
 network-types = "0.0.7"
-ployz-ebpf-common = { path = "../crates/ployz-ebpf-common" }
+ployz-ebpf-common = { path = "../common" }
 
 [profile.dev]
 opt-level = 2

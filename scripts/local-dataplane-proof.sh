@@ -21,7 +21,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${ROOT_DIR}/scripts/lib.sh"
 
 IMAGE="${PLOYZ_LOCAL_DATAPLANE_IMAGE:-rust:1.91-bookworm}"
-PROOF_IMAGE="${PLOYZ_LOCAL_DATAPLANE_PROOF_IMAGE:-ployz-local-dataplane-proof:rust-1.91-bookworm-v5}"
+PROOF_IMAGE="${PLOYZ_LOCAL_DATAPLANE_PROOF_IMAGE:-ployz-local-dataplane-proof:rust-1.91-bookworm-v7}"
 NATS_SERVER_VERSION="${PLOYZ_LOCAL_DATAPLANE_NATS_SERVER_VERSION:-2.14.2}"
 TARGET_DIR="${PLOYZ_LOCAL_DATAPLANE_TARGET_DIR:-/tmp/ployz-local-dataplane-target}"
 CARGO_REGISTRY_DIR="${PLOYZ_LOCAL_DATAPLANE_CARGO_REGISTRY_DIR:-/tmp/ployz-local-dataplane-cargo-registry}"
@@ -58,6 +58,7 @@ RUN apt-get update \\
   && apt-get install -y --no-install-recommends \\
     ca-certificates \\
     clang \\
+    cmake \\
     curl \\
     docker.io \\
     dbus \\
@@ -66,6 +67,7 @@ RUN apt-get update \\
     lld \\
     llvm \\
     pkg-config \\
+    protobuf-compiler \\
     systemd \\
     systemd-sysv \\
     wireguard-tools \\
