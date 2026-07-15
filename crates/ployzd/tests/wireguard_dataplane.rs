@@ -3,11 +3,11 @@ use ployz_core::network::{
     WireGuardEbpfPrepareError, WireGuardPeer, WireGuardPublicKey,
 };
 use ployz_test_support::ids::machine_id;
-use ployzd::adapters::docker::runner::DockerManagedContainerRunner;
-use ployzd::adapters::host_dataplane::{
+use ployzd::config::{DEFAULT_DATAPLANE_BRIDGE_IFNAME, DEFAULT_DATAPLANE_WG_IFNAME};
+use ployzd::roles::machine::execution::docker::runner::DockerManagedContainerRunner;
+use ployzd::roles::machine::execution::host_dataplane::{
     PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer, WireGuardMtuPolicy,
 };
-use ployzd::config::{DEFAULT_DATAPLANE_BRIDGE_IFNAME, DEFAULT_DATAPLANE_WG_IFNAME};
 use ployzd::roles::machine::runner::MachineContainerRunner;
 use ployzd::roles::machine::service::MachinePloyzNativeMeshPreparer;
 use std::path::{Path, PathBuf};

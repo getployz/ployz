@@ -1,4 +1,4 @@
-use crate::machine_runtime::MachineRuntimeUnavailableReason;
+use crate::roles::machine::MachineRuntimeUnavailableReason;
 use crate::roles::machine::response::log_hint;
 use ployz_core::deploy::DeployPlanError;
 use ployz_core::ids::{

@@ -17,7 +17,7 @@ use super::images::{
 };
 use super::logs::handle_logs_tail;
 use super::substrate::{handle_substrate_report, handle_substrate_update};
-use crate::adapters::host_dataplane::dataplane_status_budget;
+use crate::roles::machine::execution::host_dataplane::dataplane_status_budget;
 use crate::roles::machine::projection::{
     MachineProjectionState, RunningProjectionTask, start_projection_task,
 };

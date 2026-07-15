@@ -1,6 +1,6 @@
 //! Digest-only Registry V2 reads over the Ployz Native Mesh.
 
-use crate::adapters::containerd_content::ContainerdContentStore;
+use super::containerd_content::ContainerdContentStore;
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::body::Incoming;

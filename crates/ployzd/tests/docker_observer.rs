@@ -5,7 +5,7 @@ use ployz_core::machine::runtime::{
 };
 use ployz_test_support::containers;
 use ployz_test_support::ids::{container_id, machine_id};
-use ployzd::adapters::docker::labels::{
+use ployzd::roles::machine::execution::docker::labels::{
     self, CONTAINER_TYPE_LABEL, MANAGED_LABEL, ManagedContainerLabelError,
     NAMESPACE_REVISION_ENTRY_LABEL, OPERATION_ID_LABEL, SERVICE_ID_LABEL, STEP_ID_LABEL,
 };

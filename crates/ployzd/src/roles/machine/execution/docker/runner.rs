@@ -1,10 +1,9 @@
+use super::labels::{self, MANAGED_LABEL, ManagedContainerLabelError};
 use super::network::{
     ENDPOINT_NETWORK_NAME, ensure_endpoint_network, is_docker_object_missing,
     read_endpoint_network_status, require_endpoint_network,
 };
-use crate::adapters::docker::labels::{self, MANAGED_LABEL, ManagedContainerLabelError};
-use crate::adapters::host_dataplane::WireGuardMtuPolicy;
-use crate::adapters::host_dataplane::resolve_wireguard_mtu;
+use crate::roles::machine::execution::host_dataplane::{WireGuardMtuPolicy, resolve_wireguard_mtu};
 use crate::roles::machine::protocol::MachineImagePull;
 use crate::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,

@@ -205,8 +205,8 @@ fn verified_attachment(
 
 #[cfg(test)]
 mod tests {
+    use super::HostCommandAction;
     use super::*;
-    use crate::adapters::host_dataplane::HostCommandAction;
 
     #[test]
     fn route_programming_adds_only_peer_endpoint_subnets() {

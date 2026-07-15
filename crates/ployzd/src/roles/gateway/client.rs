@@ -8,7 +8,7 @@ use ployz_core::state::GatewayStatusObservation;
 use ployz_core::subjects::MachineServiceEndpoint;
 use serde::{Deserialize, Serialize};
 
-use crate::machine_runtime::MachineRuntimeUnavailableReason;
+use crate::roles::machine::MachineRuntimeUnavailableReason;
 use crate::roles::machine::client::{DEFAULT_MACHINE_RPC_TIMEOUT, MachineCallError, call_machine};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

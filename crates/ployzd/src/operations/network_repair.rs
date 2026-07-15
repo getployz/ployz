@@ -4,7 +4,6 @@ use crate::control::intent::service::NatsIntentReader;
 use crate::control::operation_evidence::{
     AcceptedNetworkRepairSubmission, OperationStatusStoreError, RecordOperationEventError,
 };
-use crate::machine_runtime::{MachineRequestFailure, MachineRuntimeUnavailableReason};
 use crate::operation_api::admission::OperationControllers;
 use crate::roles::dns::protocol::{DnsStatusRpcOk, DnsStatusRpcRequest};
 use crate::roles::machine::client::{
@@ -12,6 +11,7 @@ use crate::roles::machine::client::{
     unavailable_reason,
 };
 use crate::roles::machine::convergence::gather_dataplane_statuses;
+use crate::roles::machine::{MachineRequestFailure, MachineRuntimeUnavailableReason};
 use crate::tasks::TaskRegistry;
 use futures_util::{StreamExt, stream};
 use ployz_core::dataplane::DataplaneProjection;

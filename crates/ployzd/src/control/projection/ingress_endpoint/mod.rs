@@ -28,8 +28,8 @@ use tokio::task::JoinHandle;
 use crate::control::intent::ingress_intent::{IngressProjectionStore, IngressProjectionWrite};
 use crate::control::intent::service::NatsIntentReader;
 use crate::control::operation_evidence::{IngressRefreshOperationSubmission, OperationRepository};
-use crate::machine_runtime::MachineRuntimeUnavailableReason;
 use crate::roles::gateway::client::{GatewayStatusReadError, NatsGatewayStatusReader};
+use crate::roles::machine::MachineRuntimeUnavailableReason;
 use crate::roles::machine::client::{MachineFactsReadError, NatsMachineFactsReader};
 use crate::service_catalog::{ingress_endpoint_get_spec, ingress_endpoint_service};
 

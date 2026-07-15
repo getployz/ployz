@@ -1,12 +1,7 @@
 //! Process wiring for the machine role.
 
-use crate::adapters::containerd_content::ContainerdContentStore;
 use crate::adapters::credentials::{
     AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials,
-};
-use crate::adapters::docker::runner::DockerManagedContainerRunner;
-use crate::adapters::host_dataplane::{
-    PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer, WireGuardMtuPolicy,
 };
 use crate::config::MachineProcessConfig;
 use crate::process_support::{
@@ -14,6 +9,12 @@ use crate::process_support::{
 };
 use crate::recovery::{IntentFailover, mirrored_server_pool, spawn_intent_failover_mirror};
 use crate::recovery::{IntentMirror, PendingMachineJoinMirror};
+use crate::roles::machine::execution::containerd_content::ContainerdContentStore;
+use crate::roles::machine::execution::docker::runner::DockerManagedContainerRunner;
+use crate::roles::machine::execution::host_dataplane::{
+    PloyzNativeMeshHostConfig, PloyzNativeMeshPreparer, WireGuardMtuPolicy,
+};
+use crate::roles::machine::execution::registry_v2::RunningRegistryV2;
 use crate::roles::machine::facts::{
     MachineEndpointCache, MachineFactsPublishError, publish_machine_facts,
 };
@@ -21,7 +22,6 @@ use crate::roles::machine::images::AvailableImageService;
 use crate::roles::machine::projection::{
     MachineProjectionState, RunningProjectionTask, start_projection_task,
 };
-use crate::roles::machine::registry_v2::RunningRegistryV2;
 use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
 use crate::roles::machine::service::{
     MachineFactsReadError, MachineRoleProjectionServices, MachineServiceError,

@@ -5,7 +5,7 @@ use bollard::query_parameters::InspectNetworkOptions;
 use ployz_core::dataplane::{EndpointBridgeStatus, MachineEndpointSubnet};
 use std::collections::HashMap;
 
-use crate::adapters::docker::labels::MANAGED_LABEL;
+use super::labels::MANAGED_LABEL;
 use crate::roles::machine::runner::MachineContainerRunnerError;
 
 pub(super) const ENDPOINT_NETWORK_NAME: &str = "ployz";

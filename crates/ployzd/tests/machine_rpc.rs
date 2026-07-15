@@ -1,10 +1,12 @@
-use ployz_core::deploy::ImageReference;
+use ployz_core::deploy::{ImageReference, VolumeName};
 use ployz_core::ids::{ContainerId, MachineId};
 use ployz_core::machine::runtime::ManagedContainerIdentity;
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, start_nats_service};
 use ployz_test_support::containers;
-use ployz_test_support::ids::{container_id, failure_message, machine_id, operation_id, step_id};
+use ployz_test_support::ids::{
+    container_id, failure_message, machine_id, namespace_id, operation_id, step_id,
+};
 use ployzd::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
 };
@@ -316,13 +318,18 @@ async fn nats_machine_runtime_calls_volume_remove_service() {
         .await
         .expect("flush service subscription");
     let runtime = NatsMachineContainerRuntime::new(nats.client);
-    let request = MachineVolumeRemoveRpcRequest {
+    let expected_request = MachineVolumeRemoveRpcRequest {
         operation_id: operation_id("op_123"),
         docker_volume_name: "ployz-n4-prod-v4-data".to_owned(),
     };
 
     runtime
-        .remove_volume(&machine_id, request.clone())
+        .remove_volume(
+            &machine_id,
+            operation_id("op_123"),
+            &namespace_id("prod"),
+            &VolumeName::try_new("data").expect("valid volume name"),
+        )
         .await
         .expect("machine volume remove succeeds");
 
@@ -331,7 +338,7 @@ async fn nats_machine_runtime_calls_volume_remove_service() {
             .lock()
             .expect("received volume request lock is not poisoned")
             .as_slice(),
-        [request]
+        [expected_request]
     );
 }
 

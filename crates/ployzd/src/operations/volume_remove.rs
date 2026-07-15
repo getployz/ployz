@@ -1,6 +1,5 @@
 //! Operation-owned explicit volume destruction.
 
-use crate::adapters::docker::runner::docker_volume_name;
 use crate::control::intent::namespace_intent::NamespaceIntentStore;
 use crate::control::intent::service::NatsIntentReader;
 use crate::control::operation_evidence::{
@@ -10,7 +9,6 @@ use crate::operation_api::admission::OperationControllers;
 use crate::roles::machine::client::{
     NatsMachineContainerRuntime, NatsMachineFactsReader, read_available_machine_facts_by_id,
 };
-use crate::roles::machine::protocol::MachineVolumeRemoveRpcRequest;
 use crate::tasks::TaskRegistry;
 use ployz_core::deploy::VolumeName;
 use ployz_core::ids::{NamespaceId, OperationId};
@@ -123,14 +121,12 @@ impl VolumeRemoveOperation {
             return;
         }
 
-        let framed_name = docker_volume_name(&pin.namespace_id, &pin.volume_name);
         if let Err(error) = machine_runtime
             .remove_volume(
                 &pin.machine_id,
-                MachineVolumeRemoveRpcRequest {
-                    operation_id: accepted.operation_id.clone(),
-                    docker_volume_name: framed_name,
-                },
+                accepted.operation_id.clone(),
+                &pin.namespace_id,
+                &pin.volume_name,
             )
             .await
         {

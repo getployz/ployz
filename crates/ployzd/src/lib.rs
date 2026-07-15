@@ -8,10 +8,7 @@
 
 pub mod adapters {
     pub(crate) mod atomic_file;
-    pub mod containerd_content;
     pub mod credentials;
-    pub mod docker;
-    pub mod host_dataplane;
     pub mod nats_authorization;
     pub mod nats_server;
 }
@@ -63,7 +60,6 @@ pub mod ingress_endpoint;
 /// Compatibility facade for Control-owned durable operator intent.
 pub mod intent;
 pub mod lease;
-pub(crate) mod machine_runtime;
 pub mod operation_api;
 pub mod process_support;
 pub mod role_cli;

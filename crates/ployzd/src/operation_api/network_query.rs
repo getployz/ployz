@@ -18,10 +18,10 @@ use ployz_sdk_types::{
 use sha2::{Digest, Sha256};
 
 use crate::control::intent::service::NatsIntentReader;
-use crate::machine_runtime::MachineRequestFailure;
 use crate::roles::dns::protocol::{
     DnsResolveRpcOk, DnsResolveRpcRequest, DnsStatusRpcOk, DnsStatusRpcRequest,
 };
+use crate::roles::machine::MachineRequestFailure;
 use crate::roles::machine::client::{
     DEFAULT_MACHINE_RPC_TIMEOUT, MAX_CONCURRENT_MACHINE_READS, unavailable_reason,
 };

@@ -2,8 +2,10 @@
 
 use super::protocol::MachineImagePull;
 use super::response::{failure_message, machine_domain_error, machine_success};
-use crate::adapters::containerd_content::{ContainerdContentStore, ContentIngest, ContentLease};
-use crate::adapters::docker::runner::DockerManagedContainerRunner;
+use crate::roles::machine::execution::containerd_content::{
+    ContainerdContentStore, ContentIngest, ContentLease,
+};
+use crate::roles::machine::execution::docker::runner::DockerManagedContainerRunner;
 use ployz_core::ids::MachineId;
 use ployz_core::image::{
     IMAGE_BLOB_CHUNK_MAX_BYTES, IMAGE_BLOB_PUSH_ACTION_CHUNK, IMAGE_BLOB_PUSH_ACTION_HEADER,
@@ -233,7 +235,7 @@ async fn sweep_expired_uploads(state: &AvailableImageService) {
 async fn store_committed_lease(
     state: &AvailableImageService,
     digest: OciDigest,
-    lease: crate::adapters::containerd_content::ContentLease,
+    lease: ContentLease,
 ) {
     let replaced = state.committed_leases.lock().await.insert(
         digest,

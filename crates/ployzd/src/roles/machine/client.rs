@@ -1,9 +1,10 @@
 //! Request-side NATS adapters for machine-local services.
 
-use crate::machine_runtime::MachineRuntimeUnavailableReason;
 use crate::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, PreStartHookRuntimeError,
 };
+use crate::roles::machine::MachineRuntimeUnavailableReason;
+use crate::roles::machine::execution::docker::runner::docker_volume_name;
 use crate::roles::machine::protocol::{
     MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
     MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,
@@ -25,7 +26,8 @@ use crate::roles::machine::protocol::{
 };
 use futures_util::{StreamExt, stream};
 use ployz_core::dataplane::{MachineDataplaneStatus, NetworkStatusMode};
-use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::deploy::VolumeName;
+use ployz_core::ids::{MachineId, NamespaceId, OperationId};
 use ployz_core::image::{ImageEnsureOk, ImageEnsureRequest, ImageRpcDomainError, OciDigest};
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::{MachineSubstrateVersions, MachineUpdateFailure};
@@ -594,8 +596,14 @@ impl NatsMachineContainerRuntime {
     pub async fn remove_volume(
         &self,
         machine_id: &MachineId,
-        request: MachineVolumeRemoveRpcRequest,
+        operation_id: OperationId,
+        namespace_id: &NamespaceId,
+        volume_name: &VolumeName,
     ) -> Result<(), MachineVolumeRemoveError> {
+        let request = MachineVolumeRemoveRpcRequest {
+            operation_id,
+            docker_volume_name: docker_volume_name(namespace_id, volume_name),
+        };
         call_machine::<MachineVolumeRemoveRpcOk, MachineVolumeRemoveDomainError>(
             &self.client,
             self.request_timeout,

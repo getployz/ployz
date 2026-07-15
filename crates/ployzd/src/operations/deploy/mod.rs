@@ -23,7 +23,7 @@ use ployz_core::ops::{
     OperatorHint, RetainedArtifact,
 };
 
-pub use crate::machine_runtime::MachineRuntimeUnavailableReason;
+pub use crate::roles::machine::MachineRuntimeUnavailableReason;
 pub use facts::{
     DeployFactLoadError, load_deploy_execution_facts_from_nats, validate_deploy_route_admission,
 };
