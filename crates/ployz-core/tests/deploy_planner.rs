@@ -1,14 +1,14 @@
 use ployz_core::deploy::{
     ContainerCommand, ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest,
-    ContainerMountPath, ContainerRuntimeSpec, DependencyCondition, DeployCleanupContainer,
-    DeployPhasePlan, DeployPlan, DeployPlanError, DeployPlanStep, DeployPlanningInput,
-    DeployPreparationInput, DeployRoute, DeployRouteTarget, DeployServicePlan,
+    ContainerMountPath, ContainerRuntimeSpec, DatasetName, DependencyCondition,
+    DeployCleanupContainer, DeployPhasePlan, DeployPlan, DeployPlanError, DeployPlanStep,
+    DeployPlanningInput, DeployPreparationInput, DeployRoute, DeployRouteTarget, DeployServicePlan,
     DeployServiceRequest, EnvName, EnvValue, ExistingServiceReplica, HealthcheckShellCommand,
     ImageReference, ImageSource, PreStartHook, PreStartHookStep, ReplicaCount, ReplicaSlot,
-    ServiceDependency, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeName,
-    auto_hostname_route_binding_commits, namespace_revision_id_for,
-    namespace_route_binding_removals, namespace_serving_target_removals, plan_namespace_deploy,
-    prepare_deploy, validate_deploy_route_bindings,
+    ServiceDependency, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeMaxSizeBytes,
+    VolumeName, VolumeSpec, ZfsPoolName, auto_hostname_route_binding_commits,
+    namespace_revision_id_for, namespace_route_binding_removals, namespace_serving_target_removals,
+    plan_namespace_deploy, prepare_deploy, validate_deploy_route_bindings,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::image::OciDigest;
@@ -508,6 +508,7 @@ fn pre_start_hook_step_is_absent_when_all_containers_are_reused() {
 fn volume_backed_service_pins_to_first_eligible_machine() {
     let mut input = planning_input(2, [machine_id("machine_a"), machine_id("machine_b")]);
     input.request.runtime.volume_mounts = vec![volume_mount("postgres_data", "/var/lib/postgres")];
+    declare_plain_mounted_volumes(&mut input.request);
 
     assert_eq!(
         plan_single_service(input).expect("plan succeeds"),
@@ -520,9 +521,62 @@ fn volume_backed_service_pins_to_first_eligible_machine() {
 }
 
 #[test]
+fn provisioned_volume_without_a_dataset_backed_pin_fails_before_plain_pin_commit() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    input.request.runtime.volume_mounts = vec![volume_mount("data", "/data")];
+    input.request.volumes.insert(
+        VolumeName::try_new("data").expect("volume name"),
+        VolumeSpec::Provisioned {
+            max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("non-zero size"),
+        },
+    );
+
+    assert_eq!(
+        plan_single_service(input),
+        Err(DeployPlanError::ProvisionedVolumeRequiresProvisioning {
+            service_id: service_id("svc_api"),
+            volume_name: VolumeName::try_new("data").expect("volume name"),
+        })
+    );
+}
+
+#[test]
+fn provisioned_volume_with_a_dataset_backed_pin_can_be_placed() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    input.request.runtime.volume_mounts = vec![volume_mount("data", "/data")];
+    input.request.volumes.insert(
+        VolumeName::try_new("data").expect("volume name"),
+        VolumeSpec::Provisioned {
+            max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("non-zero size"),
+        },
+    );
+    input.volume_pins = vec![provisioned_volume_pin("data", "machine_a")];
+
+    assert_eq!(
+        plan_single_service(input).expect("dataset-backed pin is placeable"),
+        deploy_plan(vec![run_step("machine_a", 1)], Vec::new())
+    );
+}
+
+#[test]
+fn normalized_service_input_without_a_volume_declaration_fails_planning() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    input.request.runtime.volume_mounts = vec![volume_mount("data", "/data")];
+
+    assert_eq!(
+        plan_single_service(input),
+        Err(DeployPlanError::MissingVolumeDeclaration {
+            service_id: service_id("svc_api"),
+            volume_name: VolumeName::try_new("data").expect("volume name"),
+        })
+    );
+}
+
+#[test]
 fn volume_backed_service_uses_existing_pin() {
     let mut input = planning_input(2, [machine_id("machine_a"), machine_id("machine_b")]);
     input.request.runtime.volume_mounts = vec![volume_mount("postgres_data", "/var/lib/postgres")];
+    declare_plain_mounted_volumes(&mut input.request);
     input.volume_pins = vec![volume_pin("postgres_data", "machine_b")];
 
     assert_eq!(
@@ -538,6 +592,7 @@ fn volume_backed_service_uses_existing_pin() {
 fn volume_backed_service_fails_when_existing_pin_is_not_eligible() {
     let mut input = planning_input(1, [machine_id("machine_a")]);
     input.request.runtime.volume_mounts = vec![volume_mount("postgres_data", "/var/lib/postgres")];
+    declare_plain_mounted_volumes(&mut input.request);
     input.volume_pins = vec![volume_pin("postgres_data", "machine_b")];
 
     assert_eq!(
@@ -550,6 +605,7 @@ fn volume_backed_service_fails_when_existing_pin_is_not_eligible() {
 fn volume_backed_service_reuses_only_replicas_on_pinned_machine() {
     let mut input = planning_input(2, [machine_id("machine_a"), machine_id("machine_b")]);
     input.request.runtime.volume_mounts = vec![volume_mount("postgres_data", "/var/lib/postgres")];
+    declare_plain_mounted_volumes(&mut input.request);
     input.volume_pins = vec![volume_pin("postgres_data", "machine_b")];
     input.existing_replicas = vec![
         existing_replica("machine_a", "ctr_off_pin"),
@@ -576,12 +632,14 @@ fn volume_backed_service_reuses_only_replicas_on_pinned_machine() {
 fn namespace_volume_pin_commits_are_visible_to_later_service_plans() {
     let mut first = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
     first.request.runtime.volume_mounts = vec![volume_mount("data", "/data")];
+    declare_plain_mounted_volumes(&mut first.request);
     let mut second = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
     second.request.service_id = service_id("svc_worker");
     second.request.runtime.volume_mounts = vec![
         volume_mount("data", "/data"),
         volume_mount("uploads", "/uploads"),
     ];
+    declare_plain_mounted_volumes(&mut second.request);
     second.volume_pins = vec![volume_pin("uploads", "machine_b")];
 
     assert_eq!(
@@ -605,6 +663,7 @@ fn service_with_volumes_on_different_pinned_machines_fails_planning() {
         volume_mount("postgres_data", "/var/lib/postgres"),
         volume_mount("uploads", "/srv/uploads"),
     ];
+    declare_plain_mounted_volumes(&mut input.request);
     input.volume_pins = vec![
         volume_pin("postgres_data", "machine_a"),
         volume_pin("uploads", "machine_b"),
@@ -1350,6 +1409,7 @@ fn deploy_request(replicas: u16) -> DeployServiceRequest {
         image_source: ployz_core::deploy::ImageSource::Registry,
         replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
         runtime: ContainerRuntimeSpec::image_defaults(),
+        volumes: BTreeMap::new(),
         pre_start: None,
         depends_on: Vec::new(),
         routes: Vec::new(),
@@ -1408,12 +1468,39 @@ fn volume_mount(volume_name: &str, target: &str) -> ServiceVolumeMount {
     }
 }
 
+fn declare_plain_mounted_volumes(request: &mut DeployServiceRequest) {
+    request.volumes = request
+        .runtime
+        .volume_mounts
+        .iter()
+        .map(|mount| (mount.volume_name.clone(), VolumeSpec::Plain))
+        .collect();
+}
+
 fn volume_pin(volume_name: &str, machine_id: &str) -> VolumePinState {
     VolumePinState {
         namespace_id: namespace_id("default"),
         volume_name: VolumeName::try_new(volume_name).expect("valid volume name"),
         machine_id: self::machine_id(machine_id),
         kind: ployz_core::intent::VolumeKind::Plain,
+    }
+}
+
+fn provisioned_volume_pin(volume_name: &str, machine_id: &str) -> VolumePinState {
+    let volume_name = VolumeName::try_new(volume_name).expect("valid volume name");
+    VolumePinState {
+        namespace_id: namespace_id("default"),
+        volume_name: volume_name.clone(),
+        machine_id: self::machine_id(machine_id),
+        kind: ployz_core::intent::VolumeKind::Provisioned {
+            dataset: DatasetName::for_volume(
+                &ZfsPoolName::try_new("tank").expect("pool name"),
+                &namespace_id("default"),
+                &volume_name,
+            )
+            .expect("dataset name"),
+            max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("non-zero size"),
+        },
     }
 }
 

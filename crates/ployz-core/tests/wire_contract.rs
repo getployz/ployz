@@ -4,7 +4,7 @@ use ployz_core::deploy::{
     ContainerMountPath, ContainerRuntimeSpec, DatasetName, DatasetNameError, DependencyCondition,
     DeployOrigin, DeployOriginError, DeployRequest, DeployServiceSpec, ImageReference, ImageSource,
     ReplicaCount, ServiceDependency, ServiceVolumeMount, VolumeMaxSizeBytes, VolumeName,
-    VolumeSpec,
+    VolumeSpec, ZfsPoolName, ZfsPoolNameError,
 };
 use ployz_core::intent::{VolumeKind, VolumePinState};
 use ployz_core::machine::MachineUsabilityReason;
@@ -502,6 +502,22 @@ fn deploy_request_synthesizes_plain_declarations_for_legacy_inputs() {
 }
 
 #[test]
+fn normalized_service_requests_retain_mounted_volume_declarations() {
+    let request = request_with_volume_mount(BTreeMap::from([(
+        volume_name("data"),
+        VolumeSpec::Provisioned {
+            max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("non-zero size"),
+        },
+    )]));
+
+    let services = request.service_requests();
+    let [service] = services.as_slice() else {
+        panic!("request has one service");
+    };
+    assert_eq!(service.volumes, request.volumes);
+}
+
+#[test]
 fn provisioned_volume_contract_round_trips_without_nullable_state() {
     let spec = VolumeSpec::Provisioned {
         max_size_bytes: VolumeMaxSizeBytes::try_new(10 * 1024 * 1024).expect("nonzero volume size"),
@@ -534,7 +550,7 @@ fn provisioned_volume_pin_round_trips_with_dataset_and_size() {
         machine_id: machine_id("machine_a"),
         kind: VolumeKind::Provisioned {
             dataset: DatasetName::for_volume(
-                "tank",
+                &ZfsPoolName::try_new("tank").expect("pool name"),
                 &namespace_id("default"),
                 &volume_name("data"),
             )
@@ -554,7 +570,7 @@ fn provisioned_volume_pin_round_trips_with_dataset_and_size() {
 #[test]
 fn dataset_name_rejects_a_full_name_over_the_zfs_budget() {
     let error = DatasetName::for_volume(
-        &"p".repeat(220),
+        &ZfsPoolName::try_new("p".repeat(220)).expect("pool name"),
         &namespace_id("default"),
         &volume_name("postgres_data"),
     )
@@ -563,6 +579,14 @@ fn dataset_name_rejects_a_full_name_over_the_zfs_budget() {
     assert!(matches!(
         error,
         DatasetNameError::NameBudgetExceeded { maximum: 255, .. }
+    ));
+}
+
+#[test]
+fn zfs_pool_name_rejects_hierarchical_physical_roots() {
+    assert!(matches!(
+        ZfsPoolName::try_new("tank/foreign"),
+        Err(ZfsPoolNameError::Hierarchical { .. })
     ));
 }
 

@@ -326,7 +326,11 @@ fn parse_ployz_volume_extension(
         let text = match value {
             Value::String(value) => value,
             Value::Number(value) => value.to_string(),
-            _ => {
+            Value::Null
+            | Value::Bool(_)
+            | Value::Sequence(_)
+            | Value::Mapping(_)
+            | Value::Tagged(_) => {
                 findings.push(ComposeFinding::invalid(
                     path.field(key),
                     "volume max size must be a byte quantity such as 10G",

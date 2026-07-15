@@ -151,6 +151,16 @@ impl DeployRequest {
                 image_source: service.image_source.clone(),
                 replicas: service.replicas,
                 runtime: service.runtime.clone(),
+                volumes: service
+                    .runtime
+                    .volume_mounts
+                    .iter()
+                    .filter_map(|mount| {
+                        self.volumes
+                            .get(&mount.volume_name)
+                            .map(|spec| (mount.volume_name.clone(), spec.clone()))
+                    })
+                    .collect(),
                 pre_start: service.pre_start.clone(),
                 depends_on: service.depends_on.clone(),
                 routes: service.routes.clone(),
@@ -248,6 +258,8 @@ pub struct DeployServiceRequest {
     pub image_source: ImageSource,
     pub replicas: ReplicaCount,
     pub runtime: ContainerRuntimeSpec,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub volumes: BTreeMap<VolumeName, VolumeSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pre_start: Option<PreStartHook>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

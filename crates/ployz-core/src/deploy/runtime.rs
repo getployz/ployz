@@ -156,6 +156,44 @@ pub enum VolumeNameError {
 
 const ZFS_DATASET_NAME_MAX_BYTES: usize = 255;
 
+/// One physical ZFS pool component; it cannot name an arbitrary dataset root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ZfsPoolName(String);
+
+impl ZfsPoolName {
+    pub fn try_new(value: impl Into<String>) -> Result<Self, ZfsPoolNameError> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err(ZfsPoolNameError::Empty);
+        }
+        if value.contains('/') {
+            return Err(ZfsPoolNameError::Hierarchical { value });
+        }
+        if !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':'))
+        {
+            return Err(ZfsPoolNameError::InvalidCharacter { value });
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ZfsPoolNameError {
+    #[error("ZFS pool name is empty")]
+    Empty,
+    #[error("ZFS pool name must be one path component: {value}")]
+    Hierarchical { value: String },
+    #[error("ZFS pool name contains an invalid character: {value}")]
+    InvalidCharacter { value: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"DatasetName\">"))]
@@ -185,13 +223,15 @@ impl DatasetName {
         Ok(Self(value))
     }
 
+    /// Constructs the only dataset namespace used for Provisioned Volumes.
     pub fn for_volume(
-        pool: &str,
+        pool: &ZfsPoolName,
         namespace_id: &NamespaceId,
         volume_name: &VolumeName,
     ) -> Result<Self, DatasetNameError> {
         Self::try_new(format!(
-            "{pool}/ployz/volumes/{}",
+            "{}/ployz/volumes/{}",
+            pool.as_str(),
             volume_name.stable_storage_name(namespace_id)
         ))
     }

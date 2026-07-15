@@ -181,6 +181,14 @@ pub enum DeployPlanError {
         service_id: ServiceId,
         machines: Vec<MachineId>,
     },
+    MissingVolumeDeclaration {
+        service_id: ServiceId,
+        volume_name: VolumeName,
+    },
+    ProvisionedVolumeRequiresProvisioning {
+        service_id: ServiceId,
+        volume_name: VolumeName,
+    },
 }
 
 pub fn prepare_deploy(
@@ -726,6 +734,24 @@ fn volume_placement(
         });
     }
 
+    for mount in &request.runtime.volume_mounts {
+        let Some(spec) = request.volumes.get(&mount.volume_name) else {
+            return Err(DeployPlanError::MissingVolumeDeclaration {
+                service_id: request.service_id.clone(),
+                volume_name: mount.volume_name.clone(),
+            });
+        };
+        let already_pinned = volume_pins.iter().any(|pin| {
+            pin.namespace_id == request.namespace_id && pin.volume_name == mount.volume_name
+        });
+        if !already_pinned && matches!(spec, VolumeSpec::Provisioned { .. }) {
+            return Err(DeployPlanError::ProvisionedVolumeRequiresProvisioning {
+                service_id: request.service_id.clone(),
+                volume_name: mount.volume_name.clone(),
+            });
+        }
+    }
+
     let matching_pins = request
         .runtime
         .volume_mounts
@@ -749,7 +775,7 @@ fn volume_placement(
             }
             Ok(VolumePlacement {
                 machine_id: Some(machine_id.clone()),
-                commits: missing_volume_pin_commits(request, machine_id, volume_pins),
+                commits: missing_volume_pin_commits(request, machine_id, volume_pins)?,
             })
         }
         [] => {
@@ -758,7 +784,7 @@ fn volume_placement(
             };
             Ok(VolumePlacement {
                 machine_id: Some(machine_id.clone()),
-                commits: missing_volume_pin_commits(request, machine_id, volume_pins),
+                commits: missing_volume_pin_commits(request, machine_id, volume_pins)?,
             })
         }
         _ => Err(DeployPlanError::ConflictingVolumePins {
@@ -772,7 +798,7 @@ fn missing_volume_pin_commits(
     request: &DeployServiceRequest,
     machine_id: &MachineId,
     volume_pins: &[VolumePinState],
-) -> Vec<VolumePinState> {
+) -> Result<Vec<VolumePinState>, DeployPlanError> {
     let mut volume_names = request
         .runtime
         .volume_mounts
@@ -789,11 +815,27 @@ fn missing_volume_pin_commits(
                 .iter()
                 .any(|pin| pin.namespace_id == request.namespace_id && pin.volume_name == *mount)
         })
-        .map(|volume_name| VolumePinState {
-            namespace_id: request.namespace_id.clone(),
-            volume_name,
-            machine_id: machine_id.clone(),
-            kind: crate::intent::VolumeKind::Plain,
+        .map(|volume_name| {
+            let Some(spec) = request.volumes.get(&volume_name) else {
+                return Err(DeployPlanError::MissingVolumeDeclaration {
+                    service_id: request.service_id.clone(),
+                    volume_name,
+                });
+            };
+            match spec {
+                VolumeSpec::Plain => Ok(VolumePinState {
+                    namespace_id: request.namespace_id.clone(),
+                    volume_name,
+                    machine_id: machine_id.clone(),
+                    kind: crate::intent::VolumeKind::Plain,
+                }),
+                VolumeSpec::Provisioned { .. } => {
+                    Err(DeployPlanError::ProvisionedVolumeRequiresProvisioning {
+                        service_id: request.service_id.clone(),
+                        volume_name,
+                    })
+                }
+            }
         })
         .collect()
 }

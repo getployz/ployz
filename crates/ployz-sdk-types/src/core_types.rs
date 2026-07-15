@@ -17,7 +17,7 @@ pub use ployz_core::deploy::{
     RegistryCredential, RegistryCredentialError, RegistryCredentialSecret,
     RegistryCredentialUsername, ReplicaCount, ReplicaCountError, ReplicaSlot, ServiceDependency,
     ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeMaxSizeBytes,
-    VolumeMaxSizeError, VolumeName, VolumeNameError, VolumeSpec,
+    VolumeMaxSizeError, VolumeName, VolumeNameError, VolumeSpec, ZfsPoolName, ZfsPoolNameError,
 };
 pub use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
