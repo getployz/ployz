@@ -10,10 +10,11 @@ use ployz_core::ops::{
     ReplayedOperationEvent,
 };
 use ployz_core::roles::GatewayRole;
-use ployz_sdk_types::{OpsListRequest, OpsListResult, OpsStatusRequest};
+use ployz_sdk_types::{AcceptedOperation, OpsListRequest, OpsListResult, OpsStatusRequest};
 
+use crate::certificate::presentation::provision_failure_detail;
 use crate::commands::PloyzctlCliError;
-use crate::deploy::failure::{DeployFailureView, certificate_provision_failure_detail};
+use crate::deploy::failure::DeployFailureView;
 
 mod network_repair;
 
@@ -233,6 +234,27 @@ impl StatusOutput {
 pub struct WatchOutput {
     pub events: Vec<ReplayedOperationEvent>,
     pub output: OpsWatchOutput,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedOperationOutput {
+    pub accepted: AcceptedOperation,
+}
+
+impl AcceptedOperationOutput {
+    #[must_use]
+    pub const fn from_accepted(accepted: AcceptedOperation) -> Self {
+        Self { accepted }
+    }
+
+    #[must_use]
+    pub fn render(&self) -> String {
+        format!(
+            "operation {}\nwatch ployz ops watch {}\n",
+            self.accepted.operation_id.as_str(),
+            self.accepted.operation_id.as_str()
+        )
+    }
 }
 
 impl WatchOutput {
@@ -564,7 +586,7 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
             ..
         } => Some(format!(
             "failure {}",
-            certificate_provision_failure_detail(failure.failure(), None)
+            provision_failure_detail(failure.failure(), None)
         )),
         OperationStatus::IngressRefresh {
             state: ployz_sdk_types::IngressRefreshOperationState::Failed { failure },

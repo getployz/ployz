@@ -4,11 +4,11 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use ployz::bootstrap_command::BootstrapRelease;
 use ployz::commands::PloyzctlCommand;
-use ployz::commands::machine::{MachineAddRemoteCommand, MachineIdentity, MachineInitCommand};
-use ployz::runtime::{PloyzctlRuntimeConfig, execute_command};
-use ployz::ssh::SshTarget;
+use ployz::dispatcher::{PloyzctlRuntimeConfig, execute_command};
+use ployz::machine::bootstrap::BootstrapRelease;
+use ployz::machine::command::{MachineAddRemoteCommand, MachineIdentity, MachineInitCommand};
+use ployz::machine::ssh::SshTarget;
 use ployz_core::install::{MachineBootstrapUrl, MachineJoinClusterName};
 use ployz_core::machine::roles::InstallRolePolicy;
 use ployz_core::nats_config::NatsUserSeed;

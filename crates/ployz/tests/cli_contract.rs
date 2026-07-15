@@ -2,15 +2,15 @@ use ployz_test_support::fs::make_executable;
 use std::fs;
 use std::process::{Command, Output};
 
-use ployz::commands::init::{
-    FirstMachineInitOutput, InstallRolePolicy, plan_first_machine_process_set,
-};
-use ployz::commands::machine::MachineName;
-use ployz::commands::ops::{ListOutput, OpsWatchOutput, StatusOutput, WatchOutput};
-use ployz::commands::service::{ServiceInspectOutput, ServiceListOutput};
 use ployz::commands::{
     PloyzctlCliError, PloyzctlCommand, TelemetryCommand, parse_command, parse_invocation,
 };
+use ployz::machine::command::MachineName;
+use ployz::machine::founder::{
+    FirstMachineInitOutput, InstallRolePolicy, plan_first_machine_process_set,
+};
+use ployz::operation::command::{ListOutput, OpsWatchOutput, StatusOutput, WatchOutput};
+use ployz::service::command::{ServiceInspectOutput, ServiceListOutput};
 use ployz_core::cert::ManagedLeaseName;
 use ployz_core::deploy::{
     DeployOrigin, DeployRequest, DeployServiceSpec, ImageReference, ReplicaCount,

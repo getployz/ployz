@@ -8,11 +8,11 @@ use crate::deploy::command::{DeployRollbackCommand, DeployRollbackSelection};
 use crate::execution_support::generate_client_deploy_rollback_id;
 
 use super::{follow as deploy_follow, history as deploy_history};
+use crate::dispatcher::PloyzctlRuntimeConfig;
 use crate::execution_support::{
     PloyzctlExecutionError, PloyzctlExecutionOutput, nats_connect_config,
     operation_api_client_with_connect, with_cluster_context_from_disk,
 };
-use crate::runtime::PloyzctlRuntimeConfig;
 
 pub(crate) async fn execute(
     command: DeployRollbackCommand,

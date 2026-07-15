@@ -1,16 +1,10 @@
-//! Runtime execution for parsed CLI commands.
+//! Thin dispatch for parsed CLI commands.
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::commands::PloyzctlCommand;
-use crate::confirmation::{confirm_namespace_remove, confirm_volume_remove};
-use crate::execution_support::{
-    api_error, current_unix_seconds, operation_api_client, render_api_call,
-};
 use crate::machine::operator_context::ClusterContext;
-use crate::machine::runtime::remote::{execute_core_promote_remote, execute_core_replace_remote};
-use tokio::time::sleep as async_sleep;
 
 pub use crate::execution_support::{
     CommandExit, DEFAULT_NATS_CONNECT_TIMEOUT, DEFAULT_OPS_WATCH_POLL_INTERVAL,
@@ -173,8 +167,12 @@ pub async fn execute_command(
             Err(PloyzctlExecutionError::CloudUnconfigured { command: "login" })
         }
         PloyzctlCommand::Telemetry(_) => Err(PloyzctlExecutionError::LocalCommand),
-        PloyzctlCommand::CorePromote(command) => execute_core_promote_remote(command, config).await,
-        PloyzctlCommand::CoreReplace(command) => execute_core_replace_remote(command, config).await,
+        PloyzctlCommand::CorePromote(command) => {
+            crate::core::runtime::promote(command, config).await
+        }
+        PloyzctlCommand::CoreReplace(command) => {
+            crate::core::runtime::replace(command, config).await
+        }
         PloyzctlCommand::ComposeCheck(command) => {
             Ok(crate::deploy::runtime::compose::check(command))
         }
@@ -197,12 +195,7 @@ pub async fn execute_command(
             Ok(crate::machine::runtime::render_join_template(command))
         }
         PloyzctlCommand::IngressConfigure(command) => {
-            let api = operation_api_client(config).await?;
-            let accepted = api
-                .ingress_configure(&command.into_request())
-                .await
-                .map_err(api_error)?;
-            crate::operation::runtime::watch_accepted(&api, accepted.operation_id, config).await
+            crate::ingress::runtime::configure(command, config).await
         }
         PloyzctlCommand::MachineInit(command) => {
             crate::machine::runtime::remote::execute_machine_init(command, config).await
@@ -233,92 +226,22 @@ pub async fn execute_command(
             crate::network::runtime::repair(command, config).await
         }
         PloyzctlCommand::ServiceList(command) => {
-            render_api_call(
-                config,
-                async |api| api.service_list(&command.into_request()).await,
-                |result| crate::commands::service::ServiceListOutput::from_result(result).render(),
-            )
-            .await
+            crate::service::runtime::list(command, config).await
         }
-        PloyzctlCommand::VolumeList(command) => {
-            render_api_call(
-                config,
-                async |api| api.volume_list(&command.into_request()).await,
-                |result| crate::commands::volume::VolumeListOutput::from_result(result).render(),
-            )
-            .await
-        }
+        PloyzctlCommand::VolumeList(command) => crate::volume::runtime::list(command, config).await,
         PloyzctlCommand::ServiceInspect(command) => {
-            render_api_call(
-                config,
-                async |api| api.service_inspect(&command.into_request()).await,
-                |service| crate::commands::service::ServiceInspectOutput::new(service).render(),
-            )
-            .await
+            crate::service::runtime::inspect(command, config).await
         }
         PloyzctlCommand::ServiceRestart(command) => {
-            let detach = command.detach;
-            let api = operation_api_client(config).await?;
-            let accepted = api
-                .service_restart(&command.into_request())
-                .await
-                .map_err(api_error)?;
-            if detach {
-                return Ok(PloyzctlExecutionOutput::stdout(
-                    crate::machine::command::AcceptedOperationOutput::from_accepted(accepted)
-                        .render(),
-                ));
-            }
-            crate::operation::runtime::watch_accepted(&api, accepted.operation_id, config).await
+            crate::service::runtime::restart(command, config).await
         }
         PloyzctlCommand::NamespaceRemove(command) => {
-            let detach = command.detach;
-            if !command.force {
-                confirm_namespace_remove(&command.namespace_id)?;
-            }
-            let api = operation_api_client(config).await?;
-            let accepted = api
-                .namespace_remove(&command.into_request())
-                .await
-                .map_err(api_error)?;
-            if detach {
-                return Ok(PloyzctlExecutionOutput::stdout(
-                    crate::machine::command::AcceptedOperationOutput::from_accepted(accepted)
-                        .render(),
-                ));
-            }
-            crate::operation::runtime::watch_accepted(&api, accepted.operation_id, config).await
+            crate::namespace::runtime::remove(command, config).await
         }
         PloyzctlCommand::VolumeRemove(command) => {
-            let detach = command.detach;
-            if !command.force {
-                confirm_volume_remove(&command.namespace_id, &command.volume_name)?;
-            }
-            let api = operation_api_client(config).await?;
-            let accepted = api
-                .volume_remove(&command.into_request())
-                .await
-                .map_err(api_error)?;
-            if detach {
-                return Ok(PloyzctlExecutionOutput::stdout(
-                    crate::machine::command::AcceptedOperationOutput::from_accepted(accepted)
-                        .render(),
-                ));
-            }
-            crate::operation::runtime::watch_accepted(&api, accepted.operation_id, config).await
+            crate::volume::runtime::remove(command, config).await
         }
-        PloyzctlCommand::LogsTail(command) => {
-            if command.follow {
-                follow_logs(command, config).await
-            } else {
-                render_api_call(
-                    config,
-                    async |api| api.logs_tail(&command.into_request()).await,
-                    |result| crate::commands::logs::LogsTailOutput::new(result).render(),
-                )
-                .await
-            }
-        }
+        PloyzctlCommand::LogsTail(command) => crate::logs::runtime::tail(command, config).await,
         PloyzctlCommand::OpsStatus(command) => {
             crate::operation::runtime::status(command, config).await
         }
@@ -326,25 +249,5 @@ pub async fn execute_command(
         PloyzctlCommand::OpsWatch(command) => {
             crate::operation::runtime::watch(command, config).await
         }
-    }
-}
-
-async fn follow_logs(
-    command: crate::commands::logs::LogsTailCommand,
-    config: &PloyzctlRuntimeConfig,
-) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
-    let api = operation_api_client(config).await?;
-    let started_at = Instant::now();
-    let mut output = String::new();
-    let mut request = command.clone().into_request();
-    loop {
-        let next_since = current_unix_seconds();
-        let result = api.logs_tail(&request).await.map_err(api_error)?;
-        output.push_str(&crate::commands::logs::LogsTailOutput::new(result).render());
-        if started_at.elapsed() >= config.ops_watch_timeout() {
-            return Ok(PloyzctlExecutionOutput::stdout(output));
-        }
-        request = command.request_after(next_since);
-        async_sleep(config.ops_watch_poll_interval()).await;
     }
 }

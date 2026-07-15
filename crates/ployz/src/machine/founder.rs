@@ -6,8 +6,8 @@ pub use ployz_core::roles::{GatewayRole, InstallRolePolicy, plan_first_machine_p
 use std::fs;
 use std::io::Read;
 
-use crate::commands::role_policy::RolePolicyCli;
 use crate::commands::{PloyzctlCliError, cli_error, invalid_value};
+use crate::role_policy::command::RolePolicyCli;
 use ployz_sdk_types::InitFirstMachineActivateRequest;
 
 pub mod join_template;

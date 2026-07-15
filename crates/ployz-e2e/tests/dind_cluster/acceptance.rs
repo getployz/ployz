@@ -1,7 +1,7 @@
 use super::*;
 use ployz::commands::parse_command;
-use ployz::deploy_history::{ClusterFingerprint, DeployHistory, DeployHistoryEntry};
-use ployz::runtime::{PloyzctlRuntimeConfig, execute_command};
+use ployz::deploy::history_store::{ClusterFingerprint, DeployHistory, DeployHistoryEntry};
+use ployz::dispatcher::{PloyzctlRuntimeConfig, execute_command};
 use ployz_core::operation::{DeployFailureClass, DeployRunningStage, HealthCheckFailure};
 use support::dind::formation::ProductCliHarness;
 

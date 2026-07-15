@@ -12,13 +12,13 @@ use crate::deploy::render::{
 };
 
 use super::history as deploy_history;
+use crate::dispatcher::PloyzctlRuntimeConfig;
 use crate::execution_support::{
     CommandExit, PloyzctlExecutionError, PloyzctlExecutionOutput, api_error, nats_connect_config,
     operation_api_client_with_connect, watch_operation_until_terminal_with,
     with_cluster_context_from_disk,
 };
 use crate::operation::runtime::replay_request;
-use crate::runtime::PloyzctlRuntimeConfig;
 
 pub(crate) async fn execute_deploy(
     mut command: DeployCommand,

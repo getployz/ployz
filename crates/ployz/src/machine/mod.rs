@@ -9,5 +9,5 @@ pub mod command;
 pub mod founder;
 pub mod local_release;
 pub mod operator_context;
-pub(crate) mod runtime;
+pub mod runtime;
 pub mod ssh;

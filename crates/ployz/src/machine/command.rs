@@ -23,16 +23,16 @@ pub use ployz_sdk_types::{
     BootstrapCommandError, MachineBootstrapUrl, MachineJoinRuntimeNatsUrl, MachineJoinToken,
 };
 
-use crate::commands::ingress::{AutomaticHostnamesCli, DnsTargetCli};
-use crate::commands::role_policy::RolePolicyCli;
 use crate::commands::{PloyzctlCliError, invalid_value};
 use crate::execution_support::generate_client_machine_update_id;
+use crate::ingress::command::{AutomaticHostnamesCli, DnsTargetCli};
 use crate::machine::bootstrap::{
     BootstrapInstaller, BootstrapRelease, DEFAULT_BOOTSTRAP_URL, DEFAULT_CLUSTER_NAME,
     DEFAULT_RELEASE_CHANNEL, JoinBootstrapCommand,
 };
 use crate::machine::local_release::LocalReleaseBundle;
 use crate::machine::ssh::SshTarget;
+use crate::role_policy::command::RolePolicyCli;
 
 /// Quick-start machine identity: the machine ID and machine name are the same
 /// value (R5), derived from the remote hostname unless `--name` overrides

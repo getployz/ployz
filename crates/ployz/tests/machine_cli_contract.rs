@@ -1,16 +1,16 @@
 use std::fs;
 
-use ployz::bootstrap_command::{
+use ployz::commands::{PloyzctlCommand, parse_command};
+use ployz::machine::bootstrap::{
     BootstrapInstaller, BootstrapRelease, CloudBootstrapCommand, CloudBootstrapMode,
     DEFAULT_BOOTSTRAP_URL, DEFAULT_RELEASE_CHANNEL, FounderBootstrapCommand,
 };
-use ployz::commands::machine::{
+use ployz::machine::command::{
     MachineAddInstaller, MachineAddOutput, MachineBootstrapUrl, MachineIdentity,
     MachineIdentityError, MachineInspectOutput, MachineJoinRuntimeNatsUrl, MachineJoinToken,
     MachineListOutput, MachineName, derive_machine_identity,
 };
-use ployz::commands::{PloyzctlCommand, parse_command};
-use ployz::ssh::{SshClient, SshCommandError, SshPhase, SshTarget, SshTargetParseError};
+use ployz::machine::ssh::{SshClient, SshCommandError, SshPhase, SshTarget, SshTargetParseError};
 use ployz_core::ids::MachineId;
 use ployz_core::install::{
     AbsoluteInstallPath, HostPortAssurance, InstallArtifactSource, InstallArtifactSpec,

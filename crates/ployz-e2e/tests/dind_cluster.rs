@@ -25,8 +25,8 @@ mod rollback;
 mod support;
 
 use futures_util::StreamExt;
-use ployz::compose::{ComposeInput, UnsupportedFieldMode, parse_deploy_file};
-use ployz::image_push::{prepare_deploy_images, push_local_image};
+use ployz::deploy::compose::{ComposeInput, UnsupportedFieldMode, parse_deploy_file};
+use ployz::deploy::image_push::{prepare_deploy_images, push_local_image};
 use ployz_core::deploy::{
     ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerMountPath,
     ContainerResourceLimits, ContainerRestartPolicy, ContainerRuntimeSpec, DependencyCondition,

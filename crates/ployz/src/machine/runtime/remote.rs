@@ -7,7 +7,8 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::commands::core::{CorePromoteCommand, CoreReplaceCommand};
+use crate::core::command::{CorePromoteCommand, CoreReplaceCommand};
+use crate::dispatcher::PloyzctlRuntimeConfig;
 use crate::execution_support::generate_client_machine_add_ids;
 use crate::execution_support::{
     CommandExit, PloyzctlExecutionError, PloyzctlExecutionOutput, api_error, operation_api_client,
@@ -31,7 +32,6 @@ use crate::machine::operator_context::{
 use crate::machine::ssh::{
     DEFAULT_SSH_COMMAND_TIMEOUT, SshClient, SshCommandError, SshPhase, SshTarget,
 };
-use crate::runtime::PloyzctlRuntimeConfig;
 use crate::shell::shell_quote;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::MachineJoinRuntimeNatsUrl;

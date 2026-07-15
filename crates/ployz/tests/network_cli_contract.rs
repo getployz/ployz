@@ -1,8 +1,8 @@
 use std::net::Ipv4Addr;
 
-use ployz::commands::network::{NetworkResolveOutput, NetworkStatusOutput};
-use ployz::commands::ops::{OpsWatchOutput, StatusOutput, WatchOutput};
 use ployz::commands::{PloyzctlCommand, parse_command};
+use ployz::network::command::{NetworkResolveOutput, NetworkStatusOutput};
+use ployz::operation::command::{OpsWatchOutput, StatusOutput, WatchOutput};
 use ployz_core::dataplane::{DataplaneProjection, MachineEndpointSubnet};
 use ployz_core::ids::{NamespaceId, ServiceId};
 use ployz_core::internal_dns::InternalServiceName;

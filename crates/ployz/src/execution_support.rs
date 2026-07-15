@@ -6,12 +6,12 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::api_client::{OperationApiClient, OperationApiClientError};
+use crate::dispatcher::PloyzctlRuntimeConfig;
 #[cfg(test)]
 use crate::machine::operator_context::ClusterContext;
 use crate::machine::operator_context::{ClusterContextError, load_cluster_context};
 use crate::machine::runtime::host_runner::LocalHostRunnerInstallError;
 use crate::machine::runtime::remote::RemoteMachineExecutionError;
-use crate::runtime::PloyzctlRuntimeConfig;
 use ployz_core::ids::OperationId;
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::ops::{

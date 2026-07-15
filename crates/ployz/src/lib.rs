@@ -3,21 +3,20 @@
 //! Client-facing helpers for `ployz`.
 
 pub mod api_client;
-pub mod bootstrap_command;
+pub mod certificate;
 pub mod commands;
-pub mod compose;
-pub mod config;
 mod confirmation;
+pub mod core;
 pub mod deploy;
-pub mod deploy_history;
+pub mod dispatcher;
 mod execution_support;
-pub mod host_runner_install;
-pub mod image_push;
-pub mod local_release;
+pub mod ingress;
+pub mod logs;
 pub mod machine;
+pub mod namespace;
 pub mod network;
 pub mod operation;
-pub mod remote_machine_runtime;
-pub mod runtime;
+pub mod role_policy;
+pub mod service;
 mod shell;
-pub mod ssh;
+pub mod volume;

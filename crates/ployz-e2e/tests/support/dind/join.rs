@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use ployz::commands::machine::MachineAddOutput;
+use ployz::machine::command::MachineAddOutput;
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_e2e::dind::{
     ARTIFACTS_MOUNT_PATH, DindMachine, ExecOutcome, shell_quote, write_file_in_container,

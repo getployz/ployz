@@ -4,6 +4,7 @@ use std::fs;
 use std::time::Instant;
 
 use crate::api_client::{NatsServiceRequestFailure, OperationApiClientError};
+use crate::dispatcher::PloyzctlRuntimeConfig;
 use crate::execution_support::{
     CommandExit, PloyzctlExecutionError, PloyzctlExecutionOutput, api_error, nats_connect_config,
     operation_api_client, operation_api_client_with_connect, render_api_call,
@@ -19,15 +20,14 @@ use crate::machine::founder::{
     FirstMachineActivateCommand, FirstMachineInitCommand, FirstMachineInitMode,
 };
 use crate::operation::runtime::watch_accepted;
-use crate::runtime::PloyzctlRuntimeConfig;
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::ops::MachineAddOperationStateName;
 use ployz_nats::connect::NatsConnectError;
 use ployz_sdk_types::{InitFirstMachineActivateError, MachineJoinRedeemError};
 use tokio::time::sleep as async_sleep;
 
-pub(crate) mod host_runner;
-pub(crate) mod remote;
+pub mod host_runner;
+pub mod remote;
 
 pub(super) async fn activate_first_machine(
     command: &FirstMachineActivateCommand,

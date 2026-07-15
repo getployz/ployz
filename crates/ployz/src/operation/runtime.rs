@@ -1,6 +1,7 @@
 //! Operation query, replay, and progress execution.
 
 use crate::api_client::OperationApiClient;
+use crate::dispatcher::PloyzctlRuntimeConfig;
 use crate::execution_support::{
     PloyzctlExecutionError, PloyzctlExecutionOutput, api_error, operation_api_client,
     watch_operation_until_terminal,
@@ -9,7 +10,6 @@ use crate::operation::command::{
     ListOutput, OpsListCommand, OpsStatusCommand, OpsWatchCommand, OpsWatchOutput, StatusOutput,
     WatchOutput,
 };
-use crate::runtime::PloyzctlRuntimeConfig;
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{
     EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEventReplayCursor,

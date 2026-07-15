@@ -1,7 +1,7 @@
 use super::*;
 use ployz::commands::parse_command;
-use ployz::deploy_history::{ClusterFingerprint, DeployHistory};
-use ployz::runtime::{PloyzctlRuntimeConfig, execute_command};
+use ployz::deploy::history_store::{ClusterFingerprint, DeployHistory};
+use ployz::dispatcher::{PloyzctlRuntimeConfig, execute_command};
 
 /// Rollback replays successful local history as a fresh deploy with the exact
 /// pinned image identity, and a missing pinned registry artifact fails without

@@ -5,11 +5,11 @@ use crate::network::command::{
 
 use std::time::Duration;
 
+use crate::dispatcher::PloyzctlRuntimeConfig;
 use crate::execution_support::{
     PloyzctlExecutionError, PloyzctlExecutionOutput, api_error, operation_api_client,
 };
 use crate::operation::runtime::watch_accepted;
-use crate::runtime::PloyzctlRuntimeConfig;
 
 /// Client request budget covering the daemon's 30s per-RPC machine gather for a
 /// network query. `--probe` adds per-peer path-MTU probing, so it needs more.

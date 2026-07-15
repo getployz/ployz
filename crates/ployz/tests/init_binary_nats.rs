@@ -1,7 +1,11 @@
 use std::process::{Command, Output};
 
-use ployz::config::{CLUSTER_CONTEXT_FILE_NAME, ClusterContext, save_cluster_context};
-use ployz::runtime::{PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV, PLOYZ_NATS_URL_ENV};
+use ployz::dispatcher::{
+    PLOYZ_NATS_CA_FILE_ENV, PLOYZ_NATS_NKEY_SEED_FILE_ENV, PLOYZ_NATS_URL_ENV,
+};
+use ployz::machine::operator_context::{
+    CLUSTER_CONTEXT_FILE_NAME, ClusterContext, save_cluster_context,
+};
 use ployz_core::roles::GatewayRole;
 use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::connect::NatsClientUrl;

@@ -7,17 +7,17 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ployz::bootstrap_command::{BootstrapRelease, DEFAULT_BOOTSTRAP_URL, DEFAULT_RELEASE_CHANNEL};
 use ployz::commands::PloyzctlCommand;
-use ployz::commands::core::{CorePromoteCommand, CoreReplaceCommand};
-use ployz::commands::machine::{MachineAddRemoteCommand, MachineInitCommand};
-use ployz::config::{
+use ployz::core::command::{CorePromoteCommand, CoreReplaceCommand};
+use ployz::dispatcher::{PloyzctlExecutionError, PloyzctlRuntimeConfig, execute_command};
+use ployz::machine::bootstrap::{BootstrapRelease, DEFAULT_BOOTSTRAP_URL, DEFAULT_RELEASE_CHANNEL};
+use ployz::machine::command::{MachineAddRemoteCommand, MachineInitCommand};
+use ployz::machine::local_release::LocalReleaseBundle;
+use ployz::machine::operator_context::{
     ClusterContext, ClusterContextMachine, load_cluster_context, save_cluster_context,
 };
-use ployz::local_release::LocalReleaseBundle;
-use ployz::remote_machine_runtime::RemoteMachineExecutionError;
-use ployz::runtime::{PloyzctlExecutionError, PloyzctlRuntimeConfig, execute_command};
-use ployz::ssh::SshTarget;
+use ployz::machine::runtime::remote::RemoteMachineExecutionError;
+use ployz::machine::ssh::SshTarget;
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
     InstallSha256Digest, MachineBootstrapUrl, MachineJoinBundle, MachineJoinClusterName,

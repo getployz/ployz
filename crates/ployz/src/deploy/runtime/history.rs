@@ -9,10 +9,10 @@ use crate::deploy::history_store::{
     default_deploy_history_root, render_history,
 };
 
+use crate::dispatcher::PloyzctlRuntimeConfig;
 use crate::execution_support::{
     PloyzctlExecutionError, PloyzctlExecutionOutput, with_cluster_context_from_disk,
 };
-use crate::runtime::PloyzctlRuntimeConfig;
 
 pub(crate) fn inspect(
     command: DeployHistoryCommand,
