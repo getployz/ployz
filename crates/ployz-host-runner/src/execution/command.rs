@@ -58,11 +58,6 @@ impl SystemHostRunnerCommandRunner {
     pub const fn new(timeout: Duration) -> Self {
         Self { timeout }
     }
-
-    #[must_use]
-    pub const fn timeout(&self) -> Duration {
-        self.timeout
-    }
 }
 
 impl Default for SystemHostRunnerCommandRunner {

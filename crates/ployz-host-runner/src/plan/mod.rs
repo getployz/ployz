@@ -5,10 +5,13 @@ pub(crate) mod nats_material;
 pub(crate) mod progress;
 pub(crate) mod steps;
 
+#[cfg(test)]
+pub use execution::HostRunnerRecordFailure;
 pub use execution::{
-    HostRunnerPlanExecution, HostRunnerPlanFailure, HostRunnerPlanTerminal,
-    HostRunnerRecordFailure, HostRunnerStepEffects, HostRunnerStepEvent, HostRunnerStepRecorder,
-    execute_host_runner_plan,
+    HostRunnerPlanExecution, HostRunnerPlanFailure, HostRunnerPlanTerminal, HostRunnerStepEffects,
+    HostRunnerStepEvent, HostRunnerStepRecorder, execute_host_runner_plan,
 };
-pub use progress::{HostRunnerTextRecorder, render_step_event};
+pub use progress::HostRunnerTextRecorder;
+#[cfg(test)]
+pub use progress::render_step_event;
 pub use steps::*;

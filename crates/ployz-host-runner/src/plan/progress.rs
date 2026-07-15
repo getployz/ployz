@@ -91,9 +91,6 @@ fn render_step_label(step: &HostRunnerStepLabel) -> String {
         HostRunnerStepLabel::StartSupervisorUnit(target) => {
             format!("start-unit {}", target.unit_name())
         }
-        HostRunnerStepLabel::RestartSupervisorUnit(target) => {
-            format!("restart-unit {}", target.unit_name())
-        }
         HostRunnerStepLabel::RedeemJoinToken => "redeem-join-token".to_owned(),
         HostRunnerStepLabel::ReportJoinResult => "report-join-result".to_owned(),
         HostRunnerStepLabel::ConsumeJoinTokenFile => "consume-join-token-file".to_owned(),
@@ -152,7 +149,6 @@ fn render_failure_reason(reason: HostRunnerStepFailureReason) -> &'static str {
         HostRunnerStepFailureReason::RoleEnvironmentWriteFailed => "role-environment-write-failed",
         HostRunnerStepFailureReason::SupervisorWriteFailed => "supervisor-write-failed",
         HostRunnerStepFailureReason::SupervisorStartFailed => "supervisor-start-failed",
-        HostRunnerStepFailureReason::SupervisorRestartFailed => "supervisor-restart-failed",
         HostRunnerStepFailureReason::JoinTokenRedeemFailed => "join-token-redeem-failed",
         HostRunnerStepFailureReason::JoinReportFailed => "join-report-failed",
         HostRunnerStepFailureReason::JoinTokenConsumeFailed => "join-token-consume-failed",
@@ -163,9 +159,6 @@ fn render_failure_reason(reason: HostRunnerStepFailureReason) -> &'static str {
         HostRunnerStepFailureReason::DataplaneHostPrepareFailed => "dataplane-host-prepare-failed",
         HostRunnerStepFailureReason::ContainerRuntimeVerifyFailed => {
             "container-runtime-verify-failed"
-        }
-        HostRunnerStepFailureReason::ContainerRuntimeHostUnsupported => {
-            "container-runtime-host-unsupported"
         }
         HostRunnerStepFailureReason::ContainerRuntimeClassicStoreUnsupported => {
             "container-runtime-classic-store-unsupported"

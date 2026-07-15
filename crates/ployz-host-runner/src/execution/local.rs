@@ -64,6 +64,7 @@ impl<R> HostRunnerLocalEffects<R> {
         }
     }
 
+    #[cfg(test)]
     #[must_use]
     pub const fn runner(&self) -> &R {
         &self.runner
@@ -110,9 +111,6 @@ impl<R: HostRunnerCommandRunner> HostRunnerStepEffects for HostRunnerLocalEffect
             }
             HostRunnerStep::StartSupervisorUnit(target) => {
                 self.start_supervisor_unit(target).map_err(Into::into)
-            }
-            HostRunnerStep::RestartSupervisorUnit(target) => {
-                self.restart_supervisor_unit(target).map_err(Into::into)
             }
             HostRunnerStep::StoreJoinMaterial(material) => self.store_join_material(material),
         }
@@ -668,13 +666,6 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
         target: &SupervisorUnitTarget,
     ) -> Result<(), FailureMessage> {
         self.apply_supervisor_change(SupervisorChange::InstallAndStart, target)
-    }
-
-    fn restart_supervisor_unit(
-        &mut self,
-        target: &SupervisorUnitTarget,
-    ) -> Result<(), FailureMessage> {
-        self.apply_supervisor_change(SupervisorChange::ReloadAndRestart, target)
     }
 
     fn supervisor_backend(&self) -> Result<SupervisorBackend, FailureMessage> {

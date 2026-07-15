@@ -11,7 +11,6 @@ pub(crate) mod supervisor;
 
 pub use artifacts::*;
 pub use command::*;
-pub use firewall::*;
 pub use fsx::*;
 pub use host_platform::*;
 pub use local::*;

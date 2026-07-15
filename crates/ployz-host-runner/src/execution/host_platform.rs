@@ -62,11 +62,6 @@ pub struct HostPlatformProfile {
 
 impl HostPlatformProfile {
     /// Returns the host's reported release version when present.
-    #[must_use]
-    pub fn version_id(&self) -> Option<&str> {
-        self.version_id.as_deref()
-    }
-
     /// Returns the host package ecosystem.
     #[must_use]
     pub const fn package_family(&self) -> HostPackageFamily {

@@ -29,11 +29,11 @@ use crate::lifecycle::assigned_substrate::{
 };
 use crate::recovery::ClusterNatsIdentity;
 
-pub use super::nats_material::{
-    AUTHORIZED_USERS_FILE_NAME, NatsAuthorizedUsersTarget, NatsClientCredentialsTarget,
-    NatsServerConfigTarget, NatsTlsMaterialTarget, RoleNatsCredentials, RoleNatsSeedSource,
-};
 use super::nats_material::{DEFAULT_NATS_PORT, first_machine_listener, tls_loopback_nats_url};
+pub use super::nats_material::{
+    NatsAuthorizedUsersTarget, NatsClientCredentialsTarget, NatsServerConfigTarget,
+    NatsTlsMaterialTarget, RoleNatsCredentials,
+};
 
 const PLOYZ_MACHINE_ID_ENV: &str = "PLOYZ_MACHINE_ID";
 const PLOYZ_GATEWAY_LISTEN_ADDR_ENV: &str = "PLOYZ_GATEWAY_LISTEN_ADDR";
@@ -83,7 +83,6 @@ pub enum HostRunnerStep {
     WriteMachineJoinTemplate(MachineJoinTemplateTarget),
     WriteSupervisorUnit(SupervisorUnitSpec),
     StartSupervisorUnit(SupervisorUnitTarget),
-    RestartSupervisorUnit(SupervisorUnitTarget),
     StoreJoinMaterial(HostRunnerJoinMaterial),
 }
 
@@ -105,7 +104,6 @@ pub enum HostRunnerStepLabel {
     WriteMachineJoinTemplate { path: PathBuf },
     WriteSupervisorUnit(SupervisorUnitTarget),
     StartSupervisorUnit(SupervisorUnitTarget),
-    RestartSupervisorUnit(SupervisorUnitTarget),
     RedeemJoinToken,
     ReportJoinResult,
     ConsumeJoinTokenFile,
@@ -157,9 +155,6 @@ impl HostRunnerStepLabel {
             HostRunnerStep::WriteSupervisorUnit(spec) => Self::WriteSupervisorUnit(spec.target()),
             HostRunnerStep::StartSupervisorUnit(target) => {
                 Self::StartSupervisorUnit(target.clone())
-            }
-            HostRunnerStep::RestartSupervisorUnit(target) => {
-                Self::RestartSupervisorUnit(target.clone())
             }
             HostRunnerStep::StoreJoinMaterial(material) => {
                 Self::StoreJoinMaterial(material.redacted())
@@ -237,6 +232,7 @@ impl HostRunnerJoinMaterial {
         )
     }
 
+    #[cfg(test)]
     pub fn new(
         machine_id: MachineId,
         cluster_name: impl Into<String>,
@@ -336,6 +332,7 @@ pub struct RedactedJoinMaterial {
 }
 
 impl RedactedJoinMaterial {
+    #[cfg(test)]
     pub fn new(
         machine_id: MachineId,
         cluster_name: impl Into<String>,
@@ -941,6 +938,7 @@ pub enum RoleSetError {
 }
 
 #[must_use]
+#[cfg(test)]
 pub fn host_runner_join_local_install_plan(target: HostRunnerJoinTarget) -> HostRunnerStepPlan {
     let mut steps = host_runner_join_material_steps(&target);
     steps.extend(host_runner_join_install_steps(target));
@@ -1354,6 +1352,7 @@ impl From<FailureMessage> for HostRunnerStepEffectError {
 }
 
 impl HostRunnerStepFailure {
+    #[cfg(test)]
     #[must_use]
     pub fn from_step(step: &HostRunnerStep, message: FailureMessage) -> Self {
         Self {
@@ -1392,7 +1391,6 @@ pub enum HostRunnerStepFailureReason {
     RoleEnvironmentWriteFailed,
     SupervisorWriteFailed,
     SupervisorStartFailed,
-    SupervisorRestartFailed,
     JoinTokenRedeemFailed,
     JoinReportFailed,
     JoinTokenConsumeFailed,
@@ -1400,7 +1398,6 @@ pub enum HostRunnerStepFailureReason {
     DataplaneHostPrepareFailed,
     ContainerRuntimePrepareFailed,
     ContainerRuntimeVerifyFailed,
-    ContainerRuntimeHostUnsupported,
     ContainerRuntimeClassicStoreUnsupported,
 }
 
@@ -1424,7 +1421,6 @@ impl HostRunnerStepFailureReason {
             HostRunnerStep::WriteMachineJoinTemplate(_) => Self::MachineJoinTemplateWriteFailed,
             HostRunnerStep::WriteSupervisorUnit(_) => Self::SupervisorWriteFailed,
             HostRunnerStep::StartSupervisorUnit(_) => Self::SupervisorStartFailed,
-            HostRunnerStep::RestartSupervisorUnit(_) => Self::SupervisorRestartFailed,
             HostRunnerStep::StoreJoinMaterial(_) => Self::JoinMaterialStoreFailed,
         }
     }

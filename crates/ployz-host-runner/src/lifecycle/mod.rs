@@ -8,7 +8,10 @@ mod joiner_bootstrap;
 pub(crate) mod machine_join;
 pub(crate) mod substrate_update;
 
+#[cfg(test)]
 pub use assigned_substrate::*;
+#[cfg(test)]
 pub use cloud_bootstrap::*;
 pub(crate) use dispatch::run_bootstrap_command;
+#[cfg(test)]
 pub use machine_join::*;

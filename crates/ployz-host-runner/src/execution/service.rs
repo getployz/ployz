@@ -143,11 +143,13 @@ impl NatsServerUnit {
         Ok(Self { exec_start })
     }
 
+    #[cfg(test)]
     #[must_use]
     pub const fn target(&self) -> SupervisorUnitTarget {
         SupervisorUnitTarget::NatsServer
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn unit_name(&self) -> String {
         self.target().unit_name()
@@ -187,11 +189,13 @@ impl PloyzdRoleUnit {
         })
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn target(&self) -> SupervisorUnitTarget {
         SupervisorUnitTarget::PloyzdRole(self.role.clone())
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn unit_name(&self) -> String {
         self.target().unit_name()

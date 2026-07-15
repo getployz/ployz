@@ -142,7 +142,6 @@ fn core_promote_authorized_users_carries_only_the_reused_core_principals() {
             | HostRunnerStep::WriteMachineJoinTemplate(_)
             | HostRunnerStep::WriteSupervisorUnit(_)
             | HostRunnerStep::StartSupervisorUnit(_)
-            | HostRunnerStep::RestartSupervisorUnit(_)
             | HostRunnerStep::StoreJoinMaterial(_) => None,
         })
         .expect("promote plan writes authorized users");

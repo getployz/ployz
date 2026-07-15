@@ -138,6 +138,7 @@ pub struct ServerCertificateSans {
 }
 
 impl ServerCertificateSans {
+    #[cfg(test)]
     pub fn try_new(
         machine_public_ip: Option<IpAddr>,
         hostname: Option<String>,

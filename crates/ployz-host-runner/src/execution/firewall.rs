@@ -132,6 +132,7 @@ impl FirewallBackend {
         }
     }
 
+    #[cfg(test)]
     pub fn close_with(
         &self,
         port: AssignedHostPort,
@@ -150,6 +151,7 @@ impl FirewallBackend {
 #[derive(Clone, Copy)]
 enum FirewallChange {
     Open,
+    #[cfg(test)]
     Close,
 }
 
@@ -162,7 +164,13 @@ fn change_firewalld(
     let query = format!("--query-port={port}");
     let action = match change {
         FirewallChange::Open => format!("--add-port={port}"),
+        #[cfg(test)]
         FirewallChange::Close => format!("--remove-port={port}"),
+    };
+    let closing = match change {
+        FirewallChange::Open => false,
+        #[cfg(test)]
+        FirewallChange::Close => true,
     };
     let runtime_has_port = command_probe(runner, "firewall-cmd", &["--quiet", &query], &[1])?;
     let permanent_has_port = command_probe(
@@ -171,10 +179,10 @@ fn change_firewalld(
         &["--permanent", "--quiet", &query],
         &[1],
     )?;
-    if runtime_has_port == matches!(change, FirewallChange::Close) {
+    if runtime_has_port == closing {
         require_success(runner, "firewall-cmd", &[&action])?;
     }
-    if permanent_has_port == matches!(change, FirewallChange::Close) {
+    if permanent_has_port == closing {
         require_success(runner, "firewall-cmd", &["--permanent", &action])?;
     }
     Ok(())

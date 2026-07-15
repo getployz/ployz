@@ -138,7 +138,6 @@ fn first_machine_names_founder_and_cloud_credentials() {
             | HostRunnerStep::WritePloyzdRoleEnvironment(_)
             | HostRunnerStep::WriteSupervisorUnit(_)
             | HostRunnerStep::StartSupervisorUnit(_)
-            | HostRunnerStep::RestartSupervisorUnit(_)
             | HostRunnerStep::StoreJoinMaterial(_) => None,
         })
         .expect("first-machine plan writes authorized users");
@@ -243,7 +242,6 @@ fn first_machine_public_ip_flips_the_listener_external_in_the_secured_config() {
             | HostRunnerStep::WriteMachineJoinTemplate(_)
             | HostRunnerStep::WriteSupervisorUnit(_)
             | HostRunnerStep::StartSupervisorUnit(_)
-            | HostRunnerStep::RestartSupervisorUnit(_)
             | HostRunnerStep::StoreJoinMaterial(_) => None,
         })
         .expect("first-machine plan writes the nats config");
@@ -324,7 +322,6 @@ fn first_machine_plan_derives_role_supernet_after_environment_overrides() {
             | HostRunnerStep::WriteMachineJoinTemplate(_)
             | HostRunnerStep::WriteSupervisorUnit(_)
             | HostRunnerStep::StartSupervisorUnit(_)
-            | HostRunnerStep::RestartSupervisorUnit(_)
             | HostRunnerStep::StoreJoinMaterial(_) => None,
         })
         .expect("first-machine plan writes the control environment");

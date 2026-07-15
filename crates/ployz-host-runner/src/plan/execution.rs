@@ -20,6 +20,7 @@ pub enum HostRunnerPlanTerminal {
 }
 
 impl HostRunnerPlanTerminal {
+    #[cfg(test)]
     #[must_use]
     pub fn failure(&self) -> Option<&HostRunnerPlanFailure> {
         match self {

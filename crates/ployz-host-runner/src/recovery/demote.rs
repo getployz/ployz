@@ -30,6 +30,7 @@ impl CoreDemoteTarget {
         }
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn with_env_dir(mut self, env_dir: PathBuf) -> Self {
         self.env_dir = env_dir;

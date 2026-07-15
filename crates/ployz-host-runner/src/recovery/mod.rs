@@ -12,13 +12,11 @@ mod identity;
 mod promote;
 mod secret;
 
-pub use demote::{CoreDemoteTarget, demote_local_core, repoint_non_core_roles};
 pub use identity::{
-    ClusterNatsIdentity, CoreSeeds, CoreSeedsError, NatsCaKeyPem, NatsIdentityError,
-    NatsServerCertificate, NatsServerKeyPem, ServerCertificateSans, generate_cluster_nats_identity,
-    issue_server_certificate, resurrect_core_identity, unwrap_core_seeds, wrap_core_seeds,
+    ClusterNatsIdentity, CoreSeeds, NatsIdentityError, NatsServerKeyPem, ServerCertificateSans,
+    generate_cluster_nats_identity, wrap_core_seeds,
 };
-pub use secret::{RecoverySecretError, generate_recovery_secret, unwrap, wrap};
+pub use secret::{RecoverySecretError, wrap};
 
 pub(crate) use demote_command::run_core_demote_command;
 pub(crate) use promote::run_core_promote_command;
