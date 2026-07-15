@@ -72,7 +72,7 @@ pub enum ControlCertificateRenewalAttempt {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(tag = "failure", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "failure_kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlCertificateRenewalFailure {
     IntentStore {
         message: String,

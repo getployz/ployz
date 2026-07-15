@@ -30,9 +30,7 @@ use crate::machine::operator_context::{
     save_cluster_context_machine_ssh,
 };
 use crate::machine::runtime::MachineExecutionError;
-use crate::ssh::{
-    DEFAULT_SSH_COMMAND_TIMEOUT, SshClient, SshCommandError, SshPhase, SshTarget,
-};
+use crate::ssh::{DEFAULT_SSH_COMMAND_TIMEOUT, SshClient, SshCommandError, SshPhase, SshTarget};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::MachineJoinRuntimeNatsUrl;
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};

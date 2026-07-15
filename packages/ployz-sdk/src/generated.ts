@@ -553,7 +553,17 @@ export type MachineEndpointObservation = { machine_id: MachineId, control_endpoi
 
 export type GatewayServingStatus = "current" | "last_known_good" | "unavailable";
 
-export type GatewayStatusObservation = { machine_id: MachineId, listen_addr: string, serving: GatewayServingStatus, route_count: number, };
+export type GatewayProcessHealth = { last_attempt: GatewayProcessAttempt | null, consecutive_failures: number, last_http_failure: GatewayHttpFailure | null, consecutive_http_failures: number, last_watch_failure: GatewayWatchFailure | null, consecutive_watch_failures: number, last_status_publish_failure: GatewayStatusPublishFailure | null, consecutive_status_publish_failures: number, };
+
+export type GatewayProcessAttempt = { "status": "current", route_count: number, } | { "status": "serving_last_known_good", route_count: number, message: string, } | { "status": "failed", message: string, };
+
+export type GatewayHttpFailure = { "failure": "proxy", message: string, };
+
+export type GatewayWatchFailure = { "failure": "open", message: string, } | { "failure": "ended", source: string, };
+
+export type GatewayStatusPublishFailure = { "failure": "write", message: string, };
+
+export type GatewayStatusObservation = { machine_id: MachineId, listen_addr: string, serving: GatewayServingStatus, route_count: number, process_health: GatewayProcessHealth, };
 
 export type MachineDiskSpace = { available_bytes: number, total_bytes: number, };
 
@@ -661,7 +671,23 @@ export type VolumeRemoveError = { "error": "resource_busy", operation_id: Operat
 
 export type RuntimeSnapshotRequest = Record<symbol, never>;
 
-export type RuntimeSnapshotResult = { snapshot: RuntimeSnapshot, };
+export type RuntimeSnapshotResult = { snapshot: RuntimeSnapshot, control_health: ControlHealth | null, };
+
+export type ControlHealth = { runtime_projection: ControlRuntimeProjectionHealth, certificate_renewal: ControlCertificateRenewalHealth, };
+
+export type ControlRuntimeProjectionHealth = { projection: ControlRuntimeProjectionLoopHealth, publisher: ControlRuntimeProjectionLoopHealth, seed_service: ControlRuntimeProjectionServiceHealth, };
+
+export type ControlRuntimeProjectionLoopHealth = { running: boolean, consecutive_failures: number, };
+
+export type ControlRuntimeProjectionServiceHealth = { endpoint_tasks_started: number, endpoint_tasks_finished: number, request_timeouts: number, handler_failures: number, domain_failures: number, response_failures: number, };
+
+export type ControlCertificateRenewalHealth = { last_attempt: ControlCertificateRenewalAttempt | null, consecutive_failures: number, };
+
+export type ControlCertificateRenewalAttempt = { "status": "completed", outcome: ControlCertificateRenewalOutcome, } | { "status": "failed", failure: ControlCertificateRenewalFailure, };
+
+export type ControlCertificateRenewalFailure = { "failure_kind": "intent_store", message: string, } | { "failure_kind": "renewal_evidence", failure: CertificateProvisionFailure, } | { "failure_kind": "operation_status", message: string, } | { "failure_kind": "operation_evidence", message: string, } | { "failure_kind": "ployz_dns_target", message: string, } | { "failure_kind": "worker", message: string, };
+
+export type ControlCertificateRenewalOutcome = { "outcome": "no_action" } | { "outcome": "awaiting_ployz_wildcard" } | { "outcome": "attempted", attempted: number, failed: number, };
 
 export type RuntimeSnapshot = { automatic_hostname_configuration: AutomaticHostnameConfiguration, ployz_dns_target: RuntimePloyzDnsTarget, ingress_endpoint_projection: IngressEndpointProjection, active_certificates: Array<ActiveCertificateMetadata>, route_tls: Array<RouteTlsStatus>, machines: Array<MachineSnapshot>, services: Array<ServiceSnapshot>, routes: Array<RouteBindingState>, containers: Array<ManagedContainerObservation>, revisions: Array<RuntimeServiceRevision>, releases: Array<RuntimeServiceRelease>, instances: Array<RuntimeServiceInstance>, projection_sources: RuntimeProjectionSources, updated_at_unix_seconds: number, };
 
