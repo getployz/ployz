@@ -57,9 +57,7 @@ const GATEWAY_LISTENER_READY_TIMEOUT: Duration = Duration::from_secs(2);
 const GATEWAY_LISTENER_READY_POLL: Duration = Duration::from_millis(10);
 const GATEWAY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(9);
 
-mod service;
-
-pub use service::start_gateway_certificate_service;
+pub(crate) mod service;
 use service::start_gateway_role_service;
 
 pub struct RunningGatewayProcess {

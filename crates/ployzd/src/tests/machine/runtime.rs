@@ -1,5 +1,5 @@
 use crate::control::operations::deploy::MachineContainerRuntime;
-use crate::roles::machine::client::NatsMachineContainerRuntime;
+use crate::control::role_client::machine::NatsMachineContainerRuntime;
 use crate::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRunRpcRequest, MachineImagePull,
     MachineRunContainerOutcome,

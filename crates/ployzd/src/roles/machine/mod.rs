@@ -9,7 +9,6 @@
 //! Recovery mirroring and failover are owned by the role-neutral
 //! [`crate::recovery`] module.
 
-pub mod client;
 mod containers;
 mod dataplane;
 mod endpoints;

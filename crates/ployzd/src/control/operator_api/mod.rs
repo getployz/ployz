@@ -1,6 +1,5 @@
 //! Operator-facing operation service handlers.
 
-pub mod admission;
 mod core_replace;
 mod error_map;
 mod first_machine;
@@ -14,14 +13,18 @@ pub use core_replace::core_replace_report;
 pub use first_machine::init_first_machine_activate;
 pub use machine_join::{machine_join_redeem, machine_join_report};
 pub use network_query::NetworkQueryService;
+#[cfg(test)]
+pub use queries::ops_status_missing;
 pub use queries::{
     LogsQueryService, MachineQueryService, RuntimeSnapshotQueryService, ServiceQueryService,
-    VolumeQueryService, credential_list, ops_list, ops_status, ops_status_missing, ops_watch,
+    VolumeQueryService, credential_list, ops_list, ops_status, ops_watch,
 };
+#[cfg(test)]
+pub use submit::owned_operation;
 pub use submit::{
     core_replace, credential_add, credential_remove, deploy_reserve, deploy_submit,
     ingress_configure, machine_add, machine_drain, machine_resume, machine_update,
-    namespace_remove, network_repair, owned_operation, service_restart, volume_remove,
+    namespace_remove, network_repair, service_restart, volume_remove,
 };
 
 use crate::control::authorization::MachineCredentialMint;

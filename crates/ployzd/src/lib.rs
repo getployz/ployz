@@ -25,7 +25,6 @@ mod roles {
         pub(crate) mod service;
     }
     pub mod gateway {
-        pub mod client;
         pub mod pingora;
         pub mod process;
         pub mod projection;

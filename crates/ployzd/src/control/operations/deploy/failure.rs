@@ -190,7 +190,7 @@ where
 pub enum DeployExecutionError {
     #[error("deploy planning failed: {0:?}")]
     Plan(DeployPlanError),
-    #[error("deploy plan is inconsistent for service {service_id}")]
+    #[error("deploy plan is inconsistent for service {service_id:?}")]
     PlanInconsistent { service_id: ServiceId },
     #[error("deploy step identifier is invalid: {0:?}")]
     StepId(SubjectTokenError),
@@ -214,7 +214,7 @@ pub enum DeployExecutionError {
     #[error("pre-start hook failed: {0:?}")]
     PreStartHook(PreStartHookRuntimeError),
     #[error(
-        "pre-start hook container {container_id} on {machine_id} exited {exit_code}: {message}"
+        "pre-start hook container {container_id:?} on {machine_id:?} exited {exit_code}: {message}"
     )]
     PreStartHookExited {
         machine_id: MachineId,
@@ -224,7 +224,7 @@ pub enum DeployExecutionError {
     },
     #[error("deploy health check failed: {0:?}")]
     WaitHealthy(DeployHealthCheckError),
-    #[error("certificate provisioning failed for {hostname}: {failure:?}")]
+    #[error("certificate provisioning failed for {hostname:?}: {failure:?}")]
     ProvisionCertificate {
         hostname: RouteHostname,
         failure: Box<CertificateProvisionFailure>,

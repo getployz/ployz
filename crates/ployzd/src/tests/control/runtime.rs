@@ -8,10 +8,10 @@
 use crate::certificate::{AcmeIssueContext, AcmeIssuer, AcmeIssuerError, IssuedCertificate};
 use crate::control::intent::machine_roster::MachineRosterStore;
 use crate::control::intent::namespace_intent::NamespaceIntentStore;
-use crate::control::operator_api::admission::MachineAddBootstrapConfig;
 use crate::control::reconciler::certificate::{
     CertificateRenewalAttempt, CertificateRenewalOutcome,
 };
+use crate::control::sequencer::MachineAddBootstrapConfig;
 use crate::lease::LeaseWorkerUrl;
 use crate::roles::gateway::process::start_gateway_process_with_client;
 use crate::roles::machine::protocol::{

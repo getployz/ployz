@@ -1,7 +1,7 @@
 use crate::control::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
 };
-use crate::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineFactsReader};
+use crate::control::role_client::machine::{NatsMachineContainerRuntime, NatsMachineFactsReader};
 use crate::roles::machine::protocol::{
     MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,
     MachineContainerRemoveRpcRequest, MachineContainerRemoveRpcResponse,

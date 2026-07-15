@@ -4,7 +4,7 @@
 use crate::control::intent::machine_roster::MachineRosterStore;
 use crate::control::operation_evidence::OperationRepository;
 use crate::control::operations::machine_lifecycle::MachineLifecycleOperation;
-use crate::control::operator_api::admission::{
+use crate::control::sequencer::{
     MachineAddBootstrapConfig, MachineLifecycleSubmitCommand, OperationControllers,
 };
 use crate::tasks::TaskRegistry;

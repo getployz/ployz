@@ -24,6 +24,7 @@ use ployz_core::operation::{
     OperatorHint, RetainedArtifact,
 };
 
+#[cfg(test)]
 pub use crate::roles::machine::MachineRuntimeUnavailableReason;
 pub use facts::{
     DeployFactLoadError, load_deploy_execution_facts_from_nats, validate_deploy_route_admission,
@@ -39,10 +40,9 @@ pub use ports::{
     CertificateProvisioner, DeployHealthChecker, DeployOperationRecorder, DeployPhasePromotion,
     MachineContainerRuntime, NamespaceCommitError, NamespaceStateCommitter,
 };
-pub use preparation::{
-    AutomaticHostnameMode, DeployExecutionFacts, DeployExecutionInput,
-    namespace_cleanup_candidates, prepare_deploy_execution_command,
-};
+pub use preparation::{AutomaticHostnameMode, DeployExecutionFacts, DeployExecutionInput};
+#[cfg(test)]
+pub use preparation::{namespace_cleanup_candidates, prepare_deploy_execution_command};
 use step::with_step_timeout;
 pub use step::{DeployExecutionStep, DeployFailureRecordError, DeployOperationRecordError};
 

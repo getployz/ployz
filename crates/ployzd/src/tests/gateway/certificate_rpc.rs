@@ -2,14 +2,13 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::control::operations::deploy::MachineRuntimeUnavailableReason;
-use crate::roles::gateway::client::{
-    GatewayStatusGetOk, GatewayStatusGetResponse, NatsGatewayStatusReader,
-};
+use crate::control::role_client::gateway::NatsGatewayStatusReader;
 use crate::roles::gateway::pingora::PingoraRouteRegistry;
-use crate::roles::gateway::process::start_gateway_certificate_service;
+use crate::roles::gateway::process::service::start_gateway_certificate_service;
 use crate::roles::gateway::projection::{
     GatewayCertificateBundle, GatewayProjectedRoute, GatewayProjection,
 };
+use crate::roles::gateway::protocol::{GatewayStatusGetOk, GatewayStatusGetResponse};
 use crate::roles::gateway::source::{GatewayCertificateStore, GatewayCertificateStoreError};
 use crate::service_catalog::{DaemonServiceCatalog, gateway_role_service, machine_endpoint_spec};
 use ployz_core::certificate::{

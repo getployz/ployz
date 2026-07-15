@@ -15,10 +15,9 @@ mod writer;
 
 pub use machine_seed::{MachineSeedWriteError, write_machine_seed_file};
 pub use mint::{MachineCredentialMint, MintRequest, MintResumeError, MintVerifyEndpoint};
-pub use reload::{
-    HostNatsReloadRunner, NatsReloadEvidence, NatsReloadOutcome, NatsReloadRunner,
-    SignalNatsReloadRunner,
-};
+pub use reload::{HostNatsReloadRunner, NatsReloadRunner};
+#[cfg(test)]
+pub use reload::{NatsReloadEvidence, NatsReloadOutcome, SignalNatsReloadRunner};
 pub use writer::{
     CredentialMutationChange, CredentialMutationFailure, CredentialMutationRejection,
     NatsAuthorizationHandle, NatsAuthorizationWriter, RenderFailure, RenderPrepareFailure,

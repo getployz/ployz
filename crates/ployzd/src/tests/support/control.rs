@@ -8,7 +8,7 @@ use crate::config::{ControlNatsAuthorizationConfig, ControlProcessConfig};
 use crate::control::authorization::{
     NatsReloadEvidence, NatsReloadOutcome, NatsReloadRunner, SignalNatsReloadRunner,
 };
-use crate::control::operator_api::admission::MachineAddBootstrapConfig;
+use crate::control::sequencer::MachineAddBootstrapConfig;
 use ployz_core::ids::MachineId;
 use ployz_core::install::{MachineBootstrapUrl, MachineJoinBundle, MachineJoinTemplate};
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};

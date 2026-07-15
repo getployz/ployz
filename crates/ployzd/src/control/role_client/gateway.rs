@@ -11,7 +11,6 @@ use crate::control::role_client::machine::{
 };
 pub use crate::roles::gateway::protocol::{
     GatewayStatusGetDomainError, GatewayStatusGetOk, GatewayStatusGetRequest,
-    GatewayStatusGetResponse,
 };
 use crate::roles::machine::MachineRuntimeUnavailableReason;
 

@@ -12,11 +12,11 @@ use crate::control::operations::deploy::driver::{
     DeployOperationDriver, DeployOperationPorts, DeployOperationRunError, DeployOperationStores,
     run_deploy_operation,
 };
-use crate::control::operator_api::admission::{
+use crate::control::role_client::machine::{NatsMachineContainerRuntime, NatsMachineFactsReader};
+use crate::control::sequencer::{
     DeploySubmitCommand, MachineAddBootstrapConfig, OperationControllers, SubmitCommandError,
 };
 use crate::control::store::CoreStore;
-use crate::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineFactsReader};
 use crate::roles::machine::protocol::{MachineFactsGetRpcOk, MachineFactsGetRpcResponse};
 use crate::tasks::TaskRegistry;
 use futures_util::StreamExt;

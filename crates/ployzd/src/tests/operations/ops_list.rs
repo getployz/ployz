@@ -1,8 +1,8 @@
 use crate::control::operation_evidence::{
     ManagedDnsReconcileOperationSubmission, OperationRepository,
 };
-use crate::control::operator_api::admission::{MachineAddBootstrapConfig, OperationControllers};
 use crate::control::operator_api::ops_list;
+use crate::control::sequencer::{MachineAddBootstrapConfig, OperationControllers};
 use crate::control::store::CoreStore;
 use ployz_core::install::{DEFAULT_MACHINE_BOOTSTRAP_URL, MachineBootstrapUrl};
 use ployz_core::operation::{

@@ -10,10 +10,10 @@ use crate::control::intent::machine_roster::MachineRosterStore;
 use crate::control::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
 };
-use crate::control::operator_api::admission::MachineAddBootstrapConfig;
+use crate::control::role_client::machine::NatsMachineContainerRuntime;
+use crate::control::sequencer::MachineAddBootstrapConfig;
 use crate::control::store::CoreStore;
 use crate::roles::gateway::process::start_gateway_process_with_client;
-use crate::roles::machine::client::NatsMachineContainerRuntime;
 use crate::roles::machine::protocol::{
     MachineContainerRunRpcRequest, MachineDataplaneStatusRpcRequest,
     MachineDataplaneStatusRpcResponse, MachineRpcResponse,

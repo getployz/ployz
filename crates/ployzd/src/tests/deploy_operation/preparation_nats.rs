@@ -7,7 +7,7 @@ use crate::control::operations::deploy::{
     DeployExecutionCommand, DeployServiceExecutionCommand, load_deploy_execution_facts_from_nats,
     prepare_deploy_execution_command,
 };
-use crate::roles::machine::client::NatsMachineFactsReader;
+use crate::control::role_client::machine::NatsMachineFactsReader;
 use crate::roles::machine::protocol::{
     MachineDataplaneStatusRpcRequest, MachineDataplaneStatusRpcResponse, MachineRpcResponse,
 };

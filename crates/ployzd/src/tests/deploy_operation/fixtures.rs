@@ -37,7 +37,7 @@ use crate::control::operations::deploy::{
     MachineContainerRuntimeError, MachineRuntimeUnavailableReason, NamespaceCommitError,
     NamespaceStateCommitter, PreStartHookRuntimeError,
 };
-use crate::roles::machine::client::MachineImageResolveError;
+use crate::control::role_client::machine::MachineImageResolveError;
 use crate::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerResolveImageRpcRequest,
     MachineContainerRestartRpcRequest, MachineContainerRunHookRpcOk,
@@ -654,7 +654,7 @@ impl MachineContainerRuntime for RecordingRuntime {
         _request: ployz_core::image::ImageEnsureRequest,
     ) -> Result<
         ployz_core::image::ImageEnsureOk,
-        crate::roles::machine::client::MachineImageEnsureError,
+        crate::control::role_client::machine::MachineImageEnsureError,
     > {
         Ok(ployz_core::image::ImageEnsureOk {
             machine_id: machine_id.clone(),
