@@ -148,8 +148,6 @@ impl DeployOperationState {
         Some(super::OperationInterruptionEvidence::new(
             cause,
             super::OperationInterruptionStage::Deploy { stage },
-            super::OperationInterruptionUncertainWork::IntentAndRuntime,
-            super::OperationInterruptionNextAction::RetryFromObservedReality,
         ))
     }
 

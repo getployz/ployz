@@ -67,6 +67,50 @@ impl OperationInterruptionStage {
             }
         }
     }
+
+    #[must_use]
+    pub const fn uncertain_work(self) -> OperationInterruptionUncertainWork {
+        match self {
+            Self::CredentialGrantAccepted
+            | Self::IngressConfigureAccepted
+            | Self::MachineLifecycleAccepted => OperationInterruptionUncertainWork::Intent,
+            Self::MachineUpdateAccepted
+            | Self::MachineUpdateRunning
+            | Self::ServiceRestartAccepted
+            | Self::ServiceRestartRunning { .. } => OperationInterruptionUncertainWork::Runtime,
+            Self::Deploy { .. }
+            | Self::NetworkRepairAccepted
+            | Self::NetworkRepairRunning { .. }
+            | Self::NamespaceRemoveAccepted
+            | Self::NamespaceRemoveRunning { .. }
+            | Self::VolumeRemoveAccepted
+            | Self::VolumeRemoveRunning { .. } => {
+                OperationInterruptionUncertainWork::IntentAndRuntime
+            }
+        }
+    }
+
+    #[must_use]
+    pub const fn next_action(self) -> OperationInterruptionNextAction {
+        match self {
+            Self::Deploy { .. } => OperationInterruptionNextAction::RetryFromObservedReality,
+            Self::CredentialGrantAccepted
+            | Self::IngressConfigureAccepted
+            | Self::MachineUpdateAccepted
+            | Self::MachineUpdateRunning
+            | Self::MachineLifecycleAccepted
+            | Self::NetworkRepairAccepted
+            | Self::NetworkRepairRunning { .. }
+            | Self::ServiceRestartAccepted
+            | Self::ServiceRestartRunning { .. }
+            | Self::NamespaceRemoveAccepted
+            | Self::NamespaceRemoveRunning { .. }
+            | Self::VolumeRemoveAccepted
+            | Self::VolumeRemoveRunning { .. } => {
+                OperationInterruptionNextAction::InspectThenResubmit
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,22 +136,16 @@ pub enum OperationInterruptionNextAction {
 pub struct OperationInterruptionEvidence {
     cause: OperationInterruptionCause,
     last_durable_stage: OperationInterruptionStage,
-    uncertain_work: OperationInterruptionUncertainWork,
-    next_action: OperationInterruptionNextAction,
 }
 
 impl OperationInterruptionEvidence {
     pub(super) const fn new(
         cause: OperationInterruptionCause,
         last_durable_stage: OperationInterruptionStage,
-        uncertain_work: OperationInterruptionUncertainWork,
-        next_action: OperationInterruptionNextAction,
     ) -> Self {
         Self {
             cause,
             last_durable_stage,
-            uncertain_work,
-            next_action,
         }
     }
 
@@ -123,12 +161,12 @@ impl OperationInterruptionEvidence {
 
     #[must_use]
     pub const fn uncertain_work(&self) -> OperationInterruptionUncertainWork {
-        self.uncertain_work
+        self.last_durable_stage.uncertain_work()
     }
 
     #[must_use]
     pub const fn next_action(&self) -> OperationInterruptionNextAction {
-        self.next_action
+        self.last_durable_stage.next_action()
     }
 
     #[must_use]

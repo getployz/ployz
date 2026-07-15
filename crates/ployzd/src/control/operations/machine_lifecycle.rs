@@ -36,15 +36,18 @@ impl MachineLifecycleOperation {
         }
     }
 
-    pub fn start(&self, accepted: AcceptedMachineLifecycleSubmission) {
+    pub fn start(
+        &self,
+        accepted: AcceptedMachineLifecycleSubmission,
+    ) -> Result<(), crate::tasks::TaskAdmissionError> {
         if !accepted.should_start_execution {
-            return;
+            return Ok(());
         }
 
         let runtime = self.clone();
-        self.task_registry.spawn(async move {
+        self.task_registry.spawn(|| async move {
             runtime.run(accepted).await;
-        });
+        })
     }
 
     pub async fn run(self, accepted: AcceptedMachineLifecycleSubmission) {

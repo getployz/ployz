@@ -34,14 +34,20 @@ impl Default for TaskRegistry {
 }
 
 impl TaskRegistry {
-    pub fn spawn(&self, future: impl std::future::Future<Output = ()> + Send + 'static) {
+    pub fn spawn<Build, Future>(&self, build: Build) -> Result<(), TaskAdmissionError>
+    where
+        Build: FnOnce() -> Future,
+        Future: std::future::Future<Output = ()> + Send + 'static,
+    {
         let mut state = self
             .state
             .lock()
             .expect("task registry lock is not poisoned");
-        if state.accepting {
-            state.handles.spawn(future);
+        if !state.accepting {
+            return Err(TaskAdmissionError::Quiescing);
         }
+        state.handles.spawn(build());
+        Ok(())
     }
 
     fn begin_quiesce(&self) -> JoinSet<()> {
@@ -55,22 +61,20 @@ impl TaskRegistry {
         handles
     }
 
-    pub async fn quiesce_all(
-        registries: &[&Self],
-        timeout: Duration,
-    ) -> Result<(), TaskRegistryQuiesceError> {
-        let mut handles = registries
-            .iter()
-            .map(|registry| registry.begin_quiesce())
-            .collect::<Vec<_>>();
+    pub async fn quiesce(&self, timeout: Duration) -> Result<(), TaskRegistryQuiesceError> {
+        let mut handles = self.begin_quiesce();
         tokio::time::timeout(timeout, async {
-            for registry_handles in &mut handles {
-                while registry_handles.join_next().await.is_some() {}
-            }
+            while handles.join_next().await.is_some() {}
         })
         .await
         .map_err(|_| TaskRegistryQuiesceError { timeout })
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum TaskAdmissionError {
+    #[error("task registry is quiescing")]
+    Quiescing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -99,23 +103,33 @@ mod tests {
         let registry = TaskRegistry::default();
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
-        registry.spawn(async move {
-            let _drop_signal = DropSignal(Some(dropped_tx));
-            let _ = started_tx.send(());
-            std::future::pending::<()>().await;
-        });
+        registry
+            .spawn(|| async move {
+                let _drop_signal = DropSignal(Some(dropped_tx));
+                let _ = started_tx.send(());
+                std::future::pending::<()>().await;
+            })
+            .expect("worker admits");
         started_rx.await.expect("worker starts");
 
-        TaskRegistry::quiesce_all(&[&registry], Duration::from_secs(1))
+        registry
+            .quiesce(Duration::from_secs(1))
             .await
             .expect("worker quiesces");
         dropped_rx.await.expect("worker future is dropped");
 
+        let built = Arc::new(AtomicBool::new(false));
+        let built_by_builder = built.clone();
         let admitted = Arc::new(AtomicBool::new(false));
         let admitted_by_task = admitted.clone();
-        registry.spawn(async move {
-            admitted_by_task.store(true, Ordering::SeqCst);
+        let admission = registry.spawn(|| {
+            built_by_builder.store(true, Ordering::SeqCst);
+            async move {
+                admitted_by_task.store(true, Ordering::SeqCst);
+            }
         });
+        assert_eq!(admission, Err(TaskAdmissionError::Quiescing));
+        assert!(!built.load(Ordering::SeqCst));
         tokio::task::yield_now().await;
         assert!(!admitted.load(Ordering::SeqCst));
     }

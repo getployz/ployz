@@ -31,14 +31,17 @@ impl IngressConfigureOperation {
         }
     }
 
-    pub fn start(&self, accepted: AcceptedIngressConfigureSubmission) {
+    pub fn start(
+        &self,
+        accepted: AcceptedIngressConfigureSubmission,
+    ) -> Result<(), crate::tasks::TaskAdmissionError> {
         if !accepted.should_start_execution {
-            return;
+            return Ok(());
         }
         let worker = self.clone();
-        self.task_registry.spawn(async move {
+        self.task_registry.spawn(|| async move {
             worker.run(accepted).await;
-        });
+        })
     }
 
     async fn run(self, accepted: AcceptedIngressConfigureSubmission) {

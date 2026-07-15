@@ -48,14 +48,17 @@ impl VolumeRemoveOperation {
         }
     }
 
-    pub fn start(&self, accepted: AcceptedVolumeRemoveSubmission) {
+    pub fn start(
+        &self,
+        accepted: AcceptedVolumeRemoveSubmission,
+    ) -> Result<(), crate::tasks::TaskAdmissionError> {
         if !accepted.should_start_execution {
-            return;
+            return Ok(());
         }
         let runtime = self.clone();
-        self.task_registry.spawn(async move {
+        self.task_registry.spawn(|| async move {
             runtime.run(accepted).await;
-        });
+        })
     }
 
     pub async fn run(self, accepted: AcceptedVolumeRemoveSubmission) {

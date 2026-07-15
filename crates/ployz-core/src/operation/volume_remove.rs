@@ -14,8 +14,7 @@ use super::text::CancellationReason;
 use super::text::FailureMessage;
 use super::{
     EventSequence, OperationInterruptionCause, OperationInterruptionEvidence,
-    OperationInterruptionNextAction, OperationInterruptionStage,
-    OperationInterruptionUncertainWork, OperationKind, OperationStatus,
+    OperationInterruptionStage, OperationKind, OperationStatus,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,8 +64,6 @@ impl VolumeRemoveOperationState {
         Some(OperationInterruptionEvidence::new(
             cause,
             last_durable_stage,
-            OperationInterruptionUncertainWork::IntentAndRuntime,
-            OperationInterruptionNextAction::InspectThenResubmit,
         ))
     }
 

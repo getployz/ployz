@@ -74,14 +74,17 @@ impl NetworkRepairOperation {
         }
     }
 
-    pub fn start(&self, accepted: AcceptedNetworkRepairSubmission) {
+    pub fn start(
+        &self,
+        accepted: AcceptedNetworkRepairSubmission,
+    ) -> Result<(), crate::tasks::TaskAdmissionError> {
         if !accepted.should_start_execution {
-            return;
+            return Ok(());
         }
         let runtime = self.clone();
-        self.task_registry.spawn(async move {
+        self.task_registry.spawn(|| async move {
             runtime.run(accepted).await;
-        });
+        })
     }
 
     pub async fn run(self, accepted: AcceptedNetworkRepairSubmission) {

@@ -12,8 +12,7 @@ use super::projection::{
 use super::text::{CancellationReason, FailureMessage};
 use super::{
     EventSequence, OperationInterruptionCause, OperationInterruptionEvidence,
-    OperationInterruptionNextAction, OperationInterruptionStage,
-    OperationInterruptionUncertainWork, OperationStatus,
+    OperationInterruptionStage, OperationStatus,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,8 +60,6 @@ impl CredentialGrantOperationState {
             Self::Accepted => Some(OperationInterruptionEvidence::new(
                 cause,
                 OperationInterruptionStage::CredentialGrantAccepted,
-                OperationInterruptionUncertainWork::Intent,
-                OperationInterruptionNextAction::InspectThenResubmit,
             )),
             Self::Completed
             | Self::Failed { .. }

@@ -259,21 +259,24 @@ async fn quiesced_running_worker_cannot_race_interruption_sealing() {
     let worker_operation_id = operation_id.clone();
     let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-    tasks.spawn(async move {
-        let _ = started_tx.send(());
-        if release_rx.await.is_ok() {
-            worker_repository
-                .record_namespace_remove_transition(
-                    &worker_operation_id,
-                    NamespaceRemoveTransition::Completed,
-                )
-                .await
-                .expect("worker completion records");
-        }
-    });
+    tasks
+        .spawn(|| async move {
+            let _ = started_tx.send(());
+            if release_rx.await.is_ok() {
+                worker_repository
+                    .record_namespace_remove_transition(
+                        &worker_operation_id,
+                        NamespaceRemoveTransition::Completed,
+                    )
+                    .await
+                    .expect("worker completion records");
+            }
+        })
+        .expect("worker admits");
     started_rx.await.expect("worker starts");
 
-    TaskRegistry::quiesce_all(&[&tasks], Duration::from_secs(1))
+    tasks
+        .quiesce(Duration::from_secs(1))
         .await
         .expect("worker quiesces");
     assert!(release_tx.send(()).is_err(), "worker receiver must be gone");

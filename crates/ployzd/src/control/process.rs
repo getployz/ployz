@@ -64,20 +64,7 @@ const REACHABILITY_RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
 pub struct RunningControlProcess {
     intent: RunningIntentService,
     operation_api: RunningNatsService,
-    credential_grant_tasks: TaskRegistry,
-    ingress_configure_tasks: TaskRegistry,
-    deploy_tasks: TaskRegistry,
-    service_restart_tasks: TaskRegistry,
-    namespace_remove_tasks: TaskRegistry,
-    network_repair_tasks: TaskRegistry,
-    volume_remove_tasks: TaskRegistry,
-    machine_update_tasks: TaskRegistry,
-    machine_lifecycle_tasks: TaskRegistry,
-    mint_tasks: TaskRegistry,
-    reachability_tasks: TaskRegistry,
-    managed_dns_tasks: TaskRegistry,
-    certificate_issuance_tasks: TaskRegistry,
-    certificate_renewal_tasks: TaskRegistry,
+    control_tasks: TaskRegistry,
     testimony_cache: RunningRoleTestimonyCache,
     runtime_projection: RunningRuntimeProjection,
     ingress_endpoint_projection: RunningIngressEndpointProjection,
@@ -90,26 +77,10 @@ const CONTROL_TASK_QUIESCE_TIMEOUT: Duration = Duration::from_secs(5);
 impl RunningControlProcess {
     pub async fn shutdown(self) -> Result<(), ControlProcessShutdownError> {
         let mut nats_service_error = self.operation_api.shutdown().await.err();
-        let quiesce_result = TaskRegistry::quiesce_all(
-            &[
-                &self.credential_grant_tasks,
-                &self.ingress_configure_tasks,
-                &self.deploy_tasks,
-                &self.service_restart_tasks,
-                &self.namespace_remove_tasks,
-                &self.network_repair_tasks,
-                &self.volume_remove_tasks,
-                &self.machine_update_tasks,
-                &self.machine_lifecycle_tasks,
-                &self.mint_tasks,
-                &self.reachability_tasks,
-                &self.managed_dns_tasks,
-                &self.certificate_issuance_tasks,
-                &self.certificate_renewal_tasks,
-            ],
-            CONTROL_TASK_QUIESCE_TIMEOUT,
-        )
-        .await;
+        let quiesce_result = self
+            .control_tasks
+            .quiesce(CONTROL_TASK_QUIESCE_TIMEOUT)
+            .await;
         let interruption_result = if quiesce_result.is_ok() {
             Some(
                 self.operation_repository
@@ -276,22 +247,10 @@ async fn start_control_process_with_client_reload_and_issuer(
         .await
         .map_err(ControlProcessError::StartFactsCache)?;
     let facts = testimony_cache.cache();
-    let deploy_tasks = TaskRegistry::default();
-    let credential_grant_tasks = TaskRegistry::default();
-    let ingress_configure_tasks = TaskRegistry::default();
-    let service_restart_tasks = TaskRegistry::default();
-    let namespace_remove_tasks = TaskRegistry::default();
-    let network_repair_tasks = TaskRegistry::default();
-    let volume_remove_tasks = TaskRegistry::default();
-    let machine_update_tasks = TaskRegistry::default();
-    let machine_lifecycle_tasks = TaskRegistry::default();
-    let mint_tasks = TaskRegistry::default();
+    let control_tasks = TaskRegistry::default();
     let namespace_intent = NamespaceIntentStore::new(core_store.clone());
     let ployz_dns_target = PloyzDnsTargetStore::new(core_store.clone());
     let lease_client = LeaseClient::new(config.lease_worker_url.clone());
-    let managed_dns_tasks = TaskRegistry::default();
-    let certificate_issuance_tasks = TaskRegistry::default();
-    let certificate_renewal_tasks = TaskRegistry::default();
     let (certificate_wake, certificate_wake_rx) = tokio::sync::mpsc::channel(1);
     let certificate_manager = match certificate_issuer {
         Some(issuer) => CertificateManager::with_issuer(
@@ -306,13 +265,11 @@ async fn start_control_process_with_client_reload_and_issuer(
             config.certificate_manager.clone(),
         ),
     }
-    .with_task_registry(certificate_issuance_tasks.clone());
+    .with_task_registry(control_tasks.clone());
     let machine_roster = MachineRosterStore::new(core_store.clone());
-    let reachability_tasks = TaskRegistry::default();
-    reachability_tasks.spawn(reconcile_reachability_loop(
-        facts.clone(),
-        machine_roster.clone(),
-    ));
+    control_tasks
+        .spawn(|| reconcile_reachability_loop(facts.clone(), machine_roster.clone()))
+        .map_err(ControlProcessError::StartControlTask)?;
     let deploy_driver = DeployOperationDriver::new(
         DeployOperationStores {
             intent_change_client: client.clone(),
@@ -323,13 +280,13 @@ async fn start_control_process_with_client_reload_and_issuer(
         },
         certificate_manager.clone(),
         config.deploy_step_timeout,
-        deploy_tasks.clone(),
+        control_tasks.clone(),
     );
     let service_restart = crate::control::operations::service_restart::ServiceRestartOperation::new(
         client.clone(),
         controllers.clone(),
         config.deploy_step_timeout,
-        service_restart_tasks.clone(),
+        control_tasks.clone(),
     );
     let namespace_remove =
         crate::control::operations::namespace_remove::NamespaceRemoveOperation::new(
@@ -337,33 +294,33 @@ async fn start_control_process_with_client_reload_and_issuer(
             namespace_intent.clone(),
             controllers.clone(),
             config.deploy_step_timeout,
-            namespace_remove_tasks.clone(),
+            control_tasks.clone(),
         );
     let volume_remove = crate::control::operations::volume_remove::VolumeRemoveOperation::new(
         client.clone(),
         namespace_intent.clone(),
         controllers.clone(),
         config.deploy_step_timeout,
-        volume_remove_tasks.clone(),
+        control_tasks.clone(),
     );
     let machine_mint = MachineCredentialMint::new(
         controllers.clone(),
         authorization.handle(),
         MintVerifyEndpoint::from_connect(&config.nats_connect),
         config.nats_authorization.machine_seed_file.clone(),
-        mint_tasks.clone(),
+        control_tasks.clone(),
     );
     let credential_grant = CredentialGrantOperation::new(
         controllers.clone(),
         authorization.handle(),
         client.clone(),
-        credential_grant_tasks.clone(),
+        control_tasks.clone(),
     );
     let ingress_configure = IngressConfigureOperation::new(
         controllers.clone(),
         IngressIntentStore::new(core_store.clone()),
         client.clone(),
-        ingress_configure_tasks.clone(),
+        control_tasks.clone(),
     );
     // Startup reconciliation (one bounded pass, owned by control start): a
     // control crash between machine-add acceptance and material-ready
@@ -385,7 +342,7 @@ async fn start_control_process_with_client_reload_and_issuer(
             .with_request_timeout(config.deploy_step_timeout),
         client.clone(),
         config.deploy_step_timeout,
-        network_repair_tasks.clone(),
+        control_tasks.clone(),
     );
     let core_machine_id = config
         .deploy_machines
@@ -393,14 +350,15 @@ async fn start_control_process_with_client_reload_and_issuer(
         .cloned()
         .ok_or(ControlProcessError::MissingDeployMachine)?;
     start_managed_dns_task(
-        &managed_dns_tasks,
+        &control_tasks,
         client.clone(),
         IngressIntentStore::new(core_store.clone()),
         ployz_dns_target.clone(),
         controllers.repository().clone(),
         lease_client.clone(),
         certificate_wake,
-    );
+    )
+    .map_err(ControlProcessError::StartControlTask)?;
     let certificate_renewal_health = CertificateRenewalTask::new(
         client.clone(),
         certificate_manager,
@@ -410,7 +368,8 @@ async fn start_control_process_with_client_reload_and_issuer(
         lease_client,
         certificate_wake_rx,
     )
-    .start(&certificate_renewal_tasks);
+    .start(&control_tasks)
+    .map_err(ControlProcessError::StartControlTask)?;
     let intent = start_intent_service(
         client.clone(),
         core_machine_id.clone(),
@@ -443,16 +402,13 @@ async fn start_control_process_with_client_reload_and_issuer(
     })?;
     let runtime_projection_health = runtime_projection.health_reader();
     let machine_updater = NatsMachineSubstrateUpdater::new(client.clone());
-    let machine_update = MachineUpdateOperation::new(
-        controllers.clone(),
-        machine_updater,
-        machine_update_tasks.clone(),
-    );
+    let machine_update =
+        MachineUpdateOperation::new(controllers.clone(), machine_updater, control_tasks.clone());
     let machine_lifecycle = MachineLifecycleOperation::new(
         client.clone(),
         controllers.clone(),
         machine_roster.clone(),
-        machine_lifecycle_tasks.clone(),
+        control_tasks.clone(),
     );
     let operation_api = start_operation_api_service_with_handlers(
         client.clone(),
@@ -494,20 +450,7 @@ async fn start_control_process_with_client_reload_and_issuer(
     Ok(RunningControlProcess {
         intent,
         operation_api,
-        credential_grant_tasks,
-        ingress_configure_tasks,
-        deploy_tasks,
-        service_restart_tasks,
-        namespace_remove_tasks,
-        network_repair_tasks,
-        volume_remove_tasks,
-        machine_update_tasks,
-        machine_lifecycle_tasks,
-        mint_tasks,
-        reachability_tasks,
-        managed_dns_tasks,
-        certificate_issuance_tasks,
-        certificate_renewal_tasks,
+        control_tasks,
         testimony_cache,
         runtime_projection,
         ingress_endpoint_projection,
@@ -663,6 +606,8 @@ pub enum ControlProcessError {
     RenderNatsAuthorization(RenderFailure),
     #[error("failed to reconcile unfinished machine-add mints: {0}")]
     ResumeMachineAddMints(MintResumeError),
+    #[error("failed to admit control task during startup: {0}")]
+    StartControlTask(crate::tasks::TaskAdmissionError),
     #[error("failed to recover operations interrupted by prior control process loss: {0}")]
     RecoverInterruptedOperations(OperationStatusStoreError),
     #[error("failed to start intent service: {0}")]

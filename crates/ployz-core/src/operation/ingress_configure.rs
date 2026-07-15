@@ -11,8 +11,7 @@ use super::projection::{
 };
 use super::{
     EventSequence, FailureMessage, OperationInterruptionCause, OperationInterruptionEvidence,
-    OperationInterruptionNextAction, OperationInterruptionStage,
-    OperationInterruptionUncertainWork, OperationStatus,
+    OperationInterruptionStage, OperationStatus,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,8 +42,6 @@ impl IngressConfigureOperationState {
             Self::Accepted => Some(OperationInterruptionEvidence::new(
                 cause,
                 OperationInterruptionStage::IngressConfigureAccepted,
-                OperationInterruptionUncertainWork::Intent,
-                OperationInterruptionNextAction::InspectThenResubmit,
             )),
             Self::Completed | Self::Failed { .. } | Self::Interrupted { .. } => None,
         }

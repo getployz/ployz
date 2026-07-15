@@ -304,54 +304,56 @@ impl CertificateManager {
     ) -> Result<ActiveCertState, CertificateProvisionFailure> {
         let manager = self.clone();
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-        self.issuance_tasks.spawn(async move {
-            let _guard = manager.issuance_lock.lock().await;
-            let current = manager
-                .store
-                .active_for_owner(&owner)
-                .await
-                .map_err(active_commit_without_attempt);
-            let result = match (current, request) {
-                (Err(error), _) => Err(error),
-                (Ok(current), IssueRequest::Ensure { owner_operation_id }) => {
-                    let reusable = current.as_ref().and_then(|metadata| {
-                        let active = &metadata.active;
-                        if !active.is_usable_at((manager.now_seconds)()) {
-                            return None;
-                        }
-                        load_custom_certificate(&manager.state_dir, active)
-                            .ok()
-                            .map(|bundle| (active.clone(), bundle))
-                    });
-                    match reusable {
-                        Some((active, bundle)) => manager
-                            .push_bundle(&owner_operation_id, &targets, &bundle)
-                            .await
-                            .map(|()| active),
-                        None => {
-                            manager
-                                .issue_inner(owner, &hostname, &targets, preflight, current)
+        self.issuance_tasks
+            .spawn(|| async move {
+                let _guard = manager.issuance_lock.lock().await;
+                let current = manager
+                    .store
+                    .active_for_owner(&owner)
+                    .await
+                    .map_err(active_commit_without_attempt);
+                let result = match (current, request) {
+                    (Err(error), _) => Err(error),
+                    (Ok(current), IssueRequest::Ensure { owner_operation_id }) => {
+                        let reusable = current.as_ref().and_then(|metadata| {
+                            let active = &metadata.active;
+                            if !active.is_usable_at((manager.now_seconds)()) {
+                                return None;
+                            }
+                            load_custom_certificate(&manager.state_dir, active)
+                                .ok()
+                                .map(|bundle| (active.clone(), bundle))
+                        });
+                        match reusable {
+                            Some((active, bundle)) => manager
+                                .push_bundle(&owner_operation_id, &targets, &bundle)
                                 .await
+                                .map(|()| active),
+                            None => {
+                                manager
+                                    .issue_inner(owner, &hostname, &targets, preflight, current)
+                                    .await
+                            }
                         }
                     }
-                }
-                (Ok(Some(current)), IssueRequest::Renew(expected)) if current != expected => {
-                    Ok(current.active)
-                }
-                (Ok(current), IssueRequest::Renew(expected)) => {
-                    manager
-                        .issue_inner(
-                            owner,
-                            &hostname,
-                            &targets,
-                            preflight,
-                            current.or(Some(expected)),
-                        )
-                        .await
-                }
-            };
-            let _ = result_tx.send(result);
-        });
+                    (Ok(Some(current)), IssueRequest::Renew(expected)) if current != expected => {
+                        Ok(current.active)
+                    }
+                    (Ok(current), IssueRequest::Renew(expected)) => {
+                        manager
+                            .issue_inner(
+                                owner,
+                                &hostname,
+                                &targets,
+                                preflight,
+                                current.or(Some(expected)),
+                            )
+                            .await
+                    }
+                };
+                let _ = result_tx.send(result);
+            })
+            .map_err(active_commit_without_attempt)?;
         result_rx.await.map_err(active_commit_without_attempt)?
     }
 

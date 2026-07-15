@@ -78,6 +78,8 @@ pub enum MintResumeError {
     ReadSecretDelivery(OperationStatusStoreError),
     #[error("failed to read machine-add status: {0:?}")]
     ReadStatus(OperationStatusStoreError),
+    #[error("failed to admit resumed machine-add mint: {0}")]
+    TaskAdmission(crate::tasks::TaskAdmissionError),
 }
 
 /// Bounded operation work that mints per-machine credentials after a
@@ -114,11 +116,11 @@ impl MachineCredentialMint {
         &self.machine_seed_file
     }
 
-    pub fn start(&self, request: MintRequest) {
+    pub fn start(&self, request: MintRequest) -> Result<(), crate::tasks::TaskAdmissionError> {
         let runtime = self.clone();
-        self.tasks.spawn(async move {
+        self.tasks.spawn(|| async move {
             let _outcome = runtime.run(request).await;
-        });
+        })
     }
 
     /// One bounded startup pass owned by control start: a control crash
@@ -169,7 +171,8 @@ impl MachineCredentialMint {
                 machine_id: submission.identity.machine_id,
                 idempotency_key: submission.idempotency_key,
             };
-            self.start(request.clone());
+            self.start(request.clone())
+                .map_err(MintResumeError::TaskAdmission)?;
             resumed.push(request);
         }
         Ok(resumed)

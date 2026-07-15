@@ -50,15 +50,17 @@ pub fn start_managed_dns_task(
     repository: OperationRepository,
     worker: LeaseClient,
     certificate_wake: tokio::sync::mpsc::Sender<()>,
-) {
-    registry.spawn(run_loop(
-        client,
-        ingress_intent,
-        target,
-        repository,
-        worker,
-        certificate_wake,
-    ));
+) -> Result<(), crate::tasks::TaskAdmissionError> {
+    registry.spawn(|| {
+        run_loop(
+            client,
+            ingress_intent,
+            target,
+            repository,
+            worker,
+            certificate_wake,
+        )
+    })
 }
 
 async fn run_loop(

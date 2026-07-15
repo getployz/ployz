@@ -64,11 +64,13 @@ impl CertificateRenewalTask {
         }
     }
 
-    #[must_use]
-    pub fn start(self, registry: &TaskRegistry) -> CertificateRenewalHealth {
+    pub fn start(
+        self,
+        registry: &TaskRegistry,
+    ) -> Result<CertificateRenewalHealth, crate::tasks::TaskAdmissionError> {
         let health = CertificateRenewalHealth::default();
-        registry.spawn(self.run_loop(health.clone()));
-        health
+        registry.spawn(|| self.run_loop(health.clone()))?;
+        Ok(health)
     }
 
     async fn run_loop(mut self, health: CertificateRenewalHealth) {

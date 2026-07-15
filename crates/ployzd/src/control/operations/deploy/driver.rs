@@ -358,15 +358,18 @@ impl DeployOperationDriver {
         }
     }
 
-    pub fn start(&self, accepted: AcceptedDeployExecution) {
+    pub fn start(
+        &self,
+        accepted: AcceptedDeployExecution,
+    ) -> Result<(), crate::tasks::TaskAdmissionError> {
         if !accepted.submission.should_start_execution {
-            return;
+            return Ok(());
         }
 
         let runtime = self.clone();
-        self.task_registry.spawn(async move {
+        self.task_registry.spawn(|| async move {
             let _outcome = runtime.run(accepted).await;
-        });
+        })
     }
 
     pub async fn run(

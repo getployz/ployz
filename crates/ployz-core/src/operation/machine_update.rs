@@ -15,8 +15,7 @@ use super::projection::{
 use super::text::{CancellationReason, FailureMessage};
 use super::{
     EventSequence, OperationInterruptionCause, OperationInterruptionEvidence,
-    OperationInterruptionNextAction, OperationInterruptionStage,
-    OperationInterruptionUncertainWork, OperationKind, OperationStatus,
+    OperationInterruptionStage, OperationKind, OperationStatus,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,8 +65,6 @@ impl MachineUpdateOperationState {
         Some(OperationInterruptionEvidence::new(
             cause,
             last_durable_stage,
-            OperationInterruptionUncertainWork::Runtime,
-            OperationInterruptionNextAction::InspectThenResubmit,
         ))
     }
 
