@@ -304,17 +304,18 @@ impl InternalResolverHealth {
     }
 
     pub(super) async fn await_bound(&self, timeout: Duration) -> Option<SocketAddr> {
-        let deadline = tokio::time::Instant::now() + timeout;
         let mut states = self.state.subscribe();
-        loop {
-            match states.borrow().clone() {
-                InternalResolverState::Serving { bound } => return Some(bound),
-                InternalResolverState::AwaitingBind { .. } => {}
-            }
-            match tokio::time::timeout_at(deadline, states.changed()).await {
-                Ok(Ok(())) => {}
-                Ok(Err(_)) | Err(_) => return None,
-            }
+        let Ok(Ok(state)) = tokio::time::timeout(
+            timeout,
+            states.wait_for(|state| matches!(state, InternalResolverState::Serving { .. })),
+        )
+        .await
+        else {
+            return None;
+        };
+        match &*state {
+            InternalResolverState::Serving { bound } => Some(*bound),
+            InternalResolverState::AwaitingBind { .. } => None,
         }
     }
 }
