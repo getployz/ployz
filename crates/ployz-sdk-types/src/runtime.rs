@@ -24,7 +24,15 @@ pub struct RuntimeSnapshotResult {
 #[serde(deny_unknown_fields)]
 pub struct ControlHealth {
     pub runtime_projection: ControlRuntimeProjectionHealth,
+    pub ingress_endpoint_projection: ControlIngressEndpointProjectionHealth,
     pub certificate_renewal: ControlCertificateRenewalHealth,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ControlIngressEndpointProjectionHealth {
+    pub consecutive_failures: u64,
+    pub last_failure: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -74,32 +82,28 @@ pub enum ControlCertificateRenewalAttempt {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "failure_kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlCertificateRenewalFailure {
-    IntentStore {
-        message: String,
-    },
-    RenewalEvidence {
-        failure: CertificateProvisionFailure,
-    },
-    OperationStatus {
-        message: String,
-    },
-    OperationEvidence {
-        message: String,
-    },
-    PloyzDnsTarget {
-        message: String,
-    },
-    Worker {
-        message: String,
-    },
+    IntentStore { message: String },
+    MachineRoster { message: String },
+    OperationStatus { message: String },
+    OperationEvidence { message: String },
+    PloyzDnsTarget { message: String },
+    Worker { message: String },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ControlCertificateRenewalOutcome {
     NoAction,
     AwaitingPloyzWildcard,
-    Attempted { attempted: usize, failed: usize },
+    Attempted {
+        attempted: usize,
+        failed: usize,
+    },
+    Degraded {
+        attempted: usize,
+        failed: usize,
+        unknown_machine_ids: Vec<MachineId>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

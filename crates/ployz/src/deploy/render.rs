@@ -302,7 +302,6 @@ impl DeployTree {
                 }
                 OperationKind::Cert
                 | OperationKind::IngressConfigure
-                | OperationKind::IngressRefresh
                 | OperationKind::ManagedDnsReconcile
                 | OperationKind::MachineAdd
                 | OperationKind::MachineUpdate
@@ -323,9 +322,6 @@ impl DeployTree {
             | OperationEvent::CertWarning { .. }
             | OperationEvent::CertCompleted { .. }
             | OperationEvent::CertFailed { .. }
-            | OperationEvent::IngressRefreshSubmitted { .. }
-            | OperationEvent::IngressRefreshCompleted { .. }
-            | OperationEvent::IngressRefreshFailed { .. }
             | OperationEvent::IngressConfigureSubmitted { .. }
             | OperationEvent::IngressConfigureCompleted { .. }
             | OperationEvent::IngressConfigureFailed { .. }

@@ -424,7 +424,10 @@ where
             async {
                 ports
                     .certificate_provisioner
-                    .ensure_ployz_wildcard(command.ployz_gateway_certificate_targets())
+                    .ensure_ployz_wildcard(
+                        command.operation_id(),
+                        command.ployz_gateway_certificate_targets(),
+                    )
                     .await
                     .map(|_| ())
                     .map_err(|failure| DeployExecutionError::ProvisionCertificate {

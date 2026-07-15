@@ -1,18 +1,18 @@
 //! Gateway-local custom certificate artifacts.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-#[cfg(test)]
-use crate::certificate::material::custom_certificate_material_path;
 use crate::certificate::material::{
-    CertificateMaterialError, certificate_material_path_for_digest, load_custom_certificate,
-    validate_custom_certificate, validate_custom_certificate_for_activation,
-    write_custom_certificate,
+    CertificateMaterialError, certificate_material_path_for_digest,
+    custom_certificate_material_path, load_custom_certificate, validate_custom_certificate,
+    validate_custom_certificate_for_activation, write_custom_certificate,
 };
 use ployz_core::certificate::{
     ActiveCertState, CertificateArtifactPushRequest, CertificateArtifactRemoveRequest,
     CustomCertBundle,
 };
+use ployz_core::ids::CertId;
 use ployz_core::install::InstallSha256Digest;
 
 #[derive(Debug, Clone)]
@@ -78,6 +78,49 @@ impl GatewayCertificateStore {
     ) -> Result<CustomCertBundle, GatewayCertificateStoreError> {
         validate_custom_certificate_for_activation(active, now_seconds).map_err(store_error)?;
         self.load(active)
+    }
+
+    pub fn missing_at(
+        &self,
+        desired: &[ActiveCertState],
+        now_seconds: u64,
+    ) -> Result<Vec<CertId>, GatewayCertificateStoreError> {
+        let mut cert_ids = BTreeSet::new();
+        for active in desired {
+            if !cert_ids.insert(active.cert_id.clone()) {
+                return Err(GatewayCertificateStoreError::DuplicateDesiredCertificate {
+                    cert_id: active.cert_id.clone(),
+                });
+            }
+            validate_custom_certificate_for_activation(active, now_seconds).map_err(store_error)?;
+        }
+
+        let mut missing = Vec::new();
+        for active in desired {
+            let path =
+                custom_certificate_material_path(&self.state_dir, active).map_err(store_error)?;
+            match path.try_exists() {
+                Ok(false) => {
+                    missing.push(active.cert_id.clone());
+                    continue;
+                }
+                Ok(true) => {}
+                Err(error) => {
+                    return Err(GatewayCertificateStoreError::ArtifactFile {
+                        path,
+                        message: error.to_string(),
+                    });
+                }
+            }
+            match self.load(active) {
+                Ok(_) => {}
+                Err(GatewayCertificateStoreError::InvalidMaterial { .. }) => {
+                    missing.push(active.cert_id.clone());
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(missing)
     }
 
     /// Removes exactly the artifact named by certificate id and digest.
@@ -147,6 +190,8 @@ fn store_error(error: CertificateMaterialError) -> GatewayCertificateStoreError 
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum GatewayCertificateStoreError {
+    #[error("desired certificate set contains duplicate id {}", cert_id.as_str())]
+    DuplicateDesiredCertificate { cert_id: CertId },
     #[error("certificate artifact size differs: expected {expected}, actual {actual}")]
     SizeMismatch { expected: u64, actual: u64 },
     #[error(

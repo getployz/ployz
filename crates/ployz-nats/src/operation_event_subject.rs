@@ -131,9 +131,6 @@ pub fn operation_event_subject_suffix(event: &OperationEvent) -> String {
         OperationEvent::ManagedDnsReconcileFailed { .. } => {
             "managed.dns.reconcile.failed".to_owned()
         }
-        OperationEvent::IngressRefreshSubmitted { .. } => "ingress.refresh.submitted".to_owned(),
-        OperationEvent::IngressRefreshCompleted { .. } => "ingress.refresh.completed".to_owned(),
-        OperationEvent::IngressRefreshFailed { .. } => "ingress.refresh.failed".to_owned(),
         OperationEvent::IngressConfigureSubmitted { .. } => {
             "ingress.configure.submitted".to_owned()
         }

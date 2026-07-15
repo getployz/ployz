@@ -11,6 +11,29 @@ use super::{AcmeHttp01Challenge, CustomCertBundle};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct CertificateArtifactStatusRequest {
+    pub desired: Vec<super::ActiveCertState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CertificateArtifactStatusOk {
+    pub machine_id: MachineId,
+    pub missing_cert_ids: Vec<CertId>,
+}
+
+impl MachineRpcResponder for CertificateArtifactStatusOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        let Self { machine_id, .. } = self;
+        machine_id
+    }
+}
+
+pub type CertificateArtifactStatusResponse =
+    MachineRpcResponse<CertificateArtifactStatusOk, GatewayCertificateRpcError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CertificateArtifactPushRequest {
     pub operation_id: OperationId,
     pub bundle: CustomCertBundle,
@@ -188,6 +211,33 @@ mod tests {
             )
             .expect("deserialize request"),
             request
+        );
+    }
+
+    #[test]
+    fn artifact_status_roundtrips_desired_and_missing_ids() {
+        let desired = bundle().active_cert().clone();
+        let response = CertificateArtifactStatusResponse::Ok(CertificateArtifactStatusOk {
+            machine_id: MachineId::try_new("machine_gateway").expect("machine id"),
+            missing_cert_ids: vec![desired.cert_id.clone()],
+        });
+        let request = CertificateArtifactStatusRequest {
+            desired: vec![desired],
+        };
+
+        assert_eq!(
+            serde_json::from_value::<CertificateArtifactStatusRequest>(
+                serde_json::to_value(&request).expect("serialize request")
+            )
+            .expect("deserialize request"),
+            request
+        );
+        assert_eq!(
+            serde_json::from_value::<CertificateArtifactStatusResponse>(
+                serde_json::to_value(&response).expect("serialize response")
+            )
+            .expect("deserialize response"),
+            response
         );
     }
 

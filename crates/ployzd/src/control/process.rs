@@ -31,7 +31,7 @@ use crate::control::projection::ingress_endpoint::{
     IngressEndpointStartError, RunningIngressEndpointProjection, start_ingress_endpoint_projection,
 };
 use crate::control::projection::runtime::{RunningRuntimeProjection, start_runtime_projection};
-use crate::control::reconciler::certificate::start_certificate_renewal_task;
+use crate::control::reconciler::certificate::CertificateRenewalTask;
 use crate::control::reconciler::managed_dns::start_managed_dns_task;
 use crate::control::role_client::machine::{
     NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
@@ -349,15 +349,16 @@ async fn start_control_process_with_client_reload_and_issuer(
         lease_client.clone(),
         certificate_wake,
     );
-    let certificate_renewal_health = start_certificate_renewal_task(
-        &certificate_renewal_tasks,
+    let certificate_renewal_health = CertificateRenewalTask::new(
+        client.clone(),
         certificate_manager,
         NatsMachineFactsReader::new(client.clone()),
         machine_roster.clone(),
         ployz_dns_target,
         lease_client,
         certificate_wake_rx,
-    );
+    )
+    .start(&certificate_renewal_tasks);
     let intent = start_intent_service(
         client.clone(),
         core_machine_id.clone(),
@@ -374,10 +375,10 @@ async fn start_control_process_with_client_reload_and_issuer(
             .control_plane_epoch()
             .await
             .map_err(ControlProcessError::ReadCoreEpoch)?,
-        controllers.repository().clone(),
     )
     .await
     .map_err(ControlProcessError::StartIngressEndpointProjection)?;
+    let ingress_endpoint_projection_health = ingress_endpoint_projection.health_reader();
     let runtime_projection = start_runtime_projection(
         client.clone(),
         intent_reader.clone(),
@@ -431,6 +432,7 @@ async fn start_control_process_with_client_reload_and_issuer(
             intent_reader,
             logs_tailer,
             runtime_projection_health,
+            ingress_endpoint_projection_health,
             certificate_renewal_health.clone(),
         ),
     )

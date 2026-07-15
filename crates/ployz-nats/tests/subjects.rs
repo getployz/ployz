@@ -171,6 +171,13 @@ fn machine_subjects_use_known_endpoint_and_event_tokens() {
         "plz.v1.rpc.machine.query.machine_7.dataplane.public_key"
     );
     assert_eq!(
+        machine_service(
+            &machine_id,
+            MachineServiceEndpoint::CertificateArtifactStatus
+        ),
+        "plz.v1.rpc.machine.query.machine_7.certificate.artifact.status"
+    );
+    assert_eq!(
         machine_facts(&machine_id),
         "plz.v1.testimony.machine.machine_7.snapshot"
     );

@@ -425,6 +425,7 @@ pub enum MachineServiceEndpoint {
     ImageBlobPush,
     ImageManifestPush,
     ImageEnsure,
+    CertificateArtifactStatus,
     CertificateArtifactPush,
     CertificateArtifactRemove,
     CertificateChallengeApply,
@@ -465,6 +466,7 @@ impl MachineServiceEndpoint {
             Self::ImageBlobPush => "image.blob.push",
             Self::ImageManifestPush => "image.manifest.push",
             Self::ImageEnsure => "container.ensure_image",
+            Self::CertificateArtifactStatus => "certificate.artifact.status",
             Self::CertificateArtifactPush => "certificate.artifact.push",
             Self::CertificateArtifactRemove => "certificate.artifact.remove",
             Self::CertificateChallengeApply => "certificate.challenge.apply",
@@ -488,6 +490,7 @@ impl MachineServiceEndpoint {
             | Self::DataplaneStatus
             | Self::LogsTail
             | Self::ImageBlobCheck
+            | Self::CertificateArtifactStatus
             | Self::CertificateChallengeStatus
             | Self::GatewayStatusGet => MachineServiceEndpointExecution::Query,
             Self::FactsRefresh

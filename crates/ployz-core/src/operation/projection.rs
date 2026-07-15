@@ -9,7 +9,6 @@ use super::credential_grant::{self, CredentialGrantOperationState};
 use super::deploy::{self, DeployOperationState};
 use super::events::{ClassifiedOperationEvent, OperationSubjectRef};
 use super::ingress_configure::{self, IngressConfigureOperationState};
-use super::ingress_refresh::{self, IngressRefreshOperationState};
 use super::machine_add::{self, MachineAddFields, MachineAddOperationState};
 use super::machine_lifecycle::{self, MachineLifecycleOperationState};
 use super::machine_update::{self, MachineUpdateOperationState};
@@ -104,7 +103,6 @@ pub enum ProjectionOperationState {
     ServiceRestart(ServiceRestartOperationState),
     ManagedDnsReconcile(ManagedDnsReconcileOperationState),
     IngressConfigure(IngressConfigureOperationState),
-    IngressRefresh(IngressRefreshOperationState),
     NamespaceRemove(NamespaceRemoveOperationState),
     VolumeRemove(VolumeRemoveOperationState),
 }
@@ -124,7 +122,6 @@ impl ProjectionOperationState {
             Self::ServiceRestart(_) => OperationKind::ServiceRestart,
             Self::ManagedDnsReconcile(_) => OperationKind::ManagedDnsReconcile,
             Self::IngressConfigure(_) => OperationKind::IngressConfigure,
-            Self::IngressRefresh(_) => OperationKind::IngressRefresh,
             Self::NamespaceRemove(_) => OperationKind::NamespaceRemove,
             Self::VolumeRemove(_) => OperationKind::VolumeRemove,
         }
@@ -144,7 +141,6 @@ pub(crate) const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::ServiceRestart => "service-restart",
         OperationKind::ManagedDnsReconcile => "managed-dns-reconcile",
         OperationKind::IngressConfigure => "ingress-configure",
-        OperationKind::IngressRefresh => "ingress-refresh",
         OperationKind::NamespaceRemove => "namespace-remove",
         OperationKind::VolumeRemove => "volume-remove",
     }
@@ -170,7 +166,6 @@ fn subject_ref_text(subject: &OperationSubjectRef) -> String {
             format!("managed-dns-reconcile {subject:?}")
         }
         OperationSubjectRef::IngressConfigure => "ingress-configure".to_owned(),
-        OperationSubjectRef::IngressRefresh => "ingress-refresh".to_owned(),
     }
 }
 
@@ -431,12 +426,6 @@ pub fn project_operation_event(
                 return Err(kind_mismatch(current, OperationKind::IngressConfigure));
             };
             ingress_configure::project_event(id, configuration, state, event, event_sequence)
-        }
-        ClassifiedOperationEvent::IngressRefresh { event, .. } => {
-            let OperationStatus::IngressRefresh { id, state, .. } = current else {
-                return Err(kind_mismatch(current, OperationKind::IngressRefresh));
-            };
-            ingress_refresh::project_event(id, state, event, event_sequence)
         }
         ClassifiedOperationEvent::NamespaceRemove { event, .. } => {
             let OperationStatus::NamespaceRemove {

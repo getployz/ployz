@@ -15,7 +15,6 @@ impl OperationStatus {
             | Self::ServiceRestart { id, .. }
             | Self::ManagedDnsReconcile { id, .. }
             | Self::IngressConfigure { id, .. }
-            | Self::IngressRefresh { id, .. }
             | Self::NamespaceRemove { id, .. } => id,
             Self::VolumeRemove { id, .. } => id,
         }
@@ -35,7 +34,6 @@ impl OperationStatus {
             Self::ServiceRestart { .. } => OperationKind::ServiceRestart,
             Self::ManagedDnsReconcile { .. } => OperationKind::ManagedDnsReconcile,
             Self::IngressConfigure { .. } => OperationKind::IngressConfigure,
-            Self::IngressRefresh { .. } => OperationKind::IngressRefresh,
             Self::NamespaceRemove { .. } => OperationKind::NamespaceRemove,
             Self::VolumeRemove { .. } => OperationKind::VolumeRemove,
         }
@@ -58,9 +56,7 @@ impl OperationStatus {
             | Self::CredentialGrant { .. }
             | Self::NetworkRepair { .. }
             | Self::ManagedDnsReconcile { .. } => OperationProgressScope::Cluster,
-            Self::IngressConfigure { .. } | Self::IngressRefresh { .. } => {
-                OperationProgressScope::Cluster
-            }
+            Self::IngressConfigure { .. } => OperationProgressScope::Cluster,
             Self::MachineAdd { machine_id, .. }
             | Self::MachineUpdate { machine_id, .. }
             | Self::MachineLifecycle { machine_id, .. }
@@ -110,10 +106,6 @@ impl OperationStatus {
                 ..
             }
             | Self::IngressConfigure {
-                last_event_sequence,
-                ..
-            }
-            | Self::IngressRefresh {
                 last_event_sequence,
                 ..
             }

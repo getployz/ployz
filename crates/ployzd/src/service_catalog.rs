@@ -264,6 +264,10 @@ pub fn gateway_role_service(machine_id: &MachineId) -> NatsServiceSpec {
             machine_id.as_str(),
         )]),
         vec![
+            machine_endpoint_spec(
+                machine_id,
+                MachineServiceEndpoint::CertificateArtifactStatus,
+            ),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::CertificateArtifactPush),
             machine_endpoint_spec(
                 machine_id,
@@ -338,6 +342,7 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         MachineServiceEndpoint::ImageBlobPush => "machine.image.blob.push",
         MachineServiceEndpoint::ImageManifestPush => "machine.image.manifest.push",
         MachineServiceEndpoint::ImageEnsure => "machine.image.ensure",
+        MachineServiceEndpoint::CertificateArtifactStatus => "machine.certificate.artifact.status",
         MachineServiceEndpoint::CertificateArtifactPush => "machine.certificate.artifact.push",
         MachineServiceEndpoint::CertificateArtifactRemove => "machine.certificate.artifact.remove",
         MachineServiceEndpoint::CertificateChallengeApply => "machine.certificate.challenge.apply",

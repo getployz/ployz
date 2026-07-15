@@ -109,6 +109,7 @@ pub trait CertificateProvisioner {
 
     fn ensure_ployz_wildcard(
         &mut self,
+        owner_operation_id: &OperationId,
         targets: &[GatewayCertificateTarget],
     ) -> impl Future<Output = Result<ActiveCertState, CertificateProvisionFailure>> + Send;
 }

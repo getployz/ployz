@@ -1,5 +1,6 @@
 //! Canonical ingress endpoint projection owner.
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
@@ -11,12 +12,6 @@ use ployz_core::intent::IntentSnapshot;
 use ployz_core::intent::recovery::ControlPlaneEpoch;
 use ployz_core::machine::GatewayServingStatus;
 use ployz_core::network::reachability::is_public;
-use ployz_core::operation::{
-    FailureMessage, IngressRefreshCandidateEvidence, IngressRefreshCandidatePublication,
-    IngressRefreshEvidence, IngressRefreshExclusionReason, IngressRefreshFactsOutcome,
-    IngressRefreshFailure, IngressRefreshGatewayOutcome, IngressRefreshInvalidationEvidence,
-    IngressRefreshOperationState, IngressRefreshTransition, OperationStatus,
-};
 use ployz_core::roles::GatewayRole;
 
 use ployz_nats::service_runtime::{
@@ -30,7 +25,6 @@ use tokio::task::JoinHandle;
 
 use crate::control::intent::ingress_intent::{IngressProjectionStore, IngressProjectionWrite};
 use crate::control::intent::service::NatsIntentReader;
-use crate::control::operation_evidence::{IngressRefreshOperationSubmission, OperationRepository};
 use crate::control::role_client::gateway::{GatewayStatusReadError, NatsGatewayStatusReader};
 use crate::control::role_client::machine::{MachineFactsReadError, NatsMachineFactsReader};
 use crate::roles::machine::MachineRuntimeUnavailableReason;
@@ -47,7 +41,6 @@ const GATHER_DEADLINE: Duration = Duration::from_secs(30);
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProjectionEvidenceRecord {
     pub projection: IngressEndpointProjection,
-    pub candidate_outcomes: Vec<IngressRefreshCandidateEvidence>,
     pub publishable_gateway_ids: Vec<MachineId>,
 }
 
@@ -59,7 +52,6 @@ impl ProjectionEvidenceRecord {
                 revision: 0,
                 state: IngressEndpointProjectionState::Pending,
             },
-            candidate_outcomes: Vec::new(),
             publishable_gateway_ids: Vec::new(),
         }
     }
@@ -73,9 +65,15 @@ pub struct RunningIngressEndpointProjection {
     service: RunningNatsService,
     shutdown: broadcast::Sender<()>,
     task: JoinHandle<()>,
+    health: IngressEndpointProjectionHealth,
 }
 
 impl RunningIngressEndpointProjection {
+    #[must_use]
+    pub(crate) fn health_reader(&self) -> IngressEndpointProjectionHealth {
+        self.health.clone()
+    }
+
     pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
         let _ = self.shutdown.send(());
         let _ = self.task.await;
@@ -87,10 +85,8 @@ pub async fn start_ingress_endpoint_projection(
     client: async_nats::Client,
     store: IngressProjectionStore,
     control_plane_epoch: ControlPlaneEpoch,
-    operations: OperationRepository,
 ) -> Result<RunningIngressEndpointProjection, IngressEndpointStartError> {
     ensure_epoch_projection(&store, control_plane_epoch).await?;
-    recover_unfinished_refreshes(&operations).await?;
     let mut service = start_nats_service(client.clone(), &ingress_endpoint_service())
         .await
         .map_err(IngressEndpointStartError::Service)?;
@@ -109,6 +105,7 @@ pub async fn start_ingress_endpoint_projection(
         }
     })?;
     let (shutdown, _) = broadcast::channel(1);
+    let health = IngressEndpointProjectionHealth::default();
     let task_shutdown = shutdown.subscribe();
     let task = tokio::spawn(run_projection_loop(
         ProjectionRuntime {
@@ -118,7 +115,8 @@ pub async fn start_ingress_endpoint_projection(
             gateway: NatsGatewayStatusReader::new(client.clone())
                 .with_request_timeout(GATHER_DEADLINE),
             facts: NatsMachineFactsReader::new(client).with_request_timeout(GATHER_DEADLINE),
-            operations,
+            pending_invalidation: None,
+            health: health.clone(),
         },
         changed,
         task_shutdown,
@@ -127,6 +125,7 @@ pub async fn start_ingress_endpoint_projection(
         service,
         shutdown,
         task,
+        health,
     })
 }
 
@@ -138,68 +137,6 @@ pub enum IngressEndpointStartError {
     Service(NatsServiceRuntimeError),
     #[error("subscribe ingress endpoint intent changes: {message}")]
     Subscribe { message: String },
-    #[error("recover interrupted ingress endpoint refreshes: {message}")]
-    Recovery { message: String },
-}
-
-async fn recover_unfinished_refreshes(
-    operations: &OperationRepository,
-) -> Result<(), IngressEndpointStartError> {
-    let statuses = operations.operation_statuses().await.map_err(|error| {
-        IngressEndpointStartError::Recovery {
-            message: error.to_string(),
-        }
-    })?;
-    for id in unfinished_refresh_ids(statuses) {
-        operations
-            .record_ingress_refresh_transition(
-                &id,
-                IngressRefreshTransition::Failed {
-                    failure: IngressRefreshFailure::Interrupted {
-                        message: failure_message(
-                            "ingress endpoint task restarted before terminal evidence",
-                        ),
-                    },
-                },
-            )
-            .await
-            .map_err(|error| IngressEndpointStartError::Recovery {
-                message: error.to_string(),
-            })?;
-    }
-    Ok(())
-}
-
-fn unfinished_refresh_ids(statuses: Vec<OperationStatus>) -> Vec<ployz_core::ids::OperationId> {
-    statuses
-        .into_iter()
-        .filter_map(|status| match status {
-            OperationStatus::IngressRefresh {
-                id,
-                state: IngressRefreshOperationState::Accepted,
-                ..
-            } => Some(id),
-            OperationStatus::IngressRefresh {
-                state:
-                    IngressRefreshOperationState::Completed { .. }
-                    | IngressRefreshOperationState::Failed { .. },
-                ..
-            }
-            | OperationStatus::Deploy { .. }
-            | OperationStatus::Cert { .. }
-            | OperationStatus::MachineAdd { .. }
-            | OperationStatus::MachineUpdate { .. }
-            | OperationStatus::MachineLifecycle { .. }
-            | OperationStatus::CoreReplace { .. }
-            | OperationStatus::CredentialGrant { .. }
-            | OperationStatus::NetworkRepair { .. }
-            | OperationStatus::ServiceRestart { .. }
-            | OperationStatus::ManagedDnsReconcile { .. }
-            | OperationStatus::IngressConfigure { .. }
-            | OperationStatus::NamespaceRemove { .. }
-            | OperationStatus::VolumeRemove { .. } => None,
-        })
-        .collect()
 }
 
 async fn ensure_epoch_projection(
@@ -250,11 +187,12 @@ struct ProjectionRuntime {
     intent: NatsIntentReader,
     gateway: NatsGatewayStatusReader,
     facts: NatsMachineFactsReader,
-    operations: OperationRepository,
+    pending_invalidation: Option<IngressEndpointProjectionIdentity>,
+    health: IngressEndpointProjectionHealth,
 }
 
 async fn run_projection_loop(
-    runtime: ProjectionRuntime,
+    mut runtime: ProjectionRuntime,
     mut intent_changed: async_nats::Subscriber,
     mut shutdown: broadcast::Receiver<()>,
 ) {
@@ -269,62 +207,21 @@ async fn run_projection_loop(
             _ = shutdown.recv() => break,
         }
         while intent_changed.next().now_or_never().flatten().is_some() {}
-        let _ = runtime.refresh().await;
+        match runtime.refresh().await {
+            Ok(_) => runtime.health.record_success(),
+            Err(error) => {
+                eprintln!("ployzd ingress endpoint projection warning: {error}");
+                runtime.health.record_failure(&error);
+            }
+        }
     }
 }
 
 impl ProjectionRuntime {
     async fn refresh(
-        &self,
+        &mut self,
     ) -> Result<Option<IngressEndpointProjectionIdentity>, IngressEndpointRefreshError> {
-        let operation_id =
-            ployz_core::ids::OperationId::try_new(format!("op_ingress_refresh_{}", nuid::next()))
-                .expect("NUID operation id is valid");
-        self.operations
-            .submit_ingress_refresh(IngressRefreshOperationSubmission {
-                operation_id: operation_id.clone(),
-            })
-            .await
-            .map_err(|_| IngressEndpointRefreshError::OperationStore)?;
-        let result = self.refresh_inner().await;
-        let (identity, transition) = match result {
-            Ok((identity, mut evidence)) => {
-                // Projection invalidation follows the projection commit and precedes terminal
-                // evidence, so an operation-log outage cannot hide the committed identity.
-                evidence.invalidation = match publish_changed(&self.client, identity).await {
-                    Ok(()) => IngressRefreshInvalidationEvidence::Published,
-                    Err(error) => IngressRefreshInvalidationEvidence::Failed {
-                        message: bounded_failure_message(
-                            "publish ingress.endpoint.changed",
-                            &error,
-                        ),
-                    },
-                };
-                (
-                    Some(identity),
-                    IngressRefreshTransition::Completed { evidence },
-                )
-            }
-            Err(error) => (
-                None,
-                IngressRefreshTransition::Failed {
-                    failure: error.operation_failure(),
-                },
-            ),
-        };
-        self.operations
-            .record_ingress_refresh_transition(&operation_id, transition)
-            .await
-            .map_err(|_| IngressEndpointRefreshError::OperationStore)?;
-        Ok(identity)
-    }
-
-    async fn refresh_inner(
-        &self,
-    ) -> Result<
-        (IngressEndpointProjectionIdentity, IngressRefreshEvidence),
-        IngressEndpointRefreshError,
-    > {
+        self.publish_pending_invalidation().await?;
         let intent = self
             .intent
             .intent()
@@ -332,42 +229,48 @@ impl ProjectionRuntime {
             .map_err(|_| IngressEndpointRefreshError::IntentUnavailable)?;
         let candidates = gateway_candidates(&intent);
         let outcomes = self.gather(candidates).await;
-        let gathered_evidence = outcomes.clone();
         let previous = self
             .store
             .load()
             .await
-            .map_err(|source| IngressEndpointRefreshError::Store {
-                source,
-                candidates: gathered_evidence.clone(),
-            })?
-            .ok_or_else(|| IngressEndpointRefreshError::ProjectionMissing {
-                candidates: gathered_evidence,
-            })?;
+            .map_err(IngressEndpointRefreshError::Store)?
+            .ok_or(IngressEndpointRefreshError::ProjectionMissing)?;
         let next = project_refresh(&previous, outcomes);
-        let evidence = refresh_evidence(&previous, &next);
+        if next == previous {
+            return Ok(None);
+        }
         let expected = Some(previous.projection.identity());
         let identity = next.projection.identity();
         match self
             .store
             .compare_and_replace(expected, next)
             .await
-            .map_err(|source| IngressEndpointRefreshError::Store {
-                source,
-                candidates: evidence.candidates.clone(),
-            })? {
-            IngressProjectionWrite::Stored | IngressProjectionWrite::Unchanged => {
-                Ok((identity, evidence))
+            .map_err(IngressEndpointRefreshError::Store)?
+        {
+            IngressProjectionWrite::Stored => {
+                self.pending_invalidation = Some(identity);
+                self.publish_pending_invalidation().await?;
+                Ok(Some(identity))
             }
+            IngressProjectionWrite::Unchanged => Ok(None),
             IngressProjectionWrite::Conflict { .. } => {
-                Err(IngressEndpointRefreshError::ConcurrentWriter {
-                    candidates: evidence.candidates,
-                })
+                Err(IngressEndpointRefreshError::ConcurrentWriter)
             }
         }
     }
 
-    async fn gather(&self, candidates: Vec<MachineId>) -> Vec<IngressRefreshCandidateEvidence> {
+    async fn publish_pending_invalidation(&mut self) -> Result<(), IngressEndpointRefreshError> {
+        let Some(identity) = self.pending_invalidation else {
+            return Ok(());
+        };
+        publish_changed(&self.client, identity)
+            .await
+            .map_err(IngressEndpointRefreshError::Publish)?;
+        self.pending_invalidation = None;
+        Ok(())
+    }
+
+    async fn gather(&self, candidates: Vec<MachineId>) -> Vec<CandidateOutcome> {
         let mut gathered = candidates
             .iter()
             .cloned()
@@ -453,113 +356,70 @@ enum GatherReply {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CandidateOutcome {
+    machine_id: MachineId,
+    gateway_replied: bool,
+    public_addresses: Vec<std::net::IpAddr>,
+}
+
 #[derive(Debug, thiserror::Error)]
 enum IngressEndpointRefreshError {
     #[error("intent unavailable")]
     IntentUnavailable,
-    #[error("projection store: {source}")]
-    Store {
-        source: crate::control::store::CoreStoreError,
-        candidates: Vec<IngressRefreshCandidateEvidence>,
-    },
+    #[error("projection store: {0}")]
+    Store(crate::control::store::CoreStoreError),
     #[error("projection is missing")]
-    ProjectionMissing {
-        candidates: Vec<IngressRefreshCandidateEvidence>,
-    },
+    ProjectionMissing,
     #[error("concurrent projection writer")]
-    ConcurrentWriter {
-        candidates: Vec<IngressRefreshCandidateEvidence>,
-    },
-    #[error("operation evidence store failed")]
-    OperationStore,
+    ConcurrentWriter,
+    #[error("publish ingress endpoint invalidation: {0}")]
+    Publish(async_nats::PublishError),
 }
 
-impl IngressEndpointRefreshError {
-    fn operation_failure(&self) -> IngressRefreshFailure {
-        match self {
-            Self::IntentUnavailable => IngressRefreshFailure::IntentUnavailable {
-                message: failure_message("intent.get was unavailable"),
-            },
-            Self::Store { source, candidates } => IngressRefreshFailure::StorageFailed {
-                message: bounded_failure_message("projection store failed", source),
-                candidates: candidates.clone(),
-            },
-            Self::ProjectionMissing { candidates } => IngressRefreshFailure::StorageFailed {
-                message: failure_message("ingress endpoint projection is missing"),
-                candidates: candidates.clone(),
-            },
-            Self::OperationStore => IngressRefreshFailure::StorageFailed {
-                message: failure_message("operation evidence store failed"),
-                candidates: Vec::new(),
-            },
-            Self::ConcurrentWriter { candidates } => IngressRefreshFailure::ConcurrentWriter {
-                message: failure_message("ingress endpoint projection changed during refresh"),
-                candidates: candidates.clone(),
-            },
+#[derive(Debug, Clone, Default)]
+pub(crate) struct IngressEndpointProjectionHealth {
+    state: Arc<Mutex<IngressEndpointProjectionHealthState>>,
+}
+
+impl IngressEndpointProjectionHealth {
+    fn record_success(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.consecutive_failures = 0;
+        state.last_failure = None;
+    }
+
+    fn record_failure(&self, error: &IngressEndpointRefreshError) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+        state.last_failure = Some(error.to_string());
+    }
+
+    #[must_use]
+    pub(crate) fn operational_health(
+        &self,
+    ) -> ployz_sdk_types::ControlIngressEndpointProjectionHealth {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        ployz_sdk_types::ControlIngressEndpointProjectionHealth {
+            consecutive_failures: state.consecutive_failures,
+            last_failure: state.last_failure.clone(),
         }
     }
 }
 
-fn refresh_evidence(
-    previous: &ProjectionEvidenceRecord,
-    next: &ProjectionEvidenceRecord,
-) -> IngressRefreshEvidence {
-    IngressRefreshEvidence {
-        candidates: next.candidate_outcomes.clone(),
-        publishable_gateway_ids: next.publishable_gateway_ids.clone(),
-        deadline_seconds: GATHER_DEADLINE.as_secs(),
-        before: previous.projection.identity(),
-        after: next.projection.identity(),
-        invalidation: IngressRefreshInvalidationEvidence::Published,
-    }
-}
-
-fn candidate_publication(
-    gateway: IngressRefreshGatewayOutcome,
-    facts: &IngressRefreshFactsOutcome,
-) -> IngressRefreshCandidatePublication {
-    if gateway_may_publish(gateway)
-        && let IngressRefreshFactsOutcome::Responded {
-            public_control_endpoints,
-        } = facts
-        && !public_control_endpoints.is_empty()
-    {
-        return IngressRefreshCandidatePublication::Published {
-            addresses: public_control_endpoints.clone(),
-        };
-    }
-    let reason = match (gateway, facts) {
-        (IngressRefreshGatewayOutcome::Unavailable, _) => {
-            IngressRefreshExclusionReason::GatewayUnavailable
-        }
-        (
-            IngressRefreshGatewayOutcome::TimedOut
-            | IngressRefreshGatewayOutcome::NoResponder
-            | IngressRefreshGatewayOutcome::WrongResponder
-            | IngressRefreshGatewayOutcome::Rejected
-            | IngressRefreshGatewayOutcome::Malformed
-            | IngressRefreshGatewayOutcome::Transport,
-            _,
-        ) => IngressRefreshExclusionReason::GatewayTestimonyFailed,
-        (
-            _,
-            IngressRefreshFactsOutcome::TimedOut
-            | IngressRefreshFactsOutcome::NoResponder
-            | IngressRefreshFactsOutcome::WrongResponder
-            | IngressRefreshFactsOutcome::Rejected
-            | IngressRefreshFactsOutcome::Malformed
-            | IngressRefreshFactsOutcome::Transport,
-        ) => IngressRefreshExclusionReason::FactsTestimonyFailed,
-        (_, IngressRefreshFactsOutcome::Missing) => IngressRefreshExclusionReason::MissingFacts,
-        (_, IngressRefreshFactsOutcome::Addressless) => IngressRefreshExclusionReason::Addressless,
-        (_, IngressRefreshFactsOutcome::NonPublic) => {
-            IngressRefreshExclusionReason::NonPublicAddresses
-        }
-        (_, IngressRefreshFactsOutcome::Responded { .. }) => {
-            IngressRefreshExclusionReason::Addressless
-        }
-    };
-    IngressRefreshCandidatePublication::Excluded { reason }
+#[derive(Debug, Default)]
+struct IngressEndpointProjectionHealthState {
+    consecutive_failures: u64,
+    last_failure: Option<String>,
 }
 
 fn gateway_candidates(intent: &IntentSnapshot) -> Vec<MachineId> {
@@ -578,125 +438,37 @@ fn candidate_outcome(
     machine_id: MachineId,
     gateway: Result<ployz_core::machine::GatewayStatusObservation, GatewayStatusReadError>,
     facts: Result<ployz_core::machine::runtime::MachineFactsSnapshot, MachineFactsReadError>,
-) -> IngressRefreshCandidateEvidence {
-    let gateway = match gateway {
-        Ok(status) => match status.serving {
-            GatewayServingStatus::Current => IngressRefreshGatewayOutcome::Current,
-            GatewayServingStatus::LastKnownGood => IngressRefreshGatewayOutcome::LastKnownGood,
-            GatewayServingStatus::Unavailable => IngressRefreshGatewayOutcome::Unavailable,
-        },
-        Err(error) => gateway_failure(&error.reason),
+) -> CandidateOutcome {
+    let (gateway_replied, gateway_may_publish) = match gateway {
+        Ok(status) => (
+            true,
+            matches!(
+                status.serving,
+                GatewayServingStatus::Current | GatewayServingStatus::LastKnownGood
+            ),
+        ),
+        Err(_) => (false, false),
     };
-    let facts = match facts {
-        Ok(facts) => match facts.endpoints() {
-            None => IngressRefreshFactsOutcome::Missing,
-            Some(endpoints) if endpoints.control_endpoints.is_empty() => {
-                IngressRefreshFactsOutcome::Addressless
-            }
-            Some(endpoints) => {
-                let public_control_endpoints = endpoints
+    let public_addresses = if gateway_may_publish {
+        facts
+            .ok()
+            .and_then(|facts| facts.endpoints().cloned())
+            .map(|endpoints| {
+                endpoints
                     .control_endpoints
-                    .iter()
-                    .copied()
+                    .into_iter()
                     .filter(|address| is_public(*address))
-                    .collect::<Vec<_>>();
-                if public_control_endpoints.is_empty() {
-                    IngressRefreshFactsOutcome::NonPublic
-                } else {
-                    IngressRefreshFactsOutcome::Responded {
-                        public_control_endpoints,
-                    }
-                }
-            }
-        },
-        Err(MachineFactsReadError::Unavailable { reason, .. }) => facts_failure(&reason),
-        Err(MachineFactsReadError::GatherFailed { .. }) => IngressRefreshFactsOutcome::Rejected,
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
     };
-    let publication = candidate_publication(gateway, &facts);
-    IngressRefreshCandidateEvidence {
+    CandidateOutcome {
         machine_id,
-        gateway,
-        facts,
-        publication,
+        gateway_replied,
+        public_addresses,
     }
-}
-
-fn failure_message(message: &str) -> FailureMessage {
-    FailureMessage::try_new(message).expect("static ingress refresh failure is non-empty")
-}
-
-fn bounded_failure_message(context: &str, error: &impl std::fmt::Display) -> FailureMessage {
-    const MAX_CHARS: usize = 512;
-    let rendered = format!("{context}: {error}");
-    let bounded = rendered.chars().take(MAX_CHARS).collect::<String>();
-    FailureMessage::try_new(bounded).expect("ingress refresh failure context is non-empty")
-}
-
-const fn gateway_failure(reason: &MachineRuntimeUnavailableReason) -> IngressRefreshGatewayOutcome {
-    match reason {
-        MachineRuntimeUnavailableReason::RequestTimedOut
-        | MachineRuntimeUnavailableReason::ServiceTimedOut { .. } => {
-            IngressRefreshGatewayOutcome::TimedOut
-        }
-        MachineRuntimeUnavailableReason::NoResponders => IngressRefreshGatewayOutcome::NoResponder,
-        MachineRuntimeUnavailableReason::WrongResponder { .. } => {
-            IngressRefreshGatewayOutcome::WrongResponder
-        }
-        MachineRuntimeUnavailableReason::DecodeResponse { .. }
-        | MachineRuntimeUnavailableReason::MalformedServiceError { .. } => {
-            IngressRefreshGatewayOutcome::Malformed
-        }
-        MachineRuntimeUnavailableReason::ServiceBadRequest { .. }
-        | MachineRuntimeUnavailableReason::ServiceConflict { .. } => {
-            IngressRefreshGatewayOutcome::Rejected
-        }
-        MachineRuntimeUnavailableReason::EncodeRequest { .. }
-        | MachineRuntimeUnavailableReason::InvalidSubject
-        | MachineRuntimeUnavailableReason::MaxPayloadExceeded
-        | MachineRuntimeUnavailableReason::RequestFailed { .. }
-        | MachineRuntimeUnavailableReason::ServiceResponseTooLarge
-        | MachineRuntimeUnavailableReason::ServiceUnavailable { .. }
-        | MachineRuntimeUnavailableReason::ServiceInternal { .. } => {
-            IngressRefreshGatewayOutcome::Transport
-        }
-    }
-}
-
-const fn facts_failure(reason: &MachineRuntimeUnavailableReason) -> IngressRefreshFactsOutcome {
-    match reason {
-        MachineRuntimeUnavailableReason::RequestTimedOut
-        | MachineRuntimeUnavailableReason::ServiceTimedOut { .. } => {
-            IngressRefreshFactsOutcome::TimedOut
-        }
-        MachineRuntimeUnavailableReason::NoResponders => IngressRefreshFactsOutcome::NoResponder,
-        MachineRuntimeUnavailableReason::WrongResponder { .. } => {
-            IngressRefreshFactsOutcome::WrongResponder
-        }
-        MachineRuntimeUnavailableReason::DecodeResponse { .. }
-        | MachineRuntimeUnavailableReason::MalformedServiceError { .. } => {
-            IngressRefreshFactsOutcome::Malformed
-        }
-        MachineRuntimeUnavailableReason::ServiceBadRequest { .. }
-        | MachineRuntimeUnavailableReason::ServiceConflict { .. } => {
-            IngressRefreshFactsOutcome::Rejected
-        }
-        MachineRuntimeUnavailableReason::EncodeRequest { .. }
-        | MachineRuntimeUnavailableReason::InvalidSubject
-        | MachineRuntimeUnavailableReason::MaxPayloadExceeded
-        | MachineRuntimeUnavailableReason::RequestFailed { .. }
-        | MachineRuntimeUnavailableReason::ServiceResponseTooLarge
-        | MachineRuntimeUnavailableReason::ServiceUnavailable { .. }
-        | MachineRuntimeUnavailableReason::ServiceInternal { .. } => {
-            IngressRefreshFactsOutcome::Transport
-        }
-    }
-}
-
-const fn gateway_may_publish(outcome: IngressRefreshGatewayOutcome) -> bool {
-    matches!(
-        outcome,
-        IngressRefreshGatewayOutcome::Current | IngressRefreshGatewayOutcome::LastKnownGood
-    )
 }
 
 async fn publish_changed(
@@ -712,97 +484,20 @@ async fn publish_changed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::operation::EventSequence;
-
-    fn pending() -> ProjectionEvidenceRecord {
-        ProjectionEvidenceRecord::pending(ControlPlaneEpoch::initial())
-    }
 
     #[test]
-    fn candidate_evidence_names_each_non_publishable_reason() {
-        let machine_id = MachineId::try_new("machine_a").expect("machine id");
-        let cases = [
-            (
-                IngressRefreshGatewayOutcome::Unavailable,
-                IngressRefreshFactsOutcome::Addressless,
-                IngressRefreshExclusionReason::GatewayUnavailable,
-            ),
-            (
-                IngressRefreshGatewayOutcome::Current,
-                IngressRefreshFactsOutcome::Missing,
-                IngressRefreshExclusionReason::MissingFacts,
-            ),
-            (
-                IngressRefreshGatewayOutcome::Current,
-                IngressRefreshFactsOutcome::Addressless,
-                IngressRefreshExclusionReason::Addressless,
-            ),
-            (
-                IngressRefreshGatewayOutcome::Current,
-                IngressRefreshFactsOutcome::NonPublic,
-                IngressRefreshExclusionReason::NonPublicAddresses,
-            ),
-            (
-                IngressRefreshGatewayOutcome::TimedOut,
-                IngressRefreshFactsOutcome::Addressless,
-                IngressRefreshExclusionReason::GatewayTestimonyFailed,
-            ),
-            (
-                IngressRefreshGatewayOutcome::Current,
-                IngressRefreshFactsOutcome::Malformed,
-                IngressRefreshExclusionReason::FactsTestimonyFailed,
-            ),
-        ];
+    fn projection_health_records_failure_and_recovery() {
+        let health = IngressEndpointProjectionHealth::default();
 
-        for (gateway, facts, expected) in cases {
-            let publication = candidate_publication(gateway, &facts);
-            let evidence = IngressRefreshCandidateEvidence {
-                machine_id: machine_id.clone(),
-                gateway,
-                facts,
-                publication,
-            };
-            assert_eq!(
-                evidence.publication,
-                IngressRefreshCandidatePublication::Excluded { reason: expected }
-            );
-        }
-    }
-
-    #[test]
-    fn startup_recovery_selects_only_accepted_refreshes() {
-        let accepted_id =
-            ployz_core::ids::OperationId::try_new("op_refresh_accepted").expect("operation id");
-        let completed_id =
-            ployz_core::ids::OperationId::try_new("op_refresh_completed").expect("operation id");
-        let sequence = EventSequence::try_new(1).expect("sequence");
-        let completed = OperationStatus::IngressRefresh {
-            id: completed_id,
-            state: IngressRefreshOperationState::Completed {
-                evidence: IngressRefreshEvidence {
-                    candidates: Vec::new(),
-                    publishable_gateway_ids: Vec::new(),
-                    deadline_seconds: 30,
-                    before: pending().projection.identity(),
-                    after: pending().projection.identity(),
-                    invalidation: IngressRefreshInvalidationEvidence::Published,
-                },
-            },
-            last_event_sequence: sequence,
-        };
-
+        health.record_failure(&IngressEndpointRefreshError::ProjectionMissing);
+        assert_eq!(health.operational_health().consecutive_failures, 1);
         assert_eq!(
-            unfinished_refresh_ids(vec![
-                OperationStatus::ingress_refresh_accepted(accepted_id.clone(), sequence),
-                completed,
-            ]),
-            vec![accepted_id]
+            health.operational_health().last_failure.as_deref(),
+            Some("projection is missing")
         );
-    }
 
-    #[test]
-    fn publish_failure_message_is_bounded() {
-        let message = bounded_failure_message("publish", &"x".repeat(1_000));
-        assert_eq!(message.as_str().chars().count(), 512);
+        health.record_success();
+        assert_eq!(health.operational_health().consecutive_failures, 0);
+        assert_eq!(health.operational_health().last_failure, None);
     }
 }

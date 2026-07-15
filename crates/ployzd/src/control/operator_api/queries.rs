@@ -6,6 +6,7 @@ mod volume;
 pub use volume::VolumeQueryService;
 
 use crate::control::intent::service::NatsIntentReader;
+use crate::control::projection::ingress_endpoint::IngressEndpointProjectionHealth;
 use crate::control::projection::runtime::RuntimeProjectionHealthReader;
 use crate::control::projection::runtime_state::{
     from_sources as runtime_snapshot_from_sources, load_ingress_sources, service_snapshot,
@@ -86,6 +87,7 @@ pub struct RuntimeSnapshotQueryService {
     facts_reader: NatsMachineFactsReader,
     core_store: CoreStore,
     runtime_projection_health: RuntimeProjectionHealthReader,
+    ingress_endpoint_projection_health: IngressEndpointProjectionHealth,
     certificate_renewal_health: CertificateRenewalHealth,
 }
 
@@ -97,6 +99,7 @@ impl RuntimeSnapshotQueryService {
         facts_reader: NatsMachineFactsReader,
         core_store: CoreStore,
         runtime_projection_health: RuntimeProjectionHealthReader,
+        ingress_endpoint_projection_health: IngressEndpointProjectionHealth,
         certificate_renewal_health: CertificateRenewalHealth,
     ) -> Self {
         Self {
@@ -105,6 +108,7 @@ impl RuntimeSnapshotQueryService {
             facts_reader,
             core_store,
             runtime_projection_health,
+            ingress_endpoint_projection_health,
             certificate_renewal_health,
         }
     }
@@ -142,6 +146,9 @@ impl RuntimeSnapshotQueryService {
             ),
             control_health: Some(ControlHealth {
                 runtime_projection: self.runtime_projection_health.snapshot(),
+                ingress_endpoint_projection: self
+                    .ingress_endpoint_projection_health
+                    .operational_health(),
                 certificate_renewal: self.certificate_renewal_health.operational_health(),
             }),
         })

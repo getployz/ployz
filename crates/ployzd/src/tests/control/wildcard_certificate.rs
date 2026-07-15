@@ -17,7 +17,9 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use ployz_core::certificate::{
     CertificateArtifactPushOk, CertificateArtifactPushRequest, CertificateArtifactPushResponse,
-    LeaseBearerToken, ManagedCertBundle, ManagedLeaseAcquireRequest, ManagedLeaseAcquisitionId,
+    CertificateArtifactStatusOk, CertificateArtifactStatusRequest,
+    CertificateArtifactStatusResponse, LeaseBearerToken, ManagedCertBundle,
+    ManagedLeaseAcquireRequest, ManagedLeaseAcquisitionId,
 };
 use ployz_core::ids::{MachineId, RouteBindingId};
 use ployz_core::ingress::CertificateOwner;
@@ -54,12 +56,14 @@ fn cold_gateway_with_missing_required_material_is_unavailable_not_last_known_goo
 }
 
 #[tokio::test]
-async fn wildcard_install_and_returning_gateway_sync_use_cert_operations_without_acme() {
+async fn returning_gateway_is_repaired_even_when_another_gateway_is_silent() {
     let first = MachineId::try_new("gateway_first").expect("machine id");
     let returning = MachineId::try_new("gateway_returning").expect("machine id");
+    let silent = MachineId::try_new("gateway_silent").expect("machine id");
     let nats = ployz_test_support::nats::TestNats::start_with_machines(&[
         first.clone(),
         returning.clone(),
+        silent.clone(),
     ])
     .await;
     let first_pushes = start_gateway(&nats, first.clone()).await;
@@ -85,18 +89,20 @@ async fn wildcard_install_and_returning_gateway_sync_use_cert_operations_without
         .install_ployz_wildcard(worker_bundle(), &[target(first.clone())])
         .await
         .expect("wildcard installed");
-    let outcome = run_once_at(&manager, &[target(first), target(returning)], u64::MAX)
-        .await
-        .expect("returning gateway synchronized");
+    let outcome = run_once_at(
+        &manager,
+        &[target(first), target(returning), target(silent.clone())],
+        u64::MAX,
+    )
+    .await
+    .expect("known missing gateway is repaired");
 
-    assert_eq!(
+    assert!(matches!(
         outcome,
-        CertificateRenewalOutcome::Attempted {
-            attempted: 1,
-            failed: 0,
-        }
-    );
-    assert_eq!(first_pushes.load(Ordering::Relaxed), 2);
+        CertificateRenewalOutcome::Degraded { attempted: 1, failed: 0, unknown }
+            if matches!(unknown.as_slice(), [failure] if failure.machine_id == silent)
+    ));
+    assert_eq!(first_pushes.load(Ordering::Relaxed), 1);
     assert_eq!(returning_pushes.load(Ordering::Relaxed), 1);
     let statuses = OperationRepository::open(core, nats.controller)
         .operation_statuses()
@@ -129,9 +135,20 @@ async fn start_gateway(
         ))
         .await
         .expect("subscribe");
+    let mut statuses = client
+        .subscribe(machine_service(
+            &machine_id,
+            MachineServiceEndpoint::CertificateArtifactStatus,
+        ))
+        .await
+        .expect("subscribe status");
     client.flush().await.expect("flush subscription");
     let pushes = Arc::new(AtomicUsize::new(0));
+    let stored_cert_ids = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
     let recorded = Arc::clone(&pushes);
+    let pushed_cert_ids = Arc::clone(&stored_cert_ids);
+    let push_client = client.clone();
+    let push_machine_id = machine_id.clone();
     tokio::spawn(async move {
         while let Some(message) = requests.next().await {
             let Some(reply) = message.reply else {
@@ -142,9 +159,44 @@ async fn start_gateway(
             recorded.fetch_add(1, Ordering::Relaxed);
             let response: CertificateArtifactPushResponse =
                 MachineRpcResponse::Ok(CertificateArtifactPushOk {
-                    machine_id: machine_id.clone(),
+                    machine_id: push_machine_id.clone(),
                     cert_id: request.bundle.active_cert().cert_id.clone(),
                     digest: request.expected_digest,
+                });
+            pushed_cert_ids
+                .lock()
+                .expect("stored cert ids")
+                .insert(request.bundle.active_cert().cert_id.clone());
+            push_client
+                .publish(
+                    reply,
+                    serde_json::to_vec(&response).expect("response").into(),
+                )
+                .await
+                .expect("publish response");
+        }
+    });
+    let status_cert_ids = Arc::clone(&stored_cert_ids);
+    tokio::spawn(async move {
+        while let Some(message) = statuses.next().await {
+            let Some(reply) = message.reply else {
+                continue;
+            };
+            let request: CertificateArtifactStatusRequest =
+                serde_json::from_slice(&message.payload).expect("status request");
+            let missing_cert_ids = {
+                let stored = status_cert_ids.lock().expect("stored cert ids");
+                request
+                    .desired
+                    .into_iter()
+                    .filter(|certificate| !stored.contains(&certificate.cert_id))
+                    .map(|certificate| certificate.cert_id)
+                    .collect()
+            };
+            let response: CertificateArtifactStatusResponse =
+                MachineRpcResponse::Ok(CertificateArtifactStatusOk {
+                    machine_id: machine_id.clone(),
+                    missing_cert_ids,
                 });
             client
                 .publish(
@@ -152,7 +204,7 @@ async fn start_gateway(
                     serde_json::to_vec(&response).expect("response").into(),
                 )
                 .await
-                .expect("publish response");
+                .expect("publish status response");
         }
     });
     pushes

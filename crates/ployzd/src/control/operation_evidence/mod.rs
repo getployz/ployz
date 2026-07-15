@@ -7,9 +7,9 @@
 //! outcomes (a duplicate submit, a stale projection, a fingerprint conflict)
 //! travel back inside `Ok(...)`; only a genuine database failure is `Err`.
 
-use crate::control::store::{
-    CoreStore, CoreStoreError, from_json, query_json, query_json_list, to_json,
-};
+#[cfg(test)]
+use crate::control::store::query_json_list;
+use crate::control::store::{CoreStore, CoreStoreError, from_json, query_json, to_json};
 use ployz_core::ids::OperationId;
 use ployz_core::operation::{
     EventSequence, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
@@ -27,7 +27,6 @@ mod credential_grant;
 mod dataplane_staging;
 mod deploy;
 mod ingress_configure;
-mod ingress_refresh;
 mod machine_add;
 mod machine_lifecycle;
 mod machine_update;
@@ -454,6 +453,7 @@ where
     Ok(statuses)
 }
 
+#[cfg(test)]
 fn select_all_statuses(conn: &mut Connection) -> Result<Vec<OperationStatus>, rusqlite::Error> {
     query_json_list(
         conn,
