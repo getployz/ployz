@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use ployz_host_runner::execution::{
+use crate::execution::{
     ArtifactKind, ArtifactSource, ArtifactTarget, ArtifactVersion, Sha256Digest,
 };
 

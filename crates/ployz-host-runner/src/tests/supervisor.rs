@@ -1,10 +1,10 @@
-mod support;
+use super::support;
 
-use ployz_core::roles::DaemonProcessRole;
-use ployz_host_runner::execution::{
+use crate::execution::{
     NatsServerUnitTarget, PloyzdRoleEnvironmentFile, SupervisorUnitSpec, SupervisorUnitTarget,
 };
-use ployz_host_runner::execution::{SupervisorBackend, SupervisorChange};
+use crate::execution::{SupervisorBackend, SupervisorChange};
+use ployz_core::roles::DaemonProcessRole;
 use ployz_test_support::ids::machine_id;
 use support::artifacts::ployzd_artifact;
 

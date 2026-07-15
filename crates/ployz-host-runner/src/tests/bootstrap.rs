@@ -1,9 +1,9 @@
-mod support;
+use super::support;
 
 use std::fs;
 
-use ployz_host_runner::cli::{HostRunnerCommand, load_command};
-use ployz_host_runner::plan::JoinToken;
+use crate::cli::{HostRunnerCommand, load_command};
+use crate::plan::JoinToken;
 use support::bootstrap::unique_temp_path;
 
 #[test]

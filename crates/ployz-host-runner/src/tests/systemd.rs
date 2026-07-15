@@ -1,13 +1,13 @@
-mod support;
+use super::support;
 
 use std::path::PathBuf;
 
-use ployz_core::roles::DaemonProcessRole;
-use ployz_host_runner::execution::{ArtifactKind, ArtifactTarget};
-use ployz_host_runner::execution::{
+use crate::execution::{ArtifactKind, ArtifactTarget};
+use crate::execution::{
     NatsServerUnit, NatsServerUnitTarget, PloyzdRoleEnvironmentFile, PloyzdRoleUnit,
     SupervisorUnitFileError, role_unit_name,
 };
+use ployz_core::roles::DaemonProcessRole;
 use ployz_test_support::ids::machine_id;
 use support::artifacts::{
     artifact_source as source, artifact_version as version, ployzd_artifact,

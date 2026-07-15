@@ -1,15 +1,15 @@
-mod support;
+use super::support;
 
 use ployz_core::install::{WrappedCaKey, WrappedCoreSeeds};
 
-use ployz_core::roles::InstallRolePolicy;
-use ployz_host_runner::execution::SupervisorUnitTarget;
-use ployz_host_runner::plan::{
+use crate::execution::SupervisorUnitTarget;
+use crate::plan::{
     ContainerRuntime, FirstMachineInstallTarget, HostRunnerPlanFailure, HostRunnerPlanTerminal,
     HostRunnerRecordFailure, HostRunnerStep, HostRunnerStepEvent, HostRunnerStepFailure,
     HostRunnerStepFailureReason, HostRunnerStepLabel, execute_host_runner_plan,
     first_machine_install_plan, render_step_event,
 };
+use ployz_core::roles::InstallRolePolicy;
 use ployz_test_support::ids::{failure_message, machine_id};
 use support::artifacts::{nats_server_artifact, ployzd_artifact};
 use support::bootstrap::*;

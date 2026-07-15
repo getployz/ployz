@@ -1,6 +1,4 @@
-use ployz_host_runner::execution::{
-    DockerInstall, HostPackageFamily, SupervisorKind, detect_host_platform,
-};
+use crate::execution::{DockerInstall, HostPackageFamily, SupervisorKind, detect_host_platform};
 
 #[test]
 fn supported_distributions_select_host_capabilities() {

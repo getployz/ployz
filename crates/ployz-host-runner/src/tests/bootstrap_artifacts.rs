@@ -1,10 +1,8 @@
-mod support;
+use super::support;
 
 use std::path::PathBuf;
 
-use ployz_host_runner::execution::{
-    ArtifactKind, ArtifactTarget, ArtifactTargetError, Sha256Digest,
-};
+use crate::execution::{ArtifactKind, ArtifactTarget, ArtifactTargetError, Sha256Digest};
 use support::artifacts::{
     artifact_source as source, artifact_version as version, sha256_digest as digest,
 };

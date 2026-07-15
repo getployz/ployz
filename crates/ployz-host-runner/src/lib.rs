@@ -8,12 +8,15 @@
 pub mod cli;
 mod cloud_client;
 mod env_config;
-pub mod execution;
-pub mod lifecycle;
-pub mod plan;
-pub mod recovery;
+mod execution;
+mod lifecycle;
+mod plan;
+mod recovery;
 mod release_manifest;
 mod runtime;
+
+#[cfg(test)]
+mod tests;
 
 use std::process::ExitCode;
 

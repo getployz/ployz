@@ -1,11 +1,15 @@
 #[test]
-fn host_runner_exposes_capabilities_without_transitional_module_aliases() {
+fn host_runner_keeps_implementation_capabilities_private() {
     let library = include_str!("../src/lib.rs");
 
     for capability in ["execution", "lifecycle", "plan", "recovery"] {
         assert!(
-            library.contains(&format!("pub mod {capability};")),
-            "missing public {capability} capability"
+            library.contains(&format!("mod {capability};")),
+            "missing private {capability} capability"
+        );
+        assert!(
+            !library.contains(&format!("pub mod {capability};")),
+            "implementation capability {capability} remains public"
         );
     }
 
