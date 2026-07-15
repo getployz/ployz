@@ -213,10 +213,10 @@ fn transition_allowed(
             MachineLifecycleOperationState::Accepted,
             MachineLifecycleOperationState::Completed
             | MachineLifecycleOperationState::Failed { .. }
-            | MachineLifecycleOperationState::Cancelled { .. }
-            | MachineLifecycleOperationState::Interrupted { .. },
+            | MachineLifecycleOperationState::Cancelled { .. },
         ) => true,
-        (MachineLifecycleOperationState::Accepted, MachineLifecycleOperationState::Accepted)
+        (_, MachineLifecycleOperationState::Interrupted { .. })
+        | (MachineLifecycleOperationState::Accepted, MachineLifecycleOperationState::Accepted)
         | (
             MachineLifecycleOperationState::Completed
             | MachineLifecycleOperationState::Failed { .. }

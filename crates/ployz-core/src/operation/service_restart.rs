@@ -341,10 +341,10 @@ fn transition_allowed(
         | (
             ServiceRestartOperationState::Accepted | ServiceRestartOperationState::Running { .. },
             ServiceRestartOperationState::Failed { .. }
-            | ServiceRestartOperationState::Cancelled { .. }
-            | ServiceRestartOperationState::Interrupted { .. },
+            | ServiceRestartOperationState::Cancelled { .. },
         ) => true,
-        (
+        (_, ServiceRestartOperationState::Interrupted { .. })
+        | (
             ServiceRestartOperationState::Accepted
             | ServiceRestartOperationState::Completed
             | ServiceRestartOperationState::Failed { .. }

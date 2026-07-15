@@ -492,7 +492,7 @@ fn upsert_status(
     conn.execute(
         "INSERT INTO operations (operation_id, status_json) VALUES (?1, ?2)
          ON CONFLICT(operation_id) DO UPDATE SET status_json = excluded.status_json",
-        params![operation_id.as_str(), to_json(status)?],
+        params![operation_id.as_str(), to_durable_operation_json(status)?],
     )?;
     Ok(())
 }
@@ -519,10 +519,45 @@ fn insert_event(
             sequence.get(),
             recorded_at_unix_ms.unix_millis(),
             event.singleton_evidence_key(),
-            to_json(event)?
+            to_durable_operation_json(event)?
         ],
     )?;
     Ok(())
+}
+
+fn to_durable_operation_json(value: &impl serde::Serialize) -> Result<String, rusqlite::Error> {
+    let mut value = serde_json::to_value(value)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    remove_interruption_projections(&mut value);
+    to_json(&value)
+}
+
+fn remove_interruption_projections(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            if fields.contains_key("cause")
+                && fields.contains_key("last_durable_stage")
+                && fields.contains_key("uncertain_work")
+                && fields.contains_key("next_action")
+            {
+                fields.remove("kind");
+                fields.remove("uncertain_work");
+                fields.remove("next_action");
+            }
+            for field in fields.values_mut() {
+                remove_interruption_projections(field);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                remove_interruption_projections(value);
+            }
+        }
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => {}
+    }
 }
 
 fn singleton_event_exists(

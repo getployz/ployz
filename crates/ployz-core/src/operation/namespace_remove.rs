@@ -308,10 +308,10 @@ fn transition_allowed(
         | (
             NamespaceRemoveOperationState::Accepted | NamespaceRemoveOperationState::Running { .. },
             NamespaceRemoveOperationState::Failed { .. }
-            | NamespaceRemoveOperationState::Cancelled { .. }
-            | NamespaceRemoveOperationState::Interrupted { .. },
+            | NamespaceRemoveOperationState::Cancelled { .. },
         ) => true,
-        (
+        (_, NamespaceRemoveOperationState::Interrupted { .. })
+        | (
             NamespaceRemoveOperationState::Accepted
             | NamespaceRemoveOperationState::Completed
             | NamespaceRemoveOperationState::Failed { .. }

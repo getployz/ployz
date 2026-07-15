@@ -1,17 +1,80 @@
 use super::{
     NamespaceRemoveOperationSubmission, OperationRepository, select_all_statuses_newest_first,
-    select_status, upsert_status,
+    select_status, to_durable_operation_json, upsert_status,
 };
-use crate::control::store::CoreStore;
+use crate::control::store::{CoreStore, from_json};
 use crate::tasks::TaskRegistry;
+use ployz_core::ids::CertId;
 use ployz_core::operation::{
-    EventSequence, NamespaceRemoveOperationState, NamespaceRemoveRunningStage,
-    NamespaceRemoveTransition, OperationEventReplayRequest, OperationInterruptionCause,
-    OperationStatus,
+    CertInterruptionStage, CertOperationFailure, CertOperationState,
+    CertificateInterruptionNextAction, CertificateProvisionFailure, EventSequence,
+    NamespaceRemoveOperationState, NamespaceRemoveRunningStage, NamespaceRemoveTransition,
+    OperationEventReplayRequest, OperationInterruptionCause, OperationStatus,
 };
 use ployz_test_support::ids::{event_replay_limit, event_sequence, namespace_id, operation_id};
 use rusqlite::Connection;
 use std::time::Duration;
+
+fn assert_durable_interruption_evidence(json: &str) {
+    fn visit(value: &serde_json::Value, found: &mut bool) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                if fields.contains_key("cause") && fields.contains_key("last_durable_stage") {
+                    *found = true;
+                    assert!(!fields.contains_key("kind"));
+                    assert!(!fields.contains_key("uncertain_work"));
+                    assert!(!fields.contains_key("next_action"));
+                }
+                for field in fields.values() {
+                    visit(field, found);
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    visit(value, found);
+                }
+            }
+            serde_json::Value::Null
+            | serde_json::Value::Bool(_)
+            | serde_json::Value::Number(_)
+            | serde_json::Value::String(_) => {}
+        }
+    }
+
+    let value: serde_json::Value = serde_json::from_str(json).expect("durable row is JSON");
+    let mut found = false;
+    visit(&value, &mut found);
+    assert!(found, "durable row contains interruption evidence");
+}
+
+#[test]
+fn durable_interruption_projection_does_not_strip_certificate_failure_evidence() {
+    let cert_id = CertId::try_new("cert-a").expect("cert id");
+    let status = OperationStatus::Cert {
+        id: operation_id("op-cert-interrupted"),
+        cert_id: cert_id.clone(),
+        state: CertOperationState::Failed {
+            failure: CertOperationFailure::try_new(
+                cert_id,
+                CertificateProvisionFailure::CoreInterrupted {
+                    cause: OperationInterruptionCause::PriorCoreProcessLoss,
+                    last_durable_stage: CertInterruptionStage::Accepted,
+                    next_action: CertificateInterruptionNextAction::RetryFromCurrentIntent,
+                },
+                None,
+            )
+            .expect("certificate failure"),
+        },
+        last_event_sequence: EventSequence::first(),
+    };
+
+    let json = to_durable_operation_json(&status).expect("serialize durable certificate status");
+    assert!(json.contains("\"next_action\":\"retry_from_current_intent\""));
+    assert_eq!(
+        from_json::<OperationStatus>(&json).expect("read durable certificate status"),
+        status
+    );
+}
 
 #[tokio::test]
 async fn replay_preserves_recorded_timestamps_for_ordered_events() {
@@ -209,6 +272,30 @@ async fn interruption_recovery_is_uncapped_idempotent_and_excludes_other_owners(
             ..
         }
     ));
+    let (status_json, event_json) = store
+        .call(|conn| {
+            let status_json = conn.query_row(
+                "SELECT status_json FROM operations WHERE operation_id = ?1",
+                ["op_interrupted_000"],
+                |row| row.get::<_, String>(0),
+            )?;
+            let event_json = conn.query_row(
+                "SELECT event_json FROM operation_events
+                 WHERE operation_id = ?1 ORDER BY sequence DESC LIMIT 1",
+                ["op_interrupted_000"],
+                |row| row.get::<_, String>(0),
+            )?;
+            Ok((status_json, event_json))
+        })
+        .await
+        .expect("read durable interruption rows");
+    for durable_json in [&status_json, &event_json] {
+        assert_durable_interruption_evidence(durable_json);
+    }
+    let public_json = serde_json::to_string(&recovered).expect("serialize public status");
+    assert!(public_json.contains("\"kind\":\"namespace_remove\""));
+    assert!(public_json.contains("\"uncertain_work\":\"intent_and_runtime\""));
+    assert!(public_json.contains("\"next_action\":\"inspect_then_resubmit\""));
     assert!(
         !repository
             .get(&operation_id("op_cert_owned_elsewhere"))

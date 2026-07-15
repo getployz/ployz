@@ -196,10 +196,10 @@ fn transition_allowed(
             CredentialGrantOperationState::Accepted,
             CredentialGrantOperationState::Completed
             | CredentialGrantOperationState::Failed { .. }
-            | CredentialGrantOperationState::Cancelled { .. }
-            | CredentialGrantOperationState::Interrupted { .. },
+            | CredentialGrantOperationState::Cancelled { .. },
         ) => true,
-        (CredentialGrantOperationState::Accepted, CredentialGrantOperationState::Accepted)
+        (_, CredentialGrantOperationState::Interrupted { .. })
+        | (CredentialGrantOperationState::Accepted, CredentialGrantOperationState::Accepted)
         | (
             CredentialGrantOperationState::Completed
             | CredentialGrantOperationState::Failed { .. }

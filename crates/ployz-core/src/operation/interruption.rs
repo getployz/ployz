@@ -142,17 +142,29 @@ pub enum OperationInterruptionNextAction {
     )
 )]
 #[serde(
-    try_from = "OperationInterruptionEvidenceWire",
-    into = "OperationInterruptionEvidenceWire"
+    from = "OperationInterruptionEvidenceInput",
+    into = "OperationInterruptionEvidenceOutput"
 )]
 pub struct OperationInterruptionEvidence {
     cause: OperationInterruptionCause,
     last_durable_stage: OperationInterruptionStage,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct OperationInterruptionEvidenceWire {
+struct OperationInterruptionEvidenceInput {
+    cause: OperationInterruptionCause,
+    last_durable_stage: OperationInterruptionStage,
+    #[serde(default, rename = "kind")]
+    _kind: Option<serde::de::IgnoredAny>,
+    #[serde(default, rename = "uncertain_work")]
+    _uncertain_work: Option<serde::de::IgnoredAny>,
+    #[serde(default, rename = "next_action")]
+    _next_action: Option<serde::de::IgnoredAny>,
+}
+
+#[derive(Serialize)]
+struct OperationInterruptionEvidenceOutput {
     cause: OperationInterruptionCause,
     last_durable_stage: OperationInterruptionStage,
     kind: OperationKind,
@@ -197,22 +209,20 @@ impl OperationInterruptionEvidence {
     }
 }
 
-impl TryFrom<OperationInterruptionEvidenceWire> for OperationInterruptionEvidence {
-    type Error = OperationInterruptionEvidenceWireError;
-
-    fn try_from(wire: OperationInterruptionEvidenceWire) -> Result<Self, Self::Error> {
-        let evidence = Self::new(wire.cause, wire.last_durable_stage);
-        if wire.kind != evidence.kind()
-            || wire.uncertain_work != evidence.uncertain_work()
-            || wire.next_action != evidence.next_action()
-        {
-            return Err(OperationInterruptionEvidenceWireError);
-        }
-        Ok(evidence)
+impl From<OperationInterruptionEvidenceInput> for OperationInterruptionEvidence {
+    fn from(wire: OperationInterruptionEvidenceInput) -> Self {
+        let OperationInterruptionEvidenceInput {
+            cause,
+            last_durable_stage,
+            _kind: _,
+            _uncertain_work: _,
+            _next_action: _,
+        } = wire;
+        Self::new(cause, last_durable_stage)
     }
 }
 
-impl From<OperationInterruptionEvidence> for OperationInterruptionEvidenceWire {
+impl From<OperationInterruptionEvidence> for OperationInterruptionEvidenceOutput {
     fn from(evidence: OperationInterruptionEvidence) -> Self {
         Self {
             cause: evidence.cause(),
@@ -223,10 +233,6 @@ impl From<OperationInterruptionEvidence> for OperationInterruptionEvidenceWire {
         }
     }
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("interruption evidence derived fields do not match its durable stage")]
-pub struct OperationInterruptionEvidenceWireError;
 
 impl OperationStatus {
     #[must_use]

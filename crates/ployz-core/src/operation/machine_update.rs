@@ -255,18 +255,16 @@ fn transition_allowed(
     match (current, attempted) {
         (
             MachineUpdateOperationState::Accepted,
-            MachineUpdateOperationState::Running
-            | MachineUpdateOperationState::Cancelled { .. }
-            | MachineUpdateOperationState::Interrupted { .. },
+            MachineUpdateOperationState::Running | MachineUpdateOperationState::Cancelled { .. },
         )
         | (
             MachineUpdateOperationState::Running,
             MachineUpdateOperationState::Completed { .. }
             | MachineUpdateOperationState::Failed { .. }
-            | MachineUpdateOperationState::Cancelled { .. }
-            | MachineUpdateOperationState::Interrupted { .. },
+            | MachineUpdateOperationState::Cancelled { .. },
         ) => true,
-        (
+        (_, MachineUpdateOperationState::Interrupted { .. })
+        | (
             MachineUpdateOperationState::Accepted
             | MachineUpdateOperationState::Running
             | MachineUpdateOperationState::Completed { .. }
@@ -277,8 +275,7 @@ fn transition_allowed(
             | MachineUpdateOperationState::Running
             | MachineUpdateOperationState::Completed { .. }
             | MachineUpdateOperationState::Failed { .. }
-            | MachineUpdateOperationState::Cancelled { .. }
-            | MachineUpdateOperationState::Interrupted { .. },
+            | MachineUpdateOperationState::Cancelled { .. },
         ) => false,
     }
 }

@@ -229,10 +229,10 @@ fn transition_allowed(
         )
         | (
             VolumeRemoveOperationState::Accepted | VolumeRemoveOperationState::Running { .. },
-            VolumeRemoveOperationState::Failed { .. }
-            | VolumeRemoveOperationState::Interrupted { .. },
+            VolumeRemoveOperationState::Failed { .. },
         ) => true,
-        (
+        (_, VolumeRemoveOperationState::Interrupted { .. })
+        | (
             VolumeRemoveOperationState::Accepted
             | VolumeRemoveOperationState::Running { .. }
             | VolumeRemoveOperationState::Completed
@@ -246,8 +246,7 @@ fn transition_allowed(
             VolumeRemoveOperationState::Completed
             | VolumeRemoveOperationState::Failed { .. }
             | VolumeRemoveOperationState::Interrupted { .. },
-            VolumeRemoveOperationState::Failed { .. }
-            | VolumeRemoveOperationState::Interrupted { .. },
+            VolumeRemoveOperationState::Failed { .. },
         ) => false,
     }
 }

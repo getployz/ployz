@@ -86,24 +86,41 @@ fn running_deploy_interruption_preserves_typed_stage_and_retry_contract() {
         .expect("interruption evidence deserializes"),
         evidence
     );
-    for (field, forged) in [
-        ("kind", serde_json::json!("cert")),
-        ("uncertain_work", serde_json::json!("runtime")),
-        ("next_action", serde_json::json!("inspect_then_resubmit")),
-    ] {
-        let mut forged_evidence = encoded.clone();
-        forged_evidence
-            .as_object_mut()
-            .expect("evidence is an object")
-            .insert(field.to_owned(), forged);
-        assert!(
-            serde_json::from_value::<ployz_core::operation::OperationInterruptionEvidence>(
-                forged_evidence,
-            )
-            .is_err(),
-            "forged {field} is rejected"
-        );
-    }
+    let mut durable_evidence = encoded.clone();
+    let durable_fields = durable_evidence
+        .as_object_mut()
+        .expect("evidence is an object");
+    durable_fields.remove("kind");
+    durable_fields.remove("uncertain_work");
+    durable_fields.remove("next_action");
+    assert_eq!(
+        serde_json::from_value::<ployz_core::operation::OperationInterruptionEvidence>(
+            durable_evidence,
+        )
+        .expect("factual durable evidence remains readable"),
+        evidence
+    );
+
+    let mut historical_evidence = encoded.clone();
+    let historical_fields = historical_evidence
+        .as_object_mut()
+        .expect("evidence is an object");
+    historical_fields.insert(
+        "kind".to_owned(),
+        serde_json::json!({ "retired": "deploy" }),
+    );
+    historical_fields.insert("uncertain_work".to_owned(), serde_json::json!(17));
+    historical_fields.insert(
+        "next_action".to_owned(),
+        serde_json::json!(["retired_policy"]),
+    );
+    assert_eq!(
+        serde_json::from_value::<ployz_core::operation::OperationInterruptionEvidence>(
+            historical_evidence,
+        )
+        .expect("historical derived projections do not govern durable evidence"),
+        evidence
+    );
 
     let event = OperationEvent::OperationInterrupted {
         operation_id: status.id().clone(),

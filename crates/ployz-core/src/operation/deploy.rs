@@ -1046,13 +1046,7 @@ fn transition_allowed(current: &DeployOperationState, attempted: &DeployOperatio
         | (DeployOperationState::Planning, DeployOperationState::Cancelled { .. })
         | (DeployOperationState::Planning, DeployOperationState::Failed { .. })
         | (DeployOperationState::Running { .. }, DeployOperationState::Cancelled { .. })
-        | (DeployOperationState::Running { .. }, DeployOperationState::Failed { .. })
-        | (
-            DeployOperationState::Accepted
-            | DeployOperationState::Planning
-            | DeployOperationState::Running { .. },
-            DeployOperationState::Interrupted { .. },
-        ) => true,
+        | (DeployOperationState::Running { .. }, DeployOperationState::Failed { .. }) => true,
         (
             DeployOperationState::Running {
                 stage: DeployRunningStage::ServingTargetCommit,
@@ -1081,7 +1075,8 @@ fn transition_allowed(current: &DeployOperationState, attempted: &DeployOperatio
             DeployOperationState::Running { stage: current },
             DeployOperationState::Running { stage: attempted },
         ) => stage_is_next(*current, *attempted),
-        (DeployOperationState::Accepted, _)
+        (_, DeployOperationState::Interrupted { .. })
+        | (DeployOperationState::Accepted, _)
         | (DeployOperationState::Completed { .. }, _)
         | (DeployOperationState::Failed { .. }, _)
         | (DeployOperationState::Cancelled { .. }, _)

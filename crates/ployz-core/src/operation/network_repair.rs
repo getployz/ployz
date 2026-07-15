@@ -323,8 +323,7 @@ fn transition_allowed(
             NetworkRepairOperationState::Running {
                 stage: NetworkRepairRunningStage::AwaitingDataplane,
             }
-            | NetworkRepairOperationState::Cancelled { .. }
-            | NetworkRepairOperationState::Interrupted { .. },
+            | NetworkRepairOperationState::Cancelled { .. },
         )
         | (
             NetworkRepairOperationState::Accepted,
@@ -340,8 +339,7 @@ fn transition_allowed(
                 stage: NetworkRepairRunningStage::RefreshingMachineFacts,
             }
             | NetworkRepairOperationState::Failed { .. }
-            | NetworkRepairOperationState::Cancelled { .. }
-            | NetworkRepairOperationState::Interrupted { .. },
+            | NetworkRepairOperationState::Cancelled { .. },
         )
         | (
             NetworkRepairOperationState::Running {
@@ -351,8 +349,7 @@ fn transition_allowed(
                 stage: NetworkRepairRunningStage::ConfirmingDnsRefresh,
             }
             | NetworkRepairOperationState::Failed { .. }
-            | NetworkRepairOperationState::Cancelled { .. }
-            | NetworkRepairOperationState::Interrupted { .. },
+            | NetworkRepairOperationState::Cancelled { .. },
         )
         | (
             NetworkRepairOperationState::Running {
@@ -360,10 +357,10 @@ fn transition_allowed(
             },
             NetworkRepairOperationState::Completed
             | NetworkRepairOperationState::Failed { .. }
-            | NetworkRepairOperationState::Cancelled { .. }
-            | NetworkRepairOperationState::Interrupted { .. },
+            | NetworkRepairOperationState::Cancelled { .. },
         ) => true,
-        (
+        (_, NetworkRepairOperationState::Interrupted { .. })
+        | (
             NetworkRepairOperationState::Accepted
             | NetworkRepairOperationState::Completed
             | NetworkRepairOperationState::Failed { .. }
