@@ -1,10 +1,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+use crate::execution::HostRunnerCommandOutput;
 use crate::execution::supervisor::execute_supervisor_commands;
 use crate::execution::{
-    HostRunnerCommandOutput, HostRunnerCommandRunner, SupervisorBackend, SupervisorChange,
-    SupervisorUnitTarget, detect_host_platform,
+    HostRunnerCommandRunner, SupervisorBackend, SupervisorChange, SupervisorUnitTarget,
+    detect_host_platform,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::ops::FailureMessage;
