@@ -11,8 +11,8 @@ use crate::dispatcher::PloyzctlRuntimeConfig;
 use crate::execution_error::PloyzctlExecutionError;
 use crate::execution_support::generate_client_machine_add_ids;
 use crate::execution_support::{
-    CommandExit, ExecutionSupportError, PloyzctlExecutionOutput, api_error, operation_api_client,
-    watch_operation_until_terminal, with_cluster_context_from_disk,
+    PloyzctlExecutionOutput, api_error, operation_api_client, watch_operation_until_terminal,
+    with_cluster_context_from_disk,
 };
 use crate::machine::bootstrap::{
     BootstrapInstaller, BootstrapRelease, FounderBootstrapCommand, MACHINE_NATS_PORT,
@@ -26,11 +26,13 @@ use crate::machine::founder::FirstMachineActivateCommand;
 use crate::machine::local_release::LocalReleaseStageError;
 use crate::machine::operator_context::{
     ClusterContextError, ClusterContextMaterial, default_cluster_context_path,
-    load_cluster_context, publish_cluster_context, save_cluster_context,
-    save_cluster_context_machine_ssh,
+    publish_cluster_context, save_cluster_context, save_cluster_context_machine_ssh,
 };
 use crate::machine::runtime::MachineExecutionError;
-use crate::ssh::{DEFAULT_SSH_COMMAND_TIMEOUT, SshClient, SshCommandError, SshPhase, SshTarget};
+use crate::ssh::{
+    DEFAULT_SSH_COMMAND_TIMEOUT, MarkerBlockError, SshClient, SshCommandError, SshPhase, SshTarget,
+    extract_marker_json,
+};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::MachineJoinRuntimeNatsUrl;
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
