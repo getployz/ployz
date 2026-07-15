@@ -17,7 +17,6 @@ use ployzd::tasks::TaskRegistry;
 
 use ployz_test_support::ids::{machine_id, operation_id};
 
-#[path = "support/mod.rs"]
 #[tokio::test]
 async fn drain_records_lifecycle_evidence_and_resume_reverts() {
     let nats = ployz_test_support::nats::TestNats::start().await;

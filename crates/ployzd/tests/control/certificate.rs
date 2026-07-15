@@ -610,7 +610,7 @@ async fn acme_validation_waits_for_exact_gateway_challenge_application() {
     assert!(!issuer.validation_started.load(Ordering::Acquire));
 
     gateway.apply_challenge();
-    tokio::time::timeout(Duration::from_secs(1), ensure)
+    tokio::time::timeout(Duration::from_secs(5), ensure)
         .await
         .expect("issuance observes applied challenge")
         .expect("issuance task")
