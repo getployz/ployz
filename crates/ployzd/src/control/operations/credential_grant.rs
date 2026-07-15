@@ -34,17 +34,18 @@ impl CredentialGrantOperation {
         }
     }
 
-    pub fn start(
-        &self,
-        accepted: AcceptedCredentialGrantSubmission,
-    ) -> Result<(), crate::tasks::TaskAdmissionError> {
+    pub fn start(&self, accepted: AcceptedCredentialGrantSubmission) {
         if !accepted.should_start_execution {
-            return Ok(());
+            return;
         }
+        let operation_id = accepted.operation_id.clone();
         let worker = self.clone();
-        self.task_registry.spawn(|| async move {
-            worker.run(accepted).await;
-        })
+        super::report_task_admission(
+            &operation_id,
+            self.task_registry.spawn(|| async move {
+                worker.run(accepted).await;
+            }),
+        );
     }
 
     async fn run(self, accepted: AcceptedCredentialGrantSubmission) {

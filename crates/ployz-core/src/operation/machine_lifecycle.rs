@@ -63,6 +63,10 @@ impl MachineLifecycleOperationState {
         }
     }
 
+    pub(super) const fn interrupted(evidence: OperationInterruptionEvidence) -> Self {
+        Self::Interrupted { evidence }
+    }
+
     pub(super) const fn terminal_interruption_evidence(
         &self,
     ) -> Option<&OperationInterruptionEvidence> {
@@ -132,7 +136,6 @@ pub(super) enum MachineLifecycleEvent {
         transition: MachineLifecycleTransition,
     },
     Cancelled(CancellationReason),
-    Interrupted(OperationInterruptionEvidence),
 }
 
 pub(super) fn project_event(
@@ -180,14 +183,6 @@ pub(super) fn project_event(
             target,
             state,
             MachineLifecycleOperationState::Cancelled { reason },
-            event_sequence,
-        ),
-        MachineLifecycleEvent::Interrupted(evidence) => project_state(
-            id,
-            machine_id,
-            target,
-            state,
-            MachineLifecycleOperationState::Interrupted { evidence },
             event_sequence,
         ),
     }

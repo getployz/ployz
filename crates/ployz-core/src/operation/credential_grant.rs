@@ -68,6 +68,10 @@ impl CredentialGrantOperationState {
         }
     }
 
+    pub(super) const fn interrupted(evidence: OperationInterruptionEvidence) -> Self {
+        Self::Interrupted { evidence }
+    }
+
     pub(super) const fn terminal_interruption_evidence(
         &self,
     ) -> Option<&OperationInterruptionEvidence> {
@@ -136,7 +140,6 @@ pub(super) enum CredentialGrantEvent {
     Submitted { action: CredentialGrantAction },
     Transition(CredentialGrantTransition),
     Cancelled(CancellationReason),
-    Interrupted(OperationInterruptionEvidence),
 }
 
 pub(super) fn project_event(
@@ -165,13 +168,6 @@ pub(super) fn project_event(
             action,
             state,
             CredentialGrantOperationState::Cancelled { reason },
-            event_sequence,
-        ),
-        CredentialGrantEvent::Interrupted(evidence) => project_state(
-            id,
-            action,
-            state,
-            CredentialGrantOperationState::Interrupted { evidence },
             event_sequence,
         ),
     }

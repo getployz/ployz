@@ -47,6 +47,10 @@ impl IngressConfigureOperationState {
         }
     }
 
+    pub(super) const fn interrupted(evidence: OperationInterruptionEvidence) -> Self {
+        Self::Interrupted { evidence }
+    }
+
     pub(super) const fn terminal_interruption_evidence(
         &self,
     ) -> Option<&OperationInterruptionEvidence> {
@@ -98,7 +102,6 @@ impl IngressConfigureTransition {
 pub(super) enum IngressConfigureEvent {
     Submitted { configuration: IngressConfiguration },
     Transition(IngressConfigureTransition),
-    Interrupted(OperationInterruptionEvidence),
     UnsupportedCancellation,
 }
 
@@ -121,9 +124,6 @@ pub(super) fn project_event(
             return Ok(OperationProjection::AlreadySatisfied);
         }
         IngressConfigureEvent::Transition(transition) => transition.state(),
-        IngressConfigureEvent::Interrupted(evidence) => {
-            IngressConfigureOperationState::Interrupted { evidence }
-        }
         IngressConfigureEvent::UnsupportedCancellation => {
             return Ok(OperationProjection::AlreadySatisfied);
         }

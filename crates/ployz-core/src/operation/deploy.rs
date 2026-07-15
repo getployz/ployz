@@ -151,6 +151,10 @@ impl DeployOperationState {
         ))
     }
 
+    pub(super) const fn interrupted(evidence: super::OperationInterruptionEvidence) -> Self {
+        Self::Interrupted { evidence }
+    }
+
     pub(super) const fn terminal_interruption_evidence(
         &self,
     ) -> Option<&super::OperationInterruptionEvidence> {
@@ -764,7 +768,6 @@ pub(super) enum DeployEvent {
     Submitted,
     Evidence(DeployEvidence),
     Transition(DeployTransition),
-    Interrupted(super::OperationInterruptionEvidence),
 }
 
 /// What a piece of deploy evidence requires of the operation state to count
@@ -961,15 +964,6 @@ pub(super) fn project_event(
             origin,
             state,
             transition.state(),
-            event_sequence,
-        ),
-        DeployEvent::Interrupted(evidence) => project_state(
-            id,
-            namespace_id,
-            service_id,
-            origin,
-            state,
-            DeployOperationState::Interrupted { evidence },
             event_sequence,
         ),
         DeployEvent::Submitted => Ok(OperationProjection::AlreadySatisfied),

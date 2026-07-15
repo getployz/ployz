@@ -34,18 +34,6 @@ use super::error_map::{
     deploy_submit_error_from_submit_error, machine_add_error_from_submit_error,
 };
 
-fn report_task_admission(
-    operation_id: &OperationId,
-    admission: Result<(), crate::tasks::TaskAdmissionError>,
-) {
-    if let Err(error) = admission {
-        eprintln!(
-            "operation {} was accepted while control tasks were quiescing: {error}",
-            operation_id.as_str()
-        );
-    }
-}
-
 #[must_use]
 pub fn owned_operation(
     operation_id: OperationId,
@@ -124,10 +112,7 @@ pub async fn credential_add(
         OperationProgressScope::Cluster,
         accepted.start_sequence,
     );
-    report_task_admission(
-        &operation.operation_id,
-        handlers.credential_grant().start(accepted),
-    );
+    handlers.credential_grant().start(accepted);
     Ok(operation)
 }
 
@@ -151,10 +136,7 @@ pub async fn credential_remove(
         OperationProgressScope::Cluster,
         accepted.start_sequence,
     );
-    report_task_admission(
-        &operation.operation_id,
-        handlers.credential_grant().start(accepted),
-    );
+    handlers.credential_grant().start(accepted);
     Ok(operation)
 }
 
@@ -179,10 +161,7 @@ pub async fn ingress_configure(
         OperationProgressScope::Cluster,
         accepted.start_sequence,
     );
-    report_task_admission(
-        &operation.operation_id,
-        handlers.ingress_configure().start(accepted),
-    );
+    handlers.ingress_configure().start(accepted);
     Ok(operation)
 }
 
@@ -328,10 +307,7 @@ pub async fn deploy_submit(
         scope,
         accepted.start_sequence,
     );
-    report_task_admission(
-        &operation.operation_id,
-        handlers.deploy_driver.start(accepted_execution),
-    );
+    handlers.deploy_driver.start(accepted_execution);
 
     Ok(operation)
 }
@@ -526,10 +502,7 @@ pub async fn service_restart(
         },
         accepted.start_sequence,
     );
-    report_task_admission(
-        &operation.operation_id,
-        handlers.service_restart().start(accepted),
-    );
+    handlers.service_restart().start(accepted);
     Ok(operation)
 }
 
@@ -594,10 +567,7 @@ pub async fn network_repair(
         OperationProgressScope::Cluster,
         accepted.start_sequence,
     );
-    report_task_admission(
-        &operation.operation_id,
-        handlers.network_repair().start(accepted),
-    );
+    handlers.network_repair().start(accepted);
     Ok(operation)
 }
 
@@ -663,10 +633,7 @@ pub async fn namespace_remove(
         },
         accepted.start_sequence,
     );
-    report_task_admission(
-        &operation.operation_id,
-        handlers.namespace_remove().start(accepted),
-    );
+    handlers.namespace_remove().start(accepted);
     Ok(operation)
 }
 
@@ -712,10 +679,7 @@ pub async fn volume_remove(
         },
         accepted.start_sequence,
     );
-    report_task_admission(
-        &operation.operation_id,
-        handlers.volume_remove().start(accepted),
-    );
+    handlers.volume_remove().start(accepted);
     Ok(operation)
 }
 
@@ -764,14 +728,11 @@ pub async fn machine_add(
                 message: "machine-add accepted raw join token is invalid".to_owned(),
             }
         })?;
-    report_task_admission(
-        &accepted.operation_id,
-        handlers.machine_mint.start(MintRequest {
-            operation_id: accepted.operation_id.clone(),
-            machine_id: accepted.identity.machine_id.clone(),
-            idempotency_key,
-        }),
-    );
+    handlers.machine_mint.start(MintRequest {
+        operation_id: accepted.operation_id.clone(),
+        machine_id: accepted.identity.machine_id.clone(),
+        idempotency_key,
+    });
     tokio::spawn({
         let handlers = handlers.clone();
         async move {
@@ -845,10 +806,7 @@ pub async fn machine_update(
         &accepted.machine_id,
         accepted.start_sequence,
     );
-    report_task_admission(
-        &operation.operation_id,
-        handlers.machine_update().start(accepted),
-    );
+    handlers.machine_update().start(accepted);
 
     Ok(operation)
 }
@@ -928,10 +886,7 @@ async fn machine_lifecycle(
         &accepted.machine_id,
         accepted.start_sequence,
     );
-    report_task_admission(
-        &operation.operation_id,
-        handlers.machine_lifecycle().start(accepted),
-    );
+    handlers.machine_lifecycle().start(accepted);
 
     Ok(operation)
 }

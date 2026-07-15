@@ -37,18 +37,19 @@ impl MachineUpdateOperation {
         }
     }
 
-    pub fn start(
-        &self,
-        accepted: AcceptedMachineUpdateSubmission,
-    ) -> Result<(), crate::tasks::TaskAdmissionError> {
+    pub fn start(&self, accepted: AcceptedMachineUpdateSubmission) {
         if !accepted.should_start_execution {
-            return Ok(());
+            return;
         }
 
+        let operation_id = accepted.operation_id.clone();
         let runtime = self.clone();
-        self.task_registry.spawn(|| async move {
-            runtime.run(accepted).await;
-        })
+        super::report_task_admission(
+            &operation_id,
+            self.task_registry.spawn(|| async move {
+                runtime.run(accepted).await;
+            }),
+        );
     }
 
     pub async fn run(self, accepted: AcceptedMachineUpdateSubmission) {

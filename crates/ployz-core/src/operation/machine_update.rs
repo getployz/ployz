@@ -68,6 +68,10 @@ impl MachineUpdateOperationState {
         ))
     }
 
+    pub(super) const fn interrupted(evidence: OperationInterruptionEvidence) -> Self {
+        Self::Interrupted { evidence }
+    }
+
     pub(super) const fn terminal_interruption_evidence(
         &self,
     ) -> Option<&OperationInterruptionEvidence> {
@@ -176,7 +180,6 @@ pub(super) enum MachineUpdateEvent {
         transition: MachineUpdateTransition,
     },
     Cancelled(CancellationReason),
-    Interrupted(OperationInterruptionEvidence),
 }
 
 pub(super) fn project_event(
@@ -224,14 +227,6 @@ pub(super) fn project_event(
             target_version,
             state,
             MachineUpdateOperationState::Cancelled { reason },
-            event_sequence,
-        ),
-        MachineUpdateEvent::Interrupted(evidence) => project_state(
-            id,
-            machine_id,
-            target_version,
-            state,
-            MachineUpdateOperationState::Interrupted { evidence },
             event_sequence,
         ),
     }

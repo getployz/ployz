@@ -276,7 +276,7 @@ async fn quiesced_running_worker_cannot_race_interruption_sealing() {
     started_rx.await.expect("worker starts");
 
     tasks
-        .quiesce(Duration::from_secs(1))
+        .abort_and_join(Duration::from_secs(1))
         .await
         .expect("worker quiesces");
     assert!(release_tx.send(()).is_err(), "worker receiver must be gone");

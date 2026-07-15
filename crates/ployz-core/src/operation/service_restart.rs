@@ -75,6 +75,10 @@ impl ServiceRestartOperationState {
         ))
     }
 
+    pub(super) const fn interrupted(evidence: OperationInterruptionEvidence) -> Self {
+        Self::Interrupted { evidence }
+    }
+
     pub(super) const fn terminal_interruption_evidence(
         &self,
     ) -> Option<&OperationInterruptionEvidence> {
@@ -181,7 +185,6 @@ pub(super) enum ServiceRestartEvent {
         container_id: ContainerId,
     },
     Transition(ServiceRestartTransition),
-    Interrupted(OperationInterruptionEvidence),
 }
 
 pub(super) fn project_event(
@@ -230,14 +233,6 @@ pub(super) fn project_event(
             service_id,
             state,
             transition.state(),
-            event_sequence,
-        ),
-        ServiceRestartEvent::Interrupted(evidence) => project_state(
-            id,
-            namespace_id,
-            service_id,
-            state,
-            ServiceRestartOperationState::Interrupted { evidence },
             event_sequence,
         ),
     }

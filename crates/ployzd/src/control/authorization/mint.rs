@@ -116,7 +116,12 @@ impl MachineCredentialMint {
         &self.machine_seed_file
     }
 
-    pub fn start(&self, request: MintRequest) -> Result<(), crate::tasks::TaskAdmissionError> {
+    pub fn start(&self, request: MintRequest) {
+        let operation_id = request.operation_id.clone();
+        super::super::operations::report_task_admission(&operation_id, self.admit(request));
+    }
+
+    fn admit(&self, request: MintRequest) -> Result<(), crate::tasks::TaskAdmissionError> {
         let runtime = self.clone();
         self.tasks.spawn(|| async move {
             let _outcome = runtime.run(request).await;
@@ -171,7 +176,7 @@ impl MachineCredentialMint {
                 machine_id: submission.identity.machine_id,
                 idempotency_key: submission.idempotency_key,
             };
-            self.start(request.clone())
+            self.admit(request.clone())
                 .map_err(MintResumeError::TaskAdmission)?;
             resumed.push(request);
         }

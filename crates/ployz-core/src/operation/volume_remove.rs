@@ -67,6 +67,10 @@ impl VolumeRemoveOperationState {
         ))
     }
 
+    pub(super) const fn interrupted(evidence: OperationInterruptionEvidence) -> Self {
+        Self::Interrupted { evidence }
+    }
+
     pub(super) const fn terminal_interruption_evidence(
         &self,
     ) -> Option<&OperationInterruptionEvidence> {
@@ -155,7 +159,6 @@ pub(super) enum VolumeRemoveEvent {
     },
     Transition(VolumeRemoveTransition),
     Cancelled(CancellationReason),
-    Interrupted(OperationInterruptionEvidence),
 }
 
 pub(super) fn project_event(
@@ -197,15 +200,6 @@ pub(super) fn project_event(
                 attempted: Box::new(ProjectionOperationState::VolumeRemove(state.clone())),
             })
         }
-        VolumeRemoveEvent::Interrupted(evidence) => project_transition(
-            id,
-            state,
-            VolumeRemoveOperationState::Interrupted { evidence },
-            VolumeRemoveOperationState::is_terminal,
-            transition_allowed,
-            ProjectionOperationState::VolumeRemove,
-            |state| status(id, namespace_id, volume_name, state, event_sequence),
-        ),
     }
 }
 

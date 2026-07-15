@@ -85,6 +85,10 @@ impl NetworkRepairOperationState {
         ))
     }
 
+    pub(super) const fn interrupted(evidence: OperationInterruptionEvidence) -> Self {
+        Self::Interrupted { evidence }
+    }
+
     pub(super) const fn terminal_interruption_evidence(
         &self,
     ) -> Option<&OperationInterruptionEvidence> {
@@ -249,7 +253,6 @@ pub(super) enum NetworkRepairEvent {
     Submitted,
     Evidence(NetworkRepairEvidence),
     Transition(NetworkRepairTransition),
-    Interrupted(OperationInterruptionEvidence),
 }
 
 pub(super) fn project_event(
@@ -291,13 +294,6 @@ pub(super) fn project_event(
             target_machine_id,
             state,
             transition.state(),
-            event_sequence,
-        ),
-        NetworkRepairEvent::Interrupted(evidence) => project_state(
-            id,
-            target_machine_id,
-            state,
-            NetworkRepairOperationState::Interrupted { evidence },
             event_sequence,
         ),
     }

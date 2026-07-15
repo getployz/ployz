@@ -50,7 +50,7 @@ impl TaskRegistry {
         Ok(())
     }
 
-    fn begin_quiesce(&self) -> JoinSet<()> {
+    fn close_and_abort(&self) -> JoinSet<()> {
         let mut state = self
             .state
             .lock()
@@ -61,8 +61,8 @@ impl TaskRegistry {
         handles
     }
 
-    pub async fn quiesce(&self, timeout: Duration) -> Result<(), TaskRegistryQuiesceError> {
-        let mut handles = self.begin_quiesce();
+    pub async fn abort_and_join(&self, timeout: Duration) -> Result<(), TaskRegistryQuiesceError> {
+        let mut handles = self.close_and_abort();
         tokio::time::timeout(timeout, async {
             while handles.join_next().await.is_some() {}
         })
@@ -99,7 +99,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn quiesce_drains_running_tasks_and_stops_admission() {
+    async fn abort_and_join_cancels_running_tasks_and_stops_admission() {
         let registry = TaskRegistry::default();
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
@@ -113,7 +113,7 @@ mod tests {
         started_rx.await.expect("worker starts");
 
         registry
-            .quiesce(Duration::from_secs(1))
+            .abort_and_join(Duration::from_secs(1))
             .await
             .expect("worker quiesces");
         dropped_rx.await.expect("worker future is dropped");

@@ -79,7 +79,7 @@ impl RunningControlProcess {
         let mut nats_service_error = self.operation_api.shutdown().await.err();
         let quiesce_result = self
             .control_tasks
-            .quiesce(CONTROL_TASK_QUIESCE_TIMEOUT)
+            .abort_and_join(CONTROL_TASK_QUIESCE_TIMEOUT)
             .await;
         let interruption_result = if quiesce_result.is_ok() {
             Some(

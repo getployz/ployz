@@ -77,6 +77,10 @@ impl NamespaceRemoveOperationState {
         ))
     }
 
+    pub(super) const fn interrupted(evidence: OperationInterruptionEvidence) -> Self {
+        Self::Interrupted { evidence }
+    }
+
     pub(super) const fn terminal_interruption_evidence(
         &self,
     ) -> Option<&OperationInterruptionEvidence> {
@@ -174,7 +178,6 @@ pub(super) enum NamespaceRemoveEvent {
         container_id: ContainerId,
     },
     Transition(NamespaceRemoveTransition),
-    Interrupted(OperationInterruptionEvidence),
 }
 
 pub(super) fn project_event(
@@ -225,13 +228,6 @@ pub(super) fn project_event(
         NamespaceRemoveEvent::Transition(transition) => {
             project_state(id, namespace_id, state, transition.state(), event_sequence)
         }
-        NamespaceRemoveEvent::Interrupted(evidence) => project_state(
-            id,
-            namespace_id,
-            state,
-            NamespaceRemoveOperationState::Interrupted { evidence },
-            event_sequence,
-        ),
     }
 }
 

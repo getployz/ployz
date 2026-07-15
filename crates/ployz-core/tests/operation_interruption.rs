@@ -72,19 +72,29 @@ fn running_deploy_interruption_preserves_typed_stage_and_retry_contract() {
     let ployz_core::operation::OperationProjection::StatusChanged { status } = projected else {
         panic!("interruption changes status");
     };
+    let projected_operation_id = status.id().clone();
     let OperationStatus::Deploy {
+        ref id,
+        ref namespace_id,
+        ref service_id,
+        ref origin,
         state: DeployOperationState::Interrupted {
             evidence: ref actual,
         },
-        ..
+        ref last_event_sequence,
     } = *status
     else {
         panic!("deploy becomes interrupted");
     };
     assert_eq!(*actual, evidence);
+    assert_eq!(id, &operation_id("op-deploy"));
+    assert_eq!(namespace_id, &self::namespace_id());
+    assert_eq!(service_id, &self::service_id());
+    assert_eq!(origin, &None);
+    assert_eq!(last_event_sequence.get(), 5);
 
     let late_event = OperationEvent::DeployContainerStarted {
-        operation_id: status.id().clone(),
+        operation_id: projected_operation_id,
         machine_id: ployz_core::ids::MachineId::try_new("edge-one").expect("machine id"),
         container_id: ployz_core::ids::ContainerId::try_new("late-container")
             .expect("container id"),

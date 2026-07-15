@@ -17,7 +17,10 @@ use super::namespace_remove::{self, NamespaceRemoveOperationState};
 use super::network_repair::{self, NetworkRepairOperationState};
 use super::service_restart::{self, ServiceRestartOperationState};
 use super::volume_remove::{self, VolumeRemoveOperationState};
-use super::{EventSequence, OperationEvent, OperationId, OperationKind, OperationStatus};
+use super::{
+    EventSequence, OperationEvent, OperationId, OperationInterruptionEvidence, OperationKind,
+    OperationStatus,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperationProjection {
@@ -244,12 +247,6 @@ pub fn project_operation_event(
     event: OperationEvent,
     event_sequence: EventSequence,
 ) -> Result<OperationProjection, StatusProjectionError> {
-    let interruption_matches = if let OperationEvent::OperationInterrupted { evidence, .. } = &event
-    {
-        Some(current.interruption_evidence(evidence.cause()).as_ref() == Some(evidence))
-    } else {
-        None
-    };
     let event = ClassifiedOperationEvent::from(event);
     let event_operation_id = event.operation_id();
     let current_operation_id = current.id();
@@ -264,12 +261,6 @@ pub fn project_operation_event(
     if event_sequence <= last_event_sequence {
         return Ok(OperationProjection::AlreadySatisfied);
     }
-    if interruption_matches == Some(false) {
-        return Err(StatusProjectionError::OperationInterruptionMismatch {
-            operation_id: current.id().clone(),
-        });
-    }
-
     match event {
         ClassifiedOperationEvent::Deploy { event, .. } => {
             let OperationStatus::Deploy {
@@ -472,5 +463,107 @@ pub fn project_operation_event(
                 event_sequence,
             )
         }
+        ClassifiedOperationEvent::OperationInterrupted { evidence, .. } => {
+            project_operation_interruption(current, evidence, event_sequence)
+        }
     }
+}
+
+fn project_operation_interruption(
+    current: &OperationStatus,
+    evidence: OperationInterruptionEvidence,
+    event_sequence: EventSequence,
+) -> Result<OperationProjection, StatusProjectionError> {
+    if current.interruption_evidence(evidence.cause()).as_ref() != Some(&evidence) {
+        return Err(StatusProjectionError::OperationInterruptionMismatch {
+            operation_id: current.id().clone(),
+        });
+    }
+
+    let mut status = current.clone();
+    match &mut status {
+        OperationStatus::Deploy {
+            state,
+            last_event_sequence,
+            ..
+        } => {
+            *state = DeployOperationState::interrupted(evidence);
+            *last_event_sequence = event_sequence;
+        }
+        OperationStatus::CredentialGrant {
+            state,
+            last_event_sequence,
+            ..
+        } => {
+            *state = CredentialGrantOperationState::interrupted(evidence);
+            *last_event_sequence = event_sequence;
+        }
+        OperationStatus::IngressConfigure {
+            state,
+            last_event_sequence,
+            ..
+        } => {
+            *state = IngressConfigureOperationState::interrupted(evidence);
+            *last_event_sequence = event_sequence;
+        }
+        OperationStatus::MachineUpdate {
+            state,
+            last_event_sequence,
+            ..
+        } => {
+            *state = MachineUpdateOperationState::interrupted(evidence);
+            *last_event_sequence = event_sequence;
+        }
+        OperationStatus::MachineLifecycle {
+            state,
+            last_event_sequence,
+            ..
+        } => {
+            *state = MachineLifecycleOperationState::interrupted(evidence);
+            *last_event_sequence = event_sequence;
+        }
+        OperationStatus::NetworkRepair {
+            state,
+            last_event_sequence,
+            ..
+        } => {
+            *state = NetworkRepairOperationState::interrupted(evidence);
+            *last_event_sequence = event_sequence;
+        }
+        OperationStatus::ServiceRestart {
+            state,
+            last_event_sequence,
+            ..
+        } => {
+            *state = ServiceRestartOperationState::interrupted(evidence);
+            *last_event_sequence = event_sequence;
+        }
+        OperationStatus::NamespaceRemove {
+            state,
+            last_event_sequence,
+            ..
+        } => {
+            *state = NamespaceRemoveOperationState::interrupted(evidence);
+            *last_event_sequence = event_sequence;
+        }
+        OperationStatus::VolumeRemove {
+            state,
+            last_event_sequence,
+            ..
+        } => {
+            *state = VolumeRemoveOperationState::interrupted(evidence);
+            *last_event_sequence = event_sequence;
+        }
+        OperationStatus::Cert { .. }
+        | OperationStatus::MachineAdd { .. }
+        | OperationStatus::CoreReplace { .. }
+        | OperationStatus::ManagedDnsReconcile { .. } => {
+            return Err(StatusProjectionError::OperationInterruptionMismatch {
+                operation_id: current.id().clone(),
+            });
+        }
+    }
+    Ok(OperationProjection::StatusChanged {
+        status: Box::new(status),
+    })
 }
