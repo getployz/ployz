@@ -8,7 +8,7 @@ use ployz::commands::PloyzctlCommand;
 use ployz::dispatcher::{PloyzctlRuntimeConfig, execute_command};
 use ployz::machine::bootstrap::BootstrapRelease;
 use ployz::machine::command::{MachineAddRemoteCommand, MachineIdentity, MachineInitCommand};
-use ployz::machine::ssh::SshTarget;
+use ployz::ssh::SshTarget;
 use ployz_core::install::{MachineBootstrapUrl, MachineJoinClusterName};
 use ployz_core::machine::roles::InstallRolePolicy;
 use ployz_core::nats_config::NatsUserSeed;

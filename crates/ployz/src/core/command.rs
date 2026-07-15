@@ -1,7 +1,7 @@
 use clap::Args;
 
 use crate::commands::{PloyzctlCliError, invalid_value};
-use crate::machine::ssh::SshTarget;
+use crate::ssh::SshTarget;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CorePromoteCommand {

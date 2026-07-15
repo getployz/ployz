@@ -1,6 +1,7 @@
 //! Command-level aggregation of shared and feature-owned execution failures.
 
 use crate::deploy::runtime::DeployExecutionError;
+use crate::core::runtime::CoreRuntimeError;
 use crate::execution_support::ExecutionSupportError;
 use crate::machine::runtime::MachineExecutionError;
 use crate::namespace::runtime::NamespaceExecutionError;
@@ -16,6 +17,8 @@ pub enum PloyzctlExecutionError {
     CloudUnconfigured { command: &'static str },
     #[error(transparent)]
     Support(#[from] ExecutionSupportError),
+    #[error(transparent)]
+    Core(CoreRuntimeError),
     #[error(transparent)]
     Machine(MachineExecutionError),
     #[error(transparent)]

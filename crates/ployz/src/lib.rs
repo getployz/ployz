@@ -20,4 +20,5 @@ pub mod operation;
 pub mod role_policy;
 pub mod service;
 mod shell;
+pub mod ssh;
 pub mod volume;

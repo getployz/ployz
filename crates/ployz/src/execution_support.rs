@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::api_client::{OperationApiClient, OperationApiClientError};
+use crate::core::runtime::CoreRuntimeError;
 use crate::dispatcher::PloyzctlRuntimeConfig;
 #[cfg(test)]
 use crate::machine::operator_context::ClusterContext;

@@ -1,10 +1,8 @@
-//! Reusable SSH layer for remote machine bootstrap.
+//! Reusable SSH transport for remote product commands.
 //!
-//! `machine init` and `machine add` both need the same primitives: parse a
-//! `user@host` target, run a bounded remote command with phase-labeled
-//! failure evidence, and read the remote hostname that becomes the default
-//! machine identity. Remote commands stay POSIX-shaped; every failure names
-//! the phase and carries captured stdout/stderr.
+//! Core recovery and Machine bootstrap use the same bounded command and
+//! result-framing primitives. Remote commands stay POSIX-shaped; every
+//! failure names the phase and carries captured stdout/stderr.
 
 use std::fmt;
 use std::io::{Read, Write};
@@ -18,6 +16,39 @@ use wait_timeout::ChildExt;
 pub const DEFAULT_SSH_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 pub const SSH_CONNECT_TIMEOUT_SECS: u32 = 10;
 const MAX_SSH_OUTPUT_BYTES: usize = 64 * 1024;
+
+pub(crate) enum MarkerBlockError {
+    Missing,
+    Malformed(&'static str),
+}
+
+pub(crate) fn extract_marker_json<'a>(
+    stdout: &'a str,
+    begin: &str,
+    end: &str,
+) -> Result<&'a str, MarkerBlockError> {
+    let mut lines = stdout.lines();
+    while let Some(line) = lines.next() {
+        if line.trim() != begin {
+            continue;
+        }
+        let Some(json_line) = lines.next() else {
+            return Err(MarkerBlockError::Malformed(
+                "result marker was not followed by JSON",
+            ));
+        };
+        let Some(end_line) = lines.next() else {
+            return Err(MarkerBlockError::Malformed(
+                "result JSON was not followed by an end marker",
+            ));
+        };
+        if end_line.trim() != end {
+            return Err(MarkerBlockError::Malformed("result end marker was missing"));
+        }
+        return Ok(json_line);
+    }
+    Err(MarkerBlockError::Missing)
+}
 
 /// A validated `user@host` SSH destination.
 ///

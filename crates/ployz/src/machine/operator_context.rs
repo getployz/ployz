@@ -11,7 +11,7 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use crate::machine::ssh::{SshTarget, SshTargetParseError};
+use crate::ssh::{SshTarget, SshTargetParseError};
 use ployz_core::ids::{MachineId, SubjectTokenError};
 use ployz_nats::connect::{NatsClientUrl, NatsClientUrlError};
 use serde::{Deserialize, Serialize};

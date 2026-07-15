@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use ployz_core::install::{InstallArtifactSpec, MachineJoinMaterial};
 use sha2::{Digest as _, Sha256};
 
-use crate::machine::ssh::{SshClient, SshCommandError, SshPhase, SshTarget};
 use crate::shell::shell_quote;
+use crate::ssh::{SshClient, SshCommandError, SshPhase, SshTarget};
 
 const ARTIFACTS: [Artifact; 4] = [
     Artifact::new("ployz", "PLOYZ"),

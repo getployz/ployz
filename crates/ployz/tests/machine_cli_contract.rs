@@ -10,7 +10,7 @@ use ployz::machine::command::{
     MachineIdentityError, MachineInspectOutput, MachineJoinRuntimeNatsUrl, MachineJoinToken,
     MachineListOutput, MachineName, derive_machine_identity,
 };
-use ployz::machine::ssh::{SshClient, SshCommandError, SshPhase, SshTarget, SshTargetParseError};
+use ployz::ssh::{SshClient, SshCommandError, SshPhase, SshTarget, SshTargetParseError};
 use ployz_core::ids::MachineId;
 use ployz_core::install::{
     AbsoluteInstallPath, HostPortAssurance, InstallArtifactSource, InstallArtifactSpec,

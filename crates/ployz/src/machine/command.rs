@@ -33,8 +33,8 @@ use crate::machine::bootstrap::{
     DEFAULT_RELEASE_CHANNEL, JoinBootstrapCommand,
 };
 use crate::machine::local_release::LocalReleaseBundle;
-use crate::machine::ssh::SshTarget;
 use crate::role_policy::command::RolePolicyCli;
+use crate::ssh::SshTarget;
 
 /// Quick-start machine identity: the machine ID and machine name are the same
 /// value (R5), derived from the remote hostname unless `--name` overrides
