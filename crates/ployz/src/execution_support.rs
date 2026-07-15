@@ -7,7 +7,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::api_client::{NatsServiceRequestFailure, OperationApiClient, OperationApiClientError};
 use crate::commands::init::{FirstMachineActivateCommand, FirstMachineActivationOutput};
-use crate::config::{ClusterContext, ClusterContextError, load_cluster_context};
+#[cfg(test)]
+use crate::config::ClusterContext;
+use crate::config::{ClusterContextError, load_cluster_context};
 use crate::host_runner_install::LocalHostRunnerInstallError;
 use crate::remote_machine_runtime::RemoteMachineExecutionError;
 use crate::runtime::PloyzctlRuntimeConfig;
