@@ -1,4 +1,4 @@
-//! NATS material targets within Host Runner step plans: the server config,
+//! NATS material targets within Host Runner plans: the server config,
 //! TLS material, authorized users, and client credential writes, plus the
 //! listener/URL policy helpers they share.
 

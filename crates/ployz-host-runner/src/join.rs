@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::steps::{JoinMaterialError, JoinToken, RedactedJoinMaterial};
+use crate::plan::{JoinMaterialError, JoinToken, RedactedJoinMaterial};
 use ployz_core::dataplane::MachineEndpointSupernet;
 use ployz_core::ids::MachineId;
 

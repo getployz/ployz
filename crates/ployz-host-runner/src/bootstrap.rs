@@ -1,9 +1,7 @@
 use std::process::ExitCode;
 
 use crate::cli::{HostRunnerBootstrap, HostRunnerBootstrapMode};
-use crate::executor::HostRunnerPlanTerminal;
-use crate::report::HostRunnerTextRecorder;
-use crate::steps::JoinToken;
+use crate::plan::{HostRunnerPlanTerminal, HostRunnerTextRecorder, JoinToken};
 
 use crate::cloud_bootstrap_runner;
 use crate::env_config::local_core_target_from_env;

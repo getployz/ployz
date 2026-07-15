@@ -13,9 +13,9 @@ use crate::nats_identity::{
     CoreSeeds, NatsIdentityError, ServerCertificateSans, generate_cluster_nats_identity,
     wrap_core_seeds,
 };
+use crate::plan::{FirstMachineInstallTarget, JoinMaterialError, JoinToken};
 use crate::recovery_secret::{self, RecoverySecretError};
 use crate::release_manifest::{ExactPloyzVersion, ExactPloyzVersionError};
-use crate::steps::{FirstMachineInstallTarget, JoinMaterialError, JoinToken};
 use crate::systemd::{NatsServerUnitTarget, SupervisorUnitFileError};
 use clap::{Parser, Subcommand};
 use ployz_core::ids::OperationId;
@@ -681,7 +681,7 @@ mod tests {
         HostRunnerCommand, HostRunnerCoreDemote, HostRunnerCorePromote, HostRunnerStartup,
         HostRunnerSubstrateUpdate, HostRunnerSubstrateUpdateSource, SpecSource, load_command,
     };
-    use crate::steps::JoinToken;
+    use crate::plan::JoinToken;
 
     fn load_startup(
         args: impl IntoIterator<Item = OsString>,

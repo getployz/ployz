@@ -1,10 +1,9 @@
 use std::process::ExitCode;
 
 use crate::command::SystemHostRunnerCommandRunner;
-use crate::executor::{HostRunnerPlanTerminal, execute_host_runner_plan};
 use crate::local::{HostRunnerLocalConfig, HostRunnerLocalEffects};
-use crate::report::HostRunnerTextRecorder;
-use crate::steps::{FirstMachineInstallTarget, first_machine_install_plan};
+use crate::plan::{FirstMachineInstallTarget, HostRunnerTextRecorder, first_machine_install_plan};
+use crate::plan::{HostRunnerPlanTerminal, execute_host_runner_plan};
 use ployz_core::ids::MachineId;
 use ployz_core::install::{MachineJoinRuntimeNatsUrl, NatsMachineMaterialPaths};
 use ployz_sdk_types::{CloudFounderBootstrapResult, MachineJoinTrustedNats, NatsCaCertificatePem};
@@ -93,8 +92,8 @@ fn read_result_file(path: &std::path::Path, label: &str) -> Result<String, Strin
 
 pub(crate) fn run_first_machine_install(
     target: FirstMachineInstallTarget,
-    recorder: &mut impl crate::executor::HostRunnerStepRecorder,
-) -> crate::executor::HostRunnerPlanExecution {
+    recorder: &mut impl crate::plan::HostRunnerStepRecorder,
+) -> crate::plan::HostRunnerPlanExecution {
     let plan = first_machine_install_plan(target);
     let mut effects = HostRunnerLocalEffects::new(
         HostRunnerLocalConfig {

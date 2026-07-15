@@ -10,16 +10,15 @@ use crate::assigned_substrate::{
 use crate::cli::HostRunnerCorePromote;
 use crate::command::SystemHostRunnerCommandRunner;
 use crate::core_demote::repoint_non_core_roles;
-use crate::executor::{HostRunnerPlanTerminal, execute_host_runner_plan};
 use crate::join::{
     JOIN_CORE_SEEDS_FILE, JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_RECOVERY_KEY_FILE,
     JOIN_TRUSTED_CA_FILE, parse_dataplane_endpoint_supernet_from_join_material,
     parse_machine_id_from_join_material,
 };
 use crate::local::{HostRunnerLocalConfig, HostRunnerLocalEffects};
+use crate::plan::{CorePromoteTarget, HostRunnerTextRecorder, core_promote_plan};
+use crate::plan::{HostRunnerPlanTerminal, execute_host_runner_plan};
 use crate::release_manifest::release_manifest_url;
-use crate::report::HostRunnerTextRecorder;
-use crate::steps::{CorePromoteTarget, core_promote_plan};
 use ployz_core::install::{MachineJoinClusterName, MachineJoinRuntimeNatsUrl};
 
 use crate::env_config::{

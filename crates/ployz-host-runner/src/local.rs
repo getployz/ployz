@@ -16,7 +16,6 @@ use crate::assigned_substrate::{
     AssignedHostPort, AssignedSubstrateState, write_assigned_substrate_state,
 };
 use crate::command::{HostRunnerCommandOutput, HostRunnerCommandRunner};
-use crate::executor::HostRunnerStepEffects;
 use crate::firewall::{FirewallBackend, detect_firewall_backend};
 use crate::fsx::{FileMode, StagedDirectory, ensure_directory, write_durable_file};
 use crate::host_platform::{
@@ -26,7 +25,8 @@ use crate::join::{
     JOIN_CORE_SEEDS_FILE, JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_NATS_CREDENTIALS_FILE,
     JOIN_RECOVERY_KEY_FILE, JOIN_TRUSTED_CA_FILE, render_redacted_join_material,
 };
-use crate::steps::{
+use crate::plan::HostRunnerStepEffects;
+use crate::plan::{
     ContainerRuntime, HostPrerequisite, HostRunnerJoinMaterial, HostRunnerStep,
     HostRunnerStepEffectError, HostRunnerStepFailureReason, MachineJoinTemplateTarget,
     NatsAuthorizedUsersTarget, NatsClientCredentialsTarget, NatsServerConfigTarget,

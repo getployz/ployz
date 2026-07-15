@@ -1,10 +1,10 @@
 use std::path::Path;
 
+use crate::plan::FirstMachineInstallTarget;
 use crate::release_manifest::{
     ReleaseManifest, default_release_manifest_url, persisted_release_manifest_url,
     read_release_manifest_text,
 };
-use crate::steps::FirstMachineInstallTarget;
 use ployz_core::ids::MachineId;
 use ployz_core::install::{
     AbsoluteInstallPath, DEFAULT_MACHINE_BOOTSTRAP_URL, FirstMachineInstallSpec, HostPortAssurance,

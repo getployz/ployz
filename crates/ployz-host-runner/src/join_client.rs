@@ -5,17 +5,16 @@ use std::time::Duration;
 use crate::artifacts::{ArtifactKind, DataplaneArtifactTargets, artifact_target};
 use crate::cli::HostRunnerStartup;
 use crate::command::SystemHostRunnerCommandRunner;
-use crate::executor::HostRunnerPlanTerminal;
 use crate::join::JOIN_MATERIAL_DIR;
 use crate::join_executor::{
     HostRunnerJoinRedeemer, HostRunnerJoinReporter, HostRunnerJoinTokenConsumer,
     RedeemedHostRunnerJoin, execute_host_runner_join,
 };
 use crate::local::{HostRunnerLocalConfig, HostRunnerLocalEffects};
-use crate::report::HostRunnerTextRecorder;
-use crate::steps::{
-    HostRunnerJoinMaterial, HostRunnerJoinTarget, JoinToken, NonEmptyRoleSet,
-    PloyzdRoleEnvironmentTarget, RoleNatsCredentials,
+use crate::plan::HostRunnerPlanTerminal;
+use crate::plan::{
+    HostRunnerJoinMaterial, HostRunnerJoinTarget, HostRunnerTextRecorder, JoinToken,
+    NonEmptyRoleSet, PloyzdRoleEnvironmentTarget, RoleNatsCredentials,
 };
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::ops::FailureMessage;
@@ -61,8 +60,8 @@ pub(crate) fn run_start_command(startup: HostRunnerStartup) -> ExitCode {
 pub(crate) fn run_startup_join(
     token: &JoinToken,
     join_token_file: std::path::PathBuf,
-    recorder: &mut impl crate::executor::HostRunnerStepRecorder,
-) -> crate::executor::HostRunnerPlanExecution {
+    recorder: &mut impl crate::plan::HostRunnerStepRecorder,
+) -> crate::plan::HostRunnerPlanExecution {
     run_join_with_consumer(
         token,
         StartupJoinTokenConsumer { join_token_file },
@@ -73,8 +72,8 @@ pub(crate) fn run_startup_join(
 pub(crate) fn run_join_with_consumer(
     token: &JoinToken,
     mut token_consumer: impl HostRunnerJoinTokenConsumer,
-    recorder: &mut impl crate::executor::HostRunnerStepRecorder,
-) -> crate::executor::HostRunnerPlanExecution {
+    recorder: &mut impl crate::plan::HostRunnerStepRecorder,
+) -> crate::plan::HostRunnerPlanExecution {
     let mut redeemer = JoinRedeemer::from_env();
     let mut reporter = JoinReporter::from_env(token.clone());
     let mut effects = HostRunnerLocalEffects::new(

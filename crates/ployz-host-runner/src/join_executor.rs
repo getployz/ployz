@@ -4,13 +4,14 @@ use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::ops::FailureMessage;
 use ployz_sdk_types::{MachineJoinRedeemed, MachineJoinReportFailure};
 
-use crate::executor::{
-    HostRunnerPlanExecution, HostRunnerPlanFailure, HostRunnerPlanTerminal, HostRunnerStepEffects,
-    HostRunnerStepEvent, HostRunnerStepRecorder, execute_host_runner_plan, execute_labeled_action,
-};
-use crate::steps::{
+use crate::plan::execution::execute_labeled_action;
+use crate::plan::{
     HostRunnerJoinTarget, HostRunnerStepFailureReason, HostRunnerStepLabel, JoinToken,
     host_runner_join_install_plan, host_runner_join_material_plan,
+};
+use crate::plan::{
+    HostRunnerPlanExecution, HostRunnerPlanFailure, HostRunnerPlanTerminal, HostRunnerStepEffects,
+    HostRunnerStepEvent, HostRunnerStepRecorder, execute_host_runner_plan,
 };
 
 pub trait HostRunnerJoinRedeemer {

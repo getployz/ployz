@@ -27,6 +27,7 @@ mod join_client;
 pub mod join_executor;
 pub mod local;
 pub mod nats_identity;
+pub mod plan;
 pub mod recovery_secret;
 pub mod release_manifest;
 pub mod report;

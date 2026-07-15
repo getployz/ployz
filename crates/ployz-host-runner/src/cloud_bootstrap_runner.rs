@@ -11,14 +11,13 @@ use crate::cloud_bootstrap::{
 };
 use crate::cloud_client::CloudClient;
 use crate::command::{HostRunnerCommandRunner, SystemHostRunnerCommandRunner};
-use crate::executor::{HostRunnerPlanFailure, HostRunnerPlanTerminal};
 use crate::join_executor::execute_host_runner_join_with_redeemed;
 use crate::local::{HostRunnerLocalConfig, HostRunnerLocalEffects};
+use crate::plan::{HostRunnerPlanFailure, HostRunnerPlanTerminal};
+use crate::plan::{HostRunnerStepFailureReason, HostRunnerTextRecorder, JoinToken};
 use crate::release_manifest::{
     ReleaseManifest, default_release_manifest_url, persisted_release_manifest_url,
 };
-use crate::report::HostRunnerTextRecorder;
-use crate::steps::{HostRunnerStepFailureReason, JoinToken};
 use ployz_core::install::{
     AbsoluteInstallPath, DEFAULT_MACHINE_BOOTSTRAP_URL, FirstMachineInstallSpec,
     MachineBootstrapUrl, MachineJoinClusterName, MachineJoinRuntimeNatsUrl,
@@ -821,8 +820,10 @@ mod tests {
         cloud_joiner_failed_terminal_callback, persisted_release_manifest_url,
         public_ip_from_runtime_nats_url,
     };
-    use crate::executor::HostRunnerPlanFailure;
-    use crate::steps::{HostRunnerStepFailure, HostRunnerStepFailureReason, HostRunnerStepLabel};
+    use crate::plan::{
+        HostRunnerPlanFailure, HostRunnerStepFailure, HostRunnerStepFailureReason,
+        HostRunnerStepLabel,
+    };
     use ployz_core::install::MachineJoinRuntimeNatsUrl;
     use ployz_core::ops::FailureMessage;
     use ployz_sdk_types::{
