@@ -282,7 +282,8 @@ pub async fn deploy_submit(
     .await
     .map_err(|error| DeploySubmitError::InvalidTarget {
         operation_id: operation_id.clone(),
-        message: error.to_string(),
+        message: ployz_core::ops::FailureMessage::try_new(error.to_string())
+            .expect("route admission validation error is non-empty"),
     })?;
     let accepted_execution = handlers
         .controllers

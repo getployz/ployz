@@ -53,11 +53,6 @@ impl OperationRepository {
         Self { store, progress }
     }
 
-    #[must_use]
-    pub(crate) const fn core_store(&self) -> &CoreStore {
-        &self.store
-    }
-
     async fn submit_operation<K: OperationAction>(
         &self,
         operation_id: OperationId,
