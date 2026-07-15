@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 
 use crate::ids::CertId;
 use crate::install::{InstallContractError, InstallSha256Digest};
-use crate::ops::RouteHostname;
+use crate::operation::RouteHostname;
 
 use super::{CertBundleRef, CertValidityWindow, two_thirds_due};
 
@@ -203,7 +203,7 @@ mod tests {
     use crate::certificate::{CertBundleRef, CertValidAt, CertValidityWindow};
     use crate::ids::CertId;
     use crate::install::AbsoluteInstallPath;
-    use crate::ops::RouteHostname;
+    use crate::operation::RouteHostname;
 
     #[test]
     fn digest_valid_material_does_not_require_tls_parsing() {

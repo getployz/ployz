@@ -13,7 +13,7 @@ use crate::ingress::{
 };
 use crate::machine::{IssuedJoinToken, MachineName};
 use crate::nats_config::NatsAuthorizationGrant;
-use crate::ops::{RoutePort, RouteTarget};
+use crate::operation::{RoutePort, RouteTarget};
 use crate::roles::InstallRolePolicy;
 use std::net::{IpAddr, SocketAddr};
 

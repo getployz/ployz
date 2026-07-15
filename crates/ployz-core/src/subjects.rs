@@ -1,7 +1,7 @@
 //! NATS subject construction helpers.
 
 use crate::ids::{MachineId, NamespaceId, OperationId};
-use crate::ops::{
+use crate::operation::{
     DeployRunningStage, NamespaceRemoveRunningStage, NetworkRepairRunningStage,
     ServiceRestartRunningStage, VolumeRemoveRunningStage,
 };

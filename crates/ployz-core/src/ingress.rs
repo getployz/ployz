@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::certificate::ActiveCertState;
 use crate::ids::RouteBindingId;
-use crate::ops::{RouteHostname, RouteHostnameError};
+use crate::operation::{RouteHostname, RouteHostnameError};
 use crate::reachability::is_public;
 use crate::state::ControlPlaneEpoch;
 

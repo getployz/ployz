@@ -1,5 +1,5 @@
 use ployz_core::deploy::VolumeName;
-use ployz_core::ops::{
+use ployz_core::operation::{
     EventSequence, OperationProjection, OperationStatus, VolumeRemoveOperationState,
     VolumeRemoveRunningStage, VolumeRemoveTransition, project_volume_remove_transition,
 };

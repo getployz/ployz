@@ -1,6 +1,6 @@
 use ployz_core::ids::{CertId, MachineId, OperationId, SubjectTokenError};
 use ployz_core::machine::MachineAddFailure;
-use ployz_core::ops::{
+use ployz_core::operation::{
     CancellationReason, DeployCompletionOutcome, DeployRunningStage, MachineSubstrateVersions,
     OperationEvent,
 };
@@ -236,12 +236,12 @@ fn deploy_completed(operation_id: &OperationId) -> OperationEvent {
 }
 
 fn cancelled(operation_id: &OperationId) -> OperationEvent {
-    cancelled_with_kind(operation_id, ployz_core::ops::OperationKind::Deploy)
+    cancelled_with_kind(operation_id, ployz_core::operation::OperationKind::Deploy)
 }
 
 fn cancelled_with_kind(
     operation_id: &OperationId,
-    kind: ployz_core::ops::OperationKind,
+    kind: ployz_core::operation::OperationKind,
 ) -> OperationEvent {
     OperationEvent::Cancelled {
         operation_id: operation_id.clone(),

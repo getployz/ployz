@@ -4,7 +4,7 @@ use std::fmt;
 
 use crate::ids::{MachineId, NamespaceId, ServiceId};
 use crate::machine_rpc::{MachineRpcResponder, MachineRpcResponse};
-use crate::ops::FailureMessage;
+use crate::operation::FailureMessage;
 
 pub const IMAGE_MESH_REGISTRY_PORT: u16 = 5000;
 pub const IMAGE_BLOB_CHUNK_MAX_BYTES: usize = 512 * 1024;

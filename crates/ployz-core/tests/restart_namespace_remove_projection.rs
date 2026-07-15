@@ -1,4 +1,4 @@
-use ployz_core::ops::{
+use ployz_core::operation::{
     NamespaceRemoveOperationState, NamespaceRemoveRunningStage, NamespaceRemoveTransition,
     OperationEvent, OperationProjection, OperationStatus, ProjectionOperationState, RouteHostname,
     RouteTarget, ServiceRestartOperationState, ServiceRestartRunningStage,

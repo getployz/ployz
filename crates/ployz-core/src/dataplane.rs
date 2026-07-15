@@ -9,7 +9,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::str::FromStr;
 
 use crate::ids::MachineId;
-use crate::ops::FailureMessage;
+use crate::operation::FailureMessage;
 
 pub const DEFAULT_WIREGUARD_LISTEN_PORT: u16 = 51820;
 pub const MIN_WIREGUARD_MTU: u32 = 1280;

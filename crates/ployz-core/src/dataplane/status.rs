@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ops::FailureMessage;
+use crate::operation::FailureMessage;
 
 use super::{DataplaneProjectionRevision, MachineEndpointSubnet, WireGuardPublicKey};
 

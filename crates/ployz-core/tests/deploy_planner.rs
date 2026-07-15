@@ -17,7 +17,7 @@ use ployz_core::machine_runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerKind,
     ManagedContainerObservation,
 };
-use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
+use ployz_core::operation::{RouteHostname, RoutePort, RouteTarget};
 use ployz_core::state::{RouteBindingState, VolumePinState};
 use ployz_test_support::containers;
 use ployz_test_support::fixtures::serving_target_entry;

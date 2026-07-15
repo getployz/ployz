@@ -3,7 +3,7 @@ use ployz_core::cert::{
 };
 use ployz_core::ids::{CertId, MachineId, OperationId, RouteBindingId};
 use ployz_core::ingress::{ActiveCertificateMetadata, CertificateOwner};
-use ployz_core::ops::{
+use ployz_core::operation::{
     CertOperationFailure, CertOperationFailureError, CertOperationState, EventSequence,
     FailureMessage, OperationEvent, OperationProjection, OperationStatus, RouteHostname,
     project_operation_event,

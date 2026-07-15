@@ -11,7 +11,7 @@ use crate::ids::{
 };
 use crate::ingress::{AutomaticHostnameLabel, RouteBindingOrigin};
 use crate::machine_runtime::{MachineContainerObservationSnapshot, ManagedContainerIdentity};
-use crate::ops::{RouteHostname, RoutePort, RouteTarget};
+use crate::operation::{RouteHostname, RoutePort, RouteTarget};
 use crate::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 

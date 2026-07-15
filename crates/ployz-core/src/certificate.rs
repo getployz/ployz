@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 
 use crate::ids::CertId;
 use crate::install::{AbsoluteInstallPath, InstallSha256Digest};
-use crate::ops::RouteHostname;
+use crate::operation::RouteHostname;
 use crate::state_key::id_prefixed_state_key;
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
@@ -21,7 +21,7 @@ pub const DEFAULT_LEASE_WORKER_URL: &str = "https://dns.ployz.app";
 mod custom_bundle;
 mod gateway_rpc;
 
-pub use crate::ops::CertificateProvisionFailure;
+pub use crate::operation::CertificateProvisionFailure;
 pub use custom_bundle::{
     ActiveCertState, CustomCertBundle, CustomCertBundleError, custom_bundle_digest,
 };

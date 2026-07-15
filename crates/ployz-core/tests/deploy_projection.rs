@@ -4,7 +4,7 @@
 use ployz_core::deploy::{
     DeployOrigin, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployServicePlan, ReplicaSlot,
 };
-use ployz_core::ops::{
+use ployz_core::operation::{
     DeployCompletionOutcome, DeployOperationState, DeployRunningStage, DeployTransition,
     OperationEvent, OperationProjection, OperationStatus, ProjectionOperationState,
     StatusProjectionError, project_deploy_transition, project_operation_event,

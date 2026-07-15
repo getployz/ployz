@@ -1,5 +1,5 @@
 use ployz_core::dataplane::DataplaneProjection;
-use ployz_core::ops::{
+use ployz_core::operation::{
     FailureMessage, NetworkRepairFailure, NetworkRepairOperationState, NetworkRepairProgressPhase,
     NetworkRepairRunningStage, NetworkRepairTransition, OperationEvent, OperationProjection,
     OperationStatus, ProjectionOperationState, StatusProjectionError,
@@ -223,7 +223,7 @@ fn network_repair_rejects_failed_before_running() {
         None,
         event_sequence(1),
     );
-    let failure = ployz_core::ops::NetworkRepairFailure::NoActiveMachines;
+    let failure = ployz_core::operation::NetworkRepairFailure::NoActiveMachines;
 
     assert_eq!(
         project_network_repair_transition(

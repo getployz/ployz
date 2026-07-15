@@ -1,7 +1,7 @@
 use ployz_core::deploy::{
     DependencyCondition, DeployOrigin, DeployOriginError, DeployRequest, ServiceDependency,
 };
-use ployz_core::ops::{
+use ployz_core::operation::{
     ArtifactUnavailableReason, ControlPlaneCommitScope, DeployFailureClass, DeployOperationFailure,
     DeployOperationState, DeployRunningStage, EventSequence, HealthCheckFailure,
     MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEvent, OperationEventReplayCursor,
@@ -131,7 +131,7 @@ fn deploy_failures_map_to_closed_failure_classes() {
     let cases = [
         (
             DeployOperationFailure::NoUsableMachines {
-                reasons: vec![ployz_core::ops::UnusableMachine {
+                reasons: vec![ployz_core::operation::UnusableMachine {
                     machine_id: machine_id("machine_7"),
                     reason: MachineUsabilityReason::Draining,
                 }],
@@ -140,7 +140,7 @@ fn deploy_failures_map_to_closed_failure_classes() {
         ),
         (
             DeployOperationFailure::NoUsableMachines {
-                reasons: vec![ployz_core::ops::UnusableMachine {
+                reasons: vec![ployz_core::operation::UnusableMachine {
                     machine_id: machine_id("machine_7"),
                     reason: MachineUsabilityReason::FactsUnavailable,
                 }],

@@ -14,8 +14,12 @@ pub struct DeployRoute {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployRouteTarget {
-    AutoHostname { label: AutomaticHostnameLabel },
-    Hostname { hostname: crate::ops::RouteHostname },
+    AutoHostname {
+        label: AutomaticHostnameLabel,
+    },
+    Hostname {
+        hostname: crate::operation::RouteHostname,
+    },
 }
 
 impl DeployRouteTarget {

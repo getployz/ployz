@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use std::fmt;
 
 use crate::ids::{MachineId, OperationId, SubjectToken, SubjectTokenError};
-use crate::ops::{
+use crate::operation::{
     FailureMessage, MachineAddOperationState, MachineAddOperationStateName, OperationIdempotencyKey,
 };
 use crate::state::{ActiveMachineState, StagedMachineDataplaneState};
