@@ -1527,8 +1527,18 @@ pub(super) fn target_deploy_request(replicas: u16) -> DeployRequest {
 fn deploy_execution_input(
     operation_id: OperationId,
     request: DeployRequest,
-    facts: DeployExecutionFacts,
+    mut facts: DeployExecutionFacts,
 ) -> DeployExecutionInput {
+    if facts.machine_platforms.is_empty() {
+        let platform = ployz_core::image::OciPlatform::try_new("linux", "amd64")
+            .expect("valid default fixture platform");
+        facts.machine_platforms = facts
+            .eligible_machines
+            .iter()
+            .cloned()
+            .map(|machine_id| (machine_id, platform.clone()))
+            .collect();
+    }
     DeployExecutionInput::new(
         operation_id,
         ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(request)
