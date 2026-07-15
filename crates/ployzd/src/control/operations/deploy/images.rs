@@ -7,7 +7,7 @@ use ployz_core::deploy::{
     VolumeDeclaredDeployRequest,
 };
 use ployz_core::image::{
-    ImageEnsureRequest, ImageRemoveDomainError, ImageRepository, ImageRpcDomainError, OciDigest,
+    ImageEnsureRequest, ImageRemoveDomainError, ImageRepository, ImageRpcDomainError,
 };
 use ployz_core::network::DataplaneMember;
 use ployz_core::operation::{
@@ -636,7 +636,7 @@ mod tests {
                 },
             ],
             volume_pin_commits: Vec::new(),
-            cleanup_containers: Vec::new(),
+            cleanup_actions: Vec::new(),
         };
 
         let error = validate_pushed_platforms(&command, &plan)
@@ -675,6 +675,7 @@ mod tests {
                     .expect("pushed receipt"),
                 ),
                 replicas: ReplicaCount::try_new(1).expect("replica count"),
+                keep: None,
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 pre_start: None,
                 depends_on: Vec::new(),
