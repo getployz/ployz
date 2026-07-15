@@ -276,7 +276,7 @@ pub enum OperationEvent {
     },
     NetworkRepairDataplaneConverged {
         operation_id: OperationId,
-        revision: crate::dataplane::DataplaneProjectionRevision,
+        revision: crate::network::DataplaneProjectionRevision,
         machine_ids: Vec<MachineId>,
     },
     NetworkRepairMachineFactsRefreshed {

@@ -5,8 +5,8 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::dataplane::MachineEndpointSupernet;
 use crate::nats_config::NatsUserSeed;
+use crate::network::MachineEndpointSupernet;
 
 use super::artifacts::InstallArtifactSpec;
 use super::nats::{MachineJoinRuntimeNatsUrl, MachineJoinTrustedNats};

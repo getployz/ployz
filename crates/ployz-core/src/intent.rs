@@ -4,7 +4,6 @@ pub mod recovery;
 
 use serde::{Deserialize, Serialize};
 
-use crate::dataplane::{DataplaneProjection, MachineEndpointSubnet, WireGuardPublicKey};
 use crate::deploy::{ImageReference, ReplicaCount, VolumeName};
 use crate::ids::{
     MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, RouteBindingId, ServiceId,
@@ -16,6 +15,7 @@ use crate::ingress::{
 use crate::machine::roles::InstallRolePolicy;
 use crate::machine::{MachineLifecycle, MachineName};
 use crate::nats_config::NatsAuthorizationGrant;
+use crate::network::{DataplaneProjection, MachineEndpointSubnet, WireGuardPublicKey};
 use crate::operation::{RoutePort, RouteTarget};
 use std::net::{IpAddr, SocketAddr};
 

@@ -270,7 +270,7 @@ fn machine_join_bundle_debug_redacts_secrets() {
 fn first_machine_install_spec(gateway: GatewayRole) -> FirstMachineInstallSpec {
     FirstMachineInstallSpec {
         machine_id: MachineId::try_new("machine_1").expect("valid machine id"),
-        dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+        dataplane_endpoint_supernet: ployz_core::network::MachineEndpointSupernet::default_v1(),
         gateway,
         host_port_assurance: HostPortAssurance::Keeper,
         machine_public_ip: None,
@@ -322,8 +322,7 @@ fn machine_join_bundle() -> MachineJoinBundle {
     MachineJoinBundle {
         material: MachineJoinMaterial {
             cluster_name: MachineJoinClusterName::try_new("prod").expect("valid cluster name"),
-            dataplane_endpoint_supernet: ployz_core::dataplane::MachineEndpointSupernet::default_v1(
-            ),
+            dataplane_endpoint_supernet: ployz_core::network::MachineEndpointSupernet::default_v1(),
             runtime_nats_url: MachineJoinRuntimeNatsUrl::try_new("nats://127.0.0.1:7422")
                 .expect("valid runtime nats url"),
             trusted_nats: MachineJoinTrustedNats {

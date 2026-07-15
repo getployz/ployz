@@ -25,7 +25,7 @@ pub struct PendingMachineJoinRecovery {
     pub roles: InstallRolePolicy,
     #[serde(default = "HostPortAssurance::keeper")]
     pub host_port_assurance: HostPortAssurance,
-    pub endpoint_subnet: crate::dataplane::MachineEndpointSubnet,
+    pub endpoint_subnet: crate::network::MachineEndpointSubnet,
     pub join_token: IssuedJoinToken,
 }
 

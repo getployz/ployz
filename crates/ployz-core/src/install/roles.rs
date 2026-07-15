@@ -4,9 +4,9 @@ use std::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::dataplane::MachineEndpointSupernet;
 use crate::ids::MachineId;
 use crate::machine::roles::{GatewayRole, InstallRolePolicy};
+use crate::network::MachineEndpointSupernet;
 
 use super::artifacts::FirstMachineInstallArtifacts;
 use super::join::{MachineBootstrapUrl, MachineJoinClusterName};

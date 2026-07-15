@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::operation::FailureMessage;
 
-use super::{DataplaneProjectionRevision, MachineEndpointSubnet, WireGuardPublicKey};
+use super::dataplane::{DataplaneProjectionRevision, MachineEndpointSubnet, WireGuardPublicKey};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]

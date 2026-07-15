@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use crate::certificate::ActiveCertState;
 use crate::ids::RouteBindingId;
 use crate::intent::recovery::ControlPlaneEpoch;
+use crate::network::is_public;
 use crate::operation::{RouteHostname, RouteHostnameError};
-use crate::reachability::is_public;
 
 /// Durable operator choice for automatic hostname creation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

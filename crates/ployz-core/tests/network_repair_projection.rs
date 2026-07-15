@@ -1,4 +1,4 @@
-use ployz_core::dataplane::DataplaneProjection;
+use ployz_core::network::DataplaneProjection;
 use ployz_core::operation::{
     FailureMessage, NetworkRepairFailure, NetworkRepairOperationState, NetworkRepairProgressPhase,
     NetworkRepairRunningStage, NetworkRepairTransition, OperationEvent, OperationProjection,
@@ -8,7 +8,7 @@ use ployz_core::operation::{
 use ployz_test_support::ids::machine_id;
 use ployz_test_support::ids::{event_sequence, operation_id};
 
-fn dataplane_revision() -> ployz_core::dataplane::DataplaneProjectionRevision {
+fn dataplane_revision() -> ployz_core::network::DataplaneProjectionRevision {
     DataplaneProjection::try_new(Vec::new(), None)
         .expect("empty projection")
         .declared_revision()

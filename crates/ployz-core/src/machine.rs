@@ -204,8 +204,8 @@ pub struct DataplaneProjectionAdmissionEvidence {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct DataplaneAdmissionPeer {
-    pub public_key: crate::dataplane::WireGuardPublicKey,
-    pub endpoint_subnet: crate::dataplane::WireGuardPeerEndpointSubnet,
+    pub public_key: crate::network::WireGuardPublicKey,
+    pub endpoint_subnet: crate::network::WireGuardPeerEndpointSubnet,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,7 +214,7 @@ pub struct DataplaneAdmissionPeer {
 pub enum WireGuardReadinessFailure {
     InterfaceMissing,
     InterfaceMtuUnavailable {
-        observed: crate::dataplane::WireGuardInterfaceMtu,
+        observed: crate::network::WireGuardInterfaceMtu,
     },
 }
 
@@ -226,20 +226,20 @@ pub enum DataplaneProjectionAdmissionFailure {
         message: FailureMessage,
     },
     UnusableProjection {
-        failure: crate::dataplane::DataplaneProjectionFailure,
+        failure: crate::network::DataplaneProjectionFailure,
     },
     AwaitingTargetRevision {
-        expected: crate::dataplane::DataplaneProjectionRevision,
-        observed: Option<crate::dataplane::DataplaneProjectionRevision>,
+        expected: crate::network::DataplaneProjectionRevision,
+        observed: Option<crate::network::DataplaneProjectionRevision>,
     },
     EndpointBridgeNotReady {
-        status: crate::dataplane::EndpointBridgeStatus,
+        status: crate::network::EndpointBridgeStatus,
     },
     WireGuardNotReady {
         failure: WireGuardReadinessFailure,
     },
     EbpfNotReady {
-        status: crate::dataplane::EbpfAttachmentStatus,
+        status: crate::network::EbpfAttachmentStatus,
     },
     PeerSetMismatch {
         expected: Vec<DataplaneAdmissionPeer>,

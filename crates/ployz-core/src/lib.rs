@@ -21,6 +21,7 @@ pub mod machine;
 pub mod machine_rpc;
 pub mod machine_runtime;
 pub mod nats_config;
+pub mod network;
 pub mod operation;
 pub mod ops;
 pub mod permissions;
