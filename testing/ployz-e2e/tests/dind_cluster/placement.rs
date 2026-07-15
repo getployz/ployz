@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use super::{
@@ -494,6 +495,7 @@ fn placement_target(namespace: &str) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id(namespace),
         origin: None,
+        volumes: BTreeMap::new(),
         services: vec![DeployServiceSpec {
             service_id: service_id("server"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("workload image reference"),

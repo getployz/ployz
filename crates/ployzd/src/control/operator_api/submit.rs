@@ -261,6 +261,7 @@ pub async fn deploy_submit(
     command: DeploySubmitCommand,
 ) -> Result<AcceptedOperation, DeploySubmitError> {
     let operation_id = command.operation_id.clone();
+    validate_deploy_volume_declarations(&command)?;
     for service in &command.target.services {
         validate_internal_dns_name(&command.target.namespace_id, &service.service_id).map_err(
             |message| DeploySubmitError::InvalidTarget {
@@ -300,6 +301,19 @@ pub async fn deploy_submit(
     handlers.deploy_driver.start(accepted_execution);
 
     Ok(operation)
+}
+
+fn validate_deploy_volume_declarations(
+    command: &DeploySubmitCommand,
+) -> Result<(), DeploySubmitError> {
+    command
+        .target
+        .validate_volume_declarations()
+        .map_err(|error| DeploySubmitError::InvalidTarget {
+            operation_id: command.operation_id.clone(),
+            message: ployz_core::operation::FailureMessage::try_new(error.to_string())
+                .expect("volume declaration validation error is non-empty"),
+        })
 }
 
 fn validate_internal_dns_name(

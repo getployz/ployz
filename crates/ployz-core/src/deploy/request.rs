@@ -83,10 +83,36 @@ pub struct DeployRequest {
     pub namespace_id: NamespaceId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<DeployOrigin>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub volumes: BTreeMap<VolumeName, VolumeSpec>,
     pub services: Vec<DeployServiceSpec>,
 }
 
 impl DeployRequest {
+    pub fn validate_volume_declarations(&self) -> Result<(), DeployVolumeDeclarationError> {
+        for service in &self.services {
+            for mount in &service.runtime.volume_mounts {
+                if !self.volumes.contains_key(&mount.volume_name) {
+                    return Err(DeployVolumeDeclarationError {
+                        service_id: service.service_id.clone(),
+                        volume_name: mount.volume_name.clone(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn synthesize_plain_volume_declarations(&mut self) {
+        for service in &self.services {
+            for mount in &service.runtime.volume_mounts {
+                self.volumes
+                    .entry(mount.volume_name.clone())
+                    .or_insert(VolumeSpec::Plain);
+            }
+        }
+    }
+
     #[must_use]
     pub fn namespace_revision_id(&self) -> NamespaceRevisionId {
         namespace_revision_id_for(&self.namespace_id, &self.services)
@@ -131,6 +157,17 @@ impl DeployRequest {
             })
             .collect()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "service {} mounts volume {} without a declaration",
+    .service_id.as_str(),
+    .volume_name.as_str()
+)]
+pub struct DeployVolumeDeclarationError {
+    pub service_id: ServiceId,
+    pub volume_name: VolumeName,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

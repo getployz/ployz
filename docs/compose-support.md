@@ -54,10 +54,11 @@ Supported and translated fields become a Ployz deploy request. Unsupported and u
 | `secrets`, `services.*.secrets` | Unsupported (planned) | secrets are planned separately |
 | `services.*.security_opt` | Unsupported (unsupported) | host capability controls are not deployed yet |
 | `networks` | Unsupported (planned) | top-level networks are not deployed yet |
-| `volumes` | Unsupported (planned) | top-level named volumes are not deployed yet |
+| `volumes` | Translated | Declares named volumes. Null or empty declarations are Plain; declarations not mounted by a service are retained in deploy input but are not created. |
+| `volumes.*.x-ployz.max-size` | Ployz-specific extension | Declares a Provisioned Volume with a positive byte quantity such as `10G`. |
 | `services.*.ulimits` | Unsupported (unsupported) | ulimits are not deployed yet |
 | `services.*.user` | Unsupported (unsupported) | container user is not deployed yet |
-| `services.*.volumes` | Unsupported (planned) | volumes are not deployed yet |
+| `services.*.volumes` | Translated (limited) | Named-volume short and long syntax map to service mounts. Bind, anonymous, tmpfs, read-only, and mount-option forms are rejected. A mount without a top-level declaration is synthesized as Plain. |
 | `services.*.working_dir` | Unsupported (unsupported) | working directory is not deployed yet |
 | `services.*.x-pre_deploy` | Unsupported | rename the hook to Compose `pre_start` |
 | Any other field | Unsupported | Unknown field; remove it or pass `--allow-unsupported`. |

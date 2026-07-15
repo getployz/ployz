@@ -1,9 +1,10 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 use ployz_core::deploy::{
     DeployOrigin, DeployRequest, DeployReservationId, DeployRoute, DeployRouteTarget,
-    DeployServiceSpec, ImageReference, ReplicaCount,
+    DeployServiceSpec, ImageReference, ReplicaCount, VolumeName, VolumeSpec,
 };
 use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
 use ployz_core::operation::{OperationIdempotencyKey, RouteHostname, RoutePort};
@@ -23,6 +24,7 @@ pub struct DeployCommand {
     pub idempotency_key: OperationIdempotencyKey,
     pub namespace_id: NamespaceId,
     pub origin: Option<DeployOrigin>,
+    pub volumes: BTreeMap<VolumeName, VolumeSpec>,
     pub services: Vec<DeployServiceSpec>,
     pub warnings: Vec<String>,
     pub detach: bool,
@@ -39,6 +41,7 @@ impl DeployCommand {
             target: DeployRequest {
                 namespace_id: self.namespace_id,
                 origin: self.origin,
+                volumes: self.volumes,
                 services: self.services,
             },
         }
@@ -234,6 +237,7 @@ fn deploy_submit_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCli
             idempotency_key: generated_ids.idempotency_key,
             namespace_id: parsed.namespace_id,
             origin,
+            volumes: parsed.volumes,
             services: parsed.services,
             warnings: warnings.into_iter().map(|warning| warning.0).collect(),
             detach,
@@ -283,6 +287,7 @@ fn deploy_submit_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCli
         idempotency_key: generated_ids.idempotency_key,
         namespace_id,
         origin,
+        volumes: BTreeMap::new(),
         services: vec![DeployServiceSpec {
             service_id,
             image,

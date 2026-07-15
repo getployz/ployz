@@ -132,11 +132,19 @@ export type StopGracePeriod = SafeInteger<"StopGracePeriod">;
 
 export type VolumeName = Brand<string, "VolumeName">;
 
+export type DatasetName = Brand<string, "DatasetName">;
+
+export type VolumeMaxSizeBytes = SafeInteger<"VolumeMaxSizeBytes">;
+
+export type VolumeSpec = { "kind": "plain" } | { "kind": "provisioned", max_size_bytes: VolumeMaxSizeBytes, };
+
 export type ContainerMountPath = Brand<string, "ContainerMountPath">;
 
 export type ServiceVolumeMount = { volume_name: VolumeName, target: ContainerMountPath, };
 
-export type VolumePinState = { namespace_id: NamespaceId, volume_name: VolumeName, machine_id: MachineId, };
+export type VolumeKind = { "kind": "plain" } | { "kind": "provisioned", dataset: DatasetName, max_size_bytes: VolumeMaxSizeBytes, };
+
+export type VolumePinState = { namespace_id: NamespaceId, volume_name: VolumeName, machine_id: MachineId, kind: VolumeKind, };
 
 export type VolumeStatus = "in_use" | "orphaned";
 
@@ -172,7 +180,7 @@ export type ServiceDependency = { service_id: ServiceId, condition: DependencyCo
 
 export type DeployOrigin = Brand<string, "DeployOrigin">;
 
-export type DeployRequest = { namespace_id: NamespaceId, origin?: DeployOrigin | null, services: Array<DeployServiceSpec>, };
+export type DeployRequest = { namespace_id: NamespaceId, origin?: DeployOrigin | null, volumes?: { [key in VolumeName]: VolumeSpec }, services: Array<DeployServiceSpec>, };
 
 export type DeployServiceSpec = { service_id: ServiceId, image: ImageReference, image_source?: ImageSource, replicas: ReplicaCount, runtime: ContainerRuntimeSpec, pre_start?: PreStartHook | null, depends_on?: Array<ServiceDependency>, routes?: Array<DeployRoute>, };
 

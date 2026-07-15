@@ -1,14 +1,17 @@
-use ployz_core::deploy::{ContainerMountPath, ServiceVolumeMount, VolumeName};
+use std::collections::BTreeMap;
+
+use ployz_core::deploy::{
+    ContainerMountPath, ServiceVolumeMount, VolumeMaxSizeBytes, VolumeName, VolumeSpec,
+};
 use serde_yaml::Value;
 
 use super::diagnostics::{ComposeFinding, ComposePath};
 use super::model::{ComposeKnownVolumeType, ComposeLongVolume, ComposeVolume, ComposeVolumeType};
+use super::translate::parse_byte_quantity;
 
-/// A named-volume mount is self-declaring pinned intent: the mount creates the
-/// volume, so a service may reference a name with no matching top-level
-/// `volumes:` entry. Top-level declarations are validated on their own path and
-/// exist only to reject unsupported options (external, drivers); they are not a
-/// registry a mount must appear in.
+/// A named-volume mount is self-declaring at the Compose boundary, where a
+/// missing top-level declaration is translated into an explicit Plain volume
+/// before the core deploy request is submitted.
 pub(super) fn parse_volume_mounts(
     volumes: Option<Vec<ComposeVolume>>,
     service_path: &ComposePath,
@@ -184,12 +187,12 @@ fn bind_mount_finding(path: ComposePath) -> ComposeFinding {
     )
 }
 
-pub(super) fn validate_top_level_volumes(
+pub(super) fn parse_top_level_volumes(
     volumes: Option<Value>,
     findings: &mut Vec<ComposeFinding>,
-) {
+) -> BTreeMap<VolumeName, VolumeSpec> {
     let Some(volumes) = volumes else {
-        return;
+        return BTreeMap::new();
     };
     let volumes_path = ComposePath::root().field("volumes");
     let Value::Mapping(volumes) = volumes else {
@@ -199,8 +202,9 @@ pub(super) fn validate_top_level_volumes(
                 "volumes must be a mapping of volume names to declarations",
             ));
         }
-        return;
+        return BTreeMap::new();
     };
+    let mut parsed = BTreeMap::new();
     for (name, declaration) in volumes {
         let Some(name) = name.as_str() else {
             findings.push(ComposeFinding::invalid(
@@ -209,58 +213,146 @@ pub(super) fn validate_top_level_volumes(
             ));
             continue;
         };
-        validate_top_level_volume_declaration(declaration, &volumes_path.field(name), findings);
+        let volume_name = match VolumeName::try_new(name) {
+            Ok(volume_name) => volume_name,
+            Err(error) => {
+                findings.push(ComposeFinding::invalid(volumes_path.field(name), error));
+                continue;
+            }
+        };
+        if let Some(spec) =
+            parse_top_level_volume_declaration(declaration, &volumes_path.field(name), findings)
+        {
+            parsed.insert(volume_name, spec);
+        }
     }
+    parsed
 }
 
-fn validate_top_level_volume_declaration(
+fn parse_top_level_volume_declaration(
     declaration: Value,
     path: &ComposePath,
     findings: &mut Vec<ComposeFinding>,
-) {
+) -> Option<VolumeSpec> {
+    if matches!(declaration, Value::Null) {
+        return Some(VolumeSpec::Plain);
+    }
     let Value::Mapping(options) = declaration else {
-        if !matches!(declaration, Value::Null) {
-            findings.push(ComposeFinding::invalid(
-                path.clone(),
-                "volume declaration must be null or a mapping",
-            ));
-        }
-        return;
+        findings.push(ComposeFinding::invalid(
+            path.clone(),
+            "volume declaration must be null or a mapping",
+        ));
+        return None;
     };
+    let mut provisioned = None;
+    let mut valid = true;
     for (key, value) in options {
         let Some(key) = key.as_str() else {
             findings.push(ComposeFinding::invalid(
                 path.clone(),
                 "volume declaration keys must be strings",
             ));
+            valid = false;
             continue;
         };
         match key {
             "external" if value == Value::Bool(false) => {}
-            "external" => findings.push(ComposeFinding::invalid(
-                path.field(key),
-                "external volumes are not supported; remove external: true so Ployz creates the volume as pinned intent",
-            )),
-            "driver" => findings.push(ComposeFinding::invalid(
-                path.field(key),
-                "custom volume drivers are not supported; remove driver",
-            )),
-            "driver_opts" => findings.push(ComposeFinding::invalid(
-                path.field(key),
-                "volume driver options are not supported; remove driver_opts",
-            )),
-            "name" => findings.push(ComposeFinding::invalid(
-                path.field(key),
-                "volume name overrides are not supported; use the top-level volume key",
-            )),
-            "labels" => findings.push(ComposeFinding::invalid(
-                path.field(key),
-                "volume labels are not supported; remove labels",
-            )),
-            other => findings.push(ComposeFinding::invalid(
-                path.field(other),
-                format!("volume declaration option {other:?} is not supported; remove it"),
-            )),
+            "x-ployz" => match parse_ployz_volume_extension(value, &path.field(key)) {
+                Ok(spec) => provisioned = Some(spec),
+                Err(mut extension_findings) => {
+                    findings.append(&mut extension_findings);
+                    valid = false;
+                }
+            },
+            "external" => {
+                findings.push(ComposeFinding::invalid(
+                    path.field(key),
+                    "external volumes are not supported; remove external: true so Ployz creates the volume as pinned intent",
+                ));
+                valid = false;
+            }
+            "driver" | "driver_opts" | "name" | "labels" => {
+                let message = match key {
+                    "driver" => "custom volume drivers are not supported; remove driver",
+                    "driver_opts" => "volume driver options are not supported; remove driver_opts",
+                    "name" => {
+                        "volume name overrides are not supported; use the top-level volume key"
+                    }
+                    "labels" => "volume labels are not supported; remove labels",
+                    _ => unreachable!("matched diagnostic key"),
+                };
+                findings.push(ComposeFinding::invalid(path.field(key), message));
+                valid = false;
+            }
+            other => {
+                findings.push(ComposeFinding::invalid(
+                    path.field(other),
+                    format!("volume declaration option {other:?} is not supported; remove it"),
+                ));
+                valid = false;
+            }
         }
+    }
+    valid.then_some(provisioned.unwrap_or(VolumeSpec::Plain))
+}
+
+fn parse_ployz_volume_extension(
+    extension: Value,
+    path: &ComposePath,
+) -> Result<VolumeSpec, Vec<ComposeFinding>> {
+    let Value::Mapping(options) = extension else {
+        return Err(vec![ComposeFinding::invalid(
+            path.clone(),
+            "x-ployz must be a mapping with max-size",
+        )]);
+    };
+    let mut max_size = None;
+    let mut findings = Vec::new();
+    for (key, value) in options {
+        let Some(key) = key.as_str() else {
+            findings.push(ComposeFinding::invalid(
+                path.clone(),
+                "x-ployz keys must be strings",
+            ));
+            continue;
+        };
+        if key != "max-size" {
+            findings.push(ComposeFinding::invalid(
+                path.field(key),
+                format!("x-ployz volume option {key:?} is not supported; remove it"),
+            ));
+            continue;
+        }
+        let text = match value {
+            Value::String(value) => value,
+            Value::Number(value) => value.to_string(),
+            _ => {
+                findings.push(ComposeFinding::invalid(
+                    path.field(key),
+                    "volume max size must be a byte quantity such as 10G",
+                ));
+                continue;
+            }
+        };
+        match parse_byte_quantity(&text, "volume max size")
+            .and_then(|bytes| VolumeMaxSizeBytes::try_new(bytes).map_err(|error| error.to_string()))
+        {
+            Ok(value) => max_size = Some(value),
+            Err(error) => findings.push(ComposeFinding::invalid(path.field(key), error)),
+        }
+    }
+    let Some(max_size_bytes) = max_size else {
+        if findings.is_empty() {
+            findings.push(ComposeFinding::invalid(
+                path.field("max-size"),
+                "x-ployz requires max-size",
+            ));
+        }
+        return Err(findings);
+    };
+    if findings.is_empty() {
+        Ok(VolumeSpec::Provisioned { max_size_bytes })
+    } else {
+        Err(findings)
     }
 }

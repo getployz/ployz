@@ -222,6 +222,7 @@ mod tests {
         DeployRequest {
             namespace_id: namespace_id("default"),
             origin: None,
+            volumes: std::collections::BTreeMap::new(),
             services: vec![DeployServiceSpec {
                 service_id: service_id("web"),
                 image: ImageReference::try_new(image).expect("valid image"),

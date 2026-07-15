@@ -23,8 +23,7 @@ pub(crate) async fn execute(
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
     let config = with_cluster_context_from_disk(config.clone())?;
     let namespace_id = command.namespace_id.clone();
-    let mut target = select_request(command, &config)?;
-    target.origin = Some(DeployOrigin::try_new("rollback").expect("rollback origin is valid"));
+    let target = prepare_rollback_target(select_request(command, &config)?);
     let connect = nats_connect_config(&config)?;
     let api = operation_api_client_with_connect(&config, connect).await?;
     let reservation_id = deploy_follow::reserve_deploy(&api, namespace_id.clone()).await?;
@@ -51,6 +50,12 @@ pub(crate) async fn execute(
         String::new(),
     )
     .await
+}
+
+fn prepare_rollback_target(mut target: DeployRequest) -> DeployRequest {
+    target.origin = Some(DeployOrigin::try_new("rollback").expect("rollback origin is valid"));
+    target.synthesize_plain_volume_declarations();
+    target
 }
 
 fn select_request(
@@ -176,7 +181,8 @@ fn deploy_history_error(message: impl Into<String>) -> PloyzctlExecutionError {
 mod tests {
     use super::*;
     use ployz_core::deploy::{
-        ContainerRuntimeSpec, DeployServiceSpec, ImageReference, ImageSource, ReplicaCount,
+        ContainerMountPath, ContainerRuntimeSpec, DeployServiceSpec, ImageReference, ImageSource,
+        ReplicaCount, ServiceVolumeMount, VolumeName, VolumeSpec,
     };
     use ployz_test_support::ids::{namespace_id, operation_id, service_id};
     use std::io::Cursor;
@@ -185,6 +191,7 @@ mod tests {
         DeployRequest {
             namespace_id: namespace_id("default"),
             origin: None,
+            volumes: BTreeMap::new(),
             services: vec![DeployServiceSpec {
                 service_id: service_id("web"),
                 image: ImageReference::try_new(image).expect("valid image"),
@@ -283,6 +290,33 @@ mod tests {
             selected_image(&selected),
             "ghcr.io/acme/web@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         );
+    }
+
+    #[test]
+    fn rollback_synthesizes_plain_declarations_for_legacy_history_requests() {
+        let mut legacy = request("nginx:latest");
+        legacy.services[0].runtime.volume_mounts = vec![ServiceVolumeMount {
+            volume_name: VolumeName::try_new("data").expect("volume name"),
+            target: ContainerMountPath::try_new("/data").expect("mount path"),
+        }];
+        let mut legacy_json = serde_json::to_value(legacy).expect("request serializes");
+        legacy_json
+            .as_object_mut()
+            .expect("request is an object")
+            .remove("volumes");
+        let legacy = serde_json::from_value(legacy_json).expect("legacy history request loads");
+
+        let prepared = prepare_rollback_target(legacy);
+
+        assert_eq!(
+            prepared
+                .volumes
+                .get(&VolumeName::try_new("data").expect("volume name")),
+            Some(&VolumeSpec::Plain)
+        );
+        prepared
+            .validate_volume_declarations()
+            .expect("prepared rollback request is admissible");
     }
 
     #[test]

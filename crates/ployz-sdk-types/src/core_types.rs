@@ -7,16 +7,17 @@ pub use ployz_core::certificate::{
 pub use ployz_core::deploy::{
     ContainerCommand, ContainerCommandError, ContainerEntrypoint, ContainerHealthcheck,
     ContainerHealthcheckTest, ContainerMountPath, ContainerMountPathError, ContainerResourceLimits,
-    ContainerRestartPolicy, ContainerRuntimeSpec, DependencyCondition, DeployCleanupContainer,
-    DeployOrigin, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployRequest,
-    DeployReservationExpiresAt, DeployReservationId, DeployReservationNumberError, DeployRoute,
-    DeployRouteTarget, DeployServicePlan, DeployServiceSpec, EnvName, EnvNameError, EnvValue,
-    EnvValueError, HealthcheckDurationNanos, HealthcheckRetries, HealthcheckShellCommand,
-    ImageReference, ImageReferenceError, ImageSource, LinuxCapability, MemoryBytes, NanoCpus,
-    PidsLimit, PreStartHook, PreStartHookStep, RegistryCredential, RegistryCredentialError,
-    RegistryCredentialSecret, RegistryCredentialUsername, ReplicaCount, ReplicaCountError,
-    ReplicaSlot, ServiceDependency, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod,
-    VolumeName, VolumeNameError,
+    ContainerRestartPolicy, ContainerRuntimeSpec, DatasetName, DatasetNameError,
+    DependencyCondition, DeployCleanupContainer, DeployOrigin, DeployPhasePlan, DeployPlan,
+    DeployPlanStep, DeployRequest, DeployReservationExpiresAt, DeployReservationId,
+    DeployReservationNumberError, DeployRoute, DeployRouteTarget, DeployServicePlan,
+    DeployServiceSpec, EnvName, EnvNameError, EnvValue, EnvValueError, HealthcheckDurationNanos,
+    HealthcheckRetries, HealthcheckShellCommand, ImageReference, ImageReferenceError, ImageSource,
+    LinuxCapability, MemoryBytes, NanoCpus, PidsLimit, PreStartHook, PreStartHookStep,
+    RegistryCredential, RegistryCredentialError, RegistryCredentialSecret,
+    RegistryCredentialUsername, ReplicaCount, ReplicaCountError, ReplicaSlot, ServiceDependency,
+    ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeMaxSizeBytes,
+    VolumeMaxSizeError, VolumeName, VolumeNameError, VolumeSpec,
 };
 pub use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
@@ -38,7 +39,7 @@ pub use ployz_core::install::{
 };
 pub use ployz_core::intent::recovery::ControlPlaneEpoch;
 pub use ployz_core::intent::{
-    ActiveMachineState, RouteBindingState, ServingTargetEntry, VolumePinState,
+    ActiveMachineState, RouteBindingState, ServingTargetEntry, VolumeKind, VolumePinState,
 };
 pub use ployz_core::machine::roles::{GatewayRole, InstallRolePolicy};
 pub use ployz_core::machine::runtime::{

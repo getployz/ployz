@@ -793,6 +793,7 @@ fn missing_volume_pin_commits(
             namespace_id: request.namespace_id.clone(),
             volume_name,
             machine_id: machine_id.clone(),
+            kind: crate::intent::VolumeKind::Plain,
         })
         .collect()
 }

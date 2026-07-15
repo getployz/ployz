@@ -1,6 +1,12 @@
+use std::collections::BTreeMap;
+
 use ployz_core::deploy::{
-    DependencyCondition, DeployOrigin, DeployOriginError, DeployRequest, ServiceDependency,
+    ContainerMountPath, ContainerRuntimeSpec, DatasetName, DatasetNameError, DependencyCondition,
+    DeployOrigin, DeployOriginError, DeployRequest, DeployServiceSpec, ImageReference, ImageSource,
+    ReplicaCount, ServiceDependency, ServiceVolumeMount, VolumeMaxSizeBytes, VolumeName,
+    VolumeSpec,
 };
+use ployz_core::intent::{VolumeKind, VolumePinState};
 use ployz_core::machine::MachineUsabilityReason;
 use ployz_core::operation::{
     ArtifactUnavailableReason, ControlPlaneCommitScope, DeployFailureClass, DeployOperationFailure,
@@ -447,6 +453,7 @@ fn deploy_origin_round_trips_on_request_and_status() {
     let request = DeployRequest {
         namespace_id: namespace_id("default"),
         origin: Some(origin.clone()),
+        volumes: std::collections::BTreeMap::new(),
         services: Vec::new(),
     };
     let status = OperationStatus::deploy_accepted(
@@ -468,6 +475,141 @@ fn deploy_origin_round_trips_on_request_and_status() {
         serde_json::from_str::<OperationStatus>(&status_json).expect("status deserializes"),
         status
     );
+}
+
+#[test]
+fn deploy_request_requires_a_declaration_for_every_mounted_volume() {
+    let request = request_with_volume_mount(std::collections::BTreeMap::new());
+
+    let error = request
+        .validate_volume_declarations()
+        .expect_err("undeclared mount is invalid");
+
+    assert_eq!(error.service_id, service_id("svc_api"));
+    assert_eq!(error.volume_name, volume_name("data"));
+}
+
+#[test]
+fn deploy_request_synthesizes_plain_declarations_for_legacy_inputs() {
+    let mut request = request_with_volume_mount(std::collections::BTreeMap::new());
+
+    request.synthesize_plain_volume_declarations();
+
+    assert_eq!(
+        request.volumes.get(&volume_name("data")),
+        Some(&VolumeSpec::Plain)
+    );
+}
+
+#[test]
+fn provisioned_volume_contract_round_trips_without_nullable_state() {
+    let spec = VolumeSpec::Provisioned {
+        max_size_bytes: VolumeMaxSizeBytes::try_new(10 * 1024 * 1024).expect("nonzero volume size"),
+    };
+
+    let json = serde_json::to_string(&spec).expect("volume spec serializes");
+
+    assert_eq!(json, r#"{"kind":"provisioned","max_size_bytes":10485760}"#);
+    assert_eq!(
+        serde_json::from_str::<VolumeSpec>(&json).expect("volume spec decodes"),
+        spec
+    );
+}
+
+#[test]
+fn volume_pin_legacy_json_defaults_to_plain_kind() {
+    let pin = serde_json::from_str::<VolumePinState>(
+        r#"{"namespace_id":"default","volume_name":"data","machine_id":"machine_a"}"#,
+    )
+    .expect("legacy pin decodes");
+
+    assert_eq!(pin.kind, VolumeKind::Plain);
+}
+
+#[test]
+fn provisioned_volume_pin_round_trips_with_dataset_and_size() {
+    let pin = VolumePinState {
+        namespace_id: namespace_id("default"),
+        volume_name: volume_name("data"),
+        machine_id: machine_id("machine_a"),
+        kind: VolumeKind::Provisioned {
+            dataset: DatasetName::for_volume(
+                "tank",
+                &namespace_id("default"),
+                &volume_name("data"),
+            )
+            .expect("dataset name fits"),
+            max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("nonzero volume size"),
+        },
+    };
+
+    let json = serde_json::to_string(&pin).expect("pin serializes");
+
+    assert_eq!(
+        serde_json::from_str::<VolumePinState>(&json).expect("pin decodes"),
+        pin
+    );
+}
+
+#[test]
+fn dataset_name_rejects_a_full_name_over_the_zfs_budget() {
+    let error = DatasetName::for_volume(
+        &"p".repeat(220),
+        &namespace_id("default"),
+        &volume_name("postgres_data"),
+    )
+    .expect_err("full dataset name exceeds the budget");
+
+    assert!(matches!(
+        error,
+        DatasetNameError::NameBudgetExceeded { maximum: 255, .. }
+    ));
+}
+
+#[test]
+fn volume_declaration_changes_do_not_change_the_namespace_revision() {
+    let plain =
+        request_with_volume_mount(BTreeMap::from([(volume_name("data"), VolumeSpec::Plain)]));
+    let provisioned = request_with_volume_mount(BTreeMap::from([(
+        volume_name("data"),
+        VolumeSpec::Provisioned {
+            max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("non-zero size"),
+        },
+    )]));
+
+    assert_eq!(
+        plain.namespace_revision_id(),
+        provisioned.namespace_revision_id()
+    );
+}
+
+fn request_with_volume_mount(
+    volumes: std::collections::BTreeMap<VolumeName, VolumeSpec>,
+) -> DeployRequest {
+    let mut runtime = ContainerRuntimeSpec::image_defaults();
+    runtime.volume_mounts = vec![ServiceVolumeMount {
+        volume_name: volume_name("data"),
+        target: ContainerMountPath::try_new("/data").expect("mount path"),
+    }];
+    DeployRequest {
+        namespace_id: namespace_id("default"),
+        origin: None,
+        volumes,
+        services: vec![DeployServiceSpec {
+            service_id: service_id("svc_api"),
+            image: ImageReference::try_new("nginx:latest").expect("image"),
+            image_source: ImageSource::Registry,
+            replicas: ReplicaCount::try_new(1).expect("replicas"),
+            runtime,
+            pre_start: None,
+            depends_on: Vec::new(),
+            routes: Vec::new(),
+        }],
+    }
+}
+
+fn volume_name(value: &str) -> VolumeName {
+    VolumeName::try_new(value).expect("volume name")
 }
 
 #[test]

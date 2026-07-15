@@ -380,6 +380,10 @@ _Avoid_: Scheduling type, replica mode
 Durable or host-backed storage that can be mounted into a service container. Volumes are part of deploy planning because they can constrain placement and update order.
 _Avoid_: Disk, mount as storage identity
 
+**Provisioned Volume**:
+A Volume whose deploy declaration includes a maximum size and asks Ployz to provision its durable backing before the Volume is mounted. A Volume's plain or provisioned kind is fixed when that Volume is first created; changing the declaration does not convert existing data between kinds.
+_Avoid_: Managed Volume, ZFS Volume, declared Volume, bounded Volume
+
 **Config**:
 Non-secret material injected into a service container as part of a namespace revision. Changing a config changes the desired service definition that deploy planning compares against runtime state.
 _Avoid_: Runtime setting, secret

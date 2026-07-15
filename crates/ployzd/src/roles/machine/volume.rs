@@ -2,15 +2,7 @@ use ployz_core::deploy::VolumeName;
 use ployz_core::ids::NamespaceId;
 
 pub(crate) fn docker_volume_name(namespace_id: &NamespaceId, volume_name: &VolumeName) -> String {
-    let namespace_id = namespace_id.as_str();
-    let volume_name = volume_name.as_str();
-    format!(
-        "ployz-n{}-{}-v{}-{}",
-        namespace_id.len(),
-        namespace_id,
-        volume_name.len(),
-        volume_name
-    )
+    volume_name.stable_storage_name(namespace_id)
 }
 
 #[cfg(test)]

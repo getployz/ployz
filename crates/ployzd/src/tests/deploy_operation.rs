@@ -599,6 +599,7 @@ async fn deploy_worker_commits_volume_pin_and_mounts_volume() {
             namespace_id: namespace_id("default"),
             volume_name: volume_name("postgres_data"),
             machine_id: machine_id("machine_a"),
+            kind: ployz_core::intent::VolumeKind::Plain,
         }]
     );
     let [(request_machine_id, request)] = runtime.requests.as_slice() else {

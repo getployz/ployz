@@ -71,6 +71,7 @@ fn sdk_exports_core_wire_types() {
     let deploy = DeployRequest {
         namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
         origin: None,
+        volumes: std::collections::BTreeMap::new(),
         services: vec![DeployServiceSpec {
             service_id: service_id.clone(),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
@@ -217,6 +218,7 @@ fn sdk_exports_operation_api_wire_types() {
         target: DeployRequest {
             namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
             origin: None,
+            volumes: std::collections::BTreeMap::new(),
             services: vec![DeployServiceSpec {
                 service_id: ServiceId::try_new("svc_api").expect("valid service id"),
                 image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),

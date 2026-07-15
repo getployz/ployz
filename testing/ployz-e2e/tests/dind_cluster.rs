@@ -483,6 +483,7 @@ async fn assert_namespace_manifest_convergence_sweeps_failed_retry(core: &CoreCo
         let retry_target = DeployRequest {
             namespace_id: namespace_id("converge"),
             origin: None,
+            volumes: BTreeMap::new(),
             services: vec![retry_service],
         };
         let retry = core
@@ -1122,6 +1123,7 @@ async fn assert_direct_push_multi_machine_deploy(core: &CoreContext) {
                 target: DeployRequest {
                     namespace_id: namespace,
                     origin: None,
+                    volumes: BTreeMap::new(),
                     services,
                 },
             })
@@ -1259,6 +1261,7 @@ exit 1",
                 target: DeployRequest {
                     namespace_id: namespace.clone(),
                     origin: None,
+                    volumes: BTreeMap::new(),
                     services: vec![DeployServiceSpec {
                         service_id: service.clone(),
                         image: requested.clone(),
@@ -2256,6 +2259,7 @@ fn smoke_deploy_target() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("smoke"),
         origin: None,
+        volumes: BTreeMap::new(),
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_smoke"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
@@ -2279,6 +2283,7 @@ fn auto_hostname_deploy_target() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("auto_https"),
         origin: None,
+        volumes: BTreeMap::new(),
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_auto"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
@@ -2302,6 +2307,7 @@ fn internal_dns_deploy_target() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("internal_dns"),
         origin: None,
+        volumes: BTreeMap::new(),
         services: vec![
             DeployServiceSpec {
                 service_id: service_id("server"),
@@ -2333,6 +2339,7 @@ fn runtime_fields_deploy_target(workload_image: &ImageReference) -> DeployReques
     DeployRequest {
         namespace_id: namespace_id("runtime"),
         origin: None,
+        volumes: BTreeMap::new(),
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_runtime"),
             image: workload_image.clone(),
@@ -2372,6 +2379,7 @@ volumes:
     DeployRequest {
         namespace_id: parsed.namespace_id,
         origin: None,
+        volumes: parsed.volumes,
         services: parsed.services,
     }
 }
@@ -2399,6 +2407,7 @@ fn failing_healthcheck_deploy_target(workload_image: &ImageReference) -> DeployR
     DeployRequest {
         namespace_id: namespace_id("bad_health"),
         origin: None,
+        volumes: BTreeMap::new(),
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_bad_health"),
             image: workload_image.clone(),
@@ -2441,6 +2450,10 @@ fn pre_start_deploy_target(namespace: &str, hook_command: &str) -> DeployRequest
     DeployRequest {
         namespace_id: namespace_id(namespace),
         origin: None,
+        volumes: BTreeMap::from([(
+            VolumeName::try_new("data").expect("valid volume name"),
+            ployz_core::deploy::VolumeSpec::Plain,
+        )]),
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_hooked"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image"),
@@ -2504,6 +2517,7 @@ fn depends_on_deploy_target() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("depends_on_order"),
         origin: None,
+        volumes: BTreeMap::new(),
         services: vec![
             DeployServiceSpec {
                 service_id: service_id("b"),
@@ -2577,6 +2591,7 @@ fn convergence_deploy_target(command: &str) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("converge"),
         origin: None,
+        volumes: BTreeMap::new(),
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_converge"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),

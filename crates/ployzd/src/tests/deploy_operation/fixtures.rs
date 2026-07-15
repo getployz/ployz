@@ -1103,6 +1103,7 @@ fn routed_deploy_request(replicas: u16) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
         origin: None,
+        volumes: std::collections::BTreeMap::new(),
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_api"),
             image: image("registry.example/api:rev_2"),
@@ -1128,6 +1129,7 @@ pub(super) fn ployz_automatic_deploy_command() -> DeployExecutionInput {
         DeployRequest {
             namespace_id: namespace_id("default"),
             origin: None,
+            volumes: std::collections::BTreeMap::new(),
             services: vec![DeployServiceSpec {
                 service_id: service_id("svc_api"),
                 image: image("registry.example/api:rev_2"),
@@ -1176,6 +1178,7 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
     let request = DeployRequest {
         namespace_id: namespace_id("default"),
         origin: None,
+        volumes: std::collections::BTreeMap::new(),
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_api"),
             image: image("local/api:rev_2"),
@@ -1241,6 +1244,10 @@ pub(super) fn deploy_command_without_eligible_machines(replicas: u16) -> DeployE
 
 pub(super) fn volume_backed_deploy_command(replicas: u16) -> DeployExecutionInput {
     let mut request = target_deploy_request(replicas);
+    request.volumes.insert(
+        volume_name("postgres_data"),
+        ployz_core::deploy::VolumeSpec::Plain,
+    );
     let [service] = request.services.as_mut_slice() else {
         panic!("deploy request fixture has one service");
     };
@@ -1334,6 +1341,7 @@ pub(super) fn target_deploy_request(replicas: u16) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
         origin: None,
+        volumes: std::collections::BTreeMap::new(),
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_api"),
             image: image("registry.example/api:rev_2"),
@@ -1406,6 +1414,7 @@ pub(super) fn empty_deploy_command_with_running_container(
         DeployRequest {
             namespace_id: namespace_id("default"),
             origin: None,
+            volumes: std::collections::BTreeMap::new(),
             services: Vec::new(),
         },
         DeployExecutionFacts {

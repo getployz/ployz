@@ -325,6 +325,7 @@ async fn control_runtime_serves_active_service_queries() {
             namespace_id: namespace_id("default"),
             volume_name: VolumeName::try_new("data").expect("valid volume name"),
             machine_id: machine_id("core_1"),
+            kind: ployz_core::intent::VolumeKind::Plain,
         })
         .await
         .expect("volume pin stores");
@@ -1325,6 +1326,7 @@ fn deploy_target(service_id: &str) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
         origin: None,
+        volumes: std::collections::BTreeMap::new(),
         services: vec![DeployServiceSpec {
             service_id: self::service_id(service_id),
             image: image("ghcr.io/acme/api:rev-2"),

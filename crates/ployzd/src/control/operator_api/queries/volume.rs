@@ -86,11 +86,13 @@ mod tests {
                     namespace_id: namespace_id.clone(),
                     volume_name: used.clone(),
                     machine_id: machine_id("machine_a"),
+                    kind: ployz_core::intent::VolumeKind::Plain,
                 },
                 VolumePinState {
                     namespace_id,
                     volume_name: orphaned,
                     machine_id: machine_id("machine_a"),
+                    kind: ployz_core::intent::VolumeKind::Plain,
                 },
             ],
             nats_authorizations: Vec::new(),

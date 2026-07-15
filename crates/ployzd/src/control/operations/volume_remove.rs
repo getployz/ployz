@@ -262,6 +262,7 @@ mod tests {
                 namespace_id: namespace_id.clone(),
                 volume_name: volume_name.clone(),
                 machine_id: machine_id("machine_a"),
+                kind: ployz_core::intent::VolumeKind::Plain,
             }],
             nats_authorizations: Vec::new(),
             automatic_hostname_configuration:

@@ -4,7 +4,7 @@ pub mod recovery;
 
 use serde::{Deserialize, Serialize};
 
-use crate::deploy::{ImageReference, ReplicaCount, VolumeName};
+use crate::deploy::{DatasetName, ImageReference, ReplicaCount, VolumeMaxSizeBytes, VolumeName};
 use crate::ids::{
     MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, RouteBindingId, ServiceId,
 };
@@ -56,6 +56,23 @@ pub struct VolumePinState {
     pub namespace_id: NamespaceId,
     pub volume_name: VolumeName,
     pub machine_id: MachineId,
+    #[serde(default = "plain_volume_kind")]
+    pub kind: VolumeKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum VolumeKind {
+    Plain,
+    Provisioned {
+        dataset: DatasetName,
+        max_size_bytes: VolumeMaxSizeBytes,
+    },
+}
+
+fn plain_volume_kind() -> VolumeKind {
+    VolumeKind::Plain
 }
 
 /// Core-owned active-machine roster value.

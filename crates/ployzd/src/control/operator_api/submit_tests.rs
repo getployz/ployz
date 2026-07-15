@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use ployz_core::deploy::{
-    ContainerRuntimeSpec, DeployRequest, DeployReservationId, DeployServiceSpec, ImageReference,
-    ImageSource, ReplicaCount,
+    ContainerMountPath, ContainerRuntimeSpec, DeployRequest, DeployReservationId,
+    DeployServiceSpec, ImageReference, ImageSource, ReplicaCount, ServiceVolumeMount, VolumeName,
 };
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::image::OciDigest;
@@ -12,8 +12,8 @@ use ployz_sdk_types::{DeploySubmitError, NetworkRepairError};
 use crate::control::sequencer::DeploySubmitCommand;
 
 use super::{
-    validate_internal_dns_name, validate_network_repair_preconditions,
-    validate_registry_credentials,
+    validate_deploy_volume_declarations, validate_internal_dns_name,
+    validate_network_repair_preconditions, validate_registry_credentials,
 };
 
 fn operation_id() -> OperationId {
@@ -73,6 +73,7 @@ fn pushed_image_digest_must_match_the_manifest_digest() {
         target: DeployRequest {
             namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
             origin: None,
+            volumes: std::collections::BTreeMap::new(),
             services: vec![DeployServiceSpec {
                 service_id: ServiceId::try_new("api").expect("valid service id"),
                 image,
@@ -95,5 +96,42 @@ fn pushed_image_digest_must_match_the_manifest_digest() {
         validate_registry_credentials(&command),
         Err(DeploySubmitError::InvalidTarget { message, .. })
             if message.as_str().contains("must match its pushed manifest digest")
+    ));
+}
+
+#[test]
+fn deploy_admission_rejects_a_mounted_volume_without_a_declaration() {
+    let mut runtime = ContainerRuntimeSpec::image_defaults();
+    runtime.volume_mounts = vec![ServiceVolumeMount {
+        volume_name: VolumeName::try_new("data").expect("volume name"),
+        target: ContainerMountPath::try_new("/data").expect("mount path"),
+    }];
+    let command = DeploySubmitCommand {
+        operation_id: OperationId::try_new("op_missing_volume_declaration").expect("operation id"),
+        idempotency_key: OperationIdempotencyKey::try_new("idem_missing_volume_declaration")
+            .expect("idempotency key"),
+        reservation_id: DeployReservationId::first(),
+        target: DeployRequest {
+            namespace_id: NamespaceId::try_new("default").expect("namespace id"),
+            origin: None,
+            volumes: BTreeMap::new(),
+            services: vec![DeployServiceSpec {
+                service_id: ServiceId::try_new("api").expect("service id"),
+                image: ImageReference::try_new("nginx:latest").expect("image"),
+                image_source: ImageSource::Registry,
+                replicas: ReplicaCount::try_new(1).expect("replicas"),
+                runtime,
+                pre_start: None,
+                depends_on: Vec::new(),
+                routes: Vec::new(),
+            }],
+        },
+        registry_credentials: BTreeMap::new(),
+    };
+
+    assert!(matches!(
+        validate_deploy_volume_declarations(&command),
+        Err(DeploySubmitError::InvalidTarget { message, .. })
+            if message.as_str().contains("service api mounts volume data without a declaration")
     ));
 }

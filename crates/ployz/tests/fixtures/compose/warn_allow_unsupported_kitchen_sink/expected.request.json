@@ -1,5 +1,10 @@
 {
   "namespace_id": "fixture_kitchen_sink",
+  "volumes": {
+    "data": {
+      "kind": "plain"
+    }
+  },
   "services": [
     {
       "service_id": "web",

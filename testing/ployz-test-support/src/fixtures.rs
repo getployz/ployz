@@ -105,6 +105,7 @@ pub fn deploy_target(service: &str) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
         origin: None,
+        volumes: std::collections::BTreeMap::new(),
         services: vec![DeployServiceSpec {
             service_id: service_id(service),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),

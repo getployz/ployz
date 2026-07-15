@@ -1098,6 +1098,7 @@ fn deploy_route_validation_rejects_duplicate_service_ids() {
     let request = ployz_core::deploy::DeployRequest {
         namespace_id: namespace_id("default"),
         origin: None,
+        volumes: std::collections::BTreeMap::new(),
         services: vec![first, second],
     };
 
@@ -1144,6 +1145,7 @@ fn deploy_route_validation_reuses_identical_automatic_binding() {
     let request = ployz_core::deploy::DeployRequest {
         namespace_id: namespace_id("default"),
         origin: None,
+        volumes: std::collections::BTreeMap::new(),
         services: vec![service],
     };
     let mut existing = route_binding_state("api.apps.example.com", "svc_api");
@@ -1411,6 +1413,7 @@ fn volume_pin(volume_name: &str, machine_id: &str) -> VolumePinState {
         namespace_id: namespace_id("default"),
         volume_name: VolumeName::try_new(volume_name).expect("valid volume name"),
         machine_id: self::machine_id(machine_id),
+        kind: ployz_core::intent::VolumeKind::Plain,
     }
 }
 

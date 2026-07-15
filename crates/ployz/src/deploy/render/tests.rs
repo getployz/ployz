@@ -59,6 +59,7 @@ fn target() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id(),
         origin: None,
+        volumes: std::collections::BTreeMap::new(),
         services: vec![
             service(
                 "web",
