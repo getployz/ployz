@@ -506,6 +506,27 @@ impl DeployHealthChecker for HangingHealth {
     }
 }
 
+pub(super) struct NotifyingHangingHealth {
+    reached: Arc<tokio::sync::Notify>,
+}
+
+impl NotifyingHangingHealth {
+    pub(super) fn new(reached: Arc<tokio::sync::Notify>) -> Self {
+        Self { reached }
+    }
+}
+
+impl DeployHealthChecker for NotifyingHangingHealth {
+    async fn wait_healthy(
+        &mut self,
+        _containers: &[crate::control::operations::deploy::DeployContainer],
+    ) -> Result<(), DeployHealthCheckError> {
+        self.reached.notify_one();
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DeployContainerForAssert {
     machine_id: MachineId,

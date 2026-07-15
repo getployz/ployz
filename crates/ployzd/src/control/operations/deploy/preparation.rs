@@ -197,7 +197,9 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
                 draining_machines: draining_machines.clone(),
                 observed_machines: facts.observed_machines.clone(),
                 existing_replica_policy: if is_promoted {
-                    ExistingReplicaPolicy::Promoted
+                    ExistingReplicaPolicy::Promoted {
+                        interrupted_operation_ids: reusable_interrupted_operation_ids.clone(),
+                    }
                 } else if reusable_interrupted_operation_ids.is_empty() {
                     ExistingReplicaPolicy::ExcludeUnpromoted
                 } else {

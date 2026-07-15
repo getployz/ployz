@@ -906,7 +906,9 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
                     ),
                 ],
             )],
-            existing_replica_policy: ExistingReplicaPolicy::Promoted,
+            existing_replica_policy: ExistingReplicaPolicy::Promoted {
+                interrupted_operation_ids: BTreeSet::new(),
+            },
         },
         route_binding_id_for,
     )
@@ -973,6 +975,61 @@ fn deploy_preparation_marks_interrupted_replicas_for_creation_gating() {
 }
 
 #[test]
+fn promoted_entry_still_gates_replica_from_interrupted_provenance() {
+    let mut completed = observed_container(
+        "machine_a",
+        "ctr_completed",
+        "svc_api",
+        "entry_1",
+        ManagedContainerKind::Service,
+        ContainerRuntimeState::running_unroutable(),
+    );
+    completed.identity.operation_id = operation_id("op_completed");
+    let mut interrupted = observed_container(
+        "machine_b",
+        "ctr_interrupted",
+        "svc_api",
+        "entry_1",
+        ManagedContainerKind::Service,
+        ContainerRuntimeState::running_unroutable(),
+    );
+    interrupted.identity.operation_id = operation_id("op_interrupted");
+    let prepared = prepare_deploy(
+        DeployPreparationInput {
+            request: deploy_request(2),
+            occupied_route_bindings: Vec::new(),
+            eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+            draining_machines: Vec::new(),
+            observed_machines: vec![
+                observed_machine("machine_a", [completed]),
+                observed_machine("machine_b", [interrupted]),
+            ],
+            existing_replica_policy: ExistingReplicaPolicy::Promoted {
+                interrupted_operation_ids: BTreeSet::from([operation_id("op_interrupted")]),
+            },
+        },
+        route_binding_id_for,
+    )
+    .expect("promoted deploy preparation");
+
+    assert_eq!(
+        prepared.existing_replicas,
+        vec![
+            ExistingServiceReplica {
+                machine_id: machine_id("machine_a"),
+                container_id: container_id("ctr_completed"),
+                creation_gate: ExistingReplicaCreationGate::AlreadyPassed,
+            },
+            ExistingServiceReplica {
+                machine_id: machine_id("machine_b"),
+                container_id: container_id("ctr_interrupted"),
+                creation_gate: ExistingReplicaCreationGate::RequiredAfterInterruption,
+            },
+        ]
+    );
+}
+
+#[test]
 fn deploy_preparation_evacuates_draining_machine_replicas() {
     let request = deploy_request(1);
     let normalized = normalized_services(vec![request.clone()], BTreeMap::new());
@@ -994,7 +1051,9 @@ fn deploy_preparation_evacuates_draining_machine_replicas() {
                     ContainerRuntimeState::running_unroutable(),
                 )],
             )],
-            existing_replica_policy: ExistingReplicaPolicy::Promoted,
+            existing_replica_policy: ExistingReplicaPolicy::Promoted {
+                interrupted_operation_ids: BTreeSet::new(),
+            },
         },
         route_binding_id_for,
     )
@@ -1066,7 +1125,9 @@ fn routed_deploy_preparation_reuses_matching_identity_regardless_of_endpoint_por
                     ),
                 ],
             )],
-            existing_replica_policy: ExistingReplicaPolicy::Promoted,
+            existing_replica_policy: ExistingReplicaPolicy::Promoted {
+                interrupted_operation_ids: BTreeSet::new(),
+            },
         },
         route_binding_id_for,
     )
@@ -1527,7 +1588,9 @@ fn deploy_preparation_ignores_same_service_id_in_other_namespace() {
             eligible_machines: vec![machine_id("machine_a")],
             draining_machines: Vec::new(),
             observed_machines: vec![observed_machine("machine_a", [foreign])],
-            existing_replica_policy: ExistingReplicaPolicy::Promoted,
+            existing_replica_policy: ExistingReplicaPolicy::Promoted {
+                interrupted_operation_ids: BTreeSet::new(),
+            },
         },
         route_binding_id_for,
     )

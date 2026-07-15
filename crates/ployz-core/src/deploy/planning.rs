@@ -31,7 +31,11 @@ pub enum ExistingReplicaCreationGate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExistingReplicaPolicy {
     /// Matching observed replicas belong to the current serving target.
-    Promoted,
+    Promoted {
+        /// Containers created by an interrupted attempt against this same
+        /// entry still require their own creation gate.
+        interrupted_operation_ids: std::collections::BTreeSet<OperationId>,
+    },
     /// Only replicas created by one of these durably interrupted deploys may
     /// be adopted, and each adopted replica must pass its creation gate.
     RecoverInterrupted {
@@ -333,7 +337,7 @@ fn existing_replicas(
                     &service.namespace_revision_entry_id(namespace_id),
                 )
                 && match policy {
-                    ExistingReplicaPolicy::Promoted => true,
+                    ExistingReplicaPolicy::Promoted { .. } => true,
                     ExistingReplicaPolicy::RecoverInterrupted { operation_ids } => {
                         operation_ids.contains(&container.identity.operation_id)
                     }
@@ -344,7 +348,14 @@ fn existing_replicas(
             machine_id: container.machine_id.clone(),
             container_id: container.container_id.clone(),
             creation_gate: match policy {
-                ExistingReplicaPolicy::Promoted => ExistingReplicaCreationGate::AlreadyPassed,
+                ExistingReplicaPolicy::Promoted {
+                    interrupted_operation_ids,
+                } if interrupted_operation_ids.contains(&container.identity.operation_id) => {
+                    ExistingReplicaCreationGate::RequiredAfterInterruption
+                }
+                ExistingReplicaPolicy::Promoted { .. } => {
+                    ExistingReplicaCreationGate::AlreadyPassed
+                }
                 ExistingReplicaPolicy::RecoverInterrupted { .. } => {
                     ExistingReplicaCreationGate::RequiredAfterInterruption
                 }

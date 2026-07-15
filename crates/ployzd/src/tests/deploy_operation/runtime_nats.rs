@@ -334,6 +334,226 @@ async fn interrupted_deploy_retry_gathers_and_reuses_retained_runtime_work() {
 }
 
 #[tokio::test]
+async fn interrupted_scale_up_replica_is_regated_under_a_promoted_entry() {
+    let nats = test_nats().await;
+    let (machine_a_facts_task, machine_a_facts) = start_dynamic_facts_subscription(
+        nats.machine_a.clone(),
+        nats.client.clone(),
+        machine_id("machine_a"),
+    )
+    .await;
+    let (machine_slow_facts_task, machine_slow_facts) = start_dynamic_facts_subscription(
+        nats.machine_slow.clone(),
+        nats.client.clone(),
+        machine_id("machine_slow"),
+    )
+    .await;
+    let _facts_tasks = (machine_a_facts_task, machine_slow_facts_task);
+    let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
+    let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
+    let controllers = operation_controllers(nats.client.clone()).await;
+
+    let initial = controllers
+        .submit_deploy(DeploySubmitCommand {
+            registry_credentials: std::collections::BTreeMap::new(),
+            operation_id: operation_id("op_initial"),
+            idempotency_key: idempotency_key("idem_initial"),
+            reservation_id: reserve_deploy(&controllers).await,
+            target: deploy_request(1),
+        })
+        .await
+        .expect("initial deploy accepted");
+    let mut initial_runtime = RecordingRuntime::with_containers(["ctr_promoted"]);
+    let mut initial_health = RecordingHealth::healthy();
+    run_deploy_operation(
+        initial,
+        DeployOperationStores {
+            intent_change_client: nats.client.clone(),
+            namespace_intent: nats.namespace_intent.clone(),
+            ployz_dns_target: nats.ployz_dns_target.clone(),
+            ingress_projection: nats.ingress_projection.clone(),
+            controllers: controllers.clone(),
+        },
+        DeployOperationPorts {
+            facts_reader: &facts_reader,
+            intent_reader: &intent_reader,
+            machine_runtime: &mut initial_runtime,
+            health_checker: &mut initial_health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+        },
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("initial deploy promotes one replica");
+    controllers
+        .release_namespace(&namespace_id("default"), &operation_id("op_initial"))
+        .await;
+    let [(promoted_machine_id, promoted_request)] = initial_runtime.requests.as_slice() else {
+        panic!("initial deploy creates one container");
+    };
+    let promoted_observation = ployz_core::machine::runtime::ManagedContainerObservation {
+        machine_id: promoted_machine_id.clone(),
+        container_id: container_id("ctr_promoted"),
+        identity: promoted_request.container.clone(),
+        state: ployz_core::machine::runtime::ContainerRuntimeState::running_unroutable(),
+        health_status: None,
+        resolved_image_identity: None,
+        created_at_unix_seconds: None,
+    };
+    let promoted_facts = if promoted_machine_id == &machine_id("machine_a") {
+        &machine_a_facts
+    } else {
+        &machine_slow_facts
+    };
+    *promoted_facts
+        .lock()
+        .expect("dynamic facts lock is not poisoned") =
+        machine_facts(promoted_machine_id.clone(), [promoted_observation.clone()]);
+
+    let scale_up = controllers
+        .submit_deploy(DeploySubmitCommand {
+            registry_credentials: std::collections::BTreeMap::new(),
+            operation_id: operation_id("op_scale_up"),
+            idempotency_key: idempotency_key("idem_scale_up"),
+            reservation_id: reserve_deploy(&controllers).await,
+            target: deploy_request(2),
+        })
+        .await
+        .expect("scale-up deploy accepted");
+    let health_reached = Arc::new(tokio::sync::Notify::new());
+    let mut scale_runtime = RecordingRuntime::with_containers(["ctr_interrupted"]);
+    let mut scale_health = NotifyingHangingHealth::new(Arc::clone(&health_reached));
+    let mut scale_certificates = RecordingCertificates::successful();
+    {
+        let scale_run = run_deploy_operation(
+            scale_up,
+            DeployOperationStores {
+                intent_change_client: nats.client.clone(),
+                namespace_intent: nats.namespace_intent.clone(),
+                ployz_dns_target: nats.ployz_dns_target.clone(),
+                ingress_projection: nats.ingress_projection.clone(),
+                controllers: controllers.clone(),
+            },
+            DeployOperationPorts {
+                facts_reader: &facts_reader,
+                intent_reader: &intent_reader,
+                machine_runtime: &mut scale_runtime,
+                health_checker: &mut scale_health,
+                certificate_provisioner: &mut scale_certificates,
+            },
+            Duration::from_secs(5),
+        );
+        tokio::pin!(scale_run);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                () = health_reached.notified() => {}
+                outcome = &mut scale_run => panic!("scale-up settled before interruption: {outcome:?}"),
+            }
+        })
+        .await
+        .expect("scale-up reaches its creation health gate");
+    }
+    let [(interrupted_machine_id, interrupted_request)] = scale_runtime.requests.as_slice() else {
+        panic!("scale-up creates one additional container");
+    };
+    let interrupted_observation = ployz_core::machine::runtime::ManagedContainerObservation {
+        machine_id: interrupted_machine_id.clone(),
+        container_id: container_id("ctr_interrupted"),
+        identity: interrupted_request.container.clone(),
+        state: ployz_core::machine::runtime::ContainerRuntimeState::running_unroutable(),
+        health_status: None,
+        resolved_image_identity: None,
+        created_at_unix_seconds: None,
+    };
+    let interrupted_facts = if interrupted_machine_id == &machine_id("machine_a") {
+        &machine_a_facts
+    } else {
+        &machine_slow_facts
+    };
+    *interrupted_facts
+        .lock()
+        .expect("dynamic facts lock is not poisoned") =
+        if interrupted_machine_id == promoted_machine_id {
+            machine_facts(
+                interrupted_machine_id.clone(),
+                [promoted_observation, interrupted_observation],
+            )
+        } else {
+            machine_facts(interrupted_machine_id.clone(), [interrupted_observation])
+        };
+
+    let repository = controllers.repository().clone();
+    let summary = repository
+        .record_interrupted_operations(OperationInterruptionCause::PriorCoreProcessLoss)
+        .await
+        .expect("scale-up interruption records");
+    assert_eq!(summary.recorded, 1);
+    drop(controllers);
+    let restarted_controllers = OperationControllers::new(
+        repository,
+        MachineAddBootstrapConfig::new(
+            MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
+                .expect("default bootstrap URL is valid"),
+        ),
+    );
+    let retry = restarted_controllers
+        .submit_deploy(DeploySubmitCommand {
+            registry_credentials: std::collections::BTreeMap::new(),
+            operation_id: operation_id("op_scale_retry"),
+            idempotency_key: idempotency_key("idem_scale_retry"),
+            reservation_id: reserve_deploy(&restarted_controllers).await,
+            target: deploy_request(2),
+        })
+        .await
+        .expect("scale-up retry accepted");
+    let mut retry_runtime = RecordingRuntime::with_containers([]);
+    let mut retry_health = RecordingHealth::healthy();
+    let outcome = run_deploy_operation(
+        retry,
+        DeployOperationStores {
+            intent_change_client: nats.client.clone(),
+            namespace_intent: nats.namespace_intent.clone(),
+            ployz_dns_target: nats.ployz_dns_target.clone(),
+            ingress_projection: nats.ingress_projection.clone(),
+            controllers: restarted_controllers,
+        },
+        DeployOperationPorts {
+            facts_reader: &facts_reader,
+            intent_reader: &intent_reader,
+            machine_runtime: &mut retry_runtime,
+            health_checker: &mut retry_health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+        },
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("scale-up retry promotes both observed replicas");
+
+    assert!(retry_runtime.requests.is_empty());
+    assert_eq!(
+        retry_health.checked,
+        vec![vec![DeployContainerForAssert::new(
+            interrupted_machine_id.as_str(),
+            "ctr_interrupted",
+        )]]
+    );
+    assert_eq!(outcome.containers.len(), 2);
+    let serving = nats
+        .namespace_intent
+        .load()
+        .await
+        .expect("namespace intent reads")
+        .serving_target_entries
+        .into_iter()
+        .find(|entry| entry.service_id == service_id("svc_api"))
+        .expect("retry commits serving target");
+    assert_eq!(
+        serving.desired_replicas,
+        ReplicaCount::try_new(2).expect("replica count")
+    );
+}
+
+#[tokio::test]
 async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
     let nats = test_nats().await;
     let _facts = start_facts_subscription(
