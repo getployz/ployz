@@ -26,9 +26,10 @@ pub mod volume;
 pub use images::*;
 pub use planning::*;
 pub use request::{
-    DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS, DependencyCondition, DeployOrigin, DeployOriginError,
-    DeployRequest, DeployReservationExpiresAt, DeployReservationId, DeployReservationNumberError,
-    DeployServiceRequest, DeployServiceSpec, DeployVolumeDeclarationError, NormalizedDeployRequest,
+    DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS, DeclaredVolumeMount, DependencyCondition, DeployOrigin,
+    DeployOriginError, DeployRequest, DeployReservationExpiresAt, DeployReservationId,
+    DeployReservationNumberError, DeployServiceRequest, DeployServiceSpec,
+    DeployVolumeDeclarationError, NormalizedDeployInvariantError, NormalizedDeployRequest,
     PreStartHook, ReplicaCount, ReplicaCountError, ServiceDependency,
 };
 pub use revision::{

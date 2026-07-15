@@ -94,10 +94,10 @@ where
         )
         .await;
     }
-    let mut resolved_request = request.into_request();
+    let mut request = request;
     if let Err(source) = resolve_registry_images(
         &provisional_command,
-        &mut resolved_request,
+        &mut request,
         &mut *ports.recorder,
         &mut *ports.machine_runtime,
     )
@@ -110,20 +110,6 @@ where
         )
         .await;
     }
-    let request = match ployz_core::deploy::NormalizedDeployRequest::try_new(resolved_request) {
-        Ok(request) => request,
-        Err(error) => {
-            let source = DeployExecutionError::InvalidImagePull {
-                message: format!("resolved deploy request is invalid: {error}"),
-            };
-            return fail_deploy(
-                provisional_command.clone(),
-                &mut *ports.recorder,
-                DeployExecutionFailure::new(&provisional_command, source, &[]),
-            )
-            .await;
-        }
-    };
     let command = preparation::prepare_deploy_execution_command_with_credentials(
         operation_id,
         request,
@@ -432,7 +418,7 @@ where
         });
     };
     let step_id = StepId::try_new("pre_start").map_err(DeployExecutionError::StepId)?;
-    let mut runtime = service.request.runtime.clone();
+    let mut runtime = service.request.runtime().clone();
     runtime.command = Some(pre_start.command.clone());
     runtime.healthcheck = None;
     runtime.restart_policy = ContainerRestartPolicy::No;
@@ -627,7 +613,7 @@ fn container_stop_failed_artifact(
 fn requires_docker_healthcheck(service: &DeployServiceExecutionCommand) -> bool {
     service
         .request
-        .runtime
+        .runtime()
         .healthcheck
         .as_ref()
         .is_some_and(ployz_core::deploy::ContainerHealthcheck::reports_docker_health)
@@ -887,7 +873,7 @@ where
     let requires_docker_healthcheck = requires_docker_healthcheck(service);
     let request = MachineContainerRunRpcRequest {
         pull: machine_image_pull(service, dataplane_members)?,
-        runtime: service.request.runtime.clone(),
+        runtime: service.request.runtime().clone(),
         container: ManagedContainerIdentity {
             namespace_id: service.request.namespace_id.clone(),
             service_id: service.request.service_id.clone(),

@@ -267,7 +267,7 @@ impl OperationControllers {
         let acquired_ingress = matches!(ingress_claim, Some(IngressClaim::Acquired));
         if let Some(IngressClaim::Busy { owner }) = &ingress_claim {
             return Err(SubmitCommandError::IngressBusy {
-                namespace_id: command.target.namespace_id.clone(),
+                namespace_id: command.target.namespace_id().clone(),
                 owner: owner.clone(),
             });
         }

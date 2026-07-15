@@ -383,8 +383,6 @@ pub fn validate_deploy_route_bindings(
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DeployRouteBindingValidationError {
-    #[error(transparent)]
-    VolumeDeclaration(#[from] DeployVolumeDeclarationError),
     #[error("service {} is declared more than once", .service_id.as_str())]
     DuplicateServiceId { service_id: ServiceId },
     #[error(transparent)]
@@ -530,7 +528,7 @@ fn dependency_ordered_phases(
                 input.request.service_id.clone(),
                 input
                     .request
-                    .runtime
+                    .runtime()
                     .healthcheck
                     .as_ref()
                     .is_some_and(ContainerHealthcheck::reports_docker_health),
@@ -725,7 +723,7 @@ fn volume_placement(
     eligible_machines: &[MachineId],
     volume_pins: &[VolumePinState],
 ) -> Result<VolumePlacement, DeployPlanError> {
-    if request.runtime.volume_mounts.is_empty() {
+    if request.declared_volume_mounts().is_empty() {
         return Ok(VolumePlacement {
             machine_id: None,
             commits: Vec::new(),
@@ -734,7 +732,9 @@ fn volume_placement(
 
     let mut pinned_machines = Vec::new();
     let mut new_plain_volumes = Vec::new();
-    for (volume_name, spec) in &request.volumes {
+    for declared in request.declared_volume_mounts() {
+        let volume_name = &declared.mount().volume_name;
+        let spec = declared.spec();
         match volume_pins
             .iter()
             .find(|pin| pin.namespace_id == request.namespace_id && pin.volume_name == *volume_name)

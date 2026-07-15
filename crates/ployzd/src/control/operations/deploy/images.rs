@@ -1,7 +1,7 @@
 //! Pushed-image availability and mesh redistribution for deploy execution.
 
 use ployz_core::deploy::{
-    DeployPlan, DeployPlanStep, DeployRequest, DeployServicePlan, ImageSource,
+    DeployPlan, DeployPlanStep, DeployServicePlan, ImageSource, NormalizedDeployRequest,
 };
 use ployz_core::image::{ImageEnsureRequest, ImageRepository, ImageRpcDomainError, OciDigest};
 use ployz_core::network::DataplaneMember;
@@ -49,7 +49,7 @@ pub(super) fn dataplane_membership(
 
 pub(super) async fn resolve_registry_images<R, N>(
     command: &DeployExecutionCommand,
-    request: &mut DeployRequest,
+    request: &mut NormalizedDeployRequest,
     recorder: &mut R,
     machine_runtime: &mut N,
 ) -> Result<(), DeployExecutionError>
@@ -58,38 +58,36 @@ where
     N: MachineContainerRuntime,
 {
     let provisional_plan = deploy_plan(command)?;
-    for target in &mut request.services {
-        if !matches!(target.image_source, ImageSource::Registry) {
-            continue;
-        }
-        if target.image.pinned_digest().is_some() {
-            continue;
-        }
+    let targets = request
+        .services()
+        .iter()
+        .filter(|target| {
+            matches!(target.image_source, ImageSource::Registry)
+                && target.image.pinned_digest().is_none()
+        })
+        .map(|target| (target.service_id.clone(), target.image.clone()))
+        .collect::<Vec<_>>();
+    for (service_id, requested) in targets {
         let Some(service) = command
             .services()
             .iter()
-            .find(|service| service.request.service_id == target.service_id)
+            .find(|service| service.request.service_id == service_id)
         else {
-            return Err(DeployExecutionError::PlanInconsistent {
-                service_id: target.service_id.clone(),
-            });
+            return Err(DeployExecutionError::PlanInconsistent { service_id });
         };
         let Some(machine_id) = provisional_plan
             .phases
             .iter()
             .flat_map(|phase| &phase.services)
-            .find(|plan| plan.service_id == target.service_id)
+            .find(|plan| plan.service_id == service_id)
             .and_then(|plan| plan.steps.first())
             .map(|step| match step {
                 DeployPlanStep::UseExistingContainer { machine_id, .. }
                 | DeployPlanStep::RunContainer { machine_id, .. } => machine_id.clone(),
             })
         else {
-            return Err(DeployExecutionError::PlanInconsistent {
-                service_id: target.service_id.clone(),
-            });
+            return Err(DeployExecutionError::PlanInconsistent { service_id });
         };
-        let requested = target.image.clone();
         let digest = tokio::time::timeout(
             command.step_timeout(),
             machine_runtime.resolve_image(
@@ -118,12 +116,16 @@ where
                 deploy_failure_message(error.to_string()),
             )
         })?;
-        target.image = resolved.clone();
+        request
+            .replace_service_image(&service_id, resolved.clone())
+            .map_err(|error| DeployExecutionError::InternalInvariant {
+                message: error.to_string(),
+            })?;
         record_evidence(
             command,
             recorder,
             DeployEvidence::ImageResolved {
-                service_id: target.service_id.clone(),
+                service_id,
                 machine_id,
                 requested,
                 resolved,

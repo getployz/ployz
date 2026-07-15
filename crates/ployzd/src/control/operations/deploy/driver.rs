@@ -85,13 +85,9 @@ where
         health_checker,
         certificate_provisioner,
     } = ports;
-    let request = accepted.target.clone();
-    let normalized_request = match NormalizedDeployRequest::try_new(request) {
+    let normalized_request = match normalize_stored_deploy_target(accepted.target.clone()) {
         Ok(request) => request,
-        Err(error) => {
-            let source = DeployFactLoadError::InvalidRouteBindings {
-                message: error.to_string(),
-            };
+        Err(source) => {
             let failure_record_error = record_operation_failure(
                 &stores.controllers,
                 &accepted,
@@ -121,7 +117,7 @@ where
             let failure_record_error = record_operation_failure(
                 &stores.controllers,
                 &accepted,
-                fact_load_failure(normalized_request.request(), &source),
+                fact_load_failure(&accepted.target, &source),
             )
             .await
             .err();
@@ -160,6 +156,16 @@ where
     .map_err(DeployOperationRunError::Execute)
 }
 
+fn normalize_stored_deploy_target(
+    request: ployz_core::deploy::DeployRequest,
+) -> Result<NormalizedDeployRequest, DeployFactLoadError> {
+    NormalizedDeployRequest::try_new(request).map_err(|error| {
+        DeployFactLoadError::InvalidStoredTarget {
+            message: error.to_string(),
+        }
+    })
+}
+
 async fn record_operation_failure(
     controllers: &OperationControllers,
     accepted: &AcceptedDeploySubmission,
@@ -177,7 +183,8 @@ fn fact_load_failure(
     source: &DeployFactLoadError,
 ) -> DeployOperationFailure {
     match source {
-        DeployFactLoadError::IntentRead { .. }
+        DeployFactLoadError::InvalidStoredTarget { .. }
+        | DeployFactLoadError::IntentRead { .. }
         | DeployFactLoadError::InvalidRouteBindings { .. }
         | DeployFactLoadError::IngressState { .. }
         | DeployFactLoadError::IngressUnavailable { .. } => {
@@ -566,6 +573,35 @@ mod tests {
         ContainerHealth, ContainerRuntimeState, ManagedContainerIdentity, ManagedContainerKind,
         ManagedContainerObservation,
     };
+
+    #[test]
+    fn invalid_persisted_volume_contract_has_a_dedicated_failure() {
+        let mut runtime = ployz_core::deploy::ContainerRuntimeSpec::image_defaults();
+        runtime.volume_mounts = vec![ployz_core::deploy::ServiceVolumeMount {
+            volume_name: ployz_core::deploy::VolumeName::try_new("data").expect("volume name"),
+            target: ployz_core::deploy::ContainerMountPath::try_new("/data").expect("mount path"),
+        }];
+        let request = ployz_core::deploy::DeployRequest {
+            namespace_id: namespace_id("default"),
+            origin: None,
+            volumes: std::collections::BTreeMap::new(),
+            services: vec![ployz_core::deploy::DeployServiceSpec {
+                service_id: service_id("svc_api"),
+                image: ployz_core::deploy::ImageReference::try_new("nginx:latest").expect("image"),
+                image_source: ployz_core::deploy::ImageSource::Registry,
+                replicas: ployz_core::deploy::ReplicaCount::try_new(1).expect("replicas"),
+                runtime,
+                pre_start: None,
+                depends_on: Vec::new(),
+                routes: Vec::new(),
+            }],
+        };
+
+        assert!(matches!(
+            normalize_stored_deploy_target(request),
+            Err(DeployFactLoadError::InvalidStoredTarget { .. })
+        ));
+    }
 
     #[test]
     fn running_confirmation_uses_observed_container_start_time() {

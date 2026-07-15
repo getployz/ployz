@@ -6,6 +6,7 @@ use ployz_core::deploy::{
     NormalizedDeployRequest, ReplicaCount, ServiceDependency, ServiceVolumeMount,
     VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName, ZfsPoolNameError,
 };
+use ployz_core::ids::{NamespaceRevisionEntryId, NamespaceRevisionId};
 use ployz_core::intent::{VolumeKind, VolumePinState};
 use ployz_core::machine::MachineUsabilityReason;
 use ployz_core::operation::{
@@ -488,6 +489,26 @@ fn deploy_request_requires_a_declaration_for_every_mounted_volume() {
 }
 
 #[test]
+fn planner_service_constructor_rejects_an_undeclared_mount() {
+    let request = request_with_volume_mount(BTreeMap::new());
+    let [service] = request.services.as_slice() else {
+        panic!("request has one service");
+    };
+
+    let error = ployz_core::deploy::DeployServiceRequest::try_from_spec(
+        request.namespace_id,
+        NamespaceRevisionId::try_new("rev_test").expect("revision id"),
+        NamespaceRevisionEntryId::try_new("entry_test").expect("entry id"),
+        service.clone(),
+        &request.volumes,
+    )
+    .expect_err("planner input rejects an undeclared mount");
+
+    assert_eq!(error.service_id, service_id("svc_api"));
+    assert_eq!(error.volume_name, volume_name("data"));
+}
+
+#[test]
 fn deploy_request_synthesizes_plain_declarations_for_legacy_inputs() {
     let mut request = request_with_volume_mount(std::collections::BTreeMap::new());
 
@@ -509,14 +530,47 @@ fn normalized_service_requests_retain_mounted_volume_declarations() {
         (volume_name("unused"), VolumeSpec::Plain),
     ]));
 
+    let original = request.clone();
     let request = NormalizedDeployRequest::try_new(request).expect("request normalizes");
+    assert_eq!(request.to_request(), original);
     let services = request.services();
     let [service] = services else {
         panic!("request has one service");
     };
+    let [declared] = service.declared_volume_mounts() else {
+        panic!("service has one declared volume mount");
+    };
+    assert_eq!(declared.mount().volume_name, volume_name("data"));
+    assert_eq!(declared.spec(), &provisioned);
+}
+
+#[test]
+fn normalized_image_replacement_preserves_volume_invariants_without_revalidation() {
+    let mut request =
+        request_with_volume_mount(BTreeMap::from([(volume_name("data"), VolumeSpec::Plain)]));
+    let mut normalized =
+        NormalizedDeployRequest::try_new(request.clone()).expect("request normalizes once");
+    let resolved = ImageReference::try_new(
+        "registry.example/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    )
+    .expect("resolved image");
+
+    normalized
+        .replace_service_image(&service_id("svc_api"), resolved.clone())
+        .expect("known service image changes invariant-preservingly");
+    let [service] = request.services.as_mut_slice() else {
+        panic!("request has one service");
+    };
+    service.image = resolved;
+
+    assert_eq!(normalized.to_request(), request);
+    let [service] = normalized.services() else {
+        panic!("request has one service");
+    };
+    assert_eq!(service.declared_volume_mounts().len(), 1);
     assert_eq!(
-        service.volumes,
-        BTreeMap::from([(volume_name("data"), provisioned)])
+        service.namespace_revision_id,
+        normalized.namespace_revision_id()
     );
 }
 

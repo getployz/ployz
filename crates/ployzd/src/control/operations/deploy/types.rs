@@ -155,7 +155,7 @@ impl DeployServiceExecutionCommand {
     pub fn serving_target_entry_state(&self) -> ServingTargetEntry {
         let mut volume_names = self
             .request
-            .runtime
+            .runtime()
             .volume_mounts
             .iter()
             .map(|mount| mount.volume_name.clone())

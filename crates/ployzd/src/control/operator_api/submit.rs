@@ -270,8 +270,8 @@ pub async fn deploy_submit(
 ) -> Result<AcceptedOperation, DeploySubmitError> {
     let command = normalize_deploy_submit(request)?;
     let operation_id = command.operation_id.clone();
-    for service in &command.target.services {
-        validate_internal_dns_name(&command.target.namespace_id, &service.service_id).map_err(
+    for service in command.target.services() {
+        validate_internal_dns_name(command.target.namespace_id(), &service.service_id).map_err(
             |message| DeploySubmitError::InvalidTarget {
                 operation_id: operation_id.clone(),
                 message,
@@ -331,7 +331,7 @@ fn validate_registry_credentials(command: &DeploySubmitCommand) -> Result<(), De
     for service_id in command.registry_credentials.keys() {
         let Some(service) = command
             .target
-            .services
+            .services()
             .iter()
             .find(|service| service.service_id == *service_id)
         else {
@@ -350,7 +350,7 @@ fn validate_registry_credentials(command: &DeploySubmitCommand) -> Result<(), De
         }
     }
 
-    for service in &command.target.services {
+    for service in command.target.services() {
         let ImageSource::PushedToSeed {
             manifest_digest, ..
         } = &service.image_source
@@ -377,7 +377,7 @@ fn validate_registry_credentials(command: &DeploySubmitCommand) -> Result<(), De
 
 fn invalid_pushed_image(
     command: &DeploySubmitCommand,
-    service: &ployz_core::deploy::DeployServiceSpec,
+    service: &ployz_core::deploy::DeployServiceRequest,
     reason: &str,
 ) -> DeploySubmitError {
     DeploySubmitError::InvalidTarget {
@@ -409,7 +409,7 @@ async fn validate_pushed_image_seeds(
     handlers: &OperationApiHandlers,
     command: &DeploySubmitCommand,
 ) -> Result<(), DeploySubmitError> {
-    let seeds = command.target.services.iter().filter_map(|service| {
+    let seeds = command.target.services().iter().filter_map(|service| {
         let ImageSource::PushedToSeed { seed, .. } = &service.image_source else {
             return None;
         };

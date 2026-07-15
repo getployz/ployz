@@ -196,6 +196,8 @@ pub enum DeployExecutionError {
     StepId(SubjectTokenError),
     #[error("image pull result is invalid: {message}")]
     InvalidImagePull { message: String },
+    #[error("deploy execution invariant failed: {message}")]
+    InternalInvariant { message: String },
     #[error("deploy step {step:?} timed out after {timeout:?}")]
     StepTimedOut {
         step: DeployExecutionStep,
@@ -589,6 +591,11 @@ impl DeployExecutionError {
                 message: failure_message("deploy planning failed"),
             },
             Self::InvalidImagePull { message } => DeployOperationFailure::PlanningFailed {
+                service_id: failure_service_id(command),
+                namespace_revision_id: failure_namespace_revision_id(command),
+                message: failure_message(message.clone()),
+            },
+            Self::InternalInvariant { message } => DeployOperationFailure::PlanningFailed {
                 service_id: failure_service_id(command),
                 namespace_revision_id: failure_namespace_revision_id(command),
                 message: failure_message(message.clone()),

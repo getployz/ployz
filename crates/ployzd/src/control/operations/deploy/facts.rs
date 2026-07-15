@@ -8,7 +8,7 @@ use crate::control::intent::namespace_intent::NamespaceIntentStore;
 use crate::control::intent::service::NatsIntentReader;
 use crate::control::role_client::machine::{NatsMachineFactsReader, read_machine_placement_facts};
 use crate::control::role_client::machine_convergence::gather_dataplane_statuses;
-use ployz_core::deploy::{DeployRequest, DeployRouteTarget, NormalizedDeployRequest};
+use ployz_core::deploy::{DeployRouteTarget, NormalizedDeployRequest};
 use ployz_core::ids::MachineId;
 use ployz_core::ingress::{AutomaticHostnameConfiguration, IngressConfiguration};
 use ployz_core::intent::ActiveMachineState;
@@ -32,7 +32,7 @@ pub async fn load_deploy_execution_facts_from_nats(
     step_timeout: Duration,
 ) -> Result<DeployExecutionFacts, DeployFactLoadError> {
     let intent = read_intent(intent_reader).await?;
-    let allocation = if auto_hostname_service(request.request()).is_some()
+    let allocation = if normalized_auto_hostname_service(request).is_some()
         && matches!(
             &intent.automatic_hostname_configuration,
             AutomaticHostnameConfiguration::Ployz
@@ -47,7 +47,7 @@ pub async fn load_deploy_execution_facts_from_nats(
         None
     };
     let automatic_hostname_mode = resolve_automatic_hostname_mode(
-        request.request(),
+        request,
         Some(&intent.automatic_hostname_configuration),
         allocation.as_ref(),
     )?;
@@ -74,23 +74,12 @@ pub async fn load_deploy_execution_facts_from_nats(
     .await
 }
 
-pub(super) fn auto_hostname_service(
-    request: &DeployRequest,
-) -> Option<&ployz_core::deploy::DeployServiceSpec> {
-    request.services.iter().find(|service| {
-        service
-            .routes
-            .iter()
-            .any(|route| matches!(route.target, DeployRouteTarget::AutoHostname { .. }))
-    })
-}
-
 fn resolve_automatic_hostname_mode(
-    request: &DeployRequest,
+    request: &NormalizedDeployRequest,
     configuration: Option<&AutomaticHostnameConfiguration>,
     allocation: Option<&PloyzDnsTargetAllocation>,
 ) -> Result<AutomaticHostnameMode, DeployFactLoadError> {
-    if auto_hostname_service(request).is_none() {
+    if normalized_auto_hostname_service(request).is_none() {
         return Ok(AutomaticHostnameMode::Disabled);
     }
     let Some(configuration) = configuration else {
@@ -123,6 +112,17 @@ fn resolve_automatic_hostname_mode(
     }
 }
 
+fn normalized_auto_hostname_service(
+    request: &NormalizedDeployRequest,
+) -> Option<&ployz_core::deploy::DeployServiceRequest> {
+    request.services().iter().find(|service| {
+        service
+            .routes
+            .iter()
+            .any(|route| matches!(route.target, DeployRouteTarget::AutoHostname { .. }))
+    })
+}
+
 pub async fn validate_deploy_route_admission(
     request: &NormalizedDeployRequest,
     ingress: &IngressIntentStore,
@@ -136,7 +136,7 @@ pub async fn validate_deploy_route_admission(
             .map_err(|error| DeployFactLoadError::IngressState {
                 message: error.to_string(),
             })?;
-    let allocation = if auto_hostname_service(request.request()).is_some()
+    let allocation = if normalized_auto_hostname_service(request).is_some()
         && configuration.as_ref().is_some_and(|configuration| {
             matches!(
                 configuration.automatic_hostnames(),
@@ -153,7 +153,7 @@ pub async fn validate_deploy_route_admission(
         None
     };
     let automatic_hostname_mode = resolve_automatic_hostname_mode(
-        request.request(),
+        request,
         configuration
             .as_ref()
             .map(IngressConfiguration::automatic_hostnames),
@@ -198,12 +198,12 @@ async fn deploy_execution_facts(
     let namespace_serving_entries = intent
         .serving_target_entries
         .into_iter()
-        .filter(|entry| entry.namespace_id == request.namespace_id)
+        .filter(|entry| entry.namespace_id == *request.namespace_id())
         .collect::<Vec<_>>();
     let namespace_volume_pins = intent
         .volume_pins
         .into_iter()
-        .filter(|pin| pin.namespace_id == request.namespace_id)
+        .filter(|pin| pin.namespace_id == *request.namespace_id())
         .collect::<Vec<_>>();
     let placement_facts = read_machine_placement_facts(facts_reader, machine_lifecycles).await;
     let dataplane_statuses = gather_dataplane_statuses(
@@ -238,7 +238,7 @@ async fn deploy_execution_facts(
         .cloned()
         .collect();
     let namespace_cleanup_candidates =
-        namespace_cleanup_candidates(&request.namespace_id, &observed_machines);
+        namespace_cleanup_candidates(request.namespace_id(), &observed_machines);
     validate_route_bindings(
         request,
         automatic_hostname_mode.suffix(),
@@ -279,10 +279,10 @@ fn validate_route_bindings(
 }
 
 fn operation_dataplane_members(
-    request: &DeployRequest,
+    request: &NormalizedDeployRequest,
     active_machines: &[ActiveMachineState],
 ) -> Vec<DataplaneMember> {
-    let needs_membership = request.services.iter().any(|service| {
+    let needs_membership = request.services().iter().any(|service| {
         !service.routes.is_empty()
             || matches!(
                 &service.image_source,
@@ -314,6 +314,8 @@ fn load_machine_lifecycles(intent: &IntentSnapshot) -> Vec<(MachineId, MachineLi
 /// message is failure evidence.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DeployFactLoadError {
+    #[error("stored deploy target is invalid: {message}")]
+    InvalidStoredTarget { message: String },
     #[error("intent could not be read: {message}")]
     IntentRead { message: String },
     #[error("invalid route bindings: {message}")]
