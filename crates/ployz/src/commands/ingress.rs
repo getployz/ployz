@@ -6,8 +6,8 @@ use ployz_core::ingress::{
 };
 use ployz_sdk_types::IngressConfigureRequest;
 
-use crate::client_ids::generate_client_ingress_configure_id;
 use crate::commands::{PloyzctlCliError, invalid_value};
+use crate::execution_support::generate_client_ingress_configure_id;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IngressConfigureCommand {

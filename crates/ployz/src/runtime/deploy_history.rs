@@ -9,13 +9,16 @@ use crate::deploy_history::{
     default_deploy_history_root, render_history,
 };
 
-use super::{PloyzctlExecutionError, PloyzctlExecutionOutput, PloyzctlRuntimeConfig};
+use super::PloyzctlRuntimeConfig;
+use crate::execution_support::{
+    PloyzctlExecutionError, PloyzctlExecutionOutput, with_cluster_context_from_disk,
+};
 
 pub(super) fn inspect(
     command: DeployHistoryCommand,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
-    let config = config.clone().with_cluster_context_from_disk()?;
+    let config = with_cluster_context_from_disk(config.clone())?;
     let history = stream(&config, command.namespace_id).map_err(execution_error)?;
     let entries = history
         .load()

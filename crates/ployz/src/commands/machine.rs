@@ -27,10 +27,10 @@ use crate::bootstrap_command::{
     BootstrapInstaller, BootstrapRelease, DEFAULT_BOOTSTRAP_URL, DEFAULT_CLUSTER_NAME,
     DEFAULT_RELEASE_CHANNEL, JoinBootstrapCommand,
 };
-use crate::client_ids::generate_client_machine_update_id;
 use crate::commands::ingress::{AutomaticHostnamesCli, DnsTargetCli};
 use crate::commands::role_policy::RolePolicyCli;
 use crate::commands::{PloyzctlCliError, invalid_value};
+use crate::execution_support::generate_client_machine_update_id;
 use crate::local_release::LocalReleaseBundle;
 use crate::ssh::SshTarget;
 
@@ -819,12 +819,13 @@ pub(crate) fn machine_lifecycle_command(
     };
     let machine_id = MachineId::try_new(parsed.machine_id)
         .map_err(|error| invalid_value("<machine_id>", error))?;
-    let operation_id = crate::client_ids::generate_client_machine_lifecycle_id(action, &machine_id)
-        .map_err(|error| PloyzctlCliError::InvalidValue {
-            flag: "<machine_id>",
-            message: error.to_string(),
-        })?
-        .operation_id;
+    let operation_id =
+        crate::execution_support::generate_client_machine_lifecycle_id(action, &machine_id)
+            .map_err(|error| PloyzctlCliError::InvalidValue {
+                flag: "<machine_id>",
+                message: error.to_string(),
+            })?
+            .operation_id;
     Ok(MachineLifecycleCommand {
         operation_id,
         machine_id,

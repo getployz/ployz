@@ -5,7 +5,7 @@ use std::io::{self, Write};
 use ployz_core::deploy::VolumeName;
 use ployz_core::ids::NamespaceId;
 
-use crate::runtime::PloyzctlExecutionError;
+use crate::execution_support::PloyzctlExecutionError;
 
 /// Prompt on stderr, read one line from stdin, and require it to equal
 /// `expected`. `read_error` classifies an stderr/stdin I/O failure;

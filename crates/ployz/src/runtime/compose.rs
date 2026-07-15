@@ -1,6 +1,6 @@
 use crate::commands::compose::ComposeCheckCommand;
 
-use super::{CommandExit, PloyzctlExecutionOutput};
+use crate::execution_support::{CommandExit, PloyzctlExecutionOutput};
 
 pub(super) fn check(command: ComposeCheckCommand) -> PloyzctlExecutionOutput {
     let stderr = command.diagnostics.join("\n");
@@ -19,7 +19,7 @@ pub(super) fn check(command: ComposeCheckCommand) -> PloyzctlExecutionOutput {
 mod tests {
     use super::check;
     use crate::commands::compose::ComposeCheckCommand;
-    use crate::runtime::{CommandExit, PloyzctlExecutionOutput};
+    use crate::execution_support::{CommandExit, PloyzctlExecutionOutput};
 
     #[test]
     fn check_renders_exact_diagnostic_bytes() {

@@ -1,8 +1,8 @@
 //! Runtime execution for remote machine bootstrap commands.
 //!
 //! This module owns the SSH-driven `machine init` and remote `machine add`
-//! flows. `runtime.rs` stays responsible for command dispatch and shared
-//! NATS plumbing.
+//! flows. Shared authenticated NATS and operation mechanics live in
+//! `execution_support`; `runtime.rs` dispatches parsed commands.
 
 use std::fmt;
 use std::path::PathBuf;
@@ -10,7 +10,6 @@ use std::path::PathBuf;
 use crate::bootstrap_command::{
     BootstrapInstaller, BootstrapRelease, FounderBootstrapCommand, MACHINE_NATS_PORT,
 };
-use crate::client_ids::generate_client_machine_add_ids;
 use crate::commands::core::{CorePromoteCommand, CoreReplaceCommand};
 use crate::commands::init::FirstMachineActivateCommand;
 use crate::commands::machine::{
@@ -23,12 +22,14 @@ use crate::config::{
     load_cluster_context, publish_cluster_context, save_cluster_context,
     save_cluster_context_machine_ssh,
 };
-use crate::local_release::LocalReleaseStageError;
-use crate::runtime::{
-    CommandExit, PloyzctlExecutionError, PloyzctlExecutionOutput, PloyzctlRuntimeConfig,
-    activate_first_machine, api_error, operation_api_client, read_join_seed,
-    watch_operation_until_terminal,
+use crate::execution_support::generate_client_machine_add_ids;
+use crate::execution_support::{
+    CommandExit, PloyzctlExecutionError, PloyzctlExecutionOutput, activate_first_machine,
+    api_error, operation_api_client, read_join_seed, watch_operation_until_terminal,
+    with_cluster_context_from_disk,
 };
+use crate::local_release::LocalReleaseStageError;
+use crate::runtime::PloyzctlRuntimeConfig;
 use crate::shell::shell_quote;
 use crate::ssh::{DEFAULT_SSH_COMMAND_TIMEOUT, SshClient, SshCommandError, SshPhase, SshTarget};
 use ployz_core::ids::{MachineId, OperationId};
@@ -158,10 +159,10 @@ pub(crate) async fn execute_core_replace_remote(
     command: CoreReplaceCommand,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
-    let config = config.clone().with_cluster_context_from_disk()?;
+    let config = with_cluster_context_from_disk(config.clone())?;
     let api = operation_api_client(&config).await?;
     let machine_id = resolve_core_replace_machine_id(&command.target, &config, &api).await?;
-    let operation_id = crate::client_ids::generate_client_core_replace_id(&machine_id)
+    let operation_id = crate::execution_support::generate_client_core_replace_id(&machine_id)
         .map_err(|error| client_generated_ids_error(error.to_string()))?
         .operation_id;
     let successor_nats_url = config
@@ -748,7 +749,7 @@ pub(crate) async fn execute_machine_add_remote(
     let target = command.target.clone();
 
     let identity = derive_remote_identity(&probe, &target, command.identity_override.clone())?;
-    let config = config.clone().with_cluster_context_from_disk()?;
+    let config = with_cluster_context_from_disk(config.clone())?;
     let join_seed = read_join_seed(&config)?;
     let api = operation_api_client(&config).await?;
 

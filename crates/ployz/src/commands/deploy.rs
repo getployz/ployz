@@ -9,9 +9,9 @@ use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
 use ployz_core::ops::{OperationIdempotencyKey, RouteHostname, RoutePort};
 use ployz_sdk_types::{AcceptedOperation, DeploySubmitRequest};
 
-use crate::client_ids::generate_client_deploy_id;
 use crate::commands::{PloyzctlCliError, cli_error, invalid_value};
 use crate::compose::UnsupportedFieldMode;
+use crate::execution_support::generate_client_deploy_id;
 
 /// Public port the `--route HOST:PORT` shorthand listens on: alpha route
 /// shorthand is plain HTTP (KTD8).

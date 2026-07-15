@@ -4,19 +4,20 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use ployz_core::deploy::{DeployOrigin, DeployRequest};
 use ployz_sdk_types::DeploySubmitRequest;
 
-use crate::client_ids::generate_client_deploy_rollback_id;
 use crate::commands::deploy::{DeployRollbackCommand, DeployRollbackSelection};
+use crate::execution_support::generate_client_deploy_rollback_id;
 
-use super::{
-    PloyzctlExecutionError, PloyzctlExecutionOutput, PloyzctlRuntimeConfig, deploy_follow,
-    deploy_history, nats_connect_config, operation_api_client_with_connect,
+use super::{PloyzctlRuntimeConfig, deploy_follow, deploy_history};
+use crate::execution_support::{
+    PloyzctlExecutionError, PloyzctlExecutionOutput, nats_connect_config,
+    operation_api_client_with_connect, with_cluster_context_from_disk,
 };
 
 pub(super) async fn execute(
     command: DeployRollbackCommand,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
-    let config = config.clone().with_cluster_context_from_disk()?;
+    let config = with_cluster_context_from_disk(config.clone())?;
     let namespace_id = command.namespace_id.clone();
     let mut target = select_request(command, &config)?;
     target.origin = Some(DeployOrigin::try_new("rollback").expect("rollback origin is valid"));

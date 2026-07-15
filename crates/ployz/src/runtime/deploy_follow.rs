@@ -11,17 +11,18 @@ use crate::commands::deploy_render::{
     DeployTree, render_failure_block, render_frame, render_plain_lines, render_terminal,
 };
 
-use super::{
-    CommandExit, PloyzctlExecutionError, PloyzctlExecutionOutput, PloyzctlRuntimeConfig, api_error,
-    deploy_history, nats_connect_config, operation_api_client_with_connect,
-    operation_replay_request, watch_operation_until_terminal_with,
+use super::{PloyzctlRuntimeConfig, deploy_history};
+use crate::execution_support::{
+    CommandExit, PloyzctlExecutionError, PloyzctlExecutionOutput, api_error, nats_connect_config,
+    operation_api_client_with_connect, operation_replay_request,
+    watch_operation_until_terminal_with, with_cluster_context_from_disk,
 };
 
 pub(super) async fn execute_deploy(
     mut command: DeployCommand,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
-    let config = config.clone().with_cluster_context_from_disk()?;
+    let config = with_cluster_context_from_disk(config.clone())?;
     let detach = command.detach;
     let namespace_id = command.namespace_id.clone();
     let warnings = command.warnings.join("\n");
