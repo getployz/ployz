@@ -1,7 +1,7 @@
 //! Machine-local NATS RPC protocol types.
 
-use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredential};
-use ployz_core::ids::{ContainerId, MachineId, OperationId, StepId};
+use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredential, VolumeName};
+use ployz_core::ids::{ContainerId, MachineId, NamespaceId, OperationId, StepId};
 use ployz_core::image::{IMAGE_MESH_REGISTRY_PORT, ImageRepository, OciDigest};
 use ployz_core::install::InstallArtifactVersion;
 pub use ployz_core::machine::rpc::{MachineRpcResponder, MachineRpcResponse};
@@ -289,7 +289,8 @@ pub enum MachineContainerRemoveDomainError {
 #[serde(deny_unknown_fields)]
 pub struct MachineVolumeRemoveRpcRequest {
     pub operation_id: OperationId,
-    pub docker_volume_name: String,
+    pub namespace_id: NamespaceId,
+    pub volume_name: VolumeName,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

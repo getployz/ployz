@@ -24,6 +24,7 @@ pub mod runner;
 pub mod service;
 mod substrate;
 mod unavailable;
+mod volume;
 
 pub(crate) use unavailable::MachineRequestFailure;
 pub use unavailable::MachineRuntimeUnavailableReason;

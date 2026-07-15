@@ -1,7 +1,6 @@
 //! Request-side NATS adapters for machine-local services.
 
 use crate::roles::machine::MachineRuntimeUnavailableReason;
-use crate::roles::machine::execution::docker::runner::docker_volume_name;
 use crate::roles::machine::protocol::{
     MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
     MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,
@@ -540,7 +539,8 @@ impl NatsMachineContainerRuntime {
     ) -> Result<(), MachineVolumeRemoveError> {
         let request = MachineVolumeRemoveRpcRequest {
             operation_id,
-            docker_volume_name: docker_volume_name(namespace_id, volume_name),
+            namespace_id: namespace_id.clone(),
+            volume_name: volume_name.clone(),
         };
         call_machine::<MachineVolumeRemoveRpcOk, MachineVolumeRemoveDomainError>(
             &self.client,

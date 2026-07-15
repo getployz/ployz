@@ -27,6 +27,7 @@ use crate::roles::machine::service::{
 };
 use futures_util::StreamExt;
 use ployz_core::deploy::ImageReference;
+use ployz_core::deploy::VolumeName;
 use ployz_core::ids::ContainerId;
 use ployz_core::machine::runtime::{
     ContainerRuntimeState, MachineContainerFactDelta, MachineFactsSnapshot,
@@ -43,7 +44,9 @@ use ployz_nats::subjects::{
     MachineServiceEndpoint, machine_container_facts, machine_facts, machine_service,
 };
 use ployz_test_support::containers;
-use ployz_test_support::ids::{container_id, failure_message, machine_id, operation_id};
+use ployz_test_support::ids::{
+    container_id, failure_message, machine_id, namespace_id, operation_id,
+};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -728,7 +731,8 @@ async fn machine_role_service_removes_volume() {
         ),
         &MachineVolumeRemoveRpcRequest {
             operation_id: operation_id("op_123"),
-            docker_volume_name: "ployz-n4-prod-v4-data".to_owned(),
+            namespace_id: namespace_id("prod"),
+            volume_name: VolumeName::try_new("data").expect("valid volume name"),
         },
         Duration::from_secs(1),
     )

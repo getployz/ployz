@@ -322,7 +322,8 @@ async fn nats_machine_runtime_calls_volume_remove_service() {
     let runtime = NatsMachineContainerRuntime::new(nats.client);
     let expected_request = MachineVolumeRemoveRpcRequest {
         operation_id: operation_id("op_123"),
-        docker_volume_name: "ployz-n4-prod-v4-data".to_owned(),
+        namespace_id: namespace_id("prod"),
+        volume_name: VolumeName::try_new("data").expect("valid volume name"),
     };
 
     runtime

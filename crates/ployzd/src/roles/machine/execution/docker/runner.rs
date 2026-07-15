@@ -10,6 +10,7 @@ use crate::roles::machine::runner::{
     MachineContainerRunner, MachineContainerRunnerError, MachineLogQuery, MachineLogReader,
     MachineLogReaderError, MachineLogTail, MachineLogTimestamps,
 };
+use crate::roles::machine::volume::docker_volume_name;
 use bollard::Docker;
 use bollard::auth::DockerCredentials;
 use bollard::errors::Error as BollardError;
@@ -861,21 +862,6 @@ fn docker_volume_mounts(
     )
 }
 
-pub(crate) fn docker_volume_name(
-    namespace_id: &ployz_core::ids::NamespaceId,
-    volume_name: &ployz_core::deploy::VolumeName,
-) -> String {
-    let namespace_id = namespace_id.as_str();
-    let volume_name = volume_name.as_str();
-    format!(
-        "ployz-n{}-{}-v{}-{}",
-        namespace_id.len(),
-        namespace_id,
-        volume_name.len(),
-        volume_name
-    )
-}
-
 fn health_config(healthcheck: &ContainerHealthcheck) -> HealthConfig {
     HealthConfig {
         test: Some(match &healthcheck.test {
@@ -1397,17 +1383,6 @@ mod tests {
             Some("ployz-n7-default-v13-postgres_data".to_owned())
         );
         assert_eq!(mount.target, Some("/var/lib/postgresql/data".to_owned()));
-    }
-
-    #[test]
-    fn docker_volume_names_are_framed_to_avoid_collisions() {
-        let left = namespace_id("a-b");
-        let right = namespace_id("a");
-
-        assert_ne!(
-            docker_volume_name(&left, &volume_name("c")),
-            docker_volume_name(&right, &volume_name("b-c"))
-        );
     }
 
     #[test]

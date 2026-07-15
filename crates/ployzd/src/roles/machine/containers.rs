@@ -24,6 +24,7 @@ use crate::roles::machine::runner::{
     CreateManagedContainer, MachineContainerRunDecision, MachineContainerRunner,
     MachineContainerRunnerError, decide_container_run,
 };
+use crate::roles::machine::volume::docker_volume_name;
 use ployz_core::ids::{ContainerId, MachineId};
 use ployz_core::machine::runtime::{MachineContainerFactDelta, ManagedContainerObservation};
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decode_json_request};
@@ -489,7 +490,8 @@ where
         Err(response) => return response,
     };
 
-    match runner.remove_volume(&request.docker_volume_name).await {
+    let docker_volume_name = docker_volume_name(&request.namespace_id, &request.volume_name);
+    match runner.remove_volume(&docker_volume_name).await {
         Ok(()) => machine_success(MachineVolumeRemoveRpcResponse::Ok(
             MachineVolumeRemoveRpcOk { machine_id },
         )),
