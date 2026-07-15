@@ -424,7 +424,13 @@ export type WireGuardMtuProbe = { "status": "not_requested" } | { "status": "mea
 
 export type EbpfAttachmentStatus = { "status": "attached" } | { "status": "detached", message: string, } | { "status": "unknown", message: string, };
 
-export type InternalDnsStatus = { resolver: InternalDnsResolverStatus, fact_watermarks: Array<InternalDnsFactWatermark>, };
+export type InternalDnsStatus = { resolver: InternalDnsResolverStatus, fact_watermarks: Array<InternalDnsFactWatermark>, intent_health: InternalDnsIntentHealth, };
+
+export type InternalDnsIntentHealth = { refresh: InternalDnsIntentRefreshHealth, watch: InternalDnsIntentWatchHealth, };
+
+export type InternalDnsIntentRefreshHealth = { "status": "unknown" } | { "status": "pending" } | { "status": "current" } | { "status": "request_failed", message: string, } | { "status": "timed_out", timeout_seconds: number, };
+
+export type InternalDnsIntentWatchHealth = { "status": "unknown" } | { "status": "pending" } | { "status": "watching" } | { "status": "open_failed", message: string, } | { "status": "subscription_closed" };
 
 export type InternalDnsResolverStatus = { "status": "awaiting_bind", attempts: number, } | { "status": "serving", bound: string, } | { "status": "not_configured" };
 
