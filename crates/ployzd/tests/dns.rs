@@ -32,7 +32,7 @@ async fn dns_process_serves_machine_scoped_status_and_shuts_down() {
     .expect("DNS process starts");
 
     let response = request_json::<_, DnsStatusResponse>(
-        &machine_client,
+        &nats.controller,
         machine_service(&dns_machine_id, MachineServiceEndpoint::DnsStatus),
         &serde_json::json!({}),
         Duration::from_secs(1),
