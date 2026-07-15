@@ -29,7 +29,9 @@ use ployz_sdk_types::{
     LogsTailLines, LogsTailTarget, OpsListResult, ServiceContainerMembership,
     ServiceContainerTestimony, ServiceSnapshot,
 };
-use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
+use ployz_test_support::ids::{
+    event_sequence, machine_id, operation_event_recorded_at, operation_id,
+};
 
 #[test]
 fn cli_login_is_reserved_cloud_verb() {
@@ -1410,10 +1412,7 @@ fn service_inspect_renders_container_rows() {
 fn replayed(sequence: u64, event: ployz_core::operation::OperationEvent) -> ReplayedOperationEvent {
     ReplayedOperationEvent {
         sequence: event_sequence(sequence),
-        recorded_at_unix_ms: ployz_sdk_types::OperationEventRecordedAtUnixMs::try_new(
-            1_784_116_800_000 + sequence,
-        )
-        .expect("valid recorded-at timestamp"),
+        recorded_at_unix_ms: operation_event_recorded_at(1_784_116_800_000 + sequence),
         event,
     }
 }

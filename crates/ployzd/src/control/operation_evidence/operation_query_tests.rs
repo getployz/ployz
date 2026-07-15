@@ -9,7 +9,6 @@ use ployz_core::operation::{
 };
 use ployz_test_support::ids::{event_replay_limit, event_sequence, namespace_id, operation_id};
 use rusqlite::Connection;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[tokio::test]
 async fn replay_preserves_recorded_timestamps_for_ordered_events() {
@@ -17,9 +16,8 @@ async fn replay_preserves_recorded_timestamps_for_ordered_events() {
     let store = CoreStore::open_in_memory()
         .await
         .expect("open operation store");
-    let repository = OperationRepository::open(store, nats.controller);
+    let repository = OperationRepository::open(store.clone(), nats.controller);
     let operation_id = operation_id("op_recorded_timestamps");
-    let lower_bound = unix_millis_now();
 
     repository
         .submit_namespace_remove(NamespaceRemoveOperationSubmission {
@@ -37,7 +35,20 @@ async fn replay_preserves_recorded_timestamps_for_ordered_events() {
         )
         .await
         .expect("append second event");
-    let upper_bound = unix_millis_now();
+    let persisted_operation_id = operation_id.clone();
+    let persisted = store
+        .call(move |conn| {
+            let mut statement = conn.prepare(
+                "SELECT sequence, recorded_at_unix_ms FROM operation_events
+                 WHERE operation_id = ?1 ORDER BY sequence",
+            )?;
+            let rows = statement.query_map([persisted_operation_id.as_str()], |row| {
+                Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>()
+        })
+        .await
+        .expect("read persisted event timestamps");
     let request = OperationEventReplayRequest {
         operation_id,
         start_sequence: event_sequence(1),
@@ -61,9 +72,17 @@ async fn replay_preserves_recorded_timestamps_for_ordered_events() {
             .collect::<Vec<_>>(),
         [event_sequence(1), event_sequence(2)]
     );
-    assert!(first_replay.events.iter().all(|event| {
-        (lower_bound..=upper_bound).contains(&event.recorded_at_unix_ms.unix_millis())
-    }));
+    assert_eq!(
+        first_replay
+            .events
+            .iter()
+            .map(|event| (
+                event.sequence.get(),
+                event.recorded_at_unix_ms.unix_millis()
+            ))
+            .collect::<Vec<_>>(),
+        persisted
+    );
     assert_eq!(first_replay, second_replay);
 }
 
@@ -128,14 +147,4 @@ fn namespace_remove_status(id: &str) -> OperationStatus {
         namespace_id("team-a"),
         EventSequence::first(),
     )
-}
-
-fn unix_millis_now() -> u64 {
-    u64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock is after Unix epoch")
-            .as_millis(),
-    )
-    .expect("current Unix milliseconds fit in u64")
 }

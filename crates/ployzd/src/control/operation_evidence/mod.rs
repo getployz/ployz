@@ -346,8 +346,18 @@ fn replay_operation_events_txn(
                 )));
             }
         };
-        let recorded_at_unix_ms = OperationEventRecordedAtUnixMs::try_new(recorded_at_unix_ms)
-            .map_err(recorded_at_unix_ms_conversion)?;
+        let recorded_at_unix_ms = match OperationEventRecordedAtUnixMs::try_new(recorded_at_unix_ms)
+        {
+            Ok(recorded_at_unix_ms) => recorded_at_unix_ms,
+            Err(error) => {
+                return Ok(ReplayTxn::Invalid(
+                    OperationEventLogError::InvalidRecordedAtUnixMs {
+                        value: recorded_at_unix_ms,
+                        error,
+                    },
+                ));
+            }
+        };
         events.push(ployz_core::operation::ReplayedOperationEvent {
             sequence,
             recorded_at_unix_ms,
@@ -599,16 +609,6 @@ fn sequence_conversion(error: ployz_core::operation::EventSequenceError) -> rusq
         0,
         rusqlite::types::Type::Integer,
         format!("invalid event sequence: {error}").into(),
-    )
-}
-
-fn recorded_at_unix_ms_conversion(
-    error: ployz_core::operation::OperationEventRecordedAtUnixMsError,
-) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(
-        1,
-        rusqlite::types::Type::Integer,
-        format!("invalid operation event recorded timestamp: {error}").into(),
     )
 }
 

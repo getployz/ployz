@@ -26,7 +26,9 @@ use ployz_sdk_types::{
         DeployReserveApi, DeploySubmitApi, OperationApiContract, OpsStatusApi, OpsWatchApi,
     },
 };
-use ployz_test_support::ids::{event_sequence, operation_id, service_id};
+use ployz_test_support::ids::{
+    event_sequence, operation_event_recorded_at, operation_id, service_id,
+};
 use ployz_test_support::nats::{SecuredTestNats, TestNats};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -545,10 +547,7 @@ fn pinned_request(origin: Option<DeployOrigin>) -> DeployRequest {
 fn replayed(sequence: u64, event: OperationEvent) -> ReplayedOperationEvent {
     ReplayedOperationEvent {
         sequence: event_sequence(sequence),
-        recorded_at_unix_ms: ployz_sdk_types::OperationEventRecordedAtUnixMs::try_new(
-            1_784_116_800_000 + sequence,
-        )
-        .expect("valid recorded-at timestamp"),
+        recorded_at_unix_ms: operation_event_recorded_at(1_784_116_800_000 + sequence),
         event,
     }
 }

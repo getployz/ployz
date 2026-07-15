@@ -5,15 +5,16 @@ use ployz_core::machine::MachineUsabilityReason;
 use ployz_core::operation::{
     ArtifactUnavailableReason, ControlPlaneCommitScope, DeployFailureClass, DeployOperationFailure,
     DeployOperationState, DeployRunningStage, EventSequence, HealthCheckFailure,
-    MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEvent, OperationEventRecordedAtUnixMs,
-    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationKind, OperationStatus, OperatorHint,
-    ReplayedOperationEvent, RetainedArtifact, RouteCutoverFailureReason, RouteTarget,
+    MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEvent, OperationEventReplayCursor,
+    OperationEventReplayLimit, OperationEventReplayPage, OperationEventReplayRequest,
+    OperationKind, OperationStatus, OperatorHint, ReplayedOperationEvent, RetainedArtifact,
+    RouteCutoverFailureReason, RouteTarget,
 };
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
     cancellation_reason, container_id, event_replay_limit, event_sequence, failure_message,
-    machine_id, namespace_id, operation_id, route_hostname, service_id,
+    machine_id, namespace_id, operation_event_recorded_at, operation_id, route_hostname,
+    service_id,
 };
 
 #[test]
@@ -334,8 +335,7 @@ fn operation_event_replay_page_carries_explicit_cursor() {
     let page = OperationEventReplayPage::more(
         vec![ReplayedOperationEvent {
             sequence: event_sequence(4),
-            recorded_at_unix_ms: OperationEventRecordedAtUnixMs::try_new(1_784_116_800_123)
-                .expect("valid recorded-at timestamp"),
+            recorded_at_unix_ms: operation_event_recorded_at(1_784_116_800_123),
             event: OperationEvent::DeployPlanningStarted {
                 operation_id: operation_id("op_123"),
             },

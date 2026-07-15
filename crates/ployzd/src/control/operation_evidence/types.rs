@@ -454,6 +454,11 @@ pub enum OperationEventLogError {
         sequence: u64,
         error: ployz_core::operation::EventSequenceError,
     },
+    #[error("operation event recorded-at Unix milliseconds {value} is invalid: {error}")]
+    InvalidRecordedAtUnixMs {
+        value: u64,
+        error: ployz_core::operation::OperationEventRecordedAtUnixMsError,
+    },
     #[error("operation replay next sequence {sequence} is invalid")]
     InvalidNextReplaySequence { sequence: u64 },
 }
