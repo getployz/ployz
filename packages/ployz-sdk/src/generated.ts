@@ -220,6 +220,8 @@ export type ManagedContainerObservation = { machine_id: MachineId, container_id:
 
 export type DeployPlanStep = { "step": "use_existing_container", machine_id: MachineId, container_id: ContainerId, slot: ReplicaSlot, } | { "step": "run_container", machine_id: MachineId, slot: ReplicaSlot, };
 
+export type OperationEventRecordedAtUnixMs = Brand<string, "OperationEventRecordedAtUnixMs">;
+
 export type OperationEventReplayLimit = SafeInteger<"OperationEventReplayLimit">;
 
 export type OperationEventReplayRequest = { operation_id: OperationId, start_sequence: EventSequence, limit: OperationEventReplayLimit, };
@@ -228,7 +230,7 @@ export type OperationEventReplayPage = { events: Array<ReplayedOperationEvent>, 
 
 export type OperationEventReplayCursor = { "state": "caught_up" } | { "state": "terminal" } | { "state": "more", next_start_sequence: EventSequence, };
 
-export type ReplayedOperationEvent = { sequence: EventSequence, event: OperationEvent, };
+export type ReplayedOperationEvent = { sequence: EventSequence, recorded_at_unix_ms: OperationEventRecordedAtUnixMs, event: OperationEvent, };
 
 export type OperationStatus = { "kind": "deploy", id: OperationId, namespace_id: NamespaceId, service_id: ServiceId, origin?: DeployOrigin | null, state: DeployOperationState, last_event_sequence: EventSequence, } | { "kind": "cert", id: OperationId, cert_id: CertId, state: CertOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_add", id: OperationId, machine_id: MachineId, name: MachineName, roles: InstallRolePolicy, host_port_assurance: HostPortAssurance, state: MachineAddOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_update", id: OperationId, machine_id: MachineId, target_version: InstallArtifactVersion, state: MachineUpdateOperationState, last_event_sequence: EventSequence, } | { "kind": "machine_lifecycle", id: OperationId, machine_id: MachineId, target: MachineLifecycle, state: MachineLifecycleOperationState, last_event_sequence: EventSequence, } | { "kind": "core_replace", id: OperationId, machine_id: MachineId, successor_nats_url: MachineJoinRuntimeNatsUrl, state: CoreReplaceOperationState, last_event_sequence: EventSequence, } | { "kind": "credential_grant", id: OperationId, action: CredentialGrantAction, state: CredentialGrantOperationState, last_event_sequence: EventSequence, } | { "kind": "network_repair", id: OperationId, target_machine_id?: MachineId | null, state: NetworkRepairOperationState, last_event_sequence: EventSequence, } | { "kind": "service_restart", id: OperationId, namespace_id: NamespaceId, service_id: ServiceId, state: ServiceRestartOperationState, last_event_sequence: EventSequence, } | { "kind": "managed_dns_reconcile", id: OperationId, subject: ManagedDnsReconcileSubject, state: ManagedDnsReconcileOperationState, last_event_sequence: EventSequence, } | { "kind": "ingress_configure", id: OperationId, configuration: IngressConfiguration, state: IngressConfigureOperationState, last_event_sequence: EventSequence, } | { "kind": "namespace_remove", id: OperationId, namespace_id: NamespaceId, state: NamespaceRemoveOperationState, last_event_sequence: EventSequence, } | { "kind": "volume_remove", id: OperationId, namespace_id: NamespaceId, volume_name: VolumeName, state: VolumeRemoveOperationState, last_event_sequence: EventSequence, };
 

@@ -16,7 +16,9 @@ use ployz_sdk_types::{
     NetworkDataplaneTestimony, NetworkInternalDnsTestimony, NetworkResolveMachineTestimony,
     NetworkResolveResult, NetworkStatusMachine,
 };
-use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
+use ployz_test_support::ids::{
+    event_sequence, machine_id, operation_event_recorded_at, operation_id,
+};
 
 #[test]
 fn cli_parses_network_status_probe() {
@@ -378,6 +380,7 @@ fn network_repair_watch_renders_dataplane_failure_evidence() {
     let output = WatchOutput {
         events: vec![ployz_sdk_types::ReplayedOperationEvent {
             sequence: event_sequence(3),
+            recorded_at_unix_ms: operation_event_recorded_at(1_784_116_800_003),
             event: ployz_sdk_types::OperationEvent::NetworkRepairFailed {
                 operation_id: operation_id("op_network_repair"),
                 failure: ployz_sdk_types::NetworkRepairFailure::DataplaneUnavailable {
@@ -408,6 +411,7 @@ fn network_repair_watch_renders_dataplane_converged_evidence() {
     let output = WatchOutput {
         events: vec![ployz_sdk_types::ReplayedOperationEvent {
             sequence: event_sequence(3),
+            recorded_at_unix_ms: operation_event_recorded_at(1_784_116_800_003),
             event: ployz_sdk_types::OperationEvent::NetworkRepairDataplaneConverged {
                 operation_id: operation_id("op_network_repair"),
                 revision,

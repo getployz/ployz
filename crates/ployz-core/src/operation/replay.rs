@@ -4,9 +4,22 @@ use serde::{Deserialize, Serialize};
 use std::num::NonZeroU16;
 
 use crate::ids::OperationId;
+use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 use super::events::OperationEvent;
 use super::{EventSequence, MAX_OPERATION_EVENT_REPLAY_LIMIT};
+
+positive_u64_wire_newtype! {
+    pub struct OperationEventRecordedAtUnixMs;
+    ts_brand: "Brand<string, \"OperationEventRecordedAtUnixMs\">";
+    accessor: unix_millis;
+    error: OperationEventRecordedAtUnixMsError;
+}
+
+positive_u64_wire_error! {
+    pub enum OperationEventRecordedAtUnixMsError;
+    noun: "operation event recorded-at Unix milliseconds";
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -124,5 +137,6 @@ pub enum OperationEventReplayCursor {
 #[serde(deny_unknown_fields)]
 pub struct ReplayedOperationEvent {
     pub sequence: EventSequence,
+    pub recorded_at_unix_ms: OperationEventRecordedAtUnixMs,
     pub event: OperationEvent,
 }

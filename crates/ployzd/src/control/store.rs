@@ -16,7 +16,7 @@ use rusqlite::{Connection, OptionalExtension};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
-const CURRENT_SCHEMA_VERSION: i64 = 14;
+const CURRENT_SCHEMA_VERSION: i64 = 15;
 
 const CURRENT_SCHEMA: &str = "
     CREATE TABLE operations (
@@ -25,10 +25,11 @@ const CURRENT_SCHEMA: &str = "
         status_json   TEXT NOT NULL
     );
     CREATE TABLE operation_events (
-        operation_id TEXT    NOT NULL,
-        sequence     INTEGER NOT NULL,
-        event_json   TEXT    NOT NULL,
-        subject      TEXT,
+        operation_id        TEXT    NOT NULL,
+        sequence            INTEGER NOT NULL,
+        recorded_at_unix_ms INTEGER NOT NULL,
+        event_json          TEXT    NOT NULL,
+        subject             TEXT,
         PRIMARY KEY (operation_id, sequence)
     );
     CREATE UNIQUE INDEX operation_events_subject

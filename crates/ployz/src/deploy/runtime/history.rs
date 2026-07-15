@@ -214,7 +214,8 @@ mod tests {
     };
     use ployz_core::operation::{DeployOperationFailure, OperationKind};
     use ployz_test_support::ids::{
-        cancellation_reason, event_sequence, machine_id, namespace_id, operation_id, service_id,
+        cancellation_reason, event_sequence, machine_id, namespace_id, operation_event_recorded_at,
+        operation_id, service_id,
     };
 
     fn request(image: &str) -> DeployRequest {
@@ -237,6 +238,7 @@ mod tests {
     fn replay(sequence: u64, event: OperationEvent) -> ReplayedOperationEvent {
         ReplayedOperationEvent {
             sequence: event_sequence(sequence),
+            recorded_at_unix_ms: operation_event_recorded_at(1_784_116_800_000 + sequence),
             event,
         }
     }

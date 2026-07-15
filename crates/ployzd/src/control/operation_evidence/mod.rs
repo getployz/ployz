@@ -12,13 +12,14 @@ use crate::control::store::query_json_list;
 use crate::control::store::{CoreStore, CoreStoreError, from_json, query_json, to_json};
 use ployz_core::ids::OperationId;
 use ployz_core::operation::{
-    EventSequence, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
-    OperationEventReplayPage, OperationProjection, OperationStatus, StatusProjectionError,
-    project_operation_event, validate_fresh_deploy_evidence,
+    EventSequence, OperationEvent, OperationEventRecordedAtUnixMs, OperationEventReplayCursor,
+    OperationEventReplayLimit, OperationEventReplayPage, OperationProjection, OperationStatus,
+    StatusProjectionError, project_operation_event, validate_fresh_deploy_evidence,
 };
 use ployz_nats::operation_event_subject::operation_event_subject_suffix;
 use ployz_nats::subjects::{OperationProgressScope, operation_progress_subject};
 use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 mod action;
 mod cert;
@@ -309,7 +310,7 @@ fn replay_operation_events_txn(
     };
     let page_limit = limit.as_usize();
     let mut statement = conn.prepare(
-        "SELECT sequence, event_json FROM operation_events
+        "SELECT sequence, recorded_at_unix_ms, event_json FROM operation_events
          WHERE operation_id = ?1 AND sequence >= ?2 ORDER BY sequence LIMIT ?3",
     )?;
     let rows = statement.query_map(
@@ -318,11 +319,17 @@ fn replay_operation_events_txn(
             start_sequence.get(),
             page_limit as i64
         ],
-        |row| Ok((row.get::<_, u64>(0)?, row.get::<_, String>(1)?)),
+        |row| {
+            Ok((
+                row.get::<_, u64>(0)?,
+                row.get::<_, u64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        },
     )?;
     let mut events = Vec::new();
     for row in rows {
-        let (sequence, event_json) = row?;
+        let (sequence, recorded_at_unix_ms, event_json) = row?;
         let sequence = match EventSequence::try_new(sequence) {
             Ok(sequence) => sequence,
             Err(error) => {
@@ -339,7 +346,23 @@ fn replay_operation_events_txn(
                 )));
             }
         };
-        events.push(ployz_core::operation::ReplayedOperationEvent { sequence, event });
+        let recorded_at_unix_ms = match OperationEventRecordedAtUnixMs::try_new(recorded_at_unix_ms)
+        {
+            Ok(recorded_at_unix_ms) => recorded_at_unix_ms,
+            Err(error) => {
+                return Ok(ReplayTxn::Invalid(
+                    OperationEventLogError::InvalidRecordedAtUnixMs {
+                        value: recorded_at_unix_ms,
+                        error,
+                    },
+                ));
+            }
+        };
+        events.push(ployz_core::operation::ReplayedOperationEvent {
+            sequence,
+            recorded_at_unix_ms,
+            event,
+        });
     }
     if events.len() < page_limit {
         return Ok(finish_replay_page(
@@ -479,12 +502,22 @@ fn insert_event(
     event: &OperationEvent,
     sequence: EventSequence,
 ) -> Result<(), rusqlite::Error> {
+    let recorded_at_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?
+        .as_millis();
+    let recorded_at_unix_ms = u64::try_from(recorded_at_unix_ms)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    let recorded_at_unix_ms = OperationEventRecordedAtUnixMs::try_new(recorded_at_unix_ms)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
     conn.execute(
-        "INSERT INTO operation_events (operation_id, sequence, subject, event_json)
-         VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO operation_events
+            (operation_id, sequence, recorded_at_unix_ms, subject, event_json)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
         params![
             event.operation_id().as_str(),
             sequence.get(),
+            recorded_at_unix_ms.unix_millis(),
             event.singleton_evidence_key(),
             to_json(event)?
         ],

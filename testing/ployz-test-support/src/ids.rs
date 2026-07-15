@@ -7,8 +7,8 @@ use ployz_core::ids::{
 };
 use ployz_core::machine::{JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineName, RawJoinToken};
 use ployz_core::operation::{
-    CancellationReason, EventSequence, FailureMessage, OperationEventReplayLimit,
-    OperationIdempotencyKey, RouteHostname, RoutePort,
+    CancellationReason, EventSequence, FailureMessage, OperationEventRecordedAtUnixMs,
+    OperationEventReplayLimit, OperationIdempotencyKey, RouteHostname, RoutePort,
 };
 
 #[must_use]
@@ -94,6 +94,11 @@ pub fn route_port(value: u16) -> RoutePort {
 #[must_use]
 pub fn event_sequence(value: u64) -> EventSequence {
     EventSequence::try_new(value).expect("valid event sequence")
+}
+
+#[must_use]
+pub fn operation_event_recorded_at(value: u64) -> OperationEventRecordedAtUnixMs {
+    OperationEventRecordedAtUnixMs::try_new(value).expect("valid operation event timestamp")
 }
 
 #[must_use]
