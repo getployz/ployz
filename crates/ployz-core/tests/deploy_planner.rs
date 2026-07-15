@@ -647,7 +647,7 @@ fn provisioned_declaration_rejects_a_plain_pin() {
 }
 
 #[test]
-fn provisioned_declaration_rejects_a_different_pinned_size() {
+fn provisioned_declaration_allows_growing_a_pinned_maximum() {
     let mut input = planning_input(1, [machine_id("machine_a")]);
     declare_volume_mounts(
         &mut input,
@@ -660,14 +660,35 @@ fn provisioned_declaration_rejects_a_different_pinned_size() {
     );
     input.volume_pins = vec![provisioned_volume_pin("data", "machine_a")];
 
-    assert!(matches!(
+    assert_eq!(
+        plan_single_service(input).expect("larger declaration is grow-only"),
+        deploy_plan(vec![run_step("machine_a", 1)], Vec::new())
+    );
+}
+
+#[test]
+fn provisioned_declaration_rejects_shrinking_a_pinned_maximum() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    declare_volume_mounts(
+        &mut input,
+        vec![(
+            volume_mount("data", "/data"),
+            VolumeSpec::Provisioned {
+                max_size_bytes: VolumeMaxSizeBytes::try_new(512).expect("non-zero size"),
+            },
+        )],
+    );
+    input.volume_pins = vec![provisioned_volume_pin("data", "machine_a")];
+
+    assert_eq!(
         plan_single_service(input),
-        Err(DeployPlanError::VolumePinIncompatible {
-            declaration: VolumeSpec::Provisioned { .. },
-            pin_kind: ployz_core::intent::VolumeKind::Provisioned { .. },
-            ..
+        Err(DeployPlanError::ProvisionedVolumeShrink {
+            service_id: service_id("svc_api"),
+            volume_name: VolumeName::try_new("data").expect("volume name"),
+            declared_max_size_bytes: VolumeMaxSizeBytes::try_new(512).expect("non-zero size"),
+            pinned_max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("non-zero size"),
         })
-    ));
+    );
 }
 
 #[test]

@@ -195,6 +195,12 @@ pub enum DeployPlanError {
         declaration: VolumeSpec,
         pin_kind: crate::intent::VolumeKind,
     },
+    ProvisionedVolumeShrink {
+        service_id: ServiceId,
+        volume_name: VolumeName,
+        declared_max_size_bytes: VolumeMaxSizeBytes,
+        pinned_max_size_bytes: VolumeMaxSizeBytes,
+    },
 }
 
 pub fn prepare_deploy(
@@ -800,17 +806,43 @@ fn volume_placement(
         match volume_pins.iter().find(|pin| {
             pin.namespace_id() == request.namespace_id() && pin.volume_name() == volume_name
         }) {
-            Some(pin) if volume_pin_matches_declaration(spec, pin.kind()) => {
-                pinned_machines.push(pin.machine_id().clone());
-            }
-            Some(pin) => {
-                return Err(DeployPlanError::VolumePinIncompatible {
-                    service_id: service.service_id.clone(),
-                    volume_name: volume_name.clone(),
-                    declaration: spec.clone(),
-                    pin_kind: pin.kind().clone(),
-                });
-            }
+            Some(pin) => match (spec, pin.kind()) {
+                (VolumeSpec::Plain, crate::intent::VolumeKind::Plain) => {
+                    pinned_machines.push(pin.machine_id().clone());
+                }
+                (
+                    VolumeSpec::Provisioned { max_size_bytes },
+                    crate::intent::VolumeKind::Provisioned {
+                        max_size_bytes: pinned_size,
+                        ..
+                    },
+                ) if max_size_bytes.get() >= pinned_size.get() => {
+                    pinned_machines.push(pin.machine_id().clone());
+                }
+                (
+                    VolumeSpec::Provisioned { max_size_bytes },
+                    crate::intent::VolumeKind::Provisioned {
+                        max_size_bytes: pinned_size,
+                        ..
+                    },
+                ) => {
+                    return Err(DeployPlanError::ProvisionedVolumeShrink {
+                        service_id: service.service_id.clone(),
+                        volume_name: volume_name.clone(),
+                        declared_max_size_bytes: *max_size_bytes,
+                        pinned_max_size_bytes: *pinned_size,
+                    });
+                }
+                (VolumeSpec::Plain, crate::intent::VolumeKind::Provisioned { .. })
+                | (VolumeSpec::Provisioned { .. }, crate::intent::VolumeKind::Plain) => {
+                    return Err(DeployPlanError::VolumePinIncompatible {
+                        service_id: service.service_id.clone(),
+                        volume_name: volume_name.clone(),
+                        declaration: spec.clone(),
+                        pin_kind: pin.kind().clone(),
+                    });
+                }
+            },
             None if matches!(spec, VolumeSpec::Plain) => {
                 new_plain_volumes.push(volume_name.clone());
             }
@@ -855,24 +887,6 @@ fn volume_placement(
             service_id: service.service_id.clone(),
             machines: pinned_machines,
         }),
-    }
-}
-
-fn volume_pin_matches_declaration(
-    declaration: &VolumeSpec,
-    pin_kind: &crate::intent::VolumeKind,
-) -> bool {
-    match (declaration, pin_kind) {
-        (VolumeSpec::Plain, crate::intent::VolumeKind::Plain) => true,
-        (
-            VolumeSpec::Provisioned { max_size_bytes },
-            crate::intent::VolumeKind::Provisioned {
-                max_size_bytes: pinned_size,
-                ..
-            },
-        ) => max_size_bytes == pinned_size,
-        (VolumeSpec::Plain, crate::intent::VolumeKind::Provisioned { .. })
-        | (VolumeSpec::Provisioned { .. }, crate::intent::VolumeKind::Plain) => false,
     }
 }
 

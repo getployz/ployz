@@ -572,6 +572,18 @@ impl DeployExecutionError {
                     volume_name.as_str()
                 )),
             },
+            Self::Plan(DeployPlanError::ProvisionedVolumeShrink {
+                service_id,
+                volume_name,
+                ..
+            }) => DeployOperationFailure::PlanningFailed {
+                service_id: service_id.clone(),
+                namespace_revision_id: failure_namespace_revision_id(command),
+                message: failure_message(format!(
+                    "provisioned volume {} cannot shrink below its pinned maximum",
+                    volume_name.as_str()
+                )),
+            },
             Self::Plan(DeployPlanError::UnknownServiceDependency {
                 service_id,
                 dependency,
