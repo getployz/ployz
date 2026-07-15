@@ -61,7 +61,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
         .expect("subscribe intent changes");
     let resolved_request = resolved_deploy_request(1);
     let resolved_entry_id =
-        ployz_core::deploy::NormalizedDeployRequest::try_new(resolved_request.clone())
+        ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(resolved_request.clone())
             .expect("request normalizes")
             .services()
             .first()
@@ -800,13 +800,13 @@ async fn deploy_submit_command(
         operation_id: operation_id("op_123"),
         idempotency_key: idempotency_key("idem_deploy_123"),
         reservation_id: reserve_deploy(controllers).await,
-        target: ployz_core::deploy::NormalizedDeployRequest::try_new(target)
+        target: ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(target)
             .expect("deploy request normalizes"),
     }
 }
 
-fn normalized_deploy_request(replicas: u16) -> ployz_core::deploy::NormalizedDeployRequest {
-    ployz_core::deploy::NormalizedDeployRequest::try_new(deploy_request(replicas))
+fn normalized_deploy_request(replicas: u16) -> ployz_core::deploy::VolumeDeclaredDeployRequest {
+    ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(deploy_request(replicas))
         .expect("deploy request normalizes")
 }
 

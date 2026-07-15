@@ -58,13 +58,14 @@ fn normalize_deploy_submit(
         target,
         registry_credentials,
     } = value;
-    let target = ployz_core::deploy::NormalizedDeployRequest::try_new(target).map_err(|error| {
-        DeploySubmitError::InvalidTarget {
-            operation_id: operation_id.clone(),
-            message: ployz_core::operation::FailureMessage::try_new(error.to_string())
-                .expect("volume declaration validation error is non-empty"),
-        }
-    })?;
+    let target =
+        ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(target).map_err(|error| {
+            DeploySubmitError::InvalidTarget {
+                operation_id: operation_id.clone(),
+                message: ployz_core::operation::FailureMessage::try_new(error.to_string())
+                    .expect("volume declaration validation error is non-empty"),
+            }
+        })?;
     Ok(DeploySubmitCommand {
         operation_id,
         idempotency_key,

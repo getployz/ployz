@@ -342,6 +342,47 @@ fn deploy_plan_requires_eligible_machine() {
 }
 
 #[test]
+fn namespace_planner_rejects_a_service_id_outside_the_validated_request() {
+    let input = CoreDeployPlanningInput {
+        service_id: service_id("svc_foreign"),
+        eligible_machines: vec![machine_id("machine_a")],
+        existing_replicas: Vec::new(),
+        cleanup_candidates: Vec::new(),
+        volume_pins: Vec::new(),
+    };
+    let request = normalized_services(vec![deploy_request(1)], BTreeMap::new());
+
+    assert_eq!(
+        plan_namespace_deploy(&request, vec![input], Vec::new()),
+        Err(DeployPlanError::UnknownService {
+            service_id: service_id("svc_foreign"),
+        })
+    );
+}
+
+#[test]
+fn deploy_preparation_rejects_a_service_id_outside_the_validated_request() {
+    let request = normalized_services(vec![deploy_request(1)], BTreeMap::new());
+
+    assert_eq!(
+        prepare_deploy(
+            DeployPreparationInput {
+                request: &request,
+                service_id: service_id("svc_foreign"),
+                occupied_route_bindings: Vec::new(),
+                eligible_machines: Vec::new(),
+                draining_machines: Vec::new(),
+                observed_machines: Vec::new(),
+            },
+            route_binding_id_for,
+        ),
+        Err(ployz_core::deploy::DeployPreparationError::UnknownService {
+            service_id: service_id("svc_foreign"),
+        })
+    );
+}
+
+#[test]
 fn service_dependencies_reorder_namespace_plan_stably() {
     let mut worker = planning_input(1, [machine_id("machine_a")]);
     update_request(&mut worker.service, |request| {
@@ -749,7 +790,7 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
     let prepared = prepare_deploy(
         DeployPreparationInput {
             request: &normalized,
-            service: &request,
+            service_id: request.service_id.clone(),
             occupied_route_bindings: Vec::new(),
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
             draining_machines: Vec::new(),
@@ -821,7 +862,7 @@ fn deploy_preparation_evacuates_draining_machine_replicas() {
     let prepared = prepare_deploy(
         DeployPreparationInput {
             request: &normalized,
-            service: &request,
+            service_id: request.service_id.clone(),
             occupied_route_bindings: Vec::new(),
             eligible_machines: vec![machine_id("machine_a")],
             draining_machines: vec![machine_id("machine_b")],
@@ -886,7 +927,7 @@ fn routed_deploy_preparation_reuses_matching_identity_regardless_of_endpoint_por
     let prepared = prepare_deploy(
         DeployPreparationInput {
             request: &normalized,
-            service: &request,
+            service_id: request.service_id.clone(),
             occupied_route_bindings: Vec::new(),
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
             draining_machines: Vec::new(),
@@ -940,7 +981,7 @@ fn deploy_preparation_commits_multiple_routes_per_service() {
     let prepared = prepare_deploy(
         DeployPreparationInput {
             request: &normalized,
-            service: &request,
+            service_id: request.service_id.clone(),
             occupied_route_bindings: Vec::new(),
             eligible_machines: vec![machine_id("machine_a")],
             draining_machines: Vec::new(),
@@ -984,7 +1025,7 @@ fn declared_route_reroute_reuses_the_binding_identity_and_updates_endpoint_port(
     let prepared = prepare_deploy(
         DeployPreparationInput {
             request: &normalized,
-            service: &request,
+            service_id: request.service_id.clone(),
             occupied_route_bindings: vec![existing],
             eligible_machines: Vec::new(),
             draining_machines: Vec::new(),
@@ -1017,7 +1058,7 @@ fn declared_route_rejects_duplicate_target_regardless_of_endpoint_port() {
         let error = prepare_deploy(
             DeployPreparationInput {
                 request: &normalized,
-                service: &request,
+                service_id: request.service_id.clone(),
                 occupied_route_bindings: Vec::new(),
                 eligible_machines: Vec::new(),
                 draining_machines: Vec::new(),
@@ -1029,7 +1070,9 @@ fn declared_route_rejects_duplicate_target_regardless_of_endpoint_port() {
 
         assert!(matches!(
             error,
-            ployz_core::deploy::RouteBindingCommitError::HostnameCollision { .. }
+            ployz_core::deploy::DeployPreparationError::Route(
+                ployz_core::deploy::RouteBindingCommitError::HostnameCollision { .. }
+            )
         ));
     }
 }
@@ -1053,7 +1096,7 @@ fn declared_route_reroute_rejects_other_owners_and_automatic_bindings() {
         let error = prepare_deploy(
             DeployPreparationInput {
                 request: &normalized,
-                service: &request,
+                service_id: request.service_id.clone(),
                 occupied_route_bindings: vec![occupied],
                 eligible_machines: Vec::new(),
                 draining_machines: Vec::new(),
@@ -1065,7 +1108,9 @@ fn declared_route_reroute_rejects_other_owners_and_automatic_bindings() {
 
         assert!(matches!(
             error,
-            ployz_core::deploy::RouteBindingCommitError::HostnameCollision { .. }
+            ployz_core::deploy::DeployPreparationError::Route(
+                ployz_core::deploy::RouteBindingCommitError::HostnameCollision { .. }
+            )
         ));
     }
 }
@@ -1131,7 +1176,7 @@ fn deploy_preparation_updates_endpoint_port_without_container_plan_changes() {
     let prepared = prepare_deploy(
         DeployPreparationInput {
             request: &normalized,
-            service: &request,
+            service_id: request.service_id.clone(),
             occupied_route_bindings: Vec::new(),
             eligible_machines: Vec::new(),
             draining_machines: Vec::new(),
@@ -1254,7 +1299,7 @@ fn deploy_route_validation_rejects_duplicate_service_ids() {
         volumes: std::collections::BTreeMap::new(),
         services: vec![first, second],
     };
-    let request = ployz_core::deploy::NormalizedDeployRequest::try_new(request)
+    let request = ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(request)
         .expect("deploy request normalizes");
 
     let error = validate_deploy_route_bindings(
@@ -1304,7 +1349,7 @@ fn deploy_route_validation_reuses_identical_automatic_binding() {
         volumes: std::collections::BTreeMap::new(),
         services: vec![service],
     };
-    let request = ployz_core::deploy::NormalizedDeployRequest::try_new(request)
+    let request = ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(request)
         .expect("deploy request normalizes");
     let mut existing = route_binding_state("api.apps.example.com", "svc_api");
     existing.id = route_binding_id("route_existing");
@@ -1357,7 +1402,7 @@ fn deploy_preparation_ignores_same_service_id_in_other_namespace() {
     let prepared = prepare_deploy(
         DeployPreparationInput {
             request: &normalized,
-            service: &request,
+            service_id: request.service_id.clone(),
             occupied_route_bindings: Vec::new(),
             eligible_machines: vec![machine_id("machine_a")],
             draining_machines: Vec::new(),
@@ -1529,20 +1574,21 @@ fn plan_inputs(
     for input in &inputs {
         volumes.extend(input.volumes.clone());
     }
-    let request =
-        ployz_core::deploy::NormalizedDeployRequest::try_new(ployz_core::deploy::DeployRequest {
+    let request = ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(
+        ployz_core::deploy::DeployRequest {
             namespace_id: namespace_id("default"),
             origin: None,
             volumes,
             services: inputs.iter().map(|input| input.service.clone()).collect(),
-        })
-        .expect("planner fixture normalizes");
+        },
+    )
+    .expect("planner fixture normalizes");
     plan_namespace_deploy(
         &request,
         inputs
             .into_iter()
             .map(|input| CoreDeployPlanningInput {
-                service: input.service,
+                service_id: input.service.service_id,
                 eligible_machines: input.eligible_machines,
                 existing_replicas: input.existing_replicas,
                 cleanup_candidates: input.cleanup_candidates,
@@ -1560,8 +1606,8 @@ fn plan_inputs(
 fn normalized_services(
     services: Vec<DeployServiceSpec>,
     volumes: BTreeMap<VolumeName, VolumeSpec>,
-) -> ployz_core::deploy::NormalizedDeployRequest {
-    ployz_core::deploy::NormalizedDeployRequest::try_new(ployz_core::deploy::DeployRequest {
+) -> ployz_core::deploy::VolumeDeclaredDeployRequest {
+    ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(ployz_core::deploy::DeployRequest {
         namespace_id: namespace_id("default"),
         origin: None,
         volumes,

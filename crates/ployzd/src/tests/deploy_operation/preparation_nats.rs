@@ -331,7 +331,7 @@ async fn prepare_command_from_nats(
     facts_reader: &NatsMachineFactsReader,
     step_timeout: Duration,
 ) -> crate::control::operations::deploy::DeployExecutionCommand {
-    let request = ployz_core::deploy::NormalizedDeployRequest::try_new(request)
+    let request = ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(request)
         .expect("test deploy request normalizes");
     let store = crate::control::store::CoreStore::open_in_memory()
         .await

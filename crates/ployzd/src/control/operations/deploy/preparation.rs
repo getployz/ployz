@@ -1,9 +1,9 @@
 //! Convert current cluster facts into a deploy execution command.
 
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployPreparationInput, NormalizedDeployRequest, RegistryCredential,
-    auto_hostname_route_binding_commits, namespace_route_binding_removals,
-    namespace_serving_target_removals, prepare_deploy,
+    DeployCleanupContainer, DeployPreparationInput, RegistryCredential,
+    VolumeDeclaredDeployRequest, auto_hostname_route_binding_commits,
+    namespace_route_binding_removals, namespace_serving_target_removals, prepare_deploy,
 };
 use ployz_core::ids::{MachineId, OperationId, RouteBindingId, ServiceId};
 use ployz_core::image::OciPlatform;
@@ -63,7 +63,7 @@ pub struct DeployExecutionFacts {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployExecutionInput {
     pub(super) operation_id: OperationId,
-    pub(super) request: NormalizedDeployRequest,
+    pub(super) request: VolumeDeclaredDeployRequest,
     pub(super) facts: DeployExecutionFacts,
     pub(super) registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
 }
@@ -72,7 +72,7 @@ impl DeployExecutionInput {
     #[must_use]
     pub fn new(
         operation_id: OperationId,
-        request: NormalizedDeployRequest,
+        request: VolumeDeclaredDeployRequest,
         facts: DeployExecutionFacts,
         registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
     ) -> Self {
@@ -100,7 +100,7 @@ pub fn prepare_deploy_execution_command(
     facts: DeployExecutionFacts,
 ) -> DeployExecutionCommand {
     let request =
-        NormalizedDeployRequest::try_new(request).expect("test deploy request normalizes");
+        VolumeDeclaredDeployRequest::try_new(request).expect("test deploy request validates");
     prepare_deploy_execution_command_with_credentials(
         operation_id,
         request,
@@ -112,7 +112,7 @@ pub fn prepare_deploy_execution_command(
 #[must_use]
 pub(super) fn prepare_deploy_execution_command_with_credentials(
     operation_id: OperationId,
-    request: NormalizedDeployRequest,
+    request: VolumeDeclaredDeployRequest,
     facts: DeployExecutionFacts,
     registry_credentials: &BTreeMap<ServiceId, RegistryCredential>,
 ) -> DeployExecutionCommand {
@@ -179,7 +179,7 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         let mut prepared = prepare_deploy(
             DeployPreparationInput {
                 request: &request,
-                service,
+                service_id: service.service_id.clone(),
                 occupied_route_bindings: occupied_bindings.clone(),
                 eligible_machines: facts.eligible_machines.clone(),
                 draining_machines: draining_machines.clone(),

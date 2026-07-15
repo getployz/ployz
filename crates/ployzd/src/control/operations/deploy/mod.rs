@@ -372,7 +372,7 @@ pub(super) fn deploy_plan(
             .services()
             .iter()
             .map(|service| DeployPlanningInput {
-                service: service.service.clone(),
+                service_id: service.service.service_id.clone(),
                 eligible_machines: service.eligible_machines.clone(),
                 existing_replicas: service.existing_replicas.clone(),
                 cleanup_candidates: service.cleanup_candidates.clone(),

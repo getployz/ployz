@@ -16,7 +16,7 @@ use crate::control::operation_evidence::{
 };
 use ployz_core::deploy::{
     DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS, DeployReservationExpiresAt, DeployReservationId,
-    NormalizedDeployRequest, RegistryCredential, VolumeName,
+    RegistryCredential, VolumeDeclaredDeployRequest, VolumeName,
 };
 use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
 use ployz_core::install::{
@@ -48,7 +48,7 @@ pub struct DeploySubmitCommand {
     pub operation_id: OperationId,
     pub idempotency_key: IdempotencyKey,
     pub reservation_id: DeployReservationId,
-    pub target: NormalizedDeployRequest,
+    pub target: VolumeDeclaredDeployRequest,
     pub registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
 }
 

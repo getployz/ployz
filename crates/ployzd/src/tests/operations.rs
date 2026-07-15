@@ -248,7 +248,7 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
     };
     resolved_service.image = resolved_image.clone();
     let normalized_resolved_target =
-        ployz_core::deploy::NormalizedDeployRequest::try_new(resolved_target.clone())
+        ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(resolved_target.clone())
             .expect("request normalizes");
     let resolved_service_target = normalized_resolved_target
         .services()
@@ -289,7 +289,7 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
                 plan: plan_namespace_deploy(
                     &normalized_resolved_target,
                     vec![DeployPlanningInput {
-                        service: resolved_service_target,
+                        service_id: resolved_service_target.service_id,
                         eligible_machines: vec![machine_id("machine_a")],
                         existing_replicas: Vec::new(),
                         cleanup_candidates: Vec::new(),

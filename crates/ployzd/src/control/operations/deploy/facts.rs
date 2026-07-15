@@ -8,7 +8,7 @@ use crate::control::intent::namespace_intent::NamespaceIntentStore;
 use crate::control::intent::service::NatsIntentReader;
 use crate::control::role_client::machine::{NatsMachineFactsReader, read_machine_placement_facts};
 use crate::control::role_client::machine_convergence::gather_dataplane_statuses;
-use ployz_core::deploy::{DeployRouteTarget, NormalizedDeployRequest};
+use ployz_core::deploy::{DeployRouteTarget, VolumeDeclaredDeployRequest};
 use ployz_core::ids::MachineId;
 use ployz_core::ingress::{AutomaticHostnameConfiguration, IngressConfiguration};
 use ployz_core::intent::ActiveMachineState;
@@ -24,7 +24,7 @@ use super::preparation::{mint_route_binding_id, namespace_cleanup_candidates};
 use super::{AutomaticHostnameMode, DeployExecutionFacts};
 
 pub async fn load_deploy_execution_facts_from_nats(
-    request: &NormalizedDeployRequest,
+    request: &VolumeDeclaredDeployRequest,
     intent_reader: &NatsIntentReader,
     facts_reader: &NatsMachineFactsReader,
     target_store: &PloyzDnsTargetStore,
@@ -75,7 +75,7 @@ pub async fn load_deploy_execution_facts_from_nats(
 }
 
 fn resolve_automatic_hostname_mode(
-    request: &NormalizedDeployRequest,
+    request: &VolumeDeclaredDeployRequest,
     configuration: Option<&AutomaticHostnameConfiguration>,
     allocation: Option<&PloyzDnsTargetAllocation>,
 ) -> Result<AutomaticHostnameMode, DeployFactLoadError> {
@@ -112,7 +112,7 @@ fn resolve_automatic_hostname_mode(
     }
 }
 
-fn has_auto_hostname_service(request: &NormalizedDeployRequest) -> bool {
+fn has_auto_hostname_service(request: &VolumeDeclaredDeployRequest) -> bool {
     request.services().iter().any(|service| {
         service
             .routes
@@ -122,7 +122,7 @@ fn has_auto_hostname_service(request: &NormalizedDeployRequest) -> bool {
 }
 
 pub async fn validate_deploy_route_admission(
-    request: &NormalizedDeployRequest,
+    request: &VolumeDeclaredDeployRequest,
     ingress: &IngressIntentStore,
     target_store: &PloyzDnsTargetStore,
     namespace: &NamespaceIntentStore,
@@ -179,7 +179,7 @@ async fn read_intent(
 }
 
 async fn deploy_execution_facts(
-    request: &NormalizedDeployRequest,
+    request: &VolumeDeclaredDeployRequest,
     facts_reader: &NatsMachineFactsReader,
     intent: IntentSnapshot,
     projection: DataplaneProjection,
@@ -260,7 +260,7 @@ async fn deploy_execution_facts(
 }
 
 fn validate_route_bindings(
-    request: &NormalizedDeployRequest,
+    request: &VolumeDeclaredDeployRequest,
     automatic_hostname_suffix: Option<&RouteHostname>,
     existing: &[ployz_core::intent::RouteBindingState],
 ) -> Result<(), DeployFactLoadError> {
@@ -277,7 +277,7 @@ fn validate_route_bindings(
 }
 
 fn operation_dataplane_members(
-    request: &NormalizedDeployRequest,
+    request: &VolumeDeclaredDeployRequest,
     active_machines: &[ActiveMachineState],
 ) -> Vec<DataplaneMember> {
     let needs_membership = request.services().iter().any(|service| {

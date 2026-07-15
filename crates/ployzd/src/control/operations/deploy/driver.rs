@@ -23,7 +23,7 @@ use crate::roles::machine::protocol::{
 };
 use crate::tasks::TaskRegistry;
 use ployz_core::certificate::ActiveCertState;
-use ployz_core::deploy::NormalizedDeployRequest;
+use ployz_core::deploy::VolumeDeclaredDeployRequest;
 use ployz_core::ingress::CertificateOwner;
 use ployz_core::machine::runtime::{ContainerHealth, ContainerRuntimeState};
 use ployz_core::operation::{
@@ -158,8 +158,8 @@ where
 
 fn normalize_stored_deploy_target(
     request: ployz_core::deploy::DeployRequest,
-) -> Result<NormalizedDeployRequest, DeployFactLoadError> {
-    NormalizedDeployRequest::try_new(request).map_err(|error| {
+) -> Result<VolumeDeclaredDeployRequest, DeployFactLoadError> {
+    VolumeDeclaredDeployRequest::try_new(request).map_err(|error| {
         DeployFactLoadError::InvalidStoredTarget {
             message: error.to_string(),
         }

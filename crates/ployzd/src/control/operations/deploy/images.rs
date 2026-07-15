@@ -1,7 +1,7 @@
 //! Pushed-image availability and mesh redistribution for deploy execution.
 
 use ployz_core::deploy::{
-    DeployPlan, DeployPlanStep, DeployServicePlan, ImageSource, NormalizedDeployRequest,
+    DeployPlan, DeployPlanStep, DeployServicePlan, ImageSource, VolumeDeclaredDeployRequest,
 };
 use ployz_core::image::{ImageEnsureRequest, ImageRepository, ImageRpcDomainError, OciDigest};
 use ployz_core::network::DataplaneMember;
@@ -49,7 +49,7 @@ pub(super) fn dataplane_membership(
 
 pub(super) async fn resolve_registry_images<R, N>(
     command: &DeployExecutionCommand,
-    request: &mut NormalizedDeployRequest,
+    request: &mut VolumeDeclaredDeployRequest,
     recorder: &mut R,
     machine_runtime: &mut N,
 ) -> Result<(), DeployExecutionError>

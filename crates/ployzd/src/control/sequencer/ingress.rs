@@ -2,7 +2,7 @@ use super::OperationControllers;
 use crate::control::operation_evidence::{
     IngressConfigureOperationSubmission, SubmitOperationError,
 };
-use ployz_core::deploy::NormalizedDeployRequest;
+use ployz_core::deploy::VolumeDeclaredDeployRequest;
 use ployz_core::ids::OperationId;
 use ployz_core::ingress::IngressConfiguration;
 
@@ -27,7 +27,7 @@ pub(super) enum IngressClaim {
     Busy { owner: OperationId },
 }
 
-pub(super) fn deploy_requires_ingress(target: &NormalizedDeployRequest) -> bool {
+pub(super) fn deploy_requires_ingress(target: &VolumeDeclaredDeployRequest) -> bool {
     target.services().iter().any(|service| {
         service.routes.iter().any(|route| {
             matches!(

@@ -530,6 +530,13 @@ impl DeployExecutionError {
         retained_artifacts: Vec<RetainedArtifact>,
     ) -> DeployOperationFailure {
         match self {
+            Self::Plan(DeployPlanError::UnknownService { service_id }) => {
+                DeployOperationFailure::PlanningFailed {
+                    service_id: service_id.clone(),
+                    namespace_revision_id: failure_namespace_revision_id(command),
+                    message: failure_message("planning input names a service outside the deploy"),
+                }
+            }
             Self::Plan(DeployPlanError::NoEligibleMachines) => {
                 DeployOperationFailure::NoUsableMachines {
                     reasons: command.unusable_machines.clone(),

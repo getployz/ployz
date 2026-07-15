@@ -124,9 +124,9 @@ impl DeployRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NormalizedDeployRequest(DeployRequest);
+pub struct VolumeDeclaredDeployRequest(DeployRequest);
 
-impl NormalizedDeployRequest {
+impl VolumeDeclaredDeployRequest {
     pub fn try_new(request: DeployRequest) -> Result<Self, DeployVolumeDeclarationError> {
         for service in &request.services {
             for mount in &service.runtime.volume_mounts {
@@ -167,6 +167,14 @@ impl NormalizedDeployRequest {
     }
 
     #[must_use]
+    pub fn service(&self, service_id: &ServiceId) -> Option<&DeployServiceSpec> {
+        self.0
+            .services
+            .iter()
+            .find(|service| service.service_id == *service_id)
+    }
+
+    #[must_use]
     pub fn into_request(self) -> DeployRequest {
         self.0
     }
@@ -175,14 +183,14 @@ impl NormalizedDeployRequest {
         &mut self,
         service_id: &ServiceId,
         image: ImageReference,
-    ) -> Result<(), NormalizedDeployInvariantError> {
+    ) -> Result<(), DeployImageReplacementError> {
         let Some(service) = self
             .0
             .services
             .iter_mut()
             .find(|service| service.service_id == *service_id)
         else {
-            return Err(NormalizedDeployInvariantError::UnknownService {
+            return Err(DeployImageReplacementError::UnknownService {
                 service_id: service_id.clone(),
             });
         };
@@ -192,8 +200,8 @@ impl NormalizedDeployRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum NormalizedDeployInvariantError {
-    #[error("normalized deploy does not contain service {}", .service_id.as_str())]
+pub enum DeployImageReplacementError {
+    #[error("volume-declared deploy does not contain service {}", .service_id.as_str())]
     UnknownService { service_id: ServiceId },
 }
 
@@ -271,44 +279,6 @@ impl DeployServiceSpec {
             &self.image_source,
             &self.runtime,
         )
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeclaredVolumeMount<'a> {
-    mount: &'a ServiceVolumeMount,
-    spec: &'a VolumeSpec,
-}
-
-impl DeclaredVolumeMount<'_> {
-    #[must_use]
-    pub fn mount(&self) -> &ServiceVolumeMount {
-        self.mount
-    }
-
-    #[must_use]
-    pub fn spec(&self) -> &VolumeSpec {
-        self.spec
-    }
-}
-
-impl NormalizedDeployRequest {
-    pub fn declared_volume_mounts<'a>(
-        &'a self,
-        service: &'a DeployServiceSpec,
-    ) -> impl Iterator<Item = DeclaredVolumeMount<'a>> {
-        service
-            .runtime
-            .volume_mounts
-            .iter()
-            .map(|mount| DeclaredVolumeMount {
-                mount,
-                spec: self
-                    .0
-                    .volumes
-                    .get(&mount.volume_name)
-                    .expect("normalized deploy validates every mounted volume declaration"),
-            })
     }
 }
 

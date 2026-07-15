@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use ployz_core::deploy::{
     ContainerMountPath, ContainerRuntimeSpec, DeployRequest, DeployReservationId,
-    DeployServiceSpec, ImageReference, ImageSource, NormalizedDeployRequest, ReplicaCount,
-    ServiceVolumeMount, VolumeName,
+    DeployServiceSpec, ImageReference, ImageSource, ReplicaCount, ServiceVolumeMount,
+    VolumeDeclaredDeployRequest, VolumeName,
 };
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::image::OciDigest;
@@ -71,7 +71,7 @@ fn pushed_image_digest_must_match_the_manifest_digest() {
         idempotency_key: OperationIdempotencyKey::try_new("idem_test")
             .expect("valid idempotency key"),
         reservation_id: DeployReservationId::first(),
-        target: NormalizedDeployRequest::try_new(DeployRequest {
+        target: VolumeDeclaredDeployRequest::try_new(DeployRequest {
             namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
             origin: None,
             volumes: std::collections::BTreeMap::new(),

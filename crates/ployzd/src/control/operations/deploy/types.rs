@@ -1,6 +1,6 @@
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployServiceSpec, ExistingServiceReplica, NormalizedDeployRequest,
-    RegistryCredential,
+    DeployCleanupContainer, DeployServiceSpec, ExistingServiceReplica, RegistryCredential,
+    VolumeDeclaredDeployRequest,
 };
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
@@ -25,7 +25,7 @@ const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(180);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployExecutionCommand {
     pub(super) operation_id: OperationId,
-    pub(super) request: NormalizedDeployRequest,
+    pub(super) request: VolumeDeclaredDeployRequest,
     pub(super) services: Vec<DeployServiceExecutionCommand>,
     pub(super) route_binding_removals: Vec<RouteBindingState>,
     pub(super) serving_target_removals: Vec<ServingTargetEntry>,

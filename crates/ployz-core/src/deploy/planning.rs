@@ -4,7 +4,7 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployPlanningInput {
-    pub service: DeployServiceSpec,
+    pub service_id: ServiceId,
     pub eligible_machines: Vec<MachineId>,
     pub existing_replicas: Vec<ExistingServiceReplica>,
     pub cleanup_candidates: Vec<DeployCleanupContainer>,
@@ -28,8 +28,8 @@ pub struct DeployCleanupContainer {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployPreparationInput<'a> {
-    pub request: &'a NormalizedDeployRequest,
-    pub service: &'a DeployServiceSpec,
+    pub request: &'a VolumeDeclaredDeployRequest,
+    pub service_id: ServiceId,
     pub occupied_route_bindings: Vec<RouteBindingState>,
     pub eligible_machines: Vec<MachineId>,
     /// Machines under drain intent: their running replicas do not count as
@@ -166,6 +166,9 @@ pub enum ReplicaSlotError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployPlanError {
+    UnknownService {
+        service_id: ServiceId,
+    },
     NoEligibleMachines,
     UnknownServiceDependency {
         service_id: ServiceId,
@@ -197,32 +200,45 @@ pub enum DeployPlanError {
 pub fn prepare_deploy(
     input: DeployPreparationInput<'_>,
     mut new_route_binding_id: impl FnMut(&RouteTarget) -> RouteBindingId,
-) -> Result<PreparedDeploy, RouteBindingCommitError> {
+) -> Result<PreparedDeploy, DeployPreparationError> {
+    let Some(service) = input.request.service(&input.service_id) else {
+        return Err(DeployPreparationError::UnknownService {
+            service_id: input.service_id,
+        });
+    };
     let route_commits = route_binding_commits(
         input.request.namespace_id(),
-        input.service,
+        service,
         &input.occupied_route_bindings,
         &mut new_route_binding_id,
     )?;
     let existing_replicas = existing_replicas(
         input.request.namespace_id(),
-        input.service,
+        service,
         &input.observed_machines,
         &input.draining_machines,
     );
     let cleanup_candidates = cleanup_candidates(
         input.request.namespace_id(),
-        input.service,
+        service,
         &input.observed_machines,
     );
 
     Ok(PreparedDeploy {
-        service: input.service.clone(),
+        service: service.clone(),
         route_commits,
         eligible_machines: input.eligible_machines,
         existing_replicas,
         cleanup_candidates,
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum DeployPreparationError {
+    #[error("validated deploy request does not contain service {}", .service_id.as_str())]
+    UnknownService { service_id: ServiceId },
+    #[error(transparent)]
+    Route(#[from] RouteBindingCommitError),
 }
 
 /// Route binding removals are a namespace-level decision: the manifest is
@@ -362,7 +378,7 @@ fn route_binding_commits(
 /// share one hostname namespace. The returned bindings include identical
 /// existing bindings, making this the same policy used by execution planning.
 pub fn validate_deploy_route_bindings(
-    request: &NormalizedDeployRequest,
+    request: &VolumeDeclaredDeployRequest,
     automatic_hostname_suffix: Option<&RouteHostname>,
     existing: &[RouteBindingState],
     mut new_route_binding_id: impl FnMut(&RouteTarget) -> RouteBindingId,
@@ -500,11 +516,11 @@ pub enum AutoHostnameRouteBindingError {
 }
 
 pub fn plan_namespace_deploy(
-    request: &NormalizedDeployRequest,
+    request: &VolumeDeclaredDeployRequest,
     services: Vec<DeployPlanningInput>,
     cleanup_containers: Vec<DeployCleanupContainer>,
 ) -> Result<DeployPlan, DeployPlanError> {
-    let phases = dependency_ordered_phases(services)?;
+    let phases = dependency_ordered_phases(request, services)?;
     let mut phase_plans = Vec::new();
     let mut cleanup_containers = cleanup_containers;
     let mut volume_pin_commits = Vec::new();
@@ -541,48 +557,50 @@ pub fn plan_namespace_deploy(
 }
 
 fn dependency_ordered_phases(
+    request: &VolumeDeclaredDeployRequest,
     services: Vec<DeployPlanningInput>,
 ) -> Result<Vec<Vec<DeployPlanningInput>>, DeployPlanError> {
     let service_healthchecks = services
         .iter()
         .map(|input| {
-            (
-                input.service.service_id.clone(),
-                input
-                    .service
+            let service = deploy_service(request, &input.service_id)?;
+            Ok((
+                input.service_id.clone(),
+                service
                     .runtime
                     .healthcheck
                     .as_ref()
                     .is_some_and(ContainerHealthcheck::reports_docker_health),
-            )
+            ))
         })
-        .collect::<BTreeMap<_, _>>();
+        .collect::<Result<BTreeMap<_, _>, DeployPlanError>>()?;
     let mut dependents = BTreeMap::<ServiceId, Vec<ServiceId>>::new();
     let mut dependency_counts = BTreeMap::<ServiceId, usize>::new();
 
     for input in &services {
+        let service = deploy_service(request, &input.service_id)?;
         let mut dependencies = BTreeSet::new();
-        for dependency in &input.service.depends_on {
+        for dependency in &service.depends_on {
             let Some(has_healthcheck) = service_healthchecks.get(&dependency.service_id) else {
                 return Err(DeployPlanError::UnknownServiceDependency {
-                    service_id: input.service.service_id.clone(),
+                    service_id: input.service_id.clone(),
                     dependency: dependency.service_id.clone(),
                 });
             };
             if dependency.condition == DependencyCondition::Healthy && !has_healthcheck {
                 return Err(DeployPlanError::HealthyDependencyWithoutHealthcheck {
-                    service_id: input.service.service_id.clone(),
+                    service_id: input.service_id.clone(),
                     dependency: dependency.service_id.clone(),
                 });
             }
             dependencies.insert(dependency.service_id.clone());
         }
-        dependency_counts.insert(input.service.service_id.clone(), dependencies.len());
+        dependency_counts.insert(input.service_id.clone(), dependencies.len());
         for dependency in dependencies {
             dependents
                 .entry(dependency)
                 .or_default()
-                .push(input.service.service_id.clone());
+                .push(input.service_id.clone());
         }
     }
 
@@ -623,7 +641,7 @@ fn dependency_ordered_phases(
 
     let mut services = services
         .into_iter()
-        .map(|input| (input.service.service_id.clone(), input))
+        .map(|input| (input.service_id.clone(), input))
         .collect::<BTreeMap<_, _>>();
     Ok(phase_ids
         .into_iter()
@@ -646,16 +664,17 @@ pub struct DeploySingleServicePlan {
 }
 
 fn plan_deploy_service(
-    request: &NormalizedDeployRequest,
+    request: &VolumeDeclaredDeployRequest,
     input: DeployPlanningInput,
 ) -> Result<DeploySingleServicePlan, DeployPlanError> {
+    let service = deploy_service(request, &input.service_id)?;
     let volume_placement = volume_placement(
         request,
-        &input.service,
+        service,
         &input.eligible_machines,
         &input.volume_pins,
     )?;
-    let target_replicas = usize::from(input.service.replicas.get());
+    let target_replicas = usize::from(service.replicas.get());
     let mut existing_replicas = input.existing_replicas;
     if let Some(machine_id) = &volume_placement.machine_id {
         existing_replicas.retain(|replica| &replica.machine_id == machine_id);
@@ -720,7 +739,7 @@ fn plan_deploy_service(
     cleanup_containers.dedup_by(|left, right| {
         left.machine_id == right.machine_id && left.container_id == right.container_id
     });
-    let pre_start = input.service.pre_start.as_ref().and_then(|_| {
+    let pre_start = service.pre_start.as_ref().and_then(|_| {
         steps.iter().find_map(|step| match step {
             DeployPlanStep::RunContainer { machine_id, .. } => Some(PreStartHookStep {
                 machine_id: machine_id.clone(),
@@ -730,13 +749,24 @@ fn plan_deploy_service(
     });
 
     Ok(DeploySingleServicePlan {
-        service_id: input.service.service_id.clone(),
+        service_id: input.service_id,
         namespace_revision_id: request.namespace_revision_id(),
         steps,
         pre_start,
         volume_pin_commits: volume_placement.commits,
         cleanup_containers,
     })
+}
+
+fn deploy_service<'a>(
+    request: &'a VolumeDeclaredDeployRequest,
+    service_id: &ServiceId,
+) -> Result<&'a DeployServiceSpec, DeployPlanError> {
+    request
+        .service(service_id)
+        .ok_or_else(|| DeployPlanError::UnknownService {
+            service_id: service_id.clone(),
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -746,7 +776,7 @@ struct VolumePlacement {
 }
 
 fn volume_placement(
-    request: &NormalizedDeployRequest,
+    request: &VolumeDeclaredDeployRequest,
     service: &DeployServiceSpec,
     eligible_machines: &[MachineId],
     volume_pins: &[VolumePinState],
@@ -760,9 +790,13 @@ fn volume_placement(
 
     let mut pinned_machines = Vec::new();
     let mut new_plain_volumes = Vec::new();
-    for declared in request.declared_volume_mounts(service) {
-        let volume_name = &declared.mount().volume_name;
-        let spec = declared.spec();
+    for mount in &service.runtime.volume_mounts {
+        let volume_name = &mount.volume_name;
+        let spec = request
+            .request()
+            .volumes
+            .get(volume_name)
+            .expect("volume-declared deploy validates every mounted volume declaration");
         match volume_pins.iter().find(|pin| {
             pin.namespace_id() == request.namespace_id() && pin.volume_name() == volume_name
         }) {
