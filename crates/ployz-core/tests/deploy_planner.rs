@@ -589,6 +589,31 @@ fn duplicate_plain_volume_mounts_emit_one_pin_commit() {
 }
 
 #[test]
+fn new_plain_volume_pin_commits_are_sorted_by_volume_name() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    declare_plain_volume_mounts(
+        &mut input,
+        vec![
+            volume_mount("uploads", "/uploads"),
+            volume_mount("data", "/data"),
+        ],
+    );
+
+    assert_eq!(
+        plan_single_service(&input).expect("new volume pins are deterministic"),
+        deploy_plan_with_volume_pins(
+            &input,
+            vec![run_step("machine_a", 1)],
+            vec![
+                volume_pin("data", "machine_a"),
+                volume_pin("uploads", "machine_a"),
+            ],
+            Vec::new(),
+        )
+    );
+}
+
+#[test]
 fn provisioned_volume_without_a_dataset_backed_pin_fails_before_plain_pin_commit() {
     let mut input = planning_input(1, [machine_id("machine_a")]);
     declare_volume_mounts(
