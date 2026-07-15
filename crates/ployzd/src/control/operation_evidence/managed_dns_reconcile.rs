@@ -15,7 +15,7 @@ impl OperationRepository {
     ) -> Result<Vec<OperationStatus>, super::OperationStatusStoreError> {
         self.store
             .call(|conn| {
-                let statuses = crate::core_store::query_json_list(
+                let statuses = crate::control::store::query_json_list(
                     conn,
                     "SELECT status_json FROM operations ORDER BY operation_id",
                 )?;

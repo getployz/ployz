@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::adapters::atomic_file::write_file_atomically;
-use crate::intent::nats_authorizations::{
+use crate::control::intent::nats_authorizations::{
     CredentialRemoveStoreOutcome, NatsAuthorizationStore, NatsAuthorizationStoreError,
 };
 use ployz_core::nats_config::{
@@ -586,7 +586,7 @@ mod tests {
     use ployz_core::nats_config::{CredentialName, MintedNatsUser};
 
     use super::*;
-    use crate::core_store::CoreStore;
+    use crate::control::store::CoreStore;
 
     #[derive(Clone)]
     struct ScriptedReload {

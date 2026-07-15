@@ -19,9 +19,9 @@ use super::material::{
     load_custom_certificate, prepare_custom_certificate, prepare_ployz_wildcard_certificate,
     validate_custom_certificate_for_activation, write_custom_certificate,
 };
-use crate::core_store::CoreStore;
-use crate::intent::certificate_intent::CertificateIntentStore;
-use crate::operations::log::{CertOperationSubmission, OperationRepository};
+use crate::control::intent::certificate_intent::CertificateIntentStore;
+use crate::control::operation_evidence::{CertOperationSubmission, OperationRepository};
+use crate::control::store::CoreStore;
 use crate::tasks::TaskRegistry;
 
 pub const DEFAULT_ACME_DIRECTORY_URL: &str = "https://acme-v02.api.letsencrypt.org/directory";

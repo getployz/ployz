@@ -8,7 +8,7 @@ use ployz_core::network::{
     WireGuardStatus,
 };
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
-use ployzd::intent::service::NatsIntentReader;
+use ployzd::control::intent::service::NatsIntentReader;
 use ployzd::roles::machine::protocol::{
     MachineDataplaneStatusRpcOk, MachineDataplaneStatusRpcResponse,
 };

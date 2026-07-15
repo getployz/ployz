@@ -226,7 +226,7 @@ async fn first_machine_activation_repairs_completed_operation_without_roster() {
         secret_row_count(&nats, "machine_add_submissions", "op_init_core_1"),
         0
     );
-    let ingress_intent = ployzd::intent::ingress_intent::IngressIntentStore::new(
+    let ingress_intent = ployzd::control::intent::ingress_intent::IngressIntentStore::new(
         CoreStore::open(config.core_db_path.clone())
             .await
             .expect("core store opens"),

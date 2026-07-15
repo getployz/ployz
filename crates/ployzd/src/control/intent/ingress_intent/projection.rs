@@ -1,8 +1,8 @@
 use ployz_core::ingress::IngressEndpointProjectionIdentity;
 use rusqlite::{Connection, OptionalExtension};
 
-use crate::core_store::{CoreStore, CoreStoreError, from_json, query_json, to_json};
-use crate::ingress_endpoint::ProjectionEvidenceRecord;
+use crate::control::projection::ingress_endpoint::ProjectionEvidenceRecord;
+use crate::control::store::{CoreStore, CoreStoreError, from_json, query_json, to_json};
 
 const SINGLETON_ID: &str = "1";
 

@@ -1,6 +1,6 @@
 //! Core-local namespace intent (route bindings and serving targets), in SQLite.
 
-use crate::core_store::{CoreStore, CoreStoreError, query_json_list, to_json};
+use crate::control::store::{CoreStore, CoreStoreError, query_json_list, to_json};
 use ployz_core::deploy::VolumeName;
 use ployz_core::ids::NamespaceId;
 use ployz_core::ops::RouteTarget;

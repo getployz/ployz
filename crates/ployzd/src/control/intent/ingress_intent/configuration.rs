@@ -1,7 +1,7 @@
 pub use ployz_core::ingress::IngressConfiguration;
 use rusqlite::Connection;
 
-use crate::core_store::{CoreStore, CoreStoreError, query_json, to_json};
+use crate::control::store::{CoreStore, CoreStoreError, query_json, to_json};
 
 const SINGLETON_ID: &str = "1";
 

@@ -1,7 +1,9 @@
 //! Operation-owned machine substrate updates.
 
+use crate::control::operation_evidence::{
+    AcceptedMachineUpdateSubmission, RecordOperationEventError,
+};
 use crate::operation_api::admission::OperationControllers;
-use crate::operations::log::{AcceptedMachineUpdateSubmission, RecordOperationEventError};
 use crate::roles::machine::client::NatsMachineSubstrateUpdater;
 use crate::roles::machine::protocol::MachineSubstrateUpdateRpcRequest;
 use crate::tasks::TaskRegistry;

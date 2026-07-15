@@ -17,6 +17,7 @@ pub mod adapters {
 }
 pub mod certificate;
 pub mod config;
+pub mod control;
 pub mod recovery;
 pub mod role_testimony;
 pub mod roles {
@@ -52,19 +53,20 @@ pub mod operations {
     pub mod service_restart;
     pub mod volume_remove;
 }
+/// Compatibility facade for the Control-owned SQLite store.
 pub mod core_store;
 pub mod dispatch;
 /// Compatibility facade for the daemon-local role testimony cache.
 pub mod fact_cache;
+/// Compatibility facade for the Control-owned Ingress Endpoint Projection.
 pub mod ingress_endpoint;
+/// Compatibility facade for Control-owned durable operator intent.
 pub mod intent;
 pub mod lease;
 pub(crate) mod machine_runtime;
 pub mod operation_api;
 pub mod process_support;
 pub mod role_cli;
-pub(crate) mod runtime_projection;
-pub(crate) mod runtime_snapshot;
 pub mod seed;
 pub mod service_catalog;
 pub mod tasks;

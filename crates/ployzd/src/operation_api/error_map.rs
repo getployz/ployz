@@ -2,12 +2,12 @@
 //! errors. Actionable states stay typed; storage and transport plumbing renders
 //! as evidence text.
 
-use crate::operation_api::admission::{MachineAddSubmitCommandError, SubmitCommandError};
-use crate::operations::log::{
+use crate::control::operation_evidence::{
     RecordMachineAddEventError, RecordMachineJoinReportError,
     RedeemMachineJoinTokenError as RedeemMachineJoinTokenRepositoryError,
     ReplayOperationEventsError, SubmitOperationError,
 };
+use crate::operation_api::admission::{MachineAddSubmitCommandError, SubmitCommandError};
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{
     EventSequence, FailureMessage, ProjectionOperationState, StatusProjectionError,
@@ -415,11 +415,11 @@ mod tests {
         deploy_submit_error_from_submit_error, machine_add_error_from_submit_error,
         ops_watch_error_from_replay_error,
     };
-    use crate::operation_api::admission::{MachineAddSubmitCommandError, SubmitCommandError};
-    use crate::operations::log::{
+    use crate::control::operation_evidence::{
         OperationEventLogError, OperationStatusStoreError, ReplayOperationEventsError,
         SubmitOperationError,
     };
+    use crate::operation_api::admission::{MachineAddSubmitCommandError, SubmitCommandError};
     use ployz_core::ids::{NamespaceId, OperationId};
     use ployz_core::ops::EventSequence;
     use ployz_sdk_types::{DeploySubmitError, MachineAddError, OpsWatchError};

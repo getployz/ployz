@@ -1,4 +1,4 @@
-use crate::intent::service::NatsIntentReader;
+use crate::control::intent::service::NatsIntentReader;
 use ployz_core::state::IntentSnapshot;
 use ployz_sdk_types::{VolumeListError, VolumeListResult, VolumeSnapshot, VolumeStatus};
 

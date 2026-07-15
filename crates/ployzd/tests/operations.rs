@@ -31,8 +31,8 @@ use ployz_sdk_types::{
 };
 use ployzd::certificate::{AcmeIssueContext, AcmeIssuer, AcmeIssuerError, IssuedCertificate};
 use ployzd::config::ControlProcessConfig;
-use ployzd::core_store::CoreStore;
-use ployzd::intent::machine_roster::MachineRosterStore;
+use ployzd::control::intent::machine_roster::MachineRosterStore;
+use ployzd::control::store::CoreStore;
 use ployzd::operation_api::admission::MachineAddBootstrapConfig;
 use ployzd::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
@@ -960,7 +960,7 @@ fn assert_redirect_response(response: &str) {
 async fn start_control_with_deploy_roster(
     nats: &TestNats,
     config: &ControlProcessConfig,
-) -> Result<ployzd::roles::control::RunningControlProcess, Box<dyn Error + Send + Sync>> {
+) -> Result<ployzd::control::process::RunningControlProcess, Box<dyn Error + Send + Sync>> {
     let store = CoreStore::open(config.core_db_path.clone()).await?;
     let roster = MachineRosterStore::new(store);
     for (index, machine_id) in config.deploy_machines.iter().enumerate() {

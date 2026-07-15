@@ -17,7 +17,7 @@ use ployz_sdk_types::{
 };
 use sha2::{Digest, Sha256};
 
-use crate::intent::service::NatsIntentReader;
+use crate::control::intent::service::NatsIntentReader;
 use crate::machine_runtime::MachineRequestFailure;
 use crate::roles::dns::protocol::{
     DnsResolveRpcOk, DnsResolveRpcRequest, DnsStatusRpcOk, DnsStatusRpcRequest,

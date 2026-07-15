@@ -1,10 +1,12 @@
 //! Operation-owned explicit volume destruction.
 
 use crate::adapters::docker::runner::docker_volume_name;
-use crate::intent::namespace_intent::NamespaceIntentStore;
-use crate::intent::service::NatsIntentReader;
+use crate::control::intent::namespace_intent::NamespaceIntentStore;
+use crate::control::intent::service::NatsIntentReader;
+use crate::control::operation_evidence::{
+    AcceptedVolumeRemoveSubmission, RecordOperationEventError,
+};
 use crate::operation_api::admission::OperationControllers;
-use crate::operations::log::{AcceptedVolumeRemoveSubmission, RecordOperationEventError};
 use crate::roles::machine::client::{
     NatsMachineContainerRuntime, NatsMachineFactsReader, read_available_machine_facts_by_id,
 };

@@ -7,7 +7,7 @@ use ployz_core::ingress::{IngressEndpointProjectionIdentity, PloyzDnsTargetInten
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
-use crate::core_store::{CoreStore, CoreStoreError, query_json, to_json};
+use crate::control::store::{CoreStore, CoreStoreError, query_json, to_json};
 
 const SINGLETON_ID: &str = "1";
 
@@ -295,7 +295,7 @@ mod tests {
     use super::*;
     use ployz_core::ingress::{AutomaticHostnameConfiguration, IngressConfiguration};
 
-    use crate::intent::ingress_intent::IngressIntentStore;
+    use crate::control::intent::ingress_intent::IngressIntentStore;
 
     #[tokio::test]
     async fn acquired_target_starts_with_an_empty_checkpoint() {

@@ -25,8 +25,8 @@ use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, operation_id, route_hostname, route_port, service_id,
 };
-use ployzd::intent::namespace_intent::NamespaceIntentStore;
-use ployzd::intent::service::{RunningIntentService, start_intent_service};
+use ployzd::control::intent::namespace_intent::NamespaceIntentStore;
+use ployzd::control::intent::service::{RunningIntentService, start_intent_service};
 use ployzd::roles::gateway::process::{
     GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessError,
     start_gateway_process_with_client,
@@ -430,7 +430,7 @@ impl TestNats {
         let client = connected.controller.clone();
         let machine_client = connected.machine_client(&machine_id("machine_7")).await;
         let namespace_intent = NamespaceIntentStore::new(
-            ployzd::core_store::CoreStore::open_in_memory()
+            ployzd::control::store::CoreStore::open_in_memory()
                 .await
                 .expect("open core store"),
         );
@@ -444,7 +444,7 @@ impl TestNats {
     }
 
     async fn start_intent(&self) -> RunningIntentService {
-        let core_store = ployzd::core_store::CoreStore::open_in_memory()
+        let core_store = ployzd::control::store::CoreStore::open_in_memory()
             .await
             .expect("core store opens");
         support::intent::initialize_disabled_ingress(&core_store).await;

@@ -2,7 +2,7 @@ use super::{
     OperationRepository, OperationStatusStoreError, StageMachineDataplaneError, index_error,
     select_status,
 };
-use crate::core_store::{query_json, query_json_list, to_json};
+use crate::control::store::{query_json, query_json_list, to_json};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::ops::{MachineAddOperationState, OperationStatus};
 use ployz_core::state::{ActiveMachineState, StagedMachineDataplaneState};

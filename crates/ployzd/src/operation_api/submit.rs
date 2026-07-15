@@ -1,7 +1,7 @@
 //! Submit handlers: accept the operation quickly, start the owned worker,
 //! and return the operation id + watch subject.
 
-use crate::adapters::nats_authorization::MintRequest;
+use crate::control::authorization::MintRequest;
 use crate::operation_api::admission::{
     CoreReplaceSubmitCommand, CredentialGrantSubmitCommand, DeploySubmitCommand,
     IngressConfigureSubmitCommand, IngressConfigureSubmitError, MachineAddBootstrapMaterial,

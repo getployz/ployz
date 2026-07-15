@@ -6,7 +6,7 @@
 //! is durable operator intent — mirrored to candidates and seeded on promotion
 //! like the machine roster, never re-derived from partial truth.
 
-use crate::core_store::{CoreStore, CoreStoreError, from_json, query_json_list, to_json};
+use crate::control::store::{CoreStore, CoreStoreError, from_json, query_json_list, to_json};
 use ployz_core::nats_config::{
     CredentialGrant, CredentialRole, NatsAuthorizationGrant, NatsUserPublicKey,
     parse_authorized_users,

@@ -8,7 +8,7 @@ use super::{
     SubmitMachineAddError, SubmitOperationError, index_error, insert_event, publish_progress,
     select_status, subject_token_conversion, upsert_status,
 };
-use crate::core_store::{CoreStoreError, query_json, query_json_list, to_json};
+use crate::control::store::{CoreStoreError, query_json, query_json_list, to_json};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenFingerprint, JoinTokenRedeemedAt, MachineAddFailure, RawJoinToken,

@@ -21,10 +21,10 @@ use ployz_sdk_types::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::core_store::CoreStore;
-use crate::intent::ingress_intent::{
+use crate::control::intent::ingress_intent::{
     IngressProjectionStore, ManagedDnsCheckpoint, PloyzDnsTargetAllocation, PloyzDnsTargetStore,
 };
+use crate::control::store::CoreStore;
 
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeIngressSources {

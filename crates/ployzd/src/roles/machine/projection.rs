@@ -16,7 +16,7 @@ use ployz_nats::service_runtime::NatsClient;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::intent::service::NatsIntentReader;
+use crate::control::intent::service::NatsIntentReader;
 use crate::roles::machine::runner::{MachineContainerRunner, MachineContainerRunnerError};
 use crate::roles::machine::service::MachinePloyzNativeMeshPreparer;
 

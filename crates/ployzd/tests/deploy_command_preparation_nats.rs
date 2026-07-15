@@ -17,9 +17,11 @@ use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, operation_id, route_port,
     service_id,
 };
-use ployzd::intent::machine_roster::MachineRosterStore;
-use ployzd::intent::namespace_intent::NamespaceIntentStore;
-use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
+use ployzd::control::intent::machine_roster::MachineRosterStore;
+use ployzd::control::intent::namespace_intent::NamespaceIntentStore;
+use ployzd::control::intent::service::{
+    NatsIntentReader, RunningIntentService, start_intent_service,
+};
 use ployzd::operations::deploy::{
     DeployExecutionCommand, DeployServiceExecutionCommand, load_deploy_execution_facts_from_nats,
     prepare_deploy_execution_command,
@@ -331,11 +333,13 @@ async fn prepare_command_from_nats(
     facts_reader: &NatsMachineFactsReader,
     step_timeout: Duration,
 ) -> ployzd::operations::deploy::DeployExecutionCommand {
-    let store = ployzd::core_store::CoreStore::open_in_memory()
+    let store = ployzd::control::store::CoreStore::open_in_memory()
         .await
         .expect("open ingress store");
-    let ployz_dns_target = ployzd::intent::ingress_intent::PloyzDnsTargetStore::new(store.clone());
-    let ingress_projection = ployzd::intent::ingress_intent::IngressProjectionStore::new(store);
+    let ployz_dns_target =
+        ployzd::control::intent::ingress_intent::PloyzDnsTargetStore::new(store.clone());
+    let ingress_projection =
+        ployzd::control::intent::ingress_intent::IngressProjectionStore::new(store);
     let facts = load_deploy_execution_facts_from_nats(
         &request,
         intent_reader,
@@ -625,7 +629,7 @@ async fn test_nats() -> TestNats {
     ];
     let connected = ployz_test_support::nats::TestNats::start_with_machines(&machine_ids).await;
     let intent_dir = tempfile::tempdir().expect("intent dir");
-    let core_store = ployzd::core_store::CoreStore::open_in_memory()
+    let core_store = ployzd::control::store::CoreStore::open_in_memory()
         .await
         .expect("open core store");
     support::intent::initialize_disabled_ingress(&core_store).await;

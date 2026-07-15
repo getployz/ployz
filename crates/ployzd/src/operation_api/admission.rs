@@ -5,7 +5,7 @@ mod ingress;
 use ingress::{IngressClaim, deploy_requires_ingress};
 pub use ingress::{IngressConfigureSubmitCommand, IngressConfigureSubmitError};
 
-use crate::operations::log::{
+use crate::control::operation_evidence::{
     AcceptedDeploySubmission, AcceptedMachineAddSubmission, CoreReplaceOperationSubmission,
     CredentialGrantOperationSubmission, DeployOperationSubmission, MachineAddOperationSubmission,
     MachineJoinIdentity, MachineJoinRedemption, MachineLifecycleOperationSubmission,
@@ -274,9 +274,9 @@ impl OperationControllers {
         let store = self.repository.core_store().clone();
         if let Err(error) = crate::operations::deploy::validate_deploy_route_admission(
             &command.target,
-            &crate::intent::ingress_intent::IngressIntentStore::new(store.clone()),
-            &crate::intent::ingress_intent::PloyzDnsTargetStore::new(store.clone()),
-            &crate::intent::namespace_intent::NamespaceIntentStore::new(store),
+            &crate::control::intent::ingress_intent::IngressIntentStore::new(store.clone()),
+            &crate::control::intent::ingress_intent::PloyzDnsTargetStore::new(store.clone()),
+            &crate::control::intent::namespace_intent::NamespaceIntentStore::new(store),
         )
         .await
         {
@@ -376,7 +376,10 @@ impl OperationControllers {
     pub async fn submit_credential_grant(
         &self,
         command: CredentialGrantSubmitCommand,
-    ) -> Result<crate::operations::log::AcceptedCredentialGrantSubmission, SubmitCommandError> {
+    ) -> Result<
+        crate::control::operation_evidence::AcceptedCredentialGrantSubmission,
+        SubmitCommandError,
+    > {
         self.repository
             .submit_credential_grant(CredentialGrantOperationSubmission {
                 operation_id: command.operation_id,
@@ -425,7 +428,7 @@ impl OperationControllers {
         &self,
         command: MachineAddSubmitCommand,
         endpoint_supernet: &ployz_core::dataplane::MachineEndpointSupernet,
-        machine_roster: &crate::intent::machine_roster::MachineRosterStore,
+        machine_roster: &crate::control::intent::machine_roster::MachineRosterStore,
     ) -> Result<AcceptedMachineAddSubmission, MachineAddSubmitCommandError> {
         let _mesh = self.mesh_lock.lock().await;
         if let Some(existing) = self
@@ -509,7 +512,10 @@ impl OperationControllers {
     pub async fn submit_machine_update(
         &self,
         command: MachineUpdateSubmitCommand,
-    ) -> Result<crate::operations::log::AcceptedMachineUpdateSubmission, SubmitCommandError> {
+    ) -> Result<
+        crate::control::operation_evidence::AcceptedMachineUpdateSubmission,
+        SubmitCommandError,
+    > {
         Ok(self
             .repository
             .submit_machine_update(MachineUpdateOperationSubmission {
@@ -523,8 +529,10 @@ impl OperationControllers {
     pub async fn submit_machine_lifecycle(
         &self,
         command: MachineLifecycleSubmitCommand,
-    ) -> Result<crate::operations::log::AcceptedMachineLifecycleSubmission, SubmitCommandError>
-    {
+    ) -> Result<
+        crate::control::operation_evidence::AcceptedMachineLifecycleSubmission,
+        SubmitCommandError,
+    > {
         Ok(self
             .repository
             .submit_machine_lifecycle(MachineLifecycleOperationSubmission {
@@ -538,7 +546,8 @@ impl OperationControllers {
     pub async fn submit_core_replace(
         &self,
         command: CoreReplaceSubmitCommand,
-    ) -> Result<crate::operations::log::AcceptedCoreReplaceSubmission, SubmitCommandError> {
+    ) -> Result<crate::control::operation_evidence::AcceptedCoreReplaceSubmission, SubmitCommandError>
+    {
         Ok(self
             .repository
             .submit_core_replace(CoreReplaceOperationSubmission {
@@ -552,7 +561,10 @@ impl OperationControllers {
     pub async fn submit_network_repair(
         &self,
         command: NetworkRepairSubmitCommand,
-    ) -> Result<crate::operations::log::AcceptedNetworkRepairSubmission, SubmitCommandError> {
+    ) -> Result<
+        crate::control::operation_evidence::AcceptedNetworkRepairSubmission,
+        SubmitCommandError,
+    > {
         Ok(self
             .repository
             .submit_network_repair(NetworkRepairOperationSubmission {
@@ -565,7 +577,10 @@ impl OperationControllers {
     pub async fn submit_service_restart(
         &self,
         command: ServiceRestartSubmitCommand,
-    ) -> Result<crate::operations::log::AcceptedServiceRestartSubmission, SubmitCommandError> {
+    ) -> Result<
+        crate::control::operation_evidence::AcceptedServiceRestartSubmission,
+        SubmitCommandError,
+    > {
         let namespace_id = command.namespace_id.clone();
         let operation_id = command.operation_id.clone();
         let claim = self.claim_namespace(&namespace_id, &operation_id).await;
@@ -605,7 +620,10 @@ impl OperationControllers {
     pub async fn submit_namespace_remove(
         &self,
         command: NamespaceRemoveSubmitCommand,
-    ) -> Result<crate::operations::log::AcceptedNamespaceRemoveSubmission, SubmitCommandError> {
+    ) -> Result<
+        crate::control::operation_evidence::AcceptedNamespaceRemoveSubmission,
+        SubmitCommandError,
+    > {
         let namespace_id = command.namespace_id.clone();
         let operation_id = command.operation_id.clone();
         let claim = self.claim_namespace(&namespace_id, &operation_id).await;
@@ -644,7 +662,10 @@ impl OperationControllers {
     pub async fn submit_volume_remove(
         &self,
         command: VolumeRemoveSubmitCommand,
-    ) -> Result<crate::operations::log::AcceptedVolumeRemoveSubmission, SubmitCommandError> {
+    ) -> Result<
+        crate::control::operation_evidence::AcceptedVolumeRemoveSubmission,
+        SubmitCommandError,
+    > {
         let namespace_id = command.namespace_id.clone();
         let operation_id = command.operation_id.clone();
         let claim = self.claim_namespace(&namespace_id, &operation_id).await;

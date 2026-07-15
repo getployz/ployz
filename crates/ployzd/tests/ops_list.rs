@@ -4,10 +4,12 @@ use ployz_core::operation::{
 };
 use ployz_sdk_types::{OpsListError, OpsListRequest};
 use ployz_test_support::ids::operation_id;
-use ployzd::core_store::CoreStore;
+use ployzd::control::operation_evidence::{
+    ManagedDnsReconcileOperationSubmission, OperationRepository,
+};
+use ployzd::control::store::CoreStore;
 use ployzd::operation_api::admission::{MachineAddBootstrapConfig, OperationControllers};
 use ployzd::operation_api::ops_list;
-use ployzd::operations::log::{ManagedDnsReconcileOperationSubmission, OperationRepository};
 
 #[tokio::test]
 async fn operations_before_boundary_are_returned_newest_first() {

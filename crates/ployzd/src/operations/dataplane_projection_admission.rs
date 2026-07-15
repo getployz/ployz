@@ -13,7 +13,7 @@ use ployz_core::machine::{
 use ployz_core::ops::FailureMessage;
 use ployz_core::state::StagedMachineDataplaneState;
 
-use crate::intent::service::NatsIntentReader;
+use crate::control::intent::service::NatsIntentReader;
 use crate::operation_api::admission::OperationControllers;
 use crate::roles::machine::client::{MachineFactsReadError, NatsMachineFactsReader};
 use crate::roles::machine::convergence::gather_dataplane_statuses;

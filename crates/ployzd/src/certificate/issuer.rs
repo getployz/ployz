@@ -11,8 +11,8 @@ use ployz_core::ops::RouteHostname;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::intent::certificate_intent::CertificateIntentStore;
-use crate::operations::log::OperationRepository;
+use crate::control::intent::certificate_intent::CertificateIntentStore;
+use crate::control::operation_evidence::OperationRepository;
 
 use super::gateway::GatewayCertificateClient;
 

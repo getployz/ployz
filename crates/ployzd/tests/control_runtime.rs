@@ -45,10 +45,12 @@ use ployz_sdk_types::{
     ServiceInspectRequest, ServiceListRequest, VolumeListRequest, VolumeStatus,
 };
 use ployz_test_support::ops::wait_for_terminal_status;
-use ployzd::certificate::task::{CertificateRenewalAttempt, CertificateRenewalOutcome};
 use ployzd::certificate::{AcmeIssueContext, AcmeIssuer, AcmeIssuerError, IssuedCertificate};
-use ployzd::intent::machine_roster::MachineRosterStore;
-use ployzd::intent::namespace_intent::NamespaceIntentStore;
+use ployzd::control::intent::machine_roster::MachineRosterStore;
+use ployzd::control::intent::namespace_intent::NamespaceIntentStore;
+use ployzd::control::reconciler::certificate::{
+    CertificateRenewalAttempt, CertificateRenewalOutcome,
+};
 use ployzd::lease::LeaseWorkerUrl;
 use ployzd::operation_api::admission::MachineAddBootstrapConfig;
 use ployzd::roles::gateway::process::start_gateway_process_with_client;
@@ -304,7 +306,7 @@ async fn control_runtime_serves_active_service_queries() {
     let nats = TestNats::start().await;
     let config = nats.control_config();
     let namespace_intent = NamespaceIntentStore::new(
-        ployzd::core_store::CoreStore::open(config.core_db_path.clone())
+        ployzd::control::store::CoreStore::open(config.core_db_path.clone())
             .await
             .expect("open core store"),
     );
@@ -374,7 +376,7 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
         LeaseWorkerUrl::try_new("http://127.0.0.1:9").expect("lease worker URL"),
     );
     let namespace_intent = NamespaceIntentStore::new(
-        ployzd::core_store::CoreStore::open(config.core_db_path.clone())
+        ployzd::control::store::CoreStore::open(config.core_db_path.clone())
             .await
             .expect("open core store"),
     );
@@ -596,7 +598,7 @@ async fn next_runtime_snapshot(
 #[tokio::test]
 async fn control_runtime_refuses_machine_add_without_join_template() {
     let nats = TestNats::start().await;
-    let result = ployzd::roles::control::start_control_process_with_client_and_reload(
+    let result = ployzd::control::process::start_control_process_with_client_and_reload(
         nats.connected.controller.clone(),
         &nats.control_config_without_join_template(),
         nats.reload_runner(),
@@ -605,7 +607,7 @@ async fn control_runtime_refuses_machine_add_without_join_template() {
 
     assert!(matches!(
         result,
-        Err(ployzd::roles::control::ControlProcessError::MissingMachineJoinTemplate)
+        Err(ployzd::control::process::ControlProcessError::MissingMachineJoinTemplate)
     ));
 }
 
@@ -670,7 +672,7 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         .await
         .expect("deploy evidence replays");
     let namespace_intent = NamespaceIntentStore::new(
-        ployzd::core_store::CoreStore::open(config.core_db_path.clone())
+        ployzd::control::store::CoreStore::open(config.core_db_path.clone())
             .await
             .expect("open core store"),
     );
@@ -1089,7 +1091,7 @@ fn replicas(value: u16) -> ReplicaCount {
 
 async fn machine_roster(config: &ployzd::config::ControlProcessConfig) -> MachineRosterStore {
     MachineRosterStore::new(
-        ployzd::core_store::CoreStore::open(config.core_db_path.clone())
+        ployzd::control::store::CoreStore::open(config.core_db_path.clone())
             .await
             .expect("open core store"),
     )

@@ -5,7 +5,7 @@ use ployz_core::ids::MachineId;
 use ployz_core::ops::{ControlPlaneCommitScope, RouteHostname, RouteTarget};
 
 use super::{DeployExecutionCommand, DeployExecutionError};
-use crate::operations::log::{RecordDeployEvidenceError, RecordDeployTransitionError};
+use crate::control::operation_evidence::{RecordDeployEvidenceError, RecordDeployTransitionError};
 
 #[derive(Debug)]
 pub enum DeployOperationRecordError {

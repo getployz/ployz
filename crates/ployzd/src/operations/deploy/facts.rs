@@ -1,11 +1,11 @@
 //! Load deploy execution facts from core intent and fresh machine facts RPCs.
 
 use crate::certificate::gateway_certificate_targets;
-use crate::intent::ingress_intent::{
+use crate::control::intent::ingress_intent::{
     IngressIntentStore, IngressProjectionStore, PloyzDnsTargetAllocation, PloyzDnsTargetStore,
 };
-use crate::intent::namespace_intent::NamespaceIntentStore;
-use crate::intent::service::NatsIntentReader;
+use crate::control::intent::namespace_intent::NamespaceIntentStore;
+use crate::control::intent::service::NatsIntentReader;
 use crate::roles::machine::client::{NatsMachineFactsReader, read_machine_placement_facts};
 use crate::roles::machine::convergence::gather_dataplane_statuses;
 use ployz_core::dataplane::{DataplaneMember, DataplaneProjection};

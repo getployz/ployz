@@ -1,6 +1,6 @@
 //! Gateway projection source adapters.
 
-use crate::intent::service::{IntentReadError, NatsIntentReader};
+use crate::control::intent::service::{IntentReadError, NatsIntentReader};
 use crate::role_testimony::RoleTestimonyCache;
 use crate::roles::gateway::projection::{
     GatewayCertificateBundle, GatewayCertificateMaterialFailure,

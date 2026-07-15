@@ -1,6 +1,6 @@
 use super::*;
-use crate::core_store::CoreStore;
-use crate::intent::ingress_intent::IngressIntentStore;
+use crate::control::intent::ingress_intent::IngressIntentStore;
+use crate::control::store::CoreStore;
 use ployz_core::deploy::{
     ContainerRuntimeSpec, DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageReference,
     ImageSource, ReplicaCount,

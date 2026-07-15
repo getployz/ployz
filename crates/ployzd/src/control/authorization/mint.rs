@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::operations::log::{
+use crate::control::operation_evidence::{
     OperationStatusStoreError, StoredMachineAddMintClaim, StoredMachineAddSecretDelivery,
 };
 use ployz_core::ids::{MachineId, OperationId};

@@ -23,7 +23,7 @@ use ployz_sdk_types::{
     MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinReportOutcome,
     MachineJoinReportRequest, MachineListRequest, OpsStatusError, OpsStatusRequest,
 };
-use ployzd::intent::service::NatsIntentReader;
+use ployzd::control::intent::service::NatsIntentReader;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -36,8 +36,8 @@ use ployz_test_support::ids::{idempotency_key, machine_id, operation_id};
 use ployz_test_support::ops::wait_for_terminal_status;
 use support::control::{RecordingReload, TestNats, redeem_when_ready};
 
-use ployzd::core_store::CoreStore;
-use ployzd::operations::log::{OperationRepository, OperationStatusWrite};
+use ployzd::control::operation_evidence::{OperationRepository, OperationStatusWrite};
+use ployzd::control::store::CoreStore;
 use ployzd::recovery::{IntentMirror, PendingMachineJoinMirror};
 
 static MACHINE_ADD_MINT_TEST_LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
@@ -372,7 +372,7 @@ async fn startup_renders_current_authorization_permissions() {
 
     let reload = nats.reload_runner();
     let config = nats.control_config();
-    let runtime = ployzd::roles::control::start_control_process_with_client_and_reload(
+    let runtime = ployzd::control::process::start_control_process_with_client_and_reload(
         nats.connected.controller.clone(),
         &config,
         reload.clone(),

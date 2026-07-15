@@ -3,13 +3,13 @@
 //! the daemon scenarios launch ployzd with.
 
 use ployz_core::ids::MachineId;
-use ployzd::adapters::nats_authorization::SignalNatsReloadRunner;
 use ployzd::adapters::nats_server::NatsServerLaunch;
 use ployzd::certificate::AcmeIssuer;
 use ployzd::config::{ControlNatsAuthorizationConfig, ControlProcessConfig};
-use ployzd::core_store::CoreStore;
-use ployzd::intent::ingress_intent::IngressIntentStore;
-use ployzd::roles::control::{ControlProcessError, RunningControlProcess};
+use ployzd::control::authorization::SignalNatsReloadRunner;
+use ployzd::control::intent::ingress_intent::IngressIntentStore;
+use ployzd::control::process::{ControlProcessError, RunningControlProcess};
+use ployzd::control::store::CoreStore;
 
 pub struct TestNats {
     connected: ployz_test_support::nats::TestNats,
@@ -80,7 +80,7 @@ impl TestNats {
             )
             .await
             .expect("test ingress intent initializes");
-        ployzd::roles::control::start_control_process_with_client_and_reload(
+        ployzd::control::process::start_control_process_with_client_and_reload(
             self.controller_client(),
             config,
             SignalNatsReloadRunner::new(self.connected.server.server_pid()),
@@ -106,7 +106,7 @@ impl TestNats {
             )
             .await
             .expect("test ingress intent initializes");
-        ployzd::roles::control::start_control_process_with_client_and_test_issuer(
+        ployzd::control::process::start_control_process_with_client_and_test_issuer(
             self.controller_client(),
             config,
             SignalNatsReloadRunner::new(self.connected.server.server_pid()),

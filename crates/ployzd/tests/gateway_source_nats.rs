@@ -10,8 +10,10 @@ use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, route_hostname, route_port, service_id,
 };
-use ployzd::intent::namespace_intent::NamespaceIntentStore;
-use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
+use ployzd::control::intent::namespace_intent::NamespaceIntentStore;
+use ployzd::control::intent::service::{
+    NatsIntentReader, RunningIntentService, start_intent_service,
+};
 use ployzd::role_testimony::RoleTestimonyCache;
 use ployzd::roles::gateway::projection::{
     GatewayProjectedRoute, GatewayProjectionUpdate, GatewayUpstream, project_gateway,
@@ -101,11 +103,11 @@ async fn test_nats() -> TestNats {
     let machine_client = nats.machine_client(&gateway_machine).await;
     let lifecycle_dir = tempfile::tempdir().expect("lifecycle dir");
     let namespace_intent = NamespaceIntentStore::new(
-        ployzd::core_store::CoreStore::open_in_memory()
+        ployzd::control::store::CoreStore::open_in_memory()
             .await
             .expect("open core store"),
     );
-    let intent_core_store = ployzd::core_store::CoreStore::open_in_memory()
+    let intent_core_store = ployzd::control::store::CoreStore::open_in_memory()
         .await
         .expect("core store opens");
     support::intent::initialize_disabled_ingress(&intent_core_store).await;

@@ -2,16 +2,16 @@
 //! commit operator intent to the machine's roster row.
 
 use ployz_core::install::{DEFAULT_MACHINE_BOOTSTRAP_URL, MachineBootstrapUrl};
-use ployz_core::machine::MachineLifecycle;
 use ployz_core::machine::active_machine_from_completed_add;
+use ployz_core::machine::MachineLifecycle;
 use ployz_core::operation::{
     MachineLifecycleFailure, MachineLifecycleOperationState, OperationStatus,
 };
-use ployzd::intent::machine_roster::MachineRosterStore;
+use ployzd::control::intent::machine_roster::MachineRosterStore;
+use ployzd::control::operation_evidence::OperationRepository;
 use ployzd::operation_api::admission::{
     MachineAddBootstrapConfig, MachineLifecycleSubmitCommand, OperationControllers,
 };
-use ployzd::operations::log::OperationRepository;
 use ployzd::operations::machine_lifecycle::MachineLifecycleOperation;
 use ployzd::tasks::TaskRegistry;
 
@@ -25,7 +25,7 @@ async fn drain_records_lifecycle_evidence_and_resume_reverts() {
     let nats = ployz_test_support::nats::TestNats::start().await;
     let controllers = operation_controllers(nats.controller.clone()).await;
     let machine_roster = MachineRosterStore::new(
-        ployzd::core_store::CoreStore::open_in_memory()
+        ployzd::control::store::CoreStore::open_in_memory()
             .await
             .expect("open core store"),
     );
@@ -85,7 +85,7 @@ async fn drain_of_unknown_machine_fails_without_writing_evidence() {
     let nats = ployz_test_support::nats::TestNats::start().await;
     let controllers = operation_controllers(nats.controller.clone()).await;
     let machine_roster = MachineRosterStore::new(
-        ployzd::core_store::CoreStore::open_in_memory()
+        ployzd::control::store::CoreStore::open_in_memory()
             .await
             .expect("open core store"),
     );
@@ -176,7 +176,7 @@ async fn operation_controllers(client: async_nats::Client) -> OperationControlle
     let evidence_dir = tempfile::tempdir()
         .expect("operation evidence temp dir")
         .keep();
-    let core_store = ployzd::core_store::CoreStore::open(evidence_dir.join("ployz-core.db"))
+    let core_store = ployzd::control::store::CoreStore::open(evidence_dir.join("ployz-core.db"))
         .await
         .expect("open core store");
     OperationControllers::new(

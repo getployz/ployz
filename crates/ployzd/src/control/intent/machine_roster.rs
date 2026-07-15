@@ -5,7 +5,7 @@
 //! lives in exactly one place, read straight from the roster with no separate
 //! overlay.
 
-use crate::core_store::{CoreStore, CoreStoreError, query_json, query_json_list, to_json};
+use crate::control::store::{CoreStore, CoreStoreError, query_json, query_json_list, to_json};
 use ployz_core::ids::MachineId;
 use ployz_core::state::{ActiveMachineState, MachineLifecycle};
 use rusqlite::{Connection, params};

@@ -2,8 +2,8 @@ use ployz_core::ids::CertId;
 use ployz_core::ingress::{ActiveCertificateMetadata, CertificateOwner};
 use rusqlite::{OptionalExtension, params};
 
-use crate::core_store::{CoreStore, CoreStoreError};
-use crate::intent::ingress_intent::ActiveCertificateMetadataStore;
+use crate::control::intent::ingress_intent::ActiveCertificateMetadataStore;
+use crate::control::store::{CoreStore, CoreStoreError};
 
 #[derive(Debug, Clone)]
 pub struct CertificateIntentStore {

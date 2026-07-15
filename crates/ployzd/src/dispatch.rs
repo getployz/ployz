@@ -1,7 +1,7 @@
 //! Dispatch for configured daemon role processes.
 
 use crate::config::DaemonProcessConfig;
-use crate::roles::control::{ControlProcessError, run_control_until_shutdown};
+use crate::control::process::{ControlProcessError, run_control_until_shutdown};
 use crate::roles::dns::process::{DnsProcessError, run_dns_until_shutdown};
 use crate::roles::gateway::process::{GatewayProcessError, run_gateway_until_shutdown};
 use crate::roles::machine::process::{MachineProcessError, run_machine_until_shutdown};

@@ -2,8 +2,8 @@
 //! the operation event first and then activates the machine in cluster
 //! truth (record-then-activate).
 
-use crate::adapters::nats_authorization::MintRequest;
-use crate::operations::log::{MachineJoinRedemption, RedeemMachineJoinTokenError};
+use crate::control::authorization::MintRequest;
+use crate::control::operation_evidence::{MachineJoinRedemption, RedeemMachineJoinTokenError};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::{
     DataplaneProjectionAdmissionEvidence, MachineAddFailure, MachineName, RawJoinToken,

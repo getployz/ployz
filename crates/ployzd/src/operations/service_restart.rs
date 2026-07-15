@@ -1,9 +1,11 @@
 //! Operation-owned service restart.
 
-use crate::intent::service::NatsIntentReader;
+use crate::control::intent::service::NatsIntentReader;
+use crate::control::operation_evidence::{
+    AcceptedServiceRestartSubmission, RecordOperationEventError,
+};
 use crate::operation_api::admission::OperationControllers;
 use crate::operations::deploy::{MachineContainerRuntime, MachineContainerRuntimeError};
-use crate::operations::log::{AcceptedServiceRestartSubmission, RecordOperationEventError};
 use crate::roles::machine::client::{
     MachineContainerInspectError, NatsMachineContainerRuntime, NatsMachineFactsReader,
     read_available_machine_facts_by_id,

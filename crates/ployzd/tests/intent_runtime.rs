@@ -13,13 +13,13 @@ use ployz_test_support::fixtures::{machine_join_bundle, serving_target_entry};
 use ployz_test_support::ids::{
     idempotency_key, machine_id, machine_name, operation_id, service_id,
 };
-use ployzd::core_store::CoreStore;
-use ployzd::intent::machine_roster::MachineRosterStore;
-use ployzd::intent::namespace_intent::NamespaceIntentStore;
-use ployzd::intent::service::{NatsIntentReader, start_intent_service};
-use ployzd::operations::log::{
+use ployzd::control::intent::machine_roster::MachineRosterStore;
+use ployzd::control::intent::namespace_intent::NamespaceIntentStore;
+use ployzd::control::intent::service::{NatsIntentReader, start_intent_service};
+use ployzd::control::operation_evidence::{
     MachineAddOperationSubmission, MachineJoinIdentity, OperationRepository,
 };
+use ployzd::control::store::CoreStore;
 use std::time::Duration;
 
 mod support;
@@ -445,7 +445,7 @@ async fn namespace_intent_store_commits_a_deploy_phase_atomically() {
 
 async fn temp_namespace_intent() -> NamespaceIntentStore {
     NamespaceIntentStore::new(
-        ployzd::core_store::CoreStore::open_in_memory()
+        ployzd::control::store::CoreStore::open_in_memory()
             .await
             .expect("open core store"),
     )

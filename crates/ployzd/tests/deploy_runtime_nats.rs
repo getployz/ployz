@@ -18,11 +18,14 @@ use ployz_core::subjects::{INTENT_CHANGED, MachineServiceEndpoint, machine_servi
 use ployz_test_support::ids::idempotency_key;
 use ployzd::certificate::{CertificateManager, CertificateManagerConfig};
 use ployzd::config::DEFAULT_MACHINE_BOOTSTRAP_URL;
-use ployzd::core_store::CoreStore;
-use ployzd::intent::ingress_intent::{IngressProjectionStore, PloyzDnsTargetStore};
-use ployzd::intent::machine_roster::MachineRosterStore;
-use ployzd::intent::namespace_intent::NamespaceIntentStore;
-use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
+use ployzd::control::intent::ingress_intent::{IngressProjectionStore, PloyzDnsTargetStore};
+use ployzd::control::intent::machine_roster::MachineRosterStore;
+use ployzd::control::intent::namespace_intent::NamespaceIntentStore;
+use ployzd::control::intent::service::{
+    NatsIntentReader, RunningIntentService, start_intent_service,
+};
+use ployzd::control::operation_evidence::{OperationRepository, SubmitOperationError};
+use ployzd::control::store::CoreStore;
 use ployzd::operation_api::admission::{
     DeploySubmitCommand, MachineAddBootstrapConfig, OperationControllers, SubmitCommandError,
 };
@@ -30,7 +33,6 @@ use ployzd::operations::deploy::driver::{
     DeployOperationDriver, DeployOperationPorts, DeployOperationRunError, DeployOperationStores,
     run_deploy_operation,
 };
-use ployzd::operations::log::{OperationRepository, SubmitOperationError};
 use ployzd::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineFactsReader};
 use ployzd::roles::machine::protocol::{MachineFactsGetRpcOk, MachineFactsGetRpcResponse};
 use ployzd::tasks::TaskRegistry;
@@ -636,11 +638,11 @@ async fn test_nats() -> TestNats {
     let machine_slow = nats.machine_client(&machine_id("machine_slow")).await;
     let lifecycle_dir = tempfile::tempdir().expect("lifecycle dir");
     let namespace_intent = NamespaceIntentStore::new(
-        ployzd::core_store::CoreStore::open_in_memory()
+        ployzd::control::store::CoreStore::open_in_memory()
             .await
             .expect("open core store"),
     );
-    let intent_core_store = ployzd::core_store::CoreStore::open_in_memory()
+    let intent_core_store = ployzd::control::store::CoreStore::open_in_memory()
         .await
         .expect("open intent core store");
     support::intent::initialize_disabled_ingress(&intent_core_store).await;
@@ -781,7 +783,7 @@ async fn operation_controllers(client: async_nats::Client) -> OperationControlle
     let evidence_dir = tempfile::tempdir()
         .expect("operation evidence temp dir")
         .keep();
-    let core_store = ployzd::core_store::CoreStore::open(evidence_dir.join("ployz-core.db"))
+    let core_store = ployzd::control::store::CoreStore::open(evidence_dir.join("ployz-core.db"))
         .await
         .expect("open core store");
     OperationControllers::new(

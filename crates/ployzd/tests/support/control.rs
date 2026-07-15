@@ -11,12 +11,12 @@ use ployz_sdk_types::{
 use ployz_test_support::fixtures::machine_join_material;
 use ployz_test_support::ids::machine_id;
 use ployz_test_support::nats::SecuredTestNats;
-use ployzd::adapters::nats_authorization::{
-    NatsReloadEvidence, NatsReloadOutcome, NatsReloadRunner, SignalNatsReloadRunner,
-};
 use ployzd::adapters::nats_server::NatsServerLaunch;
 use ployzd::certificate::AcmeIssuer;
 use ployzd::config::{ControlNatsAuthorizationConfig, ControlProcessConfig};
+use ployzd::control::authorization::{
+    NatsReloadEvidence, NatsReloadOutcome, NatsReloadRunner, SignalNatsReloadRunner,
+};
 use ployzd::operation_api::admission::MachineAddBootstrapConfig;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -97,7 +97,7 @@ impl TestNats {
     pub async fn start_control(
         &self,
         config: &ControlProcessConfig,
-    ) -> ployzd::roles::control::RunningControlProcess {
+    ) -> ployzd::control::process::RunningControlProcess {
         self.start_control_with_reload(config, self.reload_runner())
             .await
     }
@@ -106,9 +106,9 @@ impl TestNats {
         &self,
         config: &ControlProcessConfig,
         reload: RecordingReload,
-    ) -> ployzd::roles::control::RunningControlProcess {
+    ) -> ployzd::control::process::RunningControlProcess {
         initialize_ingress(config).await;
-        ployzd::roles::control::start_control_process_with_client_and_reload(
+        ployzd::control::process::start_control_process_with_client_and_reload(
             self.connected.controller.clone(),
             config,
             StartupThenReload {
@@ -125,9 +125,9 @@ impl TestNats {
         &self,
         config: &ControlProcessConfig,
         issuer: Arc<dyn AcmeIssuer>,
-    ) -> ployzd::roles::control::RunningControlProcess {
+    ) -> ployzd::control::process::RunningControlProcess {
         initialize_ingress(config).await;
-        ployzd::roles::control::start_control_process_with_client_and_test_issuer(
+        ployzd::control::process::start_control_process_with_client_and_test_issuer(
             self.connected.controller.clone(),
             config,
             StartupThenReload {
@@ -143,10 +143,10 @@ impl TestNats {
 }
 
 async fn initialize_ingress(config: &ControlProcessConfig) {
-    let store = ployzd::core_store::CoreStore::open(config.core_db_path.clone())
+    let store = ployzd::control::store::CoreStore::open(config.core_db_path.clone())
         .await
         .expect("test core store opens");
-    let ingress = ployzd::intent::ingress_intent::IngressIntentStore::new(store.clone());
+    let ingress = ployzd::control::intent::ingress_intent::IngressIntentStore::new(store.clone());
     if ingress
         .load()
         .await

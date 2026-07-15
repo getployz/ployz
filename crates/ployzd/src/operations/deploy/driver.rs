@@ -1,19 +1,19 @@
 //! Owned deploy execution started by the control service.
 
 use crate::certificate::{CertificateManager, GatewayCertificateTarget};
-use crate::intent::ingress_intent::{IngressProjectionStore, PloyzDnsTargetStore};
-use crate::intent::namespace_intent::NamespaceIntentStore;
-use crate::intent::service::NatsIntentReader;
+use crate::control::intent::ingress_intent::{IngressProjectionStore, PloyzDnsTargetStore};
+use crate::control::intent::namespace_intent::NamespaceIntentStore;
+use crate::control::intent::service::NatsIntentReader;
+use crate::control::operation_evidence::{
+    AcceptedDeploySubmission, OperationStatusWrite, RecordDeployTransitionError,
+    RecordOperationEventError,
+};
 use crate::operation_api::admission::{AcceptedDeployExecution, OperationControllers};
 use crate::operations::deploy::{
     CertificateProvisioner, DeployContainer, DeployExecutionError, DeployExecutionInput,
     DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError, DeployHealthCheckError,
     DeployHealthChecker, DeployPhasePromotion, MachineContainerRuntime, NamespaceCommitError,
     NamespaceStateCommitter, execute_deploy_operation, load_deploy_execution_facts_from_nats,
-};
-use crate::operations::log::{
-    AcceptedDeploySubmission, OperationStatusWrite, RecordDeployTransitionError,
-    RecordOperationEventError,
 };
 use crate::roles::machine::client::{
     MachineContainerInspectError, NatsMachineContainerRuntime, NatsMachineFactsReader,

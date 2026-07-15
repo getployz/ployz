@@ -1,5 +1,5 @@
 use super::{ServiceLogLine, bounded_ops_list, missing_machine_ids, service_log_lines};
-use crate::runtime_snapshot::{
+use crate::control::projection::runtime_state::{
     derive_instances, derive_releases, derive_revisions, missing_links, service_snapshot,
 };
 use ployz_core::machine_runtime::{

@@ -1,5 +1,7 @@
 use super::OperationControllers;
-use crate::operations::log::{IngressConfigureOperationSubmission, SubmitOperationError};
+use crate::control::operation_evidence::{
+    IngressConfigureOperationSubmission, SubmitOperationError,
+};
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::OperationId;
 use ployz_core::ingress::IngressConfiguration;
@@ -40,9 +42,9 @@ impl OperationControllers {
     pub async fn submit_ingress_configure(
         &self,
         command: IngressConfigureSubmitCommand,
-        intent: &crate::intent::ingress_intent::IngressIntentStore,
+        intent: &crate::control::intent::ingress_intent::IngressIntentStore,
     ) -> Result<
-        crate::operations::log::AcceptedIngressConfigureSubmission,
+        crate::control::operation_evidence::AcceptedIngressConfigureSubmission,
         IngressConfigureSubmitError,
     > {
         let ingress_claim = self.claim_ingress(&command.operation_id).await;
@@ -58,10 +60,10 @@ impl OperationControllers {
                 self.release_ingress(&command.operation_id).await;
             }
             return Err(match error {
-                crate::intent::ingress_intent::IngressIntentStoreError::InvalidConfiguration {
+                crate::control::intent::ingress_intent::IngressIntentStoreError::InvalidConfiguration {
                     message,
                 } => IngressConfigureSubmitError::InvalidConfiguration { message },
-                crate::intent::ingress_intent::IngressIntentStoreError::Store(error) => {
+                crate::control::intent::ingress_intent::IngressIntentStoreError::Store(error) => {
                     IngressConfigureSubmitError::Unavailable {
                         message: error.to_string(),
                     }

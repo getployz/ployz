@@ -1,7 +1,7 @@
 use ployz_core::ingress::{ActiveCertificateMetadata, CertificateOwner};
 use rusqlite::params;
 
-use crate::core_store::{CoreStore, CoreStoreError, query_json, query_json_list, to_json};
+use crate::control::store::{CoreStore, CoreStoreError, query_json, query_json_list, to_json};
 
 #[derive(Debug, Clone)]
 pub struct ActiveCertificateMetadataStore {

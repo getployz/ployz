@@ -24,11 +24,11 @@ pub use submit::{
     namespace_remove, network_repair, owned_operation, service_restart, volume_remove,
 };
 
-use crate::adapters::nats_authorization::MachineCredentialMint;
-use crate::core_store::CoreStore;
-use crate::intent::ingress_intent::IngressIntentStore;
-use crate::intent::machine_roster::MachineRosterStore;
-use crate::intent::service::{NatsIntentReader, publish_pending_machine_joins};
+use crate::control::authorization::MachineCredentialMint;
+use crate::control::intent::ingress_intent::IngressIntentStore;
+use crate::control::intent::machine_roster::MachineRosterStore;
+use crate::control::intent::service::{NatsIntentReader, publish_pending_machine_joins};
+use crate::control::store::CoreStore;
 use crate::operation_api::admission::OperationControllers;
 use crate::operations::credential_grant::CredentialGrantOperation;
 use crate::operations::dataplane_projection_admission::DataplaneProjectionAdmissionOperation;

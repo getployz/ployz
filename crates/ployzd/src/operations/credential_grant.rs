@@ -1,9 +1,9 @@
-use crate::adapters::nats_authorization::{
+use crate::control::authorization::{
     CredentialMutationChange, CredentialMutationFailure, CredentialMutationRejection,
     NatsAuthorizationHandle, RenderFailure, RenderPrepareFailure,
 };
+use crate::control::operation_evidence::AcceptedCredentialGrantSubmission;
 use crate::operation_api::admission::OperationControllers;
-use crate::operations::log::AcceptedCredentialGrantSubmission;
 use crate::tasks::TaskRegistry;
 use ployz_core::ops::{
     CredentialGrantAction, CredentialGrantFailure, CredentialGrantTransition, FailureMessage,

@@ -1,11 +1,11 @@
 //! Operation-owned cluster dataplane repair.
 
-use crate::intent::service::NatsIntentReader;
-use crate::machine_runtime::{MachineRequestFailure, MachineRuntimeUnavailableReason};
-use crate::operation_api::admission::OperationControllers;
-use crate::operations::log::{
+use crate::control::intent::service::NatsIntentReader;
+use crate::control::operation_evidence::{
     AcceptedNetworkRepairSubmission, OperationStatusStoreError, RecordOperationEventError,
 };
+use crate::machine_runtime::{MachineRequestFailure, MachineRuntimeUnavailableReason};
+use crate::operation_api::admission::OperationControllers;
 use crate::roles::dns::protocol::{DnsStatusRpcOk, DnsStatusRpcRequest};
 use crate::roles::machine::client::{
     MAX_CONCURRENT_MACHINE_READS, MachineFactsRefreshError, NatsMachineFactsReader,

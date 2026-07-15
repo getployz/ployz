@@ -10,13 +10,13 @@ use ployz_core::operation::{
     ManagedDnsReconcileOperationState, ManagedDnsReconcileSubject, OperationStatus,
 };
 use ployz_lease_worker::{StubLeaseWorker, serve};
-use ployzd::core_store::CoreStore;
-use ployzd::intent::ingress_intent::{
+use ployzd::control::intent::ingress_intent::{
     IngressIntentStore, ManagedDnsCheckpoint, PloyzDnsTargetAllocation, PloyzDnsTargetStore,
 };
-use ployzd::lease::task::{ManagedDnsTaskOutcome, reconcile_once};
+use ployzd::control::operation_evidence::OperationRepository;
+use ployzd::control::reconciler::managed_dns::{ManagedDnsTaskOutcome, reconcile_once};
+use ployzd::control::store::CoreStore;
 use ployzd::lease::{LeaseClient, LeaseWorkerUrl};
-use ployzd::operations::log::OperationRepository;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 

@@ -8,7 +8,7 @@ use crate::adapters::credentials::{
     AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials,
 };
 use crate::config::DnsProcessConfig;
-use crate::intent::service::NatsIntentReader;
+use crate::control::intent::service::NatsIntentReader;
 use crate::process_support::{
     RefreshDelay, bounded_role_shutdown, drain_refresh_wakes, shutdown_signal, sleep_or_shutdown,
     wait_for_refresh_delay,

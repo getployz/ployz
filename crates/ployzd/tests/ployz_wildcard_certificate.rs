@@ -13,13 +13,13 @@ use ployz_core::machine::rpc::MachineRpcResponse;
 use ployz_core::operation::{CertOperationState, OperationStatus, RouteHostname};
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_lease_worker::{LeaseWorkerRequest, LeaseWorkerResponse, StubLeaseWorker};
-use ployzd::certificate::task::{CertificateRenewalOutcome, run_once_at};
 use ployzd::certificate::{
     AcmeIssueContext, AcmeIssuer, AcmeIssuerError, CertificateManager, CertificateManagerConfig,
     GatewayCertificateTarget, IssuedCertificate,
 };
-use ployzd::core_store::CoreStore;
-use ployzd::operations::log::OperationRepository;
+use ployzd::control::operation_evidence::OperationRepository;
+use ployzd::control::reconciler::certificate::{CertificateRenewalOutcome, run_once_at};
+use ployzd::control::store::CoreStore;
 use ployzd::roles::gateway::projection::{
     GatewayCertificateMaterialFailure, GatewayCertificateMaterialFailureKind,
     GatewayProjectionInput, GatewayProjectionUpdate,

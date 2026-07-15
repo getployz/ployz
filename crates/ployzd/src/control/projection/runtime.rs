@@ -1,12 +1,12 @@
 //! Controller-owned passive runtime projection fanout.
 
-use crate::core_store::CoreStore;
-use crate::intent::service::NatsIntentReader;
-use crate::process_support::BackoffSchedule;
-use crate::role_testimony::RoleTestimonyCache;
-use crate::runtime_snapshot::{
+use crate::control::intent::service::NatsIntentReader;
+use crate::control::projection::runtime_state::{
     RuntimeIngressSources, from_sources as runtime_snapshot_from_sources, load_ingress_sources,
 };
+use crate::control::store::CoreStore;
+use crate::process_support::BackoffSchedule;
+use crate::role_testimony::RoleTestimonyCache;
 use crate::service_catalog::{runtime_projection_service, runtime_snapshot_seed_endpoint_spec};
 use futures_util::StreamExt;
 use ployz_core::state::IntentSnapshot;

@@ -1,10 +1,10 @@
 //! Core-owned operator intent service.
 
-use crate::core_store::CoreStore;
-use crate::intent::ingress_intent::{ActiveCertificateMetadataStore, IngressIntentStore};
-use crate::intent::namespace_intent::NamespaceIntentStore;
-use crate::intent::nats_authorizations::NatsAuthorizationStore;
-use crate::operations::log::OperationRepository;
+use crate::control::intent::ingress_intent::{ActiveCertificateMetadataStore, IngressIntentStore};
+use crate::control::intent::namespace_intent::NamespaceIntentStore;
+use crate::control::intent::nats_authorizations::NatsAuthorizationStore;
+use crate::control::operation_evidence::OperationRepository;
+use crate::control::store::CoreStore;
 use crate::service_catalog::{intent_get_endpoint_spec, intent_service};
 use ployz_core::dataplane::{DataplaneProjection, DataplaneProjectionMember};
 use ployz_core::ids::MachineId;
@@ -307,7 +307,7 @@ fn warn_publisher_failure(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::intent::ingress_intent::{IngressConfiguration, PloyzDnsTargetStore};
+    use crate::control::intent::ingress_intent::{IngressConfiguration, PloyzDnsTargetStore};
     use ployz_core::ingress::{AutomaticHostnameConfiguration, PloyzDnsTargetIntent};
 
     #[tokio::test]

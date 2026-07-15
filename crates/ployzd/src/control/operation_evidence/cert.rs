@@ -6,7 +6,7 @@ use ployz_core::ops::{
     OperationStatus,
 };
 
-use crate::intent::ingress_intent::upsert_active_certificate_metadata;
+use crate::control::intent::ingress_intent::upsert_active_certificate_metadata;
 
 use super::{
     CertOperationPayload, CertOperationSubmission, OperationRepository, OperationStatusWrite,
@@ -34,7 +34,7 @@ impl OperationRepository {
     ) -> Result<Vec<OperationStatus>, super::OperationStatusStoreError> {
         self.store
             .call(|conn| {
-                let statuses = crate::core_store::query_json_list(
+                let statuses = crate::control::store::query_json_list(
                     conn,
                     "SELECT status_json FROM operations ORDER BY operation_id",
                 )?;

@@ -23,16 +23,16 @@ use ployz_core::operation::{
 };
 use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_test_support::ids::{cert_id, operation_id, route_hostname};
-use ployzd::certificate::task::{
-    CertificateRenewalOutcome, recover_unfinished_operations, run_once_at,
-};
 use ployzd::certificate::{
     AcmeIssueContext, AcmeIssuer, AcmeIssuerError, CertificateManager, CertificateManagerConfig,
     GatewayCertificateTarget, IssuedCertificate,
 };
-use ployzd::core_store::CoreStore;
-use ployzd::intent::certificate_intent::CertificateIntentStore;
-use ployzd::operations::log::{CertOperationSubmission, OperationRepository};
+use ployzd::control::intent::certificate_intent::CertificateIntentStore;
+use ployzd::control::operation_evidence::{CertOperationSubmission, OperationRepository};
+use ployzd::control::reconciler::certificate::{
+    CertificateRenewalOutcome, recover_unfinished_operations, run_once_at,
+};
+use ployzd::control::store::CoreStore;
 use rcgen::{CertificateParams, CertifiedKey, KeyPair};
 use time::OffsetDateTime;
 

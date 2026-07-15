@@ -9,7 +9,7 @@
 //! kept. Pool ordering is transport preference, never cluster truth.
 
 use super::{IntentMirror, IntentMirrorStoreOutcome};
-use crate::intent::service::NatsIntentReader;
+use crate::control::intent::service::NatsIntentReader;
 use futures_util::StreamExt;
 use ployz_core::state::{ControlPlaneEpoch, IntentSnapshot};
 use ployz_core::subjects::INTENT_CHANGED;

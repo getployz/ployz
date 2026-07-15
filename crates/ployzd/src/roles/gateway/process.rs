@@ -4,7 +4,7 @@ use crate::adapters::credentials::{
     AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials,
 };
 use crate::config::GatewayProcessConfig;
-use crate::intent::service::NatsIntentReader;
+use crate::control::intent::service::NatsIntentReader;
 use crate::process_support::{
     BackoffSchedule, LazyHandle, RecordedAttempt, RefreshDelay, bounded_role_shutdown,
     drain_refresh_wakes, record_attempt, shutdown_signal, sleep_or_shutdown,

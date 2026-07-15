@@ -8,14 +8,16 @@
 //! rejected as a no-op, so re-running `core-promote` never rolls a live core's
 //! intent back.
 
-use crate::core_store::{CoreStore, CoreStoreError};
-use crate::intent::ingress_intent::{
+use crate::control::intent::ingress_intent::{
     ActiveCertificateMetadataStore, IngressConfiguration, IngressIntentStore,
     IngressIntentStoreError,
 };
-use crate::intent::machine_roster::{MachineRosterStore, MachineRosterStoreError};
-use crate::intent::namespace_intent::{NamespaceIntentStore, NamespaceIntentStoreError};
-use crate::intent::nats_authorizations::{NatsAuthorizationStore, NatsAuthorizationStoreError};
+use crate::control::intent::machine_roster::{MachineRosterStore, MachineRosterStoreError};
+use crate::control::intent::namespace_intent::{NamespaceIntentStore, NamespaceIntentStoreError};
+use crate::control::intent::nats_authorizations::{
+    NatsAuthorizationStore, NatsAuthorizationStoreError,
+};
+use crate::control::store::{CoreStore, CoreStoreError};
 use ployz_core::state::IntentSnapshot;
 use std::path::Path;
 
@@ -214,7 +216,7 @@ mod tests {
             )
         );
         assert!(
-            crate::intent::ingress_intent::PloyzDnsTargetStore::new(store)
+            crate::control::intent::ingress_intent::PloyzDnsTargetStore::new(store)
                 .load_allocation()
                 .await
                 .expect("load allocation")
