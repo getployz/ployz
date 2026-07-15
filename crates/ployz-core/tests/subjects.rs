@@ -29,10 +29,6 @@ fn operation_event_subjects_are_pinned() {
         "plz.v1.progress.namespace.default.operation.op_123.deploy.planning.started"
     );
     assert_eq!(
-        waiting_for_managed_certificate(&op_id).subject(&deploy_scope),
-        "plz.v1.progress.namespace.default.operation.op_123.deploy.managed_certificate.waiting"
-    );
-    assert_eq!(
         deploy_running(&op_id, DeployRunningStage::ServingTargetCommit).subject(&deploy_scope),
         "plz.v1.progress.namespace.default.operation.op_123.deploy.running.serving_target_commit"
     );
@@ -132,8 +128,8 @@ fn machine_subjects_use_known_endpoint_and_event_tokens() {
         "plz.v1.rpc.machine.command.machine_7.volume.remove"
     );
     assert_eq!(
-        machine_service(&machine_id, MachineServiceEndpoint::DataplanePrepare),
-        "plz.v1.rpc.machine.command.machine_7.dataplane.prepare"
+        machine_service(&machine_id, MachineServiceEndpoint::DataplanePublicKey),
+        "plz.v1.rpc.machine.query.machine_7.dataplane.public_key"
     );
     assert_eq!(
         machine_facts(&machine_id),
@@ -207,12 +203,6 @@ fn ids_use_positive_ascii_token_grammar() {
 
 fn planning_started(operation_id: &OperationId) -> OperationEvent {
     OperationEvent::DeployPlanningStarted {
-        operation_id: operation_id.clone(),
-    }
-}
-
-fn waiting_for_managed_certificate(operation_id: &OperationId) -> OperationEvent {
-    OperationEvent::DeployWaitingForManagedCertificate {
         operation_id: operation_id.clone(),
     }
 }

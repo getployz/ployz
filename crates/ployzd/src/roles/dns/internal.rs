@@ -483,7 +483,6 @@ mod tests {
     use ployz_core::roles::InstallRolePolicy;
     use ployz_core::state::{
         ActiveMachineState, ControlPlaneEpoch, IntentSnapshot, MachineLifecycle,
-        ManagedLeaseProjection,
     };
     use ployz_test_support::fixtures::serving_target_entry;
     use ployz_test_support::ids::{machine_id, machine_name, operation_id};
@@ -790,14 +789,24 @@ mod tests {
                 mesh_endpoints: Vec::new(),
                 endpoint_subnet: MachineEndpointSubnet::try_new("10.198.0.0/24")
                     .expect("endpoint subnet"),
+                wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+                    "public-{machine}"
+                ))
+                .expect("public key"),
             }],
+            dataplane_projection: ployz_core::dataplane::DataplaneProjection::try_new(
+                Vec::new(),
+                None,
+            )
+            .expect("empty projection"),
             route_bindings: Vec::new(),
             serving_target_entries: vec![serving_target_entry("db", entry)],
             volume_pins: Vec::new(),
             nats_authorizations: Vec::new(),
-            managed_lease: ManagedLeaseProjection::Unacquired,
-            custom_certificates: Vec::new(),
-            acme_http01_challenges: Vec::new(),
+            automatic_hostname_configuration:
+                ployz_core::ingress::AutomaticHostnameConfiguration::Ployz,
+            ployz_dns_target: ployz_core::ingress::PloyzDnsTargetIntent::Enabled,
+            active_certificates: Vec::new(),
         }
     }
 }

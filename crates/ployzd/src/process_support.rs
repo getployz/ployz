@@ -1,23 +1,55 @@
 //! Shared scaffolding for the role processes: shutdown signal,
 //! failure backoff, attempt recording, and lazily opened handles.
 
+use std::future::Future;
 use std::time::Duration;
-use tokio::sync::{broadcast, mpsc};
 
-/// Resolves when the process receives a shutdown signal.
-pub async fn shutdown_signal() -> Result<(), std::io::Error> {
+use ployz_nats::service_runtime::NatsServiceShutdownError;
+use tokio::sync::{broadcast, mpsc};
+use tokio::task::AbortHandle;
+
+/// Runs one role's cleanup within a total deadline and force-cancels its
+/// remaining tasks if the deadline expires.
+pub async fn bounded_role_shutdown(
+    role: &str,
+    deadline: Duration,
+    abort_handles: &[AbortHandle],
+    cleanup: impl Future<Output = Result<(), NatsServiceShutdownError>>,
+) -> Result<(), NatsServiceShutdownError> {
+    match tokio::time::timeout(deadline, cleanup).await {
+        Ok(result) => result,
+        Err(_) => {
+            for handle in abort_handles {
+                handle.abort();
+            }
+            eprintln!(
+                "ployzd {role} shutdown warning: cleanup exceeded {}s; forcing remaining tasks",
+                deadline.as_secs()
+            );
+            Ok(())
+        }
+    }
+}
+
+/// Registers shutdown handlers immediately and returns their waiter.
+pub fn shutdown_signal() -> Result<impl Future<Output = Result<(), std::io::Error>>, std::io::Error>
+{
     #[cfg(unix)]
     {
+        let mut interrupt =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
         let mut terminate =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-        tokio::select! {
-            result = tokio::signal::ctrl_c() => result,
-            _ = terminate.recv() => Ok(()),
-        }
+        Ok(async move {
+            tokio::select! {
+                _ = interrupt.recv() => Ok(()),
+                _ = terminate.recv() => Ok(()),
+            }
+        })
     }
     #[cfg(not(unix))]
     {
-        tokio::signal::ctrl_c().await
+        Ok(async { tokio::signal::ctrl_c().await })
     }
 }
 
@@ -211,6 +243,27 @@ mod tests {
         shutdown_tx.send(()).expect("shutdown sends");
 
         assert!(sleep_or_shutdown(Duration::from_secs(30), &mut shutdown_rx).await);
+    }
+
+    #[tokio::test]
+    async fn bounded_role_shutdown_aborts_tasks_after_deadline() {
+        let task = tokio::spawn(std::future::pending::<()>());
+        let abort_handles = [task.abort_handle()];
+
+        bounded_role_shutdown(
+            "test",
+            Duration::ZERO,
+            &abort_handles,
+            std::future::pending(),
+        )
+        .await
+        .expect("forced shutdown succeeds");
+
+        assert!(
+            task.await
+                .expect_err("task is aborted after the deadline")
+                .is_cancelled()
+        );
     }
 
     #[tokio::test]

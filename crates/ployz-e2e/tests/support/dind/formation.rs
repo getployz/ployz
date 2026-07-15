@@ -338,13 +338,16 @@ async fn product_init_core(
             .expect("valid bootstrap url"),
         cluster_name: MachineJoinClusterName::try_new("dind-e2e").expect("valid cluster name"),
         installer_script: Some(INSTALLER_WRAPPER_PATH.to_owned()),
+        local_release: None,
         detach: false,
         // Containers cannot self-discover a public address; the bridge IP is
         // this machine's reachable address, and pinning it flips the NATS
         // listener from loopback to external so the published port and edge
         // joins can reach it.
         public_ip: Some(core.bridge_ip),
-        public_url_mode: ployz_core::cert::PublicUrlMode::Auto,
+        automatic_hostname_configuration:
+            ployz_core::ingress::AutomaticHostnameConfiguration::Ployz,
+        ployz_dns_target: ployz_core::ingress::PloyzDnsTargetIntent::Enabled,
         host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
     };
     let output = execute_command(PloyzctlCommand::MachineInit(command), &config)
@@ -519,6 +522,7 @@ pub async fn add_and_join_edge(core: &CoreContext, edge: &DindMachine) {
         ),
         roles: InstallRolePolicy::install_all(),
         installer_script: Some(INSTALLER_WRAPPER_PATH.to_owned()),
+        local_release: None,
         detach: false,
         host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
     };

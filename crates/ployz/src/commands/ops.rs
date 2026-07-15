@@ -252,7 +252,9 @@ const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::CredentialGrant => "credential-grant",
         OperationKind::NetworkRepair => "network-repair",
         OperationKind::ServiceRestart => "service-restart",
-        OperationKind::ManagedLease => "managed-lease",
+        OperationKind::ManagedDnsReconcile => "managed-dns-reconcile",
+        OperationKind::IngressConfigure => "ingress-configure",
+        OperationKind::IngressRefresh => "ingress-refresh",
         OperationKind::NamespaceRemove => "namespace-remove",
         OperationKind::VolumeRemove => "volume-remove",
     }
@@ -330,40 +332,22 @@ fn operation_subject(status: &OperationStatus) -> String {
             volume_name,
             ..
         } => format!("volume {}/{}", namespace_id.as_str(), volume_name.as_str()),
-        OperationStatus::ManagedLease { subject, .. } => match subject {
-            ployz_sdk_types::ManagedLeaseSubject::Acquire => "lease acquisition".to_owned(),
-            ployz_sdk_types::ManagedLeaseSubject::DownloadBundle { lease } => {
-                format!("lease {} bundle download", lease.as_str())
+        OperationStatus::ManagedDnsReconcile { subject, .. } => match subject {
+            ployz_sdk_types::ManagedDnsReconcileSubject::Acquire => {
+                "Ployz DNS target acquisition".to_owned()
             }
-            ployz_sdk_types::ManagedLeaseSubject::Renew { lease, addresses } => {
-                let ipv4 = addresses
-                    .ipv4()
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let ipv6 = addresses
-                    .ipv6()
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",");
-                format!(
-                    "lease {} renewal ipv4 {} ipv6 {}",
-                    lease.as_str(),
-                    if ipv4.is_empty() { "none" } else { &ipv4 },
-                    if ipv6.is_empty() { "none" } else { &ipv6 },
-                )
+            ployz_sdk_types::ManagedDnsReconcileSubject::ProjectionApply { lease, .. } => {
+                format!("Ployz DNS target {} projection apply", lease.as_str())
             }
-            ployz_sdk_types::ManagedLeaseSubject::GatewayTestimony { missing } => format!(
-                "gateway testimony unavailable from {}",
-                missing
-                    .iter()
-                    .map(ployz_sdk_types::MachineId::as_str)
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ),
+            ployz_sdk_types::ManagedDnsReconcileSubject::AuthorizedWithdraw { lease, .. } => {
+                format!("Ployz DNS target {} withdrawal", lease.as_str())
+            }
+            ployz_sdk_types::ManagedDnsReconcileSubject::LeaseRenewal { lease, .. } => {
+                format!("Ployz DNS target {} lease renewal", lease.as_str())
+            }
         },
+        OperationStatus::IngressRefresh { .. } => "cluster ingress endpoints".to_owned(),
+        OperationStatus::IngressConfigure { .. } => "cluster ingress configuration".to_owned(),
     }
 }
 
@@ -407,17 +391,45 @@ fn operation_state(status: &OperationStatus) -> String {
         OperationStatus::CredentialGrant { state, .. } => credential_grant_state(state).to_owned(),
         OperationStatus::NetworkRepair { state, .. } => network_repair_state(state).to_owned(),
         OperationStatus::ServiceRestart { state, .. } => service_restart_state(state).to_owned(),
-        OperationStatus::ManagedLease { state, .. } => managed_lease_state(state).to_owned(),
+        OperationStatus::ManagedDnsReconcile { state, .. } => {
+            managed_dns_reconcile_state(state).to_owned()
+        }
+        OperationStatus::IngressRefresh { state, .. } => ingress_refresh_state(state).to_owned(),
+        OperationStatus::IngressConfigure { state, .. } => {
+            ingress_configure_state(state).to_owned()
+        }
         OperationStatus::NamespaceRemove { state, .. } => namespace_remove_state(state).to_owned(),
         OperationStatus::VolumeRemove { state, .. } => volume_remove_state(state).to_owned(),
     }
 }
 
-const fn managed_lease_state(state: &ployz_sdk_types::ManagedLeaseOperationState) -> &'static str {
+const fn ingress_configure_state(
+    state: &ployz_sdk_types::IngressConfigureOperationState,
+) -> &'static str {
     match state {
-        ployz_sdk_types::ManagedLeaseOperationState::Accepted => "accepted",
-        ployz_sdk_types::ManagedLeaseOperationState::Completed => "completed",
-        ployz_sdk_types::ManagedLeaseOperationState::Failed { .. } => "failed",
+        ployz_sdk_types::IngressConfigureOperationState::Accepted => "accepted",
+        ployz_sdk_types::IngressConfigureOperationState::Completed => "completed",
+        ployz_sdk_types::IngressConfigureOperationState::Failed { .. } => "failed",
+    }
+}
+
+const fn ingress_refresh_state(
+    state: &ployz_sdk_types::IngressRefreshOperationState,
+) -> &'static str {
+    match state {
+        ployz_sdk_types::IngressRefreshOperationState::Accepted => "accepted",
+        ployz_sdk_types::IngressRefreshOperationState::Completed { .. } => "completed",
+        ployz_sdk_types::IngressRefreshOperationState::Failed { .. } => "failed",
+    }
+}
+
+const fn managed_dns_reconcile_state(
+    state: &ployz_sdk_types::ManagedDnsReconcileOperationState,
+) -> &'static str {
+    match state {
+        ployz_sdk_types::ManagedDnsReconcileOperationState::Accepted => "accepted",
+        ployz_sdk_types::ManagedDnsReconcileOperationState::Completed => "completed",
+        ployz_sdk_types::ManagedDnsReconcileOperationState::Failed { .. } => "failed",
     }
 }
 
@@ -508,8 +520,8 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
             "failure {}",
             render_network_repair_failure(failure)
         )),
-        OperationStatus::ManagedLease {
-            state: ployz_sdk_types::ManagedLeaseOperationState::Failed { failure },
+        OperationStatus::ManagedDnsReconcile {
+            state: ployz_sdk_types::ManagedDnsReconcileOperationState::Failed { failure },
             ..
         } => Some(format!("failure {}", failure.message.as_str())),
         OperationStatus::CredentialGrant {
@@ -523,6 +535,14 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
             "failure {}",
             certificate_provision_failure_detail(failure.failure(), None)
         )),
+        OperationStatus::IngressRefresh {
+            state: ployz_sdk_types::IngressRefreshOperationState::Failed { failure },
+            ..
+        } => Some(format!("failure {}", ingress_refresh_failure(failure))),
+        OperationStatus::IngressConfigure {
+            state: ployz_sdk_types::IngressConfigureOperationState::Failed { failure },
+            ..
+        } => Some(format!("failure {}", ingress_configure_failure(failure))),
         OperationStatus::Deploy { .. }
         | OperationStatus::Cert { .. }
         | OperationStatus::MachineAdd { .. }
@@ -532,9 +552,30 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
         | OperationStatus::CredentialGrant { .. }
         | OperationStatus::NetworkRepair { .. }
         | OperationStatus::ServiceRestart { .. }
-        | OperationStatus::ManagedLease { .. }
+        | OperationStatus::ManagedDnsReconcile { .. }
+        | OperationStatus::IngressRefresh { .. }
+        | OperationStatus::IngressConfigure { .. }
         | OperationStatus::NamespaceRemove { .. }
         | OperationStatus::VolumeRemove { .. } => None,
+    }
+}
+
+fn ingress_configure_failure(failure: &ployz_sdk_types::IngressConfigureFailure) -> &str {
+    match failure {
+        ployz_sdk_types::IngressConfigureFailure::InvalidConfiguration { message }
+        | ployz_sdk_types::IngressConfigureFailure::IntentStoreFailed { message } => {
+            message.as_str()
+        }
+    }
+}
+
+fn ingress_refresh_failure(failure: &ployz_sdk_types::IngressRefreshFailure) -> &str {
+    match failure {
+        ployz_sdk_types::IngressRefreshFailure::IntentUnavailable { message }
+        | ployz_sdk_types::IngressRefreshFailure::GatherFailed { message, .. }
+        | ployz_sdk_types::IngressRefreshFailure::StorageFailed { message, .. }
+        | ployz_sdk_types::IngressRefreshFailure::ConcurrentWriter { message, .. }
+        | ployz_sdk_types::IngressRefreshFailure::Interrupted { message } => message.as_str(),
     }
 }
 
@@ -630,7 +671,6 @@ const fn deploy_completion_outcome(
 
 const fn deploy_running_stage(stage: DeployRunningStage) -> &'static str {
     match stage {
-        DeployRunningStage::PreparingDataplane => "running:preparing-dataplane",
         DeployRunningStage::EnsuringImages => "running:ensuring-images",
         DeployRunningStage::StartingContainers => "running:starting-containers",
         DeployRunningStage::WaitingForHealth => "running:waiting-for-health",
@@ -691,7 +731,6 @@ impl DeployEventRenderContext {
                 self.service_id = Some(target.status_service_id());
             }
             OperationEvent::DeployPlanningStarted { .. }
-            | OperationEvent::DeployWaitingForManagedCertificate { .. }
             | OperationEvent::DeployImageResolved { .. }
             | OperationEvent::DeployPlanCreated { .. }
             | OperationEvent::DeployRunning { .. }
@@ -699,7 +738,6 @@ impl DeployEventRenderContext {
             | OperationEvent::DeployHealthCheckStarted { .. }
             | OperationEvent::DeployPhaseStarted { .. }
             | OperationEvent::DeployPhaseFinished { .. }
-            | OperationEvent::DeployDataplanePrepared { .. }
             | OperationEvent::DeployImageAvailabilityVerified { .. }
             | OperationEvent::DeployCleanupFinished { .. }
             | OperationEvent::DeployCompleted { .. }
@@ -707,6 +745,7 @@ impl DeployEventRenderContext {
             | OperationEvent::CertProvisionSubmitted { .. }
             | OperationEvent::CertChallengePublished { .. }
             | OperationEvent::CertValidationStarted { .. }
+            | OperationEvent::CertWarning { .. }
             | OperationEvent::CertCompleted { .. }
             | OperationEvent::CertFailed { .. }
             | OperationEvent::MachineAddSubmitted { .. }
@@ -729,7 +768,7 @@ impl DeployEventRenderContext {
             | OperationEvent::CredentialGrantFailed { .. }
             | OperationEvent::NetworkRepairSubmitted { .. }
             | OperationEvent::NetworkRepairRunning { .. }
-            | OperationEvent::NetworkRepairDataplanePrepared { .. }
+            | OperationEvent::NetworkRepairDataplaneConverged { .. }
             | OperationEvent::NetworkRepairMachineFactsRefreshed { .. }
             | OperationEvent::NetworkRepairDnsRefreshConfirmed { .. }
             | OperationEvent::NetworkRepairCompleted { .. }
@@ -739,9 +778,15 @@ impl DeployEventRenderContext {
             | OperationEvent::ServiceRestartContainerRestarted { .. }
             | OperationEvent::ServiceRestartCompleted { .. }
             | OperationEvent::ServiceRestartFailed { .. }
-            | OperationEvent::ManagedLeaseSubmitted { .. }
-            | OperationEvent::ManagedLeaseCompleted { .. }
-            | OperationEvent::ManagedLeaseFailed { .. }
+            | OperationEvent::ManagedDnsReconcileSubmitted { .. }
+            | OperationEvent::ManagedDnsReconcileCompleted { .. }
+            | OperationEvent::ManagedDnsReconcileFailed { .. }
+            | OperationEvent::IngressRefreshSubmitted { .. }
+            | OperationEvent::IngressRefreshCompleted { .. }
+            | OperationEvent::IngressRefreshFailed { .. }
+            | OperationEvent::IngressConfigureSubmitted { .. }
+            | OperationEvent::IngressConfigureCompleted { .. }
+            | OperationEvent::IngressConfigureFailed { .. }
             | OperationEvent::NamespaceRemoveSubmitted { .. }
             | OperationEvent::NamespaceRemoveRunning { .. }
             | OperationEvent::NamespaceRemoveRouteBindingRemoved { .. }
@@ -814,20 +859,19 @@ fn render_replayed_event_text(
             }
         ),
         OperationEvent::DeployPlanningStarted { .. }
-        | OperationEvent::DeployWaitingForManagedCertificate { .. }
         | OperationEvent::DeployPlanCreated { .. }
         | OperationEvent::DeployRunning { .. }
         | OperationEvent::DeployContainerStarted { .. }
         | OperationEvent::DeployHealthCheckStarted { .. }
         | OperationEvent::DeployPhaseStarted { .. }
         | OperationEvent::DeployPhaseFinished { .. }
-        | OperationEvent::DeployDataplanePrepared { .. }
         | OperationEvent::DeployImageAvailabilityVerified { .. }
         | OperationEvent::DeployCleanupFinished { .. }
         | OperationEvent::DeployCompleted { .. }
         | OperationEvent::CertProvisionSubmitted { .. }
         | OperationEvent::CertChallengePublished { .. }
         | OperationEvent::CertValidationStarted { .. }
+        | OperationEvent::CertWarning { .. }
         | OperationEvent::CertCompleted { .. }
         | OperationEvent::CertFailed { .. }
         | OperationEvent::MachineAddSubmitted { .. }
@@ -849,7 +893,7 @@ fn render_replayed_event_text(
         | OperationEvent::CredentialGrantCompleted { .. }
         | OperationEvent::NetworkRepairSubmitted { .. }
         | OperationEvent::NetworkRepairRunning { .. }
-        | OperationEvent::NetworkRepairDataplanePrepared { .. }
+        | OperationEvent::NetworkRepairDataplaneConverged { .. }
         | OperationEvent::NetworkRepairMachineFactsRefreshed { .. }
         | OperationEvent::NetworkRepairDnsRefreshConfirmed { .. }
         | OperationEvent::NetworkRepairCompleted { .. }
@@ -858,9 +902,15 @@ fn render_replayed_event_text(
         | OperationEvent::ServiceRestartContainerRestarted { .. }
         | OperationEvent::ServiceRestartCompleted { .. }
         | OperationEvent::ServiceRestartFailed { .. }
-        | OperationEvent::ManagedLeaseSubmitted { .. }
-        | OperationEvent::ManagedLeaseCompleted { .. }
-        | OperationEvent::ManagedLeaseFailed { .. }
+        | OperationEvent::ManagedDnsReconcileSubmitted { .. }
+        | OperationEvent::ManagedDnsReconcileCompleted { .. }
+        | OperationEvent::ManagedDnsReconcileFailed { .. }
+        | OperationEvent::IngressRefreshSubmitted { .. }
+        | OperationEvent::IngressRefreshCompleted { .. }
+        | OperationEvent::IngressRefreshFailed { .. }
+        | OperationEvent::IngressConfigureSubmitted { .. }
+        | OperationEvent::IngressConfigureCompleted { .. }
+        | OperationEvent::IngressConfigureFailed { .. }
         | OperationEvent::NamespaceRemoveSubmitted { .. }
         | OperationEvent::NamespaceRemoveRunning { .. }
         | OperationEvent::NamespaceRemoveRouteBindingRemoved { .. }
@@ -885,9 +935,6 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
     match event {
         OperationEvent::DeploySubmitted { .. } => "deploy.submitted",
         OperationEvent::DeployPlanningStarted { .. } => "deploy.planning",
-        OperationEvent::DeployWaitingForManagedCertificate { .. } => {
-            "deploy.managed_certificate.waiting"
-        }
         OperationEvent::DeployImageResolved { .. } => "deploy.image_resolved",
         OperationEvent::DeployPlanCreated { .. } => "deploy.plan_created",
         OperationEvent::DeployRunning { .. } => "deploy.running",
@@ -895,7 +942,6 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::DeployHealthCheckStarted { .. } => "deploy.health_check_started",
         OperationEvent::DeployPhaseStarted { .. } => "deploy.phase_started",
         OperationEvent::DeployPhaseFinished { .. } => "deploy.phase_finished",
-        OperationEvent::DeployDataplanePrepared { .. } => "deploy.dataplane_prepared",
         OperationEvent::DeployImageAvailabilityVerified { .. } => {
             "deploy.image_availability_verified"
         }
@@ -905,6 +951,7 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::CertProvisionSubmitted { .. } => "cert.submitted",
         OperationEvent::CertChallengePublished { .. } => "cert.challenge_published",
         OperationEvent::CertValidationStarted { .. } => "cert.validation_started",
+        OperationEvent::CertWarning { .. } => "cert.warning",
         OperationEvent::CertCompleted { .. } => "cert.completed",
         OperationEvent::CertFailed { .. } => "cert.failed",
         OperationEvent::MachineAddSubmitted { .. } => "machine.add.submitted",
@@ -946,8 +993,8 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::CredentialGrantFailed { .. } => "credential.grant.failed",
         OperationEvent::NetworkRepairSubmitted { .. } => "network.repair.submitted",
         OperationEvent::NetworkRepairRunning { .. } => "network.repair.running",
-        OperationEvent::NetworkRepairDataplanePrepared { .. } => {
-            "network.repair.dataplane_prepared"
+        OperationEvent::NetworkRepairDataplaneConverged { .. } => {
+            "network.repair.dataplane_converged"
         }
         OperationEvent::NetworkRepairMachineFactsRefreshed { .. } => {
             "network.repair.machine_facts_refreshed"
@@ -964,9 +1011,15 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         }
         OperationEvent::ServiceRestartCompleted { .. } => "service.restart.completed",
         OperationEvent::ServiceRestartFailed { .. } => "service.restart.failed",
-        OperationEvent::ManagedLeaseSubmitted { .. } => "managed.lease.submitted",
-        OperationEvent::ManagedLeaseCompleted { .. } => "managed.lease.completed",
-        OperationEvent::ManagedLeaseFailed { .. } => "managed.lease.failed",
+        OperationEvent::ManagedDnsReconcileSubmitted { .. } => "managed.dns.reconcile.submitted",
+        OperationEvent::ManagedDnsReconcileCompleted { .. } => "managed.dns.reconcile.completed",
+        OperationEvent::ManagedDnsReconcileFailed { .. } => "managed.dns.reconcile.failed",
+        OperationEvent::IngressRefreshSubmitted { .. } => "ingress.refresh.submitted",
+        OperationEvent::IngressRefreshCompleted { .. } => "ingress.refresh.completed",
+        OperationEvent::IngressRefreshFailed { .. } => "ingress.refresh.failed",
+        OperationEvent::IngressConfigureSubmitted { .. } => "ingress.configure.submitted",
+        OperationEvent::IngressConfigureCompleted { .. } => "ingress.configure.completed",
+        OperationEvent::IngressConfigureFailed { .. } => "ingress.configure.failed",
         OperationEvent::NamespaceRemoveSubmitted { .. } => "namespace.remove.submitted",
         OperationEvent::NamespaceRemoveRunning { .. } => "namespace.remove.running",
         OperationEvent::NamespaceRemoveRouteBindingRemoved { .. } => {

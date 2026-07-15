@@ -1,6 +1,7 @@
 use ployz_core::cert::{
     LeaseBearerToken, ManagedCertBundle, ManagedCertificateIssuanceFailureKind,
-    ManagedLeaseAcquireRequest, ManagedLeaseAcquired, ManagedLeaseName, ManagedLeaseRenewed,
+    ManagedLeaseAcquireRequest, ManagedLeaseAcquired, ManagedLeaseName, ManagedLeaseRenewRequest,
+    ManagedLeaseRenewed,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -89,7 +90,7 @@ impl LeaseClient {
         &self,
         name: ManagedLeaseName,
         token: LeaseBearerToken,
-        request: ManagedLeaseAcquireRequest,
+        request: ManagedLeaseRenewRequest,
     ) -> Result<ManagedLeaseRenewed, LeaseClientError> {
         let path = format!("/v1/leases/{}/renew", name.as_str());
         self.post_json(&path, Some(token), request).await
@@ -218,6 +219,7 @@ impl LeaseClientError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::cert::ManagedLeaseAcquisitionId;
     use ployz_lease_worker::{StubLeaseWorker, serve};
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -248,6 +250,8 @@ mod tests {
 
         let acquired = client
             .acquire(ManagedLeaseAcquireRequest {
+                acquisition_id: ManagedLeaseAcquisitionId::try_new("a1").expect("acquisition id"),
+                token: LeaseBearerToken::try_new("client-token").expect("token"),
                 ipv4: Vec::new(),
                 ipv6: Vec::new(),
             })
@@ -264,7 +268,7 @@ mod tests {
         else {
             panic!("bundle ready");
         };
-        let renewal_request = ManagedLeaseAcquireRequest {
+        let renewal_request = ManagedLeaseRenewRequest {
             ipv4: vec!["203.0.113.8".parse().expect("IPv4")],
             ipv6: vec!["2001:db8::8".parse().expect("IPv6")],
         };
@@ -308,6 +312,8 @@ mod tests {
         );
         let acquired = client
             .acquire(ManagedLeaseAcquireRequest {
+                acquisition_id: ManagedLeaseAcquisitionId::try_new("a2").expect("acquisition id"),
+                token: LeaseBearerToken::try_new("client-token").expect("token"),
                 ipv4: Vec::new(),
                 ipv6: Vec::new(),
             })
@@ -319,7 +325,7 @@ mod tests {
             .renew(
                 acquired.lease.name,
                 wrong_token,
-                ManagedLeaseAcquireRequest {
+                ManagedLeaseRenewRequest {
                     ipv4: Vec::new(),
                     ipv6: Vec::new(),
                 },

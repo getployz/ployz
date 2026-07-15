@@ -7,12 +7,14 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::bootstrap_command::{FounderBootstrapCommand, MACHINE_NATS_PORT};
+use crate::bootstrap_command::{
+    BootstrapInstaller, BootstrapRelease, FounderBootstrapCommand, MACHINE_NATS_PORT,
+};
 use crate::client_ids::generate_client_machine_add_ids;
 use crate::commands::core::{CorePromoteCommand, CoreReplaceCommand};
 use crate::commands::init::FirstMachineActivateCommand;
 use crate::commands::machine::{
-    MachineAddOutput, MachineAddRemoteCommand, MachineAddRemoteDetachedOutput,
+    MachineAddInstaller, MachineAddOutput, MachineAddRemoteCommand, MachineAddRemoteDetachedOutput,
     MachineAddRemoteOutput, MachineIdentity, MachineIdentityError, MachineInitCommand,
     MachineInitOutput,
 };
@@ -21,6 +23,7 @@ use crate::config::{
     load_cluster_context, publish_cluster_context, save_cluster_context,
     save_cluster_context_machine_ssh,
 };
+use crate::local_release::LocalReleaseStageError;
 use crate::runtime::{
     CommandExit, PloyzctlExecutionError, PloyzctlExecutionOutput, PloyzctlRuntimeConfig,
     activate_first_machine, api_error, operation_api_client, read_join_seed,
@@ -610,6 +613,12 @@ fn runtime_nats_url_for_target(
     })
 }
 
+fn local_release_error(error: LocalReleaseStageError) -> PloyzctlExecutionError {
+    remote_machine_error(RemoteMachineExecutionError::LocalRelease {
+        message: error.to_string(),
+    })
+}
+
 /// `ployz machine init USER@HOST`: derive the remote identity, render
 /// the founder bootstrap command, deliver it over SSH, parse the machine
 /// local bootstrap result, record local context, and activate the first
@@ -623,10 +632,31 @@ pub(crate) async fn execute_machine_init(
     let target = command.target.clone();
 
     let identity = derive_remote_identity(&probe, &target, command.identity_override.clone())?;
+    let staged_release = match &command.local_release {
+        Some(bundle) => Some((
+            bundle
+                .stage(&installer, &target)
+                .map_err(local_release_error)?,
+            bundle.version().to_owned(),
+        )),
+        None => None,
+    };
+    let (bootstrap_installer, release, release_manifest_url) = match staged_release {
+        Some((staged, version)) => (
+            BootstrapInstaller::RemoteScript(staged.installer_script),
+            BootstrapRelease::Version(version),
+            Some(staged.manifest_url),
+        ),
+        None => (
+            command.installer(),
+            command.release.clone(),
+            command.release_manifest_url.clone(),
+        ),
+    };
     let install_command = FounderBootstrapCommand {
-        installer: command.installer(),
-        release: command.release.clone(),
-        release_manifest_url: command.release_manifest_url.clone(),
+        installer: bootstrap_installer,
+        release,
+        release_manifest_url,
         machine_id: identity.machine_id.clone(),
         roles: command.roles,
         bootstrap_url: command.bootstrap_url.clone(),
@@ -668,8 +698,12 @@ pub(crate) async fn execute_machine_init(
 
     let activate_config = config.clone().with_cluster_context(Some(context.clone()));
     let activation = activate_first_machine(
-        &FirstMachineActivateCommand::new(identity.machine_id.clone(), command.roles)
-            .with_public_url_mode(command.public_url_mode),
+        &FirstMachineActivateCommand {
+            machine_id: identity.machine_id.clone(),
+            roles: command.roles,
+            automatic_hostname_configuration: command.automatic_hostname_configuration.clone(),
+            ployz_dns_target: command.ployz_dns_target,
+        },
         &activate_config,
     )
     .await?;
@@ -734,7 +768,30 @@ pub(crate) async fn execute_machine_add_remote(
         .map_err(api_error)?;
     let output = MachineAddOutput::from_accepted(accepted, join_seed);
 
-    let install_command = output.install_command(&command.installer());
+    if let Some(bundle) = &command.local_release {
+        bundle
+            .validate_join_material(&output.join_bundle.material)
+            .map_err(|message| {
+                remote_machine_error(RemoteMachineExecutionError::LocalReleaseAfterMachineAdd {
+                    operation_id: operation_id.clone(),
+                    message,
+                })
+            })?;
+    }
+    let staged_release = command
+        .local_release
+        .as_ref()
+        .map(|bundle| {
+            bundle
+                .stage(&installer, &target)
+                .map_err(local_release_error)
+        })
+        .transpose()?;
+    let add_installer = staged_release.map_or_else(
+        || command.installer(),
+        |staged| MachineAddInstaller::RemoteScript(staged.installer_script),
+    );
+    let install_command = output.install_command(&add_installer);
     if let Err(source) = installer.run(&target, SshPhase::RunInstaller, &install_command) {
         return Err(remote_machine_error(
             RemoteMachineExecutionError::RemoteJoinInstall {
@@ -816,6 +873,13 @@ pub enum RemoteMachineExecutionError {
     Ssh {
         source: Box<SshCommandError>,
     },
+    LocalRelease {
+        message: String,
+    },
+    LocalReleaseAfterMachineAdd {
+        operation_id: OperationId,
+        message: String,
+    },
     MachineIdentity {
         source: MachineIdentityError,
     },
@@ -872,6 +936,15 @@ impl fmt::Display for RemoteMachineExecutionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Ssh { source } => write!(formatter, "{source}"),
+            Self::LocalRelease { message } => write!(formatter, "local release: {message}"),
+            Self::LocalReleaseAfterMachineAdd {
+                operation_id,
+                message,
+            } => write!(
+                formatter,
+                "machine add operation {} accepted, but local release validation failed: {message}",
+                operation_id.as_str()
+            ),
             Self::MachineIdentity { source } => write!(formatter, "{source}"),
             Self::FirstMachineBootstrapOutputTruncated => write!(
                 formatter,

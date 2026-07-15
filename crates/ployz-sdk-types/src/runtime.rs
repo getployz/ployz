@@ -21,6 +21,11 @@ pub struct RuntimeSnapshotResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeSnapshot {
+    pub automatic_hostname_configuration: AutomaticHostnameConfiguration,
+    pub ployz_dns_target: RuntimePloyzDnsTarget,
+    pub ingress_endpoint_projection: IngressEndpointProjection,
+    pub active_certificates: Vec<ActiveCertificateMetadata>,
+    pub route_tls: Vec<RouteTlsStatus>,
     pub machines: Vec<MachineSnapshot>,
     pub services: Vec<ServiceSnapshot>,
     pub routes: Vec<RouteBindingState>,
@@ -30,6 +35,49 @@ pub struct RuntimeSnapshot {
     pub instances: Vec<RuntimeServiceInstance>,
     pub projection_sources: RuntimeProjectionSources,
     pub updated_at_unix_seconds: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimePloyzDnsTarget {
+    pub intent: PloyzDnsTargetIntent,
+    pub allocation: RuntimePloyzDnsTargetAllocation,
+    pub publication: RuntimePloyzDnsTargetPublication,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RuntimePloyzDnsTargetAllocation {
+    Unacquired,
+    Allocated {
+        hostname: RouteHostname,
+        issued_at_unix_seconds: u64,
+        expires_at_unix_seconds: u64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RuntimePloyzDnsTargetPublication {
+    Unpublished,
+    Applied {
+        ingress_projection: Option<IngressEndpointProjectionIdentity>,
+    },
+    Withdrawn,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RouteTlsStatus {
+    pub route_binding_id: RouteBindingId,
+    pub availability: RouteTlsAvailability,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RouteTlsAvailability {
+    Available { certificate_id: CertId },
+    Unavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

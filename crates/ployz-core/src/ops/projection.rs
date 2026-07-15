@@ -8,10 +8,12 @@ use super::core_replace::{self, CoreReplaceOperationState};
 use super::credential_grant::{self, CredentialGrantOperationState};
 use super::deploy::{self, DeployOperationState};
 use super::events::{ClassifiedOperationEvent, OperationSubjectRef};
+use super::ingress_configure::{self, IngressConfigureOperationState};
+use super::ingress_refresh::{self, IngressRefreshOperationState};
 use super::machine_add::{self, MachineAddFields, MachineAddOperationState};
 use super::machine_lifecycle::{self, MachineLifecycleOperationState};
 use super::machine_update::{self, MachineUpdateOperationState};
-use super::managed_lease::{self, ManagedLeaseOperationState};
+use super::managed_dns_reconcile::{self, ManagedDnsReconcileOperationState};
 use super::namespace_remove::{self, NamespaceRemoveOperationState};
 use super::network_repair::{self, NetworkRepairOperationState};
 use super::service_restart::{self, ServiceRestartOperationState};
@@ -47,8 +49,8 @@ pub enum StatusProjectionError {
     )]
     OperationSubjectMismatch {
         operation_id: OperationId,
-        expected: OperationSubjectRef,
-        actual: OperationSubjectRef,
+        expected: Box<OperationSubjectRef>,
+        actual: Box<OperationSubjectRef>,
     },
     #[error(
         "operation event mismatch: expected {}, found {}",
@@ -61,6 +63,8 @@ pub enum StatusProjectionError {
     },
     #[error("credential grant operation {} action does not match its submitted action", .operation_id.as_str())]
     CredentialGrantActionMismatch { operation_id: OperationId },
+    #[error("ingress configuration operation {} does not match its submitted configuration", .operation_id.as_str())]
+    IngressConfigurationMismatch { operation_id: OperationId },
     #[error(
         "operation {} is terminal in its {} state; a {} transition was attempted",
         .operation_id.as_str(),
@@ -84,7 +88,7 @@ pub enum StatusProjectionError {
         attempted: Box<ProjectionOperationState>,
     },
     #[error("managed lease operation {} does not support cancellation", .operation_id.as_str())]
-    ManagedLeaseCancellationUnsupported { operation_id: OperationId },
+    ManagedDnsReconcileCancellationUnsupported { operation_id: OperationId },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,7 +102,9 @@ pub enum ProjectionOperationState {
     CredentialGrant(CredentialGrantOperationState),
     NetworkRepair(NetworkRepairOperationState),
     ServiceRestart(ServiceRestartOperationState),
-    ManagedLease(ManagedLeaseOperationState),
+    ManagedDnsReconcile(ManagedDnsReconcileOperationState),
+    IngressConfigure(IngressConfigureOperationState),
+    IngressRefresh(IngressRefreshOperationState),
     NamespaceRemove(NamespaceRemoveOperationState),
     VolumeRemove(VolumeRemoveOperationState),
 }
@@ -116,7 +122,9 @@ impl ProjectionOperationState {
             Self::CredentialGrant(_) => OperationKind::CredentialGrant,
             Self::NetworkRepair(_) => OperationKind::NetworkRepair,
             Self::ServiceRestart(_) => OperationKind::ServiceRestart,
-            Self::ManagedLease(_) => OperationKind::ManagedLease,
+            Self::ManagedDnsReconcile(_) => OperationKind::ManagedDnsReconcile,
+            Self::IngressConfigure(_) => OperationKind::IngressConfigure,
+            Self::IngressRefresh(_) => OperationKind::IngressRefresh,
             Self::NamespaceRemove(_) => OperationKind::NamespaceRemove,
             Self::VolumeRemove(_) => OperationKind::VolumeRemove,
         }
@@ -134,7 +142,9 @@ pub(crate) const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::CredentialGrant => "credential-grant",
         OperationKind::NetworkRepair => "network-repair",
         OperationKind::ServiceRestart => "service-restart",
-        OperationKind::ManagedLease => "managed-lease",
+        OperationKind::ManagedDnsReconcile => "managed-dns-reconcile",
+        OperationKind::IngressConfigure => "ingress-configure",
+        OperationKind::IngressRefresh => "ingress-refresh",
         OperationKind::NamespaceRemove => "namespace-remove",
         OperationKind::VolumeRemove => "volume-remove",
     }
@@ -156,7 +166,11 @@ fn subject_ref_text(subject: &OperationSubjectRef) -> String {
             format!("core-replace {}", machine_id.as_str())
         }
         OperationSubjectRef::CredentialGrant => "credential-grant".to_owned(),
-        OperationSubjectRef::ManagedLease(subject) => format!("managed-lease {subject:?}"),
+        OperationSubjectRef::ManagedDnsReconcile(subject) => {
+            format!("managed-dns-reconcile {subject:?}")
+        }
+        OperationSubjectRef::IngressConfigure => "ingress-configure".to_owned(),
+        OperationSubjectRef::IngressRefresh => "ingress-refresh".to_owned(),
     }
 }
 
@@ -186,8 +200,8 @@ pub(super) fn verify_subject<Subject: Clone + PartialEq>(
 
     Err(StatusProjectionError::OperationSubjectMismatch {
         operation_id: operation_id.clone(),
-        expected: subject_ref(expected.clone()),
-        actual: subject_ref(actual.clone()),
+        expected: Box::new(subject_ref(expected.clone())),
+        actual: Box::new(subject_ref(actual.clone())),
     })
 }
 
@@ -397,14 +411,32 @@ pub fn project_operation_event(
                 event_sequence,
             )
         }
-        ClassifiedOperationEvent::ManagedLease { event, .. } => {
-            let OperationStatus::ManagedLease {
+        ClassifiedOperationEvent::ManagedDnsReconcile { event, .. } => {
+            let OperationStatus::ManagedDnsReconcile {
                 id, subject, state, ..
             } = current
             else {
-                return Err(kind_mismatch(current, OperationKind::ManagedLease));
+                return Err(kind_mismatch(current, OperationKind::ManagedDnsReconcile));
             };
-            managed_lease::project_event(id, subject, state, event, event_sequence)
+            managed_dns_reconcile::project_event(id, subject, state, event, event_sequence)
+        }
+        ClassifiedOperationEvent::IngressConfigure { event, .. } => {
+            let OperationStatus::IngressConfigure {
+                id,
+                configuration,
+                state,
+                ..
+            } = current
+            else {
+                return Err(kind_mismatch(current, OperationKind::IngressConfigure));
+            };
+            ingress_configure::project_event(id, configuration, state, event, event_sequence)
+        }
+        ClassifiedOperationEvent::IngressRefresh { event, .. } => {
+            let OperationStatus::IngressRefresh { id, state, .. } = current else {
+                return Err(kind_mismatch(current, OperationKind::IngressRefresh));
+            };
+            ingress_refresh::project_event(id, state, event, event_sequence)
         }
         ClassifiedOperationEvent::NamespaceRemove { event, .. } => {
             let OperationStatus::NamespaceRemove {

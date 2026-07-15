@@ -8,13 +8,10 @@ use ployz::commands::init::{
 use ployz::commands::machine::MachineName;
 use ployz::commands::ops::{ListOutput, OpsWatchOutput, StatusOutput, WatchOutput};
 use ployz::commands::service::{ServiceInspectOutput, ServiceListOutput};
-use ployz::commands::{PloyzctlCliError, PloyzctlCommand, parse_command, parse_invocation};
-use ployz_core::cert::{ManagedLeaseAddressSet, ManagedLeaseName};
-use ployz_core::dataplane::{
-    EbpfForwardingReady, EbpfForwardingReadyEvidence, PloyzNativeMeshMachineReady,
-    PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady,
-    WireGuardReadyEvidence,
+use ployz::commands::{
+    PloyzctlCliError, PloyzctlCommand, TelemetryCommand, parse_command, parse_invocation,
 };
+use ployz_core::cert::ManagedLeaseName;
 use ployz_core::deploy::{
     DeployOrigin, DeployRequest, DeployServiceSpec, ImageReference, ReplicaCount,
 };
@@ -22,9 +19,10 @@ use ployz_core::ids::{ContainerId, MachineId, NamespaceId, ServiceId};
 use ployz_core::machine_runtime::ManagedContainerHealthStatus;
 use ployz_core::ops::{
     DeployOperationFailure, DeployOperationState, DeployRunningStage, HealthCheckFailure,
-    MAX_OPERATION_EVENT_REPLAY_LIMIT, ManagedLeaseOperationState, ManagedLeaseSubject,
-    OperationEventReplayLimit, OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot,
-    OperatorHint, ReplayedOperationEvent, RetainedArtifact,
+    MAX_OPERATION_EVENT_REPLAY_LIMIT, ManagedDnsReconcileOperationState,
+    ManagedDnsReconcileSubject, OperationEventReplayLimit, OperationIdempotencyKey,
+    OperationStatus, OperationStatusSnapshot, OperatorHint, ReplayedOperationEvent,
+    RetainedArtifact,
 };
 use ployz_core::state::MachineLifecycle;
 use ployz_sdk_types::{
@@ -41,8 +39,33 @@ fn cli_login_is_reserved_cloud_verb() {
 }
 
 #[test]
+fn cli_telemetry_preference_commands_parse_locally() {
+    for (verb, expected) in [
+        ("enable", TelemetryCommand::Enable),
+        ("disable", TelemetryCommand::Disable),
+    ] {
+        let command = parse_command(["telemetry", verb].map(str::to_owned))
+            .expect("telemetry preference command parses");
+
+        assert_eq!(command, PloyzctlCommand::Telemetry(expected));
+        assert_eq!(command.telemetry_name(), None);
+    }
+}
+
+#[test]
+fn cli_telemetry_names_are_canonical_across_aliases() {
+    for args in [["ls", ""], ["list", ""], ["service", "list"]] {
+        let args = args.into_iter().filter(|arg| !arg.is_empty());
+        let command = parse_command(args.map(str::to_owned)).expect("service list parses");
+
+        assert_eq!(command.telemetry_name(), Some("service list"));
+    }
+}
+
+#[test]
 fn binary_login_fails_fast_when_cloud_is_unconfigured() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .arg("login")
         .output()
         .expect("ployz binary runs");
@@ -94,22 +117,19 @@ fn cli_init_activate_first_machine_is_explicit_subcommand() {
     assert_eq!(command.machine_id, machine_id("machine_1"));
     assert_eq!(command.roles, InstallRolePolicy::install_all());
     assert_eq!(
-        command.public_url_mode,
-        ployz_core::cert::PublicUrlMode::Auto
+        command.automatic_hostname_configuration,
+        ployz_core::ingress::AutomaticHostnameConfiguration::Ployz
+    );
+    assert_eq!(
+        command.ployz_dns_target,
+        ployz_core::ingress::PloyzDnsTargetIntent::Enabled
     );
 }
 
 #[test]
-fn cli_init_activate_first_machine_parses_public_url_choice() {
-    for (value, expected) in [
-        ("auto", ployz_core::cert::PublicUrlMode::Auto),
-        (
-            "bring-your-own",
-            ployz_core::cert::PublicUrlMode::BringYourOwn,
-        ),
-        ("none", ployz_core::cert::PublicUrlMode::None),
-    ] {
-        let command = parse_command(
+fn cli_init_activate_first_machine_rejects_removed_public_url_flag() {
+    assert!(
+        parse_command(
             [
                 "internal",
                 "init",
@@ -117,41 +137,12 @@ fn cli_init_activate_first_machine_parses_public_url_choice() {
                 "--machine",
                 "machine_1",
                 "--public-url",
-                value,
+                "none",
             ]
             .map(str::to_owned),
         )
-        .expect("public URL choice parses");
-        let PloyzctlCommand::InitFirstMachineActivate(command) = command else {
-            panic!("expected first-machine activation command");
-        };
-        assert_eq!(command.public_url_mode, expected);
-    }
-}
-
-#[test]
-fn cli_init_activate_first_machine_rejects_unknown_public_url_choice() {
-    let error = parse_command(
-        [
-            "internal",
-            "init",
-            "activate-first-machine",
-            "--machine",
-            "machine_1",
-            "--public-url",
-            "managed-ish",
-        ]
-        .map(str::to_owned),
-    )
-    .expect_err("unknown public URL choice fails");
-
-    assert!(matches!(
-        error,
-        ployz::commands::PloyzctlCliError::InvalidValue {
-            flag: "--public-url",
-            ..
-        }
-    ));
+        .is_err()
+    );
 }
 
 #[test]
@@ -709,6 +700,7 @@ fn binary_dispatches_init_first_machine() {
 #[test]
 fn binary_init_can_print_host_runner_first_machine_install_command() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .args(init_with_host_runner_install_arg_refs())
         .output()
         .expect("ployz binary runs");
@@ -743,6 +735,7 @@ fn binary_init_can_run_host_runner_first_machine_install_command() {
     make_executable(&host_runner);
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .args(init_with_host_runner_run_arg_refs(
             host_runner.to_str().expect("Host Runner path is utf-8"),
         ))
@@ -778,6 +771,7 @@ fn binary_init_succeeds_when_host_runner_output_is_truncated() {
     make_executable(&host_runner);
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .args(init_with_host_runner_run_arg_refs(
             host_runner.to_str().expect("Host Runner path is utf-8"),
         ))
@@ -885,6 +879,7 @@ fn binary_rejects_unimplemented_commands() {
 #[test]
 fn binary_machine_add_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .env_remove("PLOYZ_NATS_URL")
         .env_remove("HOME")
         .env_remove("XDG_CONFIG_HOME")
@@ -903,6 +898,7 @@ fn binary_machine_add_requires_nats_url() {
 #[test]
 fn binary_ops_watch_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .env_remove("PLOYZ_NATS_URL")
         .env_remove("HOME")
         .env_remove("XDG_CONFIG_HOME")
@@ -921,6 +917,7 @@ fn binary_ops_watch_requires_nats_url() {
 #[test]
 fn binary_ops_status_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .env_remove("PLOYZ_NATS_URL")
         .env_remove("HOME")
         .env_remove("XDG_CONFIG_HOME")
@@ -939,6 +936,7 @@ fn binary_ops_status_requires_nats_url() {
 #[test]
 fn binary_machine_list_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .env_remove("PLOYZ_NATS_URL")
         .env_remove("HOME")
         .env_remove("XDG_CONFIG_HOME")
@@ -964,6 +962,7 @@ fn binary_rejects_corrupt_cluster_context_file() {
     fs::write(context_dir.join("context.json"), "{not json").expect("corrupt context writes");
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .env_remove("PLOYZ_NATS_URL")
         .env_remove("HOME")
         .env("XDG_CONFIG_HOME", &config_home)
@@ -985,6 +984,7 @@ fn binary_corrupt_cluster_context_does_not_block_local_init_summary() {
     fs::write(context_dir.join("context.json"), "{not json").expect("corrupt context writes");
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .env_remove("HOME")
         .env("XDG_CONFIG_HOME", &config_home)
         .args(["internal", "init", "--machine", "machine_1"])
@@ -1007,6 +1007,7 @@ fn binary_corrupt_cluster_context_does_not_block_local_init_summary() {
 #[test]
 fn binary_machine_inspect_requires_nats_url() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .env_remove("PLOYZ_NATS_URL")
         .env_remove("HOME")
         .env_remove("XDG_CONFIG_HOME")
@@ -1120,82 +1121,6 @@ fn ops_watch_renders_failed_deploy_details() {
 }
 
 #[test]
-fn ops_watch_renders_dataplane_evidence_for_wireguard_ebpf_preparation() {
-    let event = replayed(
-        3,
-        ployz_core::ops::OperationEvent::DeployDataplanePrepared {
-            operation_id: operation_id("op_123"),
-            report: PloyzNativeMeshPrepareReport::for_targets(
-                &[machine_id("machine_1")],
-                [PloyzNativeMeshMachineReady {
-                    machine_id: machine_id("machine_1"),
-                    ready: PloyzNativeMeshReady {
-                        wireguard: WireGuardReady {
-                            public_key: WireGuardPublicKey::try_new("public-key-1")
-                                .expect("valid wireguard public key"),
-                            evidence: vec![WireGuardReadyEvidence::Command {
-                                program: "wg".to_owned(),
-                                args: vec!["--version".to_owned()],
-                            }],
-                        },
-                        ebpf_forwarding: EbpfForwardingReady {
-                            evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
-                                path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
-                                symbols: vec![
-                                    "ployz_egress".to_owned(),
-                                    "ployz_ingress".to_owned(),
-                                ],
-                            }],
-                        },
-                    },
-                }],
-            )
-            .expect("dataplane report is valid"),
-        },
-    );
-
-    let text_output = WatchOutput {
-        events: vec![event.clone()],
-        output: OpsWatchOutput::Text,
-    }
-    .render();
-
-    assert_eq!(text_output, "3 deploy.dataplane_prepared\n");
-
-    let json_output = WatchOutput {
-        events: vec![event],
-        output: OpsWatchOutput::Json,
-    }
-    .render();
-    let value: serde_json::Value =
-        serde_json::from_str(json_output.trim()).expect("json watch output is JSONL");
-    assert_eq!(
-        value
-            .pointer("/sequence")
-            .and_then(serde_json::Value::as_str),
-        Some("3")
-    );
-    assert_eq!(
-        value
-            .pointer("/event/event")
-            .and_then(serde_json::Value::as_str),
-        Some("deploy_dataplane_prepared")
-    );
-    assert_eq!(
-        value
-            .pointer("/event/report/machines/0/wireguard/public_key")
-            .and_then(serde_json::Value::as_str),
-        Some("public-key-1")
-    );
-    assert_eq!(
-        value
-            .pointer("/event/report/machines/0/ebpf_forwarding/evidence/0/kind")
-            .and_then(serde_json::Value::as_str),
-        Some("ployz_tc_bytecode")
-    );
-}
-
-#[test]
 fn ops_watch_renders_no_output_when_no_events_are_replayed() {
     let output = WatchOutput {
         events: Vec::new(),
@@ -1237,24 +1162,18 @@ fn ops_status_renders_operation_state() {
 }
 
 #[test]
-fn ops_status_renders_managed_lease_renewal_addresses() {
+fn ops_status_renders_managed_dns_projection_apply() {
     let output = StatusOutput::new(
-        OperationStatusSnapshot::new(OperationStatus::ManagedLease {
+        OperationStatusSnapshot::new(OperationStatus::ManagedDnsReconcile {
             id: operation_id("op_managed_lease"),
-            subject: ManagedLeaseSubject::Renew {
+            subject: ManagedDnsReconcileSubject::ProjectionApply {
                 lease: ManagedLeaseName::try_new("cluster-one").expect("valid lease name"),
-                addresses: Box::new(ManagedLeaseAddressSet::new(
-                    vec![
-                        "203.0.113.9".parse().expect("IPv4"),
-                        "203.0.113.8".parse().expect("IPv4"),
-                    ],
-                    vec![
-                        "2001:db8::9".parse().expect("IPv6"),
-                        "2001:db8::8".parse().expect("IPv6"),
-                    ],
-                )),
+                projection: ployz_core::ingress::IngressEndpointProjectionIdentity {
+                    control_plane_epoch: ployz_core::state::ControlPlaneEpoch::initial(),
+                    revision: 4,
+                },
             },
-            state: ManagedLeaseOperationState::Completed,
+            state: ManagedDnsReconcileOperationState::Completed,
             last_event_sequence: event_sequence(3),
         }),
         Vec::new(),
@@ -1263,21 +1182,18 @@ fn ops_status_renders_managed_lease_renewal_addresses() {
 
     assert_eq!(
         output,
-        "operation op_managed_lease\nkind managed-lease\nlease cluster-one renewal ipv4 203.0.113.8,203.0.113.9 ipv6 2001:db8::8,2001:db8::9\nstate completed\nlast-event 3\ntimeline\n"
+        "operation op_managed_lease\nkind managed-dns-reconcile\nPloyz DNS target cluster-one projection apply\nstate completed\nlast-event 3\ntimeline\n"
     );
 }
 
 #[test]
-fn ops_list_renders_empty_managed_lease_renewal_address_families_as_none() {
+fn ops_list_renders_managed_dns_acquisition() {
     let output = ListOutput::from_result(OpsListResult {
         operations: vec![OperationStatusSnapshot::new(
-            OperationStatus::ManagedLease {
+            OperationStatus::ManagedDnsReconcile {
                 id: operation_id("op_managed_lease"),
-                subject: ManagedLeaseSubject::Renew {
-                    lease: ManagedLeaseName::try_new("cluster-one").expect("valid lease name"),
-                    addresses: Box::new(ManagedLeaseAddressSet::new(Vec::new(), Vec::new())),
-                },
-                state: ManagedLeaseOperationState::Accepted,
+                subject: ManagedDnsReconcileSubject::Acquire,
+                state: ManagedDnsReconcileOperationState::Accepted,
                 last_event_sequence: event_sequence(1),
             },
         )],
@@ -1287,24 +1203,19 @@ fn ops_list_renders_empty_managed_lease_renewal_address_families_as_none() {
 
     assert_eq!(
         output,
-        "op_managed_lease managed-lease lease cluster-one renewal ipv4 none ipv6 none accepted\n"
+        "op_managed_lease managed-dns-reconcile Ployz DNS target acquisition accepted\n"
     );
 }
 
 #[test]
-fn ops_status_renders_missing_gateway_testimony() {
+fn ops_status_renders_managed_dns_failure() {
     let output = StatusOutput::new(
-        OperationStatusSnapshot::new(OperationStatus::ManagedLease {
+        OperationStatusSnapshot::new(OperationStatus::ManagedDnsReconcile {
             id: operation_id("op_managed_lease"),
-            subject: ManagedLeaseSubject::GatewayTestimony {
-                missing: vec![
-                    MachineId::try_new("gateway-one").expect("valid machine id"),
-                    MachineId::try_new("gateway-two").expect("valid machine id"),
-                ],
-            },
-            state: ManagedLeaseOperationState::Failed {
-                failure: ployz_core::ops::ManagedLeaseOperationFailure {
-                    class: ployz_core::ops::ManagedLeaseFailureClass::GatewayTestimonyUnavailable,
+            subject: ManagedDnsReconcileSubject::Acquire,
+            state: ManagedDnsReconcileOperationState::Failed {
+                failure: ployz_core::ops::ManagedDnsReconcileFailure {
+                    class: ployz_core::ops::ManagedDnsReconcileFailureClass::Transport,
                     message: ployz_core::ops::FailureMessage::try_new(
                         "gateway endpoint testimony unavailable",
                     )
@@ -1319,7 +1230,7 @@ fn ops_status_renders_missing_gateway_testimony() {
 
     assert_eq!(
         output,
-        "operation op_managed_lease\nkind managed-lease\ngateway testimony unavailable from gateway-one,gateway-two\nstate failed\nfailure gateway endpoint testimony unavailable\nlast-event 3\ntimeline\n"
+        "operation op_managed_lease\nkind managed-dns-reconcile\nPloyz DNS target acquisition\nstate failed\nfailure gateway endpoint testimony unavailable\nlast-event 3\ntimeline\n"
     );
 }
 
@@ -1651,6 +1562,7 @@ fn first_machine_install_spec_json(ployzd_source: &str, machine_public_ip: Optio
 
 fn run_ployz(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .env("DO_NOT_TRACK", "1")
         .args(args)
         .output()
         .expect("ployz binary runs")

@@ -1,7 +1,8 @@
 use ployz_core::cert::{
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, CertificateProvisionFailure,
 };
-use ployz_core::ids::{CertId, MachineId, OperationId};
+use ployz_core::ids::{CertId, MachineId, OperationId, RouteBindingId};
+use ployz_core::ingress::{ActiveCertificateMetadata, CertificateOwner};
 use ployz_core::ops::{
     CertOperationFailure, CertOperationFailureError, CertOperationState, EventSequence,
     FailureMessage, OperationEvent, OperationProjection, OperationStatus, RouteHostname,
@@ -18,7 +19,13 @@ fn valid_reused_authorization_can_complete_without_a_new_challenge() {
             &accepted,
             OperationEvent::CertCompleted {
                 operation_id: operation_id(),
-                active_cert,
+                certificate: ActiveCertificateMetadata {
+                    owner: CertificateOwner::RouteBinding {
+                        route_binding_id: RouteBindingId::try_new("route_example")
+                            .expect("route id"),
+                    },
+                    active: active_cert,
+                },
             },
             sequence(2),
         ),

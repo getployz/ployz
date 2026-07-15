@@ -16,11 +16,9 @@ use crate::roles::machine::protocol::{
     MachineContainerRunHookRpcOk, MachineContainerRunHookRpcRequest,
     MachineContainerRunHookRpcResponse, MachineContainerRunRpcOk, MachineContainerRunRpcRequest,
     MachineContainerRunRpcResponse, MachineContainerStopDomainError,
-    MachineContainerStopRpcRequest, MachineContainerStopRpcResponse,
-    MachineEnsureEndpointNetworkDomainError, MachineEnsureEndpointNetworkRpcOk,
-    MachineEnsureEndpointNetworkRpcRequest, MachineEnsureEndpointNetworkRpcResponse,
-    MachineRunContainerOutcome, MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk,
-    MachineVolumeRemoveRpcRequest, MachineVolumeRemoveRpcResponse,
+    MachineContainerStopRpcRequest, MachineContainerStopRpcResponse, MachineRunContainerOutcome,
+    MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
+    MachineVolumeRemoveRpcResponse,
 };
 use crate::roles::machine::runner::{
     CreateManagedContainer, MachineContainerRunDecision, MachineContainerRunner,
@@ -36,34 +34,6 @@ use std::time::Duration;
 pub(crate) struct MachineContainerState<R> {
     pub(crate) runner: R,
     pub(crate) client: ployz_nats::service_runtime::NatsClient,
-}
-
-pub(crate) async fn handle_ensure_endpoint_network<R>(
-    machine_id: MachineId,
-    runner: R,
-    request: NatsServiceRequest,
-) -> NatsServiceResponse
-where
-    R: MachineContainerRunner,
-{
-    if let Err(response) = decode_json_request::<MachineEnsureEndpointNetworkRpcRequest>(&request) {
-        return response;
-    }
-
-    match runner.ensure_endpoint_network().await {
-        Ok(()) => machine_success(MachineEnsureEndpointNetworkRpcResponse::Ok(
-            MachineEnsureEndpointNetworkRpcOk { machine_id },
-        )),
-        Err(MachineContainerRunnerError::EnsureEndpointNetwork { message }) => {
-            machine_domain_error(MachineEnsureEndpointNetworkRpcResponse::DomainError {
-                machine_id,
-                error: MachineEnsureEndpointNetworkDomainError::EnsureFailed {
-                    message: failure_message(format!("endpoint network ensure failed: {message}")),
-                },
-            })
-        }
-        Err(error) => runner_error(error),
-    }
 }
 
 pub(crate) async fn handle_container_run<R>(
@@ -235,6 +205,7 @@ where
                 }
                 Err(error @ MachineContainerRunnerError::ListExisting { .. })
                 | Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. })
+                | Err(error @ MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. })
                 | Err(error @ MachineContainerRunnerError::ImagePull { .. })
                 | Err(error @ MachineContainerRunnerError::Start { .. })
                 | Err(error @ MachineContainerRunnerError::Wait { .. })
@@ -292,6 +263,7 @@ where
             }
             Ok(Err(error @ MachineContainerRunnerError::ListExisting { .. }))
             | Ok(Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. }))
+            | Ok(Err(error @ MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. }))
             | Ok(Err(error @ MachineContainerRunnerError::Create { .. }))
             | Ok(Err(error @ MachineContainerRunnerError::ImagePull { .. }))
             | Ok(Err(error @ MachineContainerRunnerError::Start { .. }))
@@ -317,6 +289,11 @@ where
                     ),
                     Err(error @ MachineContainerRunnerError::ListExisting { .. })
                     | Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. })
+                    | Err(
+                        error @ MachineContainerRunnerError::EndpointNetworkSubnetMismatch {
+                            ..
+                        },
+                    )
                     | Err(error @ MachineContainerRunnerError::Create { .. })
                     | Err(error @ MachineContainerRunnerError::ImagePull { .. })
                     | Err(error @ MachineContainerRunnerError::Start { .. })
@@ -366,6 +343,7 @@ fn hook_start_error(
         }
         error @ (MachineContainerRunnerError::ListExisting { .. }
         | MachineContainerRunnerError::EnsureEndpointNetwork { .. }
+        | MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. }
         | MachineContainerRunnerError::Create { .. }
         | MachineContainerRunnerError::ImagePull { .. }
         | MachineContainerRunnerError::Wait { .. }

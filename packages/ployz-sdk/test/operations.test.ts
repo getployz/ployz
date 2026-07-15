@@ -86,6 +86,7 @@ import type {
   ServiceListResponse,
   ServiceListRequest,
   ServiceSnapshot,
+  WireGuardPublicKey,
 } from "../src/index.ts";
 
 const fixturePath = join(
@@ -302,7 +303,7 @@ test("domain errors are decoded once by the client", async () => {
 test("accepted operation uses Rust wire field names", () => {
   const accepted = acceptedOperation("op_123");
 
-  assert.deepEqual(JSON.parse(JSON.stringify(accepted)), {
+  assert.deepEqual(structuredClone(accepted), {
     operation_id: "op_123",
     watch_subject: "plz.v1.progress.namespace.default.operation.op_123.>",
     start_sequence: "11",
@@ -511,18 +512,21 @@ test("sdk maps raw first-machine activation input to the wire request", () => {
   assert.deepEqual(initFirstMachineActivateRequest({ machineId: "core_1", roles: installAllRoles() }), {
     machine_id: "core_1",
     roles: installAllRoles(),
-    public_url_mode: "auto",
+    automatic_hostname_configuration: { mode: "ployz" },
+    ployz_dns_target: "enabled",
   });
   assert.deepEqual(
     initFirstMachineActivateRequest({
       machineId: "core_1",
       roles: installAllRoles(),
-      publicUrlMode: "none",
+      automaticHostnameConfiguration: { mode: "disabled" },
+      ployzDnsTarget: "disabled",
     }),
     {
       machine_id: "core_1",
       roles: installAllRoles(),
-      public_url_mode: "none",
+      automatic_hostname_configuration: { mode: "disabled" },
+      ployz_dns_target: "disabled",
     },
   );
   assert.throws(
@@ -686,6 +690,15 @@ test("sdk exports the Rust operation API contract registry", () => {
       success: "AcceptedOperation",
       error: "CredentialRemoveError",
       response: "CredentialRemoveResponse",
+    },
+    {
+      name: "ingress.configure",
+      subject: "plz.v1.rpc.operator.command.ingress.configure",
+      execution: "accepts_operation",
+      request: "IngressConfigureRequest",
+      success: "AcceptedOperation",
+      error: "IngressConfigureError",
+      response: "IngressConfigureResponse",
     },
     {
       name: "machine.list",
@@ -1062,6 +1075,7 @@ function defaultFixture(): OperationFixture {
           control_endpoints: [],
           mesh_endpoints: [],
           endpoint_subnet: "10.42.2.0/24",
+          wireguard_public_key: "public-machine-2" as WireGuardPublicKey,
         },
         testimony: { status: "no_answer" as const },
       },
@@ -1101,6 +1115,19 @@ function defaultFixture(): OperationFixture {
       },
     ],
     runtime_snapshot: {
+      automatic_hostname_configuration: { mode: "disabled" as const },
+      ployz_dns_target: {
+        intent: "disabled" as const,
+        allocation: { status: "unacquired" as const },
+        publication: { status: "unpublished" as const },
+      },
+      ingress_endpoint_projection: {
+        control_plane_epoch: 1,
+        revision: 0,
+        state: { status: "pending" as const },
+      },
+      active_certificates: [],
+      route_tls: [],
       machines: [
         {
           active: {
@@ -1112,6 +1139,7 @@ function defaultFixture(): OperationFixture {
             control_endpoints: [],
             mesh_endpoints: [],
             endpoint_subnet: "10.42.2.0/24",
+            wireguard_public_key: "public-machine-2" as WireGuardPublicKey,
           },
           testimony: { status: "no_answer" as const },
         },

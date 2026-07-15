@@ -1,18 +1,14 @@
 //! Core-owned operator intent service.
 
 use crate::core_store::CoreStore;
-use crate::intent::certificate_intent::CertificateIntentStore;
-use crate::intent::lease_intent::LeaseIntentStore;
-use crate::intent::machine_roster::MachineRosterStore;
+use crate::intent::ingress_intent::{ActiveCertificateMetadataStore, IngressIntentStore};
 use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::intent::nats_authorizations::NatsAuthorizationStore;
 use crate::operations::log::OperationRepository;
 use crate::service_catalog::{intent_get_endpoint_spec, intent_service};
-use ployz_core::cert::{AutoLeaseState, ManagedLeaseIntent};
+use ployz_core::dataplane::{DataplaneProjection, DataplaneProjectionMember};
 use ployz_core::ids::MachineId;
-use ployz_core::state::{
-    IntentSnapshot, ManagedLeaseProjection, PendingMachineJoinRecoverySnapshot,
-};
+use ployz_core::state::{IntentSnapshot, PendingMachineJoinRecoverySnapshot};
 use ployz_core::subjects::{INTENT_CHANGED, INTENT_GET, PENDING_MACHINE_JOINS_CHANGED};
 use ployz_nats::service_protocol::NatsServiceError;
 use ployz_nats::service_runtime::{
@@ -21,7 +17,7 @@ use ployz_nats::service_runtime::{
     start_nats_service,
 };
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,12 +31,12 @@ pub struct RunningIntentService {
 }
 
 struct IntentSnapshotSources<'a> {
-    machine_roster: &'a MachineRosterStore,
     namespace_intent: &'a NamespaceIntentStore,
-    lease_intent: &'a LeaseIntentStore,
-    certificate_intent: &'a CertificateIntentStore,
+    ingress_intent: &'a IngressIntentStore,
+    certificate_metadata: &'a ActiveCertificateMetadataStore,
     core_store: &'a CoreStore,
     nats_authorizations: &'a NatsAuthorizationStore,
+    operation_repository: &'a OperationRepository,
 }
 
 impl RunningIntentService {
@@ -100,13 +96,12 @@ impl From<NatsJsonServiceRequestError> for IntentReadError {
 pub async fn start_intent_service(
     client: async_nats::Client,
     core_machine_id: MachineId,
-    machine_roster: MachineRosterStore,
     namespace_intent: NamespaceIntentStore,
     core_store: CoreStore,
     publish_interval: Duration,
 ) -> Result<RunningIntentService, NatsServiceRuntimeError> {
-    let lease_intent = LeaseIntentStore::new(core_store.clone());
-    let certificate_intent = CertificateIntentStore::new(core_store.clone());
+    let ingress_intent = IngressIntentStore::new(core_store.clone());
+    let certificate_metadata = ActiveCertificateMetadataStore::new(core_store.clone());
     let mut service = start_nats_service(client.clone(), &intent_service()).await?;
     // The grant set is a projection of the same store; a thin wrapper over it reads
     // the grants the authorization writer persists there.
@@ -114,43 +109,42 @@ pub async fn start_intent_service(
     let operation_repository = OperationRepository::open(core_store.clone(), client.clone());
     let service_core_machine_id = core_machine_id.clone();
     let publisher_core_machine_id = core_machine_id;
-    let service_machine_roster = machine_roster.clone();
     let service_namespace_intent = namespace_intent.clone();
-    let service_lease_intent = lease_intent.clone();
-    let service_certificate_intent = certificate_intent.clone();
+    let service_ingress_intent = ingress_intent.clone();
+    let service_certificate_metadata = certificate_metadata.clone();
     let service_core_store = core_store.clone();
     let service_authorizations = nats_authorizations.clone();
+    let service_operation_repository = operation_repository.clone();
     service
         .bind_endpoint(&intent_get_endpoint_spec(), move |request| {
-            let machine_roster = service_machine_roster.clone();
             let namespace_intent = service_namespace_intent.clone();
-            let lease_intent = service_lease_intent.clone();
-            let certificate_intent = service_certificate_intent.clone();
+            let ingress_intent = service_ingress_intent.clone();
+            let certificate_metadata = service_certificate_metadata.clone();
             let core_store = service_core_store.clone();
             let nats_authorizations = service_authorizations.clone();
+            let operation_repository = service_operation_repository.clone();
             let core_machine_id = service_core_machine_id.clone();
             async move {
                 let sources = IntentSnapshotSources {
-                    machine_roster: &machine_roster,
                     namespace_intent: &namespace_intent,
-                    lease_intent: &lease_intent,
-                    certificate_intent: &certificate_intent,
+                    ingress_intent: &ingress_intent,
+                    certificate_metadata: &certificate_metadata,
                     core_store: &core_store,
                     nats_authorizations: &nats_authorizations,
+                    operation_repository: &operation_repository,
                 };
                 intent_get_response(request, &core_machine_id, &sources).await
             }
         })
         .await?;
-
     let publisher = tokio::spawn(async move {
         let sources = IntentSnapshotSources {
-            machine_roster: &machine_roster,
             namespace_intent: &namespace_intent,
-            lease_intent: &lease_intent,
-            certificate_intent: &certificate_intent,
+            ingress_intent: &ingress_intent,
+            certificate_metadata: &certificate_metadata,
             core_store: &core_store,
             nats_authorizations: &nats_authorizations,
+            operation_repository: &operation_repository,
         };
         let mut interval = tokio::time::interval(publish_interval);
         let mut consecutive_failures: u64 = 0;
@@ -187,6 +181,29 @@ pub async fn start_intent_service(
     Ok(RunningIntentService { service, publisher })
 }
 
+fn dataplane_projection(
+    active_machines: &[ployz_core::state::ActiveMachineState],
+    staged: Option<ployz_core::state::StagedMachineDataplaneState>,
+) -> Result<DataplaneProjection, String> {
+    let declared = active_machines
+        .iter()
+        .cloned()
+        .map(|machine| DataplaneProjectionMember {
+            machine_id: machine.machine_id,
+            endpoint_subnet: machine.endpoint_subnet,
+            mesh_endpoints: machine.mesh_endpoints,
+            wireguard_public_key: machine.wireguard_public_key,
+        })
+        .collect();
+    let staged = staged.map(|machine| DataplaneProjectionMember {
+        machine_id: machine.machine_id,
+        endpoint_subnet: machine.endpoint_subnet,
+        mesh_endpoints: machine.mesh_endpoints,
+        wireguard_public_key: machine.wireguard_public_key,
+    });
+    DataplaneProjection::try_new(declared, staged).map_err(|error| error.to_string())
+}
+
 async fn intent_get_response(
     request: NatsServiceRequest,
     core_machine_id: &MachineId,
@@ -211,11 +228,12 @@ async fn load_intent(
         .control_plane_epoch()
         .await
         .map_err(|error| error.to_string())?;
-    let active_machines = sources
-        .machine_roster
-        .active_machines()
+    let (active_machines, staged_machine) = sources
+        .operation_repository
+        .intent_machine_sources()
         .await
         .map_err(|error| error.to_string())?;
+    let dataplane_projection = dataplane_projection(&active_machines, staged_machine)?;
     let namespace_intent = sources
         .namespace_intent
         .load()
@@ -226,24 +244,15 @@ async fn load_intent(
         .list()
         .await
         .map_err(|error| error.to_string())?;
-    let managed_lease_intent = sources
-        .lease_intent
+    let ingress = sources
+        .ingress_intent
         .load()
         .await
-        .map_err(|error| error.to_string())?;
-    let now_seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
         .map_err(|error| error.to_string())?
-        .as_secs();
-    let managed_lease = project_managed_lease(managed_lease_intent, now_seconds);
-    let custom_certificates = sources
-        .certificate_intent
+        .ok_or_else(|| "ingress intent is unconfigured".to_owned())?;
+    let active_certificates = sources
+        .certificate_metadata
         .active_certificates()
-        .await
-        .map_err(|error| error.to_string())?;
-    let acme_http01_challenges = sources
-        .certificate_intent
-        .challenges()
         .await
         .map_err(|error| error.to_string())?;
 
@@ -251,30 +260,15 @@ async fn load_intent(
         epoch,
         core_machine_id: core_machine_id.clone(),
         active_machines,
+        dataplane_projection,
         route_bindings: namespace_intent.route_bindings,
         serving_target_entries: namespace_intent.serving_target_entries,
         volume_pins: namespace_intent.volume_pins,
         nats_authorizations,
-        managed_lease,
-        custom_certificates,
-        acme_http01_challenges,
+        automatic_hostname_configuration: ingress.automatic_hostnames().clone(),
+        ployz_dns_target: ingress.ployz_dns_target(),
+        active_certificates,
     })
-}
-
-fn project_managed_lease(intent: ManagedLeaseIntent, now_seconds: u64) -> ManagedLeaseProjection {
-    match intent {
-        ManagedLeaseIntent::Auto { state } => match *state {
-            AutoLeaseState::RecordOnly { lease } => ManagedLeaseProjection::RecordOnly { lease },
-            AutoLeaseState::Ready { lease, bundle } if bundle.is_valid_at(now_seconds) => {
-                ManagedLeaseProjection::Ready { lease, bundle }
-            }
-            AutoLeaseState::Ready { lease, .. } => ManagedLeaseProjection::RecordOnly { lease },
-            AutoLeaseState::Unacquired => ManagedLeaseProjection::Unacquired,
-        },
-        ManagedLeaseIntent::BringYourOwn | ManagedLeaseIntent::None => {
-            ManagedLeaseProjection::Unacquired
-        }
-    }
 }
 
 pub async fn publish_pending_machine_joins(
@@ -313,60 +307,67 @@ fn warn_publisher_failure(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::cert::{
-        LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle, ManagedLeaseName,
-        ManagedLeaseRecord,
-    };
+    use crate::intent::ingress_intent::{IngressConfiguration, PloyzDnsTargetStore};
+    use ployz_core::ingress::{AutomaticHostnameConfiguration, PloyzDnsTargetIntent};
 
-    #[test]
-    fn ready_bundle_projects_only_within_its_validity_window() {
-        let lease_name = ManagedLeaseName::try_new("brisk-river-x7f3").expect("lease name");
-        let lease = ManagedLeaseRecord::try_new(
-            lease_name.clone(),
-            LeaseBearerToken::try_new("lease_token_123").expect("lease token"),
-            LeaseIssuedAt::try_new(50).expect("lease issue time"),
-            LeaseExpiresAt::try_new(300).expect("lease expiry time"),
-        )
-        .expect("lease record");
-        let bundle = ManagedCertBundle::try_new(
-            lease_name.clone(),
-            lease_name.wildcard_and_apex(),
-            "certificate".to_owned(),
-            "private-key".to_owned(),
-            LeaseIssuedAt::try_new(100).expect("bundle issue time"),
-            LeaseExpiresAt::try_new(200).expect("bundle expiry time"),
-        )
-        .expect("certificate bundle");
-        let ready = || ManagedLeaseIntent::Auto {
-            state: Box::new(AutoLeaseState::Ready {
-                lease: lease.clone(),
-                bundle: bundle.clone(),
-            }),
+    #[tokio::test]
+    async fn private_ingress_evidence_is_not_projected() {
+        let nats = ployz_test_support::nats::TestNats::start().await;
+        let store = CoreStore::open_in_memory().await.expect("store");
+        let namespace_intent = NamespaceIntentStore::new(store.clone());
+        let ingress_intent = IngressIntentStore::new(store.clone());
+        ingress_intent
+            .replace(
+                IngressConfiguration::try_new(
+                    AutomaticHostnameConfiguration::Ployz,
+                    PloyzDnsTargetIntent::Enabled,
+                )
+                .expect("valid ingress configuration"),
+            )
+            .await
+            .expect("configure ingress");
+        assert!(
+            PloyzDnsTargetStore::new(store.clone())
+                .ensure_acquisition()
+                .await
+                .expect("create private allocation")
+                .is_some()
+        );
+        let certificate_metadata = ActiveCertificateMetadataStore::new(store.clone());
+        let nats_authorizations = NatsAuthorizationStore::new(store.clone());
+        let operation_repository =
+            OperationRepository::open(store.clone(), nats.controller.clone());
+        let sources = IntentSnapshotSources {
+            namespace_intent: &namespace_intent,
+            ingress_intent: &ingress_intent,
+            certificate_metadata: &certificate_metadata,
+            core_store: &store,
+            nats_authorizations: &nats_authorizations,
+            operation_repository: &operation_repository,
         };
 
+        let snapshot = load_intent(
+            &MachineId::try_new("machine_a").expect("machine id"),
+            &sources,
+        )
+        .await
+        .expect("project intent");
         assert_eq!(
-            project_managed_lease(ready(), 99),
-            ManagedLeaseProjection::RecordOnly {
-                lease: lease.clone()
-            }
+            snapshot.automatic_hostname_configuration,
+            AutomaticHostnameConfiguration::Ployz
         );
-        assert_eq!(
-            project_managed_lease(ready(), 100),
-            ManagedLeaseProjection::Ready {
-                lease: lease.clone(),
-                bundle: bundle.clone(),
-            }
-        );
-        assert_eq!(
-            project_managed_lease(ready(), 199),
-            ManagedLeaseProjection::Ready {
-                lease: lease.clone(),
-                bundle: bundle.clone(),
-            }
-        );
-        assert_eq!(
-            project_managed_lease(ready(), 200),
-            ManagedLeaseProjection::RecordOnly { lease }
-        );
+        assert_eq!(snapshot.ployz_dns_target, PloyzDnsTargetIntent::Enabled);
+        let json = serde_json::to_string(&snapshot).expect("serialize snapshot");
+
+        for forbidden in [
+            "\"token\"",
+            "bearer_token",
+            "private_key_pem",
+            "managed_dns_checkpoint",
+            "ingress_endpoint_projection",
+            "acquisition_id",
+        ] {
+            assert!(!json.contains(forbidden));
+        }
     }
 }

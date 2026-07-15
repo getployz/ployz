@@ -10,7 +10,7 @@ use crate::cloud_bootstrap::{
     persist_cloud_terminal_callback, reset_cloud_attempt, write_cloud_joiner_trusted_ca,
 };
 use crate::cloud_client::CloudClient;
-use crate::command::SystemHostRunnerCommandRunner;
+use crate::command::{HostRunnerCommandRunner, SystemHostRunnerCommandRunner};
 use crate::executor::{HostRunnerPlanFailure, HostRunnerPlanTerminal};
 use crate::join_executor::execute_host_runner_join_with_redeemed;
 use crate::local::{HostRunnerLocalConfig, HostRunnerLocalEffects};
@@ -215,14 +215,31 @@ impl CloudBootstrapFlow {
 
 fn prepare_cloud_bootstrap_attempt() -> Option<CloudBootstrapAttemptState> {
     let state_dir = std::path::Path::new(HOST_RUNNER_STATE_DIR);
-    let systemd_dir = std::path::Path::new("/etc/systemd/system");
-    let local_state = match inspect_cloud_bootstrap_local_state(state_dir, systemd_dir) {
-        Ok(state) => state,
-        Err(error) => {
-            eprintln!("{error}");
+    let mut runner = SystemHostRunnerCommandRunner::default();
+    let supervisor = match runner.read_os_release().and_then(|os_release| {
+        crate::host_platform::detect_host_platform(&os_release)
+            .map(|profile| crate::supervisor::SupervisorBackend::from(profile.supervisor()))
+            .map_err(|error| {
+                ployz_core::ops::FailureMessage::try_new(error.to_string())
+                    .expect("host platform failure message is non-empty")
+            })
+    }) {
+        Ok(supervisor) => supervisor,
+        Err(message) => {
+            eprintln!("failed to detect host platform: {}", message.as_str());
             return None;
         }
     };
+    let supervisor_dirs = crate::supervisor::SupervisorDirectories::host_defaults();
+    let local_state =
+        match inspect_cloud_bootstrap_local_state(state_dir, supervisor_dirs.directory(supervisor))
+        {
+            Ok(state) => state,
+            Err(error) => {
+                eprintln!("{error}");
+                return None;
+            }
+        };
     let attempt = match local_state {
         CloudBootstrapLocalState::AlreadyBootstrapped { evidence } => {
             match load_existing_cloud_attempt(state_dir) {
@@ -458,7 +475,9 @@ fn activate_cloud_founder_machine(
     let request = InitFirstMachineActivateRequest {
         machine_id: machine_id.clone(),
         roles: ployz_core::roles::InstallRolePolicy::install_all(),
-        public_url_mode: ployz_core::cert::PublicUrlMode::Auto,
+        automatic_hostname_configuration:
+            ployz_core::ingress::AutomaticHostnameConfiguration::Ployz,
+        ployz_dns_target: ployz_core::ingress::PloyzDnsTargetIntent::Enabled,
     };
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -602,9 +621,10 @@ fn run_cloud_joiner_bootstrap(
     let mut token_consumer = CloudJoinTokenConsumer;
     let mut effects = HostRunnerLocalEffects::new(
         HostRunnerLocalConfig {
-            systemd_dir: "/etc/systemd/system".into(),
+            supervisor_dirs: crate::supervisor::SupervisorDirectories::host_defaults(),
             state_dir: HOST_RUNNER_STATE_DIR.into(),
             docker_daemon_config: "/etc/docker/daemon.json".into(),
+            docker_repository_dir: "/etc/yum.repos.d".into(),
         },
         SystemHostRunnerCommandRunner::default(),
     );

@@ -6,15 +6,9 @@ use ployz::runtime::{PloyzctlRuntimeConfig, execute_command};
 /// Rollback replays successful local history as a fresh deploy with the exact
 /// pinned image identity, and a missing pinned registry artifact fails without
 /// falling back to the mutable tag.
-#[tokio::test]
-async fn scenario_deploy_rollback_replays_pinned_history() {
-    if !dind::e2e_enabled() {
-        return;
-    }
-    let docker = dind::connect_docker().expect("connect to Docker daemon");
-    let core = init_core_cluster(&docker, 0).await;
+pub(super) async fn assert_deploy_rollback_replays_pinned_history(core: &CoreContext) {
     with_evidence(&core.cluster, async {
-        wait_for_machine_observations(&core, &machine_id("core_1")).await;
+        wait_for_machine_observations(core, &machine_id("core_1")).await;
 
         let namespace = namespace_id("rollback");
         let service = service_id("svc_rollback");
@@ -125,7 +119,7 @@ docker push {v2} >/dev/null"
             panic!("successful rollback must append history: {entries:?}");
         };
         let rollback_operation = rollback_entry.operation_id.clone();
-        let rollback_status = operation_status(&core, &rollback_operation).await;
+        let rollback_status = operation_status(core, &rollback_operation).await;
         let OperationStatus::Deploy {
             state:
                 DeployOperationState::Completed {
@@ -151,7 +145,7 @@ docker push {v2} >/dev/null"
                 .iter()
                 .any(|service| service.image == v1_resolved)
         );
-        let rollback_events = terminal_operation_events(&core, &rollback_operation).await;
+        let rollback_events = terminal_operation_events(core, &rollback_operation).await;
         assert!(
             rollback_events.iter().any(|event| matches!(
                 event,
@@ -177,7 +171,7 @@ docker push {v2} >/dev/null"
             .await
             .expect("rolled-back service manifest reads");
         assert_eq!(snapshot.active.image, v1_resolved);
-        let containers = namespace_managed_containers(&core, namespace.as_str()).await;
+        let containers = namespace_managed_containers(core, namespace.as_str()).await;
         let [container] = containers.as_slice() else {
             panic!("rollback must leave one v1 container: {containers:?}");
         };
@@ -294,7 +288,7 @@ curl -fsSI -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/v
         };
         assert_eq!(service_id, &service);
         assert_eq!(failed_machine_id, &machine_id("core_1"));
-        let failed_events = terminal_operation_events(&core, failed_operation).await;
+        let failed_events = terminal_operation_events(core, failed_operation).await;
         assert!(
             failed_events.iter().any(|event| matches!(
                 event,
@@ -309,7 +303,13 @@ curl -fsSI -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/v
                 .any(|event| matches!(event, OperationEvent::DeployImageResolved { .. })),
             "failed rollback re-resolved the surviving v2 tag: {failed_events:?}"
         );
+        let cleanup = core
+            .exec_sh(
+                core.cluster.core(),
+                "docker rm -f ployz-rollback-registry >/dev/null 2>&1 || true",
+            )
+            .await;
+        assert!(cleanup.success(), "rollback registry cleanup failed: {cleanup:?}");
     })
     .await;
-    finish(core).await;
 }

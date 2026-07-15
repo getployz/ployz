@@ -90,12 +90,6 @@ impl DeployTree {
                 ));
             }
             OperationEvent::DeployPlanningStarted { operation_id: _ } => {}
-            OperationEvent::DeployWaitingForManagedCertificate { operation_id } => {
-                self.plain_lines.push(format!(
-                    "deploy {}: waiting for managed certificate",
-                    operation_id.as_str()
-                ));
-            }
             OperationEvent::DeployImageResolved {
                 operation_id,
                 service_id,
@@ -172,10 +166,6 @@ impl DeployTree {
                     *current = PlannedStage::Running(*stage);
                 }
             }
-            OperationEvent::DeployDataplanePrepared {
-                operation_id: _,
-                report: _,
-            } => {}
             OperationEvent::DeployImageAvailabilityVerified {
                 operation_id,
                 service_id,
@@ -311,7 +301,9 @@ impl DeployTree {
                     }
                 }
                 OperationKind::Cert
-                | OperationKind::ManagedLease
+                | OperationKind::IngressConfigure
+                | OperationKind::IngressRefresh
+                | OperationKind::ManagedDnsReconcile
                 | OperationKind::MachineAdd
                 | OperationKind::MachineUpdate
                 | OperationKind::MachineLifecycle
@@ -322,14 +314,21 @@ impl DeployTree {
                 | OperationKind::NamespaceRemove
                 | OperationKind::VolumeRemove => {}
             },
-            OperationEvent::ManagedLeaseSubmitted { .. }
-            | OperationEvent::ManagedLeaseCompleted { .. }
-            | OperationEvent::ManagedLeaseFailed { .. }
+            OperationEvent::ManagedDnsReconcileSubmitted { .. }
+            | OperationEvent::ManagedDnsReconcileCompleted { .. }
+            | OperationEvent::ManagedDnsReconcileFailed { .. }
             | OperationEvent::CertProvisionSubmitted { .. }
             | OperationEvent::CertChallengePublished { .. }
             | OperationEvent::CertValidationStarted { .. }
+            | OperationEvent::CertWarning { .. }
             | OperationEvent::CertCompleted { .. }
             | OperationEvent::CertFailed { .. }
+            | OperationEvent::IngressRefreshSubmitted { .. }
+            | OperationEvent::IngressRefreshCompleted { .. }
+            | OperationEvent::IngressRefreshFailed { .. }
+            | OperationEvent::IngressConfigureSubmitted { .. }
+            | OperationEvent::IngressConfigureCompleted { .. }
+            | OperationEvent::IngressConfigureFailed { .. }
             | OperationEvent::MachineAddSubmitted { .. }
             | OperationEvent::MachineAddJoined { .. }
             | OperationEvent::MachineAddCredentialProvisioned { .. }
@@ -350,7 +349,7 @@ impl DeployTree {
             | OperationEvent::CredentialGrantFailed { .. }
             | OperationEvent::NetworkRepairSubmitted { .. }
             | OperationEvent::NetworkRepairRunning { .. }
-            | OperationEvent::NetworkRepairDataplanePrepared { .. }
+            | OperationEvent::NetworkRepairDataplaneConverged { .. }
             | OperationEvent::NetworkRepairMachineFactsRefreshed { .. }
             | OperationEvent::NetworkRepairDnsRefreshConfirmed { .. }
             | OperationEvent::NetworkRepairCompleted { .. }
@@ -749,16 +748,16 @@ fn deploy_routes(target: &DeployRequest) -> impl Iterator<Item = (&str, &DeployR
 
 fn route_text(service_id: &str, route: &DeployRoute) -> String {
     match &route.target {
-        DeployRouteTarget::Hostname { hostname, port: _ } => format!(
+        DeployRouteTarget::Hostname { hostname } => format!(
             "{} → {}:{}",
             hostname.as_str(),
             service_id,
             route.endpoint_port.get()
         ),
-        DeployRouteTarget::AutoHostname { port: _ } => {
+        DeployRouteTarget::AutoHostname { label } => {
             // Auto-hostname declarations carry no minted hostname. The renderer
             // can name it when operation evidence carries the bound route.
-            format!("{service_id} → public URL (auto)")
+            format!("{service_id} → public URL (auto:{})", label.as_str())
         }
     }
 }
@@ -793,11 +792,6 @@ fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine
                         }
                         DeployOperationFailure::NoUsableMachines { .. }
                         | DeployOperationFailure::PlanningFailed { .. }
-                        | DeployOperationFailure::AutoDnsWithoutLease { .. }
-                        | DeployOperationFailure::CertificatePending { .. }
-                        | DeployOperationFailure::DataplaneUnavailable { .. }
-                        | DeployOperationFailure::DataplanePrepareTimedOut { .. }
-                        | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
                         | DeployOperationFailure::RuntimeUnavailable { .. }
                         | DeployOperationFailure::ContainerStartFailed { .. }
                         | DeployOperationFailure::PreStartHookFailed { .. }
@@ -889,7 +883,6 @@ fn render_service_step(
                 };
             }
             let step_text = match tree.stage() {
-                Some(DeployRunningStage::PreparingDataplane) => "preparing dataplane",
                 Some(DeployRunningStage::EnsuringImages) => "ensuring images",
                 Some(DeployRunningStage::StartingContainers)
                 | Some(DeployRunningStage::WaitingForHealth)
@@ -934,8 +927,7 @@ fn render_route_line(
         Some(DeployRunningStage::RouteCutover) => "cutting over",
         Some(DeployRunningStage::ServingTargetCommit)
         | Some(DeployRunningStage::RemovingSupersededContainers) => "committing",
-        Some(DeployRunningStage::PreparingDataplane)
-        | Some(DeployRunningStage::EnsuringImages)
+        Some(DeployRunningStage::EnsuringImages)
         | Some(DeployRunningStage::StartingContainers)
         | Some(DeployRunningStage::WaitingForHealth)
         | None => "queued",
@@ -1015,14 +1007,13 @@ impl DeployTree {
 
 const fn stage_rank(stage: DeployRunningStage) -> u8 {
     match stage {
-        DeployRunningStage::PreparingDataplane => 0,
-        DeployRunningStage::EnsuringImages => 1,
-        DeployRunningStage::StartingContainers => 2,
-        DeployRunningStage::WaitingForHealth => 3,
-        DeployRunningStage::EnsuringCertificates => 4,
-        DeployRunningStage::RouteCutover => 5,
-        DeployRunningStage::ServingTargetCommit => 6,
-        DeployRunningStage::RemovingSupersededContainers => 7,
+        DeployRunningStage::EnsuringImages => 0,
+        DeployRunningStage::StartingContainers => 1,
+        DeployRunningStage::WaitingForHealth => 2,
+        DeployRunningStage::EnsuringCertificates => 3,
+        DeployRunningStage::RouteCutover => 4,
+        DeployRunningStage::ServingTargetCommit => 5,
+        DeployRunningStage::RemovingSupersededContainers => 6,
     }
 }
 

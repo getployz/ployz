@@ -1,15 +1,21 @@
 //! Machine state and machine-add operation policy.
 
+mod dataplane_admission;
+
+pub use dataplane_admission::{
+    validate_declared_local_machine, validate_declared_machine, validate_placement_machine_peers,
+    validate_target_machine,
+};
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
-use crate::dataplane::MachineEndpointSubnet;
 use crate::ids::{MachineId, OperationId, SubjectToken, SubjectTokenError};
 use crate::ops::{
     FailureMessage, MachineAddOperationState, MachineAddOperationStateName, OperationIdempotencyKey,
 };
-use crate::state::ActiveMachineState;
+use crate::state::{ActiveMachineState, StagedMachineDataplaneState};
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -153,8 +159,10 @@ pub enum MachineAddFailure {
     BootstrapFailed { message: FailureMessage },
     #[error("machine readiness failed: {evidence}")]
     ReadinessFailed { evidence: MachineReadinessEvidence },
-    #[error("overlay connectivity proof failed: {evidence}")]
-    ConnectivityProofFailed { evidence: ConnectivityProofEvidence },
+    #[error("dataplane projection admission failed for {}: {}", .evidence.machine_id.as_str(), .evidence.reason)]
+    DataplaneProjectionAdmissionFailed {
+        evidence: DataplaneProjectionAdmissionEvidence,
+    },
     #[error("authorization render failed: {message}")]
     AuthorizationRenderFailed { message: FailureMessage },
     #[error("NATS reload failed: {message}")]
@@ -170,70 +178,108 @@ pub enum MachineAddFailure {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(try_from = "ConnectivityProofEvidenceWire")]
-pub struct ConnectivityProofEvidence {
-    unreachable_peers: Vec<ConnectivityProofUnreachablePeer>,
-}
-
-impl ConnectivityProofEvidence {
-    pub fn try_new(
-        unreachable_peers: Vec<ConnectivityProofUnreachablePeer>,
-    ) -> Result<Self, ConnectivityProofEvidenceError> {
-        if unreachable_peers.is_empty() {
-            return Err(ConnectivityProofEvidenceError::Empty);
-        }
-        Ok(Self { unreachable_peers })
-    }
-
-    #[must_use]
-    pub fn unreachable_peers(&self) -> &[ConnectivityProofUnreachablePeer] {
-        &self.unreachable_peers
-    }
-}
-
-impl fmt::Display for ConnectivityProofEvidence {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (index, peer) in self.unreachable_peers.iter().enumerate() {
-            if index > 0 {
-                formatter.write_str(", ")?;
-            }
-            write!(
-                formatter,
-                "{} at {}",
-                peer.machine_id.as_str(),
-                peer.gateway
-            )?;
-        }
-        Ok(())
-    }
+#[serde(deny_unknown_fields)]
+pub struct DataplaneProjectionAdmissionEvidence {
+    pub machine_id: MachineId,
+    pub reason: DataplaneProjectionAdmissionFailure,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
-pub struct ConnectivityProofUnreachablePeer {
-    pub machine_id: MachineId,
-    #[cfg_attr(feature = "typescript", ts(type = "string"))]
-    pub gateway: std::net::Ipv4Addr,
+pub struct DataplaneAdmissionPeer {
+    pub public_key: crate::dataplane::WireGuardPublicKey,
+    pub endpoint_subnet: crate::dataplane::WireGuardPeerEndpointSubnet,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum ConnectivityProofEvidenceError {
-    #[error("connectivity proof evidence has no unreachable peers")]
-    Empty,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WireGuardReadinessFailure {
+    InterfaceMissing,
+    InterfaceMtuUnavailable {
+        observed: crate::dataplane::WireGuardInterfaceMtu,
+    },
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ConnectivityProofEvidenceWire {
-    unreachable_peers: Vec<ConnectivityProofUnreachablePeer>,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DataplaneProjectionAdmissionFailure {
+    NoAnswer {
+        message: FailureMessage,
+    },
+    UnusableProjection {
+        failure: crate::dataplane::DataplaneProjectionFailure,
+    },
+    AwaitingTargetRevision {
+        expected: crate::dataplane::DataplaneProjectionRevision,
+        observed: Option<crate::dataplane::DataplaneProjectionRevision>,
+    },
+    EndpointBridgeNotReady {
+        status: crate::dataplane::EndpointBridgeStatus,
+    },
+    WireGuardNotReady {
+        failure: WireGuardReadinessFailure,
+    },
+    EbpfNotReady {
+        status: crate::dataplane::EbpfAttachmentStatus,
+    },
+    PeerSetMismatch {
+        expected: Vec<DataplaneAdmissionPeer>,
+        observed: Vec<DataplaneAdmissionPeer>,
+    },
+    PeerHandshakeNever {
+        peer_machine_id: MachineId,
+    },
+    PeerHandshakeStale {
+        peer_machine_id: MachineId,
+        observed_age_seconds: u64,
+    },
 }
 
-impl TryFrom<ConnectivityProofEvidenceWire> for ConnectivityProofEvidence {
-    type Error = ConnectivityProofEvidenceError;
-
-    fn try_from(wire: ConnectivityProofEvidenceWire) -> Result<Self, Self::Error> {
-        Self::try_new(wire.unreachable_peers)
+impl fmt::Display for DataplaneProjectionAdmissionFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoAnswer { message } => write!(formatter, "no answer: {message}"),
+            Self::UnusableProjection { failure } => {
+                write!(formatter, "unusable projection: {failure:?}")
+            }
+            Self::AwaitingTargetRevision { expected, observed } => match observed {
+                Some(observed) => write!(
+                    formatter,
+                    "awaiting target revision {}: observed {}",
+                    expected.as_str(),
+                    observed.as_str()
+                ),
+                None => write!(
+                    formatter,
+                    "awaiting target revision {}: no attempted revision",
+                    expected.as_str()
+                ),
+            },
+            Self::EndpointBridgeNotReady { status } => {
+                write!(formatter, "endpoint bridge not ready: {status:?}")
+            }
+            Self::WireGuardNotReady { failure } => {
+                write!(formatter, "WireGuard not ready: {failure:?}")
+            }
+            Self::EbpfNotReady { status } => write!(formatter, "eBPF not ready: {status:?}"),
+            Self::PeerSetMismatch { .. } => formatter.write_str("peer set mismatch"),
+            Self::PeerHandshakeNever { peer_machine_id } => write!(
+                formatter,
+                "peer {} has never completed a handshake",
+                peer_machine_id.as_str()
+            ),
+            Self::PeerHandshakeStale {
+                peer_machine_id,
+                observed_age_seconds,
+            } => write!(
+                formatter,
+                "peer {} handshake is {observed_age_seconds}s old",
+                peer_machine_id.as_str()
+            ),
+        }
     }
 }
 
@@ -290,11 +336,9 @@ pub fn redeem_pending_join_token(
 }
 
 pub fn active_machine_from_completed_add(
-    operation_id: OperationId,
-    machine_id: MachineId,
     name: MachineName,
     roles: crate::roles::InstallRolePolicy,
-    endpoint_subnet: MachineEndpointSubnet,
+    staged: StagedMachineDataplaneState,
     operation: MachineAddOperationState,
 ) -> Result<ActiveMachineState, MachineTransitionRejected> {
     let MachineAddOperationState::Completed = operation else {
@@ -303,6 +347,13 @@ pub fn active_machine_from_completed_add(
         });
     };
 
+    let StagedMachineDataplaneState {
+        operation_id,
+        machine_id,
+        endpoint_subnet,
+        mesh_endpoints,
+        wireguard_public_key,
+    } = staged;
     Ok(ActiveMachineState {
         lifecycle: crate::state::MachineLifecycle::Active,
         machine_id,
@@ -310,8 +361,9 @@ pub fn active_machine_from_completed_add(
         activated_by: operation_id,
         roles,
         control_endpoints: Vec::new(),
-        mesh_endpoints: Vec::new(),
+        mesh_endpoints,
         endpoint_subnet,
+        wireguard_public_key,
     })
 }
 

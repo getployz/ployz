@@ -682,6 +682,9 @@ fn runner_error_message(
         | MachineContainerRunnerError::Restart { message, .. }
         | MachineContainerRunnerError::Remove { message, .. }
         | MachineContainerRunnerError::RemoveVolume { message, .. } => message,
+        MachineContainerRunnerError::EndpointNetworkSubnetMismatch { expected, observed } => {
+            format!("endpoint network subnet is {observed:?}, expected {expected:?}")
+        }
     }
 }
 

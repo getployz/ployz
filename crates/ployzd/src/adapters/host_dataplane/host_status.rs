@@ -152,14 +152,7 @@ async fn peer_status(
             },
         ),
     };
-    let handshake = peer
-        .last_handshake
-        .and_then(|timestamp| SystemTime::now().duration_since(timestamp).ok())
-        .map_or(WireGuardHandshakeStatus::Never, |age| {
-            WireGuardHandshakeStatus::Ago {
-                seconds: age.as_secs(),
-            }
-        });
+    let handshake = handshake_status(peer.last_handshake);
     Ok(WireGuardPeerStatus {
         public_key,
         endpoint_subnet,
@@ -170,6 +163,17 @@ async fn peer_status(
         tx_bytes: peer.tx_bytes,
         mtu_probe,
     })
+}
+
+fn handshake_status(last_handshake: Option<SystemTime>) -> WireGuardHandshakeStatus {
+    last_handshake
+        .filter(|timestamp| *timestamp != SystemTime::UNIX_EPOCH)
+        .and_then(|timestamp| SystemTime::now().duration_since(timestamp).ok())
+        .map_or(WireGuardHandshakeStatus::Never, |age| {
+            WireGuardHandshakeStatus::Ago {
+                seconds: age.as_secs(),
+            }
+        })
 }
 
 fn peer_endpoint_subnet(value: Option<String>) -> WireGuardPeerEndpointSubnet {
@@ -217,6 +221,14 @@ mod tests {
             status,
             WireGuardPeerEndpointSubnet::Invalid { value, .. } if value == "not-a-subnet"
         ));
+    }
+
+    #[test]
+    fn zero_wireguard_handshake_timestamp_is_never() {
+        assert_eq!(
+            handshake_status(Some(SystemTime::UNIX_EPOCH)),
+            WireGuardHandshakeStatus::Never
+        );
     }
 
     #[tokio::test(start_paused = true)]

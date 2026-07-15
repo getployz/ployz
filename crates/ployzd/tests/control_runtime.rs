@@ -6,13 +6,13 @@
 //! `machine_add_mint.rs`; the shared fixture lives in `support::control`.
 
 use futures_util::StreamExt;
-use ployz_core::cert::{ManagedLeaseIntent, PublicUrlMode};
 use ployz_core::deploy::{
     DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageReference,
     RegistryCredential, ReplicaCount, VolumeName,
 };
-use ployz_core::ids::MachineId;
+use ployz_core::ids::{MachineId, RouteBindingId};
 use ployz_core::image::OciDigest;
+use ployz_core::ingress::RouteBindingOrigin;
 use ployz_core::install::{InstallArtifactVersion, MachineBootstrapUrl};
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::{
@@ -27,32 +27,40 @@ use ployz_core::state::{
     RouteBindingState, VolumePinState,
 };
 use ployz_core::subjects::{
-    MachineServiceEndpoint, OperationApiEndpoint, gateway_status,
-    machine_facts as machine_facts_subject, machine_service,
+    INTENT_CHANGED, MachineServiceEndpoint, OperationApiEndpoint, RUNTIME_SNAPSHOT_SEED,
+    RUNTIME_SNAPSHOT_STREAM, gateway_status, machine_facts as machine_facts_subject,
+    machine_service,
 };
 use ployz_nats::connect::connect_authenticated;
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
-use ployz_nats::service_runtime::{NatsServiceResponse, RunningNatsService, start_nats_service};
+use ployz_nats::service_runtime::{
+    NatsServiceResponse, RunningNatsService, request_json, start_nats_service,
+};
 use ployz_sdk_types::{
-    DeployReserveRequest, DeploySubmitRequest, InitFirstMachineActivateRequest, MachineAddError,
-    MachineAddRequest, MachineInspectRequest, MachineJoinReportOutcome, MachineJoinReportRequest,
-    MachineListRequest, MachineTestimony, MachineUpdateError, MachineUpdateRequest,
-    OpsWatchRequest, RuntimeDerivedCollectionStatus, RuntimeSnapshotRequest, ServiceInspectRequest,
-    ServiceListRequest, VolumeListRequest, VolumeStatus,
+    DeployReserveRequest, DeploySubmitRequest, MachineAddError, MachineAddRequest,
+    MachineInspectRequest, MachineJoinReportOutcome, MachineJoinReportRequest, MachineListRequest,
+    MachineTestimony, MachineUpdateError, MachineUpdateRequest, OpsWatchRequest,
+    RuntimeDerivedCollectionStatus, RuntimePloyzDnsTargetAllocation,
+    RuntimePloyzDnsTargetPublication, RuntimeSnapshot, RuntimeSnapshotRequest,
+    ServiceInspectRequest, ServiceListRequest, VolumeListRequest, VolumeStatus,
 };
 use ployz_test_support::ops::wait_for_terminal_status;
 use ployzd::certificate::task::{CertificateRenewalAttempt, CertificateRenewalOutcome};
-use ployzd::intent::lease_intent::LeaseIntentStore;
+use ployzd::certificate::{AcmeIssueContext, AcmeIssuer, AcmeIssuerError, IssuedCertificate};
 use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
+use ployzd::lease::LeaseWorkerUrl;
 use ployzd::operation_api::admission::MachineAddBootstrapConfig;
 use ployzd::roles::gateway::process::start_gateway_process_with_client;
 use ployzd::roles::machine::protocol::{
-    MachineFactsGetRpcOk, MachineFactsGetRpcResponse, MachineSubstrateReportRpcOk,
+    MachineDataplaneStatusRpcRequest, MachineDataplaneStatusRpcResponse, MachineFactsGetRpcOk,
+    MachineFactsGetRpcResponse, MachineRpcResponse, MachineSubstrateReportRpcOk,
     MachineSubstrateReportRpcResponse, MachineSubstrateUpdateRpcOk,
     MachineSubstrateUpdateRpcResponse,
 };
-use ployzd::roles::machine::service::start_machine_role_service;
+use ployzd::roles::machine::service::{
+    start_machine_role_runtime, start_machine_role_runtime_with_endpoint_observation,
+};
 use ployzd::service_catalog::machine_role_service;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
@@ -124,78 +132,6 @@ async fn control_runtime_does_not_mutate_machine_state_on_startup() {
 }
 
 #[tokio::test]
-async fn first_machine_reactivation_preserves_configured_public_url_mode() {
-    let nats = TestNats::start().await;
-    let config = nats.control_config();
-    let core_store = ployzd::core_store::CoreStore::open(config.core_db_path.clone())
-        .await
-        .expect("open core store");
-    let machine_roster = MachineRosterStore::new(core_store.clone());
-    let lease_intent = LeaseIntentStore::new(core_store);
-    machine_roster
-        .replace_active_machine(&active_machine("core_1"))
-        .await
-        .expect("active first machine stores");
-    lease_intent
-        .set_mode(PublicUrlMode::None)
-        .await
-        .expect("initial public URL mode stores");
-    let runtime = nats.start_control(&config).await;
-
-    nats.api()
-        .init_first_machine_activate(&InitFirstMachineActivateRequest {
-            machine_id: machine_id("core_1"),
-            roles: InstallRolePolicy::install_all(),
-            public_url_mode: PublicUrlMode::Auto,
-        })
-        .await
-        .expect("first-machine reactivation succeeds");
-
-    assert_eq!(
-        lease_intent.load().await.expect("public URL mode loads"),
-        ManagedLeaseIntent::None
-    );
-    runtime
-        .shutdown()
-        .await
-        .expect("control runtime shuts down");
-}
-
-#[tokio::test]
-async fn first_machine_reactivation_heals_missing_public_url_mode() {
-    let nats = TestNats::start().await;
-    let config = nats.control_config();
-    let core_store = ployzd::core_store::CoreStore::open(config.core_db_path.clone())
-        .await
-        .expect("open core store");
-    let machine_roster = MachineRosterStore::new(core_store.clone());
-    let lease_intent = LeaseIntentStore::new(core_store);
-    machine_roster
-        .replace_active_machine(&active_machine("core_1"))
-        .await
-        .expect("active first machine stores");
-    let runtime = nats.start_control(&config).await;
-
-    nats.api()
-        .init_first_machine_activate(&InitFirstMachineActivateRequest {
-            machine_id: machine_id("core_1"),
-            roles: InstallRolePolicy::install_all(),
-            public_url_mode: PublicUrlMode::None,
-        })
-        .await
-        .expect("interrupted first-machine activation heals");
-
-    assert_eq!(
-        lease_intent.load().await.expect("public URL mode loads"),
-        ManagedLeaseIntent::None
-    );
-    runtime
-        .shutdown()
-        .await
-        .expect("control runtime shuts down");
-}
-
-#[tokio::test]
 async fn control_runtime_uses_configured_machine_bootstrap_url() {
     let nats = TestNats::start().await;
     let config = nats.control_config().with_machine_bootstrap(
@@ -254,15 +190,8 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
     let redeemed = redeem_when_ready(&join_api, &accepted.join_token).await;
     assert_eq!(redeemed.machine_id, machine_id("machine_2"));
 
-    join_api
-        .machine_join_report(&MachineJoinReportRequest {
-            join_token: accepted.join_token.clone(),
-            outcome: MachineJoinReportOutcome::Completed,
-        })
-        .await
-        .expect("join completion reports");
     // The minted per-machine seed is a working Machine credential: connect
-    // with it and publish this machine's facts.
+    // with it and converge the target dataplane before reporting completion.
     let minted_seed = ployz_core::nats_config::NatsUserSeed::try_new(
         redeemed.secret_delivery.nats_credentials.secret(),
     )
@@ -278,6 +207,40 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
     )
     .await
     .expect("minted machine credential connects");
+    let runner = ObservingContainerRunner::new(machine_id("machine_2"));
+    let machine_runtime = start_machine_role_runtime(
+        minted_client.clone(),
+        machine_id("machine_2"),
+        runner.clone(),
+        ReadyWireGuardEbpf::for_machine(&machine_id("machine_2")),
+        runner,
+    )
+    .await
+    .expect("machine runtime starts");
+    join_api
+        .machine_join_report(&MachineJoinReportRequest {
+            join_token: accepted.join_token.clone(),
+            outcome: MachineJoinReportOutcome::Completed,
+        })
+        .await
+        .expect("join completion reports");
+    wait_for_dataplane_projection(&nats, &machine_id("machine_2")).await;
+    let status =
+        wait_for_terminal_status(&api, &operation_id("op_machine"), Duration::from_secs(4)).await;
+    assert!(
+        matches!(
+            status,
+            OperationStatus::MachineAdd {
+                state: ployz_core::ops::MachineAddOperationState::Completed,
+                ..
+            }
+        ),
+        "expected machine add to complete, got {status:?}"
+    );
+    machine_runtime
+        .shutdown()
+        .await
+        .expect("machine runtime shuts down");
     let _facts = start_facts_subscription(
         minted_client.clone(),
         machine_id("machine_2"),
@@ -407,7 +370,9 @@ async fn control_runtime_serves_active_service_queries() {
 #[tokio::test]
 async fn control_runtime_serves_runtime_snapshot_projection() {
     let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
-    let config = nats.control_config();
+    let config = nats.control_config().with_lease_worker_url(
+        LeaseWorkerUrl::try_new("http://127.0.0.1:9").expect("lease worker URL"),
+    );
     let namespace_intent = NamespaceIntentStore::new(
         ployzd::core_store::CoreStore::open(config.core_db_path.clone())
             .await
@@ -426,10 +391,12 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
         .expect("serving target entry stores");
     namespace_intent
         .replace_route_binding(RouteBindingState {
+            id: RouteBindingId::try_new("route_api").expect("valid route binding id"),
             namespace_id: namespace_id("default"),
-            target: RouteTarget::new(route_hostname("api.example.com"), route_port(443)),
+            target: RouteTarget::new(route_hostname("api.example.com")),
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
+            origin: RouteBindingOrigin::Declared,
         })
         .await
         .expect("route binding stores");
@@ -473,6 +440,18 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
     assert_eq!(snapshot.releases.len(), 1);
     assert_eq!(snapshot.instances.len(), 1);
     assert_eq!(
+        snapshot.automatic_hostname_configuration,
+        ployz_core::ingress::AutomaticHostnameConfiguration::Disabled
+    );
+    assert_eq!(
+        snapshot.ployz_dns_target.allocation,
+        RuntimePloyzDnsTargetAllocation::Unacquired
+    );
+    assert_eq!(
+        snapshot.ployz_dns_target.publication,
+        RuntimePloyzDnsTargetPublication::Unpublished
+    );
+    assert_eq!(
         snapshot.projection_sources.revisions.status,
         RuntimeDerivedCollectionStatus::Complete
     );
@@ -481,6 +460,137 @@ async fn control_runtime_serves_runtime_snapshot_projection() {
         .shutdown()
         .await
         .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn secured_operator_receives_passive_runtime_snapshot_replacements() {
+    let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
+    let config = nats.control_config();
+    let machine_roster = machine_roster(&config).await;
+    let mut snapshots = nats
+        .connected
+        .user
+        .subscribe(RUNTIME_SNAPSHOT_STREAM)
+        .await
+        .expect("operator subscribes to runtime snapshots");
+    nats.connected
+        .user
+        .flush()
+        .await
+        .expect("subscription flushes");
+    let runtime = nats.start_control(&config).await;
+
+    let initial = next_runtime_snapshot(&mut snapshots, "initial", |snapshot| {
+        snapshot.machines.is_empty()
+    })
+    .await;
+    assert!(initial.containers.is_empty());
+    assert_eq!(
+        initial.automatic_hostname_configuration,
+        ployz_core::ingress::AutomaticHostnameConfiguration::Disabled
+    );
+    let seeded = request_json::<_, RuntimeSnapshot>(
+        &nats.connected.user,
+        RUNTIME_SNAPSHOT_SEED.to_owned(),
+        &serde_json::json!({}),
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("operator seeds from passive runtime projection");
+    assert!(seeded.machines.is_empty());
+    assert_eq!(
+        seeded.automatic_hostname_configuration,
+        initial.automatic_hostname_configuration
+    );
+    assert!(seeded.updated_at_unix_seconds >= initial.updated_at_unix_seconds);
+    let health = runtime.runtime_projection_health();
+    assert_eq!(health.projection.consecutive_failures, 0);
+    assert_eq!(health.publisher.consecutive_failures, 0);
+    assert_eq!(health.seed.endpoint_tasks_started, 1);
+    assert_eq!(health.seed.endpoint_tasks_finished, 0);
+
+    machine_roster
+        .replace_active_machine(&active_machine("machine_a"))
+        .await
+        .expect("active machine stores");
+    nats.connected
+        .controller
+        .publish(INTENT_CHANGED, Vec::new().into())
+        .await
+        .expect("intent invalidation publishes");
+    nats.connected
+        .controller
+        .flush()
+        .await
+        .expect("intent flushes");
+    next_runtime_snapshot(&mut snapshots, "intent", |snapshot| {
+        snapshot.machines.len() == 1
+    })
+    .await;
+
+    let machine_client = nats.machine_client(&machine_id("machine_a")).await;
+    publish_machine_facts(
+        &machine_client,
+        containers::snapshot(
+            "machine_a",
+            [containers::observation("machine_a", "ctr_passive").running_unroutable()],
+        ),
+        None,
+    )
+    .await;
+    next_runtime_snapshot(&mut snapshots, "machine", |snapshot| {
+        snapshot
+            .containers
+            .iter()
+            .any(|container| container.container_id.as_str() == "ctr_passive")
+    })
+    .await;
+
+    publish_gateway_status(
+        &machine_client,
+        GatewayStatusObservation {
+            machine_id: machine_id("machine_a"),
+            listen_addr: "127.0.0.1:443".parse().expect("gateway address"),
+            serving: GatewayServingStatus::Current,
+            route_count: 2,
+        },
+    )
+    .await;
+    let gateway = next_runtime_snapshot(&mut snapshots, "gateway", |snapshot| {
+        matches!(
+            snapshot.machines.first().map(|machine| &machine.testimony),
+            Some(MachineTestimony::Answered {
+                gateway: Some(gateway),
+                ..
+            }) if gateway.route_count == 2
+        )
+    })
+    .await;
+    assert_eq!(gateway.machines.len(), 1);
+
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+async fn next_runtime_snapshot(
+    snapshots: &mut async_nats::Subscriber,
+    expected: &str,
+    accept: impl Fn(&RuntimeSnapshot) -> bool,
+) -> RuntimeSnapshot {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let message = snapshots.next().await.expect("runtime stream stays open");
+            let snapshot = serde_json::from_slice::<RuntimeSnapshot>(&message.payload)
+                .expect("runtime snapshot decodes");
+            if accept(&snapshot) {
+                return snapshot;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{expected} runtime snapshot arrives"))
 }
 
 #[tokio::test]
@@ -515,15 +625,16 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
         .await
         .expect("active machine stores");
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_role_service(
+    let machine_runtime = start_machine_role_runtime(
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
-        ReadyWireGuardEbpf,
+        ReadyWireGuardEbpf::for_machine(&machine_id("machine_a")),
         runner.clone(),
     )
     .await
     .expect("machine runtime starts");
+    wait_for_dataplane_projection(&nats, &machine_id("machine_a")).await;
     let api = nats.api();
     let credential = RegistryCredential::try_basic("alice", "deploy-only-secret")
         .expect("valid registry credential");
@@ -668,15 +779,16 @@ async fn control_runtime_records_typed_planning_failure_when_tag_cannot_resolve(
         .expect("active machine stores");
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
     runner.fail_registry_resolution("registry denied the manifest");
-    let machine_runtime = start_machine_role_service(
+    let machine_runtime = start_machine_role_runtime(
         machine_client,
         machine_id("machine_a"),
         runner.clone(),
-        ReadyWireGuardEbpf,
+        ReadyWireGuardEbpf::for_machine(&machine_id("machine_a")),
         runner.clone(),
     )
     .await
     .expect("machine runtime starts");
+    wait_for_dataplane_projection(&nats, &machine_id("machine_a")).await;
     let api = nats.api();
     let request =
         reserved_deploy_request(&api, "idem_resolution_failure", deploy_target("svc_api")).await;
@@ -813,36 +925,41 @@ async fn control_runtime_records_machine_update_without_mutating_roster_intent()
 
 #[tokio::test]
 async fn control_runtime_routed_deploy_serves_through_gateway() {
-    let nats =
-        TestNats::start_with_machines(&[machine_id("machine_a"), machine_id("machine_gateway")])
-            .await;
+    let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
     let config = nats
         .control_config()
         .with_deploy_machines(vec![machine_id("machine_a")])
         .with_deploy_step_timeout(Duration::from_secs(2));
     let machine_roster = machine_roster(&config).await;
-    let runtime = nats.start_control(&config).await;
+    let runtime = nats
+        .start_control_with_test_issuer(&config, std::sync::Arc::new(FixtureAcmeIssuer))
+        .await;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     machine_roster
         .replace_active_machine(&active_machine("machine_a"))
         .await
         .expect("active machine stores");
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_role_service(
+    let machine_runtime = start_machine_role_runtime_with_endpoint_observation(
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
-        ReadyWireGuardEbpf,
+        ReadyWireGuardEbpf::for_machine(&machine_id("machine_a")),
         runner.clone(),
+        MachineEndpointObservation {
+            machine_id: machine_id("machine_a"),
+            control_endpoints: vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+            mesh_endpoints: Vec::new(),
+        },
     )
     .await
     .expect("machine runtime starts");
-    let gateway_client = nats.machine_client(&machine_id("machine_gateway")).await;
+    wait_for_dataplane_projection(&nats, &machine_id("machine_a")).await;
     let gateway = start_gateway_process_with_client(
-        gateway_client,
+        machine_client.clone(),
         Duration::from_millis(10),
         SocketAddr::from(([127, 0, 0, 1], 0)),
-        machine_id("machine_gateway"),
+        machine_id("machine_a"),
         None,
     )
     .await
@@ -853,7 +970,7 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
     let request = reserved_deploy_request(
         &api,
         "idem_routed",
-        deploy_target_with_route("svc_api", gateway.listen_addr().port(), upstream.port()),
+        deploy_target_with_route("svc_api", upstream.port()),
     )
     .await;
     let accepted = api
@@ -904,7 +1021,7 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         .await
         .expect("connect gateway");
     client
-        .write_all(b"GET /smoke HTTP/1.1\r\nHost: api.example.com\r\nConnection: close\r\n\r\n")
+        .write_all(b"GET /smoke HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
         .await
         .expect("write gateway request");
     let mut response = String::new();
@@ -913,13 +1030,10 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         .await
         .expect("read gateway response");
 
-    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
-    assert!(response.ends_with("\r\n\r\nsmoke"));
-    let upstream_request = upstream.request().await;
-    assert!(upstream_request.starts_with("GET /smoke HTTP/1.1\r\n"));
-    assert!(upstream_request.contains("\r\nHost: api.example.com\r\n"));
+    assert!(response.starts_with("HTTP/1.1 301 Moved Permanently\r\n"));
+    assert!(response.contains("location: https://localhost/smoke\r\n"));
 
-    gateway.shutdown().await;
+    gateway.shutdown().await.expect("gateway shuts down");
     machine_runtime
         .shutdown()
         .await
@@ -928,6 +1042,41 @@ async fn control_runtime_routed_deploy_serves_through_gateway() {
         .shutdown()
         .await
         .expect("control runtime shuts down");
+}
+
+struct FixtureAcmeIssuer;
+
+#[async_trait::async_trait]
+impl AcmeIssuer for FixtureAcmeIssuer {
+    async fn issue_http01(
+        &self,
+        context: &AcmeIssueContext,
+        hostname: &ployz_core::ops::RouteHostname,
+    ) -> Result<IssuedCertificate, AcmeIssuerError> {
+        let challenge = ployz_core::cert::AcmeHttp01Challenge::try_new(
+            hostname.clone(),
+            ployz_core::cert::AcmeChallengeToken::try_new("control-runtime-token")
+                .expect("challenge token"),
+            ployz_core::cert::AcmeChallengeValue::try_new(
+                "control-runtime-token.fixture-thumbprint",
+            )
+            .expect("challenge value"),
+            ployz_core::cert::AcmeChallengeTtlSeconds::try_new(900).expect("challenge ttl"),
+        )
+        .expect("challenge");
+        context.publish_challenge(challenge).await?;
+        context.validation_started().await?;
+        let rcgen::CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed([hostname.as_str().to_owned()]).map_err(
+                |error| AcmeIssuerError::Validation {
+                    message: error.to_string(),
+                },
+            )?;
+        Ok(IssuedCertificate {
+            certificate_chain_pem: cert.pem(),
+            private_key_pem: signing_key.serialize_pem(),
+        })
+    }
 }
 
 fn image(value: &str) -> ImageReference {
@@ -946,6 +1095,36 @@ async fn machine_roster(config: &ployzd::config::ControlProcessConfig) -> Machin
     )
 }
 
+async fn wait_for_dataplane_projection(nats: &TestNats, machine_id: &MachineId) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let response = request_json::<_, MachineDataplaneStatusRpcResponse>(
+            &nats.connected.controller,
+            machine_service(machine_id, MachineServiceEndpoint::DataplaneStatus),
+            &MachineDataplaneStatusRpcRequest {
+                mode: ployz_core::dataplane::NetworkStatusMode::Snapshot,
+            },
+            Duration::from_millis(250),
+        )
+        .await;
+        if matches!(
+            response,
+            Ok(MachineRpcResponse::Ok(ok))
+                if matches!(
+                    ok.value.projection.testimony,
+                    ployz_core::dataplane::DataplaneProjectionTestimony::Applied { .. }
+                )
+        ) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "machine {machine_id:?} did not converge its dataplane projection"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 fn active_machine(value: &str) -> ActiveMachineState {
     ActiveMachineState {
         control_endpoints: Vec::new(),
@@ -957,6 +1136,10 @@ fn active_machine(value: &str) -> ActiveMachineState {
         roles: ployz_core::roles::InstallRolePolicy::install_all(),
         endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
             .expect("valid endpoint subnet"),
+        wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+            "public-{value}"
+        ))
+        .expect("public key"),
     }
 }
 
@@ -1142,19 +1325,14 @@ fn deploy_target(service_id: &str) -> DeployRequest {
     }
 }
 
-fn deploy_target_with_route(
-    service_id: &str,
-    gateway_port: u16,
-    endpoint_port: u16,
-) -> DeployRequest {
+fn deploy_target_with_route(service_id: &str, endpoint_port: u16) -> DeployRequest {
     let mut target = deploy_target(service_id);
     let [service] = target.services.as_mut_slice() else {
         panic!("deploy target fixture has one service");
     };
     service.routes = vec![DeployRoute {
         target: DeployRouteTarget::Hostname {
-            hostname: route_hostname("api.example.com"),
-            port: route_port(gateway_port),
+            hostname: route_hostname("localhost"),
         },
         endpoint_port: route_port(endpoint_port),
     }];

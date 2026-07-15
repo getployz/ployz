@@ -1,12 +1,4 @@
-use ployz_core::cert::{
-    ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, ManagedLeaseName,
-};
-use ployz_core::dataplane::{
-    DataplanePrepareError, DataplanePrepareRequest, DataplaneProviderFailure, EbpfForwardingReady,
-    EbpfForwardingReadyEvidence, PloyzNativeMeshComponent, PloyzNativeMeshMachineReady,
-    PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady,
-    WireGuardReadyEvidence,
-};
+use ployz_core::cert::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
 use ployz_core::deploy::{
     ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerMountPath,
     DependencyCondition, DeployCleanupContainer, DeployRequest, DeployRoute, DeployRouteTarget,
@@ -14,8 +6,10 @@ use ployz_core::deploy::{
     ServiceDependency, ServiceVolumeMount, VolumeName,
 };
 use ployz_core::ids::{
-    ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId, ServiceId,
+    ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId,
+    RouteBindingId, ServiceId,
 };
+use ployz_core::ingress::{AutomaticHostnameLabel, RouteBindingOrigin};
 use ployz_core::machine_runtime::{
     MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
@@ -37,7 +31,7 @@ pub(super) fn phase_number(value: u16) -> ployz_core::ops::DeployPhaseNumber {
 }
 use ployzd::certificate::GatewayCertificateTarget;
 use ployzd::operations::deploy::{
-    CertificateProvisioner, DataplanePreparer, DeployExecutionFacts, DeployExecutionInput,
+    AutomaticHostnameMode, CertificateProvisioner, DeployExecutionFacts, DeployExecutionInput,
     DeployHealthCheckError, DeployHealthChecker, DeployOperationRecordError,
     DeployOperationRecorder, DeployPhasePromotion, MachineContainerRuntime,
     MachineContainerRuntimeError, MachineRuntimeUnavailableReason, NamespaceCommitError,
@@ -48,8 +42,7 @@ use ployzd::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerResolveImageRpcRequest,
     MachineContainerRestartRpcRequest, MachineContainerRunHookRpcOk,
     MachineContainerRunHookRpcRequest, MachineContainerRunRpcRequest,
-    MachineContainerStopRpcRequest, MachineEnsureEndpointNetworkRpcRequest,
-    MachineRunContainerOutcome,
+    MachineContainerStopRpcRequest, MachineRunContainerOutcome,
 };
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -107,9 +100,6 @@ pub(super) enum RecordedOperation {
     PlanCreated {
         replica_count: usize,
     },
-    DataplanePrepared {
-        machine_count: usize,
-    },
     ImageAvailabilityVerified,
     HealthCheckStarted,
     ContainerStarted {
@@ -149,7 +139,6 @@ impl DeployOperationRecorder for RecordingOperations {
     ) -> Result<(), DeployOperationRecordError> {
         assert_eq!(recorded_operation_id, &operation_id("op_123"));
         match evidence {
-            DeployEvidence::WaitingForManagedCertificate => {}
             DeployEvidence::ImageResolved { .. } => {}
             DeployEvidence::PlanCreated { plan } => {
                 self.records.push(RecordedOperation::PlanCreated {
@@ -159,11 +148,6 @@ impl DeployOperationRecorder for RecordingOperations {
                         .flat_map(|phase| &phase.services)
                         .map(|service| service.steps.len())
                         .sum(),
-                });
-            }
-            DeployEvidence::DataplanePrepared { report } => {
-                self.records.push(RecordedOperation::DataplanePrepared {
-                    machine_count: report.machines.len(),
                 });
             }
             DeployEvidence::ImageAvailabilityVerified { .. } => {
@@ -211,7 +195,6 @@ impl DeployOperationRecorder for RecordingOperations {
 
 pub(super) struct RecordingRuntime {
     pub(super) resolutions: Vec<(MachineId, MachineContainerResolveImageRpcRequest)>,
-    pub(super) endpoint_networks: Vec<(MachineId, MachineEnsureEndpointNetworkRpcRequest)>,
     pub(super) requests: Vec<(MachineId, MachineContainerRunRpcRequest)>,
     pub(super) hook_requests: Vec<(MachineId, MachineContainerRunHookRpcRequest)>,
     pub(super) stops: Vec<(MachineId, MachineContainerStopRpcRequest)>,
@@ -219,87 +202,11 @@ pub(super) struct RecordingRuntime {
     containers: Vec<ContainerId>,
     hook_outcomes: Vec<(ContainerId, i64)>,
     fail_after_first: bool,
-    fail_endpoint_network: bool,
     reuse_existing: bool,
     start_existing: bool,
     fail_start: bool,
     fail_remove: bool,
     fail_stop: bool,
-}
-
-#[derive(Default)]
-pub(super) struct RecordingWireGuardEbpf {
-    pub(super) requests: Vec<DataplanePrepareRequest>,
-    failure: Option<DataplanePrepareError>,
-}
-
-impl RecordingWireGuardEbpf {
-    pub(super) fn ready() -> Self {
-        Self::default()
-    }
-
-    pub(super) fn wireguard_failed(machine_id: &str) -> Self {
-        Self {
-            requests: Vec::new(),
-            failure: Some(DataplanePrepareError::Unavailable {
-                machine_id: self::machine_id(machine_id),
-                provider: DataplaneProviderFailure::PloyzNativeMesh {
-                    component: PloyzNativeMeshComponent::WireGuard,
-                },
-                message: ployz_core::ops::FailureMessage::try_new("wireguard interface failed")
-                    .expect("valid failure message"),
-            }),
-        }
-    }
-}
-
-impl DataplanePreparer for RecordingWireGuardEbpf {
-    async fn prepare_dataplane(
-        &mut self,
-        request: DataplanePrepareRequest,
-    ) -> Result<PloyzNativeMeshPrepareReport, DataplanePrepareError> {
-        let ready_machines = request
-            .membership
-            .iter()
-            .map(|member| ready_machine(member.machine_id.clone()))
-            .collect::<Vec<_>>();
-        self.requests.push(request);
-        match &self.failure {
-            Some(error) => Err(error.clone()),
-            None => {
-                let expected = ready_machines
-                    .iter()
-                    .map(|machine| machine.machine_id.clone())
-                    .collect::<Vec<_>>();
-                Ok(
-                    PloyzNativeMeshPrepareReport::for_targets(&expected, ready_machines)
-                        .expect("recording report matches requested machines"),
-                )
-            }
-        }
-    }
-}
-
-fn ready_machine(machine_id: MachineId) -> PloyzNativeMeshMachineReady {
-    let public_key = wireguard_public_key(format!("public-{}", machine_id.as_str()));
-    PloyzNativeMeshMachineReady {
-        machine_id,
-        ready: PloyzNativeMeshReady {
-            wireguard: WireGuardReady {
-                public_key,
-                evidence: vec![WireGuardReadyEvidence::Command {
-                    program: "wg".to_owned(),
-                    args: vec!["--version".to_owned()],
-                }],
-            },
-            ebpf_forwarding: EbpfForwardingReady {
-                evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
-                    path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
-                    symbols: vec!["ployz_egress".to_owned(), "ployz_ingress".to_owned()],
-                }],
-            },
-        },
-    }
 }
 
 /// How the fake handles serving-target commits; routes always record.
@@ -441,29 +348,42 @@ impl NamespaceStateCommitter for RecordingNamespaceState {
 
 pub(super) struct RecordingCertificates {
     pub(super) requests: Vec<(OperationId, RouteHostname, Vec<GatewayCertificateTarget>)>,
+    pub(super) ployz_wildcard_requests: usize,
+    pub(super) ployz_target_requests: Vec<Vec<GatewayCertificateTarget>>,
     result: Result<(), CertificateProvisionFailure>,
     certificate_ready: Arc<AtomicBool>,
+    ployz_wildcard_ready: Arc<AtomicBool>,
 }
 
 impl RecordingCertificates {
     pub(super) fn successful() -> Self {
         Self {
             requests: Vec::new(),
+            ployz_wildcard_requests: 0,
+            ployz_target_requests: Vec::new(),
             result: Ok(()),
             certificate_ready: Arc::new(AtomicBool::new(false)),
+            ployz_wildcard_ready: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub(super) fn failing(failure: CertificateProvisionFailure) -> Self {
         Self {
             requests: Vec::new(),
+            ployz_wildcard_requests: 0,
+            ployz_target_requests: Vec::new(),
             result: Err(failure),
             certificate_ready: Arc::new(AtomicBool::new(false)),
+            ployz_wildcard_ready: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub(super) fn readiness(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.certificate_ready)
+    }
+
+    pub(super) fn ployz_readiness(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.ployz_wildcard_ready)
     }
 }
 
@@ -471,6 +391,7 @@ impl CertificateProvisioner for RecordingCertificates {
     async fn ensure(
         &mut self,
         owner_operation_id: &OperationId,
+        _owner: ployz_core::ingress::CertificateOwner,
         hostname: &RouteHostname,
         targets: &[GatewayCertificateTarget],
     ) -> Result<ActiveCertState, CertificateProvisionFailure> {
@@ -482,6 +403,19 @@ impl CertificateProvisioner for RecordingCertificates {
         self.result.clone()?;
         self.certificate_ready.store(true, Ordering::SeqCst);
         Ok(active_certificate(hostname.clone()))
+    }
+
+    async fn ensure_ployz_wildcard(
+        &mut self,
+        targets: &[GatewayCertificateTarget],
+    ) -> Result<ActiveCertState, CertificateProvisionFailure> {
+        self.ployz_wildcard_requests += 1;
+        self.ployz_target_requests.push(targets.to_vec());
+        self.result.clone()?;
+        self.ployz_wildcard_ready.store(true, Ordering::SeqCst);
+        Ok(active_certificate(
+            RouteHostname::try_new("wildcard.up.ployz.app").expect("hostname"),
+        ))
     }
 }
 
@@ -599,7 +533,6 @@ impl RecordingRuntime {
     pub(super) fn with_containers<const N: usize>(containers: [&str; N]) -> Self {
         Self {
             resolutions: Vec::new(),
-            endpoint_networks: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
             stops: Vec::new(),
@@ -607,7 +540,6 @@ impl RecordingRuntime {
             containers: containers.into_iter().map(container_id).rev().collect(),
             hook_outcomes: Vec::new(),
             fail_after_first: false,
-            fail_endpoint_network: false,
             reuse_existing: false,
             start_existing: false,
             fail_start: false,
@@ -619,7 +551,6 @@ impl RecordingRuntime {
     pub(super) fn reusing_containers<const N: usize>(containers: [&str; N]) -> Self {
         Self {
             resolutions: Vec::new(),
-            endpoint_networks: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
             stops: Vec::new(),
@@ -627,7 +558,6 @@ impl RecordingRuntime {
             containers: containers.into_iter().map(container_id).rev().collect(),
             hook_outcomes: Vec::new(),
             fail_after_first: false,
-            fail_endpoint_network: false,
             reuse_existing: true,
             start_existing: false,
             fail_start: false,
@@ -639,7 +569,6 @@ impl RecordingRuntime {
     pub(super) fn starting_existing_containers<const N: usize>(containers: [&str; N]) -> Self {
         Self {
             resolutions: Vec::new(),
-            endpoint_networks: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
             stops: Vec::new(),
@@ -647,7 +576,6 @@ impl RecordingRuntime {
             containers: containers.into_iter().map(container_id).rev().collect(),
             hook_outcomes: Vec::new(),
             fail_after_first: false,
-            fail_endpoint_network: false,
             reuse_existing: false,
             start_existing: true,
             fail_start: false,
@@ -659,7 +587,6 @@ impl RecordingRuntime {
     pub(super) fn failing_after_first_container() -> Self {
         Self {
             resolutions: Vec::new(),
-            endpoint_networks: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
             stops: Vec::new(),
@@ -667,7 +594,6 @@ impl RecordingRuntime {
             containers: vec![container_id("ctr_1")],
             hook_outcomes: Vec::new(),
             fail_after_first: true,
-            fail_endpoint_network: false,
             reuse_existing: false,
             start_existing: false,
             fail_start: false,
@@ -679,7 +605,6 @@ impl RecordingRuntime {
     pub(super) fn failing_start(container_id: &str) -> Self {
         Self {
             resolutions: Vec::new(),
-            endpoint_networks: Vec::new(),
             requests: Vec::new(),
             hook_requests: Vec::new(),
             stops: Vec::new(),
@@ -687,7 +612,6 @@ impl RecordingRuntime {
             containers: vec![self::container_id(container_id)],
             hook_outcomes: Vec::new(),
             fail_after_first: false,
-            fail_endpoint_network: false,
             reuse_existing: false,
             start_existing: false,
             fail_start: true,
@@ -709,11 +633,6 @@ impl RecordingRuntime {
 
     pub(super) fn with_stop_failure(mut self) -> Self {
         self.fail_stop = true;
-        self
-    }
-
-    pub(super) fn with_endpoint_network_failure(mut self) -> Self {
-        self.fail_endpoint_network = true;
         self
     }
 }
@@ -744,23 +663,6 @@ impl MachineContainerRuntime for RecordingRuntime {
                 architecture: "amd64".to_owned(),
             },
         })
-    }
-
-    async fn ensure_endpoint_network(
-        &mut self,
-        machine_id: &MachineId,
-        request: MachineEnsureEndpointNetworkRpcRequest,
-    ) -> Result<(), MachineContainerRuntimeError> {
-        self.endpoint_networks.push((machine_id.clone(), request));
-        if self.fail_endpoint_network {
-            return Err(MachineContainerRuntimeError::Unavailable {
-                machine_id: machine_id.clone(),
-                reason: MachineRuntimeUnavailableReason::RequestFailed {
-                    message: "synthetic endpoint network failure".to_owned(),
-                },
-            });
-        }
-        Ok(())
     }
 
     async fn run_container(
@@ -1027,8 +929,9 @@ fn execution_input_for_request(
             eligible_machines: vec![machine_id("machine_a")],
             namespace_cleanup_candidates: namespace_cleanup_candidates(&observed_machines),
             observed_machines,
-            managed_lease: None,
+            automatic_hostname_mode: AutomaticHostnameMode::Disabled,
             gateway_certificate_targets: Vec::new(),
+            ployz_gateway_certificate_targets: Vec::new(),
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -1053,8 +956,9 @@ pub(super) fn pinned_deploy_command() -> DeployExecutionInput {
             eligible_machines: vec![machine_id("machine_a")],
             namespace_cleanup_candidates: Vec::new(),
             observed_machines: Vec::new(),
-            managed_lease: None,
+            automatic_hostname_mode: AutomaticHostnameMode::Disabled,
             gateway_certificate_targets: Vec::new(),
+            ployz_gateway_certificate_targets: Vec::new(),
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -1087,8 +991,9 @@ pub(super) fn deploy_command_with_healthcheck(replicas: u16) -> DeployExecutionI
             namespace_cleanup_candidates: Vec::new(),
             namespace_volume_pins: Vec::new(),
             observed_machines: Vec::new(),
-            managed_lease: None,
+            automatic_hostname_mode: AutomaticHostnameMode::Disabled,
             gateway_certificate_targets: Vec::new(),
+            ployz_gateway_certificate_targets: Vec::new(),
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -1133,8 +1038,9 @@ pub(super) fn deploy_command_with_pre_start() -> DeployExecutionInput {
             namespace_cleanup_candidates: Vec::new(),
             namespace_volume_pins: Vec::new(),
             observed_machines: Vec::new(),
-            managed_lease: None,
+            automatic_hostname_mode: AutomaticHostnameMode::Disabled,
             gateway_certificate_targets: Vec::new(),
+            ployz_gateway_certificate_targets: Vec::new(),
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -1148,13 +1054,14 @@ pub(super) fn routed_deploy_replacing_route_command(replicas: u16) -> DeployExec
     routed_deploy_command_with_stored_routes(
         replicas,
         vec![RouteBindingState {
+            id: RouteBindingId::try_new("route_old").expect("valid route binding id"),
             namespace_id: namespace_id("default"),
             target: RouteTarget::new(
                 RouteHostname::try_new("old.example.com").expect("valid route hostname"),
-                route_port(443),
             ),
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
+            origin: RouteBindingOrigin::Declared,
         }],
     )
 }
@@ -1176,11 +1083,12 @@ fn routed_deploy_command_with_stored_routes(
             dataplane_members: Vec::new(),
             observed_machines: Vec::new(),
             namespace_cleanup_candidates: Vec::new(),
-            managed_lease: None,
+            automatic_hostname_mode: AutomaticHostnameMode::Disabled,
             gateway_certificate_targets: vec![GatewayCertificateTarget {
                 machine_id: machine_id("gateway_a"),
                 public_ips: vec![Ipv4Addr::new(203, 0, 113, 10).into()],
             }],
+            ployz_gateway_certificate_targets: Vec::new(),
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -1202,7 +1110,6 @@ fn routed_deploy_request(replicas: u16) -> DeployRequest {
                 target: DeployRouteTarget::Hostname {
                     hostname: RouteHostname::try_new("api.example.com")
                         .expect("valid route hostname"),
-                    port: route_port(443),
                 },
                 endpoint_port: route_port(8080),
             }],
@@ -1210,7 +1117,7 @@ fn routed_deploy_request(replicas: u16) -> DeployRequest {
     }
 }
 
-pub(super) fn managed_https_and_custom_http_deploy_command() -> DeployExecutionInput {
+pub(super) fn ployz_automatic_deploy_command() -> DeployExecutionInput {
     deploy_execution_input(
         operation_id("op_123"),
         DeployRequest {
@@ -1224,22 +1131,13 @@ pub(super) fn managed_https_and_custom_http_deploy_command() -> DeployExecutionI
                 runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
                 pre_start: None,
                 depends_on: Vec::new(),
-                routes: vec![
-                    DeployRoute {
-                        target: DeployRouteTarget::Hostname {
-                            hostname: RouteHostname::try_new("plain.example.com")
-                                .expect("valid route hostname"),
-                            port: route_port(80),
-                        },
-                        endpoint_port: route_port(8080),
+                routes: vec![DeployRoute {
+                    target: DeployRouteTarget::AutoHostname {
+                        label: AutomaticHostnameLabel::try_new("api")
+                            .expect("automatic hostname label"),
                     },
-                    DeployRoute {
-                        target: DeployRouteTarget::AutoHostname {
-                            port: route_port(443),
-                        },
-                        endpoint_port: route_port(8080),
-                    },
-                ],
+                    endpoint_port: route_port(8080),
+                }],
             }],
         },
         DeployExecutionFacts {
@@ -1252,10 +1150,15 @@ pub(super) fn managed_https_and_custom_http_deploy_command() -> DeployExecutionI
             dataplane_members: Vec::new(),
             observed_machines: Vec::new(),
             namespace_cleanup_candidates: Vec::new(),
-            managed_lease: Some(
-                ManagedLeaseName::try_new("cluster-one").expect("valid managed lease name"),
-            ),
+            automatic_hostname_mode: AutomaticHostnameMode::Ployz {
+                suffix: RouteHostname::try_new("cluster-one.up.ployz.app")
+                    .expect("valid automatic hostname suffix"),
+            },
             gateway_certificate_targets: vec![GatewayCertificateTarget {
+                machine_id: machine_id("gateway_a"),
+                public_ips: vec![Ipv4Addr::new(203, 0, 113, 10).into()],
+            }],
+            ployz_gateway_certificate_targets: vec![GatewayCertificateTarget {
                 machine_id: machine_id("gateway_a"),
                 public_ips: vec![Ipv4Addr::new(203, 0, 113, 10).into()],
             }],
@@ -1319,8 +1222,9 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
             }],
             observed_machines: Vec::new(),
             namespace_cleanup_candidates: Vec::new(),
-            managed_lease: None,
+            automatic_hostname_mode: AutomaticHostnameMode::Disabled,
             gateway_certificate_targets: Vec::new(),
+            ployz_gateway_certificate_targets: Vec::new(),
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -1352,8 +1256,9 @@ pub(super) fn volume_backed_deploy_command(replicas: u16) -> DeployExecutionInpu
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
             namespace_cleanup_candidates: Vec::new(),
             observed_machines: Vec::new(),
-            managed_lease: None,
+            automatic_hostname_mode: AutomaticHostnameMode::Disabled,
             gateway_certificate_targets: Vec::new(),
+            ployz_gateway_certificate_targets: Vec::new(),
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -1391,8 +1296,9 @@ pub(super) fn deploy_command_with_existing_container(
                 &snapshot,
             )),
             observed_machines: vec![snapshot],
-            managed_lease: None,
+            automatic_hostname_mode: AutomaticHostnameMode::Disabled,
             gateway_certificate_targets: Vec::new(),
+            ployz_gateway_certificate_targets: Vec::new(),
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -1467,8 +1373,9 @@ fn prepared_deploy_command(
             eligible_machines,
             namespace_cleanup_candidates: namespace_cleanup_candidates(&observed_machines),
             observed_machines,
-            managed_lease: None,
+            automatic_hostname_mode: AutomaticHostnameMode::Disabled,
             gateway_certificate_targets: Vec::new(),
+            ployz_gateway_certificate_targets: Vec::new(),
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -1500,13 +1407,14 @@ pub(super) fn empty_deploy_command_with_running_container(
             machine_platforms: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: vec![RouteBindingState {
+                id: RouteBindingId::try_new("route_api").expect("valid route binding id"),
                 namespace_id: namespace_id("default"),
                 target: RouteTarget::new(
                     RouteHostname::try_new("api.example.com").expect("valid route hostname"),
-                    route_port(443),
                 ),
                 endpoint_port: route_port(8080),
                 service_id: service_id("svc_api"),
+                origin: RouteBindingOrigin::Declared,
             }],
             namespace_serving_entries: vec![serving_target_entry("svc_api", "entry_old")],
             namespace_volume_pins: Vec::new(),
@@ -1514,8 +1422,9 @@ pub(super) fn empty_deploy_command_with_running_container(
             eligible_machines: vec![self::machine_id("machine_a")],
             namespace_cleanup_candidates,
             observed_machines: vec![snapshot],
-            managed_lease: None,
+            automatic_hostname_mode: AutomaticHostnameMode::Disabled,
             gateway_certificate_targets: Vec::new(),
+            ployz_gateway_certificate_targets: Vec::new(),
             step_timeout: Duration::from_secs(5),
         },
     )
@@ -1528,10 +1437,6 @@ fn namespace_cleanup_candidates(
         &namespace_id("default"),
         observed_machines,
     )
-}
-
-fn wireguard_public_key(value: impl Into<String>) -> WireGuardPublicKey {
-    WireGuardPublicKey::try_new(value).expect("valid wireguard public key")
 }
 
 fn observed_service_container(
@@ -1607,11 +1512,8 @@ pub(super) fn image(value: &str) -> ImageReference {
     ImageReference::try_new(value).expect("valid image")
 }
 
-pub(super) fn route_target(hostname: &str, port: u16) -> RouteTarget {
-    RouteTarget {
-        hostname: RouteHostname::try_new(hostname).expect("valid route hostname"),
-        port: route_port(port),
-    }
+pub(super) fn route_target(hostname: &str, _port: u16) -> RouteTarget {
+    RouteTarget::new(RouteHostname::try_new(hostname).expect("valid route hostname"))
 }
 
 pub(super) fn route_port(port: u16) -> RoutePort {

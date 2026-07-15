@@ -60,7 +60,7 @@ else
   echo "### forming a fresh cluster"
   core '[ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519 -q; grep -qF "$(cat ~/.ssh/id_ed25519.pub)" ~/.ssh/authorized_keys || cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys'
   core "ssh-keyscan -T 8 ${CORE} 127.0.0.1 >> ~/.ssh/known_hosts 2>/dev/null"
-  core "ployz machine init root@${CORE} --public-ip ${CORE} --public-url none" >/dev/null 2>&1
+  core "ployz machine init root@${CORE} --public-ip ${CORE}" >/dev/null 2>&1
   core_key=$(core 'cat ~/.ssh/id_ed25519.pub')
   ssh "${SSH_OPTS[@]}" "root@${EDGE}" "grep -qF '${core_key}' ~/.ssh/authorized_keys 2>/dev/null || echo '${core_key}' >> ~/.ssh/authorized_keys"
   core "ssh-keyscan -T 8 ${EDGE} >> ~/.ssh/known_hosts 2>/dev/null"

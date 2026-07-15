@@ -23,8 +23,6 @@ pub enum DeployFailureRecordError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployExecutionStep {
     RecordOperationEvent,
-    EnsureEndpointNetwork { machine_id: MachineId },
-    PrepareDataplane { machines: Vec<MachineId> },
     RunContainer { machine_id: MachineId },
     RunPreStartHook { machine_id: MachineId },
     WaitHealthy,

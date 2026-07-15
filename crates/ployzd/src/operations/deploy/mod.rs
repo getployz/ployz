@@ -5,6 +5,7 @@ mod facts;
 mod failure;
 mod images;
 mod phase;
+mod placement;
 mod ports;
 mod preparation;
 mod step;
@@ -24,23 +25,22 @@ use ployz_core::ops::{
 
 pub use crate::machine_runtime::MachineRuntimeUnavailableReason;
 pub use facts::{
-    DeployFactLoadError, DeployMachineCandidates, ManagedCertificateWaitPolicy,
-    load_deploy_execution_facts_from_nats,
+    DeployFactLoadError, load_deploy_execution_facts_from_nats, validate_deploy_route_admission,
 };
 pub use failure::{
     DeployExecutionError, DeployHealthCheckError, MachineContainerRuntimeError,
     PreStartHookRuntimeError,
 };
 use failure::{DeployExecutionFailure, fail_deploy};
-use images::{dataplane_prepare_request, machine_image_pull, resolve_registry_images};
+use images::{dataplane_membership, machine_image_pull, resolve_registry_images};
 use phase::{CoarsePhaseProgress, DeployRun};
 pub use ports::{
-    CertificateProvisioner, DataplanePreparer, DeployHealthChecker, DeployOperationRecorder,
-    DeployPhasePromotion, MachineContainerRuntime, NamespaceCommitError, NamespaceStateCommitter,
+    CertificateProvisioner, DeployHealthChecker, DeployOperationRecorder, DeployPhasePromotion,
+    MachineContainerRuntime, NamespaceCommitError, NamespaceStateCommitter,
 };
 pub use preparation::{
-    DeployExecutionFacts, DeployExecutionInput, namespace_cleanup_candidates,
-    prepare_deploy_execution_command,
+    AutomaticHostnameMode, DeployExecutionFacts, DeployExecutionInput,
+    namespace_cleanup_candidates, prepare_deploy_execution_command,
 };
 use step::with_step_timeout;
 pub use step::{DeployExecutionStep, DeployFailureRecordError, DeployOperationRecordError};
@@ -48,7 +48,6 @@ pub use step::{DeployExecutionStep, DeployFailureRecordError, DeployOperationRec
 use crate::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerRunHookRpcRequest,
     MachineContainerRunRpcRequest, MachineContainerStopRpcRequest,
-    MachineEnsureEndpointNetworkRpcRequest,
 };
 use ployz_core::machine_runtime::ManagedContainerIdentity;
 pub use types::{
@@ -57,13 +56,12 @@ pub use types::{
     RunContainerDisposition,
 };
 
-pub async fn execute_deploy_operation<R, D, N, H, C, S>(
+pub async fn execute_deploy_operation<R, N, H, C, S>(
     input: DeployExecutionInput,
-    ports: DeployExecutionPorts<'_, R, D, N, H, C, S>,
+    ports: DeployExecutionPorts<'_, R, N, H, C, S>,
 ) -> Result<DeployExecutionOutcome, DeployExecutionError>
 where
     R: DeployOperationRecorder,
-    D: DataplanePreparer,
     N: MachineContainerRuntime,
     H: DeployHealthChecker,
     C: CertificateProvisioner,
@@ -187,13 +185,12 @@ where
     }
 }
 
-async fn execute_deploy_after_planning<R, D, N, H, C, S>(
+async fn execute_deploy_after_planning<R, N, H, C, S>(
     command: &DeployExecutionCommand,
-    ports: &mut DeployExecutionPorts<'_, R, D, N, H, C, S>,
+    ports: &mut DeployExecutionPorts<'_, R, N, H, C, S>,
 ) -> Result<DeployExecutionOutcome, DeployExecutionFailure>
 where
     R: DeployOperationRecorder,
-    D: DataplanePreparer,
     N: MachineContainerRuntime,
     H: DeployHealthChecker,
     C: CertificateProvisioner,
@@ -209,34 +206,11 @@ where
     )
     .await
     .map_err(|source| run.fail(source))?;
-    let dataplane_request = dataplane_prepare_request(command, &plan);
+    let dataplane_membership = dataplane_membership(command, &plan);
     if !plan.volume_pin_commits.is_empty() {
         commit_volume_pins(command, &plan, &mut *ports.namespace_state)
             .await
             .map_err(|source| run.fail(source))?;
-    }
-    record_running_stage(
-        command,
-        &mut *ports.recorder,
-        DeployRunningStage::PreparingDataplane,
-    )
-    .await
-    .map_err(|source| run.fail(source))?;
-    if !plan.phases.is_empty() {
-        ensure_endpoint_networks(command, &dataplane_request, &mut *ports.machine_runtime)
-            .await
-            .map_err(|source| run.fail(source))?;
-        let dataplane =
-            prepare_dataplane(command, dataplane_request.clone(), &mut *ports.dataplane)
-                .await
-                .map_err(|source| run.fail(source))?;
-        record_evidence(
-            command,
-            &mut *ports.recorder,
-            DeployEvidence::DataplanePrepared { report: dataplane },
-        )
-        .await
-        .map_err(|source| run.fail(source))?;
     }
     if command.services().iter().any(|service| {
         matches!(
@@ -306,7 +280,7 @@ where
         phase::start_services(
             command,
             phase,
-            &dataplane_request.membership,
+            &dataplane_membership,
             &mut containers,
             &mut run,
             &mut *ports.recorder,
@@ -790,54 +764,6 @@ where
         .await?;
     }
 
-    Ok(())
-}
-
-async fn prepare_dataplane<D>(
-    command: &DeployExecutionCommand,
-    request: ployz_core::dataplane::DataplanePrepareRequest,
-    dataplane: &mut D,
-) -> Result<ployz_core::dataplane::PloyzNativeMeshPrepareReport, DeployExecutionError>
-where
-    D: DataplanePreparer,
-{
-    with_step_timeout(
-        command,
-        DeployExecutionStep::PrepareDataplane {
-            machines: request.machines(),
-        },
-        dataplane.prepare_dataplane(request),
-    )
-    .await
-}
-
-async fn ensure_endpoint_networks<N>(
-    command: &DeployExecutionCommand,
-    request: &ployz_core::dataplane::DataplanePrepareRequest,
-    machine_runtime: &mut N,
-) -> Result<(), DeployExecutionError>
-where
-    N: MachineContainerRuntime,
-{
-    for member in &request.membership {
-        let machine_id = &member.machine_id;
-        let network_request = MachineEnsureEndpointNetworkRpcRequest {
-            operation_id: command.operation_id.clone(),
-        };
-        with_step_timeout(
-            command,
-            DeployExecutionStep::EnsureEndpointNetwork {
-                machine_id: machine_id.clone(),
-            },
-            async {
-                machine_runtime
-                    .ensure_endpoint_network(machine_id, network_request)
-                    .await
-                    .map_err(DeployExecutionError::RunContainer)
-            },
-        )
-        .await?;
-    }
     Ok(())
 }
 

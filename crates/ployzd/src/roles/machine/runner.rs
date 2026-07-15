@@ -7,6 +7,7 @@ use ployz_core::machine_runtime::ContainerHealth;
 use std::net::IpAddr;
 
 use crate::roles::machine::protocol::MachineImagePull;
+use ployz_core::dataplane::{EndpointBridgeStatus, MachineEndpointSubnet};
 use ployz_core::machine_runtime::{ManagedContainerHealthStatus, ManagedContainerIdentity};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +47,10 @@ pub enum MachineContainerRunnerError {
     },
     EnsureEndpointNetwork {
         message: String,
+    },
+    EndpointNetworkSubnetMismatch {
+        expected: MachineEndpointSubnet,
+        observed: MachineEndpointSubnet,
     },
     Create {
         message: String,
@@ -117,6 +122,13 @@ pub trait MachineContainerRunner {
     fn ensure_endpoint_network(
         &self,
     ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
+
+    fn ensure_projection_endpoint_network(
+        &self,
+        expected_subnet: &MachineEndpointSubnet,
+    ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
+
+    fn read_endpoint_network_status(&self) -> impl Future<Output = EndpointBridgeStatus> + Send;
 
     fn resolve_registry_image(
         &self,

@@ -22,15 +22,15 @@ use crate::remote_machine_runtime::{
 use ployz_core::ids::OperationId;
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::ops::{
-    EventSequence, OperationEventReplayCursor, OperationEventReplayRequest, OperationOutcome,
-    ReplayedOperationEvent,
+    EventSequence, MachineAddOperationStateName, OperationEventReplayCursor,
+    OperationEventReplayRequest, OperationOutcome, ReplayedOperationEvent,
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{
     NatsClientAuth, NatsClientUrl, NatsClientUrlError, NatsConnectConfig, NatsConnectError,
     NatsTlsTrust, connect_authenticated,
 };
-use ployz_sdk_types::{InitFirstMachineActivateError, OpsStatusRequest};
+use ployz_sdk_types::{InitFirstMachineActivateError, MachineJoinRedeemError, OpsStatusRequest};
 use tokio::time::sleep as async_sleep;
 
 mod compose;
@@ -225,6 +225,7 @@ pub async fn execute_command(
         PloyzctlCommand::Login => {
             Err(PloyzctlExecutionError::CloudUnconfigured { command: "login" })
         }
+        PloyzctlCommand::Telemetry(_) => Err(PloyzctlExecutionError::LocalCommand),
         PloyzctlCommand::CorePromote(command) => execute_core_promote_remote(command, config).await,
         PloyzctlCommand::CoreReplace(command) => execute_core_replace_remote(command, config).await,
         PloyzctlCommand::ComposeCheck(command) => Ok(compose::check(command)),
@@ -261,6 +262,14 @@ pub async fn execute_command(
         }
         PloyzctlCommand::InitJoinTemplate(command) => {
             Ok(PloyzctlExecutionOutput::stdout(command.render_json()))
+        }
+        PloyzctlCommand::IngressConfigure(command) => {
+            let api = operation_api_client(config).await?;
+            let accepted = api
+                .ingress_configure(&command.into_request())
+                .await
+                .map_err(api_error)?;
+            watch_accepted_operation(&api, accepted.operation_id, config).await
         }
         PloyzctlCommand::MachineInit(command) => execute_machine_init(command, config).await,
         PloyzctlCommand::MachineAddRemote(command) => {
@@ -529,9 +538,15 @@ pub(crate) fn api_error<E>(source: OperationApiClientError<E>) -> PloyzctlExecut
 where
     E: fmt::Display,
 {
-    PloyzctlExecutionError::OperationApi {
-        message: source.to_string(),
-    }
+    let message = match source {
+        OperationApiClientError::Domain { error, .. } => error.to_string(),
+        error @ (OperationApiClientError::EncodeRequest { .. }
+        | OperationApiClientError::Request { .. }
+        | OperationApiClientError::Service { .. }
+        | OperationApiClientError::ServiceProtocol { .. }
+        | OperationApiClientError::DecodeResponse { .. }) => error.to_string(),
+    };
+    PloyzctlExecutionError::OperationApi { message }
 }
 
 pub(crate) async fn watch_operation_until_terminal(
@@ -752,6 +767,8 @@ fn nats_connect_config(
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PloyzctlExecutionError {
+    #[error("telemetry preferences are handled locally by the ployz binary")]
+    LocalCommand,
     #[error(
         "ployz {command} is reserved for Ployz Cloud and no Cloud connection is configured; configure a Ployz Cloud connection before using Cloud verbs"
     )]
@@ -868,6 +885,15 @@ impl PloyzctlExecutionError {
                 failure: NatsServiceRequestFailure::NoResponders
                     | NatsServiceRequestFailure::TimedOut,
                 ..
+            } | OperationApiClientError::Domain {
+                error: InitFirstMachineActivateError::JoinRedeem {
+                    failure: MachineJoinRedeemError::UnknownJoinToken
+                        | MachineJoinRedeemError::OperationNotPending {
+                            current: MachineAddOperationStateName::Completed,
+                            ..
+                        },
+                },
+                ..
             }
         )
     }
@@ -890,13 +916,10 @@ mod tests {
         let PloyzctlExecutionError::OperationApi { message } = error else {
             panic!("api_error maps to the operation API execution error");
         };
-        assert!(
-            message.ends_with(
-                "failed: deploy submit op_123 unavailable: operation status CAS conflict: contended"
-            ),
-            "unexpected rendering: {message}"
+        assert_eq!(
+            message,
+            "deploy submit op_123 unavailable: operation status CAS conflict: contended"
         );
-        assert!(!message.contains('{'), "Debug braces leaked: {message}");
     }
 
     fn cluster_context() -> ClusterContext {
@@ -996,5 +1019,37 @@ mod tests {
                     + config.ops_watch_poll_interval(),
             "budget must allow at least one retry after a timed-out request"
         );
+    }
+
+    #[test]
+    fn first_machine_activation_retries_consumed_token_replay() {
+        let error = PloyzctlExecutionError::FirstMachineActivateApi {
+            source: OperationApiClientError::Domain {
+                endpoint: ployz_core::subjects::OperationApiEndpoint::InitFirstMachineActivate,
+                error: InitFirstMachineActivateError::JoinRedeem {
+                    failure: MachineJoinRedeemError::UnknownJoinToken,
+                },
+            },
+        };
+
+        assert!(error.is_first_machine_activation_retryable());
+    }
+
+    #[test]
+    fn first_machine_activation_retries_completed_operation_replay() {
+        let error = PloyzctlExecutionError::FirstMachineActivateApi {
+            source: OperationApiClientError::Domain {
+                endpoint: ployz_core::subjects::OperationApiEndpoint::InitFirstMachineActivate,
+                error: InitFirstMachineActivateError::JoinRedeem {
+                    failure: MachineJoinRedeemError::OperationNotPending {
+                        operation_id: OperationId::try_new("op_init_core_1")
+                            .expect("valid operation id"),
+                        current: MachineAddOperationStateName::Completed,
+                    },
+                },
+            },
+        };
+
+        assert!(error.is_first_machine_activation_retryable());
     }
 }

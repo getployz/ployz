@@ -1,3 +1,5 @@
+use ployz_core::ids::RouteBindingId;
+use ployz_core::ingress::RouteBindingOrigin;
 use ployz_core::machine_runtime::{
     MachineContainerObservationSnapshot, MachineFactsSnapshot, ManagedContainerObservation,
 };
@@ -9,7 +11,6 @@ use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, route_hostname, route_port, service_id,
 };
 use ployzd::fact_cache::FactCache;
-use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
 use ployzd::roles::gateway::projection::{
@@ -19,6 +20,8 @@ use ployzd::roles::gateway::source::{
     GatewayCertificateStore, load_gateway_projection_update_from_nats,
 };
 use std::time::Duration;
+
+mod support;
 
 #[tokio::test]
 async fn gateway_source_loads_routes_and_current_observations_from_nats() {
@@ -31,10 +34,12 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
         .expect("serving target entry stores");
     nats.namespace_intent
         .replace_route_binding(RouteBindingState {
+            id: route_binding_id(),
             namespace_id: namespace_id("default"),
             target: target.clone(),
             endpoint_port: route_port(8080),
             service_id: service_id("svc_api"),
+            origin: RouteBindingOrigin::Declared,
         })
         .await
         .expect("route stores");
@@ -64,6 +69,8 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
     assert_eq!(
         projection.routes,
         vec![GatewayProjectedRoute {
+            id: route_binding_id(),
+            origin: RouteBindingOrigin::Declared,
             target,
             upstreams: vec![GatewayUpstream {
                 machine_id: machine_id("machine_7"),
@@ -98,18 +105,15 @@ async fn test_nats() -> TestNats {
             .await
             .expect("open core store"),
     );
+    let intent_core_store = ployzd::core_store::CoreStore::open_in_memory()
+        .await
+        .expect("core store opens");
+    support::intent::initialize_disabled_ingress(&intent_core_store).await;
     let intent = start_intent_service(
         nats.controller.clone(),
         machine_id("machine_a"),
-        MachineRosterStore::new(
-            ployzd::core_store::CoreStore::open_in_memory()
-                .await
-                .expect("open core store"),
-        ),
         namespace_intent.clone(),
-        ployzd::core_store::CoreStore::open_in_memory()
-            .await
-            .expect("core store opens"),
+        intent_core_store,
         Duration::from_secs(30),
     )
     .await
@@ -167,8 +171,12 @@ fn managed_observation(
         .build()
 }
 
-fn route_target(hostname: &str, port: u16) -> RouteTarget {
-    RouteTarget::new(route_hostname(hostname), route_port(port))
+fn route_target(hostname: &str, _port: u16) -> RouteTarget {
+    RouteTarget::new(route_hostname(hostname))
+}
+
+fn route_binding_id() -> RouteBindingId {
+    RouteBindingId::try_new("route_api").expect("valid route binding id")
 }
 
 fn endpoint_ip(ip: &str) -> std::net::IpAddr {

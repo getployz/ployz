@@ -1,7 +1,10 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use ployz_core::cert::{LeaseBearerToken, ManagedLeaseAcquireRequest};
+use ployz_core::cert::{
+    LeaseBearerToken, ManagedLeaseAcquireRequest, ManagedLeaseAcquisitionId,
+    ManagedLeaseRenewRequest,
+};
 use ployz_lease_worker::{
     Clock, ClockError, LeaseWorkerRequest, LeaseWorkerResponse, STUB_LEASE_TTL_SECONDS,
     StubLeaseWorker,
@@ -34,10 +37,7 @@ impl Clock for ManualClock {
 fn stub_worker_issues_lease_and_downloads_bundle_with_bearer_token() {
     let mut worker = StubLeaseWorker::with_clock(ManualClock::new(1_700_000_000));
     let acquired = worker
-        .handle(LeaseWorkerRequest::Acquire(ManagedLeaseAcquireRequest {
-            ipv4: Vec::new(),
-            ipv6: Vec::new(),
-        }))
+        .handle(LeaseWorkerRequest::Acquire(acquire_request("a1")))
         .expect("lease acquired");
 
     let LeaseWorkerResponse::LeaseAcquired(acquired) = acquired else {
@@ -79,9 +79,11 @@ fn stub_worker_issues_lease_and_downloads_bundle_with_bearer_token() {
 }
 
 #[test]
-fn stub_worker_acquisition_is_non_idempotent() {
+fn stub_worker_acquisition_is_idempotent() {
     let mut worker = StubLeaseWorker::with_clock(ManualClock::new(1_700_000_000));
     let request = ManagedLeaseAcquireRequest {
+        acquisition_id: ManagedLeaseAcquisitionId::try_new("a2").expect("acquisition id"),
+        token: LeaseBearerToken::try_new("client-token").expect("token"),
         ipv4: vec!["203.0.113.8".parse().expect("IPv4")],
         ipv6: vec!["2001:db8::8".parse().expect("IPv6")],
     };
@@ -98,17 +100,14 @@ fn stub_worker_acquisition_is_non_idempotent() {
         panic!("expected second lease");
     };
 
-    assert_ne!(first.lease.name, second.lease.name);
+    assert_eq!(first.lease, second.lease);
 }
 
 #[test]
 fn stub_worker_rejects_cookie_without_bearer_token() {
     let mut worker = StubLeaseWorker::with_clock(ManualClock::new(1_700_000_000));
     let acquired = worker
-        .handle(LeaseWorkerRequest::Acquire(ManagedLeaseAcquireRequest {
-            ipv4: Vec::new(),
-            ipv6: Vec::new(),
-        }))
+        .handle(LeaseWorkerRequest::Acquire(acquire_request("a3")))
         .expect("lease acquired");
     let LeaseWorkerResponse::LeaseAcquired(acquired) = acquired else {
         panic!("expected lease acquisition response");
@@ -130,10 +129,7 @@ fn stub_worker_renewal_returns_fresh_bundle_for_existing_lease() {
     let clock = ManualClock::new(1_700_000_000);
     let mut worker = StubLeaseWorker::with_clock(clock.clone());
     let acquired = worker
-        .handle(LeaseWorkerRequest::Acquire(ManagedLeaseAcquireRequest {
-            ipv4: Vec::new(),
-            ipv6: Vec::new(),
-        }))
+        .handle(LeaseWorkerRequest::Acquire(acquire_request("a4")))
         .expect("lease acquired");
     let LeaseWorkerResponse::LeaseAcquired(acquired) = acquired else {
         panic!("expected lease acquisition response");
@@ -160,7 +156,7 @@ fn stub_worker_renewal_returns_fresh_bundle_for_existing_lease() {
         .handle(LeaseWorkerRequest::Renew {
             lease: acquired.lease.name.clone(),
             token: acquired.lease.token.clone(),
-            request: ManagedLeaseAcquireRequest {
+            request: ManagedLeaseRenewRequest {
                 ipv4: Vec::new(),
                 ipv6: Vec::new(),
             },
@@ -174,4 +170,13 @@ fn stub_worker_renewal_returns_fresh_bundle_for_existing_lease() {
     assert_ne!(renewed_bundle.digest, bundle.digest);
     assert!(renewed.lease.issued_at > acquired.lease.issued_at);
     assert!(renewed.lease.expires_at > acquired.lease.expires_at);
+}
+
+fn acquire_request(id: &str) -> ManagedLeaseAcquireRequest {
+    ManagedLeaseAcquireRequest {
+        acquisition_id: ManagedLeaseAcquisitionId::try_new(id).expect("acquisition id"),
+        token: LeaseBearerToken::try_new("client-token").expect("token"),
+        ipv4: Vec::new(),
+        ipv6: Vec::new(),
+    }
 }

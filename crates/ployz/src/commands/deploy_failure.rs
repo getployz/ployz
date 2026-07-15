@@ -1,4 +1,3 @@
-use ployz_core::dataplane::{DataplaneProviderFailure, PloyzNativeMeshComponent};
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{ContainerId, MachineId, NamespaceRevisionId, ServiceId};
 use ployz_core::ops::{
@@ -45,8 +44,7 @@ impl<'a> DeployFailureView<'a> {
                     push_unique(&mut machines, &reason.machine_id);
                 }
             }
-            DeployOperationFailure::DataplaneUnavailable { machine_id, .. }
-            | DeployOperationFailure::RuntimeUnavailable { machine_id, .. }
+            DeployOperationFailure::RuntimeUnavailable { machine_id, .. }
             | DeployOperationFailure::ContainerStartFailed { machine_id, .. }
             | DeployOperationFailure::ImageResolutionFailed { machine_id, .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { machine_id, .. }
@@ -62,14 +60,6 @@ impl<'a> DeployFailureView<'a> {
                 reason: ArtifactUnavailableReason::ImagePullFailed { machine_id, .. },
                 ..
             } => push_unique(&mut machines, machine_id),
-            DeployOperationFailure::DataplanePrepareTimedOut {
-                machines: timed_out,
-                ..
-            } => {
-                for machine_id in timed_out {
-                    push_unique(&mut machines, machine_id);
-                }
-            }
             DeployOperationFailure::HealthCheckFailed { health_check, .. } => match health_check {
                 HealthCheckFailure::ProbeFailed { machine_id, .. } => {
                     push_unique(&mut machines, machine_id);
@@ -102,15 +92,12 @@ impl<'a> DeployFailureView<'a> {
                 | RouteCutoverFailureReason::TimedOut { .. } => {}
             },
             DeployOperationFailure::PlanningFailed { .. }
-            | DeployOperationFailure::AutoDnsWithoutLease { .. }
-            | DeployOperationFailure::CertificatePending { .. }
             | DeployOperationFailure::ArtifactUnavailable {
                 reason:
                     ArtifactUnavailableReason::BundleMissing
                     | ArtifactUnavailableReason::BundleUnreadable { .. },
                 ..
             }
-            | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
             | DeployOperationFailure::CertificateProvisionTimedOut { .. }
             | DeployOperationFailure::ControlPlaneCommitFailed { .. } => {}
         }
@@ -215,8 +202,6 @@ impl<'a> DeployFailureView<'a> {
         match self.failure {
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
-            | DeployOperationFailure::AutoDnsWithoutLease { .. }
-            | DeployOperationFailure::CertificatePending { .. }
             | DeployOperationFailure::ImageResolutionFailed { .. }
             | DeployOperationFailure::ArtifactUnavailable { .. }
             | DeployOperationFailure::ImageMissingOnSeed { .. }
@@ -225,10 +210,7 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::UnsupportedTargetPlatform { .. } => {
                 FailureSafety::NothingChanged
             }
-            DeployOperationFailure::DataplaneUnavailable { .. }
-            | DeployOperationFailure::DataplanePrepareTimedOut { .. }
-            | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
-            | DeployOperationFailure::RuntimeUnavailable { .. }
+            DeployOperationFailure::RuntimeUnavailable { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. }
@@ -253,11 +235,6 @@ impl<'a> DeployFailureView<'a> {
             }
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
-            | DeployOperationFailure::AutoDnsWithoutLease { .. }
-            | DeployOperationFailure::CertificatePending { .. }
-            | DeployOperationFailure::DataplaneUnavailable { .. }
-            | DeployOperationFailure::DataplanePrepareTimedOut { .. }
-            | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
@@ -274,17 +251,12 @@ impl<'a> DeployFailureView<'a> {
             DeployOperationFailure::RouteCutoverFailed { route, .. } => Some(route),
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
-            | DeployOperationFailure::AutoDnsWithoutLease { .. }
-            | DeployOperationFailure::CertificatePending { .. }
             | DeployOperationFailure::ImageResolutionFailed { .. }
             | DeployOperationFailure::ArtifactUnavailable { .. }
             | DeployOperationFailure::ImageMissingOnSeed { .. }
             | DeployOperationFailure::ImageDigestMismatch { .. }
             | DeployOperationFailure::SeedUnavailable { .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { .. }
-            | DeployOperationFailure::DataplaneUnavailable { .. }
-            | DeployOperationFailure::DataplanePrepareTimedOut { .. }
-            | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
@@ -297,9 +269,6 @@ impl<'a> DeployFailureView<'a> {
 
     pub(crate) fn guidance(&self) -> Option<String> {
         match self.failure {
-            DeployOperationFailure::AutoDnsWithoutLease { message, .. } => {
-                Some(message.as_str().to_owned())
-            }
             DeployOperationFailure::CertificateProvisionFailed {
                 hostname,
                 namespace_revision_id,
@@ -322,16 +291,12 @@ impl<'a> DeployFailureView<'a> {
             )),
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
-            | DeployOperationFailure::CertificatePending { .. }
             | DeployOperationFailure::ImageResolutionFailed { .. }
             | DeployOperationFailure::ArtifactUnavailable { .. }
             | DeployOperationFailure::ImageMissingOnSeed { .. }
             | DeployOperationFailure::ImageDigestMismatch { .. }
             | DeployOperationFailure::SeedUnavailable { .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { .. }
-            | DeployOperationFailure::DataplaneUnavailable { .. }
-            | DeployOperationFailure::DataplanePrepareTimedOut { .. }
-            | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
@@ -344,7 +309,6 @@ impl<'a> DeployFailureView<'a> {
     fn service_id(&self) -> Option<&'a ServiceId> {
         match self.failure {
             DeployOperationFailure::PlanningFailed { service_id, .. }
-            | DeployOperationFailure::AutoDnsWithoutLease { service_id, .. }
             | DeployOperationFailure::ImageResolutionFailed { service_id, .. }
             | DeployOperationFailure::ArtifactUnavailable { service_id, .. }
             | DeployOperationFailure::ImageMissingOnSeed { service_id, .. }
@@ -360,10 +324,6 @@ impl<'a> DeployFailureView<'a> {
                 | ControlPlaneCommitScope::VolumePin { .. } => None,
             },
             DeployOperationFailure::NoUsableMachines { .. }
-            | DeployOperationFailure::CertificatePending { .. }
-            | DeployOperationFailure::DataplaneUnavailable { .. }
-            | DeployOperationFailure::DataplanePrepareTimedOut { .. }
-            | DeployOperationFailure::DataplanePrepareInvalidReport { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
@@ -402,12 +362,20 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
         DeployOperationFailure::NoUsableMachines { reasons } => {
             let details = reasons
                 .iter()
-                .map(|reason| match reason.reason {
+                .map(|reason| match &reason.reason {
                     MachineUsabilityReason::Draining => {
                         format!("{} is draining", reason.machine_id.as_str())
                     }
                     MachineUsabilityReason::FactsUnavailable => {
                         format!("{} did not answer with facts", reason.machine_id.as_str())
+                    }
+                    MachineUsabilityReason::DataplaneUnavailable {
+                        reason: unavailable,
+                    } => {
+                        format!(
+                            "{} dataplane is unavailable: {unavailable:?}",
+                            reason.machine_id.as_str()
+                        )
                     }
                 })
                 .collect::<Vec<_>>()
@@ -421,11 +389,6 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
         DeployOperationFailure::PlanningFailed { message, .. } => {
             format!("deploy planning failed: {}", message.as_str())
         }
-        DeployOperationFailure::AutoDnsWithoutLease { message, .. } => message.as_str().to_owned(),
-        DeployOperationFailure::CertificatePending { last_error } => last_error.map_or_else(
-            || "managed certificate is still pending".to_owned(),
-            |last_error| format!("managed certificate is still pending: {last_error:?}"),
-        ),
         DeployOperationFailure::ImageResolutionFailed {
             image,
             machine_id,
@@ -496,28 +459,6 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
             target_platform.os,
             target_platform.architecture
         ),
-        DeployOperationFailure::DataplaneUnavailable {
-            provider_failure,
-            message,
-            ..
-        } => {
-            let component = match provider_failure {
-                DataplaneProviderFailure::PloyzNativeMesh { component } => match component {
-                    PloyzNativeMeshComponent::WireGuard => "WireGuard",
-                    PloyzNativeMeshComponent::EbpfForwarding => "eBPF forwarding",
-                },
-            };
-            format!(
-                "dataplane {component} preparation failed: {}",
-                message.as_str()
-            )
-        }
-        DeployOperationFailure::DataplanePrepareTimedOut {
-            timeout_seconds, ..
-        } => format!("dataplane preparation timed out after {timeout_seconds}s"),
-        DeployOperationFailure::DataplanePrepareInvalidReport { message, .. } => {
-            format!("dataplane returned an invalid report: {}", message.as_str())
-        }
         DeployOperationFailure::RuntimeUnavailable { message, .. } => {
             format!("container runtime unavailable: {}", message.as_str())
         }
@@ -574,7 +515,7 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
             format!("could not commit {scope}: {}", message.as_str())
         }
         DeployOperationFailure::RouteCutoverFailed { route, reason, .. } => {
-            let target = format!("{}:{}", route.hostname.as_str(), route.port.get());
+            let target = route.hostname.as_str();
             match reason {
                 RouteCutoverFailureReason::GatewayUnavailable { machine_id } => format!(
                     "route {target} gateway unavailable on {}",

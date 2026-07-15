@@ -7,10 +7,12 @@ use crate::cli::{HostRunnerSubstrateUpdate, HostRunnerSubstrateUpdateSource};
 use crate::command::{HostRunnerCommandRunner, SystemHostRunnerCommandRunner};
 use crate::executor::{HostRunnerPlanTerminal, execute_host_runner_plan};
 use crate::fsx::{FileMode, write_durable_file};
+use crate::host_platform::detect_host_platform;
 use crate::local::{HostRunnerLocalConfig, HostRunnerLocalEffects};
 use crate::release_manifest::{ReleaseManifest, release_manifest_url};
 use crate::report::HostRunnerTextRecorder;
 use crate::steps::{HostPrerequisite, HostRunnerStep, HostRunnerStepPlan};
+use crate::supervisor::{SupervisorBackend, SupervisorDirectories, execute_supervisor_commands};
 use ployz_core::ids::OperationId;
 use ployz_core::install::InstallArtifactVersion;
 use ployz_core::ops::FailureMessage;
@@ -27,7 +29,20 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
             return ExitCode::FAILURE;
         }
     };
-    let units = match installed_update_units(Path::new("/etc/systemd/system")) {
+    let mut runner = SystemHostRunnerCommandRunner::default();
+    let supervisor = match runner.read_os_release().and_then(|os_release| {
+        detect_host_platform(&os_release)
+            .map(|profile| SupervisorBackend::from(profile.supervisor()))
+            .map_err(|error| failure_message(error.to_string()))
+    }) {
+        Ok(supervisor) => supervisor,
+        Err(message) => {
+            eprintln!("failed to detect host platform: {}", message.as_str());
+            return ExitCode::FAILURE;
+        }
+    };
+    let supervisor_dirs = SupervisorDirectories::host_defaults();
+    let units = match installed_update_units(supervisor_dirs.directory(supervisor), supervisor) {
         Ok(units) if !units.is_empty() => units,
         Ok(_) => {
             eprintln!("no installed Ployz substrate units found");
@@ -95,7 +110,7 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
         None => None,
     };
     let mut steps = vec![
-        HostRunnerStep::VerifyHost(HostPrerequisite::LinuxRootSystemd),
+        HostRunnerStep::VerifyHost(HostPrerequisite::LinuxRoot),
         HostRunnerStep::PreflightHostPorts(assigned_substrate.clone()),
         HostRunnerStep::AssureHostPorts(assigned_substrate),
         HostRunnerStep::PrepareDataplaneHost,
@@ -115,9 +130,10 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
     let mut recorder = HostRunnerTextRecorder::new(stdout.lock());
     let mut effects = HostRunnerLocalEffects::new(
         HostRunnerLocalConfig {
-            systemd_dir: "/etc/systemd/system".into(),
+            supervisor_dirs: crate::supervisor::SupervisorDirectories::host_defaults(),
             state_dir: HOST_RUNNER_STATE_DIR.into(),
             docker_daemon_config: "/etc/docker/daemon.json".into(),
+            docker_repository_dir: "/etc/yum.repos.d".into(),
         },
         SystemHostRunnerCommandRunner::default(),
     );
@@ -132,8 +148,7 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
             return ExitCode::FAILURE;
         }
     }
-    let mut runner = SystemHostRunnerCommandRunner::default();
-    if let Err(message) = restart_installed_update_units(&units, &mut runner) {
+    if let Err(message) = restart_installed_update_units(&units, supervisor, &mut runner) {
         eprintln!(
             "ployz host substrate-update restart failed: {}",
             message.as_str()
@@ -227,18 +242,27 @@ impl InstalledUpdateUnit {
     }
 }
 
-fn installed_update_units(systemd_dir: &Path) -> Result<Vec<InstalledUpdateUnit>, std::io::Error> {
+fn installed_update_units(
+    supervisor_dir: &Path,
+    supervisor: SupervisorBackend,
+) -> Result<Vec<InstalledUpdateUnit>, std::io::Error> {
     let mut units = Vec::new();
-    if systemd_dir.join("nats-server.service").is_file() {
+    let nats = supervisor.service_name(&crate::systemd::SupervisorUnitTarget::NatsServer);
+    if supervisor_dir.join(&nats).is_file() {
         units.push(InstalledUpdateUnit::Nats);
     }
-    for entry in std::fs::read_dir(systemd_dir)? {
+    for entry in std::fs::read_dir(supervisor_dir)? {
         let entry = entry?;
         let file_name = entry.file_name();
         let Some(file_name) = file_name.to_str() else {
             continue;
         };
-        if file_name.starts_with("ployzd-") && file_name.ends_with(".service") {
+        let managed = file_name.starts_with("ployzd-")
+            && match supervisor {
+                SupervisorBackend::Systemd => file_name.ends_with(".service"),
+                SupervisorBackend::OpenRc => !file_name.contains('.'),
+            };
+        if managed {
             units.push(InstalledUpdateUnit::Ployzd(file_name.to_owned()));
         }
     }
@@ -249,13 +273,24 @@ fn installed_update_units(systemd_dir: &Path) -> Result<Vec<InstalledUpdateUnit>
 
 fn restart_installed_update_units(
     units: &[InstalledUpdateUnit],
+    supervisor: SupervisorBackend,
     runner: &mut impl HostRunnerCommandRunner,
 ) -> Result<(), FailureMessage> {
-    runner.systemctl(&["daemon-reload"])?;
-    for unit in units {
-        runner.systemctl(&["restart", unit.unit_name()])?;
-    }
-    Ok(())
+    let services = units
+        .iter()
+        .map(|unit| match (supervisor, unit) {
+            (SupervisorBackend::Systemd, InstalledUpdateUnit::Nats) => {
+                "nats-server.service".to_owned()
+            }
+            (SupervisorBackend::OpenRc, InstalledUpdateUnit::Nats) => "nats-server".to_owned(),
+            (_, InstalledUpdateUnit::Ployzd(service)) => service.clone(),
+        })
+        .collect::<Vec<_>>();
+    execute_supervisor_commands(runner, supervisor.restart_installed_commands(&services))
+}
+
+fn failure_message(message: impl Into<String>) -> FailureMessage {
+    FailureMessage::try_new(message).expect("substrate update failure message is non-empty")
 }
 
 #[cfg(test)]
@@ -263,6 +298,7 @@ mod tests {
     use std::fs;
 
     use super::{InstalledUpdateUnit, installed_update_units};
+    use crate::supervisor::SupervisorBackend;
 
     #[test]
     fn installed_update_units_discovers_nats_and_ployzd_units() {
@@ -274,11 +310,27 @@ mod tests {
         fs::write(root.path().join("docker.service"), "").expect("write unrelated unit");
 
         assert_eq!(
-            installed_update_units(root.path()).expect("units load"),
+            installed_update_units(root.path(), SupervisorBackend::Systemd).expect("units load"),
             vec![
                 InstalledUpdateUnit::Nats,
                 InstalledUpdateUnit::Ployzd("ployzd-gateway.service".to_owned()),
                 InstalledUpdateUnit::Ployzd("ployzd-machine-machine_1.service".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn installed_update_units_discovers_openrc_services() {
+        let root = tempfile::tempdir().expect("tempdir");
+        fs::write(root.path().join("nats-server"), "").expect("write nats service");
+        fs::write(root.path().join("ployzd-dns"), "").expect("write dns service");
+        fs::write(root.path().join("ployzd-dns.conf"), "").expect("write unrelated config");
+
+        assert_eq!(
+            installed_update_units(root.path(), SupervisorBackend::OpenRc).expect("services load"),
+            vec![
+                InstalledUpdateUnit::Nats,
+                InstalledUpdateUnit::Ployzd("ployzd-dns".to_owned()),
             ]
         );
     }

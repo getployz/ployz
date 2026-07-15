@@ -23,11 +23,14 @@ mod action;
 mod cert;
 mod core_replace;
 mod credential_grant;
+mod dataplane_staging;
 mod deploy;
+mod ingress_configure;
+mod ingress_refresh;
 mod machine_add;
 mod machine_lifecycle;
 mod machine_update;
-mod managed_lease;
+mod managed_dns_reconcile;
 mod namespace_remove;
 mod network_repair;
 mod operation;
@@ -48,6 +51,11 @@ impl OperationRepository {
     #[must_use]
     pub fn open(store: CoreStore, progress: async_nats::Client) -> Self {
         Self { store, progress }
+    }
+
+    #[must_use]
+    pub(crate) const fn core_store(&self) -> &CoreStore {
+        &self.store
     }
 
     async fn submit_operation<K: OperationAction>(
@@ -443,10 +451,8 @@ fn insert_event(
 #[cfg(test)]
 mod operation_query_tests {
     use super::{select_all_statuses_newest_first, select_status, upsert_status};
-    use ployz_core::ops::{
-        EventSequence, ManagedLeaseOperationState, ManagedLeaseSubject, OperationStatus,
-    };
-    use ployz_test_support::ids::operation_id;
+    use ployz_core::ops::{EventSequence, OperationStatus};
+    use ployz_test_support::ids::{namespace_id, operation_id};
     use rusqlite::Connection;
 
     #[test]
@@ -468,13 +474,17 @@ mod operation_query_tests {
         upsert_status(
             &connection,
             &oldest_id,
-            &managed_lease_status("op_z_oldest"),
+            &namespace_remove_status("op_z_oldest"),
         )
         .expect("insert oldest operation");
         for index in 0..100 {
             let id = format!("op_{index:03}");
-            upsert_status(&connection, &operation_id(&id), &managed_lease_status(&id))
-                .expect("insert newer operation");
+            upsert_status(
+                &connection,
+                &operation_id(&id),
+                &namespace_remove_status(&id),
+            )
+            .expect("insert newer operation");
         }
         drop(connection);
 
@@ -494,13 +504,12 @@ mod operation_query_tests {
         );
     }
 
-    fn managed_lease_status(id: &str) -> OperationStatus {
-        OperationStatus::ManagedLease {
-            id: operation_id(id),
-            subject: ManagedLeaseSubject::Acquire,
-            state: ManagedLeaseOperationState::Accepted,
-            last_event_sequence: EventSequence::first(),
-        }
+    fn namespace_remove_status(id: &str) -> OperationStatus {
+        OperationStatus::namespace_remove_accepted(
+            operation_id(id),
+            namespace_id("team-a"),
+            EventSequence::first(),
+        )
     }
 }
 

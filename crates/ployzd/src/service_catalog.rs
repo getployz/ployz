@@ -2,8 +2,8 @@
 
 use ployz_core::ids::MachineId;
 use ployz_core::subjects::{
-    INTENT_GET, MachineServiceEndpoint, OperationApiEndpoint, OperationApiEndpointExecution,
-    machine_service,
+    INGRESS_ENDPOINT_GET, INTENT_GET, MachineServiceEndpoint, OperationApiEndpoint,
+    OperationApiEndpointExecution, RUNTIME_SNAPSHOT_SEED, machine_service,
 };
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceDiscoveryQuery,
@@ -23,11 +23,19 @@ pub const DNS_SERVICE_DESCRIPTION: &str = "Ployz machine-local DNS role service"
 pub const INTENT_SERVICE_NAME: &str = "plz-intent";
 pub const INTENT_SERVICE_ID: &str = "plz-intent.core";
 pub const INTENT_SERVICE_DESCRIPTION: &str = "Ployz operator intent service";
+pub const INGRESS_ENDPOINT_SERVICE_NAME: &str = "plz-ingress-endpoint";
+pub const INGRESS_ENDPOINT_SERVICE_ID: &str = "plz-ingress-endpoint.core";
+pub const INGRESS_ENDPOINT_SERVICE_DESCRIPTION: &str =
+    "Ployz canonical ingress endpoint projection";
+pub const RUNTIME_PROJECTION_SERVICE_NAME: &str = "plz-runtime-projection";
+pub const RUNTIME_PROJECTION_SERVICE_ID: &str = "plz-runtime-projection.core";
+pub const RUNTIME_PROJECTION_SERVICE_DESCRIPTION: &str = "Ployz passive runtime projection";
 pub const SERVICE_VERSION: ServiceVersion = ServiceVersion::new(0, 1, 0);
 pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: &[OperationApiEndpoint] = &[
     OperationApiEndpoint::CredentialAdd,
     OperationApiEndpoint::CredentialList,
     OperationApiEndpoint::CredentialRemove,
+    OperationApiEndpoint::IngressConfigure,
     OperationApiEndpoint::DeployReserve,
     OperationApiEndpoint::DeploySubmit,
     OperationApiEndpoint::ServiceRestart,
@@ -66,7 +74,12 @@ impl DaemonServiceCatalog {
     #[must_use]
     pub fn for_control() -> Self {
         Self {
-            services: vec![api_service(), intent_service()],
+            services: vec![
+                api_service(),
+                intent_service(),
+                ingress_endpoint_service(),
+                runtime_projection_service(),
+            ],
         }
     }
 
@@ -141,6 +154,48 @@ pub fn intent_get_endpoint_spec() -> NatsServiceEndpointSpec {
 }
 
 #[must_use]
+pub fn ingress_endpoint_service() -> NatsServiceSpec {
+    NatsServiceSpec::new(
+        INGRESS_ENDPOINT_SERVICE_ID,
+        INGRESS_ENDPOINT_SERVICE_NAME,
+        SERVICE_VERSION,
+        INGRESS_ENDPOINT_SERVICE_DESCRIPTION,
+        ServiceMetadata::empty(),
+        vec![ingress_endpoint_get_spec()],
+    )
+}
+
+#[must_use]
+pub fn ingress_endpoint_get_spec() -> NatsServiceEndpointSpec {
+    NatsServiceEndpointSpec::new(
+        "ingress.endpoint.get",
+        INGRESS_ENDPOINT_GET,
+        EndpointExecution::Query,
+    )
+}
+
+#[must_use]
+pub fn runtime_projection_service() -> NatsServiceSpec {
+    NatsServiceSpec::new(
+        RUNTIME_PROJECTION_SERVICE_ID,
+        RUNTIME_PROJECTION_SERVICE_NAME,
+        SERVICE_VERSION,
+        RUNTIME_PROJECTION_SERVICE_DESCRIPTION,
+        ServiceMetadata::empty(),
+        vec![runtime_snapshot_seed_endpoint_spec()],
+    )
+}
+
+#[must_use]
+pub fn runtime_snapshot_seed_endpoint_spec() -> NatsServiceEndpointSpec {
+    NatsServiceEndpointSpec::new(
+        "runtime.snapshot.seed",
+        RUNTIME_SNAPSHOT_SEED,
+        EndpointExecution::Query,
+    )
+}
+
+#[must_use]
 pub fn api_endpoint_spec(endpoint: OperationApiEndpoint) -> NatsServiceEndpointSpec {
     NatsServiceEndpointSpec::new(
         endpoint.name(),
@@ -166,10 +221,6 @@ pub fn machine_role_service(machine_id: &MachineId) -> NatsServiceSpec {
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::Inspect),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::FactsGet),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::FactsRefresh),
-            machine_endpoint_spec(
-                machine_id,
-                MachineServiceEndpoint::ContainerEnsureEndpointNetwork,
-            ),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerInspect),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerResolveImage),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerRun),
@@ -178,9 +229,8 @@ pub fn machine_role_service(machine_id: &MachineId) -> NatsServiceSpec {
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerStop),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerRemove),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::VolumeRemove),
-            machine_endpoint_spec(machine_id, MachineServiceEndpoint::DataplanePrepare),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::DataplanePublicKey),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::DataplaneStatus),
-            machine_endpoint_spec(machine_id, MachineServiceEndpoint::DataplaneProbeMtu),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::SubstrateUpdate),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::SubstrateReport),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::LogsTail),
@@ -212,8 +262,21 @@ pub fn gateway_role_service(machine_id: &MachineId) -> NatsServiceSpec {
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::CertificateArtifactPush),
             machine_endpoint_spec(
                 machine_id,
+                MachineServiceEndpoint::CertificateArtifactRemove,
+            ),
+            machine_endpoint_spec(
+                machine_id,
+                MachineServiceEndpoint::CertificateChallengeApply,
+            ),
+            machine_endpoint_spec(
+                machine_id,
+                MachineServiceEndpoint::CertificateChallengeRemove,
+            ),
+            machine_endpoint_spec(
+                machine_id,
                 MachineServiceEndpoint::CertificateChallengeStatus,
             ),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::GatewayStatusGet),
         ],
     )
 }
@@ -253,9 +316,6 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         MachineServiceEndpoint::FactsRefresh => "machine.facts.refresh",
         MachineServiceEndpoint::DnsResolve => "machine.dns.resolve",
         MachineServiceEndpoint::DnsStatus => "machine.dns.status",
-        MachineServiceEndpoint::ContainerEnsureEndpointNetwork => {
-            "machine.container.ensure_endpoint_network"
-        }
         MachineServiceEndpoint::ContainerInspect => "machine.container.inspect",
         MachineServiceEndpoint::ContainerResolveImage => "machine.container.resolve_image",
         MachineServiceEndpoint::ContainerRun => "machine.container.run",
@@ -264,9 +324,8 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         MachineServiceEndpoint::ContainerStop => "machine.container.stop",
         MachineServiceEndpoint::ContainerRemove => "machine.container.remove",
         MachineServiceEndpoint::VolumeRemove => "machine.volume.remove",
-        MachineServiceEndpoint::DataplanePrepare => "machine.dataplane.prepare",
+        MachineServiceEndpoint::DataplanePublicKey => "machine.dataplane.public_key",
         MachineServiceEndpoint::DataplaneStatus => "machine.dataplane.status",
-        MachineServiceEndpoint::DataplaneProbeMtu => "machine.dataplane.probe_mtu",
         MachineServiceEndpoint::SubstrateUpdate => "machine.substrate.update",
         MachineServiceEndpoint::SubstrateReport => "machine.substrate.report",
         MachineServiceEndpoint::LogsTail => "machine.logs.tail",
@@ -275,9 +334,15 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         MachineServiceEndpoint::ImageManifestPush => "machine.image.manifest.push",
         MachineServiceEndpoint::ImageEnsure => "machine.image.ensure",
         MachineServiceEndpoint::CertificateArtifactPush => "machine.certificate.artifact.push",
+        MachineServiceEndpoint::CertificateArtifactRemove => "machine.certificate.artifact.remove",
+        MachineServiceEndpoint::CertificateChallengeApply => "machine.certificate.challenge.apply",
+        MachineServiceEndpoint::CertificateChallengeRemove => {
+            "machine.certificate.challenge.remove"
+        }
         MachineServiceEndpoint::CertificateChallengeStatus => {
             "machine.certificate.challenge.status"
         }
+        MachineServiceEndpoint::GatewayStatusGet => "machine.gateway.status.get",
     }
 }
 

@@ -20,13 +20,15 @@ use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientErr
 use ployz_sdk_types::{
     MachineAddAccepted, MachineAddError, MachineAddRequest, MachineJoinRedeemError,
     MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinReportOutcome,
-    MachineJoinReportRequest, MachineJoinToken, MachineListRequest, OpsStatusError,
-    OpsStatusRequest,
+    MachineJoinReportRequest, MachineListRequest, OpsStatusError, OpsStatusRequest,
 };
+use ployzd::intent::service::NatsIntentReader;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
+#[path = "machine_add_mint/dataplane.rs"]
+mod dataplane;
 mod support;
 
 use ployz_test_support::ids::{idempotency_key, machine_id, operation_id};
@@ -45,27 +47,6 @@ async fn lock_machine_add_mint_test() -> OwnedMutexGuard<()> {
         .clone()
         .lock_owned()
         .await
-}
-
-async fn report_join_completed_with_retry(nats: &TestNats, join_token: MachineJoinToken) {
-    for _ in 0..10 {
-        let join_report_api = OperationApiClient::new(nats.connected.join.clone())
-            .with_request_timeout(Duration::from_secs(2));
-        match join_report_api
-            .machine_join_report(&MachineJoinReportRequest {
-                join_token: join_token.clone(),
-                outcome: MachineJoinReportOutcome::Completed,
-            })
-            .await
-        {
-            Ok(_) => return,
-            Err(OperationApiClientError::Request { .. }) => {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            Err(error) => panic!("join report failed: {error:?}"),
-        }
-    }
-    panic!("join report did not complete");
 }
 
 /// The machine-add handler returns its operation id + join material before
@@ -177,8 +158,14 @@ async fn completed_machine_join_records_machine_derived_endpoint_subnet() {
     let join_api = nats.join_api();
 
     let accepted = machine_add(&api, "op_endpoint", "idem_endpoint", "machine_endpoint").await;
-    redeem_when_ready(&join_api, &accepted.join_token).await;
-    report_join_completed_with_retry(&nats, accepted.join_token).await;
+    let redeemed = redeem_when_ready(&join_api, &accepted.join_token).await;
+    dataplane::report_join_completed_with_retry(
+        &nats,
+        machine_id("machine_endpoint"),
+        redeemed.secret_delivery.nats_credentials,
+        accepted.join_token,
+    )
+    .await;
 
     let listed = api
         .machine_list(&MachineListRequest {})
@@ -192,6 +179,26 @@ async fn completed_machine_join_records_machine_derived_endpoint_subnet() {
     assert_eq!(
         machine.active.endpoint_subnet.as_string(),
         ployz_core::dataplane::default_endpoint_subnet(&machine.active.machine_id)
+    );
+    let expected_mesh_endpoint = "192.0.2.10:51820".parse().expect("mesh endpoint");
+    assert_eq!(machine.active.mesh_endpoints, vec![expected_mesh_endpoint]);
+    assert_eq!(
+        machine.active.wireguard_public_key,
+        dataplane::test_wireguard_public_key(&machine.active.machine_id)
+    );
+
+    let projection = NatsIntentReader::new(nats.connected.controller.clone())
+        .intent()
+        .await
+        .expect("intent reads")
+        .dataplane_projection;
+    let [declared] = projection.declared_members() else {
+        panic!("expected one declared dataplane member");
+    };
+    assert_eq!(declared.mesh_endpoints, vec![expected_mesh_endpoint]);
+    assert_eq!(
+        declared.wireguard_public_key,
+        dataplane::test_wireguard_public_key(&declared.machine_id)
     );
 
     runtime
@@ -541,13 +548,19 @@ async fn promoted_core_recovers_pending_join_without_old_operation_log() {
             epoch: ControlPlaneEpoch::initial().next(),
             core_machine_id: ployz_test_support::ids::machine_id("machine_a"),
             active_machines: Vec::new(),
+            dataplane_projection: ployz_core::dataplane::DataplaneProjection::try_new(
+                Vec::new(),
+                None,
+            )
+            .expect("empty projection"),
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),
             nats_authorizations: Vec::new(),
-            managed_lease: ployz_core::state::ManagedLeaseProjection::Unacquired,
-            custom_certificates: Vec::new(),
-            acme_http01_challenges: Vec::new(),
+            automatic_hostname_configuration:
+                ployz_core::ingress::AutomaticHostnameConfiguration::Ployz,
+            ployz_dns_target: ployz_core::ingress::PloyzDnsTargetIntent::Enabled,
+            active_certificates: Vec::new(),
         })
         .expect("intent mirror stores");
     MachinePendingJoinMirror::new(mirror_dir.path().join("pending-machine-joins.json"))
@@ -582,7 +595,13 @@ async fn promoted_core_recovers_pending_join_without_old_operation_log() {
         "promoted core minted fresh machine credentials"
     );
 
-    report_join_completed_with_retry(&nats, accepted.join_token).await;
+    dataplane::report_join_completed_with_retry(
+        &nats,
+        machine_id("machine_255"),
+        redeemed.secret_delivery.nats_credentials.clone(),
+        accepted.join_token,
+    )
+    .await;
 
     let machines = api
         .machine_list(&MachineListRequest {})
@@ -710,14 +729,14 @@ async fn terminal_machine_add_scrubs_working_secrets_and_status_corruption_is_un
         "machine_scrub",
     )
     .await;
-    redeem_when_ready(&join_api, &accepted.join_token).await;
-    join_api
-        .machine_join_report(&MachineJoinReportRequest {
-            join_token: accepted.join_token.clone(),
-            outcome: MachineJoinReportOutcome::Completed,
-        })
-        .await
-        .expect("machine join completion reports");
+    let redeemed = redeem_when_ready(&join_api, &accepted.join_token).await;
+    dataplane::report_join_completed_with_retry(
+        &nats,
+        machine_id("machine_scrub"),
+        redeemed.secret_delivery.nats_credentials,
+        accepted.join_token.clone(),
+    )
+    .await;
     let duplicate = machine_add_result(
         &api,
         &MachineAddRequest {
@@ -786,48 +805,6 @@ async fn terminal_machine_add_scrubs_working_secrets_and_status_corruption_is_un
             } if unavailable_id == &scrub_operation_id
         ),
         "expected unavailable status error, got {error:?}"
-    );
-
-    runtime
-        .shutdown()
-        .await
-        .expect("control runtime shuts down");
-}
-
-#[tokio::test]
-async fn completed_report_can_repair_activation_before_secret_scrub() {
-    let _guard = lock_machine_add_mint_test().await;
-    let nats = TestNats::start().await;
-    let config = nats.control_config();
-    let runtime = nats.start_control(&config).await;
-    let api = nats.api();
-    let join_api = nats.join_api();
-
-    let accepted = machine_add(&api, "op_repair_scrub", "idem_repair_scrub", "machine_rs").await;
-    redeem_when_ready(&join_api, &accepted.join_token).await;
-
-    let raw_token = RawJoinToken::try_new(accepted.join_token.as_str()).expect("join token valid");
-    let repository = operation_repository_for_test(&nats).await;
-    repository
-        .record_machine_join_completed(&raw_token)
-        .await
-        .expect("completion records before activation");
-    assert!(
-        secret_row_count(&nats, "machine_add_submissions", "op_repair_scrub") > 0,
-        "completed evidence keeps token lookup until activation can repair"
-    );
-
-    join_api
-        .machine_join_report(&MachineJoinReportRequest {
-            join_token: accepted.join_token.clone(),
-            outcome: MachineJoinReportOutcome::Completed,
-        })
-        .await
-        .expect("completed report repairs activation and scrubs");
-    assert_eq!(
-        secret_row_count(&nats, "machine_add_submissions", "op_repair_scrub"),
-        0,
-        "successful activation scrubs completed machine-add secrets"
     );
 
     runtime

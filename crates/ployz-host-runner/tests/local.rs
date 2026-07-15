@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use ployz_core::ids::MachineId;
 use ployz_core::install::NatsMachineMaterialPaths;
@@ -33,10 +34,10 @@ use ployz_host_runner::nats_identity::{
     ClusterNatsIdentity, ServerCertificateSans, generate_cluster_nats_identity,
 };
 use ployz_host_runner::steps::{
-    ContainerRuntime, FirstMachineInstallTarget, HostRunnerJoinMaterial, HostRunnerJoinTarget,
-    HostRunnerStep, HostRunnerStepFailure, HostRunnerStepFailureReason, HostRunnerStepLabel,
-    JoinToken, NonEmptyRoleSet, PloyzdRoleEnvironmentTarget, RoleNatsCredentials,
-    first_machine_install_plan,
+    ContainerRuntime, FirstMachineInstallTarget, HostPrerequisite, HostRunnerJoinMaterial,
+    HostRunnerJoinTarget, HostRunnerStep, HostRunnerStepFailure, HostRunnerStepFailureReason,
+    HostRunnerStepLabel, JoinToken, NonEmptyRoleSet, PloyzdRoleEnvironmentTarget,
+    RoleNatsCredentials, first_machine_install_plan,
 };
 use ployz_host_runner::systemd::{
     NatsServerUnitTarget, PloyzdRoleEnvironmentFile, SupervisorUnitTarget,
@@ -92,6 +93,7 @@ fn managed_host_ports_query_before_open() {
     ]
     .into();
     let mut effects = HostRunnerLocalEffects::new(local_config(&root, &systemd_dir), runner);
+    validate_host(&mut effects);
 
     effects
         .apply_step(&HostRunnerStep::AssureHostPorts(AssignedSubstrateState {
@@ -404,6 +406,45 @@ fn local_effects_fail_before_work_when_host_is_not_root() {
 }
 
 #[test]
+fn unsupported_hosts_fail_before_any_host_mutation() {
+    let root = temp_dir("ployz-host-runner-local-unsupported-host");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let plan = first_machine_plan_with_ployzd(
+        &root,
+        ployzd_artifact(&root.join("source"), &root.join("bin/ployzd")),
+    );
+    let mut effects = HostRunnerLocalEffects::new(
+        local_config(&root, &systemd_dir),
+        RecordingRunner {
+            os_release: "ID=nixos\nVERSION_ID=\"24.11\"\n".to_owned(),
+            ..RecordingRunner::root_linux()
+        },
+    );
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_host_runner_plan(&plan, &mut effects, &mut recorder);
+
+    assert!(matches!(
+        execution.terminal.failure(),
+        Some(HostRunnerPlanFailure::Step(HostRunnerStepFailure {
+            step: HostRunnerStepLabel::VerifyHost(_),
+            reason: HostRunnerStepFailureReason::HostPrerequisiteFailed,
+            message,
+        })) if message.as_str().contains("host distribution nixos")
+    ));
+    assert_eq!(
+        fs::read_dir(&systemd_dir)
+            .expect("systemd directory remains readable")
+            .count(),
+        0
+    );
+    assert!(!root.join("state").exists());
+    assert!(!root.join("etc").exists());
+    assert!(effects.runner().command_calls.is_empty());
+}
+
+#[test]
 fn local_effects_prepare_dataplane_host_before_docker() {
     let root = temp_dir("ployz-host-runner-local-dataplane-host");
     let systemd_dir = root.join("systemd");
@@ -453,6 +494,132 @@ fn local_effects_report_dataplane_host_prepare_failure() {
         })) if message.as_str() == "simulated dataplane host prepare failure"
     ));
     assert_eq!(effects.runner().docker_install_runs, 0);
+}
+
+#[test]
+fn local_effects_prepare_dataplane_packages_for_each_supported_family() {
+    let cases = [
+        (
+            "ubuntu",
+            "env DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard-tools iproute2 iputils-ping",
+        ),
+        ("rocky", "dnf install -y wireguard-tools iproute iputils"),
+        (
+            "fedora",
+            "dnf install -y wireguard-tools iproute iproute-tc iputils",
+        ),
+        (
+            "arch",
+            "pacman -S --noconfirm --needed wireguard-tools iproute2 iputils",
+        ),
+        ("alpine", "apk add wireguard-tools iproute2 iputils"),
+        (
+            "opensuse-leap",
+            "zypper --non-interactive install wireguard-tools iproute2 iputils",
+        ),
+    ];
+
+    for (id, expected_install) in cases {
+        let root = temp_dir(&format!("ployz-host-runner-dataplane-{id}"));
+        let systemd_dir = root.join("systemd");
+        fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+        fs::create_dir_all(root.join("openrc")).expect("OpenRC dir can be created");
+        let runner = RecordingRunner {
+            os_release: format!("ID={id}\nVERSION_ID=1\n"),
+            ..RecordingRunner::root_linux()
+        };
+        let mut effects = HostRunnerLocalEffects::new(local_config(&root, &systemd_dir), runner);
+        validate_host(&mut effects);
+
+        effects
+            .apply_step(&HostRunnerStep::PrepareDataplaneHost)
+            .expect("dataplane packages install");
+
+        assert!(
+            effects
+                .runner()
+                .command_calls
+                .contains(&expected_install.to_owned()),
+            "{id} did not use {expected_install}: {:?}",
+            effects.runner().command_calls,
+        );
+    }
+}
+
+#[test]
+fn arch_package_installs_use_existing_pacman_sync_databases() {
+    let root = temp_dir("ployz-host-runner-arch-docker");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let runner = RecordingRunner {
+        os_release: "ID=arch\n".to_owned(),
+        docker_installed: false,
+        docker_running: false,
+        ..RecordingRunner::root_linux()
+    };
+    let mut effects = HostRunnerLocalEffects::new(local_config(&root, &systemd_dir), runner);
+    validate_host(&mut effects);
+
+    effects
+        .apply_step(&HostRunnerStep::PrepareDataplaneHost)
+        .expect("Arch installs dataplane packages from existing pacman sync databases");
+    effects
+        .apply_step(&HostRunnerStep::PrepareContainerRuntime(
+            ContainerRuntime::Docker,
+            ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+        ))
+        .expect("Arch installs Docker from existing pacman sync databases");
+
+    assert_eq!(
+        effects
+            .runner()
+            .command_calls
+            .iter()
+            .filter(|call| call.starts_with("pacman "))
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        [
+            "pacman -S --noconfirm --needed wireguard-tools iproute2 iputils",
+            "pacman -S --noconfirm --needed docker docker-compose",
+        ]
+    );
+}
+
+#[test]
+fn amazon_linux_2_falls_back_to_yum_for_dataplane_and_docker_packages() {
+    let root = temp_dir("ployz-host-runner-amazon-linux-2");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let runner = RecordingRunner {
+        os_release: "ID=amzn\nVERSION_ID=2\n".to_owned(),
+        dnf_available: false,
+        docker_installed: false,
+        docker_running: false,
+        ..RecordingRunner::root_linux()
+    };
+    let mut effects = HostRunnerLocalEffects::new(local_config(&root, &systemd_dir), runner);
+    validate_host(&mut effects);
+
+    effects
+        .apply_step(&HostRunnerStep::PrepareDataplaneHost)
+        .expect("Amazon Linux 2 installs dataplane packages with yum");
+    effects
+        .apply_step(&HostRunnerStep::PrepareContainerRuntime(
+            ContainerRuntime::Docker,
+            ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+        ))
+        .expect("Amazon Linux 2 installs Docker with yum");
+
+    for command in [
+        "yum install -y wireguard-tools iproute iputils",
+        "yum install -y docker",
+    ] {
+        assert!(
+            effects.runner().command_calls.contains(&command.to_owned()),
+            "missing {command}: {:?}",
+            effects.runner().command_calls
+        );
+    }
 }
 
 #[test]
@@ -526,6 +693,7 @@ fn local_effects_reject_stopped_classic_store_before_writing_daemon_config() {
             ..RecordingRunner::root_linux()
         },
     );
+    validate_host(&mut effects);
 
     let result = effects.apply_step(&HostRunnerStep::PrepareContainerRuntime(
         ContainerRuntime::Docker,
@@ -610,6 +778,7 @@ fn local_effects_use_configured_supernet_without_restarting_unchanged_docker() {
         local_config(&root, &systemd_dir),
         RecordingRunner::root_linux(),
     );
+    validate_host(&mut effects);
 
     effects
         .apply_step(&HostRunnerStep::PrepareContainerRuntime(
@@ -699,6 +868,206 @@ fn local_effects_install_docker_when_runtime_is_missing() {
             .iter()
             .all(|download| download.is_cleaned_up())
     );
+}
+
+#[test]
+fn local_effects_install_docker_from_native_packages_on_opensuse() {
+    let root = temp_dir("ployz-host-runner-local-docker-opensuse");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let runner = RecordingRunner {
+        docker_installed: false,
+        docker_running: false,
+        os_release: "ID=opensuse-leap\nVERSION_ID=16.0\n".to_owned(),
+        ..RecordingRunner::root_linux()
+    };
+    let mut effects = HostRunnerLocalEffects::new(local_config(&root, &systemd_dir), runner);
+    validate_host(&mut effects);
+
+    effects
+        .apply_step(&HostRunnerStep::PrepareContainerRuntime(
+            ContainerRuntime::Docker,
+            ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+        ))
+        .expect("openSUSE installs Docker from native packages");
+
+    assert_eq!(effects.runner().docker_install_runs, 1);
+    assert!(effects.runner().downloads.is_empty());
+    for command in ["zypper refresh", "zypper --non-interactive install docker"] {
+        assert!(
+            effects.runner().command_calls.contains(&command.to_owned()),
+            "missing {command}: {:?}",
+            effects.runner().command_calls
+        );
+    }
+    let config: serde_json::Value = serde_json::from_slice(
+        &fs::read(root.join("etc/docker/daemon.json")).expect("Docker config can be read"),
+    )
+    .expect("Docker config is JSON");
+    assert_eq!(
+        config.pointer("/features/containerd-snapshotter"),
+        Some(&serde_json::json!(true))
+    );
+    assert_eq!(
+        config.get("insecure-registries"),
+        Some(&serde_json::json!(["10.198.0.0/16"]))
+    );
+    assert!(
+        effects
+            .runner()
+            .systemctl_calls
+            .contains(&docker_enable_call())
+    );
+}
+
+#[test]
+fn local_effects_install_docker_from_rhel_repository_on_rocky() {
+    let root = temp_dir("ployz-host-runner-local-docker-rocky");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    let runner = RecordingRunner {
+        docker_installed: false,
+        docker_running: false,
+        os_release: "ID=rocky\nID_LIKE=\"rhel centos fedora\"\nVERSION_ID=\"10.0\"\n".to_owned(),
+        download_body: Some(b"[docker-ce-stable]\nname=Docker CE Stable\n".to_vec()),
+        ..RecordingRunner::root_linux()
+    };
+    let mut effects = HostRunnerLocalEffects::new(local_config(&root, &systemd_dir), runner);
+    validate_host(&mut effects);
+
+    effects
+        .apply_step(&HostRunnerStep::PrepareContainerRuntime(
+            ContainerRuntime::Docker,
+            ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+        ))
+        .expect("Rocky installs Docker from the supported RHEL repository");
+
+    assert_eq!(effects.runner().docker_install_runs, 1);
+    assert_eq!(effects.runner().downloads.len(), 1);
+    assert_eq!(
+        fs::read_to_string(root.join("etc/yum.repos.d/docker-ce.repo"))
+            .expect("Docker repository is installed"),
+        "[docker-ce-stable]\nname=Docker CE Stable\n"
+    );
+    assert!(
+        effects
+            .runner()
+            .command_calls
+            .iter()
+            .all(|command| !command.contains("config-manager"))
+    );
+    let config: serde_json::Value = serde_json::from_slice(
+        &fs::read(root.join("etc/docker/daemon.json")).expect("Docker config can be read"),
+    )
+    .expect("Docker config is JSON");
+    assert_eq!(
+        config.pointer("/features/containerd-snapshotter"),
+        Some(&serde_json::json!(true))
+    );
+    assert_eq!(
+        config.get("insecure-registries"),
+        Some(&serde_json::json!(["10.198.0.0/16"]))
+    );
+    assert!(
+        effects
+            .runner()
+            .systemctl_calls
+            .contains(&docker_enable_call())
+    );
+}
+
+#[test]
+fn local_effects_install_docker_with_openrc_on_alpine() {
+    let root = temp_dir("ployz-host-runner-local-docker-alpine");
+    let systemd_dir = root.join("systemd");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    fs::create_dir_all(root.join("openrc")).expect("OpenRC dir can be created");
+    let runner = RecordingRunner {
+        docker_installed: false,
+        docker_running: false,
+        os_release: "ID=alpine\nVERSION_ID=\"3.22\"\n".to_owned(),
+        ..RecordingRunner::root_linux()
+    };
+    let mut effects = HostRunnerLocalEffects::new(local_config(&root, &systemd_dir), runner);
+    validate_host(&mut effects);
+
+    effects
+        .apply_step(&HostRunnerStep::PrepareContainerRuntime(
+            ContainerRuntime::Docker,
+            ployz_core::dataplane::MachineEndpointSupernet::default_v1(),
+        ))
+        .expect("Alpine installs Docker and starts it with OpenRC");
+
+    assert_eq!(effects.runner().docker_install_runs, 1);
+    assert!(effects.runner().downloads.is_empty());
+    assert!(root.join("etc/docker/daemon.json").exists());
+    assert!(
+        effects
+            .runner()
+            .command_calls
+            .contains(&"apk add docker docker-cli-compose".to_owned())
+    );
+    assert!(
+        effects
+            .runner()
+            .command_calls
+            .contains(&"rc-update add docker default".to_owned())
+    );
+    assert!(
+        effects
+            .runner()
+            .command_calls
+            .contains(&"rc-service docker start".to_owned())
+    );
+}
+
+#[test]
+fn first_machine_install_uses_openrc_for_every_managed_service_on_alpine() {
+    let root = temp_dir("ployz-host-runner-local-alpine-first-machine");
+    let systemd_dir = root.join("systemd");
+    let openrc_dir = root.join("openrc");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    fs::create_dir_all(&openrc_dir).expect("OpenRC dir can be created");
+    let source = root.join("source");
+    fs::write(&source, "ployz\n").expect("artifact source can be written");
+    let plan =
+        first_machine_plan_with_ployzd(&root, ployzd_artifact(&source, &root.join("bin/ployzd")));
+    let runner = RecordingRunner {
+        os_release: "ID=alpine\nVERSION_ID=\"3.22\"\n".to_owned(),
+        docker_installed: false,
+        docker_running: false,
+        ..RecordingRunner::root_linux()
+    };
+    let mut effects = HostRunnerLocalEffects::new(local_config(&root, &systemd_dir), runner);
+    let mut recorder = RecordingRecorder::default();
+
+    let execution = execute_host_runner_plan(&plan, &mut effects, &mut recorder);
+
+    assert_eq!(execution.terminal, HostRunnerPlanTerminal::Completed);
+    assert!(
+        systemd_dir
+            .read_dir()
+            .expect("systemd dir reads")
+            .next()
+            .is_none()
+    );
+    for service in [
+        "nats-server",
+        "ployzd-control",
+        "ployzd-machine-machine_1",
+        "ployzd-dns",
+    ] {
+        let contents = fs::read_to_string(openrc_dir.join(service))
+            .unwrap_or_else(|error| panic!("{service} OpenRC service reads: {error}"));
+        assert!(contents.starts_with("#!/sbin/openrc-run\n"));
+        assert!(contents.contains("supervisor=\"supervise-daemon\""));
+        assert!(
+            effects
+                .runner()
+                .command_calls
+                .contains(&format!("rc-update add {service} default"))
+        );
+    }
 }
 
 #[test]
@@ -1271,10 +1640,14 @@ struct RecordingRunner {
     command_outputs: VecDeque<HostRunnerCommandOutput>,
     linux: bool,
     uid: u32,
+    os_release: String,
+    dnf_available: bool,
     docker_installed: bool,
     docker_running: bool,
     docker_install_runs: usize,
+    docker_install_scripts: Vec<String>,
     dataplane_host_prepare_runs: usize,
+    dataplane_ready: bool,
     fail_docker_install: bool,
     fail_dataplane_host_prepare: bool,
     force_docker_info_failure: bool,
@@ -1293,10 +1666,14 @@ impl RecordingRunner {
             command_outputs: VecDeque::new(),
             linux: true,
             uid: 0,
+            os_release: "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"24.04\"\n".to_owned(),
+            dnf_available: true,
             docker_installed: true,
             docker_running: true,
             docker_install_runs: 0,
+            docker_install_scripts: Vec::new(),
             dataplane_host_prepare_runs: 0,
+            dataplane_ready: false,
             fail_docker_install: false,
             fail_dataplane_host_prepare: false,
             force_docker_info_failure: false,
@@ -1318,7 +1695,82 @@ impl HostRunnerCommandRunner for RecordingRunner {
     ) -> Result<HostRunnerCommandOutput, FailureMessage> {
         self.command_calls
             .push(format!("{program} {}", args.join(" ")));
-        Ok(self.command_outputs.pop_front().unwrap_or_else(|| {
+        if let Some(output) = self.command_outputs.pop_front() {
+            return Ok(output);
+        }
+        if program == "dnf" && !self.dnf_available {
+            return Err(failure_message("failed to run dnf"));
+        }
+        if program == "systemctl" {
+            let call = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+            if !matches!(args.first(), Some(&"is-active" | &"list-units")) {
+                self.systemctl_calls.push(call.clone());
+            }
+            if self.fail_systemctl.as_ref() == Some(&call) {
+                return Ok(HostRunnerCommandOutput {
+                    success: false,
+                    exit_code: Some(1),
+                    stdout: String::new(),
+                    failure: "simulated systemctl failure".to_owned(),
+                });
+            }
+            if args.first() == Some(&"is-active") {
+                return Ok(HostRunnerCommandOutput {
+                    success: false,
+                    exit_code: Some(3),
+                    stdout: String::new(),
+                    failure: "inactive".to_owned(),
+                });
+            }
+            if args == ["enable", "--now", "docker"] && self.docker_installed {
+                self.docker_running = true;
+            }
+            return Ok(succeeded_command(""));
+        }
+        if matches!(program, "apk" | "pacman" | "zypper" | "dnf" | "yum")
+            && args
+                .iter()
+                .any(|arg| *arg == "docker" || *arg == "docker-ce")
+        {
+            self.docker_installed = true;
+            self.docker_install_runs += 1;
+            return Ok(succeeded_command(""));
+        }
+        if program == "apt-get" && args == ["update"] {
+            return Ok(succeeded_command(""));
+        }
+        if program == "zypper" && args == ["refresh"] {
+            return Ok(succeeded_command(""));
+        }
+        if args.contains(&"wireguard-tools") {
+            self.dataplane_host_prepare_runs += 1;
+            if self.fail_dataplane_host_prepare {
+                return Ok(HostRunnerCommandOutput {
+                    success: false,
+                    exit_code: Some(1),
+                    stdout: String::new(),
+                    failure: "simulated dataplane host prepare failure".to_owned(),
+                });
+            }
+            self.dataplane_ready = true;
+            return Ok(succeeded_command(""));
+        }
+        if program == "rc-update" {
+            return Ok(succeeded_command(""));
+        }
+        if program == "rc-service" {
+            if args.get(1) == Some(&"status") {
+                return Ok(failed_command());
+            }
+            if args.first() == Some(&"docker") {
+                self.docker_running = true;
+            }
+            return Ok(succeeded_command(""));
+        }
+        if program == "rc-status" {
+            return Ok(succeeded_command(""));
+        }
+        Ok({
             if program == "systemctl" && args.first() == Some(&"list-units") {
                 succeeded_command("")
             } else if program == "sh" && args.first() == Some(&"-c") {
@@ -1326,7 +1778,39 @@ impl HostRunnerCommandRunner for RecordingRunner {
             } else {
                 failed_command()
             }
-        }))
+        })
+    }
+
+    fn command_with_timeout(
+        &mut self,
+        program: &str,
+        args: &[&str],
+        _timeout: Duration,
+    ) -> Result<HostRunnerCommandOutput, FailureMessage> {
+        if program != "sh" {
+            return self.command(program, args);
+        }
+        let [script] = args else {
+            return Ok(failed_command());
+        };
+        let script = fs::read_to_string(script)
+            .map_err(|error| failure_message(&format!("failed to read fake script: {error}")))?;
+        self.docker_install_scripts.push(script);
+        self.docker_install_runs += 1;
+        if self.fail_docker_install {
+            return Ok(HostRunnerCommandOutput {
+                success: false,
+                exit_code: Some(1),
+                stdout: String::new(),
+                failure: "simulated docker install failure".to_owned(),
+            });
+        }
+        self.docker_installed = true;
+        Ok(succeeded_command(""))
+    }
+
+    fn read_os_release(&mut self) -> Result<String, FailureMessage> {
+        Ok(self.os_release.clone())
     }
 
     fn is_linux(&mut self) -> bool {
@@ -1335,15 +1819,6 @@ impl HostRunnerCommandRunner for RecordingRunner {
 
     fn current_uid(&mut self) -> Result<u32, FailureMessage> {
         Ok(self.uid)
-    }
-
-    fn systemctl(&mut self, args: &[&str]) -> Result<(), FailureMessage> {
-        let call = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
-        self.systemctl_calls.push(call.clone());
-        if self.fail_systemctl.as_ref() == Some(&call) {
-            return Err(failure_message("simulated systemctl failure"));
-        }
-        Ok(())
     }
 
     fn download(&mut self, url: &str, destination: &Path) -> Result<(), FailureMessage> {
@@ -1392,30 +1867,8 @@ impl HostRunnerCommandRunner for RecordingRunner {
         Ok(true)
     }
 
-    fn enable_docker_service(&mut self) -> Result<(), FailureMessage> {
-        self.systemctl(&["enable", "--now", "docker"])?;
-        if !self.docker_installed {
-            return Err(failure_message("simulated docker service missing"));
-        }
-        self.docker_running = true;
-        Ok(())
-    }
-
-    fn run_docker_install_script(&mut self, _script: &Path) -> Result<(), FailureMessage> {
-        self.docker_install_runs += 1;
-        if self.fail_docker_install {
-            return Err(failure_message("simulated docker install failure"));
-        }
-        self.docker_installed = true;
-        Ok(())
-    }
-
-    fn prepare_dataplane_host(&mut self) -> Result<(), FailureMessage> {
-        self.dataplane_host_prepare_runs += 1;
-        if self.fail_dataplane_host_prepare {
-            return Err(failure_message("simulated dataplane host prepare failure"));
-        }
-        Ok(())
+    fn dataplane_host_ready(&mut self) -> bool {
+        self.dataplane_ready
     }
 }
 
@@ -1449,10 +1902,20 @@ impl HostRunnerStepRecorder for RecordingRecorder {
 
 fn local_config(root: &Path, systemd_dir: &Path) -> HostRunnerLocalConfig {
     HostRunnerLocalConfig {
-        systemd_dir: systemd_dir.to_path_buf(),
+        supervisor_dirs: ployz_host_runner::supervisor::SupervisorDirectories::new(
+            systemd_dir.to_path_buf(),
+            root.join("openrc"),
+        ),
         state_dir: root.join("state"),
         docker_daemon_config: root.join("etc/docker/daemon.json"),
+        docker_repository_dir: root.join("etc/yum.repos.d"),
     }
+}
+
+fn validate_host(effects: &mut HostRunnerLocalEffects<RecordingRunner>) {
+    effects
+        .apply_step(&HostRunnerStep::VerifyHost(HostPrerequisite::LinuxRoot))
+        .expect("host platform validates");
 }
 
 fn nats_unit(root: &Path) -> NatsServerUnitTarget {

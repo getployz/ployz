@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use ployz_core::install::HostPortAssurance;
 use ployz_core::ops::FailureMessage;
@@ -14,10 +15,13 @@ use crate::artifacts::{
 use crate::assigned_substrate::{
     AssignedHostPort, AssignedSubstrateState, write_assigned_substrate_state,
 };
-use crate::command::HostRunnerCommandRunner;
+use crate::command::{HostRunnerCommandOutput, HostRunnerCommandRunner};
 use crate::executor::HostRunnerStepEffects;
 use crate::firewall::{FirewallBackend, detect_firewall_backend};
 use crate::fsx::{FileMode, StagedDirectory, ensure_directory, write_durable_file};
+use crate::host_platform::{
+    DockerInstall, HostPackageFamily, HostPlatformProfile, detect_host_platform,
+};
 use crate::join::{
     JOIN_CORE_SEEDS_FILE, JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_NATS_CREDENTIALS_FILE,
     JOIN_RECOVERY_KEY_FILE, JOIN_TRUSTED_CA_FILE, render_redacted_join_material,
@@ -28,26 +32,36 @@ use crate::steps::{
     NatsAuthorizedUsersTarget, NatsClientCredentialsTarget, NatsServerConfigTarget,
     NatsTlsMaterialTarget, PloyzdRoleEnvironmentStep,
 };
+use crate::supervisor::{
+    SupervisorBackend, SupervisorChange, SupervisorDirectories, execute_supervisor_commands,
+};
 use crate::systemd::{SupervisorUnitSpec, SupervisorUnitTarget};
 
 const DOCKER_INSTALL_SCRIPT_URL: &str = "https://get.docker.com";
+const DOCKER_INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone)]
 pub struct HostRunnerLocalConfig {
-    pub systemd_dir: PathBuf,
+    pub supervisor_dirs: SupervisorDirectories,
     pub state_dir: PathBuf,
     pub docker_daemon_config: PathBuf,
+    pub docker_repository_dir: PathBuf,
 }
 
 pub struct HostRunnerLocalEffects<R> {
     config: HostRunnerLocalConfig,
     runner: R,
+    platform: Option<HostPlatformProfile>,
 }
 
 impl<R> HostRunnerLocalEffects<R> {
     #[must_use]
     pub fn new(config: HostRunnerLocalConfig, runner: R) -> Self {
-        Self { config, runner }
+        Self {
+            config,
+            runner,
+            platform: None,
+        }
     }
 
     #[must_use]
@@ -113,7 +127,13 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
         if state.host_ports == HostPortAssurance::External {
             return Ok(());
         }
-        let backend = detect_firewall_backend(&mut self.runner).map_err(|message| {
+        let supervisor = self.supervisor_backend().map_err(|message| {
+            HostRunnerStepEffectError::new(
+                HostRunnerStepFailureReason::HostPortsPreflightFailed,
+                message,
+            )
+        })?;
+        let backend = detect_firewall_backend(supervisor, &mut self.runner).map_err(|message| {
             HostRunnerStepEffectError::new(
                 HostRunnerStepFailureReason::HostPortsPreflightFailed,
                 message,
@@ -138,8 +158,11 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
         if state.host_ports == HostPortAssurance::External {
             return Ok(());
         }
-        let backend =
-            detect_firewall_backend(&mut self.runner).map_err(host_ports_assurance_error)?;
+        let supervisor = self
+            .supervisor_backend()
+            .map_err(host_ports_assurance_error)?;
+        let backend = detect_firewall_backend(supervisor, &mut self.runner)
+            .map_err(host_ports_assurance_error)?;
         for port in state.required_host_ports() {
             backend
                 .open_with(port, &mut self.runner)
@@ -168,7 +191,7 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
 
     fn verify_host(&mut self, prerequisite: HostPrerequisite) -> Result<(), FailureMessage> {
         match prerequisite {
-            HostPrerequisite::LinuxRootSystemd => {
+            HostPrerequisite::LinuxRoot => {
                 if !self.runner.is_linux() {
                     return Err(failure_message("Host Runner requires Linux"));
                 }
@@ -176,12 +199,18 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
                 if uid != 0 {
                     return Err(failure_message("Host Runner must run as root"));
                 }
-                if !self.config.systemd_dir.is_dir() {
+                let os_release = self.runner.read_os_release()?;
+                let profile = detect_host_platform(&os_release)
+                    .map_err(|error| failure_message(error.to_string()))?;
+                let backend = SupervisorBackend::from(profile.supervisor());
+                let supervisor_dir = self.config.supervisor_dirs.directory(backend);
+                if !supervisor_dir.is_dir() {
                     return Err(failure_message(format!(
-                        "systemd unit directory {} is missing",
-                        self.config.systemd_dir.display()
+                        "supervisor service directory {} is missing",
+                        supervisor_dir.display()
                     )));
                 }
+                self.platform = Some(profile);
                 Ok(())
             }
         }
@@ -212,12 +241,83 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
     }
 
     fn prepare_dataplane_host(&mut self) -> Result<(), HostRunnerStepEffectError> {
-        self.runner.prepare_dataplane_host().map_err(|message| {
+        self.prepare_dataplane_packages().map_err(|message| {
             HostRunnerStepEffectError::new(
                 HostRunnerStepFailureReason::DataplaneHostPrepareFailed,
                 message,
             )
         })
+    }
+
+    fn prepare_dataplane_packages(&mut self) -> Result<(), FailureMessage> {
+        if self.runner.dataplane_host_ready() {
+            return Ok(());
+        }
+        match self.host_platform()?.package_family() {
+            HostPackageFamily::Debian => {
+                self.require_long_command("apt-get", &["update"])?;
+                self.require_long_command(
+                    "env",
+                    &[
+                        "DEBIAN_FRONTEND=noninteractive",
+                        "apt-get",
+                        "install",
+                        "-y",
+                        "wireguard-tools",
+                        "iproute2",
+                        "iputils-ping",
+                    ],
+                )?;
+            }
+            HostPackageFamily::Rpm => {
+                let _ = self.rpm_command(&["install", "-y", "epel-release"]);
+                let packages: &[&str] = if self.host_platform()?.requires_iproute_tc_package() {
+                    &[
+                        "install",
+                        "-y",
+                        "wireguard-tools",
+                        "iproute",
+                        "iproute-tc",
+                        "iputils",
+                    ]
+                } else {
+                    &["install", "-y", "wireguard-tools", "iproute", "iputils"]
+                };
+                self.require_rpm_command(packages)?;
+            }
+            HostPackageFamily::Arch => self.require_long_command(
+                "pacman",
+                &[
+                    "-S",
+                    "--noconfirm",
+                    "--needed",
+                    "wireguard-tools",
+                    "iproute2",
+                    "iputils",
+                ],
+            )?,
+            HostPackageFamily::Alpine => self
+                .require_long_command("apk", &["add", "wireguard-tools", "iproute2", "iputils"])?,
+            HostPackageFamily::Suse => {
+                self.require_long_command("zypper", &["refresh"])?;
+                self.require_long_command(
+                    "zypper",
+                    &[
+                        "--non-interactive",
+                        "install",
+                        "wireguard-tools",
+                        "iproute2",
+                        "iputils",
+                    ],
+                )?;
+            }
+        }
+        if self.runner.dataplane_host_ready() {
+            return Ok(());
+        }
+        Err(failure_message(
+            "dataplane host packages installed but wg/ip/tc/tun are not ready",
+        ))
     }
 
     fn verify_container_runtime(
@@ -253,12 +353,13 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
         &mut self,
         endpoint_supernet: &ployz_core::dataplane::MachineEndpointSupernet,
     ) -> Result<(), PrepareDockerError> {
+        let platform = self.host_platform()?.clone();
         let endpoint_supernet = endpoint_supernet.as_string();
         if self.runner.docker_info().is_ok() {
             return self.prepare_running_docker(&endpoint_supernet);
         }
 
-        let enable_result = self.runner.enable_docker_service();
+        let enable_result = self.apply_docker_supervisor_change(SupervisorChange::InstallAndStart);
         if enable_result.is_ok() && self.runner.docker_info().is_ok() {
             return self.prepare_running_docker(&endpoint_supernet);
         }
@@ -271,12 +372,96 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
         }
 
         merge_docker_daemon_config(&self.config.docker_daemon_config, &endpoint_supernet)?;
-        let script = DockerInstallScript::new()?;
-        self.runner
-            .download(DOCKER_INSTALL_SCRIPT_URL, script.path())?;
-        self.runner.run_docker_install_script(script.path())?;
-        self.runner.enable_docker_service()?;
+        self.install_docker(&platform)?;
+        self.apply_docker_supervisor_change(SupervisorChange::InstallAndStart)?;
         self.verify_running_docker(&endpoint_supernet)
+    }
+
+    fn install_docker(&mut self, platform: &HostPlatformProfile) -> Result<(), FailureMessage> {
+        match platform.docker_install() {
+            DockerInstall::GetDocker => {
+                let script = TemporaryDownload::new("get-docker.sh")?;
+                self.runner
+                    .download(DOCKER_INSTALL_SCRIPT_URL, script.path())?;
+                let script = script.path().to_string_lossy();
+                self.require_long_command("sh", &[script.as_ref()])
+            }
+            DockerInstall::AlpinePackages => {
+                self.require_long_command("apk", &["add", "docker", "docker-cli-compose"])
+            }
+            DockerInstall::ArchPackages => self.require_long_command(
+                "pacman",
+                &["-S", "--noconfirm", "--needed", "docker", "docker-compose"],
+            ),
+            DockerInstall::SusePackages => {
+                self.require_long_command("zypper", &["refresh"])?;
+                self.require_long_command("zypper", &["--non-interactive", "install", "docker"])
+            }
+            DockerInstall::AmazonPackages => self.require_rpm_command(&["install", "-y", "docker"]),
+            DockerInstall::RhelRepositoryFile => self
+                .install_docker_repository("https://download.docker.com/linux/rhel/docker-ce.repo"),
+            DockerInstall::CentosRepositoryFile => self.install_docker_repository(
+                "https://download.docker.com/linux/centos/docker-ce.repo",
+            ),
+        }
+    }
+
+    fn install_docker_repository(&mut self, url: &str) -> Result<(), FailureMessage> {
+        let repository = TemporaryDownload::new("docker-ce.repo")?;
+        self.runner.download(url, repository.path())?;
+        let contents = fs::read(repository.path()).map_err(|error| {
+            failure_message(format!(
+                "failed to read downloaded Docker repository: {error}"
+            ))
+        })?;
+        fs::create_dir_all(&self.config.docker_repository_dir).map_err(|error| {
+            failure_message(format!(
+                "failed to create Docker repository directory {}: {error}",
+                self.config.docker_repository_dir.display()
+            ))
+        })?;
+        write_durable_file(
+            &self.config.docker_repository_dir,
+            "docker-ce.repo",
+            FileMode::Plain,
+            &contents,
+        )?;
+        self.require_rpm_command(&[
+            "install",
+            "-y",
+            "docker-ce",
+            "docker-ce-cli",
+            "containerd.io",
+            "docker-buildx-plugin",
+            "docker-compose-plugin",
+        ])
+    }
+
+    fn rpm_command(&mut self, args: &[&str]) -> Result<HostRunnerCommandOutput, FailureMessage> {
+        self.runner
+            .command_with_timeout("dnf", args, DOCKER_INSTALL_TIMEOUT)
+            .or_else(|_| {
+                self.runner
+                    .command_with_timeout("yum", args, DOCKER_INSTALL_TIMEOUT)
+            })
+    }
+
+    fn require_rpm_command(&mut self, args: &[&str]) -> Result<(), FailureMessage> {
+        let output = self.rpm_command(args)?;
+        if output.success {
+            return Ok(());
+        }
+        Err(failure_message(output.failure))
+    }
+
+    fn require_long_command(&mut self, program: &str, args: &[&str]) -> Result<(), FailureMessage> {
+        let output = self
+            .runner
+            .command_with_timeout(program, args, DOCKER_INSTALL_TIMEOUT)?;
+        if output.success {
+            return Ok(());
+        }
+        Err(failure_message(output.failure))
     }
 
     fn prepare_running_docker(
@@ -287,7 +472,7 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
             return Err(PrepareDockerError::ClassicStore(classic_store_message()));
         }
         if merge_docker_daemon_config(&self.config.docker_daemon_config, endpoint_supernet)? {
-            self.runner.systemctl(&["restart", "docker"])?;
+            self.apply_docker_supervisor_change(SupervisorChange::Restart)?;
         }
         self.verify_running_docker(endpoint_supernet)
     }
@@ -309,11 +494,19 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
     }
 
     fn write_supervisor_unit(&self, spec: &SupervisorUnitSpec) -> Result<(), FailureMessage> {
-        let unit_name = spec.unit_name();
-        let contents = spec
-            .render()
+        let backend = self.supervisor_backend()?;
+        let rendered = backend
+            .render(spec)
             .map_err(|error| failure_message(error.to_string()))?;
-        write_unit_file(&self.config.systemd_dir, &unit_name, contents.as_bytes())
+        write_supervisor_file(
+            self.config.supervisor_dirs.directory(backend),
+            rendered.file_name(),
+            match backend {
+                SupervisorBackend::Systemd => FileMode::Plain,
+                SupervisorBackend::OpenRc => FileMode::Executable0755,
+            },
+            rendered.contents().as_bytes(),
+        )
     }
 
     fn write_nats_server_config(
@@ -474,19 +667,51 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
         &mut self,
         target: &SupervisorUnitTarget,
     ) -> Result<(), FailureMessage> {
-        self.runner.systemctl(&["daemon-reload"])?;
-        let unit_name = target.unit_name();
-        self.runner.systemctl(&["enable", &unit_name])?;
-        self.runner.systemctl(&["restart", &unit_name])
+        self.apply_supervisor_change(SupervisorChange::InstallAndStart, target)
     }
 
     fn restart_supervisor_unit(
         &mut self,
         target: &SupervisorUnitTarget,
     ) -> Result<(), FailureMessage> {
-        self.runner.systemctl(&["daemon-reload"])?;
-        let unit_name = target.unit_name();
-        self.runner.systemctl(&["restart", &unit_name])
+        self.apply_supervisor_change(SupervisorChange::ReloadAndRestart, target)
+    }
+
+    fn supervisor_backend(&self) -> Result<SupervisorBackend, FailureMessage> {
+        Ok(self.host_platform()?.supervisor().into())
+    }
+
+    fn host_platform(&self) -> Result<&HostPlatformProfile, FailureMessage> {
+        let Some(platform) = &self.platform else {
+            return Err(failure_message(
+                "host platform was not validated before host mutation",
+            ));
+        };
+        Ok(platform)
+    }
+
+    fn apply_supervisor_change(
+        &mut self,
+        change: SupervisorChange,
+        target: &SupervisorUnitTarget,
+    ) -> Result<(), FailureMessage> {
+        let commands = self.supervisor_backend()?.commands(change, target);
+        self.run_supervisor_commands(commands)
+    }
+
+    fn apply_docker_supervisor_change(
+        &mut self,
+        change: SupervisorChange,
+    ) -> Result<(), FailureMessage> {
+        let commands = self.supervisor_backend()?.docker_commands(change);
+        self.run_supervisor_commands(commands)
+    }
+
+    fn run_supervisor_commands(
+        &mut self,
+        commands: Vec<(&'static str, Vec<String>)>,
+    ) -> Result<(), FailureMessage> {
+        execute_supervisor_commands(&mut self.runner, commands)
     }
 
     fn install_artifact_source(
@@ -806,22 +1031,20 @@ enum AcquiredArtifactSource {
     Downloaded { _directory: TempDir, path: PathBuf },
 }
 
-struct DockerInstallScript {
+struct TemporaryDownload {
     _directory: TempDir,
     path: PathBuf,
 }
 
-impl DockerInstallScript {
-    fn new() -> Result<Self, FailureMessage> {
+impl TemporaryDownload {
+    fn new(file_name: &str) -> Result<Self, FailureMessage> {
         let directory = Builder::new()
-            .prefix("ployz-docker-install-")
+            .prefix("ployz-download-")
             .tempdir()
             .map_err(|error| {
-                failure_message(format!(
-                    "failed to create Docker install directory: {error}"
-                ))
+                failure_message(format!("failed to create download directory: {error}"))
             })?;
-        let path = directory.path().join("install-docker.sh");
+        let path = directory.path().join(file_name);
         Ok(Self {
             _directory: directory,
             path,
@@ -857,18 +1080,19 @@ fn nats_file_name(path: &Path) -> String {
         .to_owned()
 }
 
-fn write_unit_file(
-    systemd_dir: &Path,
+fn write_supervisor_file(
+    supervisor_dir: &Path,
     unit_name: &str,
+    mode: FileMode,
     contents: &[u8],
 ) -> Result<(), FailureMessage> {
-    fs::create_dir_all(systemd_dir).map_err(|error| {
+    fs::create_dir_all(supervisor_dir).map_err(|error| {
         failure_message(format!(
-            "failed to create systemd unit directory {}: {error}",
-            systemd_dir.display()
+            "failed to create supervisor service directory {}: {error}",
+            supervisor_dir.display()
         ))
     })?;
-    write_durable_file(systemd_dir, unit_name, FileMode::Plain, contents)
+    write_durable_file(supervisor_dir, unit_name, mode, contents)
 }
 
 fn failure_message(message: impl Into<String>) -> FailureMessage {

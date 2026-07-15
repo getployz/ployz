@@ -2,10 +2,15 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cert::{AcmeHttp01Challenge, ActiveCertState, ManagedCertBundle, ManagedLeaseRecord};
-use crate::dataplane::MachineEndpointSubnet;
+use crate::dataplane::{DataplaneProjection, MachineEndpointSubnet, WireGuardPublicKey};
 use crate::deploy::{ImageReference, ReplicaCount, VolumeName};
-use crate::ids::{MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId};
+use crate::ids::{
+    MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, RouteBindingId, ServiceId,
+};
+use crate::ingress::{
+    ActiveCertificateMetadata, AutomaticHostnameConfiguration, PloyzDnsTargetIntent,
+    RouteBindingOrigin,
+};
 use crate::machine::{IssuedJoinToken, MachineName};
 use crate::nats_config::NatsAuthorizationGrant;
 use crate::ops::{RoutePort, RouteTarget};
@@ -31,10 +36,12 @@ pub struct ServingTargetEntry {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct RouteBindingState {
+    pub id: RouteBindingId,
     pub namespace_id: NamespaceId,
     pub target: RouteTarget,
     pub endpoint_port: RoutePort,
     pub service_id: ServiceId,
+    pub origin: RouteBindingOrigin,
 }
 
 /// Core-owned named-volume placement intent.
@@ -71,6 +78,18 @@ pub struct ActiveMachineState {
     pub mesh_endpoints: Vec<SocketAddr>,
     /// Core-owned overlay endpoint subnet allocated from cluster intent.
     pub endpoint_subnet: MachineEndpointSubnet,
+    pub wireguard_public_key: WireGuardPublicKey,
+}
+
+/// Operation-owned machine identity admitted into the target dataplane projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StagedMachineDataplaneState {
+    pub operation_id: OperationId,
+    pub machine_id: MachineId,
+    pub endpoint_subnet: MachineEndpointSubnet,
+    pub mesh_endpoints: Vec<SocketAddr>,
+    pub wireguard_public_key: WireGuardPublicKey,
 }
 
 /// Epoch-stamped non-secret pending machine-add recovery hints mirrored for
@@ -129,108 +148,22 @@ impl ControlPlaneEpoch {
 /// Full operator intent visible to readers, stamped with the epoch it reflects.
 /// The NATS authorization grant set rides here too (ADR 0031): a promoted core
 /// reuses it verbatim rather than re-deriving authority from the roster.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct IntentSnapshot {
     pub epoch: ControlPlaneEpoch,
     pub core_machine_id: MachineId,
     pub active_machines: Vec<ActiveMachineState>,
+    pub dataplane_projection: DataplaneProjection,
     pub route_bindings: Vec<RouteBindingState>,
     pub serving_target_entries: Vec<ServingTargetEntry>,
     #[serde(default)]
     pub volume_pins: Vec<VolumePinState>,
     pub nats_authorizations: Vec<NatsAuthorizationGrant>,
-    #[serde(default)]
-    pub managed_lease: ManagedLeaseProjection,
-    #[serde(default)]
-    pub custom_certificates: Vec<ActiveCertState>,
-    #[serde(default)]
-    pub acme_http01_challenges: Vec<AcmeHttp01Challenge>,
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum ManagedLeaseProjectionWire {
-    Projection(ManagedLeaseProjection),
-    Legacy(ManagedLeaseRecord),
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct IntentSnapshotWire {
-    epoch: ControlPlaneEpoch,
-    core_machine_id: MachineId,
-    active_machines: Vec<ActiveMachineState>,
-    route_bindings: Vec<RouteBindingState>,
-    serving_target_entries: Vec<ServingTargetEntry>,
-    #[serde(default)]
-    volume_pins: Vec<VolumePinState>,
-    nats_authorizations: Vec<NatsAuthorizationGrant>,
-    #[serde(default)]
-    managed_lease: Option<ManagedLeaseProjectionWire>,
-    #[serde(default)]
-    managed_cert_bundle: Option<ManagedCertBundle>,
-    #[serde(default)]
-    custom_certificates: Vec<ActiveCertState>,
-    #[serde(default)]
-    acme_http01_challenges: Vec<AcmeHttp01Challenge>,
-}
-
-impl<'de> Deserialize<'de> for IntentSnapshot {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let wire = IntentSnapshotWire::deserialize(deserializer)?;
-        let managed_lease = match (wire.managed_lease, wire.managed_cert_bundle) {
-            (Some(ManagedLeaseProjectionWire::Projection(projection)), None) => projection,
-            (Some(ManagedLeaseProjectionWire::Projection(_)), Some(_)) => {
-                return Err(serde::de::Error::custom(
-                    "typed managed lease projection conflicts with legacy certificate bundle",
-                ));
-            }
-            (Some(ManagedLeaseProjectionWire::Legacy(lease)), Some(bundle)) => {
-                ManagedLeaseProjection::Ready { lease, bundle }
-            }
-            (Some(ManagedLeaseProjectionWire::Legacy(lease)), None) => {
-                ManagedLeaseProjection::RecordOnly { lease }
-            }
-            (None, None) => ManagedLeaseProjection::Unacquired,
-            (None, Some(_)) => {
-                return Err(serde::de::Error::custom(
-                    "legacy certificate bundle requires a managed lease record",
-                ));
-            }
-        };
-        Ok(Self {
-            epoch: wire.epoch,
-            core_machine_id: wire.core_machine_id,
-            active_machines: wire.active_machines,
-            route_bindings: wire.route_bindings,
-            serving_target_entries: wire.serving_target_entries,
-            volume_pins: wire.volume_pins,
-            nats_authorizations: wire.nats_authorizations,
-            managed_lease,
-            custom_certificates: wire.custom_certificates,
-            acme_http01_challenges: wire.acme_http01_challenges,
-        })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ManagedLeaseProjection {
-    #[default]
-    Unacquired,
-    RecordOnly {
-        lease: ManagedLeaseRecord,
-    },
-    Ready {
-        lease: ManagedLeaseRecord,
-        bundle: ManagedCertBundle,
-    },
+    pub automatic_hostname_configuration: AutomaticHostnameConfiguration,
+    pub ployz_dns_target: PloyzDnsTargetIntent,
+    pub active_certificates: Vec<ActiveCertificateMetadata>,
 }
 
 impl IntentSnapshot {
@@ -279,12 +212,24 @@ pub enum MachineLifecycle {
 /// Why a machine is excluded from new workload placement for one operation.
 /// Operator intent excludes durably; unavailable machine facts exclude only
 /// the current operation runtime snapshot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineUsabilityReason {
     Draining,
     FactsUnavailable,
+    DataplaneUnavailable { reason: DataplaneUnavailableReason },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DataplaneUnavailableReason {
+    NotDeclared,
+    TestimonyMissing,
+    Admission {
+        failure: crate::machine::DataplaneProjectionAdmissionFailure,
+    },
 }
 
 #[must_use]
@@ -328,10 +273,6 @@ pub enum GatewayServingStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cert::{
-        LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle, ManagedLeaseName,
-        ManagedLeaseRecord,
-    };
     use crate::nats_config::{
         CredentialGrant, CredentialName, CredentialRole, NatsAuthorizationGrant, NatsUserPublicKey,
     };
@@ -343,37 +284,6 @@ mod tests {
             placement_rejection(MachineLifecycle::Draining),
             Some(MachineUsabilityReason::Draining)
         );
-    }
-
-    #[test]
-    fn intent_snapshot_rejects_typed_projection_with_legacy_bundle() {
-        let mut value = serde_json::to_value(ready_snapshot()).expect("serialize snapshot");
-        let bundle = value
-            .get("managed_lease")
-            .and_then(|lease| lease.get("bundle"))
-            .cloned()
-            .expect("bundle");
-        value
-            .as_object_mut()
-            .expect("snapshot object")
-            .insert("managed_cert_bundle".to_owned(), bundle);
-
-        assert!(serde_json::from_value::<IntentSnapshot>(value).is_err());
-    }
-
-    #[test]
-    fn intent_snapshot_rejects_orphaned_legacy_bundle() {
-        let mut value = serde_json::to_value(ready_snapshot()).expect("serialize snapshot");
-        let bundle = value
-            .get("managed_lease")
-            .and_then(|lease| lease.get("bundle"))
-            .cloned()
-            .expect("bundle");
-        let object = value.as_object_mut().expect("snapshot object");
-        object.remove("managed_lease");
-        object.insert("managed_cert_bundle".to_owned(), bundle);
-
-        assert!(serde_json::from_value::<IntentSnapshot>(value).is_err());
     }
 
     #[test]
@@ -397,37 +307,50 @@ mod tests {
         assert_eq!(decoded, snapshot);
     }
 
+    #[test]
+    fn intent_snapshot_requires_ingress_configuration() {
+        let mut value = serde_json::to_value(ready_snapshot()).expect("serialize snapshot");
+        value
+            .as_object_mut()
+            .expect("snapshot object")
+            .remove("automatic_hostname_configuration");
+
+        assert!(serde_json::from_value::<IntentSnapshot>(value).is_err());
+    }
+
+    #[test]
+    fn intent_snapshot_round_trips_each_automatic_hostname_configuration() {
+        for configuration in [
+            AutomaticHostnameConfiguration::Disabled,
+            AutomaticHostnameConfiguration::Ployz,
+            AutomaticHostnameConfiguration::custom("apps.example.com").expect("custom suffix"),
+        ] {
+            let mut snapshot = ready_snapshot();
+            snapshot.automatic_hostname_configuration = configuration.clone();
+
+            let decoded = serde_json::from_value::<IntentSnapshot>(
+                serde_json::to_value(snapshot).expect("serialize snapshot"),
+            )
+            .expect("deserialize snapshot");
+
+            assert_eq!(decoded.automatic_hostname_configuration, configuration);
+        }
+    }
+
     fn ready_snapshot() -> IntentSnapshot {
-        let name = ManagedLeaseName::try_new("lease").expect("lease name");
-        let issued_at = LeaseIssuedAt::try_new(1).expect("issued");
-        let expires_at = LeaseExpiresAt::try_new(2).expect("expires");
-        let lease = ManagedLeaseRecord::try_new(
-            name.clone(),
-            LeaseBearerToken::try_new("token").expect("token"),
-            issued_at,
-            expires_at,
-        )
-        .expect("lease");
-        let bundle = ManagedCertBundle::try_new(
-            name.clone(),
-            name.wildcard_and_apex(),
-            "certificate".to_owned(),
-            "private-key".to_owned(),
-            issued_at,
-            expires_at,
-        )
-        .expect("bundle");
         IntentSnapshot {
             epoch: ControlPlaneEpoch::initial(),
             core_machine_id: MachineId::try_new("core").expect("machine id"),
             active_machines: Vec::new(),
+            dataplane_projection: DataplaneProjection::try_new(Vec::new(), None)
+                .expect("empty projection"),
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),
             nats_authorizations: Vec::new(),
-            managed_lease: ManagedLeaseProjection::Ready { lease, bundle },
-            custom_certificates: Vec::new(),
-            acme_http01_challenges: Vec::new(),
+            automatic_hostname_configuration: AutomaticHostnameConfiguration::Ployz,
+            ployz_dns_target: PloyzDnsTargetIntent::Enabled,
+            active_certificates: Vec::new(),
         }
     }
 }

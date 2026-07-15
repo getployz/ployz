@@ -14,6 +14,7 @@ use ployz::commands::machine::{MachineAddRemoteCommand, MachineInitCommand};
 use ployz::config::{
     ClusterContext, ClusterContextMachine, load_cluster_context, save_cluster_context,
 };
+use ployz::local_release::LocalReleaseBundle;
 use ployz::remote_machine_runtime::RemoteMachineExecutionError;
 use ployz::runtime::{PloyzctlExecutionError, PloyzctlRuntimeConfig, execute_command};
 use ployz::ssh::SshTarget;
@@ -49,6 +50,7 @@ use ployz_sdk_types::{
 use ployz_test_support::fs::make_executable;
 use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
 use ployz_test_support::nats::TestNats;
+use sha2::{Digest as _, Sha256};
 use tokio::sync::Mutex;
 
 const TEST_SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -124,6 +126,9 @@ case "$cmd" in
     ;;
   'mkdir -p '*)
     :
+    ;;
+  *'run tar -xf - -C'*)
+    cat > {stdin_log}
     ;;
   *'ployz host bootstrap core'* | *'ployz host bootstrap join'*)
     {installer_body}
@@ -227,10 +232,71 @@ fn machine_init_command(target: &str) -> MachineInitCommand {
             .expect("default bootstrap url is valid"),
         cluster_name: MachineJoinClusterName::try_new("testcluster").expect("valid cluster name"),
         installer_script: None,
+        local_release: None,
         public_ip: None,
-        public_url_mode: ployz_core::cert::PublicUrlMode::Auto,
+        automatic_hostname_configuration:
+            ployz_core::ingress::AutomaticHostnameConfiguration::Ployz,
+        ployz_dns_target: ployz_core::ingress::PloyzDnsTargetIntent::Enabled,
         host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
     }
+}
+
+fn local_release_bundle(root: &Path) -> (LocalReleaseBundle, String) {
+    let staging = root.join("staging");
+    fs::create_dir(&staging).expect("staging dir");
+    let artifacts = [
+        ("ployz", "PLOYZ"),
+        ("ployzd", "PLOYZD"),
+        ("ployz-ebpf-ctl", "PLOYZ_EBPF_CTL"),
+        ("ployz-ebpf-tc", "PLOYZ_EBPF_TC"),
+    ]
+    .map(|(name, key)| {
+        let contents = format!("local {name}");
+        fs::write(staging.join(name), &contents).expect("artifact writes");
+        (name, key, format!("{:x}", Sha256::digest(contents)))
+    });
+    let ployz_script = "#!/bin/sh\necho local\n";
+    fs::write(staging.join("ployz.sh"), ployz_script).expect("ployz.sh writes");
+    let platform = "linux-amd64";
+    let nats_version = "2.14.2";
+    let nats_url = "https://example.invalid/nats.tar.gz";
+    let nats_sha256 = "a".repeat(64);
+    let mut identity = Sha256::new();
+    for (name, _, sha256) in &artifacts {
+        identity.update(format!("{name} {sha256}\n"));
+    }
+    identity.update(format!(
+        "ployz.sh {:x}\nplatform {platform}\nnats-version {nats_version}\nnats-url {nats_url}\nnats-sha256 {nats_sha256}\n",
+        Sha256::digest(ployz_script)
+    ));
+    let version = format!("dev-{}", &format!("{:x}", identity.finalize())[..16]);
+    let directory = root.join(&version);
+    fs::rename(staging, &directory).expect("bundle is named by version");
+    let remote = format!("/var/lib/ployz/dev-releases/{version}");
+    fs::write(
+        directory.join("install.sh"),
+        format!(
+            "#!/bin/sh\nset -eu\nPLOYZ_RELEASE_MANIFEST_URL=file://{remote}/release.env exec {remote}/ployz.sh \"$@\"\n"
+        ),
+    )
+    .expect("install wrapper writes");
+    let mut manifest = format!(
+        "PLOYZ_VERSION={version}\nPLOYZ_RELEASE_TAG={version}\nPLOYZ_RELEASE_PLATFORM={platform}\n"
+    );
+    for (name, key, sha256) in artifacts {
+        manifest.push_str(&format!(
+            "{key}_URL={remote}/{name}\n{key}_SHA256={sha256}\n"
+        ));
+    }
+    manifest.push_str(&format!(
+        "PLOYZ_NATS_SERVER_VERSION={nats_version}\nPLOYZ_NATS_SERVER_URL={nats_url}\nPLOYZ_NATS_SERVER_SHA256={nats_sha256}\n"
+    ));
+    fs::write(directory.join("release.env"), manifest).expect("manifest writes");
+
+    (
+        LocalReleaseBundle::open(directory).expect("valid local release"),
+        version,
+    )
 }
 
 struct ContextDir {
@@ -698,6 +764,86 @@ async fn machine_init_installs_activates_and_writes_local_context() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn machine_init_stages_and_installs_a_local_release() {
+    let server = TestNats::start().await;
+    let client = server.controller.clone();
+    let spec = test_api_service(&[InitFirstMachineActivateApi::ENDPOINT]);
+    let activate_endpoint = endpoint(&spec, InitFirstMachineActivateApi::ENDPOINT);
+    let mut runtime = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("service starts");
+    runtime
+        .bind_endpoint(&activate_endpoint, |_request| async move {
+            let response: InitFirstMachineActivateResponse = OperationApiResponse::Ok {
+                value: InitFirstMachineActivated {
+                    operation_id: operation_id("op_first_machine"),
+                    machine_id: machine_id("sg-core-1"),
+                },
+            };
+            NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+        })
+        .await
+        .expect("endpoint binds");
+    client.flush().await.expect("service flushes");
+
+    let first_machine_success = first_machine_installer_success_body("sg-core-1");
+    let ssh = FakeSshMachine::new("sg-core-1", &first_machine_success);
+    let context = ContextDir::new();
+    let seed_dir = tempfile::TempDir::new().expect("seed dir");
+    let release_dir = tempfile::TempDir::new().expect("release dir");
+    let (bundle, version) = local_release_bundle(release_dir.path());
+    let config = test_config(&server, &ssh, &context, seed_dir.path());
+    let mut command = machine_init_command("root@203.0.113.10");
+    command.local_release = Some(Box::new(bundle));
+
+    execute_command(PloyzctlCommand::MachineInit(command), &config)
+        .await
+        .expect("machine init succeeds");
+
+    let remote = format!("/var/lib/ployz/dev-releases/{version}");
+    let commands = ssh.commands();
+    assert!(
+        commands
+            .iter()
+            .any(|command| command.contains("run tar -xf - -C")),
+        "local release was not staged: {commands:?}"
+    );
+    let archive = fs::read(&ssh.stdin_log).expect("staged archive reached ssh stdin");
+    for expected in [
+        "ployz",
+        "ployzd",
+        "install.sh",
+        "release.env",
+        "local ployzd",
+    ] {
+        assert!(
+            archive
+                .windows(expected.len())
+                .any(|bytes| bytes == expected.as_bytes()),
+            "archive missing {expected}"
+        );
+    }
+    let install = commands
+        .iter()
+        .find(|command| command.contains("ployz host bootstrap core"))
+        .expect("founder installer ran remotely");
+    assert!(
+        install.contains(&format!("{remote}/install.sh")),
+        "{install}"
+    );
+    assert!(
+        install.contains(&format!(
+            "PLOYZ_RELEASE_MANIFEST_URL='file://{remote}/release.env'"
+        )),
+        "{install}"
+    );
+    assert!(
+        install.contains(&format!("PLOYZ_VERSION='{version}'")),
+        "{install}"
+    );
+}
+
 /// A failed remote installer exits with the SSH phase and the remote output
 /// as evidence, before any local context is written (R14).
 #[tokio::test(flavor = "multi_thread")]
@@ -926,6 +1072,7 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
             roles: InstallRolePolicy::install_all(),
             detach: false,
             installer_script: None,
+            local_release: None,
             host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
         }),
         &config,
@@ -967,6 +1114,95 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
         );
     }
     assert!(!install.contains("PLOYZ_MACHINE_PUBLIC_IP="));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn machine_add_remote_local_release_mismatch_reports_accepted_operation() {
+    let server = TestNats::start().await;
+    let client = server.controller.clone();
+    let spec = test_api_service(&[MachineAddApi::ENDPOINT]);
+    let mut runtime = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("service starts");
+    runtime
+        .bind_endpoint(
+            &endpoint(&spec, MachineAddApi::ENDPOINT),
+            |request| async move {
+                let request: MachineAddRequest =
+                    serde_json::from_slice(&request.payload).expect("machine add request decodes");
+                let response: MachineAddResponse = OperationApiResponse::Ok {
+                    value: MachineAddAccepted {
+                        accepted: accepted_operation(&request.operation_id, &request.machine_id),
+                        machine_id: request.machine_id,
+                        bootstrap_url: MachineBootstrapUrl::try_new("https://get.ployz.sh")
+                            .expect("valid bootstrap url"),
+                        join_bundle: machine_join_bundle(),
+                        join_token: MachineJoinToken::try_new("join_once_123")
+                            .expect("valid join token"),
+                        join_secret_delivery: machine_join_secret_delivery(),
+                    },
+                };
+                NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
+            },
+        )
+        .await
+        .expect("machine add endpoint binds");
+    client.flush().await.expect("service flushes");
+
+    let ssh = FakeSshMachine::new("sg-edge-1", "echo 'join ok'");
+    let context = ContextDir::new();
+    let seed_dir = tempfile::TempDir::new().expect("seed dir");
+    let config = test_config(&server, &ssh, &context, seed_dir.path());
+    save_cluster_context(
+        &context.context_path,
+        &ClusterContext {
+            nats_url: server.server.client_url().clone(),
+            nats_ca_file: server.server.ca_path().to_owned(),
+            operator_seed_file: config
+                .nats_seed_file
+                .clone()
+                .expect("test config has operator seed"),
+            join_seed_file: config.join_seed_file.clone(),
+            machines: Vec::new(),
+        },
+    )
+    .expect("cluster context saves");
+    let release_dir = tempfile::TempDir::new().expect("release dir");
+    let (bundle, _) = local_release_bundle(release_dir.path());
+
+    let error = execute_command(
+        PloyzctlCommand::MachineAddRemote(MachineAddRemoteCommand {
+            target: SshTarget::parse("root@203.0.113.11").expect("target parses"),
+            identity_override: None,
+            roles: InstallRolePolicy::install_all(),
+            detach: false,
+            installer_script: None,
+            local_release: Some(Box::new(bundle)),
+            host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
+        }),
+        &config,
+    )
+    .await
+    .expect_err("mismatched local release fails remote machine add");
+
+    let PloyzctlExecutionError::RemoteMachine { source } = &error else {
+        panic!("expected remote machine error, got {error:?}");
+    };
+    let RemoteMachineExecutionError::LocalReleaseAfterMachineAdd {
+        operation_id,
+        message,
+    } = &**source
+    else {
+        panic!("expected accepted local release error, got {error:?}");
+    };
+    assert!(operation_id.as_str().starts_with("op_add_sg-edge-1_"));
+    assert!(message.contains("does not match the cluster machine-join release"));
+    assert!(
+        error
+            .to_string()
+            .contains("machine add operation op_add_sg-edge-1_")
+    );
+    assert_eq!(ssh.commands(), vec!["hostname".to_owned()]);
 }
 
 /// Installer failure after token redemption keeps the operation id visible
@@ -1031,6 +1267,7 @@ async fn machine_add_remote_installer_failure_carries_operation_and_phase() {
             roles: InstallRolePolicy::install_all(),
             detach: false,
             installer_script: None,
+            local_release: None,
             host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
         }),
         &config,
@@ -1164,6 +1401,7 @@ async fn machine_add_remote_terminal_failure_does_not_record_machine_ssh() {
             roles: InstallRolePolicy::install_all(),
             detach: false,
             installer_script: None,
+            local_release: None,
             host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
         }),
         &config,

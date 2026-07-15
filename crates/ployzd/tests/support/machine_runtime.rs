@@ -1,6 +1,11 @@
 use ployz_core::dataplane::{
-    EbpfForwardingReady, EbpfForwardingReadyEvidence, PloyzNativeMeshReady,
-    WireGuardEbpfPrepareError, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
+    DataplaneProjectionFailure, DataplaneProjectionTestimony, EbpfAttachmentStatus,
+    EbpfForwardingReady, EbpfForwardingReadyEvidence, EndpointBridgeStatus, MachineDataplaneStatus,
+    MachineEndpointSubnet, NativeDataplaneProjectionStatus, PloyzNativeMeshReady,
+    WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardEbpfPrepareError,
+    WireGuardHandshakeStatus, WireGuardInterfaceMtu, WireGuardMtuProbe, WireGuardPeer,
+    WireGuardPeerEndpointSubnet, WireGuardPeerStatus, WireGuardPublicKey, WireGuardReady,
+    WireGuardReadyEvidence, WireGuardRttStatus, WireGuardStatus,
 };
 use ployz_core::deploy::{ImageReference, RegistryCredential};
 use ployz_core::ids::{ContainerId, MachineId};
@@ -34,6 +39,7 @@ impl ObservingContainerRunner {
             state: Arc::new(Mutex::new(ObservingContainerRunnerState {
                 next_container_number: 0,
                 snapshot,
+                endpoint_subnet: None,
                 resolutions: Vec::new(),
                 pulls: Vec::new(),
                 resolution_failure: None,
@@ -97,6 +103,30 @@ impl MachineContainerRunner for ObservingContainerRunner {
 
     async fn ensure_endpoint_network(&self) -> Result<(), MachineContainerRunnerError> {
         Ok(())
+    }
+
+    async fn ensure_projection_endpoint_network(
+        &self,
+        expected_subnet: &MachineEndpointSubnet,
+    ) -> Result<(), MachineContainerRunnerError> {
+        self.state
+            .lock()
+            .map_err(|error| MachineContainerRunnerError::EnsureEndpointNetwork {
+                message: error.to_string(),
+            })?
+            .endpoint_subnet = Some(expected_subnet.clone());
+        Ok(())
+    }
+
+    async fn read_endpoint_network_status(&self) -> EndpointBridgeStatus {
+        self.state
+            .lock()
+            .expect("observing runner state lock is not poisoned")
+            .endpoint_subnet
+            .clone()
+            .map_or(EndpointBridgeStatus::Missing, |subnet| {
+                EndpointBridgeStatus::Ready { subnet }
+            })
     }
 
     async fn resolve_registry_image(
@@ -356,6 +386,7 @@ impl ObservingContainerRunner {
 struct ObservingContainerRunnerState {
     next_container_number: u64,
     snapshot: MachineContainerObservationSnapshot,
+    endpoint_subnet: Option<MachineEndpointSubnet>,
     resolutions: Vec<(ImageReference, Option<RegistryCredential>)>,
     pulls: Vec<MachineImagePull>,
     resolution_failure: Option<String>,
@@ -373,31 +404,98 @@ impl ObservingContainerRunnerState {
 }
 
 #[derive(Debug, Clone)]
-pub struct ReadyWireGuardEbpf;
+pub struct ReadyWireGuardEbpf {
+    public_key: WireGuardPublicKey,
+    peers: Arc<Mutex<Vec<WireGuardPeer>>>,
+}
+
+impl ReadyWireGuardEbpf {
+    #[must_use]
+    pub fn for_machine(machine_id: &MachineId) -> Self {
+        Self {
+            public_key: test_wireguard_public_key(machine_id),
+            peers: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+#[must_use]
+pub fn test_wireguard_public_key(machine_id: &MachineId) -> WireGuardPublicKey {
+    WireGuardPublicKey::try_new(format!("public-{}", machine_id.as_str()))
+        .expect("test public key is valid")
+}
 
 impl MachinePloyzNativeMeshPreparer for ReadyWireGuardEbpf {
     async fn read_ployz_native_mesh_status(
         &self,
         _mode: ployz_core::dataplane::NetworkStatusMode,
-    ) -> Result<ployz_core::dataplane::MachineDataplaneStatus, String> {
-        Err("dataplane status is unavailable".to_owned())
+    ) -> Result<MachineDataplaneStatus, String> {
+        let message = ployz_core::ops::FailureMessage::try_new(
+            "projection testimony is supplied by the machine projection task",
+        )
+        .expect("test failure message");
+        let peers = self
+            .peers
+            .lock()
+            .expect("ready mesh peer lock is not poisoned")
+            .iter()
+            .map(|peer| WireGuardPeerStatus {
+                public_key: peer.public_key.clone(),
+                endpoint_subnet: MachineEndpointSubnet::try_new(&peer.endpoint_subnet).map_or(
+                    WireGuardPeerEndpointSubnet::Invalid {
+                        value: peer.endpoint_subnet.clone(),
+                        message: "invalid test endpoint subnet".to_owned(),
+                    },
+                    |subnet| WireGuardPeerEndpointSubnet::Valid { subnet },
+                ),
+                endpoint: Some(peer.active_endpoint),
+                handshake: WireGuardHandshakeStatus::Ago { seconds: 1 },
+                rtt: WireGuardRttStatus::Unavailable {
+                    message: "not measured".to_owned(),
+                },
+                rx_bytes: 0,
+                tx_bytes: 0,
+                mtu_probe: WireGuardMtuProbe::NotRequested,
+            })
+            .collect();
+        Ok(MachineDataplaneStatus {
+            projection: NativeDataplaneProjectionStatus {
+                endpoint_bridge: EndpointBridgeStatus::Missing,
+                testimony: DataplaneProjectionTestimony::Unusable {
+                    attempted_revisions: None,
+                    last_applied_revisions: None,
+                    failure: DataplaneProjectionFailure::FetchFailed { message },
+                },
+            },
+            wireguard: WireGuardStatus {
+                interface: "ployz-wg0".to_owned(),
+                configured_mtu: WireGuardConfiguredMtu::Auto,
+                detected_mtu: WireGuardDetectedMtu::Detected { mtu: 1420 },
+                interface_mtu: WireGuardInterfaceMtu::Detected { mtu: 1420 },
+                peers,
+            },
+            ebpf_attachment: EbpfAttachmentStatus::Attached,
+        })
     }
 
     async fn read_wireguard_public_key(
         &self,
     ) -> Result<WireGuardPublicKey, WireGuardEbpfPrepareError> {
-        Ok(WireGuardPublicKey::try_new("test-public-key").expect("test public key is valid"))
+        Ok(self.public_key.clone())
     }
 
     async fn prepare_ployz_native_mesh(
         &self,
         _endpoint_routes: &[ployz_core::dataplane::WireGuardEbpfEndpointRoute],
-        _peers: &[ployz_core::dataplane::WireGuardPeer],
+        peers: &[WireGuardPeer],
     ) -> Result<PloyzNativeMeshReady, WireGuardEbpfPrepareError> {
+        *self
+            .peers
+            .lock()
+            .expect("ready mesh peer lock is not poisoned") = peers.to_vec();
         Ok(PloyzNativeMeshReady {
             wireguard: WireGuardReady {
-                public_key: WireGuardPublicKey::try_new("test-public-key")
-                    .expect("test public key is valid"),
+                public_key: self.public_key.clone(),
                 evidence: vec![WireGuardReadyEvidence::Command {
                     program: "wg".to_owned(),
                     args: vec!["--version".to_owned()],
@@ -420,20 +518,6 @@ impl MachinePloyzNativeMeshPreparer for ReadyWireGuardEbpf {
         self.prepare_ployz_native_mesh(endpoint_routes, peers)
             .await
             .map(|ready| ready.wireguard)
-    }
-
-    async fn probe_overlay(
-        &self,
-        _peers: &[ployz_core::dataplane::WireGuardPublicKey],
-    ) -> Result<Vec<ployz_core::dataplane::WireGuardPublicKey>, WireGuardEbpfPrepareError> {
-        Ok(Vec::new())
-    }
-
-    async fn probe_link_mtu(
-        &self,
-        _peer_gateway: std::net::Ipv4Addr,
-    ) -> Result<u32, WireGuardEbpfPrepareError> {
-        Ok(1380)
     }
 }
 

@@ -3,9 +3,7 @@
 use crate::intent::service::NatsIntentReader;
 use crate::operation_api::admission::OperationControllers;
 use crate::operations::deploy::{MachineContainerRuntime, MachineContainerRuntimeError};
-use crate::operations::log::{
-    AcceptedServiceRestartSubmission, OperationStatusWrite, RecordOperationEventError,
-};
+use crate::operations::log::{AcceptedServiceRestartSubmission, RecordOperationEventError};
 use crate::roles::machine::client::{
     MachineContainerInspectError, NatsMachineContainerRuntime, NatsMachineFactsReader,
     read_available_machine_facts_by_id,
@@ -20,7 +18,7 @@ use ployz_core::machine_runtime::{
 };
 use ployz_core::ops::{
     FailureMessage, OperatorHint, ServiceRestartFailure, ServiceRestartRunningStage,
-    ServiceRestartTransition, StatusProjectionError,
+    ServiceRestartTransition,
 };
 use ployz_core::state::IntentSnapshot;
 use std::time::{Duration, Instant};
@@ -266,63 +264,14 @@ impl ServiceRestartOperation {
         operation_id: &OperationId,
         stage: ServiceRestartRunningStage,
     ) -> Result<(), RecordOperationEventError> {
-        match self
-            .controllers
+        self.controllers
             .repository()
             .record_service_restart_transition(
                 operation_id,
                 ServiceRestartTransition::Running { stage },
             )
             .await
-        {
-            Ok(OperationStatusWrite::Stored)
-            | Ok(OperationStatusWrite::AlreadySatisfied {
-                current_sequence: _,
-            }) => Ok(()),
-            Err(error @ RecordOperationEventError::StoreStatus(_)) => Err(error),
-            Err(error @ RecordOperationEventError::MissingOperation { .. }) => Err(error),
-            Err(error @ RecordOperationEventError::InvalidNextSequence(_)) => Err(error),
-            Err(
-                error @ RecordOperationEventError::ProjectStatus(
-                    StatusProjectionError::MissingOperation { .. },
-                ),
-            ) => Err(error),
-            Err(
-                error @ RecordOperationEventError::ProjectStatus(
-                    StatusProjectionError::OperationKindMismatch { .. },
-                ),
-            ) => Err(error),
-            Err(
-                error @ RecordOperationEventError::ProjectStatus(
-                    StatusProjectionError::OperationSubjectMismatch { .. },
-                ),
-            ) => Err(error),
-            Err(
-                error @ RecordOperationEventError::ProjectStatus(
-                    StatusProjectionError::OperationEventMismatch { .. },
-                ),
-            ) => Err(error),
-            Err(
-                error @ RecordOperationEventError::ProjectStatus(
-                    StatusProjectionError::TerminalState { .. },
-                ),
-            ) => Err(error),
-            Err(
-                error @ RecordOperationEventError::ProjectStatus(
-                    StatusProjectionError::InvalidTransition { .. },
-                ),
-            ) => Err(error),
-            Err(
-                error @ RecordOperationEventError::ProjectStatus(
-                    StatusProjectionError::CredentialGrantActionMismatch { .. },
-                ),
-            ) => Err(error),
-            Err(
-                error @ RecordOperationEventError::ProjectStatus(
-                    StatusProjectionError::ManagedLeaseCancellationUnsupported { .. },
-                ),
-            ) => Err(error),
-        }
+            .map(|_| ())
     }
 
     async fn record_failed(&self, operation_id: &OperationId, failure: ServiceRestartFailure) {

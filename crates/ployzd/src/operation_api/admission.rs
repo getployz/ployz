@@ -1,5 +1,10 @@
 //! Controller wiring for operation execution.
 
+mod ingress;
+
+use ingress::{IngressClaim, deploy_requires_ingress};
+pub use ingress::{IngressConfigureSubmitCommand, IngressConfigureSubmitError};
+
 use crate::operations::log::{
     AcceptedDeploySubmission, AcceptedMachineAddSubmission, CoreReplaceOperationSubmission,
     CredentialGrantOperationSubmission, DeployOperationSubmission, MachineAddOperationSubmission,
@@ -51,6 +56,7 @@ pub struct DeploySubmitCommand {
 pub struct AcceptedDeployExecution {
     pub submission: AcceptedDeploySubmission,
     pub registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
+    pub ingress_fence_owner: Option<OperationId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,6 +209,7 @@ pub struct OperationControllers {
     namespace_locks: Arc<Mutex<BTreeMap<NamespaceId, OperationId>>>,
     deploy_reservations: Arc<Mutex<DeployReservations>>,
     mesh_lock: Arc<Mutex<()>>,
+    ingress_lock: Arc<Mutex<Option<OperationId>>>,
     machine_bootstrap: MachineAddBootstrapConfig,
     pending_join_recovery: Arc<Mutex<Vec<PendingMachineJoinRecovery>>>,
 }
@@ -218,6 +225,7 @@ impl OperationControllers {
             namespace_locks: Arc::default(),
             deploy_reservations: Arc::default(),
             mesh_lock: Arc::default(),
+            ingress_lock: Arc::default(),
             machine_bootstrap,
             pending_join_recovery: Arc::default(),
         }
@@ -234,6 +242,7 @@ impl OperationControllers {
             namespace_locks: Arc::default(),
             deploy_reservations: Arc::default(),
             mesh_lock: Arc::default(),
+            ingress_lock: Arc::default(),
             machine_bootstrap,
             pending_join_recovery: Arc::new(Mutex::new(pending_join_recovery)),
         }
@@ -247,6 +256,58 @@ impl OperationControllers {
     pub async fn submit_deploy(
         &self,
         command: DeploySubmitCommand,
+    ) -> Result<AcceptedDeployExecution, SubmitCommandError> {
+        let ingress_fence_owner =
+            deploy_requires_ingress(&command.target).then(|| command.operation_id.clone());
+        let ingress_claim = if let Some(owner) = &ingress_fence_owner {
+            Some(self.claim_ingress(owner).await)
+        } else {
+            None
+        };
+        let acquired_ingress = matches!(ingress_claim, Some(IngressClaim::Acquired));
+        if let Some(IngressClaim::Busy { owner }) = &ingress_claim {
+            return Err(SubmitCommandError::IngressBusy {
+                namespace_id: command.target.namespace_id.clone(),
+                owner: owner.clone(),
+            });
+        }
+        let store = self.repository.core_store().clone();
+        if let Err(error) = crate::operations::deploy::validate_deploy_route_admission(
+            &command.target,
+            &crate::intent::ingress_intent::IngressIntentStore::new(store.clone()),
+            &crate::intent::ingress_intent::PloyzDnsTargetStore::new(store.clone()),
+            &crate::intent::namespace_intent::NamespaceIntentStore::new(store),
+        )
+        .await
+        {
+            if acquired_ingress {
+                self.release_ingress(&command.operation_id).await;
+            }
+            return Err(SubmitCommandError::InvalidDeployRoutes {
+                message: error.to_string(),
+            });
+        }
+        let operation_id = command.operation_id.clone();
+        let result = self.submit_deploy_inner(command, ingress_fence_owner).await;
+        if acquired_ingress {
+            match &result {
+                Err(_) => self.release_ingress(&operation_id).await,
+                Ok(accepted) if !accepted.submission.should_start_execution => {
+                    let Some(owner) = &accepted.ingress_fence_owner else {
+                        unreachable!("automatic deploy owns the ingress fence")
+                    };
+                    self.release_ingress(owner).await;
+                }
+                Ok(_) => {}
+            }
+        }
+        result
+    }
+
+    async fn submit_deploy_inner(
+        &self,
+        command: DeploySubmitCommand,
+        ingress_fence_owner: Option<OperationId>,
     ) -> Result<AcceptedDeployExecution, SubmitCommandError> {
         let operation_id = command.operation_id;
         let idempotency_key = command.idempotency_key;
@@ -300,6 +361,7 @@ impl OperationControllers {
                 Ok(AcceptedDeployExecution {
                     submission: accepted,
                     registry_credentials,
+                    ingress_fence_owner,
                 })
             }
             Err(error) => {
@@ -777,6 +839,13 @@ pub enum SubmitCommandError {
         namespace_id: NamespaceId,
         owner: OperationId,
     },
+    IngressBusy {
+        namespace_id: NamespaceId,
+        owner: OperationId,
+    },
+    InvalidDeployRoutes {
+        message: String,
+    },
     ReservationNotFound {
         namespace_id: NamespaceId,
         reservation_id: DeployReservationId,
@@ -878,36 +947,5 @@ fn current_join_time() -> Result<JoinTokenRedeemedAt, RedeemMachineJoinTokenErro
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn deploy_reservation_expires_at_its_deadline() {
-        let namespace_id = NamespaceId::try_new("default").expect("valid namespace id");
-        let reservation_id = DeployReservationId::first();
-        let expired_at = DeployReservationExpiresAt::try_new(10).expect("valid expiration");
-        let mut reservations = BTreeMap::from([(
-            namespace_id.clone(),
-            BTreeMap::from([(reservation_id, expired_at)]),
-        )]);
-
-        let error = validate_deploy_reservation_at(
-            &mut reservations,
-            &namespace_id,
-            reservation_id,
-            expired_at.unix_seconds(),
-        )
-        .expect_err("reservation expires at its deadline");
-
-        assert!(matches!(
-            error,
-            SubmitCommandError::ReservationExpired {
-                namespace_id: expired_namespace,
-                reservation_id: expired_reservation,
-                expired_at: deadline,
-            } if expired_namespace == namespace_id
-                && expired_reservation == reservation_id
-                && deadline == expired_at
-        ));
-    }
-}
+#[path = "admission_tests.rs"]
+mod tests;

@@ -36,6 +36,14 @@ sha256_of() {
   fi
 }
 
+sha256_stdin() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d' ' -f1
+  else
+    shasum -a 256 | cut -d' ' -f1
+  fi
+}
+
 validate_release_semver() {
   local label="$1"
   local value="$2"

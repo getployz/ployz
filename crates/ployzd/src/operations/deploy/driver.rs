@@ -1,16 +1,14 @@
 //! Owned deploy execution started by the control service.
 
 use crate::certificate::{CertificateManager, GatewayCertificateTarget};
-use crate::intent::lease_intent::LeaseIntentStore;
+use crate::intent::ingress_intent::{IngressProjectionStore, PloyzDnsTargetStore};
 use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::intent::service::NatsIntentReader;
-use crate::lease::LeaseClient;
 use crate::operation_api::admission::{AcceptedDeployExecution, OperationControllers};
 use crate::operations::deploy::{
-    CertificateProvisioner, DataplanePreparer, DeployContainer, DeployExecutionError,
-    DeployExecutionInput, DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError,
-    DeployHealthCheckError, DeployHealthChecker, DeployMachineCandidates, DeployPhasePromotion,
-    MachineContainerRuntime, ManagedCertificateWaitPolicy, NamespaceCommitError,
+    CertificateProvisioner, DeployContainer, DeployExecutionError, DeployExecutionInput,
+    DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError, DeployHealthCheckError,
+    DeployHealthChecker, DeployPhasePromotion, MachineContainerRuntime, NamespaceCommitError,
     NamespaceStateCommitter, execute_deploy_operation, load_deploy_execution_facts_from_nats,
 };
 use crate::operations::log::{
@@ -18,15 +16,14 @@ use crate::operations::log::{
     RecordOperationEventError,
 };
 use crate::roles::machine::client::{
-    MachineContainerInspectError, NatsMachineContainerRuntime, NatsMachineDataplanePreparer,
-    NatsMachineFactsReader,
+    MachineContainerInspectError, NatsMachineContainerRuntime, NatsMachineFactsReader,
 };
 use crate::roles::machine::protocol::{
     MachineContainerInspectRpcOk, MachineContainerInspectRpcRequest,
 };
 use crate::tasks::TaskRegistry;
 use ployz_core::cert::ActiveCertState;
-use ployz_core::deploy::DeployRouteTarget;
+use ployz_core::ingress::CertificateOwner;
 use ployz_core::machine_runtime::{ContainerHealth, ContainerRuntimeState};
 use ployz_core::ops::{
     CertificateProvisionFailure, DeployOperationFailure, DeployTransition, FailureMessage,
@@ -34,8 +31,6 @@ use ployz_core::ops::{
 };
 use ployz_core::subjects::INTENT_CHANGED;
 use std::time::Duration;
-
-use super::facts::{ManagedCertificateWaitContext, ensure_managed_certificate_for_deploy};
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// A container without a Docker healthcheck must stay running this long
@@ -47,22 +42,28 @@ impl CertificateProvisioner for CertificateManager {
     async fn ensure(
         &mut self,
         owner_operation_id: &ployz_core::ids::OperationId,
+        owner: CertificateOwner,
         hostname: &RouteHostname,
         targets: &[GatewayCertificateTarget],
     ) -> Result<ActiveCertState, CertificateProvisionFailure> {
-        CertificateManager::ensure(self, owner_operation_id, hostname, targets).await
+        CertificateManager::ensure(self, owner_operation_id, owner, hostname, targets).await
+    }
+
+    async fn ensure_ployz_wildcard(
+        &mut self,
+        targets: &[GatewayCertificateTarget],
+    ) -> Result<ActiveCertState, CertificateProvisionFailure> {
+        CertificateManager::ensure_ployz_wildcard(self, targets).await
     }
 }
 
-pub async fn run_deploy_operation<D, N, H, C>(
+pub async fn run_deploy_operation<N, H, C>(
     accepted_execution: AcceptedDeployExecution,
-    machine_candidates: DeployMachineCandidates,
     stores: DeployOperationStores,
-    ports: DeployOperationPorts<'_, D, N, H, C>,
+    ports: DeployOperationPorts<'_, N, H, C>,
     step_timeout: Duration,
 ) -> Result<DeployExecutionOutcome, DeployOperationRunError>
 where
-    D: DataplanePreparer,
     N: MachineContainerRuntime,
     H: DeployHealthChecker,
     C: CertificateProvisioner,
@@ -70,6 +71,7 @@ where
     let AcceptedDeployExecution {
         submission: accepted,
         registry_credentials,
+        ingress_fence_owner: _,
     } = accepted_execution;
     if !claim_deploy_execution(&stores.controllers, &accepted.operation_id).await? {
         return Err(DeployOperationRunError::AlreadyStarted);
@@ -77,35 +79,20 @@ where
     let DeployOperationPorts {
         facts_reader,
         intent_reader,
-        dataplane,
         machine_runtime,
         health_checker,
         certificate_provisioner,
     } = ports;
     let request = accepted.target.clone();
 
-    let facts = match async {
-        ensure_managed_certificate_for_deploy(
-            &request,
-            &accepted.operation_id,
-            intent_reader,
-            ManagedCertificateWaitContext {
-                lease_intent: &stores.lease_intent,
-                lease_client: &stores.lease_client,
-                repository: stores.controllers.repository(),
-                policy: stores.managed_certificate_wait,
-            },
-        )
-        .await?;
-        load_deploy_execution_facts_from_nats(
-            &request,
-            machine_candidates,
-            intent_reader,
-            facts_reader,
-            step_timeout,
-        )
-        .await
-    }
+    let facts = match load_deploy_execution_facts_from_nats(
+        &request,
+        intent_reader,
+        facts_reader,
+        &stores.ployz_dns_target,
+        &stores.ingress_projection,
+        step_timeout,
+    )
     .await
     {
         Ok(facts) => facts,
@@ -126,35 +113,10 @@ where
     let DeployOperationStores {
         intent_change_client,
         namespace_intent,
-        lease_intent: _,
-        lease_client: _,
-        managed_certificate_wait: _,
+        ployz_dns_target: _,
+        ingress_projection: _,
         controllers,
     } = stores;
-    if facts.managed_lease.is_none()
-        && let Some(service) = request.services.iter().find(|service| {
-            service
-                .routes
-                .iter()
-                .any(|route| matches!(route.target, DeployRouteTarget::AutoHostname { .. }))
-        })
-    {
-        let failure = DeployOperationFailure::AutoDnsWithoutLease {
-            service_id: service.service_id.clone(),
-            namespace_revision_id: request.namespace_revision_id(),
-            message: FailureMessage::try_new(format!(
-                "service {} requests an auto public URL but this cluster has no managed DNS lease; re-run init with --public-url auto or use a custom domain",
-                service.service_id.as_str()
-            ))
-            .expect("generated auto DNS lease guidance is non-empty"),
-        };
-        let failure_record_error = record_operation_failure(&controllers, &accepted, failure)
-            .await
-            .err();
-        return Err(DeployOperationRunError::AutoDnsWithoutLease {
-            failure_record_error,
-        });
-    }
     let input = DeployExecutionInput::new(
         accepted.operation_id.clone(),
         request,
@@ -167,7 +129,6 @@ where
         input,
         DeployExecutionPorts {
             recorder: &mut recorder,
-            dataplane,
             machine_runtime,
             health_checker,
             certificate_provisioner,
@@ -195,16 +156,10 @@ fn fact_load_failure(
     source: &DeployFactLoadError,
 ) -> DeployOperationFailure {
     match source {
-        DeployFactLoadError::CertificatePending { last_error } => {
-            DeployOperationFailure::CertificatePending {
-                last_error: *last_error,
-            }
-        }
         DeployFactLoadError::IntentRead { .. }
-        | DeployFactLoadError::ManagedCertificateWorker { .. }
-        | DeployFactLoadError::ManagedCertificateStore { .. }
-        | DeployFactLoadError::ManagedCertificateSuperseded
-        | DeployFactLoadError::ManagedCertificateProgress { .. } => {
+        | DeployFactLoadError::InvalidRouteBindings { .. }
+        | DeployFactLoadError::IngressState { .. }
+        | DeployFactLoadError::IngressUnavailable { .. } => {
             DeployOperationFailure::PlanningFailed {
                 service_id: request.status_service_id(),
                 namespace_revision_id: request.namespace_revision_id(),
@@ -219,16 +174,14 @@ fn fact_load_failure(
 pub struct DeployOperationStores {
     pub intent_change_client: async_nats::Client,
     pub namespace_intent: NamespaceIntentStore,
-    pub lease_intent: LeaseIntentStore,
-    pub lease_client: LeaseClient,
-    pub managed_certificate_wait: ManagedCertificateWaitPolicy,
+    pub ployz_dns_target: PloyzDnsTargetStore,
+    pub ingress_projection: IngressProjectionStore,
     pub controllers: OperationControllers,
 }
 
-pub struct DeployOperationPorts<'a, D, N, H, C> {
+pub struct DeployOperationPorts<'a, N, H, C> {
     pub facts_reader: &'a NatsMachineFactsReader,
     pub intent_reader: &'a NatsIntentReader,
-    pub dataplane: &'a mut D,
     pub machine_runtime: &'a mut N,
     pub health_checker: &'a mut H,
     pub certificate_provisioner: &'a mut C,
@@ -346,16 +299,12 @@ pub enum DeployOperationRunError {
         source: DeployFactLoadError,
         failure_record_error: Option<RecordDeployTransitionError>,
     },
-    AutoDnsWithoutLease {
-        failure_record_error: Option<RecordDeployTransitionError>,
-    },
     Execute(DeployExecutionError),
 }
 
 #[derive(Debug, Clone)]
 pub struct DeployOperationDriver {
     stores: DeployOperationStores,
-    machine_candidates: DeployMachineCandidates,
     certificate_manager: CertificateManager,
     step_timeout: Duration,
     task_registry: TaskRegistry,
@@ -365,14 +314,12 @@ impl DeployOperationDriver {
     #[must_use]
     pub fn new(
         stores: DeployOperationStores,
-        machine_candidates: DeployMachineCandidates,
         certificate_manager: CertificateManager,
         step_timeout: Duration,
         task_registry: TaskRegistry,
     ) -> Self {
         Self {
             stores,
-            machine_candidates,
             certificate_manager,
             step_timeout,
             task_registry,
@@ -395,9 +342,6 @@ impl DeployOperationDriver {
         accepted: AcceptedDeployExecution,
     ) -> Result<DeployExecutionOutcome, DeployOperationRunError> {
         let client = self.stores.intent_change_client.clone();
-        let mut dataplane = NatsMachineDataplanePreparer::new(client.clone())
-            .with_request_timeout(self.step_timeout)
-            .with_mesh_lock(self.stores.controllers.mesh_lock());
         let mut machine_runtime = NatsMachineContainerRuntime::new(client.clone())
             .with_request_timeout(self.step_timeout);
         let facts_reader =
@@ -411,15 +355,14 @@ impl DeployOperationDriver {
 
         let namespace_id = accepted.submission.target.namespace_id.clone();
         let operation_id = accepted.submission.operation_id.clone();
+        let ingress_fence_owner = accepted.ingress_fence_owner.clone();
         let controllers = self.stores.controllers.clone();
         let result = run_deploy_operation(
             accepted,
-            self.machine_candidates,
             self.stores,
             DeployOperationPorts {
                 facts_reader: &facts_reader,
                 intent_reader: &intent_reader,
-                dataplane: &mut dataplane,
                 machine_runtime: &mut machine_runtime,
                 health_checker: &mut health_checker,
                 certificate_provisioner: &mut certificate_manager,
@@ -431,6 +374,9 @@ impl DeployOperationDriver {
             controllers
                 .release_namespace(&namespace_id, &operation_id)
                 .await;
+            if let Some(owner) = ingress_fence_owner {
+                controllers.release_ingress(&owner).await;
+            }
         }
         result
     }

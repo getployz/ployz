@@ -4,10 +4,10 @@
 use crate::adapters::nats_authorization::MintRequest;
 use crate::operation_api::admission::{
     CoreReplaceSubmitCommand, CredentialGrantSubmitCommand, DeploySubmitCommand,
-    MachineAddBootstrapMaterial, MachineAddBootstrapMaterialError, MachineAddSubmitCommand,
-    MachineLifecycleSubmitCommand, MachineUpdateSubmitCommand, NamespaceRemoveSubmitCommand,
-    NetworkRepairSubmitCommand, OperationControllers, ServiceRestartSubmitCommand,
-    VolumeRemoveSubmitCommand,
+    IngressConfigureSubmitCommand, IngressConfigureSubmitError, MachineAddBootstrapMaterial,
+    MachineAddBootstrapMaterialError, MachineAddSubmitCommand, MachineLifecycleSubmitCommand,
+    MachineUpdateSubmitCommand, NamespaceRemoveSubmitCommand, NetworkRepairSubmitCommand,
+    OperationControllers, ServiceRestartSubmitCommand, VolumeRemoveSubmitCommand,
 };
 use ployz_core::deploy::ImageSource;
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
@@ -19,10 +19,11 @@ use ployz_sdk_types::{
     AcceptedOperation, CoreReplaceError, CoreReplaceRequest, CredentialAddError,
     CredentialAddRequest, CredentialRemoveError, CredentialRemoveRequest, DeployReserveError,
     DeployReserveRequest, DeployReserved, DeploySubmitError, DeploySubmitRequest,
-    MachineAddAccepted, MachineAddError, MachineAddRequest, MachineJoinToken,
-    MachineLifecycleError, MachineLifecycleRequest, MachineUpdateError, MachineUpdateRequest,
-    NamespaceRemoveError, NamespaceRemoveRequest, NetworkRepairError, NetworkRepairRequest,
-    ServiceRestartError, ServiceRestartRequest, VolumeRemoveError, VolumeRemoveRequest,
+    IngressConfigureError, IngressConfigureRequest, MachineAddAccepted, MachineAddError,
+    MachineAddRequest, MachineJoinToken, MachineLifecycleError, MachineLifecycleRequest,
+    MachineUpdateError, MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest,
+    NetworkRepairError, NetworkRepairRequest, ServiceRestartError, ServiceRestartRequest,
+    VolumeRemoveError, VolumeRemoveRequest,
 };
 
 use super::OperationApiHandlers;
@@ -125,6 +126,70 @@ pub async fn credential_remove(
     );
     handlers.credential_grant().start(accepted);
     Ok(operation)
+}
+
+pub async fn ingress_configure(
+    handlers: &OperationApiHandlers,
+    request: IngressConfigureRequest,
+) -> Result<AcceptedOperation, IngressConfigureError> {
+    let operation_id = request.operation_id.clone();
+    let accepted = handlers
+        .controllers()
+        .submit_ingress_configure(
+            IngressConfigureSubmitCommand {
+                operation_id: request.operation_id,
+                configuration: request.configuration,
+            },
+            handlers.ingress_intent(),
+        )
+        .await
+        .map_err(|error| ingress_configure_submit_error(operation_id.clone(), error))?;
+    let operation = owned_operation(
+        accepted.operation_id.clone(),
+        OperationProgressScope::Cluster,
+        accepted.start_sequence,
+    );
+    handlers.ingress_configure().start(accepted);
+    Ok(operation)
+}
+
+fn ingress_configure_submit_error(
+    operation_id: OperationId,
+    error: IngressConfigureSubmitError,
+) -> IngressConfigureError {
+    match error {
+        IngressConfigureSubmitError::Busy { owner } => {
+            IngressConfigureError::ResourceBusy { owner }
+        }
+        IngressConfigureSubmitError::InvalidConfiguration { message } => {
+            IngressConfigureError::InvalidConfiguration { message }
+        }
+        IngressConfigureSubmitError::Unavailable { message } => {
+            IngressConfigureError::Unavailable {
+                operation_id,
+                message,
+            }
+        }
+        IngressConfigureSubmitError::Submit(error) => {
+            match super::error_map::unfenced_submit_failure(
+                "ingress configure",
+                crate::operation_api::admission::SubmitCommandError::Submit(error),
+            ) {
+                super::error_map::UnfencedSubmitFailure::Unavailable { message } => {
+                    IngressConfigureError::Unavailable {
+                        operation_id,
+                        message,
+                    }
+                }
+                super::error_map::UnfencedSubmitFailure::DuplicateSequenceMismatch { sequence } => {
+                    IngressConfigureError::DuplicateSequenceMismatch {
+                        operation_id,
+                        sequence,
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn credential_add_submit_error(
@@ -890,104 +955,5 @@ async fn machine_add_bootstrap_material(
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use ployz_core::deploy::{
-        ContainerRuntimeSpec, DeployRequest, DeployReservationId, DeployServiceSpec,
-        ImageReference, ImageSource, ReplicaCount,
-    };
-    use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
-    use ployz_core::image::OciDigest;
-    use ployz_core::ops::OperationIdempotencyKey;
-    use ployz_sdk_types::{DeploySubmitError, NetworkRepairError};
-
-    use crate::operation_api::admission::DeploySubmitCommand;
-
-    use super::{
-        validate_internal_dns_name, validate_network_repair_preconditions,
-        validate_registry_credentials,
-    };
-
-    fn operation_id() -> OperationId {
-        OperationId::try_new("op_network_repair").expect("operation id")
-    }
-
-    fn machine_id(value: &str) -> MachineId {
-        MachineId::try_new(value).expect("machine id")
-    }
-
-    #[test]
-    fn network_repair_requires_an_active_machine_before_admission() {
-        let error = validate_network_repair_preconditions(&operation_id(), None, &[])
-            .expect_err("empty roster must be rejected");
-
-        assert!(matches!(error, NetworkRepairError::NoActiveMachines { .. }));
-    }
-
-    #[test]
-    fn targeted_network_repair_requires_the_target_before_admission() {
-        let error = validate_network_repair_preconditions(
-            &operation_id(),
-            Some(&machine_id("machine_b")),
-            &[machine_id("machine_a")],
-        )
-        .expect_err("unknown target must be rejected");
-
-        assert!(matches!(
-            error,
-            NetworkRepairError::TargetMachineNotFound { .. }
-        ));
-    }
-
-    #[test]
-    fn deploy_admission_rejects_ids_that_cannot_form_internal_dns_labels() {
-        let namespace_id = NamespaceId::try_new("default").expect("namespace id");
-        let service_id = ServiceId::try_new("s".repeat(64)).expect("service id");
-
-        let failure = validate_internal_dns_name(&namespace_id, &service_id)
-            .expect_err("oversized DNS label must be rejected");
-
-        assert!(failure.as_str().contains("limited to 63 bytes"));
-    }
-
-    #[test]
-    fn pushed_image_digest_must_match_the_manifest_digest() {
-        let manifest_digest = OciDigest::sha256(b"manifest");
-        let image = ImageReference::try_new("local/api:latest")
-            .expect("valid image")
-            .with_digest(&OciDigest::sha256(b"different"))
-            .expect("image accepts digest");
-        let command = DeploySubmitCommand {
-            operation_id: OperationId::try_new("op_test").expect("valid operation id"),
-            idempotency_key: OperationIdempotencyKey::try_new("idem_test")
-                .expect("valid idempotency key"),
-            reservation_id: DeployReservationId::first(),
-            target: DeployRequest {
-                namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
-                origin: None,
-                services: vec![DeployServiceSpec {
-                    service_id: ServiceId::try_new("api").expect("valid service id"),
-                    image,
-                    image_source: ImageSource::PushedToSeed {
-                        seed: MachineId::try_new("machine_a").expect("valid machine id"),
-                        manifest_digest,
-                        image_id: OciDigest::sha256(b"image"),
-                    },
-                    replicas: ReplicaCount::try_new(1).expect("valid replica count"),
-                    runtime: ContainerRuntimeSpec::image_defaults(),
-                    pre_start: None,
-                    depends_on: Vec::new(),
-                    routes: Vec::new(),
-                }],
-            },
-            registry_credentials: BTreeMap::new(),
-        };
-
-        assert!(matches!(
-            validate_registry_credentials(&command),
-            Err(DeploySubmitError::InvalidTarget { message, .. })
-                if message.as_str().contains("must match its pushed manifest digest")
-        ));
-    }
-}
+#[path = "submit_tests.rs"]
+mod tests;

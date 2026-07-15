@@ -107,7 +107,8 @@ import type {
   OpsListResult,
   OpsStatusError,
   OpsWatchError,
-  PublicUrlMode,
+  AutomaticHostnameConfiguration,
+  PloyzDnsTargetIntent,
   RuntimeSnapshotError,
   RuntimeSnapshot,
   RuntimeSnapshotRequest,
@@ -124,6 +125,7 @@ export interface PloyzOperationTransport {
     endpoint: E,
     request: OperationApiRequestByEndpoint[E],
   ): Promise<OperationApiResponseByEndpoint[E]>;
+  watchRuntime?(): AsyncIterable<RuntimeSnapshot>;
 }
 
 export class PloyzApiError<E> extends Error {
@@ -169,8 +171,8 @@ export interface PloyzMachineUpdateInput {
 export interface PloyzFirstMachineActivateInput {
   machineId: string;
   roles: InstallRolePolicy;
-  /** Public-URL choice recorded at init; omitted means the daemon default, "auto". */
-  publicUrlMode?: PublicUrlMode;
+  automaticHostnameConfiguration?: AutomaticHostnameConfiguration;
+  ployzDnsTarget?: PloyzDnsTargetIntent;
 }
 
 export interface PloyzMachineJoinRedeemInput {
@@ -286,6 +288,14 @@ export class PloyzClient {
       "runtime.snapshot",
       await this.#transport.request("runtime.snapshot", runtimeSnapshotRequest()),
     ).snapshot;
+  }
+
+  watchRuntime(): AsyncIterable<RuntimeSnapshot> {
+    const watchRuntime = this.#transport.watchRuntime;
+    if (!watchRuntime) {
+      throw new Error("transport does not support runtime watches");
+    }
+    return watchRuntime.call(this.#transport);
   }
 
   async logsTail(input: string | PloyzLogsTailInput): Promise<LogsTailResult> {
@@ -405,7 +415,8 @@ export function initFirstMachineActivateRequest(
   return {
     machine_id: machineId(input.machineId),
     roles: { gateway: input.roles.gateway },
-    public_url_mode: input.publicUrlMode ?? "auto",
+    automatic_hostname_configuration: input.automaticHostnameConfiguration ?? { mode: "ployz" },
+    ployz_dns_target: input.ployzDnsTarget ?? "enabled",
   };
 }
 

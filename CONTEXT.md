@@ -53,12 +53,40 @@ A one-off service-derived container created to run a pre-start hook. Hook contai
 _Avoid_: Job service, replica, sidecar
 
 **Route Binding**:
-An external route bound to a service id inside a namespace. A service can have any number of route bindings, each with its own hostname and endpoint port, and several route bindings may share one endpoint port. A route binding can exist even when its service is absent from the current serving target; the binding is valid route state, while serving is a projection result. A deploy manifest may include route bindings as a convenience; future route operations will update the same route binding state independently of deploy manifests.
+An external hostname bound to one service id and internal endpoint port inside a namespace. Hostnames are unique across Route Bindings; gateways provide fixed HTTPS entry and HTTP redirect/validation behavior, so public listener ports are not binding input. A route binding can exist even when its service is absent from the current serving target; the binding is valid route state, while serving is a projection result. A deploy manifest may include route bindings as a convenience; future route operations will update the same route binding state independently of deploy manifests.
 _Avoid_: Active route, the route (as if a service has at most one), deploy-owned route
 
 **Route Binding Identity**:
 The stable identity of one attached route binding. It changes when a route is detached and later recreated, even if the external hostname is reused.
 _Avoid_: Host identity, route name, route target
+
+**Route Binding Origin**:
+Whether a Route Binding hostname was declared by an operator or generated from the Automatic Hostname Namespace. Origin is durable intent and is never inferred from the hostname text.
+_Avoid_: Hostname pattern, managed hostname flag, namespace id
+
+**Automatic Hostname Namespace**:
+The single cluster-wide canonical hostname suffix from which automatic hostname requests create Route Bindings; custom input names the suffix without a wildcard label. It cannot be replaced or disabled while any generated Route Binding depends on it.
+_Avoid_: Automatic domain, public URL mode, per-route namespace
+
+**Automatic Hostname Configuration**:
+The durable operator decision selecting no automatic hostnames, the Ployz Automatic Hostname Namespace, or one custom Automatic Hostname Namespace. Selection does not wait for external readiness; lease allocation, DNS observations, certificate progress, and gateway synchronization remain separate.
+_Avoid_: Public URL mode, namespace readiness, DNS provider mode
+
+**Ployz DNS Target**:
+The allocated `<lease>.up.ployz.app` hostname that publishes the cluster's Ingress Endpoint Projection and provides stable CNAME indirection. It is independently enabled and may remain available when automatic hostnames are disabled; the Ployz namespace requires it, while custom-namespace dependencies are never inferred.
+_Avoid_: Application URL, automatic namespace, DNS provider mode
+
+**Automatic Hostname Label**:
+The caller-supplied single lowercase DNS label combined with the Automatic Hostname Namespace to form a generated Route Binding hostname directly beneath that namespace. It is 1–63 ASCII letters, digits, or hyphens without an edge hyphen; an identical request reuses its Route Binding, while Ployz never rewrites invalid input or collisions.
+_Avoid_: Service label, generated prefix, collision suffix
+
+**Automatic Hostname Verification**:
+A point-of-use check that a concrete generated hostname reaches Ployz. DNS preflight produces warning evidence, while successful exact-certificate issuance is the hard reachability proof for a custom automatic hostname.
+_Avoid_: DNS ownership, namespace health, stored verification, direct-address requirement
+
+**Automatic Route Activation**:
+The shared bounded path that derives a generated hostname, rejects collisions, obtains the namespace's applicable certificate, synchronizes publishable gateways, and attaches the Route Binding. A replacement activates the new binding before atomically retiring the old one; terminal failure preserves the old route and requires an explicit retry.
+_Avoid_: Hostname provisioning workflow, DNS provider operation, route reconciliation
 
 **Route Projection**:
 A gateway's local application of one route binding against the current serving target and runtime observations. Route projections can succeed or fail independently, and failures are reported as gateway observations. If a route binding points at a service that is not currently serveable, the route remains attached and the gateway returns an unavailable response for that route.
@@ -67,6 +95,18 @@ _Avoid_: Route binding, gateway config, active route
 **Route DNS Projection**:
 A DNS process's local serving of route binding hostnames to the gateway answers that can serve them. It is separate from machine-name DNS provided by a mesh such as Tailscale MagicDNS.
 _Avoid_: MagicDNS route backend, machine name DNS, tailnet device DNS
+
+**Ingress Endpoint Projection**:
+The canonical complete view of public IPv4 and IPv6 endpoints that DNS consumers may publish for cluster ingress. Its gather candidates are current accepted machines assigned the gateway role, including draining machines because draining does not stop existing serving; a candidate is publishable only when its gateway process gives fresh serving testimony and fresh machine facts supply an address. Explicit intent with no candidates makes the projection unavailable and authorizes withdrawal, while silence from declared gateways does not imply an empty endpoint set.
+_Avoid_: Route DNS projection, gateway membership, DNS provider state, inferred liveness
+
+**Ingress Endpoint Projection State**:
+The tagged availability of the Ingress Endpoint Projection: pending before any decisive gather, current after a non-empty fresh result, retained when total gateway silence preserves the prior current set, or unavailable when explicit intent or fresh negative testimony authorizes withdrawal.
+_Avoid_: Optional address list, DNS provider status, inferred liveness
+
+**Ingress Endpoint Projection Revision**:
+The monotonic version of one Control-Plane Epoch's Ingress Endpoint Projection. It persists across restarts of that core and advances only when the projection state, unavailable reason, or normalized publishable endpoint set changes; a new epoch starts pending with a reset revision, while repeated gather attempts remain operation evidence without revision churn.
+_Avoid_: Gather attempt number, DNS provider revision, ordered mutation sequence
 
 **Dataplane Projection**:
 A machine-local application of current machine and dataplane state into WireGuard, eBPF, routes, or related network configuration. Dataplane projection is eventually consistent and may be driven by NATS watches or bounded operation-owned NATS machine queries/commands; it is not authority to mutate cluster truth.
@@ -161,8 +201,16 @@ An iframe-oriented protected-route presentation where the gateway asks the embed
 _Avoid_: Silent auth, iframe auth, dashboard bypass
 
 **Active Certificate**:
-A certificate that Ployz has obtained and can use for gateway serving. Domain-backed route bindings require an active certificate before they can be attached.
+A valid certificate that Ployz has obtained and every currently publishable gateway can use. Domain-backed Route Bindings require one before attachment; expiry makes only the dependent Route Projection unavailable while other routes continue serving.
 _Avoid_: Pending certificate
+
+**Ployz Wildcard Certificate**:
+The wildcard certificate owned by the Ployz Automatic Hostname Namespace and shared by its generated Route Bindings. Switching away retires it without disabling the Ployz DNS Target; a replacement core recovers it from its issuing service.
+_Avoid_: Route certificate, custom wildcard, cluster certificate
+
+**Exact Route Certificate**:
+The exact-hostname certificate owned by one custom generated Route Binding. Failed provisional material is cleaned and detachment ends its lifecycle; gateway copies keep serving through core loss but never restore authority, so a replacement core reissues it.
+_Avoid_: Custom wildcard, namespace certificate, reusable hostname certificate
 
 **Operation**:
 A user-visible record of a bounded command attempt. It explains what was attempted and what the attempt reported, but future planning uses live runtime state rather than the operation record.
@@ -453,7 +501,7 @@ A client credential minted for a human operator or automation client to call clu
 _Avoid_: Shared operator seed, machine join, remote operator join
 
 **Operator Context**:
-A client-local record that lets `ployzctl` connect to one cluster using NATS endpoint, trust material, and an operator credential. Operator context is client access material, not cluster truth, machine state, or proof that a machine joined the cluster.
+A client-local record that lets `ployz` connect to one cluster using NATS endpoint, trust material, and an operator credential. Operator context is client access material, not cluster truth, machine state, or proof that a machine joined the cluster.
 _Avoid_: Cluster membership, machine join, shared context
 
 **Machine Bootstrap**:
@@ -569,12 +617,12 @@ Best-effort cleanup or expiry of stale observations for removed or inactive mach
 _Avoid_: Observation deletion as removal success, stale observation as authority
 
 **Machine Usability View**:
-The one rule set for whether a machine may take new workload placement, derived from durable operator intent (machine lifecycle) and future placement constraints. Liveness is never part of it: a dead machine answers at the point of use (an unanswered placement bid, a failed upstream dial), so no consumer infers availability from observation age.
-_Avoid_: Scattered eligibility checks, lifecycle as readiness, freshness as eligibility, eligibility booleans
+The one rule set for whether a machine may take new workload placement. It combines durable operator intent such as Machine Lifecycle with fresh, point-of-use testimony required by that placement attempt. Placement first forms a preliminary set of lifecycle-active machines that answered facts and dataplane status, match the declared Dataplane Projection revision, and report their local bridge, WireGuard interface, and eBPF attachment ready. A preliminary candidate must contain and show a handshake no more than 275 seconds old with every other preliminary candidate. The set is validated once: excluded candidates do not trigger recursive shrinking or revalidation. Silent and locally unusable declared machines remain in intent and the configured projection but are not expected peers for that attempt. The view is never stored as cluster truth and never changes existing workloads or serving state.
+_Avoid_: Scattered eligibility checks, lifecycle as readiness, stored liveness, observation-age eligibility, eligibility booleans
 
 **Machine Usability Reason**:
-A typed explanation for why a machine is excluded from new workload placement. The current reason is draining; future reasons cover operator-declared placement constraints. Liveness is never a reason - offline machines fail at the point of use rather than being inferred out of the pool.
-_Avoid_: Generic unhealthy, free-text eligibility, hidden scheduler decision, stale-observation eligibility
+A typed explanation for why a machine is excluded from one new-placement attempt. Reasons include durable policy such as draining and fresh Dataplane Unavailable evidence such as no answer, the wrong projection revision, unusable local dataplane components, a peer-set mismatch, or a missing or stale peer handshake. These reasons are attempt evidence, not durable machine state; exclusion does not evict workloads or rewrite serving truth.
+_Avoid_: Generic unhealthy, free-text eligibility, hidden scheduler decision, stored health flag
 
 **Fresh Role Observation**:
 A recent observation from a role process such as a machine agent, gateway, or DNS process. Fresh role observations make a process visible for warning-only coordination and diagnostics, but they are not durable membership or operation quorum.

@@ -11,15 +11,11 @@ impl OperationEvent {
         match self {
             Self::DeploySubmitted { .. } => "deploy.submitted".to_owned(),
             Self::DeployPlanningStarted { .. } => "deploy.planning.started".to_owned(),
-            Self::DeployWaitingForManagedCertificate { .. } => {
-                "deploy.managed_certificate.waiting".to_owned()
-            }
             Self::DeployImageResolved { service_id, .. } => {
                 format!("deploy.image.resolved.{}", service_id.as_str())
             }
             Self::DeployPlanCreated { .. } => "deploy.plan.created".to_owned(),
             Self::DeployRunning { stage, .. } => format!("deploy.running.{}", stage.as_subject()),
-            Self::DeployDataplanePrepared { .. } => "deploy.dataplane.prepared".to_owned(),
             Self::DeployImageAvailabilityVerified {
                 service_id, seed, ..
             } => format!(
@@ -45,6 +41,7 @@ impl OperationEvent {
             Self::CertProvisionSubmitted { .. } => "cert.submitted".to_owned(),
             Self::CertChallengePublished { .. } => "cert.challenge.published".to_owned(),
             Self::CertValidationStarted { .. } => "cert.validation.started".to_owned(),
+            Self::CertWarning { .. } => "cert.warning".to_owned(),
             Self::CertCompleted { .. } => "cert.completed".to_owned(),
             Self::CertFailed { .. } => "cert.failed".to_owned(),
             Self::MachineAddSubmitted { .. } => "machine.add.submitted".to_owned(),
@@ -79,8 +76,8 @@ impl OperationEvent {
             Self::NetworkRepairRunning { stage, .. } => {
                 format!("network.repair.running.{}", stage.as_subject())
             }
-            Self::NetworkRepairDataplanePrepared { .. } => {
-                "network.repair.dataplane.prepared".to_owned()
+            Self::NetworkRepairDataplaneConverged { .. } => {
+                "network.repair.dataplane.converged".to_owned()
             }
             Self::NetworkRepairMachineFactsRefreshed { .. } => {
                 "network.repair.machine_facts.refreshed".to_owned()
@@ -105,17 +102,26 @@ impl OperationEvent {
             ),
             Self::ServiceRestartCompleted { .. } => "service.restart.completed".to_owned(),
             Self::ServiceRestartFailed { .. } => "service.restart.failed".to_owned(),
-            Self::ManagedLeaseSubmitted { .. } => "managed.lease.submitted".to_owned(),
-            Self::ManagedLeaseCompleted { .. } => "managed.lease.completed".to_owned(),
-            Self::ManagedLeaseFailed { .. } => "managed.lease.failed".to_owned(),
+            Self::ManagedDnsReconcileSubmitted { .. } => {
+                "managed.dns.reconcile.submitted".to_owned()
+            }
+            Self::ManagedDnsReconcileCompleted { .. } => {
+                "managed.dns.reconcile.completed".to_owned()
+            }
+            Self::ManagedDnsReconcileFailed { .. } => "managed.dns.reconcile.failed".to_owned(),
+            Self::IngressRefreshSubmitted { .. } => "ingress.refresh.submitted".to_owned(),
+            Self::IngressRefreshCompleted { .. } => "ingress.refresh.completed".to_owned(),
+            Self::IngressRefreshFailed { .. } => "ingress.refresh.failed".to_owned(),
+            Self::IngressConfigureSubmitted { .. } => "ingress.configure.submitted".to_owned(),
+            Self::IngressConfigureCompleted { .. } => "ingress.configure.completed".to_owned(),
+            Self::IngressConfigureFailed { .. } => "ingress.configure.failed".to_owned(),
             Self::NamespaceRemoveSubmitted { .. } => "namespace.remove.submitted".to_owned(),
             Self::NamespaceRemoveRunning { stage, .. } => {
                 format!("namespace.remove.running.{}", stage.as_subject())
             }
             Self::NamespaceRemoveRouteBindingRemoved { target, .. } => format!(
-                "namespace.remove.route_binding.removed.{}.{}",
-                target.hostname.as_str(),
-                target.port.get()
+                "namespace.remove.route_binding.removed.{}",
+                target.hostname.as_str()
             ),
             Self::NamespaceRemoveContainerRemoved {
                 machine_id,

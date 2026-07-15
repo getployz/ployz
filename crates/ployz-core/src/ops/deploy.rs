@@ -7,8 +7,6 @@ use serde::{Deserialize, Serialize};
 use std::num::NonZeroU16;
 
 use crate::cert::CertificateProvisionFailure;
-use crate::cert::ManagedCertificateIssuanceFailureKind;
-use crate::dataplane::{DataplaneProviderFailure, PloyzNativeMeshPrepareReport};
 use crate::deploy::VolumeName;
 use crate::deploy::{DeployCleanupContainer, DeployPlan, ImageReference};
 use crate::ids::{
@@ -30,7 +28,6 @@ use super::{EventSequence, OperationKind, OperationStatus};
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum DeployRunningStage {
-    PreparingDataplane,
     EnsuringImages,
     StartingContainers,
     WaitingForHealth,
@@ -214,7 +211,6 @@ pub enum DeployFailureClass {
     CertificateProvisionFailed,
     MachineNoAnswer,
     Timeout,
-    DataplanePrepareFailed,
     RuntimeUnavailable,
     ControlPlaneCommitFailed,
     RouteCutoverFailed,
@@ -232,7 +228,6 @@ impl DeployFailureClass {
             Self::CertificateProvisionFailed => "certificate-provision-failed",
             Self::MachineNoAnswer => "machine-no-answer",
             Self::Timeout => "timeout",
-            Self::DataplanePrepareFailed => "dataplane-prepare-failed",
             Self::RuntimeUnavailable => "runtime-unavailable",
             Self::ControlPlaneCommitFailed => "control-plane-commit-failed",
             Self::RouteCutoverFailed => "route-cutover-failed",
@@ -258,14 +253,6 @@ pub enum DeployOperationFailure {
         machine_id: MachineId,
         image: ImageReference,
         message: FailureMessage,
-    },
-    AutoDnsWithoutLease {
-        service_id: ServiceId,
-        namespace_revision_id: NamespaceRevisionId,
-        message: FailureMessage,
-    },
-    CertificatePending {
-        last_error: Option<ManagedCertificateIssuanceFailureKind>,
     },
     ArtifactUnavailable {
         service_id: ServiceId,
@@ -293,21 +280,6 @@ pub enum DeployOperationFailure {
         machine_id: MachineId,
         image_platform: crate::image::OciPlatform,
         target_platform: crate::image::OciPlatform,
-    },
-    DataplaneUnavailable {
-        machine_id: MachineId,
-        provider_failure: DataplaneProviderFailure,
-        message: FailureMessage,
-        retained_artifacts: Vec<RetainedArtifact>,
-    },
-    DataplanePrepareTimedOut {
-        machines: Vec<MachineId>,
-        timeout_seconds: u32,
-        retained_artifacts: Vec<RetainedArtifact>,
-    },
-    DataplanePrepareInvalidReport {
-        message: FailureMessage,
-        retained_artifacts: Vec<RetainedArtifact>,
     },
     RuntimeUnavailable {
         machine_id: MachineId,
@@ -411,20 +383,13 @@ impl DeployOperationFailure {
                     DeployFailureClass::PreconditionRejected
                 }
             }
-            Self::PlanningFailed { .. } | Self::AutoDnsWithoutLease { .. } => {
-                DeployFailureClass::PreconditionRejected
-            }
-            Self::CertificatePending { .. } => DeployFailureClass::Timeout,
+            Self::PlanningFailed { .. } => DeployFailureClass::PreconditionRejected,
             Self::ArtifactUnavailable { .. }
             | Self::ImageResolutionFailed { .. }
             | Self::ImageMissingOnSeed { .. }
             | Self::ImageDigestMismatch { .. }
             | Self::SeedUnavailable { .. }
             | Self::UnsupportedTargetPlatform { .. } => DeployFailureClass::ImageResolvePullFailed,
-            Self::DataplaneUnavailable { .. } | Self::DataplanePrepareInvalidReport { .. } => {
-                DeployFailureClass::DataplanePrepareFailed
-            }
-            Self::DataplanePrepareTimedOut { .. } => DeployFailureClass::Timeout,
             Self::RuntimeUnavailable { .. } => DeployFailureClass::RuntimeUnavailable,
             Self::ContainerStartFailed { .. } => DeployFailureClass::ContainerStartFailed,
             Self::PreStartHookFailed { .. } => DeployFailureClass::PreStartHookFailed,
@@ -455,16 +420,7 @@ impl DeployOperationFailure {
     #[must_use]
     pub fn retained_artifacts(&self) -> &[RetainedArtifact] {
         match self {
-            Self::DataplaneUnavailable {
-                retained_artifacts, ..
-            }
-            | Self::DataplanePrepareTimedOut {
-                retained_artifacts, ..
-            }
-            | Self::DataplanePrepareInvalidReport {
-                retained_artifacts, ..
-            }
-            | Self::RuntimeUnavailable {
+            Self::RuntimeUnavailable {
                 retained_artifacts, ..
             }
             | Self::ContainerStartFailed {
@@ -490,8 +446,6 @@ impl DeployOperationFailure {
             } => retained_artifacts,
             Self::NoUsableMachines { .. }
             | Self::PlanningFailed { .. }
-            | Self::AutoDnsWithoutLease { .. }
-            | Self::CertificatePending { .. }
             | Self::ImageResolutionFailed { .. }
             | Self::ArtifactUnavailable { .. }
             | Self::ImageMissingOnSeed { .. }
@@ -660,7 +614,6 @@ impl DeployTransition {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployEvidence {
-    WaitingForManagedCertificate,
     ImageResolved {
         service_id: ServiceId,
         machine_id: MachineId,
@@ -670,9 +623,6 @@ pub enum DeployEvidence {
     },
     PlanCreated {
         plan: DeployPlan,
-    },
-    DataplanePrepared {
-        report: PloyzNativeMeshPrepareReport,
     },
     ImageAvailabilityVerified {
         service_id: ServiceId,
@@ -703,11 +653,6 @@ impl DeployEvidence {
     #[must_use]
     pub fn event(&self, operation_id: &OperationId) -> OperationEvent {
         match self {
-            Self::WaitingForManagedCertificate => {
-                OperationEvent::DeployWaitingForManagedCertificate {
-                    operation_id: operation_id.clone(),
-                }
-            }
             Self::ImageResolved {
                 service_id,
                 machine_id,
@@ -725,10 +670,6 @@ impl DeployEvidence {
             Self::PlanCreated { plan } => OperationEvent::DeployPlanCreated {
                 operation_id: operation_id.clone(),
                 plan: plan.clone(),
-            },
-            Self::DataplanePrepared { report } => OperationEvent::DeployDataplanePrepared {
-                operation_id: operation_id.clone(),
-                report: report.clone(),
             },
             Self::ImageAvailabilityVerified {
                 service_id,
@@ -795,11 +736,8 @@ enum EvidenceRequirement {
 
 const fn evidence_requirement(evidence: &DeployEvidence) -> EvidenceRequirement {
     match evidence {
-        DeployEvidence::WaitingForManagedCertificate
-        | DeployEvidence::ImageResolved { .. }
-        | DeployEvidence::PlanCreated { .. } => EvidenceRequirement::Planning,
-        DeployEvidence::DataplanePrepared { .. } => {
-            EvidenceRequirement::RunningStage(DeployRunningStage::PreparingDataplane)
+        DeployEvidence::ImageResolved { .. } | DeployEvidence::PlanCreated { .. } => {
+            EvidenceRequirement::Planning
         }
         DeployEvidence::ImageAvailabilityVerified { .. } => {
             EvidenceRequirement::RunningStage(DeployRunningStage::EnsuringImages)
@@ -1081,7 +1019,13 @@ fn transition_allowed(current: &DeployOperationState, attempted: &DeployOperatio
         (
             DeployOperationState::Planning,
             DeployOperationState::Running {
-                stage: DeployRunningStage::PreparingDataplane,
+                stage: DeployRunningStage::EnsuringImages,
+            },
+        )
+        | (
+            DeployOperationState::Planning,
+            DeployOperationState::Running {
+                stage: DeployRunningStage::StartingContainers,
             },
         ) => true,
         (
@@ -1099,14 +1043,13 @@ fn transition_allowed(current: &DeployOperationState, attempted: &DeployOperatio
 
 fn stage_rank(stage: DeployRunningStage) -> u8 {
     match stage {
-        DeployRunningStage::PreparingDataplane => 0,
-        DeployRunningStage::EnsuringImages => 1,
-        DeployRunningStage::StartingContainers => 2,
-        DeployRunningStage::WaitingForHealth => 3,
-        DeployRunningStage::EnsuringCertificates => 4,
-        DeployRunningStage::RouteCutover => 5,
-        DeployRunningStage::ServingTargetCommit => 6,
-        DeployRunningStage::RemovingSupersededContainers => 7,
+        DeployRunningStage::EnsuringImages => 0,
+        DeployRunningStage::StartingContainers => 1,
+        DeployRunningStage::WaitingForHealth => 2,
+        DeployRunningStage::EnsuringCertificates => 3,
+        DeployRunningStage::RouteCutover => 4,
+        DeployRunningStage::ServingTargetCommit => 5,
+        DeployRunningStage::RemovingSupersededContainers => 6,
     }
 }
 
@@ -1114,12 +1057,6 @@ fn stage_is_next(current: DeployRunningStage, attempted: DeployRunningStage) -> 
     matches!(
         (current, attempted),
         (
-            DeployRunningStage::PreparingDataplane,
-            DeployRunningStage::EnsuringImages
-        ) | (
-            DeployRunningStage::PreparingDataplane,
-            DeployRunningStage::StartingContainers
-        ) | (
             DeployRunningStage::EnsuringImages,
             DeployRunningStage::StartingContainers
         ) | (

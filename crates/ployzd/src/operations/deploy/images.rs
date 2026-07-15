@@ -1,6 +1,6 @@
 //! Pushed-image availability and mesh redistribution for deploy execution.
 
-use ployz_core::dataplane::{DataplaneMember, DataplanePrepareRequest};
+use ployz_core::dataplane::DataplaneMember;
 use ployz_core::deploy::{
     DeployPlan, DeployPlanStep, DeployRequest, DeployServicePlan, ImageSource,
 };
@@ -16,10 +16,10 @@ use super::{
     DeployServiceExecutionCommand, MachineContainerRuntime, record_evidence,
 };
 
-pub(super) fn dataplane_prepare_request(
+pub(super) fn dataplane_membership(
     command: &DeployExecutionCommand,
     plan: &DeployPlan,
-) -> DataplanePrepareRequest {
+) -> Vec<DataplaneMember> {
     let mut members = command.dataplane_members.clone();
     for seed in command.services().iter().filter_map(|service| {
         let ImageSource::PushedToSeed { seed, .. } = &service.request.image_source else {
@@ -31,7 +31,20 @@ pub(super) fn dataplane_prepare_request(
             members.push(DataplaneMember::default_for_machine(seed.clone()));
         }
     }
-    DataplanePrepareRequest::for_deploy_plan(command.operation_id.clone(), plan, &members)
+    let mut machine_ids = plan.target_machines();
+    machine_ids.extend(members.iter().map(|member| member.machine_id.clone()));
+    machine_ids.sort();
+    machine_ids.dedup();
+    machine_ids
+        .into_iter()
+        .map(|machine_id| {
+            members
+                .iter()
+                .find(|member| member.machine_id == machine_id)
+                .cloned()
+                .unwrap_or_else(|| DataplaneMember::default_for_machine(machine_id))
+        })
+        .collect()
 }
 
 pub(super) async fn resolve_registry_images<R, N>(

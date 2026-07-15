@@ -8,9 +8,8 @@ use ployz_core::cert::{
 };
 use ployz_core::ids::{CertId, MachineId, OperationId};
 use ployz_core::ops::RouteHostname;
-use ployz_core::subjects::INTENT_CHANGED;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::intent::certificate_intent::CertificateIntentStore;
 use crate::operations::log::OperationRepository;
@@ -36,37 +35,32 @@ pub trait AcmeIssuer: Send + Sync {
 
 #[derive(Debug, Clone)]
 pub struct AcmeIssueContext {
-    store: CertificateIntentStore,
     repository: OperationRepository,
-    client: async_nats::Client,
     operation_id: OperationId,
     cert_id: CertId,
     gateway_client: GatewayCertificateClient,
     challenge_machine_ids: Vec<MachineId>,
-    challenge_readiness_timeout: std::time::Duration,
     challenge_published: Arc<AtomicBool>,
+    applied_challenges: Arc<Mutex<Vec<AcmeHttp01Challenge>>>,
 }
 
 impl AcmeIssueContext {
     pub(crate) fn new(
-        store: CertificateIntentStore,
         repository: OperationRepository,
         client: async_nats::Client,
         operation_id: OperationId,
         cert_id: CertId,
         challenge_machine_ids: Vec<MachineId>,
-        challenge_readiness_timeout: std::time::Duration,
+        _challenge_readiness_timeout: std::time::Duration,
     ) -> Self {
         Self {
-            store,
             repository,
-            client: client.clone(),
             operation_id,
             cert_id,
             gateway_client: GatewayCertificateClient::new(client),
             challenge_machine_ids,
-            challenge_readiness_timeout,
             challenge_published: Arc::new(AtomicBool::new(false)),
+            applied_challenges: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -74,25 +68,20 @@ impl AcmeIssueContext {
         &self,
         challenge: AcmeHttp01Challenge,
     ) -> Result<(), AcmeIssuerError> {
-        self.store
-            .store_challenge(challenge.clone())
-            .await
-            .map_err(challenge_publish_error)?;
-        self.publish_intent_changed().await?;
         self.repository
             .record_cert_challenge(&self.operation_id, self.cert_id.clone(), challenge.clone())
             .await
             .map_err(operation_evidence_error)?;
         self.gateway_client
-            .wait_until_challenge_applied(
-                &challenge,
-                &self.challenge_machine_ids,
-                self.challenge_readiness_timeout,
-            )
+            .apply_challenge(&self.operation_id, &challenge, &self.challenge_machine_ids)
             .await
             .map_err(|error| AcmeIssuerError::ChallengeReadiness {
                 missing_machine_ids: error.missing_machine_ids,
             })?;
+        self.applied_challenges
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(challenge);
         self.challenge_published.store(true, Ordering::Release);
         Ok(())
     }
@@ -111,23 +100,24 @@ impl AcmeIssueContext {
         Ok(())
     }
 
-    pub(crate) async fn clear_challenges(
-        &self,
-        hostname: &RouteHostname,
-    ) -> Result<(), AcmeIssuerError> {
-        self.store
-            .remove_challenges_for_hostname(hostname)
-            .await
-            .map_err(challenge_publish_error)?;
-        let _ = self.publish_intent_changed().await;
-        Ok(())
-    }
-
-    async fn publish_intent_changed(&self) -> Result<(), AcmeIssuerError> {
-        self.client
-            .publish(INTENT_CHANGED, Vec::new().into())
-            .await
-            .map_err(challenge_publish_error)
+    pub(crate) async fn clear_challenges(&self, _hostname: &RouteHostname) -> Vec<MachineId> {
+        let challenges = std::mem::take(
+            &mut *self
+                .applied_challenges
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        let mut missing = Vec::new();
+        for challenge in challenges {
+            missing.extend(
+                self.gateway_client
+                    .remove_challenge(&self.operation_id, &challenge, &self.challenge_machine_ids)
+                    .await,
+            );
+        }
+        missing.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        missing.dedup();
+        missing
     }
 }
 
@@ -141,12 +131,6 @@ pub enum AcmeIssuerError {
     ChallengeReadiness { missing_machine_ids: Vec<MachineId> },
     #[error("ACME validation failed: {message}")]
     Validation { message: String },
-}
-
-fn challenge_publish_error(error: impl std::fmt::Display) -> AcmeIssuerError {
-    AcmeIssuerError::ChallengePublish {
-        message: error.to_string(),
-    }
 }
 
 fn validation_error(error: impl std::fmt::Display) -> AcmeIssuerError {

@@ -370,6 +370,25 @@ mod tests {
     }
 
     #[test]
+    fn removed_route_protocol_and_public_port_forms_reject() {
+        for route in ["app.example.com:8080/http", "app.example.com:443:8080"] {
+            let source = format!(
+                "name: default\nservices:\n  web:\n    image: nginx\n    x-ports: {route}\n"
+            );
+            assert!(
+                parse_deploy_file(ComposeInput {
+                    source: &source,
+                    base_dir: Path::new("."),
+                    interpolation_env: BTreeMap::new(),
+                    namespace_override: None,
+                    mode: UnsupportedFieldMode::Strict,
+                })
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn healthy_dependency_requires_an_executable_target_healthcheck() {
         let error = parse_deploy_file(ComposeInput {
             source: r#"

@@ -2,19 +2,18 @@ pub use ployz_core::cert::{
     AcmeChallengeError, AcmeChallengeToken, AcmeChallengeTtlError, AcmeChallengeTtlSeconds,
     AcmeChallengeValue, AcmeHttp01Challenge, ActiveCertState, CertBundleRef, CertTextError,
     CertValidAt, CertValidAtError, CertValidityError, CertValidityWindow,
-    CertificateProvisionFailure, LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt,
-    LeaseTimestampError, ManagedCertBundle, ManagedCertificateIssuanceFailureKind,
-    ManagedLeaseAcquireRequest, ManagedLeaseAcquired, ManagedLeaseAddressSet, ManagedLeaseError,
-    ManagedLeaseName, ManagedLeaseRecord, ManagedLeaseRenewed, PublicUrlMode,
+    CertificateProvisionFailure, ManagedLeaseName,
 };
 pub use ployz_core::dataplane::{
-    DataplaneMember, DataplaneProviderFailure, EbpfAttachmentStatus, EbpfForwardingReady,
-    EbpfForwardingReadyEvidence, MachineDataplaneStatus, MachineEndpointSubnet,
-    MachineEndpointSupernet, NetworkStatusMode, PloyzNativeMeshComponent,
-    PloyzNativeMeshMachineReady, PloyzNativeMeshPrepareReport, PloyzNativeMeshReady,
-    WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardHandshakeStatus, WireGuardInterfaceMtu,
-    WireGuardMtuProbe, WireGuardPeerEndpointSubnet, WireGuardPeerStatus, WireGuardPublicKey,
-    WireGuardReady, WireGuardReadyEvidence, WireGuardRttStatus, WireGuardStatus,
+    DataplaneMember, DataplaneProjection, DataplaneProjectionComponent, DataplaneProjectionFailure,
+    DataplaneProjectionMember, DataplaneProjectionRevision, DataplaneProjectionRevisions,
+    DataplaneProjectionTestimony, EbpfAttachmentStatus, EbpfForwardingReady,
+    EbpfForwardingReadyEvidence, EndpointBridgeStatus, MachineDataplaneStatus,
+    MachineEndpointSubnet, MachineEndpointSupernet, NativeDataplaneProjectionStatus,
+    NetworkStatusMode, PloyzNativeMeshComponent, PloyzNativeMeshReady, WireGuardConfiguredMtu,
+    WireGuardDetectedMtu, WireGuardHandshakeStatus, WireGuardInterfaceMtu, WireGuardMtuProbe,
+    WireGuardPeerEndpointSubnet, WireGuardPeerStatus, WireGuardPublicKey, WireGuardReady,
+    WireGuardReadyEvidence, WireGuardRttStatus, WireGuardStatus,
 };
 pub use ployz_core::deploy::{
     ContainerCommand, ContainerCommandError, ContainerEntrypoint, ContainerHealthcheck,
@@ -32,9 +31,15 @@ pub use ployz_core::deploy::{
 };
 pub use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
-    OperationId, ServiceId, StepId, SubjectTokenError,
+    OperationId, RouteBindingId, ServiceId, StepId, SubjectTokenError,
 };
 pub use ployz_core::image::{OciDigest, OciPlatform};
+pub use ployz_core::ingress::{
+    ActiveCertificateMetadata, AutomaticHostnameConfiguration, AutomaticHostnameLabel,
+    AutomaticHostnameLabelError, AutomaticHostnameSuffix, CertificateOwner, IngressConfiguration,
+    IngressEndpointProjection, IngressEndpointProjectionIdentity, IngressEndpointProjectionState,
+    IngressEndpointSet, IngressEndpointUnavailableReason, PloyzDnsTargetIntent, RouteBindingOrigin,
+};
 pub use ployz_core::install::{
     AbsoluteInstallPath, FirstMachineInstallArtifacts, FirstMachineInstallSpec, HostPortAssurance,
     InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion, InstallContractError,
@@ -47,10 +52,10 @@ pub use ployz_core::internal_dns::{
     InternalDnsResolverStatus, InternalDnsStatus, InternalServiceName, InternalServiceNameError,
 };
 pub use ployz_core::machine::{
-    ConnectivityProofEvidence, ConnectivityProofUnreachablePeer, IssuedJoinToken,
-    JoinTokenExpiresAt, JoinTokenFingerprint, JoinTokenRedeemedAt, MachineAddFailure,
-    MachineCredentialProvisioningStep, MachineName, MachineReadinessCheck,
-    MachineReadinessEvidence,
+    DataplaneAdmissionPeer, DataplaneProjectionAdmissionEvidence,
+    DataplaneProjectionAdmissionFailure, IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint,
+    JoinTokenRedeemedAt, MachineAddFailure, MachineCredentialProvisioningStep, MachineName,
+    MachineReadinessCheck, MachineReadinessEvidence, WireGuardReadinessFailure,
 };
 pub use ployz_core::machine_runtime::{
     ContainerHealth, ContainerRuntimeState, MachineDiskSpace, MachineFactsRefreshConfirmation,
@@ -62,13 +67,18 @@ pub use ployz_core::nats_config::{
     NatsCaCertificatePem, NatsInternalAuthority, NatsUserPublicKey, NatsUserSeed,
 };
 pub use ployz_core::ops::{
-    ArtifactUnavailableReason, CancellationReason, CredentialGrantAction, CredentialGrantFailure,
-    CredentialGrantOperationState, EventSequence, EventSequenceError, FailureMessage,
-    HealthCheckFailure, MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddOperationState,
-    MachineAddOperationStateName, MachineLifecycleFailure, MachineLifecycleOperationState,
-    MachineSubstrateVersions, MachineUpdateFailure, MachineUpdateOperationState,
-    ManagedLeaseFailureClass, ManagedLeaseOperationFailure, ManagedLeaseOperationState,
-    ManagedLeaseSubject, NamespaceRemoveFailure, NamespaceRemoveOperationState,
+    ArtifactUnavailableReason, CancellationReason, CertificateProvisionWarning,
+    CredentialGrantAction, CredentialGrantFailure, CredentialGrantOperationState, EventSequence,
+    EventSequenceError, FailureMessage, HealthCheckFailure, IngressConfigureFailure,
+    IngressConfigureOperationState, IngressRefreshCandidateEvidence,
+    IngressRefreshCandidatePublication, IngressRefreshEvidence, IngressRefreshExclusionReason,
+    IngressRefreshFactsOutcome, IngressRefreshFailure, IngressRefreshGatewayOutcome,
+    IngressRefreshInvalidationEvidence, IngressRefreshOperationState,
+    MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddOperationState, MachineAddOperationStateName,
+    MachineLifecycleFailure, MachineLifecycleOperationState, MachineSubstrateVersions,
+    MachineUpdateFailure, MachineUpdateOperationState, ManagedDnsReconcileFailure,
+    ManagedDnsReconcileFailureClass, ManagedDnsReconcileOperationState, ManagedDnsReconcileSubject,
+    ManagedDnsWithdrawAuthorization, NamespaceRemoveFailure, NamespaceRemoveOperationState,
     NamespaceRemoveRunningStage, NetworkRepairDnsRefreshProblem, NetworkRepairFailure,
     NetworkRepairMachineFactsRefreshOutcome, NetworkRepairOperationState,
     NetworkRepairProgressPhase, NetworkRepairRequestFailure, NetworkRepairRunningStage,
@@ -89,8 +99,8 @@ pub use ployz_core::ops::{
 };
 pub use ployz_core::roles::{GatewayRole, InstallRolePolicy};
 pub use ployz_core::security::NatsPrincipal;
-pub use ployz_core::state::MachineUsabilityReason;
 pub use ployz_core::state::{
-    ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation,
-    MachineLifecycle, RouteBindingState, ServingTargetEntry, VolumePinState,
+    ActiveMachineState, ControlPlaneEpoch, DataplaneUnavailableReason, GatewayServingStatus,
+    GatewayStatusObservation, MachineEndpointObservation, MachineLifecycle, MachineUsabilityReason,
+    RouteBindingState, ServingTargetEntry, VolumePinState,
 };

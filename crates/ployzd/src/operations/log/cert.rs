@@ -1,8 +1,12 @@
-use ployz_core::cert::{AcmeHttp01Challenge, ActiveCertState};
+use ployz_core::cert::AcmeHttp01Challenge;
 use ployz_core::ids::{CertId, OperationId};
-use ployz_core::ops::{CertOperationFailure, CertOperationState, OperationEvent, OperationStatus};
+use ployz_core::ingress::ActiveCertificateMetadata;
+use ployz_core::ops::{
+    CertOperationFailure, CertOperationState, CertificateProvisionWarning, OperationEvent,
+    OperationStatus,
+};
 
-use crate::intent::certificate_intent::upsert_active_metadata;
+use crate::intent::ingress_intent::upsert_active_certificate_metadata;
 
 use super::{
     CertOperationPayload, CertOperationSubmission, OperationRepository, OperationStatusWrite,
@@ -86,15 +90,33 @@ impl OperationRepository {
         .map(RecordOperationEventOutcome::into_status_write)
     }
 
+    pub async fn record_cert_warning(
+        &self,
+        operation_id: &OperationId,
+        cert_id: CertId,
+        warning: CertificateProvisionWarning,
+    ) -> Result<OperationStatusWrite, RecordCertTransitionError> {
+        self.record_operation_event(
+            operation_id,
+            OperationEvent::CertWarning {
+                operation_id: operation_id.clone(),
+                cert_id,
+                warning,
+            },
+        )
+        .await
+        .map(RecordOperationEventOutcome::into_status_write)
+    }
+
     pub async fn activate_cert(
         &self,
         operation_id: &OperationId,
-        active_cert: ActiveCertState,
+        certificate: ActiveCertificateMetadata,
     ) -> Result<OperationStatusWrite, RecordCertTransitionError> {
         let closure_operation_id = operation_id.clone();
         let event = OperationEvent::CertCompleted {
             operation_id: operation_id.clone(),
-            active_cert: active_cert.clone(),
+            certificate: certificate.clone(),
         };
         let outcome = self
             .store
@@ -103,7 +125,7 @@ impl OperationRepository {
                 let outcome =
                     record_operation_event_in_txn(&transaction, &closure_operation_id, event)?;
                 if matches!(&outcome, RecordTxn::Stored { .. }) {
-                    upsert_active_metadata(&transaction, &active_cert)?;
+                    upsert_active_certificate_metadata(&transaction, &certificate)?;
                     transaction.commit()?;
                 }
                 Ok(outcome)

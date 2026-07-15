@@ -1,44 +1,52 @@
 //! Process wiring for the control role.
 
 use crate::adapters::nats_authorization::{
-    MachineCredentialMint, MintResumeError, MintVerifyEndpoint, NatsAuthorizationWriter,
-    NatsReloadRunner, RenderFailure, SystemctlNatsReloadRunner,
+    HostNatsReloadRunner, MachineCredentialMint, MintResumeError, MintVerifyEndpoint,
+    NatsAuthorizationWriter, NatsReloadRunner, RenderFailure,
 };
-use crate::certificate::CertificateManager;
 use crate::certificate::task::{
     CertificateRenewalHealth, CertificateRenewalHealthState, start_certificate_renewal_task,
 };
+use crate::certificate::{AcmeIssuer, CertificateManager};
 use crate::config::ControlProcessConfig;
 use crate::core_store::{CoreStore, CoreStoreError};
 use crate::fact_cache::{FactCache, FactCacheError, RunningFactCache, start_fact_cache};
-use crate::intent::lease_intent::LeaseIntentStore;
+use crate::ingress_endpoint::{
+    IngressEndpointStartError, RunningIngressEndpointProjection, start_ingress_endpoint_projection,
+};
+use crate::intent::ingress_intent::{
+    IngressIntentStore, IngressProjectionStore, PloyzDnsTargetStore,
+};
 use crate::intent::machine_roster::MachineRosterStore;
 use crate::intent::namespace_intent::NamespaceIntentStore;
 use crate::intent::nats_authorizations::{NatsAuthorizationStore, NatsAuthorizationStoreError};
 use crate::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
 use crate::lease::LeaseClient;
-use crate::lease::task::start_managed_lease_task;
+use crate::lease::task::start_managed_dns_task;
 use crate::operation_api::admission::OperationControllers;
 use crate::operation_api::service::{ApiServiceError, start_operation_api_service_with_handlers};
 use crate::operation_api::{OperationApiHandlers, OperationWorkers};
 use crate::operations::credential_grant::CredentialGrantOperation;
 use crate::operations::deploy::driver::{DeployOperationDriver, DeployOperationStores};
-use crate::operations::deploy::{DeployMachineCandidates, ManagedCertificateWaitPolicy};
+use crate::operations::ingress_configure::IngressConfigureOperation;
 use crate::operations::log::OperationRepository;
 use crate::operations::machine_lifecycle::MachineLifecycleOperation;
 use crate::operations::machine_update::MachineUpdateOperation;
 use crate::process_support::shutdown_signal;
 use crate::roles::machine::client::{
-    NatsMachineDataplanePreparer, NatsMachineFactsReader, NatsMachineLogsTailer,
-    NatsMachineSubstrateUpdater,
+    NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
 };
 use crate::roles::machine::intent_mirror::{MachineIntentMirror, MachinePendingJoinMirror};
+use crate::runtime_projection::{
+    RunningRuntimeProjection, RuntimeProjectionHealthState, start_runtime_projection,
+};
 use crate::seed::{SeedCoreError, seed_core_from_snapshot};
 use crate::tasks::TaskRegistry;
 use ployz_core::state::{ControlPlaneEpoch, PendingMachineJoinRecovery};
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 const CONTROL_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -49,6 +57,7 @@ pub struct RunningControlProcess {
     intent: RunningIntentService,
     operation_api: RunningNatsService,
     credential_grant_tasks: TaskRegistry,
+    ingress_configure_tasks: TaskRegistry,
     deploy_tasks: TaskRegistry,
     service_restart_tasks: TaskRegistry,
     namespace_remove_tasks: TaskRegistry,
@@ -58,11 +67,13 @@ pub struct RunningControlProcess {
     machine_lifecycle_tasks: TaskRegistry,
     mint_tasks: TaskRegistry,
     reachability_tasks: TaskRegistry,
-    managed_lease_tasks: TaskRegistry,
+    managed_dns_tasks: TaskRegistry,
     certificate_issuance_tasks: TaskRegistry,
     certificate_renewal_tasks: TaskRegistry,
     certificate_renewal_health: CertificateRenewalHealth,
     facts_cache: RunningFactCache,
+    runtime_projection: RunningRuntimeProjection,
+    ingress_endpoint_projection: RunningIngressEndpointProjection,
     authorization: NatsAuthorizationWriter,
 }
 
@@ -72,10 +83,18 @@ impl RunningControlProcess {
         self.certificate_renewal_health.snapshot()
     }
 
+    #[must_use]
+    pub fn runtime_projection_health(&self) -> RuntimeProjectionHealthState {
+        self.runtime_projection.health()
+    }
+
     pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
         self.operation_api.shutdown().await?;
+        self.ingress_endpoint_projection.shutdown().await?;
+        self.runtime_projection.shutdown().await?;
         self.intent.shutdown().await?;
         self.credential_grant_tasks.abort_all();
+        self.ingress_configure_tasks.abort_all();
         self.deploy_tasks.abort_all();
         self.service_restart_tasks.abort_all();
         self.namespace_remove_tasks.abort_all();
@@ -85,7 +104,7 @@ impl RunningControlProcess {
         self.machine_lifecycle_tasks.abort_all();
         self.mint_tasks.abort_all();
         self.reachability_tasks.abort_all();
-        self.managed_lease_tasks.abort_all();
+        self.managed_dns_tasks.abort_all();
         self.certificate_issuance_tasks.abort_all();
         self.certificate_renewal_tasks.abort_all();
         self.facts_cache.shutdown().await;
@@ -121,20 +140,40 @@ pub async fn start_control_process(
     let client = connect_authenticated(&config.nats_connect, CONTROL_NATS_CONNECT_TIMEOUT)
         .await
         .map_err(ControlProcessError::ConnectNats)?;
-    start_control_process_with_client_and_reload(client, config, SystemctlNatsReloadRunner).await
+    start_control_process_with_client_and_reload(client, config, HostNatsReloadRunner::default())
+        .await
 }
 
 pub async fn start_control_process_with_client(
     client: NatsClient,
     config: &ControlProcessConfig,
 ) -> Result<RunningControlProcess, ControlProcessError> {
-    start_control_process_with_client_and_reload(client, config, SystemctlNatsReloadRunner).await
+    start_control_process_with_client_and_reload(client, config, HostNatsReloadRunner::default())
+        .await
 }
 
 pub async fn start_control_process_with_client_and_reload(
     client: NatsClient,
     config: &ControlProcessConfig,
     reload: impl NatsReloadRunner,
+) -> Result<RunningControlProcess, ControlProcessError> {
+    start_control_process_with_client_reload_and_issuer(client, config, reload, None).await
+}
+
+pub async fn start_control_process_with_client_and_test_issuer(
+    client: NatsClient,
+    config: &ControlProcessConfig,
+    reload: impl NatsReloadRunner,
+    issuer: Arc<dyn AcmeIssuer>,
+) -> Result<RunningControlProcess, ControlProcessError> {
+    start_control_process_with_client_reload_and_issuer(client, config, reload, Some(issuer)).await
+}
+
+async fn start_control_process_with_client_reload_and_issuer(
+    client: NatsClient,
+    config: &ControlProcessConfig,
+    reload: impl NatsReloadRunner,
+    certificate_issuer: Option<Arc<dyn AcmeIssuer>>,
 ) -> Result<RunningControlProcess, ControlProcessError> {
     // A normal core needs a machine-add join template to admit new machines, so
     // fail fast if it is missing. A promoted core (one seeding from a mirror) is
@@ -198,6 +237,7 @@ pub async fn start_control_process_with_client_and_reload(
     let facts = facts_cache.cache();
     let deploy_tasks = TaskRegistry::default();
     let credential_grant_tasks = TaskRegistry::default();
+    let ingress_configure_tasks = TaskRegistry::default();
     let service_restart_tasks = TaskRegistry::default();
     let namespace_remove_tasks = TaskRegistry::default();
     let network_repair_tasks = TaskRegistry::default();
@@ -206,16 +246,25 @@ pub async fn start_control_process_with_client_and_reload(
     let machine_lifecycle_tasks = TaskRegistry::default();
     let mint_tasks = TaskRegistry::default();
     let namespace_intent = NamespaceIntentStore::new(core_store.clone());
-    let lease_intent = LeaseIntentStore::new(core_store.clone());
+    let ployz_dns_target = PloyzDnsTargetStore::new(core_store.clone());
     let lease_client = LeaseClient::new(config.lease_worker_url.clone());
-    let managed_lease_tasks = TaskRegistry::default();
+    let managed_dns_tasks = TaskRegistry::default();
     let certificate_issuance_tasks = TaskRegistry::default();
     let certificate_renewal_tasks = TaskRegistry::default();
-    let certificate_manager = CertificateManager::new(
-        core_store.clone(),
-        client.clone(),
-        config.certificate_manager.clone(),
-    )
+    let (certificate_wake, certificate_wake_rx) = tokio::sync::mpsc::channel(1);
+    let certificate_manager = match certificate_issuer {
+        Some(issuer) => CertificateManager::with_issuer(
+            core_store.clone(),
+            client.clone(),
+            config.certificate_manager.clone(),
+            issuer,
+        ),
+        None => CertificateManager::new(
+            core_store.clone(),
+            client.clone(),
+            config.certificate_manager.clone(),
+        ),
+    }
     .with_task_registry(certificate_issuance_tasks.clone());
     let machine_roster = MachineRosterStore::new(core_store.clone());
     let reachability_tasks = TaskRegistry::default();
@@ -227,12 +276,10 @@ pub async fn start_control_process_with_client_and_reload(
         DeployOperationStores {
             intent_change_client: client.clone(),
             namespace_intent: namespace_intent.clone(),
-            lease_intent: lease_intent.clone(),
-            lease_client: lease_client.clone(),
-            managed_certificate_wait: ManagedCertificateWaitPolicy::production(),
+            ployz_dns_target: ployz_dns_target.clone(),
+            ingress_projection: IngressProjectionStore::new(core_store.clone()),
             controllers: controllers.clone(),
         },
-        DeployMachineCandidates::same_machines(config.deploy_machines.clone()),
         certificate_manager.clone(),
         config.deploy_step_timeout,
         deploy_tasks.clone(),
@@ -270,6 +317,12 @@ pub async fn start_control_process_with_client_and_reload(
         client.clone(),
         credential_grant_tasks.clone(),
     );
+    let ingress_configure = IngressConfigureOperation::new(
+        controllers.clone(),
+        IngressIntentStore::new(core_store.clone()),
+        client.clone(),
+        ingress_configure_tasks.clone(),
+    );
     // Startup reconciliation (one bounded pass, owned by control start): a
     // control crash between machine-add acceptance and material-ready
     // leaves the mint without a worker. Resume those mints now, before the
@@ -286,9 +339,6 @@ pub async fn start_control_process_with_client_and_reload(
         intent_reader
             .clone()
             .with_request_timeout(config.deploy_step_timeout),
-        NatsMachineDataplanePreparer::new(client.clone())
-            .with_request_timeout(config.deploy_step_timeout)
-            .with_mesh_lock(controllers.mesh_lock()),
         NatsMachineFactsReader::new(client.clone())
             .with_request_timeout(config.deploy_step_timeout),
         client.clone(),
@@ -300,32 +350,54 @@ pub async fn start_control_process_with_client_and_reload(
         .first()
         .cloned()
         .ok_or(ControlProcessError::MissingDeployMachine)?;
-    start_managed_lease_task(
-        &managed_lease_tasks,
-        lease_intent.clone(),
+    start_managed_dns_task(
+        &managed_dns_tasks,
+        client.clone(),
+        IngressIntentStore::new(core_store.clone()),
+        ployz_dns_target.clone(),
         controllers.repository().clone(),
-        lease_client,
-        facts_reader
-            .clone()
-            .with_request_timeout(config.deploy_step_timeout),
-        machine_roster.clone(),
+        lease_client.clone(),
+        certificate_wake,
     );
     let certificate_renewal_health = start_certificate_renewal_task(
         &certificate_renewal_tasks,
         certificate_manager,
         NatsMachineFactsReader::new(client.clone()),
         machine_roster.clone(),
+        ployz_dns_target,
+        lease_client,
+        certificate_wake_rx,
     );
     let intent = start_intent_service(
         client.clone(),
         core_machine_id.clone(),
-        machine_roster.clone(),
         namespace_intent,
         core_store.clone(),
         INTENT_PUBLISH_INTERVAL,
     )
     .await
     .map_err(ControlProcessError::StartIntent)?;
+    let ingress_endpoint_projection = start_ingress_endpoint_projection(
+        client.clone(),
+        IngressProjectionStore::new(core_store.clone()),
+        core_store
+            .control_plane_epoch()
+            .await
+            .map_err(ControlProcessError::ReadCoreEpoch)?,
+        controllers.repository().clone(),
+    )
+    .await
+    .map_err(ControlProcessError::StartIngressEndpointProjection)?;
+    let runtime_projection = start_runtime_projection(
+        client.clone(),
+        intent_reader.clone(),
+        facts.clone(),
+        core_store.clone(),
+    )
+    .await
+    .map_err(|error| ControlProcessError::StartRuntimeProjection {
+        message: error.to_string(),
+    })?;
     let machine_updater = NatsMachineSubstrateUpdater::new(client.clone());
     let machine_update = MachineUpdateOperation::new(
         controllers.clone(),
@@ -344,6 +416,7 @@ pub async fn start_control_process_with_client_and_reload(
             controllers,
             OperationWorkers {
                 credential_grant,
+                ingress_configure,
                 deploy: deploy_driver,
                 service_restart,
                 namespace_remove,
@@ -375,6 +448,7 @@ pub async fn start_control_process_with_client_and_reload(
         intent,
         operation_api,
         credential_grant_tasks,
+        ingress_configure_tasks,
         deploy_tasks,
         service_restart_tasks,
         namespace_remove_tasks,
@@ -384,11 +458,13 @@ pub async fn start_control_process_with_client_and_reload(
         machine_lifecycle_tasks,
         mint_tasks,
         reachability_tasks,
-        managed_lease_tasks,
+        managed_dns_tasks,
         certificate_issuance_tasks,
         certificate_renewal_tasks,
         certificate_renewal_health,
         facts_cache,
+        runtime_projection,
+        ingress_endpoint_projection,
         authorization,
     })
 }
@@ -396,8 +472,9 @@ pub async fn start_control_process_with_client_and_reload(
 pub async fn run_control_until_shutdown(
     config: &ControlProcessConfig,
 ) -> Result<(), ControlProcessError> {
+    let shutdown = shutdown_signal().map_err(ControlProcessError::ShutdownSignal)?;
     let runtime = start_control_process(config).await?;
-    shutdown_signal()
+    shutdown
         .await
         .map_err(ControlProcessError::ShutdownSignal)?;
     runtime
@@ -541,6 +618,10 @@ pub enum ControlProcessError {
     ResumeMachineAddMints(MintResumeError),
     #[error("failed to start intent service: {0}")]
     StartIntent(ployz_nats::service_runtime::NatsServiceRuntimeError),
+    #[error("failed to start ingress endpoint projection: {0}")]
+    StartIngressEndpointProjection(IngressEndpointStartError),
+    #[error("failed to start runtime projection: {message}")]
+    StartRuntimeProjection { message: String },
     #[error("failed to start operation API service: {0}")]
     StartOperationApi(ApiServiceError),
     #[error("failed to wait for shutdown: {0}")]
@@ -566,13 +647,19 @@ mod tests {
             epoch,
             core_machine_id: machine_id("machine_a"),
             active_machines: Vec::new(),
+            dataplane_projection: ployz_core::dataplane::DataplaneProjection::try_new(
+                Vec::new(),
+                None,
+            )
+            .expect("empty projection"),
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),
             nats_authorizations: Vec::new(),
-            managed_lease: ployz_core::state::ManagedLeaseProjection::Unacquired,
-            custom_certificates: Vec::new(),
-            acme_http01_challenges: Vec::new(),
+            automatic_hostname_configuration:
+                ployz_core::ingress::AutomaticHostnameConfiguration::Ployz,
+            ployz_dns_target: ployz_core::ingress::PloyzDnsTargetIntent::Enabled,
+            active_certificates: Vec::new(),
         }
     }
 
@@ -607,6 +694,10 @@ mod tests {
             mesh_endpoints: Vec::new(),
             endpoint_subnet: ployz_core::dataplane::MachineEndpointSubnet::try_new("10.198.0.0/24")
                 .expect("valid endpoint subnet"),
+            wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(format!(
+                "public-{machine_id_value}"
+            ))
+            .expect("public key"),
         }
     }
 

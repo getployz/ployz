@@ -62,8 +62,8 @@ The fact ledger stays simple because these rules are absolute:
   core.
 - **The fact write is the commit point.** Operations that mutate a machine
   (deploy, route attach, substrate update) commit by writing the machine
-  fact; the core KV index row is recorded after and is rebuildable. Claims
-  that serialize the operation live in core KV and are disposable.
+  fact; the resulting snapshot is then published as live testimony. Claims
+  that serialize control-plane mutation live in the core sequencer.
 - **Merge is union plus loud ambiguity.** Facts are namespaced by machine, so
   reassembly is a union. Cluster-scoped conflicts between machines (two
   machines claim the same domain for different services) are detected

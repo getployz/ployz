@@ -6,13 +6,12 @@ use std::num::NonZeroU16;
 #[serde(deny_unknown_fields)]
 pub struct RouteTarget {
     pub hostname: RouteHostname,
-    pub port: RoutePort,
 }
 
 impl RouteTarget {
     #[must_use]
-    pub fn new(hostname: RouteHostname, port: RoutePort) -> Self {
-        Self { hostname, port }
+    pub fn new(hostname: RouteHostname) -> Self {
+        Self { hostname }
     }
 }
 
@@ -29,9 +28,9 @@ impl RouteHostname {
             return Err(RouteHostnameError::Empty);
         }
 
-        if value
-            .split('.')
-            .any(|label| label.is_empty() || label.starts_with('-') || label.ends_with('-'))
+        if value.split('.').any(|label| {
+            label.is_empty() || label.len() > 63 || label.starts_with('-') || label.ends_with('-')
+        }) || value.len() > 253
         {
             return Err(RouteHostnameError::Invalid { value });
         }

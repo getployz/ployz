@@ -6,7 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ployz_core::cert::{
     LeaseBearerToken, LeaseExpiresAt, LeaseIssuedAt, ManagedCertBundle, ManagedLeaseAcquireRequest,
-    ManagedLeaseAcquired, ManagedLeaseName, ManagedLeaseRecord, ManagedLeaseRenewed,
+    ManagedLeaseAcquired, ManagedLeaseAcquisitionId, ManagedLeaseName, ManagedLeaseRecord,
+    ManagedLeaseRenewRequest, ManagedLeaseRenewed,
 };
 use rcgen::CertifiedKey;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -43,7 +44,7 @@ pub enum LeaseWorkerRequest {
     Renew {
         lease: ManagedLeaseName,
         token: LeaseBearerToken,
-        request: ManagedLeaseAcquireRequest,
+        request: ManagedLeaseRenewRequest,
     },
     DownloadBundle {
         lease: ManagedLeaseName,
@@ -77,9 +78,10 @@ pub enum LeaseWorkerError {
 
 pub struct StubLeaseWorker<C = SystemClock> {
     records: BTreeMap<ManagedLeaseName, ManagedLeaseRecord>,
+    acquisitions: BTreeMap<ManagedLeaseAcquisitionId, ManagedLeaseName>,
     bundles: BTreeMap<ManagedLeaseName, ManagedCertBundle>,
     pending_bundles: BTreeSet<ManagedLeaseName>,
-    renewal_requests: BTreeMap<ManagedLeaseName, ManagedLeaseAcquireRequest>,
+    renewal_requests: BTreeMap<ManagedLeaseName, ManagedLeaseRenewRequest>,
     clock: C,
 }
 
@@ -95,6 +97,7 @@ impl<C: Clock> StubLeaseWorker<C> {
     pub fn with_clock(clock: C) -> Self {
         Self {
             records: BTreeMap::new(),
+            acquisitions: BTreeMap::new(),
             bundles: BTreeMap::new(),
             pending_bundles: BTreeSet::new(),
             renewal_requests: BTreeMap::new(),
@@ -123,13 +126,28 @@ impl<C: Clock> StubLeaseWorker<C> {
         &mut self,
         request: ManagedLeaseAcquireRequest,
     ) -> Result<LeaseWorkerResponse, LeaseWorkerError> {
-        let ManagedLeaseAcquireRequest { ipv4: _, ipv6: _ } = request;
+        let ManagedLeaseAcquireRequest {
+            acquisition_id,
+            token,
+            ipv4: _,
+            ipv6: _,
+        } = request;
+        if let Some(lease) = self.acquisitions.get(&acquisition_id) {
+            let record = self.record(lease)?.clone();
+            verify_token(&record, &token)?;
+            return Ok(LeaseWorkerResponse::LeaseAcquired(ManagedLeaseAcquired {
+                lease: record,
+                bundle: None,
+            }));
+        }
         let lease = self.next_lease_name()?;
-        let record = self.issue_record(lease.clone(), self.next_token()?)?;
+        let record = self.issue_record(lease.clone(), token)?;
         let bundle = self.issue_bundle(&record)?;
         self.records.insert(lease.clone(), record.clone());
         self.bundles.insert(lease.clone(), bundle);
         self.pending_bundles.insert(lease);
+        self.acquisitions
+            .insert(acquisition_id, record.name.clone());
 
         Ok(LeaseWorkerResponse::LeaseAcquired(ManagedLeaseAcquired {
             lease: record,
@@ -141,7 +159,7 @@ impl<C: Clock> StubLeaseWorker<C> {
         &mut self,
         lease: ManagedLeaseName,
         token: &LeaseBearerToken,
-        request: ManagedLeaseAcquireRequest,
+        request: ManagedLeaseRenewRequest,
     ) -> Result<LeaseWorkerResponse, LeaseWorkerError> {
         let current = self.record(&lease)?.clone();
         verify_token(&current, token)?;
@@ -163,7 +181,7 @@ impl<C: Clock> StubLeaseWorker<C> {
     }
 
     #[must_use]
-    pub fn renewal_request(&self, lease: &ManagedLeaseName) -> Option<&ManagedLeaseAcquireRequest> {
+    pub fn renewal_request(&self, lease: &ManagedLeaseName) -> Option<&ManagedLeaseRenewRequest> {
         self.renewal_requests.get(lease)
     }
 
@@ -234,10 +252,6 @@ impl<C: Clock> StubLeaseWorker<C> {
             "l-{}",
             nuid::next().to_ascii_lowercase()
         ))?)
-    }
-
-    fn next_token(&self) -> Result<LeaseBearerToken, LeaseWorkerError> {
-        Ok(LeaseBearerToken::try_new(format!("t-{}", nuid::next()))?)
     }
 
     fn now(&self) -> Result<u64, LeaseWorkerError> {

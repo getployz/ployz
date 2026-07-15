@@ -5,14 +5,15 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::{NonZeroI64, NonZeroU16, NonZeroU64};
 
-use crate::cert::ManagedLeaseName;
 use crate::ids::{
-    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId, ServiceId,
+    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
+    RouteBindingId, ServiceId,
 };
 pub use crate::image::{
     OciDigest, RegistryCredential, RegistryCredentialError, RegistryCredentialSecret,
     RegistryCredentialUsername,
 };
+use crate::ingress::{AutomaticHostnameLabel, RouteBindingOrigin};
 use crate::machine_runtime::{MachineContainerObservationSnapshot, ManagedContainerIdentity};
 use crate::ops::{RouteHostname, RoutePort, RouteTarget};
 use crate::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
@@ -283,22 +284,13 @@ pub fn namespace_revision_id_for(
         });
         for route in routes {
             match &route.target {
-                DeployRouteTarget::AutoHostname { port } => {
+                DeployRouteTarget::AutoHostname { label } => {
                     hash_frame(&mut hasher, "route_target_kind", b"auto_hostname");
-                    hash_frame(
-                        &mut hasher,
-                        "route_public_port",
-                        port.get().to_string().as_bytes(),
-                    );
+                    hash_frame(&mut hasher, "route_label", label.as_str().as_bytes());
                 }
-                DeployRouteTarget::Hostname { hostname, port } => {
+                DeployRouteTarget::Hostname { hostname } => {
                     hash_frame(&mut hasher, "route_target_kind", b"hostname");
                     hash_frame(&mut hasher, "route_hostname", hostname.as_str().as_bytes());
-                    hash_frame(
-                        &mut hasher,
-                        "route_public_port",
-                        port.get().to_string().as_bytes(),
-                    );
                 }
             }
             hash_frame(
@@ -1290,13 +1282,8 @@ pub struct DeployRoute {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployRouteTarget {
-    AutoHostname {
-        port: RoutePort,
-    },
-    Hostname {
-        hostname: crate::ops::RouteHostname,
-        port: RoutePort,
-    },
+    AutoHostname { label: AutomaticHostnameLabel },
+    Hostname { hostname: crate::ops::RouteHostname },
 }
 
 impl DeployRouteTarget {
@@ -1307,11 +1294,8 @@ impl DeployRouteTarget {
     #[must_use]
     pub fn concrete_target(&self) -> Option<RouteTarget> {
         match self {
-            Self::AutoHostname { port: _ } => None,
-            Self::Hostname { hostname, port } => Some(RouteTarget {
-                hostname: hostname.clone(),
-                port: *port,
-            }),
+            Self::AutoHostname { .. } => None,
+            Self::Hostname { hostname } => Some(RouteTarget::new(hostname.clone())),
         }
     }
 }
@@ -1343,6 +1327,7 @@ pub struct DeployCleanupContainer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployPreparationInput {
     pub request: DeployServiceRequest,
+    pub occupied_route_bindings: Vec<RouteBindingState>,
     pub eligible_machines: Vec<MachineId>,
     /// Machines under drain intent: their running replicas do not count as
     /// existing capacity, so the plan replaces them elsewhere and the
@@ -1496,9 +1481,15 @@ pub enum DeployPlanError {
     },
 }
 
-#[must_use]
-pub fn prepare_deploy(input: DeployPreparationInput) -> PreparedDeploy {
-    let route_commits = route_binding_commits(&input.request);
+pub fn prepare_deploy(
+    input: DeployPreparationInput,
+    mut new_route_binding_id: impl FnMut(&RouteTarget) -> RouteBindingId,
+) -> Result<PreparedDeploy, RouteBindingCommitError> {
+    let route_commits = route_binding_commits(
+        &input.request,
+        &input.occupied_route_bindings,
+        &mut new_route_binding_id,
+    )?;
     let existing_replicas = existing_replicas(
         &input.request,
         &input.observed_machines,
@@ -1506,13 +1497,13 @@ pub fn prepare_deploy(input: DeployPreparationInput) -> PreparedDeploy {
     );
     let cleanup_candidates = cleanup_candidates(&input.request, &input.observed_machines);
 
-    PreparedDeploy {
+    Ok(PreparedDeploy {
         request: input.request,
         route_commits,
         eligible_machines: input.eligible_machines,
         existing_replicas,
         cleanup_candidates,
-    }
+    })
 }
 
 /// Route binding removals are a namespace-level decision: the manifest is
@@ -1599,98 +1590,184 @@ fn cleanup_candidates(
         .collect()
 }
 
-fn route_binding_commits(request: &DeployServiceRequest) -> Vec<RouteBindingState> {
-    request
-        .routes
-        .iter()
-        .cloned()
-        .filter_map(|route| {
-            route
-                .target
-                .concrete_target()
-                .map(|target| RouteBindingState {
-                    namespace_id: request.namespace_id.clone(),
-                    target,
-                    endpoint_port: route.endpoint_port,
-                    service_id: request.service_id.clone(),
-                })
-        })
-        .collect()
-}
-
-/// Mint concrete bindings for a service's auto-hostname declarations.
-/// Existing bindings for the same service and endpoint are reused so a
-/// redeploy cannot rename a public route.
-#[must_use]
-pub fn auto_hostname_route_binding_commits(
+fn route_binding_commits(
     request: &DeployServiceRequest,
-    lease: Option<&ManagedLeaseName>,
     occupied: &[RouteBindingState],
-) -> Vec<RouteBindingState> {
-    let Some(lease) = lease else {
-        return Vec::new();
-    };
-    let suffix = lease.hostname_suffix();
-    let base = request
-        .service_id
-        .as_str()
-        .replace('_', "-")
-        .trim_matches('-')
-        .to_owned();
-    let base = if base.is_empty() { "service" } else { &base };
-    let mut bindings = Vec::new();
-
+    new_route_binding_id: &mut impl FnMut(&RouteTarget) -> RouteBindingId,
+) -> Result<Vec<RouteBindingState>, RouteBindingCommitError> {
+    let mut bindings = Vec::<RouteBindingState>::new();
     for route in &request.routes {
-        let DeployRouteTarget::AutoHostname { port } = &route.target else {
+        let Some(target) = route.target.concrete_target() else {
             continue;
         };
-        if let Some(existing) = occupied.iter().find(|binding| {
-            binding.service_id == request.service_id
-                && binding.endpoint_port == route.endpoint_port
-                && binding.target.port == *port
-                && auto_hostname_label(binding.target.hostname.as_str(), &suffix, base)
-        }) {
-            bindings.push(existing.clone());
-            continue;
+        if let Some(existing) = bindings.iter().find(|binding| binding.target == target) {
+            return Err(RouteBindingCommitError::HostnameCollision {
+                hostname: target.hostname,
+                route_binding_id: existing.id.clone(),
+            });
         }
-
-        let mut sequence = 1;
-        loop {
-            let label = if sequence == 1 {
-                base.to_owned()
-            } else {
-                format!("{base}-{sequence}")
-            };
-            let hostname = RouteHostname::try_new(format!("{label}.{suffix}"))
-                .expect("service id and managed lease form a valid hostname");
-            let target = RouteTarget::new(hostname, *port);
-            if !occupied
-                .iter()
-                .chain(&bindings)
-                .any(|binding| binding.target == target)
+        if let Some(existing) = occupied.iter().find(|binding| binding.target == target) {
+            if existing.origin == RouteBindingOrigin::Declared
+                && existing.namespace_id == request.namespace_id
+                && existing.service_id == request.service_id
             {
                 bindings.push(RouteBindingState {
-                    namespace_id: request.namespace_id.clone(),
-                    target,
                     endpoint_port: route.endpoint_port,
-                    service_id: request.service_id.clone(),
+                    ..existing.clone()
                 });
-                break;
+                continue;
             }
-            sequence += 1;
+            return Err(RouteBindingCommitError::HostnameCollision {
+                hostname: target.hostname,
+                route_binding_id: existing.id.clone(),
+            });
         }
+        bindings.push(RouteBindingState {
+            id: new_route_binding_id(&target),
+            namespace_id: request.namespace_id.clone(),
+            target,
+            endpoint_port: route.endpoint_port,
+            service_id: request.service_id.clone(),
+            origin: RouteBindingOrigin::Declared,
+        });
     }
-    bindings
+    Ok(bindings)
 }
 
-fn auto_hostname_label(hostname: &str, suffix: &str, base: &str) -> bool {
-    let Some(label) = hostname.strip_suffix(&format!(".{suffix}")) else {
-        return false;
-    };
-    label == base
-        || label
-            .strip_prefix(&format!("{base}-"))
-            .is_some_and(|sequence| sequence.parse::<u32>().is_ok_and(|sequence| sequence >= 2))
+/// Validate every route mutation in one deploy against current cluster intent.
+///
+/// Automatic bindings are derived first because declared and automatic routes
+/// share one hostname namespace. The returned bindings include identical
+/// existing bindings, making this the same policy used by execution planning.
+pub fn validate_deploy_route_bindings(
+    request: &DeployRequest,
+    automatic_hostname_suffix: Option<&RouteHostname>,
+    existing: &[RouteBindingState],
+    mut new_route_binding_id: impl FnMut(&RouteTarget) -> RouteBindingId,
+) -> Result<Vec<RouteBindingState>, DeployRouteBindingValidationError> {
+    let mut occupied = existing.to_vec();
+    let mut commits = Vec::new();
+    let mut services = request.service_requests();
+    services.sort_by(|left, right| left.service_id.cmp(&right.service_id));
+    let duplicate_service_id = services.windows(2).find_map(|pair| {
+        let [first, second] = pair else {
+            return None;
+        };
+        (first.service_id == second.service_id).then(|| first.service_id.clone())
+    });
+    if let Some(service_id) = duplicate_service_id {
+        return Err(DeployRouteBindingValidationError::DuplicateServiceId { service_id });
+    }
+    for service in services {
+        let automatic = auto_hostname_route_binding_commits(
+            &service,
+            automatic_hostname_suffix,
+            &occupied,
+            &mut new_route_binding_id,
+        )?;
+        occupied.extend(automatic.iter().cloned());
+        commits.extend(automatic);
+
+        let declared = route_binding_commits(&service, &occupied, &mut new_route_binding_id)?;
+        occupied.extend(declared.iter().cloned());
+        commits.extend(declared);
+    }
+    Ok(commits)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum DeployRouteBindingValidationError {
+    #[error("service {} is declared more than once", .service_id.as_str())]
+    DuplicateServiceId { service_id: ServiceId },
+    #[error(transparent)]
+    Automatic(#[from] AutoHostnameRouteBindingError),
+    #[error(transparent)]
+    Declared(#[from] RouteBindingCommitError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RouteBindingCommitError {
+    #[error(
+        "declared hostname {} collides with route binding {}",
+        .hostname.as_str(),
+        .route_binding_id.as_str()
+    )]
+    HostnameCollision {
+        hostname: RouteHostname,
+        route_binding_id: RouteBindingId,
+    },
+}
+
+/// Derive exact automatic hostnames and reuse only identical requests.
+pub fn auto_hostname_route_binding_commits(
+    request: &DeployServiceRequest,
+    configured_suffix: Option<&RouteHostname>,
+    occupied: &[RouteBindingState],
+    mut new_route_binding_id: impl FnMut(&RouteTarget) -> RouteBindingId,
+) -> Result<Vec<RouteBindingState>, AutoHostnameRouteBindingError> {
+    let mut bindings = Vec::<RouteBindingState>::new();
+
+    for route in &request.routes {
+        let DeployRouteTarget::AutoHostname { label } = &route.target else {
+            continue;
+        };
+        let Some(suffix) = configured_suffix else {
+            return Err(AutoHostnameRouteBindingError::AutomaticHostnamesDisabled);
+        };
+        let hostname = RouteHostname::try_new(format!("{}.{}", label.as_str(), suffix.as_str()))
+            .map_err(|error| AutoHostnameRouteBindingError::InvalidHostname {
+                message: error.to_string(),
+            })?;
+        let target = RouteTarget::new(hostname);
+        if let Some(existing) = bindings.iter().find(|binding| binding.target == target) {
+            return Err(AutoHostnameRouteBindingError::HostnameCollision {
+                hostname: target.hostname,
+                route_binding_id: existing.id.clone(),
+            });
+        }
+        if let Some(existing) = occupied.iter().find(|binding| binding.target == target) {
+            if existing.origin == RouteBindingOrigin::Automatic
+                && existing.namespace_id == request.namespace_id
+                && existing.service_id == request.service_id
+            {
+                bindings.push(RouteBindingState {
+                    endpoint_port: route.endpoint_port,
+                    ..existing.clone()
+                });
+                continue;
+            }
+            return Err(AutoHostnameRouteBindingError::HostnameCollision {
+                hostname: target.hostname,
+                route_binding_id: existing.id.clone(),
+            });
+        }
+        bindings.push(RouteBindingState {
+            id: new_route_binding_id(&target),
+            namespace_id: request.namespace_id.clone(),
+            target,
+            endpoint_port: route.endpoint_port,
+            service_id: request.service_id.clone(),
+            origin: RouteBindingOrigin::Automatic,
+        });
+    }
+    Ok(bindings)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AutoHostnameRouteBindingError {
+    #[error("automatic hostnames are disabled")]
+    AutomaticHostnamesDisabled,
+    #[error("derived automatic hostname is invalid: {message}")]
+    InvalidHostname { message: String },
+    #[error(
+        "automatic hostname {} collides with route binding {}",
+        .hostname.as_str(),
+        .route_binding_id.as_str()
+    )]
+    HostnameCollision {
+        hostname: RouteHostname,
+        route_binding_id: RouteBindingId,
+    },
 }
 
 pub fn plan_namespace_deploy(

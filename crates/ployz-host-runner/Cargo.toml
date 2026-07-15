@@ -39,3 +39,4 @@ ployz-test-support.workspace = true
 
 [lib]
 path = "src/lib.rs"
+doctest = false

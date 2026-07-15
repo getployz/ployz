@@ -13,8 +13,8 @@ use crate::roles::machine::protocol::{
     MachineContainerRunDomainError, MachineContainerRunHookDomainError,
     MachineContainerRunHookRpcOk, MachineContainerRunHookRpcRequest, MachineContainerRunRpcOk,
     MachineContainerRunRpcRequest, MachineContainerStopDomainError, MachineContainerStopRpcRequest,
-    MachineEnsureEndpointNetworkDomainError, MachineEnsureEndpointNetworkRpcOk,
-    MachineEnsureEndpointNetworkRpcRequest, MachineFactsGetDomainError, MachineFactsGetRpcOk,
+    MachineDataplaneStatusDomainError, MachineDataplaneStatusRpcOk,
+    MachineDataplaneStatusRpcRequest, MachineFactsGetDomainError, MachineFactsGetRpcOk,
     MachineFactsGetRpcRequest, MachineFactsRefreshDomainError, MachineFactsRefreshRpcOk,
     MachineFactsRefreshRpcRequest, MachineLogsTailDomainError, MachineLogsTailResult,
     MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineRpcResponder, MachineRpcResponse,
@@ -24,6 +24,7 @@ use crate::roles::machine::protocol::{
     MachineVolumeRemoveRpcRequest,
 };
 use futures_util::{StreamExt, stream};
+use ployz_core::dataplane::{MachineDataplaneStatus, NetworkStatusMode};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::image::{ImageEnsureOk, ImageEnsureRequest, ImageRpcDomainError, OciDigest};
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
@@ -37,9 +38,7 @@ use ployz_nats::service_runtime::{
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 
 pub const DEFAULT_MACHINE_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const MAX_CONCURRENT_MACHINE_READS: usize = 16;
@@ -51,17 +50,9 @@ pub struct NatsMachineContainerRuntime {
 }
 
 #[derive(Debug, Clone)]
-pub struct NatsMachineDataplanePreparer {
-    pub(super) client: async_nats::Client,
-    pub(super) facts_reader: NatsMachineFactsReader,
-    pub(super) request_timeout: Duration,
-    pub(super) mesh_lock: Option<Arc<Mutex<()>>>,
-}
-
-#[derive(Debug, Clone)]
 pub struct NatsMachineFactsReader {
-    client: async_nats::Client,
-    request_timeout: Duration,
+    pub(super) client: async_nats::Client,
+    pub(super) request_timeout: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -200,14 +191,14 @@ pub enum MachineVolumeRemoveError {
 
 /// Outcome of one machine RPC round trip: either the machine answered with a typed
 /// domain error, or the call never produced a usable answer.
-pub(super) enum MachineCallError<E> {
+pub(crate) enum MachineCallError<E> {
     Unavailable(MachineRuntimeUnavailableReason),
     Domain(E),
 }
 
 /// One machine RPC round trip: encode the request, map transport failures, and
 /// reject answers from the wrong machine — exactly once for every endpoint.
-pub(super) async fn call_machine<T, E>(
+pub(crate) async fn call_machine<T, E>(
     client: &async_nats::Client,
     request_timeout: Duration,
     machine_id: &MachineId,
@@ -538,28 +529,28 @@ impl MachineSubstrateUpdateError {
     }
 }
 
-impl NatsMachineDataplanePreparer {
-    #[must_use]
-    pub fn new(client: async_nats::Client) -> Self {
-        Self {
-            facts_reader: NatsMachineFactsReader::new(client.clone()),
-            client,
-            request_timeout: DEFAULT_MACHINE_RPC_TIMEOUT,
-            mesh_lock: None,
-        }
-    }
-
-    #[must_use]
-    pub fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
-        self.request_timeout = request_timeout;
-        self.facts_reader = self.facts_reader.with_request_timeout(request_timeout);
-        self
-    }
-
-    #[must_use]
-    pub(crate) fn with_mesh_lock(mut self, mesh_lock: Arc<Mutex<()>>) -> Self {
-        self.mesh_lock = Some(mesh_lock);
-        self
+impl NatsMachineFactsReader {
+    pub(crate) async fn read_dataplane_status(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<MachineDataplaneStatus, ployz_core::ops::FailureMessage> {
+        call_machine::<MachineDataplaneStatusRpcOk, MachineDataplaneStatusDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::DataplaneStatus,
+            &MachineDataplaneStatusRpcRequest {
+                mode: NetworkStatusMode::Snapshot,
+            },
+        )
+        .await
+        .map(|response| response.value)
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => reason.failure_message(),
+            MachineCallError::Domain(MachineDataplaneStatusDomainError::ReadFailed { message }) => {
+                message
+            }
+        })
     }
 }
 
@@ -667,28 +658,6 @@ impl MachineContainerRuntime for NatsMachineContainerRuntime {
             .with_request_timeout(self.request_timeout)
             .ensure(machine_id, &request)
             .await
-    }
-
-    async fn ensure_endpoint_network(
-        &mut self,
-        machine_id: &MachineId,
-        request: MachineEnsureEndpointNetworkRpcRequest,
-    ) -> Result<(), MachineContainerRuntimeError> {
-        call_machine::<MachineEnsureEndpointNetworkRpcOk, MachineEnsureEndpointNetworkDomainError>(
-            &self.client,
-            self.request_timeout,
-            machine_id,
-            MachineServiceEndpoint::ContainerEnsureEndpointNetwork,
-            &request,
-        )
-        .await
-        .map(|_| ())
-        .map_err(|error| match error {
-            MachineCallError::Unavailable(reason) => {
-                container_runtime_unavailable(machine_id, reason)
-            }
-            MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
-        })
     }
 
     async fn run_container(
@@ -979,19 +948,6 @@ impl MachineContainerRunHookDomainError {
                 timeout_millis,
                 message,
                 inspect_hint,
-            },
-        }
-    }
-}
-
-impl MachineEnsureEndpointNetworkDomainError {
-    fn into_runtime_error(self, machine_id: MachineId) -> MachineContainerRuntimeError {
-        match self {
-            Self::EnsureFailed { message } => MachineContainerRuntimeError::Unavailable {
-                machine_id,
-                reason: MachineRuntimeUnavailableReason::ServiceUnavailable {
-                    message: message.as_str().to_owned(),
-                },
             },
         }
     }

@@ -44,6 +44,14 @@ pub enum CertificateProvisionFailure {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "warning", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CertificateProvisionWarning {
+    DnsPreflightMismatch { message: FailureMessage },
+    ChallengeCleanupIncomplete { missing_machine_ids: Vec<MachineId> },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
@@ -228,6 +236,10 @@ pub(super) enum CertEvent {
         cert_id: CertId,
         transition: Box<CertTransition>,
     },
+    Warning {
+        cert_id: CertId,
+        warning: CertificateProvisionWarning,
+    },
     Cancelled(CancellationReason),
 }
 
@@ -251,6 +263,21 @@ pub(super) fn project_event(
         } => {
             verify_subject(id, cert_id, &event_cert_id, OperationSubjectRef::Cert)?;
             project_state(id, cert_id, state, transition.state(), event_sequence)
+        }
+        CertEvent::Warning {
+            cert_id: event_cert_id,
+            warning,
+        } => {
+            verify_subject(id, cert_id, &event_cert_id, OperationSubjectRef::Cert)?;
+            let _ = warning;
+            Ok(OperationProjection::StatusChanged {
+                status: Box::new(OperationStatus::Cert {
+                    id: id.clone(),
+                    cert_id: cert_id.clone(),
+                    state: state.clone(),
+                    last_event_sequence: event_sequence,
+                }),
+            })
         }
         CertEvent::Cancelled(reason) => project_state(
             id,

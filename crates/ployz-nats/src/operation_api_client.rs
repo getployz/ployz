@@ -11,29 +11,30 @@ use ployz_sdk_types::{
     CoreReplaceReported, CoreReplaceRequest, CredentialAddError, CredentialAddRequest,
     CredentialListError, CredentialListRequest, CredentialListResult, CredentialRemoveError,
     CredentialRemoveRequest, DeployReserveError, DeployReserveRequest, DeployReserved,
-    DeploySubmitError, DeploySubmitRequest, InitFirstMachineActivateError,
-    InitFirstMachineActivateRequest, InitFirstMachineActivated, LogsTailError, LogsTailRequest,
-    LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest, MachineInspectError,
-    MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
-    MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError,
-    MachineLifecycleRequest, MachineListError, MachineListRequest, MachineListResult,
-    MachineSnapshot, MachineUpdateError, MachineUpdateRequest, NamespaceRemoveError,
-    NamespaceRemoveRequest, NetworkRepairError, NetworkRepairRequest, NetworkResolveError,
-    NetworkResolveRequest, NetworkResolveResult, NetworkStatusError, NetworkStatusRequest,
-    NetworkStatusResult, OperationApiResponse, OpsListError, OpsListRequest, OpsListResult,
-    OpsStatusError, OpsStatusRequest, OpsWatchError, OpsWatchRequest, RuntimeSnapshotError,
-    RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceInspectError, ServiceInspectRequest,
-    ServiceListError, ServiceListRequest, ServiceListResult, ServiceRestartError,
-    ServiceRestartRequest, ServiceSnapshot, VolumeListError, VolumeListRequest, VolumeListResult,
-    VolumeRemoveError, VolumeRemoveRequest,
+    DeploySubmitError, DeploySubmitRequest, IngressConfigureError, IngressConfigureRequest,
+    InitFirstMachineActivateError, InitFirstMachineActivateRequest, InitFirstMachineActivated,
+    LogsTailError, LogsTailRequest, LogsTailResult, MachineAddAccepted, MachineAddError,
+    MachineAddRequest, MachineInspectError, MachineInspectRequest, MachineJoinRedeemError,
+    MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
+    MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError, MachineLifecycleRequest,
+    MachineListError, MachineListRequest, MachineListResult, MachineSnapshot, MachineUpdateError,
+    MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest, NetworkRepairError,
+    NetworkRepairRequest, NetworkResolveError, NetworkResolveRequest, NetworkResolveResult,
+    NetworkStatusError, NetworkStatusRequest, NetworkStatusResult, OperationApiResponse,
+    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest, OpsWatchError,
+    OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult,
+    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
+    ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
+    VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
     operation_api::{
         CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi, CredentialListApi,
-        CredentialRemoveApi, DeployReserveApi, DeploySubmitApi, InitFirstMachineActivateApi,
-        LogsTailApi, MachineAddApi, MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi,
-        MachineJoinReportApi, MachineListApi, MachineResumeApi, MachineUpdateApi,
-        NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, NetworkStatusApi,
-        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
-        ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
+        CredentialRemoveApi, DeployReserveApi, DeploySubmitApi, IngressConfigureApi,
+        InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineDrainApi,
+        MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
+        MachineResumeApi, MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi,
+        NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi,
+        OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi,
+        VolumeListApi, VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -67,6 +68,13 @@ impl OperationApiClient {
         request: &CredentialRemoveRequest,
     ) -> Result<AcceptedOperation, OperationApiClientError<CredentialRemoveError>> {
         self.request_api::<CredentialRemoveApi>(request).await
+    }
+
+    pub async fn ingress_configure(
+        &self,
+        request: &IngressConfigureRequest,
+    ) -> Result<AcceptedOperation, OperationApiClientError<IngressConfigureError>> {
+        self.request_api::<IngressConfigureApi>(request).await
     }
 
     pub async fn deploy_reserve(
@@ -336,19 +344,19 @@ impl OperationApiClient {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum OperationApiClientError<E> {
-    #[error("failed to encode {} request: {message}", endpoint.subject())]
+    #[error("failed to encode {} request: {message}", endpoint.name())]
     EncodeRequest {
         endpoint: OperationApiEndpoint,
         message: String,
     },
-    #[error("{} request failed: {failure}", endpoint.subject())]
+    #[error("{} request failed: {failure}", endpoint.name())]
     Request {
         endpoint: OperationApiEndpoint,
         failure: NatsServiceRequestFailure,
     },
     #[error(
         "{} returned service error {}: {}",
-        endpoint.subject(),
+        endpoint.name(),
         failure.code.http_status_code(),
         failure.message
     )]
@@ -356,17 +364,17 @@ pub enum OperationApiClientError<E> {
         endpoint: OperationApiEndpoint,
         failure: NatsServiceError,
     },
-    #[error("{} returned malformed service error headers: {error}", endpoint.subject())]
+    #[error("{} returned malformed service error headers: {error}", endpoint.name())]
     ServiceProtocol {
         endpoint: OperationApiEndpoint,
         error: NatsServiceErrorHeaderDecodeError,
     },
-    #[error("failed to decode {} response: {message}", endpoint.subject())]
+    #[error("failed to decode {} response: {message}", endpoint.name())]
     DecodeResponse {
         endpoint: OperationApiEndpoint,
         message: String,
     },
-    #[error("{} failed: {error}", endpoint.subject())]
+    #[error("{} failed: {error}", endpoint.name())]
     Domain {
         endpoint: OperationApiEndpoint,
         error: E,

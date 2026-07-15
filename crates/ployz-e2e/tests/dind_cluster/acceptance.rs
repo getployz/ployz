@@ -1,12 +1,10 @@
 use super::*;
 use ployz::commands::parse_command;
-use ployz::compose::{ComposeInput, UnsupportedFieldMode, parse_deploy_file};
 use ployz::deploy_history::{ClusterFingerprint, DeployHistory, DeployHistoryEntry};
 use ployz::runtime::{PloyzctlRuntimeConfig, execute_command};
 use ployz_core::ops::{DeployFailureClass, DeployRunningStage, HealthCheckFailure};
 use support::dind::formation::ProductCliHarness;
 
-const UMAMI_IMAGE: &str = "ghcr.io/umami-software/umami:postgresql-latest";
 const POSTGRES_IMAGE: &str = "postgres:15-alpine";
 const ACCEPTANCE_NAMESPACE: &str = "v1_acceptance";
 
@@ -14,7 +12,6 @@ struct DeployedApp {
     database_deploy: DeployHistoryEntry,
     application: DeployHistoryEntry,
     hostname: String,
-    certificate_chain: String,
 }
 
 struct FailedDeploys {
@@ -24,7 +21,7 @@ struct FailedDeploys {
 /// The published v1 acceptance journey, kept as one cluster lifetime so each
 /// step proves the state left by the preceding step.
 #[tokio::test]
-async fn scenario_v1_acceptance_five_steps_on_fresh_machines() {
+async fn group_v1_acceptance() {
     if !dind::e2e_enabled() {
         return;
     }
@@ -221,22 +218,10 @@ async fn step_2_deploy_real_application(
         .hostname
         .as_str()
         .to_owned();
-    let certificate_chain = match &intent.managed_lease {
-        ployz_core::state::ManagedLeaseProjection::Ready { bundle, .. } => {
-            bundle.certificate_chain_pem.clone()
-        }
-        other @ (ployz_core::state::ManagedLeaseProjection::Unacquired
-        | ployz_core::state::ManagedLeaseProjection::RecordOnly { .. }) => {
-            panic!("managed HTTPS lease must be ready: {other:?}")
-        }
-    };
-    let response = gateway_https_get(
-        core.cluster.core().published.gateway_tls,
-        &hostname,
-        &certificate_chain,
-    )
-    .await
-    .expect("Umami answers through public HTTPS");
+    let response =
+        gateway_https_get_unverified(core.cluster.core().published.gateway_tls, &hostname)
+            .await
+            .expect("Umami answers through public HTTPS");
     assert!(
         response.starts_with("HTTP/1.1 200"),
         "Umami HTTPS response was not successful: {response}"
@@ -246,7 +231,6 @@ async fn step_2_deploy_real_application(
         database_deploy: database_deploy.clone(),
         application: application.clone(),
         hostname,
-        certificate_chain,
     }
 }
 
@@ -308,13 +292,10 @@ async fn step_4_keep_https_while_core_is_stopped(core: &CoreContext, app: &Deplo
         )
         .await;
     assert!(stopped.success(), "stop Control-Plane Core: {stopped:?}");
-    let response = gateway_https_get(
-        core.cluster.core().published.gateway_tls,
-        &app.hostname,
-        &app.certificate_chain,
-    )
-    .await
-    .expect("public HTTPS survives Control-Plane Core stop");
+    let response =
+        gateway_https_get_unverified(core.cluster.core().published.gateway_tls, &app.hostname)
+            .await
+            .expect("public HTTPS survives Control-Plane Core stop");
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
 
     let started = core
@@ -326,6 +307,7 @@ async fn step_4_keep_https_while_core_is_stopped(core: &CoreContext, app: &Deplo
     assert!(started.success(), "restart Control-Plane Core: {started:?}");
     assert_unit_active(core, core.cluster.core(), "ployzd-control").await;
     wait_for_machine_observations(core, &machine_id("core_1")).await;
+    wait_for_fresh_peer_handshakes(core).await;
 }
 
 async fn step_5_retry_and_rollback(
@@ -405,13 +387,10 @@ async fn step_5_retry_and_rollback(
         app.application.request.services
     );
 
-    let restored = gateway_https_get(
-        core.cluster.core().published.gateway_tls,
-        &app.hostname,
-        &app.certificate_chain,
-    )
-    .await
-    .expect("rolled-back Umami answers through HTTPS");
+    let restored =
+        gateway_https_get_unverified(core.cluster.core().published.gateway_tls, &app.hostname)
+            .await
+            .expect("rolled-back Umami answers through HTTPS");
     assert!(
         restored.starts_with("HTTP/1.1 200") && restored.contains("Umami"),
         "rollback did not restore Umami: {restored}"
@@ -566,44 +545,12 @@ fn database_service_compose() -> String {
     )
 }
 
-fn database_deploy_compose() -> String {
-    let database = database_service_compose();
-    format!(
-        r#"name: {ACCEPTANCE_NAMESPACE}
-services:
-{database}volumes:
-  postgres-data: {{}}
-"#
-    )
+fn database_deploy_compose() -> &'static str {
+    include_str!("../fixtures/v1-acceptance-database.yaml")
 }
 
-fn umami_compose() -> String {
-    let database = database_service_compose();
-    format!(
-        r#"name: {ACCEPTANCE_NAMESPACE}
-services:
-{database}  umami:
-    image: {UMAMI_IMAGE}
-    command:
-      - sh
-      - -c
-      - until node -e "const net=require('net');const s=net.createConnection(5432,'db');s.setTimeout(2000);s.on('connect',()=>process.exit(0));s.on('error',()=>process.exit(1));s.on('timeout',()=>process.exit(1));"; do sleep 1; done; exec npm run start-docker
-    environment:
-      DATABASE_URL: postgresql://umami:umami@db:5432/umami
-      APP_SECRET: ployz-v1-acceptance
-    deploy:
-      replicas: 2
-    x-ports: [3000]
-    healthcheck:
-      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
-      interval: 2s
-      timeout: 2s
-      retries: 60
-      start_period: 5s
-volumes:
-  postgres-data: {{}}
-"#
-    )
+fn umami_compose() -> &'static str {
+    include_str!("../fixtures/v1-acceptance-umami.yaml")
 }
 
 fn bad_deploy_input_compose() -> String {
@@ -615,7 +562,7 @@ services:
     image: {WORKLOAD_IMAGE}
     deploy:
       replicas: 2
-    x-ports: [80]
+    x-ports: [auto:bad-input:80]
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null"]
       interval: 2s
@@ -688,58 +635,4 @@ async fn assert_service_name_database_reachability(
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     panic!("Umami could not reach Postgres by service name: {last:?}");
-}
-
-#[test]
-fn database_deploy_is_a_full_single_service_namespace_revision() {
-    let compose = database_deploy_compose();
-    let (parsed, warnings) = parse_deploy_file(ComposeInput {
-        source: &compose,
-        base_dir: Path::new("."),
-        interpolation_env: BTreeMap::new(),
-        namespace_override: None,
-        mode: UnsupportedFieldMode::Strict,
-    })
-    .expect("database Deploy Compose parses");
-    assert!(warnings.is_empty());
-    let [database] = parsed.services.as_slice() else {
-        panic!("database Deploy must contain exactly one service");
-    };
-
-    assert_eq!(
-        (&parsed.namespace_id, &database.service_id),
-        (&namespace_id(ACCEPTANCE_NAMESPACE), &service_id("db"))
-    );
-}
-
-#[test]
-fn umami_waits_for_database_dns_before_starting() {
-    let compose = umami_compose();
-    let (parsed, warnings) = parse_deploy_file(ComposeInput {
-        source: &compose,
-        base_dir: Path::new("."),
-        interpolation_env: BTreeMap::new(),
-        namespace_override: None,
-        mode: UnsupportedFieldMode::Strict,
-    })
-    .expect("acceptance Compose parses");
-    assert!(warnings.is_empty());
-    let umami = parsed
-        .services
-        .iter()
-        .find(|service| service.service_id == service_id("umami"))
-        .expect("Umami service exists");
-
-    assert_eq!(
-        umami.runtime.command.as_ref().map(|command| command.as_slice()),
-        Some(
-            [
-                "sh",
-                "-c",
-                "until node -e \"const net=require('net');const s=net.createConnection(5432,'db');s.setTimeout(2000);s.on('connect',()=>process.exit(0));s.on('error',()=>process.exit(1));s.on('timeout',()=>process.exit(1));\"; do sleep 1; done; exec npm run start-docker",
-            ]
-            .map(str::to_owned)
-            .as_slice()
-        )
-    );
 }

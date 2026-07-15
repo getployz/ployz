@@ -71,6 +71,11 @@ mod tests {
             epoch: ControlPlaneEpoch::initial(),
             core_machine_id: machine_id("core"),
             active_machines: Vec::new(),
+            dataplane_projection: ployz_core::dataplane::DataplaneProjection::try_new(
+                Vec::new(),
+                None,
+            )
+            .expect("empty projection"),
             route_bindings: Vec::new(),
             serving_target_entries: vec![target],
             volume_pins: vec![
@@ -86,9 +91,10 @@ mod tests {
                 },
             ],
             nats_authorizations: Vec::new(),
-            managed_lease: ployz_core::state::ManagedLeaseProjection::Unacquired,
-            custom_certificates: Vec::new(),
-            acme_http01_challenges: Vec::new(),
+            automatic_hostname_configuration:
+                ployz_core::ingress::AutomaticHostnameConfiguration::Ployz,
+            ployz_dns_target: ployz_core::ingress::PloyzDnsTargetIntent::Enabled,
+            active_certificates: Vec::new(),
         };
 
         let projected = volume_snapshots(&intent);

@@ -83,7 +83,7 @@ Expected crate shape:
   permissions, and plain-subject transport helpers.
 - `ployzd`: process wiring, service handlers, controllers, machine agent, Docker,
   gateway, DNS, certs.
-- `ployzctl`: CLI client.
+- `ployz`: CLI client.
 - `ployz-sdk-types`: public schema/type export surface.
 
 Keep dependencies flowing inward. Business logic must not import process wiring.
@@ -217,6 +217,11 @@ Live` section above. These rules are about truth semantics, not storage:
   the parent task serializes and owns those shared operations.
 - Codex-native tasks and subagents never invoke Codex through the CLI or
   app-server. Use native tools and native subagents only.
+- Before implementation, the supervisor drafts the plan and runs the
+  `opus-advisor` plan gate. Opus reviews only; Codex owns the plan and every
+  implementation decision. `PLAN_REVISE` returns the plan to Codex. An
+  unavailable or unverified advisor stops implementation unless the dispatcher
+  explicitly made the gate best-effort.
 
 ## Code Reviews
 
@@ -232,15 +237,21 @@ Live` section above. These rules are about truth semantics, not storage:
   ponytail is the `ponytail-review` skill. Every reviewer uses `gpt-5.6-sol`
   with high reasoning effort. If the tool cannot verify model or effort,
   record that limitation; do not claim the routing succeeded.
-- Freeze one review SHA. Apply accepted findings in one batch.
-- Re-review only the accepted-finding delta, and only in the lane that raised
-  it. Do not rerun unaffected lanes or reread the full branch for a narrow fix.
-- A second full four-lane wave requires dispatcher approval and is reserved for
-  fixes that materially change the public contract, authority boundary, state
-  model, or more than roughly 20% of the reviewed diff.
+- Mirror that wave through the `opus-advisor` skill. A small change gets one
+  consolidated Opus cold read with four separate verdicts. A large or risky
+  change gets four independent Opus cold reads, one per lane, producing an
+  eight-review matrix with the four Codex reviews. Treat security, authority,
+  money, privacy, destructive behavior, persistence, migrations, concurrency,
+  distributed state, public contracts, architecture boundaries, or a broad
+  multi-module diff as large or risky. The supervisor records the classification.
+- A second full Codex/Opus wave requires dispatcher approval and is reserved
+  for fixes that materially change the public contract, authority boundary,
+  state model, or more than roughly 20% of the reviewed diff.
 - Correctness, security, data-loss, and unmet-spec findings block. Broader
   maintainability or simplification ideas become follow-up tickets unless the
   diff introduced the regression directly.
+- Do not open the PR until every required Opus response is valid and
+  model-confirmed, every review finding is dispositioned, and no blocker remains.
 - Merging current main does not invalidate the ticket review. Review semantic
   conflict resolutions and run the verification gates on the merged candidate.
 
@@ -249,15 +260,6 @@ Live` section above. These rules are about truth semantics, not storage:
 - During implementation, run focused tests for changed seams. After review
   findings are dispositioned, a ticket may run full workspace gates immediately;
   it does not wait for the landing queue.
-- Cargo gates may run concurrently in separate worktrees with separate target
-  directories. Only DinD and landing are globally serialized.
-- Within one worktree, run workspace Clippy, workspace tests, and SDK generation
-  sequentially. Never generate SDK files concurrently with a command that reads
-  them.
-- Keep a dedicated clean cargo-cache worktree on `origin/main`. When main
-  advances, fast-forward it and run `cargo test --workspace --no-run` before
-  seeding new worktrees. Never update or clean a dirty user checkout to refresh
-  the cache.
 - Keep `pnpm check:generated` on every final candidate. Run SDK typecheck/tests
   when SDK source or generated output changed; otherwise record them as not
   applicable.
@@ -291,13 +293,7 @@ workflow is added here in the same change:
   after accepted review fixes, after merging current main, and after local
   gates. During diagnosis, use the affected scenario or a deterministic focused
   test; do not repeatedly run the complete suite while the candidate changes.
-  Report `DIND_READY`; the dispatcher grants the single cluster slot. Do not
-  launch lock-waiting wrappers. Once final DinD begins, the dispatcher holds the
-  landing lane so another local PR cannot move main before merge.
-- When the dispatcher grants DinD, acquire the cluster with
-  `mkdir /tmp/ployz-dind-e2e.lock`; if it is unavailable, return to
-  `DIND_READY`. Always `rmdir` the lock afterwards, including on failure. Run
-  every scenario and rebuild product binaries (no `PLOYZ_DIND_SKIP_BUILD`).
+  Run every scenario and rebuild product binaries (no `PLOYZ_DIND_SKIP_BUILD`).
   Each worktree sets its own `PLOYZ_DIND_TARGET_DIR` — every worktree mounts as
   `/work`, so the shared default target dir serves another branch's binaries as
   fresh. On failure, read the evidence directory the harness prints before
@@ -308,13 +304,6 @@ workflow is added here in the same change:
   `scripts/cli-smoke-test.sh <core-ip> <edge-ip>` — see
   `docs/operations/real-host-acceptance.md`. It installs the public alpha
   channel, so promote the build under test first.
-- Cold target dirs — a fresh worktree's `target/` or a per-agent
-  `PLOYZ_DIND_TARGET_DIR` — are seeded from the clean `origin/main` cargo-cache
-  worktree with
-  `scripts/cargo-hardlink-deps.py <src-target-dir> <dst-target-dir>`: it
-  hardlinks third-party dependency artifacts only, so dependencies skip
-  recompilation while workspace crates still rebuild from the branch's own
-  code.
 - When merging main into a branch, compose semantic conflicts: union the
   imports, keep both sides' additions, and give each side's exhaustive
   matches the arms the other side's new enum variants need.

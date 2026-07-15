@@ -28,7 +28,7 @@
         {
           "target": {
             "kind": "auto_hostname",
-            "port": 443
+            "label": "web"
           },
           "endpoint_port": 8080
         }

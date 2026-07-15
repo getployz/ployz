@@ -275,36 +275,6 @@ pub fn assert_deploy_event_sequence(events: &[OperationEvent], deploy_operation:
             Box::new(|event| matches!(event, OperationEvent::DeployPlanCreated { .. })),
         ),
         (
-            "running:preparing-dataplane",
-            Box::new(|event| {
-                matches!(
-                    event,
-                    OperationEvent::DeployRunning {
-                        stage: DeployRunningStage::PreparingDataplane,
-                        ..
-                    }
-                )
-            }),
-        ),
-        (
-            "dataplane-prepared-on-both-machines",
-            Box::new(|event| {
-                matches!(
-                    event,
-                    OperationEvent::DeployDataplanePrepared {
-                        report,
-                        ..
-                    }
-                        if report
-                            .machines
-                            .iter()
-                            .map(|machine| machine.machine_id.clone())
-                            .collect::<Vec<_>>()
-                            == vec![machine_id("core_1"), machine_id("edge_2")]
-                )
-            }),
-        ),
-        (
             "running:starting-containers",
             Box::new(|event| {
                 matches!(
@@ -429,6 +399,40 @@ pub async fn gateway_https_get(
                 .add_cert(certificate)
                 .map_err(|error| format!("add trust certificate: {error}"))?;
         }
+        let stream = std::net::TcpStream::connect_timeout(&addr, HTTP_TIMEOUT)
+            .map_err(|error| format!("connect {addr}: {error}"))?;
+        stream
+            .set_read_timeout(Some(HTTP_TIMEOUT))
+            .map_err(|error| format!("set read timeout: {error}"))?;
+        let mut stream = builder
+            .build()
+            .connect(&host, stream)
+            .map_err(|error| format!("TLS handshake {addr} for {host}: {error}"))?;
+        stream
+            .write_all(
+                format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes(),
+            )
+            .map_err(|error| format!("write {addr}: {error}"))?;
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .map_err(|error| format!("read {addr}: {error}"))?;
+        Ok(response)
+    })
+    .await
+    .map_err(|error| format!("HTTPS task failed: {error}"))?
+}
+
+/// One HTTPS GET with explicit SNI for certificates whose public material is
+/// intentionally absent from the operator intent projection.
+pub async fn gateway_https_get_unverified(addr: SocketAddr, host: &str) -> Result<String, String> {
+    let host = host.to_owned();
+    tokio::task::spawn_blocking(move || {
+        use std::io::{Read, Write};
+
+        let mut builder = openssl::ssl::SslConnector::builder(openssl::ssl::SslMethod::tls())
+            .map_err(|error| format!("build TLS connector: {error}"))?;
+        builder.set_verify(openssl::ssl::SslVerifyMode::NONE);
         let stream = std::net::TcpStream::connect_timeout(&addr, HTTP_TIMEOUT)
             .map_err(|error| format!("connect {addr}: {error}"))?;
         stream

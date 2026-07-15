@@ -77,10 +77,6 @@ esac
 
 release_platform="${os_slug}-${arch_slug}"
 
-command -v curl >/dev/null || {
-  echo "ployz installer requires curl" >&2
-  exit 1
-}
 command -v install >/dev/null || {
   echo "ployz installer requires the install command" >&2
   exit 1
@@ -118,6 +114,22 @@ env_value() {
   file="$1"
   key="$2"
   awk -F= -v key="$key" '$1 == key { print substr($0, length(key) + 2); exit }' "$file"
+}
+
+fetch_file() {
+  source="$1"
+  target="$2"
+  case "$source" in
+    file://*) cp "${source#file://}" "$target" ;;
+    /*) cp "$source" "$target" ;;
+    *)
+      command -v curl >/dev/null || {
+        echo "ployz installer requires curl to download $source" >&2
+        exit 1
+      }
+      curl -fsSL "$source" -o "$target"
+      ;;
+  esac
 }
 
 validate_token() {
@@ -163,7 +175,7 @@ resolve_channel() {
   validate_token "ployz channel" "$selected_channel"
   channel_url="${channel_base_url}/${selected_channel}.env"
 
-  if ! curl -fsSL "$channel_url" -o "$channel_file"; then
+  if ! fetch_file "$channel_url" "$channel_file"; then
     echo "failed to download release channel $channel_url" >&2
     exit 1
   fi
@@ -213,7 +225,7 @@ fi
 
 load_manifest() {
   if [ "$manifest_loaded" -eq 0 ]; then
-    if ! curl -fsSL "$manifest_url" -o "$manifest_file"; then
+    if ! fetch_file "$manifest_url" "$manifest_file"; then
       echo "failed to download release manifest $manifest_url" >&2
       exit 1
     fi
@@ -311,7 +323,7 @@ download_verified() {
   sha256="$2"
   target="$3"
 
-  curl -fsSL "$url" -o "$target"
+  fetch_file "$url" "$target"
   case "$sha256_tool" in
     sha256sum)
       printf '%s  %s\n' "$sha256" "$target" | sha256sum -c - >&2

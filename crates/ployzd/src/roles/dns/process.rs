@@ -12,8 +12,8 @@ use crate::config::DnsProcessConfig;
 use crate::fact_cache::{FactCache, FactCacheError, RunningFactCache, start_fact_cache};
 use crate::intent::service::NatsIntentReader;
 use crate::process_support::{
-    BackoffSchedule, RecordedAttempt, RefreshDelay, drain_refresh_wakes, record_attempt,
-    shutdown_signal, sleep_or_shutdown, wait_for_refresh_delay,
+    BackoffSchedule, RecordedAttempt, RefreshDelay, bounded_role_shutdown, drain_refresh_wakes,
+    record_attempt, shutdown_signal, sleep_or_shutdown, wait_for_refresh_delay,
 };
 use crate::roles::dns::InternalResolverHealth;
 use crate::roles::dns::internal::{InternalDnsIntentCache, spawn_internal_resolver};
@@ -29,7 +29,9 @@ use crate::roles::nats_failover::{
 use futures_util::StreamExt;
 use ployz_core::subjects::INTENT_CHANGED;
 use ployz_nats::connect::{NatsConnectError, connect_authenticated_pool};
-use ployz_nats::service_runtime::{NatsClient, NatsServiceRuntimeError, RunningNatsService};
+use ployz_nats::service_runtime::{
+    NatsClient, NatsServiceRuntimeError, NatsServiceShutdownError, RunningNatsService,
+};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -40,6 +42,7 @@ const DNS_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DNS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const DNS_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 const DNS_WATCH_RESTART_DELAY: Duration = Duration::from_secs(1);
+const DNS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct RunningDnsProcess {
     runtime: Arc<Mutex<DnsProjector>>,
@@ -52,13 +55,28 @@ pub struct RunningDnsProcess {
 }
 
 impl RunningDnsProcess {
-    pub async fn shutdown(self) {
-        let _ = self.shutdown.send(());
-        for task in self.tasks {
-            let _ = task.await;
-        }
-        let _ = self.role_service.shutdown().await;
-        self.facts_cache.shutdown().await;
+    pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
+        let Self {
+            shutdown,
+            role_service,
+            facts_cache,
+            mut tasks,
+            ..
+        } = self;
+        let _ = shutdown.send(());
+        let abort_handles = tasks
+            .iter()
+            .map(JoinHandle::abort_handle)
+            .collect::<Vec<_>>();
+        let cleanup = async {
+            facts_cache.shutdown().await;
+            let service_shutdown = role_service.shutdown().await;
+            for task in &mut tasks {
+                let _ = task.await;
+            }
+            service_shutdown
+        };
+        bounded_role_shutdown("DNS", DNS_SHUTDOWN_TIMEOUT, &abort_handles, cleanup).await
     }
 
     #[must_use]
@@ -194,7 +212,10 @@ pub async fn start_dns_process_with_client(
 
         loop {
             drain_refresh_wakes(&mut refresh_wake_rx);
-            let attempt = source.refresh_with_timeout(&task_runtime).await;
+            let attempt = tokio::select! {
+                attempt = source.refresh_with_timeout(&task_runtime) => attempt,
+                _ = refresh_shutdown.recv() => break,
+            };
             backoff = record_dns_attempt(&task_health, attempt, refresh_interval, backoff);
 
             match wait_for_refresh_delay(backoff, &mut refresh_wake_rx, &mut refresh_shutdown).await
@@ -423,12 +444,13 @@ fn dns_attempt_from_tick(tick: DnsProjectorTick) -> DnsProcessAttempt {
 }
 
 pub async fn run_dns_until_shutdown(config: &DnsProcessConfig) -> Result<(), DnsProcessError> {
+    let shutdown = shutdown_signal().map_err(DnsProcessError::ShutdownSignal)?;
     let runtime = start_dns_process(config).await?;
-    shutdown_signal()
+    shutdown.await.map_err(DnsProcessError::ShutdownSignal)?;
+    runtime
+        .shutdown()
         .await
-        .map_err(DnsProcessError::ShutdownSignal)?;
-    runtime.shutdown().await;
-    Ok(())
+        .map_err(DnsProcessError::ShutdownRoleService)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -445,6 +467,8 @@ pub enum DnsProcessError {
     RefreshTimedOut { timeout: Duration },
     #[error("failed to wait for shutdown: {0}")]
     ShutdownSignal(std::io::Error),
+    #[error("failed to stop DNS role service: {0:?}")]
+    ShutdownRoleService(NatsServiceShutdownError),
 }
 
 #[cfg(test)]

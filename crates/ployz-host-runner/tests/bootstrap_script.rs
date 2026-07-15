@@ -248,8 +248,10 @@ fn bootstrap_script_manifest_override_bypasses_channel_resolution() {
 
     assert_success(&output);
     assert!(install_dir.join("ployz").exists());
-    let curl_log = fs::read_to_string(&curl_log).expect("curl log is recorded");
-    assert!(!curl_log.contains("/channels/"));
+    assert!(
+        !curl_log.exists(),
+        "a local manifest and local artifact should not invoke curl"
+    );
 }
 
 #[cfg(unix)]

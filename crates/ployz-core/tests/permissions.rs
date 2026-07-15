@@ -3,13 +3,15 @@ use ployz_core::permissions::{
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{
-    CORE_RPC_QUERY_SCOPE, INTENT_CHANGED, INTENT_GET, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT,
-    MACHINE_RPC_COMMAND_SCOPE, MACHINE_RPC_QUERY_SCOPE, MachineServiceEndpoint,
-    OPERATION_PROGRESS_SCOPE, OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE,
+    CORE_RPC_QUERY_SCOPE, INGRESS_ENDPOINT_CHANGED, INGRESS_ENDPOINT_GET, INTENT_CHANGED,
+    INTENT_GET, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT, MACHINE_RPC_COMMAND_SCOPE,
+    MACHINE_RPC_QUERY_SCOPE, MachineServiceEndpoint, OPERATION_PROGRESS_SCOPE,
+    OPERATOR_INIT_FIRST_MACHINE_ACTIVATE, OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE,
     OPERATOR_MACHINE_IMAGE_QUERY_SCOPE, OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE,
-    OPERATOR_RUNTIME_SNAPSHOT, PENDING_MACHINE_JOINS_CHANGED, gateway_status, gateway_status_scope,
-    machine_container_facts, machine_facts, machine_facts_scope, machine_service,
-    machine_service_command_scope, machine_service_query_scope,
+    OPERATOR_RUNTIME_SNAPSHOT, PENDING_MACHINE_JOINS_CHANGED, RUNTIME_SNAPSHOT_SEED,
+    RUNTIME_SNAPSHOT_STREAM, gateway_status, gateway_status_scope, machine_container_facts,
+    machine_facts, machine_facts_scope, machine_service, machine_service_command_scope,
+    machine_service_query_scope,
 };
 use ployz_test_support::ids::machine_id;
 
@@ -23,6 +25,7 @@ fn machine_credential_renders_own_scopes_and_intent_request() {
     let expected_publish = vec![
         "_INBOX_machine_machine_7.>".to_owned(),
         INTENT_GET.to_owned(),
+        INGRESS_ENDPOINT_GET.to_owned(),
         machine_facts(&machine_id),
         machine_container_facts(&machine_id),
         gateway_status(&machine_id),
@@ -35,6 +38,7 @@ fn machine_credential_renders_own_scopes_and_intent_request() {
             machine_service_query_scope(&machine_id),
             machine_service_command_scope(&machine_id),
             INTENT_CHANGED.to_owned(),
+            INGRESS_ENDPOINT_CHANGED.to_owned(),
             PENDING_MACHINE_JOINS_CHANGED.to_owned(),
             machine_facts_scope(),
             gateway_status_scope(),
@@ -54,12 +58,15 @@ fn controller_credential_renders_owner_machine_service_and_progress_scopes() {
         profile.publish.allowed_subjects(),
         &[
             "_INBOX_ctl.>".to_owned(),
+            OPERATOR_INIT_FIRST_MACHINE_ACTIVATE.to_owned(),
             MACHINE_RPC_QUERY_SCOPE.to_owned(),
             MACHINE_RPC_COMMAND_SCOPE.to_owned(),
             CORE_RPC_QUERY_SCOPE.to_owned(),
             OPERATION_PROGRESS_SCOPE.to_owned(),
             ployz_core::subjects::INTENT_CHANGED.to_owned(),
+            INGRESS_ENDPOINT_CHANGED.to_owned(),
             PENDING_MACHINE_JOINS_CHANGED.to_owned(),
+            RUNTIME_SNAPSHOT_STREAM.to_owned(),
         ]
     );
     assert_eq!(
@@ -72,6 +79,8 @@ fn controller_credential_renders_owner_machine_service_and_progress_scopes() {
             CORE_RPC_QUERY_SCOPE.to_owned(),
             MACHINE_RPC_QUERY_SCOPE.to_owned(),
             ployz_core::subjects::INTENT_GET.to_owned(),
+            INTENT_CHANGED.to_owned(),
+            INGRESS_ENDPOINT_CHANGED.to_owned(),
             machine_facts_scope(),
             gateway_status_scope(),
             "$SRV.>".to_owned(),
@@ -93,16 +102,16 @@ fn operator_credential_renders_operator_rpc_scope_without_machine_or_join_scope(
             OPERATOR_MACHINE_IMAGE_QUERY_SCOPE.to_owned(),
             OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE.to_owned(),
             INTENT_GET.to_owned(),
+            INGRESS_ENDPOINT_GET.to_owned(),
         ]
     );
     assert_eq!(
         profile.subscribe.allowed_subjects(),
         &[
             "_INBOX_operator.>".to_owned(),
+            INGRESS_ENDPOINT_CHANGED.to_owned(),
             OPERATION_PROGRESS_SCOPE.to_owned(),
-            machine_facts_scope(),
-            gateway_status_scope(),
-            INTENT_CHANGED.to_owned(),
+            RUNTIME_SNAPSHOT_STREAM.to_owned(),
         ]
     );
     assert!(
@@ -146,8 +155,75 @@ fn runtime_snapshot_endpoint_is_inside_the_operator_query_scope() {
             OPERATOR_MACHINE_IMAGE_QUERY_SCOPE.to_owned(),
             OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE.to_owned(),
             INTENT_GET.to_owned(),
+            INGRESS_ENDPOINT_GET.to_owned(),
         ]
     );
+}
+
+#[test]
+fn runtime_snapshot_stream_is_controller_published_and_operator_subscribed() {
+    let controller = NatsPermissionProfile::render(NatsPrincipal::Controller);
+    let operator = NatsPermissionProfile::render(NatsPrincipal::Operator);
+
+    assert_eq!(
+        RUNTIME_SNAPSHOT_STREAM,
+        "plz.v1.projection.runtime.snapshot"
+    );
+    assert!(
+        controller
+            .publish
+            .allowed_subjects()
+            .contains(&RUNTIME_SNAPSHOT_STREAM.to_owned())
+    );
+    assert!(
+        operator
+            .subscribe
+            .allowed_subjects()
+            .contains(&RUNTIME_SNAPSHOT_STREAM.to_owned())
+    );
+    assert!(
+        !operator
+            .subscribe
+            .allowed_subjects()
+            .contains(&machine_facts_scope())
+    );
+    assert!(
+        !operator
+            .subscribe
+            .allowed_subjects()
+            .contains(&gateway_status_scope())
+    );
+    assert!(
+        !operator
+            .subscribe
+            .allowed_subjects()
+            .contains(&INTENT_CHANGED.to_owned())
+    );
+}
+
+#[test]
+fn runtime_snapshot_seed_is_an_operator_query_served_by_controller() {
+    assert_eq!(
+        RUNTIME_SNAPSHOT_SEED,
+        "plz.v1.rpc.operator.query.runtime.snapshot.seed"
+    );
+    let operator = NatsPermissionProfile::render(NatsPrincipal::Operator);
+    let controller = NatsPermissionProfile::render(NatsPrincipal::Controller);
+
+    assert!(RUNTIME_SNAPSHOT_SEED.starts_with(OPERATOR_RPC_QUERY_SCOPE.trim_end_matches('>')));
+    assert!(
+        operator
+            .publish
+            .allowed_subjects()
+            .contains(&OPERATOR_RPC_QUERY_SCOPE.to_owned())
+    );
+    assert!(
+        controller
+            .subscribe
+            .allowed_subjects()
+            .contains(&OPERATOR_RPC_QUERY_SCOPE.to_owned())
+    );
+    assert_eq!(controller.allow_responses, ResponsePermission::Allowed);
 }
 
 #[test]

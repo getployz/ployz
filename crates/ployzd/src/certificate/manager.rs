@@ -3,10 +3,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use ployz_core::cert::{ActiveCertState, CustomCertBundle};
+use ployz_core::cert::{ActiveCertState, CustomCertBundle, ManagedCertBundle};
 use ployz_core::ids::{CertId, MachineId, OperationId};
+use ployz_core::ingress::{ActiveCertificateMetadata, CertificateOwner};
 use ployz_core::ops::{
-    CertOperationFailure, CertificateProvisionFailure, FailureMessage, RouteHostname,
+    CertOperationFailure, CertificateProvisionFailure, CertificateProvisionWarning, FailureMessage,
+    RouteHostname,
 };
 use ployz_core::subjects::INTENT_CHANGED;
 
@@ -14,7 +16,7 @@ use super::GatewayCertificateTarget;
 use super::gateway::GatewayCertificateClient;
 use super::issuer::{AcmeIssueContext, AcmeIssuer, AcmeIssuerError, InstantAcmeIssuer};
 use super::material::{
-    load_custom_certificate, prepare_custom_certificate,
+    load_custom_certificate, prepare_custom_certificate, prepare_ployz_wildcard_certificate,
     validate_custom_certificate_for_activation, write_custom_certificate,
 };
 use crate::core_store::CoreStore;
@@ -150,14 +152,16 @@ impl CertificateManager {
     pub async fn ensure(
         &self,
         owner_operation_id: &OperationId,
+        owner: CertificateOwner,
         hostname: &RouteHostname,
         targets: &[GatewayCertificateTarget],
     ) -> Result<ActiveCertState, CertificateProvisionFailure> {
-        let challenge_machine_ids = self.dns_preflight(hostname, targets).await?;
+        let preflight = self.dns_preflight(hostname, targets).await?;
         self.spawn_issue(
             hostname.clone(),
+            owner,
             targets.to_vec(),
-            Some(challenge_machine_ids),
+            Some(preflight),
             IssueRequest::Ensure {
                 owner_operation_id: owner_operation_id.clone(),
             },
@@ -165,17 +169,92 @@ impl CertificateManager {
         .await
     }
 
-    pub(crate) async fn renew(
+    pub async fn ensure_ployz_wildcard(
         &self,
-        active: ActiveCertState,
         targets: &[GatewayCertificateTarget],
     ) -> Result<ActiveCertState, CertificateProvisionFailure> {
-        let hostname = active.hostname.clone();
+        let certificate = self
+            .store
+            .active_for_owner(&CertificateOwner::PloyzAutomaticNamespace)
+            .await
+            .map_err(active_commit_without_attempt)?
+            .ok_or_else(|| CertificateProvisionFailure::AcmeValidation {
+                message: failure_message("Ployz automatic wildcard certificate is not active"),
+            })?;
+        self.synchronize(certificate, targets).await
+    }
+
+    pub(crate) async fn renew(
+        &self,
+        certificate: ActiveCertificateMetadata,
+        targets: &[GatewayCertificateTarget],
+    ) -> Result<ActiveCertState, CertificateProvisionFailure> {
+        if matches!(certificate.owner, CertificateOwner::PloyzAutomaticNamespace) {
+            return self.synchronize(certificate, targets).await;
+        }
+        let hostname = certificate.active.hostname.clone();
+        let owner = certificate.owner.clone();
         self.spawn_issue(
             hostname,
+            owner,
             targets.to_vec(),
             None,
-            IssueRequest::Renew(active),
+            IssueRequest::Renew(certificate),
+        )
+        .await
+    }
+
+    pub async fn install_ployz_wildcard(
+        &self,
+        worker_bundle: ManagedCertBundle,
+        targets: &[GatewayCertificateTarget],
+    ) -> Result<ActiveCertState, CertificateProvisionFailure> {
+        let _guard = self.issuance_lock.lock().await;
+        let retained = self
+            .store
+            .active_for_owner(&CertificateOwner::PloyzAutomaticNamespace)
+            .await
+            .map_err(active_commit_without_attempt)?;
+        let cert_id = CertId::try_new(format!("cert_ployz_{}", worker_bundle.lease.as_str()))
+            .map_err(active_commit_without_attempt)?;
+        let operation_id = cert_operation_id()?;
+        self.submit_operation(&operation_id, cert_id.clone())
+            .await?;
+        let activation = prepare_ployz_wildcard_certificate(&self.state_dir, worker_bundle)
+            .map(|(metadata, bundle)| CertificateActivation::InstallNew { metadata, bundle })
+            .map_err(acme_validation_failure);
+        self.activate_or_record_failure(
+            &operation_id,
+            &cert_id,
+            retained.as_ref().map(|metadata| &metadata.active),
+            targets,
+            activation,
+        )
+        .await
+    }
+
+    pub(crate) async fn synchronize(
+        &self,
+        certificate: ActiveCertificateMetadata,
+        targets: &[GatewayCertificateTarget],
+    ) -> Result<ActiveCertState, CertificateProvisionFailure> {
+        let _guard = self.issuance_lock.lock().await;
+        let active = certificate.active.clone();
+        let operation_id = cert_operation_id()?;
+        self.submit_operation(&operation_id, active.cert_id.clone())
+            .await?;
+        let activation = load_custom_certificate(&self.state_dir, &active)
+            .map(|bundle| CertificateActivation::SynchronizeStored {
+                metadata: certificate,
+                bundle,
+            })
+            .map_err(acme_validation_failure);
+        self.activate_or_record_failure(
+            &operation_id,
+            &active.cert_id,
+            Some(&active),
+            targets,
+            activation,
         )
         .await
     }
@@ -208,21 +287,12 @@ impl CertificateManager {
         &self.repository
     }
 
-    pub(crate) async fn clear_all_challenges(&self) -> Result<(), CertificateProvisionFailure> {
-        self.store.remove_all_challenges().await.map_err(|error| {
-            CertificateProvisionFailure::ChallengePublish {
-                message: failure_message(error.to_string()),
-            }
-        })?;
-        let _ = self.client.publish(INTENT_CHANGED, Vec::new().into()).await;
-        Ok(())
-    }
-
     async fn spawn_issue(
         &self,
         hostname: RouteHostname,
+        owner: CertificateOwner,
         targets: Vec<GatewayCertificateTarget>,
-        challenge_machine_ids: Option<Vec<MachineId>>,
+        preflight: Option<DnsPreflightResult>,
         request: IssueRequest,
     ) -> Result<ActiveCertState, CertificateProvisionFailure> {
         let manager = self.clone();
@@ -231,13 +301,14 @@ impl CertificateManager {
             let _guard = manager.issuance_lock.lock().await;
             let current = manager
                 .store
-                .active_for_hostname(&hostname)
+                .active_for_owner(&owner)
                 .await
                 .map_err(active_commit_without_attempt);
             let result = match (current, request) {
                 (Err(error), _) => Err(error),
                 (Ok(current), IssueRequest::Ensure { owner_operation_id }) => {
-                    let reusable = current.as_ref().and_then(|active| {
+                    let reusable = current.as_ref().and_then(|metadata| {
+                        let active = &metadata.active;
                         if !active.is_usable_at((manager.now_seconds)()) {
                             return None;
                         }
@@ -252,20 +323,21 @@ impl CertificateManager {
                             .map(|()| active),
                         None => {
                             manager
-                                .issue_inner(&hostname, &targets, challenge_machine_ids, current)
+                                .issue_inner(owner, &hostname, &targets, preflight, current)
                                 .await
                         }
                     }
                 }
                 (Ok(Some(current)), IssueRequest::Renew(expected)) if current != expected => {
-                    Ok(current)
+                    Ok(current.active)
                 }
                 (Ok(current), IssueRequest::Renew(expected)) => {
                     manager
                         .issue_inner(
+                            owner,
                             &hostname,
                             &targets,
-                            challenge_machine_ids,
+                            preflight,
                             current.or(Some(expected)),
                         )
                         .await
@@ -278,29 +350,51 @@ impl CertificateManager {
 
     async fn issue_inner(
         &self,
+        owner: CertificateOwner,
         hostname: &RouteHostname,
         targets: &[GatewayCertificateTarget],
-        challenge_machine_ids: Option<Vec<MachineId>>,
-        retained: Option<ActiveCertState>,
+        preflight: Option<DnsPreflightResult>,
+        retained: Option<ActiveCertificateMetadata>,
     ) -> Result<ActiveCertState, CertificateProvisionFailure> {
         let cert_id = cert_id_for_hostname(hostname);
         let operation_id = cert_operation_id()?;
         self.submit_operation(&operation_id, cert_id.clone())
             .await?;
-        let challenge_machine_ids = match challenge_machine_ids {
-            Some(machine_ids) => machine_ids,
-            None => match self.dns_preflight(hostname, targets).await {
-                Ok(machine_ids) => machine_ids,
-                Err(failure) => {
-                    return Err(self
-                        .record_failure(&operation_id, &cert_id, failure, retained.as_ref())
-                        .await);
-                }
-            },
+        let activation = self
+            .issue_activation(owner, hostname, targets, preflight, &operation_id, &cert_id)
+            .await;
+        self.activate_or_record_failure(
+            &operation_id,
+            &cert_id,
+            retained.as_ref().map(|metadata| &metadata.active),
+            targets,
+            activation,
+        )
+        .await
+    }
+
+    async fn issue_activation(
+        &self,
+        owner: CertificateOwner,
+        hostname: &RouteHostname,
+        targets: &[GatewayCertificateTarget],
+        preflight: Option<DnsPreflightResult>,
+        operation_id: &OperationId,
+        cert_id: &CertId,
+    ) -> Result<CertificateActivation, CertificateProvisionFailure> {
+        let preflight = match preflight {
+            Some(preflight) => preflight,
+            None => self.dns_preflight(hostname, targets).await?,
         };
+        if let Some(warning) = preflight.warning {
+            self.repository
+                .record_cert_warning(operation_id, cert_id.clone(), warning)
+                .await
+                .map_err(operation_evidence_failure)?;
+        }
+        let challenge_machine_ids = preflight.machine_ids;
 
         let context = AcmeIssueContext::new(
-            self.store.clone(),
             self.repository.clone(),
             self.client.clone(),
             operation_id.clone(),
@@ -318,70 +412,85 @@ impl CertificateManager {
                     )),
                 })
                 .and_then(|result| result.map_err(provision_failure_from_issuer));
-        let cleanup = context
-            .clear_challenges(hostname)
-            .await
-            .map_err(provision_failure_from_issuer);
-        let issued = match (issued, cleanup) {
-            (_, Err(failure)) | (Err(failure), Ok(())) => {
-                return Err(self
-                    .record_failure(&operation_id, &cert_id, failure, retained.as_ref())
-                    .await);
-            }
-            (Ok(issued), Ok(())) => issued,
-        };
+        let cleanup_missing_machine_ids = context.clear_challenges(hostname).await;
+        if !cleanup_missing_machine_ids.is_empty() {
+            self.repository
+                .record_cert_warning(
+                    operation_id,
+                    cert_id.clone(),
+                    CertificateProvisionWarning::ChallengeCleanupIncomplete {
+                        missing_machine_ids: cleanup_missing_machine_ids,
+                    },
+                )
+                .await
+                .map_err(operation_evidence_failure)?;
+        }
+        let issued = issued?;
 
-        let bundle = match prepare_custom_certificate(
+        let bundle = prepare_custom_certificate(
             &self.state_dir,
             cert_id.clone(),
             hostname.clone(),
             issued.certificate_chain_pem,
             issued.private_key_pem,
-        ) {
-            Ok(bundle) => bundle,
-            Err(error) => {
-                let failure = CertificateProvisionFailure::AcmeValidation {
-                    message: failure_message(error.to_string()),
-                };
-                return Err(self
-                    .record_failure(&operation_id, &cert_id, failure, retained.as_ref())
-                    .await);
-            }
-        };
-        if let Err(error) =
-            validate_custom_certificate_for_activation(bundle.active_cert(), (self.now_seconds)())
-        {
-            let failure = CertificateProvisionFailure::AcmeValidation {
-                message: failure_message(error.to_string()),
-            };
-            return Err(self
-                .record_failure(&operation_id, &cert_id, failure, retained.as_ref())
-                .await);
-        }
-        if let Err(error) = write_custom_certificate(&self.state_dir, &bundle) {
-            let failure = active_commit_failure(bundle.active_cert().clone(), error);
-            return Err(self
-                .record_failure(&operation_id, &cert_id, failure, retained.as_ref())
-                .await);
-        }
-        if let Err(failure) = self.push_bundle(&operation_id, targets, &bundle).await {
-            return Err(self
-                .record_failure(&operation_id, &cert_id, failure, retained.as_ref())
-                .await);
-        }
+        )
+        .map_err(acme_validation_failure)?;
         let active_cert = bundle.active_cert().clone();
-        if let Err(error) = self
-            .repository
-            .activate_cert(&operation_id, active_cert.clone())
-            .await
-        {
-            let failure = active_commit_failure(active_cert.clone(), error);
-            return Err(self
-                .record_failure(&operation_id, &cert_id, failure, retained.as_ref())
-                .await);
+        Ok(CertificateActivation::InstallNew {
+            metadata: ActiveCertificateMetadata {
+                owner,
+                active: active_cert,
+            },
+            bundle,
+        })
+    }
+
+    async fn activate_or_record_failure(
+        &self,
+        operation_id: &OperationId,
+        cert_id: &CertId,
+        retained_active_cert: Option<&ActiveCertState>,
+        targets: &[GatewayCertificateTarget],
+        activation: Result<CertificateActivation, CertificateProvisionFailure>,
+    ) -> Result<ActiveCertState, CertificateProvisionFailure> {
+        let result = match activation {
+            Ok(activation) => self.activate(operation_id, targets, activation).await,
+            Err(failure) => Err(failure),
+        };
+        match result {
+            Ok(active) => Ok(active),
+            Err(failure) => Err(self
+                .record_failure(operation_id, cert_id, failure, retained_active_cert)
+                .await),
         }
-        let _ = self.client.publish(INTENT_CHANGED, Vec::new().into()).await;
-        Ok(active_cert)
+    }
+
+    async fn activate(
+        &self,
+        operation_id: &OperationId,
+        targets: &[GatewayCertificateTarget],
+        activation: CertificateActivation,
+    ) -> Result<ActiveCertState, CertificateProvisionFailure> {
+        let (metadata, bundle) = match &activation {
+            CertificateActivation::InstallNew { metadata, bundle }
+            | CertificateActivation::SynchronizeStored { metadata, bundle } => (metadata, bundle),
+        };
+        validate_custom_certificate_for_activation(bundle.active_cert(), (self.now_seconds)())
+            .map_err(acme_validation_failure)?;
+        if let CertificateActivation::InstallNew { bundle, .. } = &activation {
+            write_custom_certificate(&self.state_dir, bundle)
+                .map_err(|error| active_commit_failure(bundle.active_cert().clone(), error))?;
+        }
+        self.push_bundle(operation_id, targets, bundle).await?;
+        let active = metadata.active.clone();
+        self.repository
+            .activate_cert(operation_id, metadata.clone())
+            .await
+            .map_err(|error| active_commit_failure(active.clone(), error))?;
+        if matches!(activation, CertificateActivation::InstallNew { .. }) {
+            let _ = self.client.publish(INTENT_CHANGED, Vec::new().into()).await;
+        }
+        Ok(active)
     }
 
     async fn submit_operation(
@@ -421,7 +530,7 @@ impl CertificateManager {
         &self,
         hostname: &RouteHostname,
         targets: &[GatewayCertificateTarget],
-    ) -> Result<Vec<MachineId>, CertificateProvisionFailure> {
+    ) -> Result<DnsPreflightResult, CertificateProvisionFailure> {
         let expected_gateway_ips = targets
             .iter()
             .flat_map(|target| target.public_ips.iter().copied())
@@ -457,10 +566,21 @@ impl CertificateManager {
             let mut expected_gateway_ips = expected_gateway_ips;
             expected_gateway_ips.sort_unstable();
             expected_gateway_ips.dedup();
-            return Err(dns_failure(format!(
-                "{} resolves to {resolved_ips:?}, which is not a non-empty subset of known gateway IPs {expected_gateway_ips:?}",
-                hostname.as_str()
-            )));
+            let mut machine_ids = targets
+                .iter()
+                .map(|target| target.machine_id.clone())
+                .collect::<Vec<_>>();
+            machine_ids.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+            machine_ids.dedup();
+            return Ok(DnsPreflightResult {
+                machine_ids,
+                warning: Some(CertificateProvisionWarning::DnsPreflightMismatch {
+                    message: failure_message(format!(
+                        "{} resolves to {resolved_ips:?}, which is not a non-empty subset of known gateway IPs {expected_gateway_ips:?}",
+                        hostname.as_str()
+                    )),
+                }),
+            });
         }
         let mut addressed = targets
             .iter()
@@ -474,7 +594,10 @@ impl CertificateManager {
             .collect::<Vec<_>>();
         addressed.sort_by(|left, right| left.as_str().cmp(right.as_str()));
         addressed.dedup();
-        Ok(addressed)
+        Ok(DnsPreflightResult {
+            machine_ids: addressed,
+            warning: None,
+        })
     }
 
     async fn record_failure(
@@ -524,7 +647,23 @@ fn cert_operation_id() -> Result<OperationId, CertificateProvisionFailure> {
 
 enum IssueRequest {
     Ensure { owner_operation_id: OperationId },
-    Renew(ActiveCertState),
+    Renew(ActiveCertificateMetadata),
+}
+
+enum CertificateActivation {
+    InstallNew {
+        metadata: ActiveCertificateMetadata,
+        bundle: CustomCertBundle,
+    },
+    SynchronizeStored {
+        metadata: ActiveCertificateMetadata,
+        bundle: CustomCertBundle,
+    },
+}
+
+struct DnsPreflightResult {
+    machine_ids: Vec<MachineId>,
+    warning: Option<CertificateProvisionWarning>,
 }
 
 fn system_now_seconds() -> u64 {
@@ -582,6 +721,18 @@ fn active_commit_failure(
 fn active_commit_without_attempt(error: impl std::fmt::Display) -> CertificateProvisionFailure {
     CertificateProvisionFailure::OperationEvidenceWrite {
         message: failure_message(error.to_string()),
+    }
+}
+
+fn acme_validation_failure(error: impl std::fmt::Display) -> CertificateProvisionFailure {
+    CertificateProvisionFailure::AcmeValidation {
+        message: failure_message(error.to_string()),
+    }
+}
+
+fn operation_evidence_failure(error: impl std::fmt::Debug) -> CertificateProvisionFailure {
+    CertificateProvisionFailure::OperationEvidenceWrite {
+        message: failure_message(format!("{error:?}")),
     }
 }
 

@@ -6,14 +6,16 @@ use super::machine::{DindMachine, DindMachineRole, MachineSpec, provision_machin
 use super::{DindError, MANAGED_LABEL, MANAGED_LABEL_VALUE, RUN_LABEL, docker_api_error};
 use bollard::Docker;
 use bollard::errors::Error as BollardError;
-use bollard::models::NetworkCreateRequest;
+use bollard::models::{Ipam, IpamConfig, NetworkCreateRequest};
 use bollard::query_parameters::{
     ListContainersOptionsBuilder, ListNetworksOptionsBuilder, ListVolumesOptionsBuilder,
     RemoveContainerOptionsBuilder, RemoveVolumeOptionsBuilder,
 };
 use std::collections::HashMap;
 use std::fmt;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// Unique identifier of one harness run; part of every resource name and the
 /// value of the [`RUN_LABEL`] on every resource the run creates.
@@ -63,8 +65,9 @@ pub struct DindCluster {
 }
 
 impl DindCluster {
-    /// Sweeps stale labeled resources, creates the per-run network, and boots
-    /// every machine to readiness (core first).
+    /// Creates the per-run network and boots every machine to readiness (core
+    /// first). Runs use unique resources and clean up by run label, so one
+    /// cluster never sweeps another cluster's resources.
     ///
     /// On failure the run's resources are swept again — unless
     /// [`super::keep_requested`] — so retries start clean.
@@ -74,8 +77,6 @@ impl DindCluster {
             machines,
         } = spec;
         let (core_spec, edge_specs) = split_roles(machines)?;
-        sweep_managed_resources(docker).await?;
-
         let run_id = DindRunId::generate();
         let network_name = format!("ployz-dind-{run_id}");
         let provisioned = provision_network_and_machines(
@@ -219,6 +220,16 @@ async fn create_cluster_network(
     let request = NetworkCreateRequest {
         name: network_name.to_owned(),
         driver: Some("bridge".to_owned()),
+        // The managed-DNS path publishes only globally routable gateway
+        // testimony. An isolated routable-looking subnet lets the harness
+        // exercise that classification while Docker keeps all traffic local.
+        ipam: Some(Ipam {
+            config: Some(vec![IpamConfig {
+                subnet: Some(cluster_subnet(run_id)),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }),
         labels: Some(HashMap::from([
             (MANAGED_LABEL.to_owned(), MANAGED_LABEL_VALUE.to_owned()),
             (RUN_LABEL.to_owned(), run_id.as_str().to_owned()),
@@ -230,6 +241,16 @@ async fn create_cluster_network(
         .await
         .map_err(docker_api_error("create cluster network"))?;
     Ok(())
+}
+
+fn cluster_subnet(run_id: &DindRunId) -> String {
+    let mut hasher = DefaultHasher::new();
+    run_id.hash(&mut hasher);
+    let value = hasher.finish();
+    let second = (value >> 12) & 0xff;
+    let third = (value >> 4) & 0xff;
+    let fourth = (value & 0x0f) << 4;
+    format!("11.{second}.{third}.{fourth}/28")
 }
 
 /// Removes every container, network, and volume carrying the
@@ -261,18 +282,7 @@ async fn sweep_by_label(docker: &Docker, label_filter: String) -> Result<(), Din
         let Some(id) = container.id else {
             continue;
         };
-        let remove = docker
-            .remove_container(
-                &id,
-                Some(
-                    RemoveContainerOptionsBuilder::new()
-                        .force(true)
-                        .v(true)
-                        .build(),
-                ),
-            )
-            .await;
-        ignore_not_found(remove).map_err(docker_api_error("remove labeled container"))?;
+        remove_container(docker, &id).await?;
     }
 
     let networks = docker
@@ -306,6 +316,33 @@ async fn sweep_by_label(docker: &Docker, label_filter: String) -> Result<(), Din
     }
 
     Ok(())
+}
+
+async fn remove_container(docker: &Docker, id: &str) -> Result<(), DindError> {
+    const ATTEMPTS: u32 = 5;
+
+    for attempt in 0..ATTEMPTS {
+        let remove = docker
+            .remove_container(
+                id,
+                Some(
+                    RemoveContainerOptionsBuilder::new()
+                        .force(true)
+                        .v(true)
+                        .build(),
+                ),
+            )
+            .await;
+        match ignore_not_found(remove) {
+            Ok(()) => return Ok(()),
+            Err(_) if attempt + 1 < ATTEMPTS => {
+                let delay_ms = 250_u64 << attempt;
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+            Err(error) => return Err(docker_api_error("remove labeled container")(error)),
+        }
+    }
+    unreachable!("bounded container removal loop returns on every final attempt")
 }
 
 /// Sweeps race against auto-removal and against each other; a resource that

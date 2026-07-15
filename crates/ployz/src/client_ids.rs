@@ -110,6 +110,11 @@ pub(crate) fn generate_client_network_repair_id(
     )
 }
 
+pub(crate) fn generate_client_ingress_configure_id()
+-> Result<ClientGeneratedOperationId, ClientGeneratedIdsError> {
+    generate_client_operation_id("ingress", "configure")
+}
+
 fn generate_client_operation_id(
     action: &'static str,
     subject: &str,

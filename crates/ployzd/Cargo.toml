@@ -15,6 +15,7 @@ clap.workspace = true
 defguard_wireguard_rs.workspace = true
 futures-util.workspace = true
 getifs.workspace = true
+getrandom.workspace = true
 local-ip-address.workspace = true
 public-ip-address.workspace = true
 rustix = { version = "1.1.4", features = ["fs"] }
@@ -26,6 +27,7 @@ ployz-core.workspace = true
 ployz-ebpf-common = { path = "../ployz-ebpf-common", features = ["validation"] }
 ployz-nats.workspace = true
 ployz-sdk-types.workspace = true
+ployz-telemetry.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -43,6 +45,7 @@ instant-acme = { version = "0.8.5", default-features = false, features = ["hyper
 http-body-util = "=0.1.3"
 bytes = "=1.11.1"
 ureq = { version = "3", default-features = false, features = ["json", "rustls"] }
+wait-timeout.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 rtnetlink.workspace = true
@@ -55,6 +58,7 @@ tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 
 [lib]
 path = "src/lib.rs"
+doctest = false
 
 [[bin]]
 name = "ployzd"

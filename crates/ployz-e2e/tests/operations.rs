@@ -1,51 +1,65 @@
 use std::error::Error;
+use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use ployz::api_client::OperationApiClient;
-use ployz_core::dataplane::{
-    EbpfForwardingReady, EbpfForwardingReadyEvidence, PloyzNativeMeshMachineReady,
-    PloyzNativeMeshPrepareReport, PloyzNativeMeshReady, WireGuardPublicKey, WireGuardReady,
-    WireGuardReadyEvidence,
-};
 use ployz_core::deploy::{
     DeployPlanningInput, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec,
     ImageReference, ReplicaCount, plan_namespace_deploy,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::install::MachineBootstrapUrl;
+use ployz_core::machine::MachineName;
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::{
     DeployCompletionOutcome, DeployOperationState, DeployPhaseNumber, DeployPhaseOutcome,
     DeployRunningStage, DeployServiceResult, EventSequence, OperationEvent,
     OperationEventReplayCursor, OperationEventReplayRequest, OperationStatus,
 };
-use ployz_core::state::MachineEndpointObservation;
-use ployz_core::subjects::machine_facts;
+use ployz_core::roles::InstallRolePolicy;
+use ployz_core::state::{ActiveMachineState, MachineEndpointObservation, MachineLifecycle};
+use ployz_core::subjects::{MachineServiceEndpoint, machine_facts, machine_service};
 use ployz_nats::operation_api_client::OperationApiClientError;
+use ployz_nats::service_runtime::request_json;
 use ployz_sdk_types::{
     DeployReserveRequest, DeploySubmitError, DeploySubmitRequest, OpsStatusRequest,
     ServiceInspectRequest,
 };
+use ployzd::certificate::{AcmeIssueContext, AcmeIssuer, AcmeIssuerError, IssuedCertificate};
+use ployzd::config::ControlProcessConfig;
+use ployzd::core_store::CoreStore;
+use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::operation_api::admission::MachineAddBootstrapConfig;
 use ployzd::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
 };
 use ployzd::roles::gateway::process::start_gateway_process_with_client;
 use ployzd::roles::machine::client::NatsMachineContainerRuntime;
-use ployzd::roles::machine::protocol::MachineContainerRunRpcRequest;
-use ployzd::roles::machine::service::start_machine_role_service;
+use ployzd::roles::machine::protocol::{
+    MachineContainerRunRpcRequest, MachineDataplaneStatusRpcRequest,
+    MachineDataplaneStatusRpcResponse, MachineRpcResponse,
+};
+use ployzd::roles::machine::service::{
+    MachineServiceError, RunningMachineRoleRuntime, start_machine_role_runtime,
+    start_machine_role_runtime_with_endpoint_observation,
+};
 
 mod support;
 
 use ployz_test_support::ops::wait_for_terminal_status;
-use support::machine_runtime::{ObservingContainerRunner, ReadyWireGuardEbpf};
+use support::machine_runtime::{
+    ObservingContainerRunner, ReadyWireGuardEbpf, test_wireguard_public_key,
+};
 
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
     event_replay_limit, event_sequence, idempotency_key, machine_id, namespace_id, route_hostname,
     route_port, service_id,
 };
-use support::http::{TestUpstream, free_loopback_port, http_get_with_host};
+use support::http::{
+    TestUpstream, free_gateway_http_port, http_get_with_host, https_get_with_host,
+};
 use support::nats::TestNats;
 
 #[tokio::test]
@@ -185,17 +199,18 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
         .with_deploy_machines(vec![machine_id("machine_a")])
         .with_deploy_step_timeout(Duration::from_secs(2))
         .with_machine_bootstrap(machine_bootstrap_config());
-    let control_runtime = nats.start_control(&config).await?;
+    let control_runtime = start_control_with_deploy_roster(&nats, &config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_role_service(
+    let machine_runtime = start_machine_role_runtime(
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
-        ReadyWireGuardEbpf,
+        ReadyWireGuardEbpf::for_machine(&machine_id("machine_a")),
         runner.clone(),
     )
     .await?;
+    wait_for_dataplane_projection(&nats, &machine_id("machine_a")).await;
     let api = OperationApiClient::new(nats.user_client());
     let request = reserved_deploy_request(&api, "idem_e2e_run", deploy_target("svc_api")).await?;
 
@@ -278,36 +293,6 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
             },
             OperationEvent::DeployRunning {
                 operation_id: deploy_operation.clone(),
-                stage: DeployRunningStage::PreparingDataplane,
-            },
-            OperationEvent::DeployDataplanePrepared {
-                operation_id: deploy_operation.clone(),
-                report: PloyzNativeMeshPrepareReport {
-                    machines: vec![PloyzNativeMeshMachineReady {
-                        machine_id: machine_id("machine_a"),
-                        ready: PloyzNativeMeshReady {
-                            wireguard: WireGuardReady {
-                                public_key: wireguard_public_key("test-public-key"),
-                                evidence: vec![WireGuardReadyEvidence::Command {
-                                    program: "wg".to_owned(),
-                                    args: vec!["--version".to_owned()],
-                                }],
-                            },
-                            ebpf_forwarding: EbpfForwardingReady {
-                                evidence: vec![EbpfForwardingReadyEvidence::PloyzTcBytecode {
-                                    path: "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc".to_owned(),
-                                    symbols: vec![
-                                        "ployz_egress".to_owned(),
-                                        "ployz_ingress".to_owned(),
-                                    ],
-                                }],
-                            },
-                        },
-                    }],
-                },
-            },
-            OperationEvent::DeployRunning {
-                operation_id: deploy_operation.clone(),
                 stage: DeployRunningStage::StartingContainers,
             },
             OperationEvent::DeployPhaseStarted {
@@ -369,21 +354,21 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
         .with_deploy_machines(vec![machine_id("machine_a")])
         .with_deploy_step_timeout(Duration::from_secs(2))
         .with_machine_bootstrap(machine_bootstrap_config());
-    let control_runtime = nats.start_control(&config).await?;
+    let control_runtime = start_control_with_deploy_roster(&nats, &config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_role_service(
+    let machine_runtime = start_routed_machine_role_runtime(
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
-        ReadyWireGuardEbpf,
-        runner.clone(),
     )
     .await?;
+    wait_for_dataplane_projection(&nats, &machine_id("machine_a")).await;
+    let gateway_http_port = free_gateway_http_port().await?;
     let gateway_runtime = start_gateway_process_with_client(
         machine_client.clone(),
         Duration::from_millis(10),
-        "127.0.0.1:0".parse().expect("valid gateway listen addr"),
+        format!("127.0.0.1:{gateway_http_port}").parse()?,
         machine_id("machine_a"),
         None,
     )
@@ -393,12 +378,7 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
     let request = reserved_deploy_request(
         &api,
         "idem_e2e_route",
-        deploy_target_with_route(
-            "svc_api",
-            "api.example.com",
-            gateway_runtime.listen_addr().port(),
-            upstream.port(),
-        ),
+        deploy_target_with_route("svc_api", "localhost", upstream.port()),
     )
     .await?;
 
@@ -426,14 +406,20 @@ async fn e2e_routed_deploy_serves_http_through_gateway() -> Result<(), Box<dyn E
     publish_machine_facts(&machine_client, runner.snapshot(), Some(public_ip(7))).await;
     wait_for_gateway_upstream(&gateway_runtime, "127.0.0.1", upstream.port()).await;
 
+    assert_redirect_response(
+        &http_get_with_host(gateway_runtime.listen_addr(), "localhost").await?,
+    );
     assert_smoke_response(
-        &http_get_with_host(gateway_runtime.listen_addr(), "api.example.com").await?,
+        &https_get_with_host(gateway_runtime.tls_listen_addr(), "localhost").await?,
     );
     let upstream_request = upstream.request().await;
     assert!(upstream_request.starts_with("GET /smoke HTTP/1.1\r\n"));
-    assert!(upstream_request.contains("\r\nHost: api.example.com\r\n"));
+    assert!(upstream_request.contains("\r\nHost: localhost\r\n"));
 
-    gateway_runtime.shutdown().await;
+    gateway_runtime
+        .shutdown()
+        .await
+        .expect("gateway runtime shuts down");
     machine_runtime
         .shutdown()
         .await
@@ -456,21 +442,21 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
         .with_deploy_machines(vec![machine_id("machine_a")])
         .with_deploy_step_timeout(Duration::from_secs(2))
         .with_machine_bootstrap(machine_bootstrap_config());
-    let control_runtime = nats.start_control(&config).await?;
+    let control_runtime = start_control_with_deploy_roster(&nats, &config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_role_service(
+    let machine_runtime = start_routed_machine_role_runtime(
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
-        ReadyWireGuardEbpf,
-        runner.clone(),
     )
     .await?;
+    wait_for_dataplane_projection(&nats, &machine_id("machine_a")).await;
+    let gateway_http_port = free_gateway_http_port().await?;
     let gateway_runtime = start_gateway_process_with_client(
         machine_client.clone(),
         Duration::from_millis(10),
-        "127.0.0.1:0".parse().expect("valid gateway listen addr"),
+        format!("127.0.0.1:{gateway_http_port}").parse()?,
         machine_id("machine_a"),
         None,
     )
@@ -478,16 +464,11 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
     let upstream = TestUpstream::start_with_expected_requests(2).await;
     let api = OperationApiClient::new(nats.user_client());
     let route_port = route_port(gateway_runtime.listen_addr().port());
-    let route_host = format!("machine-down.local:{}", route_port.get());
+    let route_host = format!("localhost:{}", route_port.get());
     let request = reserved_deploy_request(
         &api,
         "idem_e2e_machine_runtime_down_route",
-        deploy_target_with_route(
-            "svc_api",
-            "machine-down.local",
-            route_port.get(),
-            upstream.port(),
-        ),
+        deploy_target_with_route("svc_api", "localhost", upstream.port()),
     )
     .await?;
 
@@ -509,7 +490,9 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
     );
     publish_machine_facts(&machine_client, runner.snapshot(), Some(public_ip(7))).await;
     wait_for_gateway_upstream(&gateway_runtime, "127.0.0.1", upstream.port()).await;
-    assert_smoke_response(&http_get_with_host(gateway_runtime.listen_addr(), &route_host).await?);
+    assert_smoke_response(
+        &https_get_with_host(gateway_runtime.tls_listen_addr(), &route_host).await?,
+    );
 
     machine_runtime
         .shutdown()
@@ -539,10 +522,15 @@ async fn e2e_gateway_serves_route_after_machine_runtime_shutdown()
         ),
         "expected NoResponders or RequestTimedOut, got {reason:?}"
     );
-    assert_smoke_response(&http_get_with_host(gateway_runtime.listen_addr(), &route_host).await?);
+    assert_smoke_response(
+        &https_get_with_host(gateway_runtime.tls_listen_addr(), &route_host).await?,
+    );
     assert_eq!(upstream.requests().await.len(), 2);
 
-    gateway_runtime.shutdown().await;
+    gateway_runtime
+        .shutdown()
+        .await
+        .expect("gateway runtime shuts down");
     control_runtime
         .shutdown()
         .await
@@ -560,21 +548,21 @@ async fn e2e_gateway_keeps_serving_last_projection_after_control_shutdown()
         .with_deploy_machines(vec![machine_id("machine_a")])
         .with_deploy_step_timeout(Duration::from_secs(2))
         .with_machine_bootstrap(machine_bootstrap_config());
-    let control_runtime = nats.start_control(&config).await?;
+    let control_runtime = start_control_with_deploy_roster(&nats, &config).await?;
     let machine_client = nats.machine_client(&machine_id("machine_a")).await;
     let runner = ObservingContainerRunner::new(machine_id("machine_a"));
-    let machine_runtime = start_machine_role_service(
+    let machine_runtime = start_routed_machine_role_runtime(
         machine_client.clone(),
         machine_id("machine_a"),
         runner.clone(),
-        ReadyWireGuardEbpf,
-        runner.clone(),
     )
     .await?;
+    wait_for_dataplane_projection(&nats, &machine_id("machine_a")).await;
+    let gateway_http_port = free_gateway_http_port().await?;
     let gateway_runtime = start_gateway_process_with_client(
         machine_client.clone(),
         Duration::from_millis(10),
-        "127.0.0.1:0".parse().expect("valid gateway listen addr"),
+        format!("127.0.0.1:{gateway_http_port}").parse()?,
         machine_id("machine_a"),
         None,
     )
@@ -582,17 +570,12 @@ async fn e2e_gateway_keeps_serving_last_projection_after_control_shutdown()
     let first_upstream = TestUpstream::start_with_expected_requests(2).await;
     let first_upstream_port = first_upstream.port();
     let api = OperationApiClient::new(nats.user_client());
-    let route_hostname = route_hostname("control-down.local");
+    let route_hostname = route_hostname("localhost");
     let route_port = route_port(gateway_runtime.listen_addr().port());
     let request = reserved_deploy_request(
         &api,
         "idem_e2e_control_down_route",
-        deploy_target_with_route(
-            "svc_api",
-            route_hostname.as_str(),
-            route_port.get(),
-            first_upstream_port,
-        ),
+        deploy_target_with_route("svc_api", route_hostname.as_str(), first_upstream_port),
     )
     .await?;
 
@@ -615,9 +598,9 @@ async fn e2e_gateway_keeps_serving_last_projection_after_control_shutdown()
     publish_machine_facts(&machine_client, runner.snapshot(), Some(public_ip(7))).await;
     wait_for_gateway_upstream(&gateway_runtime, "127.0.0.1", first_upstream_port).await;
     assert_smoke_response(
-        &http_get_with_host(
-            gateway_runtime.listen_addr(),
-            &format!("control-down.local:{}", route_port.get()),
+        &https_get_with_host(
+            gateway_runtime.tls_listen_addr(),
+            &format!("localhost:{}", route_port.get()),
         )
         .await?,
     );
@@ -627,22 +610,21 @@ async fn e2e_gateway_keeps_serving_last_projection_after_control_shutdown()
         .expect("control runtime shuts down");
 
     assert_smoke_response(
-        &http_get_with_host(
-            gateway_runtime.listen_addr(),
-            &format!("control-down.local:{}", route_port.get()),
+        &https_get_with_host(
+            gateway_runtime.tls_listen_addr(),
+            &format!("localhost:{}", route_port.get()),
         )
         .await?,
     );
     for request in first_upstream.requests().await {
         assert!(request.starts_with("GET /smoke HTTP/1.1\r\n"));
-        assert!(
-            request.contains(
-                &("Host: control-down.local:".to_owned() + &route_port.get().to_string())
-            )
-        );
+        assert!(request.contains(&("Host: localhost:".to_owned() + &route_port.get().to_string())));
     }
 
-    gateway_runtime.shutdown().await;
+    gateway_runtime
+        .shutdown()
+        .await
+        .expect("gateway runtime shuts down");
     machine_runtime
         .shutdown()
         .await
@@ -655,33 +637,31 @@ async fn e2e_gateway_keeps_serving_last_projection_after_control_shutdown()
 async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
 -> Result<(), Box<dyn Error + Send + Sync>> {
     let nats = TestNats::start_with_machines(&[machine_id("core_1"), machine_id("edge_2")]).await;
-    let route_port = free_loopback_port().await?;
+    let route_port = free_gateway_http_port().await?;
     let config = nats
         .control_config(machine_id("core_1"))
         .with_deploy_machines(vec![machine_id("core_1"), machine_id("edge_2")])
         .with_deploy_step_timeout(Duration::from_secs(2))
         .with_machine_bootstrap(machine_bootstrap_config());
-    let control_runtime = nats.start_control(&config).await?;
+    let control_runtime = start_control_with_deploy_roster(&nats, &config).await?;
     let core_machine_client = nats.machine_client(&machine_id("core_1")).await;
     let edge_machine_client = nats.machine_client(&machine_id("edge_2")).await;
     let core_runner = ObservingContainerRunner::new(machine_id("core_1"));
     let edge_runner = ObservingContainerRunner::new(machine_id("edge_2"));
-    let core_machine_runtime = start_machine_role_service(
+    let core_machine_runtime = start_routed_machine_role_runtime(
         core_machine_client.clone(),
         machine_id("core_1"),
         core_runner.clone(),
-        ReadyWireGuardEbpf,
-        core_runner.clone(),
     )
     .await?;
-    let edge_machine_runtime = start_machine_role_service(
+    let edge_machine_runtime = start_routed_machine_role_runtime(
         edge_machine_client.clone(),
         machine_id("edge_2"),
         edge_runner.clone(),
-        ReadyWireGuardEbpf,
-        edge_runner.clone(),
     )
     .await?;
+    wait_for_dataplane_projection(&nats, &machine_id("core_1")).await;
+    wait_for_dataplane_projection(&nats, &machine_id("edge_2")).await;
     let core_gateway_runtime = start_gateway_process_with_client(
         core_machine_client.clone(),
         Duration::from_millis(10),
@@ -703,7 +683,7 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
     let request = reserved_deploy_request(
         &api,
         "idem_e2e_two_machine_route",
-        deploy_target_with_route("svc_api", "smoke.local", route_port, upstream.port()),
+        deploy_target_with_route("svc_api", "localhost", upstream.port()),
     )
     .await?;
 
@@ -723,25 +703,6 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
         ),
         "expected two-machine routed deploy to complete, got {status:?}"
     );
-    assert_eq!(
-        operation_events(&api, deploy_operation, accepted.start_sequence,)
-            .await?
-            .into_iter()
-            .filter_map(|event| {
-                let OperationEvent::DeployDataplanePrepared { report, .. } = event else {
-                    return None;
-                };
-                Some(
-                    report
-                        .machines
-                        .into_iter()
-                        .map(|machine| machine.machine_id.clone())
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .collect::<Vec<_>>(),
-        vec![vec![machine_id("core_1"), machine_id("edge_2")]]
-    );
     publish_machine_facts(
         &core_machine_client,
         core_runner.snapshot(),
@@ -758,23 +719,29 @@ async fn e2e_two_machine_routed_deploy_serves_through_both_gateways()
     wait_for_gateway_upstream(&edge_gateway_runtime, "127.0.0.1", upstream.port()).await;
     assert_eq!(core_runner.snapshot().containers().len(), 1);
     assert_smoke_response(
-        &http_get_with_host(
-            core_gateway_runtime.listen_addr(),
-            &format!("smoke.local:{route_port}"),
+        &https_get_with_host(
+            core_gateway_runtime.tls_listen_addr(),
+            &format!("localhost:{route_port}"),
         )
         .await?,
     );
     assert_smoke_response(
-        &http_get_with_host(
-            edge_gateway_runtime.listen_addr(),
-            &format!("smoke.local:{route_port}"),
+        &https_get_with_host(
+            edge_gateway_runtime.tls_listen_addr(),
+            &format!("localhost:{route_port}"),
         )
         .await?,
     );
     assert_eq!(upstream.requests().await.len(), 2);
 
-    edge_gateway_runtime.shutdown().await;
-    core_gateway_runtime.shutdown().await;
+    edge_gateway_runtime
+        .shutdown()
+        .await
+        .expect("edge gateway runtime shuts down");
+    core_gateway_runtime
+        .shutdown()
+        .await
+        .expect("core gateway runtime shuts down");
     edge_machine_runtime
         .shutdown()
         .await
@@ -806,10 +773,6 @@ async fn operation_events(
     assert_eq!(page.cursor, OperationEventReplayCursor::Terminal);
 
     Ok(page.events.into_iter().map(|event| event.event).collect())
-}
-
-fn wireguard_public_key(value: &str) -> WireGuardPublicKey {
-    WireGuardPublicKey::try_new(value).expect("valid wireguard public key")
 }
 
 fn image(value: &str) -> ImageReference {
@@ -855,12 +818,7 @@ fn deploy_target(service_id: &str) -> DeployRequest {
     }
 }
 
-fn deploy_target_with_route(
-    service_id: &str,
-    hostname: &str,
-    route_port: u16,
-    endpoint_port: u16,
-) -> DeployRequest {
+fn deploy_target_with_route(service_id: &str, hostname: &str, endpoint_port: u16) -> DeployRequest {
     let mut target = deploy_target(service_id);
     let [service] = target.services.as_mut_slice() else {
         panic!("deploy target has one service");
@@ -868,7 +826,6 @@ fn deploy_target_with_route(
     service.routes = vec![DeployRoute {
         target: DeployRouteTarget::Hostname {
             hostname: route_hostname(hostname),
-            port: self::route_port(route_port),
         },
         endpoint_port: self::route_port(endpoint_port),
     }];
@@ -954,6 +911,27 @@ fn public_ip(last_octet: u8) -> std::net::IpAddr {
     std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, last_octet))
 }
 
+async fn start_routed_machine_role_runtime(
+    client: async_nats::Client,
+    machine_id: ployz_core::ids::MachineId,
+    runner: ObservingContainerRunner,
+) -> Result<RunningMachineRoleRuntime, MachineServiceError> {
+    let loopback = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+    start_machine_role_runtime_with_endpoint_observation(
+        client,
+        machine_id.clone(),
+        runner.clone(),
+        ReadyWireGuardEbpf::for_machine(&machine_id),
+        runner,
+        MachineEndpointObservation {
+            machine_id,
+            control_endpoints: vec![loopback],
+            mesh_endpoints: Vec::new(),
+        },
+    )
+    .await
+}
+
 fn assert_smoke_response(response: &str) {
     assert!(
         response.starts_with("HTTP/1.1 200 OK\r\n"),
@@ -963,6 +941,111 @@ fn assert_smoke_response(response: &str) {
         response.ends_with("\r\n\r\nsmoke"),
         "unexpected response body: {response:?}"
     );
+}
+
+fn assert_redirect_response(response: &str) {
+    assert!(
+        response.starts_with("HTTP/1.1 301 Moved Permanently\r\n"),
+        "unexpected redirect response: {response:?}"
+    );
+    assert!(
+        response.contains("location: https://localhost/smoke\r\n"),
+        "unexpected redirect location: {response:?}"
+    );
+}
+
+async fn start_control_with_deploy_roster(
+    nats: &TestNats,
+    config: &ControlProcessConfig,
+) -> Result<ployzd::roles::control::RunningControlProcess, Box<dyn Error + Send + Sync>> {
+    let store = CoreStore::open(config.core_db_path.clone()).await?;
+    let roster = MachineRosterStore::new(store);
+    for (index, machine_id) in config.deploy_machines.iter().enumerate() {
+        let endpoint_subnet = ployz_core::dataplane::MachineEndpointSubnet::try_new(
+            ployz_core::dataplane::default_endpoint_subnet(machine_id),
+        )?;
+        roster
+            .replace_active_machine(&ActiveMachineState {
+                machine_id: machine_id.clone(),
+                name: MachineName::try_new(format!("test_machine_{}", index + 1))?,
+                activated_by: OperationId::try_new(format!("op_seed_machine_{}", index + 1))?,
+                roles: InstallRolePolicy::install_all(),
+                lifecycle: MachineLifecycle::Active,
+                control_endpoints: Vec::new(),
+                mesh_endpoints: vec![std::net::SocketAddr::new(
+                    public_ip(u8::try_from(index + 1)?),
+                    ployz_core::dataplane::DEFAULT_WIREGUARD_LISTEN_PORT,
+                )],
+                endpoint_subnet,
+                wireguard_public_key: test_wireguard_public_key(machine_id),
+            })
+            .await?;
+    }
+    Ok(nats
+        .start_control_with_test_issuer(config, Arc::new(FixtureAcmeIssuer))
+        .await?)
+}
+
+struct FixtureAcmeIssuer;
+
+#[async_trait]
+impl AcmeIssuer for FixtureAcmeIssuer {
+    async fn issue_http01(
+        &self,
+        context: &AcmeIssueContext,
+        hostname: &ployz_core::ops::RouteHostname,
+    ) -> Result<IssuedCertificate, AcmeIssuerError> {
+        let challenge = ployz_core::cert::AcmeHttp01Challenge::try_new(
+            hostname.clone(),
+            ployz_core::cert::AcmeChallengeToken::try_new("e2e-token").expect("challenge token"),
+            ployz_core::cert::AcmeChallengeValue::try_new("e2e-token.fixture-thumbprint")
+                .expect("challenge value"),
+            ployz_core::cert::AcmeChallengeTtlSeconds::try_new(900).expect("challenge ttl"),
+        )
+        .expect("challenge");
+        context.publish_challenge(challenge).await?;
+        context.validation_started().await?;
+        let rcgen::CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed([hostname.as_str().to_owned()]).map_err(
+                |error| AcmeIssuerError::Validation {
+                    message: error.to_string(),
+                },
+            )?;
+        Ok(IssuedCertificate {
+            certificate_chain_pem: cert.pem(),
+            private_key_pem: signing_key.serialize_pem(),
+        })
+    }
+}
+
+async fn wait_for_dataplane_projection(nats: &TestNats, machine_id: &ployz_core::ids::MachineId) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let response = request_json::<_, MachineDataplaneStatusRpcResponse>(
+            &nats.controller_client(),
+            machine_service(machine_id, MachineServiceEndpoint::DataplaneStatus),
+            &MachineDataplaneStatusRpcRequest {
+                mode: ployz_core::dataplane::NetworkStatusMode::Snapshot,
+            },
+            Duration::from_millis(250),
+        )
+        .await;
+        if matches!(
+            response,
+            Ok(MachineRpcResponse::Ok(ok))
+                if matches!(
+                    ok.value.projection.testimony,
+                    ployz_core::dataplane::DataplaneProjectionTestimony::Applied { .. }
+                )
+        ) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "machine {machine_id:?} did not converge its dataplane projection"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 fn machine_bootstrap_config() -> MachineAddBootstrapConfig {

@@ -1,11 +1,11 @@
+use futures_util::StreamExt;
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::RouteTarget;
 use ployz_core::state::{
     GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation, RouteBindingState,
 };
-use ployz_core::subjects::{INTENT_CHANGED, gateway_status, machine_facts};
+use ployz_core::subjects::{INTENT_CHANGED, INTENT_GET, gateway_status, machine_facts};
 use ployz_test_support::ids::{machine_id, namespace_id, route_hostname, route_port, service_id};
-use ployzd::intent::machine_roster::MachineRosterStore;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use ployzd::intent::service::{RunningIntentService, start_intent_service};
 use ployzd::roles::dns::process::{
@@ -14,6 +14,8 @@ use ployzd::roles::dns::process::{
 use ployzd::roles::dns::projection::DnsAnswer;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::{Duration, Instant};
+
+mod support;
 
 #[tokio::test]
 async fn dns_process_fails_fast_before_projection_sources_exist() {
@@ -36,7 +38,7 @@ async fn dns_process_fails_fast_before_projection_sources_exist() {
     })
     .await;
 
-    runtime.shutdown().await;
+    runtime.shutdown().await.expect("DNS shuts down");
 }
 
 #[tokio::test]
@@ -71,7 +73,7 @@ async fn dns_process_applies_route_changes_on_next_poll() {
         Some(DnsProcessAttempt::Current { record_count: 1 })
     );
 
-    runtime.shutdown().await;
+    runtime.shutdown().await.expect("DNS shuts down");
 }
 
 #[tokio::test]
@@ -114,7 +116,41 @@ async fn intent_invalidation_wakes_dns_refresh_before_poll_interval() {
     })
     .await;
 
-    runtime.shutdown().await;
+    runtime.shutdown().await.expect("DNS shuts down");
+}
+
+#[tokio::test]
+async fn dns_shutdown_cancels_blocked_projection_refresh() {
+    let nats = TestNats::start().await;
+    let mut blocked_intent = nats
+        .connected
+        .controller
+        .subscribe(INTENT_GET)
+        .await
+        .expect("subscribe without replying to intent requests");
+    nats.connected
+        .controller
+        .flush()
+        .await
+        .expect("blocked responder is ready");
+    let runtime = start_dns_process_with_client(
+        nats.dns_client.clone(),
+        machine_id("dns_machine"),
+        Duration::from_secs(60),
+        None,
+        None,
+    )
+    .await
+    .expect("DNS runtime starts");
+    tokio::time::timeout(Duration::from_secs(1), blocked_intent.next())
+        .await
+        .expect("projection refresh requests intent")
+        .expect("blocked intent responder stays open");
+
+    tokio::time::timeout(Duration::from_secs(1), runtime.shutdown())
+        .await
+        .expect("DNS shutdown cancels the blocked refresh")
+        .expect("DNS shuts down");
 }
 
 fn dns_serves_answer(runtime: &RunningDnsProcess, hostname: &str, answer: &str) -> bool {
@@ -162,18 +198,15 @@ impl TestNats {
     }
 
     async fn start_intent_with_interval(&self, publish_interval: Duration) -> RunningIntentService {
+        let core_store = ployzd::core_store::CoreStore::open_in_memory()
+            .await
+            .expect("core store opens");
+        support::intent::initialize_disabled_ingress(&core_store).await;
         start_intent_service(
             self.connected.controller.clone(),
             machine_id("machine_a"),
-            MachineRosterStore::new(
-                ployzd::core_store::CoreStore::open_in_memory()
-                    .await
-                    .expect("open core store"),
-            ),
             self.namespace_intent.clone(),
-            ployzd::core_store::CoreStore::open_in_memory()
-                .await
-                .expect("core store opens"),
+            core_store,
             publish_interval,
         )
         .await
@@ -184,10 +217,16 @@ impl TestNats {
     async fn commit_route(&self, hostname: &str) {
         self.namespace_intent
             .replace_route_binding(RouteBindingState {
+                id: ployz_core::ids::RouteBindingId::try_new(format!(
+                    "route_{}",
+                    hostname.replace('.', "_")
+                ))
+                .expect("valid route binding id"),
                 namespace_id: namespace_id("default"),
-                target: RouteTarget::new(route_hostname(hostname), route_port(443)),
+                target: RouteTarget::new(route_hostname(hostname)),
                 endpoint_port: route_port(8080),
                 service_id: service_id("svc_api"),
+                origin: ployz_core::ingress::RouteBindingOrigin::Declared,
             })
             .await
             .expect("route stores");

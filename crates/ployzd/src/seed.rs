@@ -9,8 +9,10 @@
 //! intent back.
 
 use crate::core_store::{CoreStore, CoreStoreError};
-use crate::intent::certificate_intent::{CertificateIntentStore, CertificateIntentStoreError};
-use crate::intent::lease_intent::{LeaseIntentStore, LeaseIntentStoreError};
+use crate::intent::ingress_intent::{
+    ActiveCertificateMetadataStore, IngressConfiguration, IngressIntentStore,
+    IngressIntentStoreError,
+};
 use crate::intent::machine_roster::{MachineRosterStore, MachineRosterStoreError};
 use crate::intent::namespace_intent::{NamespaceIntentStore, NamespaceIntentStoreError};
 use crate::intent::nats_authorizations::{NatsAuthorizationStore, NatsAuthorizationStoreError};
@@ -25,10 +27,12 @@ pub enum SeedCoreError {
     Namespace(#[from] NamespaceIntentStoreError),
     #[error("seeding authorization grants: {0}")]
     Authorizations(#[from] NatsAuthorizationStoreError),
-    #[error("seeding managed lease intent: {0}")]
-    ManagedLease(#[from] LeaseIntentStoreError),
-    #[error("seeding custom certificate intent: {0}")]
-    Certificate(#[from] CertificateIntentStoreError),
+    #[error("seeding ingress intent: {0}")]
+    Ingress(#[from] IngressIntentStoreError),
+    #[error("mirrored ingress intent is invalid: {0}")]
+    InvalidIngress(#[from] ployz_core::ingress::IngressConfigurationError),
+    #[error("seeding active certificate metadata: {0}")]
+    Certificate(CoreStoreError),
     #[error("seeding control-plane epoch: {0}")]
     Epoch(#[from] CoreStoreError),
 }
@@ -77,23 +81,18 @@ pub async fn seed_core_from_snapshot(
     for pin in &snapshot.volume_pins {
         namespace.replace_volume_pin(pin.clone()).await?;
     }
-    let lease_store = LeaseIntentStore::new(core_store.clone());
-    match &snapshot.managed_lease {
-        ployz_core::state::ManagedLeaseProjection::Ready { lease, bundle } => {
-            lease_store
-                .store_lease(lease.clone(), Some(bundle.clone()))
-                .await?;
-        }
-        ployz_core::state::ManagedLeaseProjection::RecordOnly { lease } => {
-            lease_store.restore_lease_record(lease.clone()).await?
-        }
-        ployz_core::state::ManagedLeaseProjection::Unacquired => {}
-    }
-    let certificate_store = CertificateIntentStore::new(core_store.clone());
-    for active_cert in &snapshot.custom_certificates {
+    IngressIntentStore::new(core_store.clone())
+        .replace(IngressConfiguration::try_new(
+            snapshot.automatic_hostname_configuration.clone(),
+            snapshot.ployz_dns_target,
+        )?)
+        .await?;
+    let certificate_store = ActiveCertificateMetadataStore::new(core_store.clone());
+    for certificate in &snapshot.active_certificates {
         certificate_store
-            .seed_active_metadata(active_cert.clone())
-            .await?;
+            .replace(certificate.clone())
+            .await
+            .map_err(SeedCoreError::Certificate)?;
     }
 
     // Reuse the succeeded core's grant set verbatim: the promoted core authorizes
@@ -115,12 +114,12 @@ pub async fn seed_core_from_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::cert::{
-        ActiveCertState, AutoLeaseState, CertBundleRef, CertValidAt, CertValidityWindow,
-        ManagedLeaseAcquireRequest, ManagedLeaseIntent,
+    use ployz_core::cert::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
+    use ployz_core::ingress::{
+        ActiveCertificateMetadata, AutomaticHostnameConfiguration, CertificateOwner,
+        PloyzDnsTargetIntent,
     };
     use ployz_core::state::{ActiveMachineState, ControlPlaneEpoch, MachineLifecycle};
-    use ployz_lease_worker::{LeaseWorkerRequest, LeaseWorkerResponse, StubLeaseWorker};
     use ployz_test_support::ids::{machine_id, operation_id};
 
     fn snapshot_at_epoch(epoch: ControlPlaneEpoch) -> IntentSnapshot {
@@ -142,7 +141,16 @@ mod tests {
                     "10.198.0.0/24",
                 )
                 .expect("valid endpoint subnet"),
+                wireguard_public_key: ployz_core::dataplane::WireGuardPublicKey::try_new(
+                    "public-machine-a",
+                )
+                .expect("public key"),
             }],
+            dataplane_projection: ployz_core::dataplane::DataplaneProjection::try_new(
+                Vec::new(),
+                None,
+            )
+            .expect("empty projection"),
             route_bindings: Vec::new(),
             serving_target_entries: Vec::new(),
             volume_pins: Vec::new(),
@@ -152,9 +160,9 @@ mod tests {
                     .expect("credential name"),
                 role: CredentialRole::Operator,
             })],
-            managed_lease: ployz_core::state::ManagedLeaseProjection::Unacquired,
-            custom_certificates: Vec::new(),
-            acme_http01_challenges: Vec::new(),
+            automatic_hostname_configuration: AutomaticHostnameConfiguration::Ployz,
+            ployz_dns_target: PloyzDnsTargetIntent::Enabled,
+            active_certificates: Vec::new(),
         }
     }
 
@@ -180,56 +188,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn seeding_restores_ready_managed_lease_bundle() {
+    async fn seeding_restores_only_public_ingress_intent() {
         let store = CoreStore::open_in_memory().await.expect("store");
-        let mut worker = StubLeaseWorker::new();
-        let LeaseWorkerResponse::LeaseAcquired(acquired) = worker
-            .handle(LeaseWorkerRequest::Acquire(ManagedLeaseAcquireRequest {
-                ipv4: Vec::new(),
-                ipv6: Vec::new(),
-            }))
-            .expect("acquire fixture lease")
-        else {
-            panic!("acquire returns lease");
-        };
-        let pending = worker
-            .handle(LeaseWorkerRequest::DownloadBundle {
-                lease: acquired.lease.name.clone(),
-                token: acquired.lease.token.clone(),
-            })
-            .expect("bundle pending");
-        assert!(matches!(pending, LeaseWorkerResponse::BundlePending));
-        let LeaseWorkerResponse::Bundle(bundle) = worker
-            .handle(LeaseWorkerRequest::DownloadBundle {
-                lease: acquired.lease.name.clone(),
-                token: acquired.lease.token.clone(),
-            })
-            .expect("bundle ready")
-        else {
-            panic!("bundle ready");
-        };
         let mut snapshot = snapshot_at_epoch(ControlPlaneEpoch::initial());
-        snapshot.managed_lease = ployz_core::state::ManagedLeaseProjection::Ready {
-            lease: acquired.lease.clone(),
-            bundle: bundle.clone(),
-        };
+        snapshot.automatic_hostname_configuration =
+            AutomaticHostnameConfiguration::custom("apps.example.com").expect("custom suffix");
+        snapshot.ployz_dns_target = PloyzDnsTargetIntent::Disabled;
 
         let certificates = tempfile::tempdir().expect("certificate state");
         seed_core_from_snapshot(&store, &snapshot, certificates.path())
             .await
-            .expect("seed ready lease");
+            .expect("seed ingress intent");
 
         assert_eq!(
-            LeaseIntentStore::new(store)
+            IngressIntentStore::new(store.clone())
                 .load()
                 .await
-                .expect("load lease"),
-            ManagedLeaseIntent::Auto {
-                state: Box::new(AutoLeaseState::Ready {
-                    lease: acquired.lease,
-                    bundle,
-                }),
-            }
+                .expect("load ingress intent"),
+            Some(
+                IngressConfiguration::try_new(
+                    snapshot.automatic_hostname_configuration,
+                    PloyzDnsTargetIntent::Disabled,
+                )
+                .expect("valid ingress configuration")
+            )
+        );
+        assert!(
+            crate::intent::ingress_intent::PloyzDnsTargetStore::new(store)
+                .load_allocation()
+                .await
+                .expect("load allocation")
+                .is_none()
         );
     }
 
@@ -237,7 +226,7 @@ mod tests {
     async fn seeding_restores_custom_certificate_metadata_without_secret_material() {
         let active = active_certificate();
         let mut snapshot = snapshot_at_epoch(ControlPlaneEpoch::initial());
-        snapshot.custom_certificates = vec![active.clone()];
+        snapshot.active_certificates = vec![active.clone()];
         let target_store = CoreStore::open_in_memory().await.expect("target store");
         let target_directory = tempfile::tempdir().expect("target certificate state");
 
@@ -245,7 +234,7 @@ mod tests {
             .await
             .expect("seed custom certificate");
 
-        let seeded_certificates = CertificateIntentStore::new(target_store)
+        let seeded_certificates = ActiveCertificateMetadataStore::new(target_store)
             .active_certificates()
             .await
             .expect("seeded certificates");
@@ -312,20 +301,23 @@ mod tests {
         );
     }
 
-    fn active_certificate() -> ActiveCertState {
-        ActiveCertState {
-            cert_id: ployz_test_support::ids::cert_id("cert_app_example_com"),
-            hostname: ployz_test_support::ids::route_hostname("app.example.com"),
-            bundle_ref: CertBundleRef::try_new(format!(
-                "sha256:{}:/var/lib/ployz/certificates/cert_app_example_com.bundle",
-                "a".repeat(64)
-            ))
-            .expect("bundle ref"),
-            validity: CertValidityWindow::try_new(
-                CertValidAt::try_new(1).expect("not before"),
-                CertValidAt::try_new(2).expect("not after"),
-            )
-            .expect("validity"),
+    fn active_certificate() -> ActiveCertificateMetadata {
+        ActiveCertificateMetadata {
+            owner: CertificateOwner::PloyzAutomaticNamespace,
+            active: ActiveCertState {
+                cert_id: ployz_test_support::ids::cert_id("cert_app_example_com"),
+                hostname: ployz_test_support::ids::route_hostname("app.example.com"),
+                bundle_ref: CertBundleRef::try_new(format!(
+                    "sha256:{}:/var/lib/ployz/certificates/cert_app_example_com.bundle",
+                    "a".repeat(64)
+                ))
+                .expect("bundle ref"),
+                validity: CertValidityWindow::try_new(
+                    CertValidAt::try_new(1).expect("not before"),
+                    CertValidAt::try_new(2).expect("not after"),
+                )
+                .expect("validity"),
+            },
         }
     }
 }

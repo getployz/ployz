@@ -28,8 +28,8 @@ pub type InitFirstMachineActivateResponse =
 pub struct InitFirstMachineActivateRequest {
     pub machine_id: MachineId,
     pub roles: InstallRolePolicy,
-    #[serde(default = "PublicUrlMode::default_mode")]
-    pub public_url_mode: PublicUrlMode,
+    pub automatic_hostname_configuration: AutomaticHostnameConfiguration,
+    pub ployz_dns_target: PloyzDnsTargetIntent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -199,8 +199,8 @@ pub enum MachineJoinReportedFailure {
     BootstrapFailed {
         message: FailureMessage,
     },
-    ConnectivityProofFailed {
-        evidence: crate::core_types::ConnectivityProofEvidence,
+    DataplaneProjectionAdmissionFailed {
+        evidence: crate::core_types::DataplaneProjectionAdmissionEvidence,
     },
 }
 

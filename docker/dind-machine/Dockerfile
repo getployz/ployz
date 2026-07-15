@@ -41,6 +41,16 @@ RUN apt-get update \
 
 COPY daemon.json /etc/docker/daemon.json
 
+# The harness allocates a TTY so journald can expose every machine's service
+# output through `docker logs` while a scenario is running.
+RUN install -d /etc/systemd/journald.conf.d \
+  && printf '%s\n' \
+    '[Journal]' \
+    'ForwardToConsole=yes' \
+    'TTYPath=/dev/console' \
+    'MaxLevelConsole=debug' \
+    > /etc/systemd/journald.conf.d/console.conf
+
 # The inner containerd overlayfs snapshotter needs a non-overlay backing mount
 # when the machine itself runs inside Docker.
 VOLUME ["/var/lib/containerd"]

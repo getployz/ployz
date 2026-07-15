@@ -1,6 +1,7 @@
 use ployz_core::dataplane::MachineEndpointSubnet;
 use ployz_core::deploy::{DeployReservationId, VolumeName};
 use ployz_core::ids::{CertId, MachineId, NamespaceId, OperationId, ServiceId};
+use ployz_core::ingress::IngressConfiguration;
 use ployz_core::install::MachineJoinRuntimeNatsUrl;
 use ployz_core::install::{
     HostPortAssurance, InstallArtifactVersion, MachineJoinBundle, MachineJoinSecretDelivery,
@@ -9,7 +10,7 @@ use ployz_core::machine::{
     IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineName, RawJoinToken,
 };
 use ployz_core::ops::{
-    CredentialGrantAction, EventSequence, MachineAddOperationStateName, ManagedLeaseSubject,
+    CredentialGrantAction, EventSequence, MachineAddOperationStateName, ManagedDnsReconcileSubject,
     OperationIdempotencyKey, OperationStatus, StatusProjectionError,
 };
 use ployz_core::roles::InstallRolePolicy;
@@ -171,6 +172,12 @@ pub struct CredentialGrantOperationSubmission {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IngressConfigureOperationSubmission {
+    pub operation_id: OperationId,
+    pub configuration: IngressConfiguration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ServiceRestartPayload {
     pub(super) namespace_id: NamespaceId,
     pub(super) service_id: ServiceId,
@@ -194,14 +201,27 @@ pub(super) struct NetworkRepairPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ManagedLeaseOperationSubmission {
+pub struct ManagedDnsReconcileOperationSubmission {
     pub operation_id: OperationId,
-    pub subject: ManagedLeaseSubject,
+    pub subject: ManagedDnsReconcileSubject,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ManagedLeasePayload {
-    pub(super) subject: ManagedLeaseSubject,
+pub(super) struct ManagedDnsReconcilePayload {
+    pub(super) subject: ManagedDnsReconcileSubject,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IngressRefreshOperationSubmission {
+    pub operation_id: OperationId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct IngressRefreshPayload;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedIngressRefreshSubmission {
+    pub operation_id: OperationId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -282,6 +302,14 @@ pub struct AcceptedCredentialGrantSubmission {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedIngressConfigureSubmission {
+    pub operation_id: OperationId,
+    pub start_sequence: EventSequence,
+    pub configuration: IngressConfiguration,
+    pub should_start_execution: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptedNamespaceRemoveSubmission {
     pub operation_id: OperationId,
     pub start_sequence: EventSequence,
@@ -307,7 +335,7 @@ pub struct AcceptedVolumeRemoveSubmission {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AcceptedManagedLeaseSubmission {
+pub struct AcceptedManagedDnsReconcileSubmission {
     pub operation_id: OperationId,
 }
 
@@ -400,7 +428,9 @@ pub type RecordNamespaceRemoveTransitionError = RecordOperationEventError;
 pub type RecordNetworkRepairTransitionError = RecordOperationEventError;
 pub type RecordNetworkRepairEvidenceError = RecordOperationEventError;
 pub type RecordVolumeRemoveTransitionError = RecordOperationEventError;
-pub type RecordManagedLeaseTransitionError = RecordOperationEventError;
+pub type RecordManagedDnsReconcileTransitionError = RecordOperationEventError;
+pub type RecordIngressRefreshTransitionError = RecordOperationEventError;
+pub type RecordIngressConfigureTransitionError = RecordOperationEventError;
 pub type RecordLifecycleEventError = RecordOperationEventError;
 pub type RecordMachineAddEventError = RecordLifecycleEventError;
 
@@ -412,6 +442,20 @@ pub enum OperationStatusStoreError {
     CorruptRecord { message: String },
     #[error("operation working records: {message}")]
     Index { message: String },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum StageMachineDataplaneError {
+    #[error("machine-add operation {} is not joining", .operation_id.as_str())]
+    OperationNotJoining { operation_id: OperationId },
+    #[error("machine-add operation {} belongs to a different machine", .operation_id.as_str())]
+    MachineMismatch { operation_id: OperationId },
+    #[error("machine {} is already active", .machine_id.as_str())]
+    MachineAlreadyActive { machine_id: MachineId },
+    #[error("another machine-add operation owns dataplane staging")]
+    StagingOccupied,
+    #[error("machine dataplane staging: {0}")]
+    Store(OperationStatusStoreError),
 }
 
 #[derive(Debug, thiserror::Error)]
