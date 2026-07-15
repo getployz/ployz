@@ -58,6 +58,7 @@ async fn step_1_form_fresh_cluster(
         add_and_join_edge(core, edge).await;
         wait_for_machine_observations(core, &machine_id(&format!("edge_{}", index + 2))).await;
     }
+    wait_for_fresh_peer_handshakes(core).await;
     let machines = core
         .api
         .machine_list(&MachineListRequest {})
@@ -242,7 +243,8 @@ async fn step_3_explain_failures(
     let bad_image_failure = terminal_deploy_failure(core, &bad_image).await;
     assert_eq!(
         bad_image_failure.failure_class(),
-        DeployFailureClass::ImageResolvePullFailed
+        DeployFailureClass::ImageResolvePullFailed,
+        "unexpected bad-image failure: {bad_image_failure:?}"
     );
     assert!(matches!(
         bad_image_failure,
