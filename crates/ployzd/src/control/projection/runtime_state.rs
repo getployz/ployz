@@ -215,7 +215,7 @@ fn machine_snapshot(
     let testimony = match facts.get(&active.machine_id) {
         Some(facts) => MachineTestimony::Answered {
             endpoints: facts.endpoints().cloned(),
-            gateway: gateways.get(&active.machine_id).cloned(),
+            gateway: gateways.get(&active.machine_id).cloned().map(Box::new),
             observed_container_count: facts.containers().containers().len(),
             disk_space: facts.disk_space(),
             last_observed_at_unix_seconds: facts.observed_at_unix_ms() / 1_000,

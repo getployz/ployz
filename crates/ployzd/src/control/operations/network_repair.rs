@@ -20,7 +20,7 @@ use ployz_core::machine::runtime::MachineFactsRefreshConfirmation;
 use ployz_core::machine::validate_declared_machine;
 use ployz_core::network::DataplaneProjection;
 use ployz_core::network::internal_dns::{
-    InternalDnsFactWatermark, InternalDnsIntentHealth, InternalDnsResolverStatus, InternalDnsStatus,
+    InternalDnsFactWatermark, InternalDnsResolverStatus, InternalDnsStatus,
 };
 use ployz_core::operation::{
     FailureMessage, NetworkRepairDnsRefreshProblem, NetworkRepairEvidence, NetworkRepairFailure,
@@ -770,7 +770,7 @@ fn record_warning(operation_id: &OperationId, phase: &str, error: &RecordOperati
 mod tests {
     use super::*;
     use ployz_core::network::internal_dns::{
-        InternalDnsFactGeneration, InternalDnsResolverCacheIncarnation,
+        InternalDnsFactGeneration, InternalDnsIntentHealth, InternalDnsResolverCacheIncarnation,
     };
     use ployz_nats::service_runtime::NatsServiceRequestFailure;
 

@@ -131,7 +131,7 @@ pub struct MachineSnapshot {
 pub enum MachineTestimony {
     Answered {
         endpoints: Option<MachineEndpointObservation>,
-        gateway: Option<GatewayStatusObservation>,
+        gateway: Option<Box<GatewayStatusObservation>>,
         observed_container_count: usize,
         disk_space: MachineDiskSpace,
         /// When this machine last self-reported, as display evidence for the

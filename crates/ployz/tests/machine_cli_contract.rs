@@ -231,12 +231,14 @@ fn machine_snapshot(machine_id: &str, gateway: Option<GatewayServingStatus>) -> 
                 control_endpoints: vec!["203.0.113.10".parse().expect("valid public ip")],
                 mesh_endpoints: vec!["203.0.113.10:51820".parse().expect("valid mesh endpoint")],
             }),
-            gateway: gateway.map(|serving| GatewayStatusObservation {
-                machine_id,
-                listen_addr: "127.0.0.1:8080".parse().expect("valid listen addr"),
-                serving,
-                route_count: 2,
-                process_health: ployz_core::machine::GatewayProcessHealth::default(),
+            gateway: gateway.map(|serving| {
+                Box::new(GatewayStatusObservation {
+                    machine_id,
+                    listen_addr: "127.0.0.1:8080".parse().expect("valid listen addr"),
+                    serving,
+                    route_count: 2,
+                    process_health: ployz_core::machine::GatewayProcessHealth::default(),
+                })
             }),
             observed_container_count: 3,
             disk_space: ployz_test_support::fixtures::test_disk_space(),

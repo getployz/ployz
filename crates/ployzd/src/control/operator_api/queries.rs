@@ -606,7 +606,10 @@ impl MachineQueryService {
                 Some((observed_container_count, disk_space, last_observed_at_unix_seconds)) => {
                     MachineTestimony::Answered {
                         endpoints: endpoints.get(&machine.machine_id).cloned(),
-                        gateway: gateway_statuses.get(&machine.machine_id).cloned(),
+                        gateway: gateway_statuses
+                            .get(&machine.machine_id)
+                            .cloned()
+                            .map(Box::new),
                         observed_container_count,
                         disk_space,
                         last_observed_at_unix_seconds,
@@ -658,7 +661,7 @@ impl MachineQueryService {
         let testimony = match facts {
             Some(facts) => MachineTestimony::Answered {
                 endpoints: facts.endpoints().cloned(),
-                gateway,
+                gateway: gateway.map(Box::new),
                 observed_container_count: facts.containers().containers().len(),
                 disk_space: facts.disk_space(),
                 last_observed_at_unix_seconds: facts.observed_at_unix_ms() / 1_000,
