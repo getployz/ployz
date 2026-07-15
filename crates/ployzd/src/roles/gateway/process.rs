@@ -57,7 +57,7 @@ const GATEWAY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const GATEWAY_REFRESH_TIMEOUT: Duration = Duration::from_secs(5);
 const GATEWAY_WATCH_RESTART_DELAY: Duration = Duration::from_secs(1);
 const GATEWAY_HEALTH_CHECK_INTERVAL: Duration = Duration::from_millis(100);
-const GATEWAY_LISTENER_READY_TIMEOUT: Duration = Duration::from_secs(2);
+const GATEWAY_LISTENER_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const GATEWAY_LISTENER_READY_POLL: Duration = Duration::from_millis(10);
 const GATEWAY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(9);
 
