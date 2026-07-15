@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dataplane::MachineEndpointSupernet;
 use crate::ids::MachineId;
-use crate::roles::{GatewayRole, InstallRolePolicy};
+use crate::machine::roles::{GatewayRole, InstallRolePolicy};
 
 use super::artifacts::FirstMachineInstallArtifacts;
 use super::join::{MachineBootstrapUrl, MachineJoinClusterName};

@@ -7,8 +7,8 @@ use ployz_core::install::{
     MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTrustedNats,
     NatsServerInstallSpec,
 };
+use ployz_core::machine::{GatewayRole, InstallRolePolicy};
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
-use ployz_core::roles::{GatewayRole, InstallRolePolicy};
 
 #[test]
 fn host_port_assurance_has_explicit_wire_values() {

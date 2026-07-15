@@ -1,10 +1,9 @@
 use ployz_core::ids::{CertId, MachineId, OperationId, SubjectTokenError};
-use ployz_core::machine::MachineAddFailure;
+use ployz_core::machine::{MachineAddFailure, MachineLifecycle};
 use ployz_core::operation::{
     CancellationReason, DeployCompletionOutcome, DeployRunningStage, MachineSubstrateVersions,
     OperationEvent,
 };
-use ployz_core::state::MachineLifecycle;
 use ployz_core::subjects::{
     MachineServiceEndpoint, OperationApiEndpoint, OperationApiEndpointExecution,
     OperationProgressScope, machine_container_facts, machine_facts, machine_service,

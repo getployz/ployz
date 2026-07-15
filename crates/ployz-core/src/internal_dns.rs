@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::dataplane::INTERNAL_DNS_SUFFIX;
 use crate::ids::{MachineId, NamespaceId, ServiceId, SubjectToken, SubjectTokenError};
-use crate::machine_runtime::{ContainerRuntimeState, MachineFactsSnapshot};
-use crate::state::IntentSnapshot;
+use crate::intent::IntentSnapshot;
+use crate::machine::runtime::{ContainerRuntimeState, MachineFactsSnapshot};
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 const MAX_DNS_LABEL_LEN: usize = 63;

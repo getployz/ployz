@@ -2,6 +2,7 @@
 //! checks, failure-phase rules, and cancellation.
 
 use ployz_core::install::HostPortAssurance;
+use ployz_core::machine::InstallRolePolicy;
 use ployz_core::machine::{
     IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint, MachineAddFailure,
     MachineReadinessCheck, MachineReadinessEvidence,
@@ -10,7 +11,6 @@ use ployz_core::operation::{
     FailureMessage, MachineAddOperationState, OperationEvent, OperationKind, OperationProjection,
     OperationStatus, ProjectionOperationState, StatusProjectionError, project_operation_event,
 };
-use ployz_core::roles::InstallRolePolicy;
 use ployz_test_support::ids::{event_sequence, machine_id, machine_name, operation_id};
 
 #[test]

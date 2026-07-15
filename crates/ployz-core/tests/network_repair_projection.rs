@@ -139,12 +139,10 @@ fn network_repair_refresh_evidence_advances_only_its_stage_cursor() {
     };
     let event = OperationEvent::NetworkRepairMachineFactsRefreshed {
         operation_id: operation_id("op_network_repair"),
-        refreshes: vec![
-            ployz_core::machine_runtime::MachineFactsRefreshConfirmation {
-                machine_id: machine_id("machine_a"),
-                observed_at_unix_ms: 42,
-            },
-        ],
+        refreshes: vec![ployz_core::machine::MachineFactsRefreshConfirmation {
+            machine_id: machine_id("machine_a"),
+            observed_at_unix_ms: 42,
+        }],
     };
 
     assert!(matches!(

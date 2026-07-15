@@ -212,7 +212,7 @@ pub(super) fn project_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::ControlPlaneEpoch;
+    use crate::intent::recovery::ControlPlaneEpoch;
 
     #[test]
     fn completed_refresh_is_terminal_and_preserves_identity_evidence() {

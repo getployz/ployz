@@ -11,12 +11,11 @@ use crate::ids::{CertId, ContainerId, MachineId, NamespaceId, OperationId, Servi
 use crate::image::OciDigest;
 use crate::ingress::{ActiveCertificateMetadata, IngressConfiguration};
 use crate::install::{InstallArtifactVersion, MachineJoinRuntimeNatsUrl};
+use crate::machine::{InstallRolePolicy, MachineLifecycle};
 use crate::machine::{
     IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineCredentialProvisioningStep,
     MachineName,
 };
-use crate::roles::InstallRolePolicy;
-use crate::state::MachineLifecycle;
 
 use super::cert::{CertEvent, CertTransition, CertificateProvisionWarning};
 use super::core_replace::{CoreReplaceEvent, CoreReplaceFailure, CoreReplaceTransition};
@@ -282,7 +281,7 @@ pub enum OperationEvent {
     },
     NetworkRepairMachineFactsRefreshed {
         operation_id: OperationId,
-        refreshes: Vec<crate::machine_runtime::MachineFactsRefreshConfirmation>,
+        refreshes: Vec<crate::machine::runtime::MachineFactsRefreshConfirmation>,
     },
     NetworkRepairDnsRefreshConfirmed {
         operation_id: OperationId,

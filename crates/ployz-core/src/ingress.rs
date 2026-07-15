@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::certificate::ActiveCertState;
 use crate::ids::RouteBindingId;
+use crate::intent::recovery::ControlPlaneEpoch;
 use crate::operation::{RouteHostname, RouteHostnameError};
 use crate::reachability::is_public;
-use crate::state::ControlPlaneEpoch;
 
 /// Durable operator choice for automatic hostname creation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -15,6 +15,7 @@ pub mod ids;
 pub mod image;
 pub mod ingress;
 pub mod install;
+pub mod intent;
 pub mod internal_dns;
 pub mod machine;
 pub mod machine_rpc;

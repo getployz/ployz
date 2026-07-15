@@ -10,9 +10,9 @@ use crate::ids::{
     RouteBindingId, ServiceId,
 };
 use crate::ingress::{AutomaticHostnameLabel, RouteBindingOrigin};
-use crate::machine_runtime::{MachineContainerObservationSnapshot, ManagedContainerIdentity};
+use crate::intent::{RouteBindingState, ServingTargetEntry, VolumePinState};
+use crate::machine::runtime::{MachineContainerObservationSnapshot, ManagedContainerIdentity};
 use crate::operation::{RouteHostname, RoutePort, RouteTarget};
-use crate::state::{RouteBindingState, ServingTargetEntry, VolumePinState};
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 pub mod images;

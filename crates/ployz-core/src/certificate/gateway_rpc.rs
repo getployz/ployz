@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{CertId, MachineId, OperationId};
 use crate::install::InstallSha256Digest;
-use crate::machine_rpc::{MachineRpcResponder, MachineRpcResponse};
+use crate::machine::rpc::{MachineRpcResponder, MachineRpcResponse};
 use crate::operation::FailureMessage;
 
 use super::{AcmeHttp01Challenge, CustomCertBundle};

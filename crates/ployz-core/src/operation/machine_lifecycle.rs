@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{MachineId, OperationId};
-use crate::state::MachineLifecycle;
+use crate::machine::MachineLifecycle;
 
 use super::events::{OperationEvent, OperationSubjectRef};
 use super::projection::{

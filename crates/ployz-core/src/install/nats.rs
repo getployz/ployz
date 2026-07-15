@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::machine::roles::DaemonProcessRole;
 use crate::nats_config::NatsCaCertificatePem;
-use crate::roles::DaemonProcessRole;
 
 use super::validation::{
     InstallContractError, has_invisible_characters, nats_url_has_host_and_port,

@@ -10,9 +10,8 @@ use crate::ids::{
     CertId, MachineId, NamespaceId, OperationId, ServiceId, SubjectToken, SubjectTokenError,
 };
 use crate::install::InstallArtifactVersion;
+use crate::machine::{InstallRolePolicy, MachineLifecycle};
 use crate::machine::{IssuedJoinToken, MachineName};
-use crate::roles::InstallRolePolicy;
-use crate::state::MachineLifecycle;
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 mod accessors;

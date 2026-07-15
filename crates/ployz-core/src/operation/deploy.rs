@@ -14,7 +14,7 @@ use crate::ids::{
     OperationId, ServiceId,
 };
 use crate::image::OciDigest;
-use crate::state::MachineUsabilityReason;
+use crate::machine::MachineUsabilityReason;
 
 use super::events::OperationEvent;
 use super::projection::{
@@ -125,7 +125,7 @@ impl DeployOperationState {
 #[serde(deny_unknown_fields)]
 pub struct UnusableMachine {
     pub machine_id: MachineId,
-    pub reason: crate::state::MachineUsabilityReason,
+    pub reason: crate::machine::MachineUsabilityReason,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

@@ -6,8 +6,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{MachineId, OperationId};
+use crate::machine::InstallRolePolicy;
 use crate::machine::{IssuedJoinToken, JoinTokenRedeemedAt, MachineAddFailure, MachineName};
-use crate::roles::InstallRolePolicy;
 
 use super::events::OperationSubjectRef;
 use super::projection::{

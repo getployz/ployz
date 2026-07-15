@@ -1,6 +1,6 @@
 //! Stable NATS subject rendering for durable operation events.
 
-use crate::state::MachineLifecycle;
+use crate::machine::MachineLifecycle;
 
 use super::OperationEvent;
 

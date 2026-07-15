@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dataplane::DataplaneProjectionRevision;
 use crate::ids::{MachineId, OperationId};
-use crate::machine_runtime::MachineFactsRefreshConfirmation;
+use crate::machine::runtime::MachineFactsRefreshConfirmation;
 
 use super::events::OperationEvent;
 use super::projection::{

@@ -1,21 +1,37 @@
 //! Machine state and machine-add operation policy.
 
 mod dataplane_admission;
+pub mod lifecycle;
+pub mod roles;
+pub mod rpc;
+pub mod runtime;
+pub mod testimony;
 
 pub use dataplane_admission::{
     validate_declared_local_machine, validate_declared_machine, validate_placement_machine_peers,
     validate_target_machine,
 };
+pub use lifecycle::{
+    DataplaneUnavailableReason, MachineLifecycle, MachineUsabilityReason, placement_rejection,
+};
+pub use roles::{
+    DaemonProcessRole, FirstMachineNatsServer, FirstMachineProcessSet, GatewayRole,
+    InstallRolePolicy, JoinedMachineProcessSet, plan_first_machine_process_set,
+    plan_joined_machine_process_set,
+};
+pub use rpc::{MachineRpcResponder, MachineRpcResponse};
+pub use runtime::*;
+pub use testimony::{GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
 use crate::ids::{MachineId, OperationId, SubjectToken, SubjectTokenError};
+use crate::intent::{ActiveMachineState, StagedMachineDataplaneState};
 use crate::operation::{
     FailureMessage, MachineAddOperationState, MachineAddOperationStateName, OperationIdempotencyKey,
 };
-use crate::state::{ActiveMachineState, StagedMachineDataplaneState};
 use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -337,7 +353,7 @@ pub fn redeem_pending_join_token(
 
 pub fn active_machine_from_completed_add(
     name: MachineName,
-    roles: crate::roles::InstallRolePolicy,
+    roles: InstallRolePolicy,
     staged: StagedMachineDataplaneState,
     operation: MachineAddOperationState,
 ) -> Result<ActiveMachineState, MachineTransitionRejected> {
@@ -355,7 +371,7 @@ pub fn active_machine_from_completed_add(
         wireguard_public_key,
     } = staged;
     Ok(ActiveMachineState {
-        lifecycle: crate::state::MachineLifecycle::Active,
+        lifecycle: MachineLifecycle::Active,
         machine_id,
         name,
         activated_by: operation_id,

@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use std::fmt;
 
 use crate::ids::{MachineId, NamespaceId, ServiceId};
-use crate::machine_rpc::{MachineRpcResponder, MachineRpcResponse};
+use crate::machine::rpc::{MachineRpcResponder, MachineRpcResponse};
 use crate::operation::FailureMessage;
 
 pub const IMAGE_MESH_REGISTRY_PORT: u16 = 5000;

@@ -4,14 +4,15 @@ use std::net::{IpAddr, Ipv4Addr};
 use ployz_core::dataplane::MachineEndpointSubnet;
 use ployz_core::ids::{MachineId, NamespaceId, ServiceId};
 use ployz_core::ingress::{AutomaticHostnameConfiguration, PloyzDnsTargetIntent};
+use ployz_core::intent::recovery::ControlPlaneEpoch;
+use ployz_core::intent::{ActiveMachineState, IntentSnapshot};
 use ployz_core::internal_dns::{InternalServiceName, internal_dns_records};
 use ployz_core::machine::MachineName;
-use ployz_core::machine_runtime::{
+use ployz_core::machine::runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, MachineFactsSnapshot,
     ManagedContainerKind,
 };
-use ployz_core::roles::InstallRolePolicy;
-use ployz_core::state::{ActiveMachineState, ControlPlaneEpoch, IntentSnapshot, MachineLifecycle};
+use ployz_core::machine::{InstallRolePolicy, MachineLifecycle};
 use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{machine_id, operation_id};
 use ployz_test_support::{containers, fixtures};
@@ -39,7 +40,7 @@ fn internal_dns_projection_returns_sorted_unique_running_service_ipv4_addresses(
             )
             .running_at(IpAddr::V4(Ipv4Addr::new(10, 198, 3, 10)))
             .build(),
-        ployz_core::machine_runtime::ManagedContainerObservation {
+        ployz_core::machine::ManagedContainerObservation {
             state: ContainerRuntimeState::Exited,
             ..containers::observation("machine_a", "ctr_exited")
                 .with(containers::identity("db").namespace("default"))
