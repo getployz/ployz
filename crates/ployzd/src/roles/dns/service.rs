@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crate::role_testimony::RoleTestimonyCache;
 use crate::roles::dns::InternalResolverHealth;
-use crate::roles::dns::internal::query_bound_resolver;
+use crate::roles::dns::internal::{InternalResolverState, query_bound_resolver};
 use crate::roles::dns::protocol::{
     DnsResolveRpcOk, DnsResolveRpcRequest, DnsStatusRpcOk, DnsStatusRpcRequest,
 };
@@ -20,14 +20,13 @@ use ployz_nats::service_runtime::{
 };
 use ployz_nats::subjects::MachineServiceEndpoint;
 
-const RESOLVER_READY_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const RESOLVER_READY_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub(crate) async fn start_dns_role_service(
     client: async_nats::Client,
     machine_id: MachineId,
     facts: RoleTestimonyCache,
-    resolver_health: Option<Arc<Mutex<InternalResolverHealth>>>,
+    resolver_health: Option<InternalResolverHealth>,
     intent_health: Arc<Mutex<InternalDnsIntentHealth>>,
 ) -> Result<RunningNatsService, NatsServiceRuntimeError> {
     let mut service = start_nats_service(client, &dns_role_service_base(&machine_id)).await?;
@@ -59,31 +58,24 @@ pub(crate) async fn start_dns_role_service(
 fn status_from_local_cache(
     machine_id: MachineId,
     facts: RoleTestimonyCache,
-    resolver_health: Option<Arc<Mutex<InternalResolverHealth>>>,
+    resolver_health: Option<InternalResolverHealth>,
     intent_health: Arc<Mutex<InternalDnsIntentHealth>>,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse {
     if let Err(response) = decode_json_request::<DnsStatusRpcRequest>(&request) {
         return response;
     }
-    let resolver = resolver_health
-        .map(|health| {
-            health
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone()
-        })
-        .map_or(
-            InternalDnsResolverStatus::NotConfigured,
-            |health| match health {
-                InternalResolverHealth::AwaitingBind { attempts } => {
-                    InternalDnsResolverStatus::AwaitingBind { attempts }
-                }
-                InternalResolverHealth::Serving { bound } => {
-                    InternalDnsResolverStatus::Serving { bound }
-                }
-            },
-        );
+    let resolver = resolver_health.map(|health| health.snapshot()).map_or(
+        InternalDnsResolverStatus::NotConfigured,
+        |health| match health {
+            InternalResolverState::AwaitingBind { attempts } => {
+                InternalDnsResolverStatus::AwaitingBind { attempts }
+            }
+            InternalResolverState::Serving { bound } => {
+                InternalDnsResolverStatus::Serving { bound }
+            }
+        },
+    );
     NatsServiceResponse::json_ok(&DnsStatusRpcOk {
         machine_id,
         value: InternalDnsStatus {
@@ -99,7 +91,7 @@ fn status_from_local_cache(
 
 async fn resolve_from_bound_resolver(
     machine_id: MachineId,
-    resolver_health: Option<Arc<Mutex<InternalResolverHealth>>>,
+    resolver_health: Option<InternalResolverHealth>,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse {
     let request = match decode_json_request::<DnsResolveRpcRequest>(&request) {
@@ -113,7 +105,7 @@ async fn resolve_from_bound_resolver(
             ),
         );
     };
-    let Some(bound) = await_bound_resolver(&resolver_health, RESOLVER_READY_TIMEOUT).await else {
+    let Some(bound) = resolver_health.await_bound(RESOLVER_READY_TIMEOUT).await else {
         return NatsServiceResponse::transport_error(
             ployz_nats::service_protocol::NatsServiceError::unavailable(
                 "internal DNS resolver is not bound",
@@ -133,29 +125,6 @@ async fn resolve_from_bound_resolver(
         name: request.name,
         addresses,
     })
-}
-
-async fn await_bound_resolver(
-    health: &Mutex<InternalResolverHealth>,
-    timeout: Duration,
-) -> Option<std::net::SocketAddr> {
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        match health
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
-        {
-            InternalResolverHealth::Serving { bound } => return Some(bound),
-            InternalResolverHealth::AwaitingBind { .. } => {}
-        }
-
-        let now = tokio::time::Instant::now();
-        if now >= deadline {
-            return None;
-        }
-        tokio::time::sleep_until((now + RESOLVER_READY_POLL_INTERVAL).min(deadline)).await;
-    }
 }
 
 #[cfg(test)]
@@ -212,16 +181,14 @@ mod tests {
             .await
             .expect("reserve UDP port");
         let bind = reservation.local_addr().expect("reserved address");
-        let health = Arc::new(Mutex::new(InternalResolverHealth::AwaitingBind {
-            attempts: 0,
-        }));
+        let health = InternalResolverHealth::awaiting_bind();
         let (shutdown, receiver) = broadcast::channel(1);
         let resolver = spawn_internal_resolver(
             RoleTestimonyCache::default(),
             InternalDnsIntentCache::default(),
             bind,
             receiver,
-            Arc::clone(&health),
+            health.clone(),
         );
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -235,7 +202,7 @@ mod tests {
 
         let response = resolve_from_bound_resolver(
             machine_id("dns_a"),
-            Some(Arc::clone(&health)),
+            Some(health),
             NatsServiceRequest {
                 headers: None,
                 payload: serde_json::to_vec(&DnsResolveRpcRequest { name }).expect("request"),
@@ -261,9 +228,7 @@ mod tests {
 
         let response = resolve_from_bound_resolver(
             machine_id("dns_a"),
-            Some(Arc::new(Mutex::new(InternalResolverHealth::AwaitingBind {
-                attempts: 4,
-            }))),
+            Some(InternalResolverHealth::awaiting_bind()),
             NatsServiceRequest {
                 headers: None,
                 payload: serde_json::to_vec(&DnsResolveRpcRequest { name }).expect("request"),

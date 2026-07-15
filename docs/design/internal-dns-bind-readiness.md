@@ -23,14 +23,17 @@ of that missing classification.
 ## Decision
 
 An internal DNS resolve request waits up to three seconds for an
-`AwaitingBind` resolver to become `Serving`. It polls the existing local
-health cell every 25 milliseconds without holding the mutex across an await. A
-resolver that remains unbound returns the existing typed unavailable response.
-An unconfigured resolver still fails immediately.
+`AwaitingBind` resolver to become `Serving`. One resolver-owned
+`tokio::sync::watch` channel carries the state: status takes an immediate
+snapshot, while resolve awaits a state transition within its readiness budget.
+A resolver that remains unbound returns the existing typed unavailable
+response. An unconfigured resolver still fails immediately.
 
 The resolver continues to use exponential bind backoff, capped at one second.
 This avoids a tight retry loop while bounding the delay between the host
-becoming bindable and the next attempt.
+becoming bindable and the next attempt. An unchanged bind failure is reported
+immediately and then once every 30 seconds, preserving the prior diagnostic
+cadence; a changed error is reported immediately.
 
 The control-side resolve gather has one shared 30-second deadline, not an
 independent deadline per machine. It gathers at most 16 machine responses
@@ -49,9 +52,9 @@ restart. Coupling deploy success to this local substrate condition would mask
 only one caller context and would make deploy own readiness outside its
 operation boundary.
 
-A new notification abstraction is also unnecessary. Resolver health has one
-writer, two readers, and one forward transition from awaiting bind to serving.
-The bounded local poll keeps that shape explicit.
+Resolver health owns its state channel and all transitions. Callers cannot
+mutate the state directly, and request handlers do not recreate transition
+knowledge through request-local polling.
 
 ## Deterministic Evidence
 
@@ -68,5 +71,9 @@ cargo test -p ployzd \
 
 cargo test -p ployzd \
   roles::dns::internal::tests::resolver_bind_retry_stays_at_a_one_second_cadence \
+  -- --exact --nocapture
+
+cargo test -p ployzd \
+  roles::dns::internal::tests::unchanged_bind_failure_diagnostics_repeat_every_thirty_seconds \
   -- --exact --nocapture
 ```

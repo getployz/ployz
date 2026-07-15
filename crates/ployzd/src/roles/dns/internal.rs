@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use ployz_core::network::INTERNAL_DNS_SUFFIX;
 use tokio::net::UdpSocket;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 
 use crate::role_testimony::RoleTestimonyCache;
@@ -22,6 +22,7 @@ const DNS_TTL_SECONDS: u32 = 5;
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(2);
 const BIND_RETRY_INITIAL: Duration = Duration::from_millis(250);
 const BIND_RETRY_CAP: Duration = Duration::from_secs(1);
+const BIND_DIAGNOSTIC_REPEAT: Duration = Duration::from_secs(30);
 const LOCAL_QUERY_TIMEOUT: Duration = Duration::from_millis(500);
 const LOCAL_QUERY_ID: u16 = 0x504c;
 
@@ -260,9 +261,86 @@ fn build_response(query: &DnsQuery, rcode: DnsRcode, answers: &[Ipv4Addr]) -> Ve
 
 /// Bind and serving state for the machine-local internal resolver.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InternalResolverHealth {
+pub(super) enum InternalResolverState {
     AwaitingBind { attempts: u64 },
     Serving { bound: SocketAddr },
+}
+
+#[derive(Debug, Clone)]
+pub struct InternalResolverHealth {
+    state: watch::Sender<InternalResolverState>,
+}
+
+impl InternalResolverHealth {
+    #[must_use]
+    pub fn awaiting_bind() -> Self {
+        let (state, _) = watch::channel(InternalResolverState::AwaitingBind { attempts: 0 });
+        Self { state }
+    }
+
+    #[must_use]
+    #[cfg(test)]
+    pub fn serving(bound: SocketAddr) -> Self {
+        let (state, _) = watch::channel(InternalResolverState::Serving { bound });
+        Self { state }
+    }
+
+    pub(super) fn snapshot(&self) -> InternalResolverState {
+        self.state.borrow().clone()
+    }
+
+    fn record_bind_failure(&self) {
+        self.state.send_modify(|state| {
+            let InternalResolverState::AwaitingBind { attempts } = state else {
+                unreachable!("resolver can only serve after a successful bind");
+            };
+            *attempts = attempts.saturating_add(1);
+        });
+    }
+
+    fn record_serving(&self, bound: SocketAddr) {
+        self.state
+            .send_replace(InternalResolverState::Serving { bound });
+    }
+
+    pub(super) async fn await_bound(&self, timeout: Duration) -> Option<SocketAddr> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut states = self.state.subscribe();
+        loop {
+            match states.borrow().clone() {
+                InternalResolverState::Serving { bound } => return Some(bound),
+                InternalResolverState::AwaitingBind { .. } => {}
+            }
+            match tokio::time::timeout_at(deadline, states.changed()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) | Err(_) => return None,
+            }
+        }
+    }
+}
+
+struct BindFailureDiagnostics {
+    last_error: Option<String>,
+    next_repeat: tokio::time::Instant,
+}
+
+impl BindFailureDiagnostics {
+    fn new() -> Self {
+        Self {
+            last_error: None,
+            next_repeat: tokio::time::Instant::now(),
+        }
+    }
+
+    fn should_report(&mut self, error: &io::Error, now: tokio::time::Instant) -> bool {
+        let error = error.to_string();
+        if self.last_error.as_ref() == Some(&error) && now < self.next_repeat {
+            return false;
+        }
+        self.last_error = Some(error);
+        self.next_repeat = now + BIND_DIAGNOSTIC_REPEAT;
+        true
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -308,27 +386,22 @@ pub(super) fn spawn_internal_resolver(
     intent: InternalDnsIntentCache,
     bind: SocketAddr,
     mut shutdown: broadcast::Receiver<()>,
-    health: Arc<Mutex<InternalResolverHealth>>,
+    health: InternalResolverHealth,
 ) -> JoinHandle<()> {
     let upstream = load_upstream_nameserver(bind.ip());
     tokio::spawn(async move {
         let mut backoff = BIND_RETRY_INITIAL;
+        let mut diagnostics = BindFailureDiagnostics::new();
         let socket = loop {
             match UdpSocket::bind(bind).await {
                 Ok(socket) => break socket,
                 Err(error) => {
-                    {
-                        let mut health = health
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner());
-                        let InternalResolverHealth::AwaitingBind { attempts } = &mut *health else {
-                            unreachable!("resolver can only serve after a successful bind");
-                        };
-                        *attempts = attempts.saturating_add(1);
+                    health.record_bind_failure();
+                    if diagnostics.should_report(&error, tokio::time::Instant::now()) {
+                        eprintln!(
+                            "ployzd internal DNS warning: phase=bind address={bind} error={error}"
+                        );
                     }
-                    eprintln!(
-                        "ployzd internal DNS warning: phase=bind address={bind} error={error}"
-                    );
                     tokio::select! {
                         () = tokio::time::sleep(backoff) => {
                             backoff = backoff.saturating_mul(2).min(BIND_RETRY_CAP);
@@ -338,10 +411,7 @@ pub(super) fn spawn_internal_resolver(
                 }
             }
         };
-        *health
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-            InternalResolverHealth::Serving { bound: bind };
+        health.record_serving(bind);
         let socket = Arc::new(socket);
         let mut packet = [0_u8; 4096];
         loop {
@@ -576,15 +646,13 @@ mod tests {
             )],
         ));
         let (shutdown, receiver) = broadcast::channel(1);
-        let health = Arc::new(Mutex::new(InternalResolverHealth::AwaitingBind {
-            attempts: 0,
-        }));
+        let health = InternalResolverHealth::awaiting_bind();
         let task = spawn_internal_resolver(
             cache,
             internal_dns_intent("machine_a", "entry_db"),
             bind,
             receiver,
-            Arc::clone(&health),
+            health.clone(),
         );
         let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
             .await
@@ -620,8 +688,8 @@ mod tests {
             Some(expected_address.as_slice())
         );
         assert_eq!(
-            *health.lock().expect("resolver health lock is not poisoned"),
-            InternalResolverHealth::Serving { bound: bind }
+            health.snapshot(),
+            InternalResolverState::Serving { bound: bind }
         );
         let _ = shutdown.send(());
         task.await.expect("resolver task exits");
@@ -634,15 +702,13 @@ mod tests {
             .expect("reserve UDP port");
         let bind = reservation.local_addr().expect("reserved address");
         let (shutdown, receiver) = broadcast::channel(1);
-        let health = Arc::new(Mutex::new(InternalResolverHealth::AwaitingBind {
-            attempts: 0,
-        }));
+        let health = InternalResolverHealth::awaiting_bind();
         let task = spawn_internal_resolver(
             RoleTestimonyCache::default(),
             InternalDnsIntentCache::default(),
             bind,
             receiver,
-            Arc::clone(&health),
+            health.clone(),
         );
         tokio::task::yield_now().await;
 
@@ -657,12 +723,29 @@ mod tests {
         }
 
         assert_eq!(
-            *health.lock().expect("resolver health lock"),
-            InternalResolverHealth::AwaitingBind { attempts: 5 }
+            health.snapshot(),
+            InternalResolverState::AwaitingBind { attempts: 5 }
         );
         let _ = shutdown.send(());
         task.await.expect("resolver task exits");
         drop(reservation);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unchanged_bind_failure_diagnostics_repeat_every_thirty_seconds() {
+        let mut diagnostics = BindFailureDiagnostics::new();
+        let address_in_use = io::Error::new(io::ErrorKind::AddrInUse, "address in use");
+        let address_unavailable =
+            io::Error::new(io::ErrorKind::AddrNotAvailable, "address unavailable");
+
+        assert!(diagnostics.should_report(&address_in_use, tokio::time::Instant::now()));
+        assert!(!diagnostics.should_report(&address_in_use, tokio::time::Instant::now()));
+        tokio::time::advance(Duration::from_secs(29)).await;
+        assert!(!diagnostics.should_report(&address_in_use, tokio::time::Instant::now()));
+        assert!(diagnostics.should_report(&address_unavailable, tokio::time::Instant::now()));
+        assert!(!diagnostics.should_report(&address_unavailable, tokio::time::Instant::now()));
+        tokio::time::advance(BIND_DIAGNOSTIC_REPEAT).await;
+        assert!(diagnostics.should_report(&address_unavailable, tokio::time::Instant::now()));
     }
 
     #[test]
