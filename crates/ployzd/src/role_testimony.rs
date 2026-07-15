@@ -8,6 +8,8 @@ use futures_util::StreamExt;
 use ployz_core::ids::MachineId;
 use ployz_core::machine::GatewayStatusObservation;
 use ployz_core::machine::MachineEndpointObservation;
+#[cfg(test)]
+use ployz_core::machine::runtime::ManagedContainerObservation;
 use ployz_core::machine::runtime::{
     MachineContainerFactDelta, MachineContainerObservationSnapshot, MachineFactsSnapshot,
 };

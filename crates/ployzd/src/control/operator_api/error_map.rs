@@ -9,9 +9,7 @@ use crate::control::operation_evidence::{
 };
 use crate::control::sequencer::{MachineAddSubmitCommandError, SubmitCommandError};
 use ployz_core::ids::OperationId;
-use ployz_core::operation::{
-    EventSequence, FailureMessage, ProjectionOperationState, StatusProjectionError,
-};
+use ployz_core::operation::{EventSequence, ProjectionOperationState, StatusProjectionError};
 use ployz_sdk_types::{
     DeploySubmitError, MachineAddError, MachineJoinRedeemError, MachineJoinReportError,
     OpsWatchError,
@@ -24,7 +22,6 @@ pub(super) fn corrupt(detail: impl std::fmt::Display) -> String {
 }
 
 pub(super) enum SubmitFailure {
-    InvalidDeployTarget,
     ResourceBusy {
         namespace_id: ployz_core::ids::NamespaceId,
         owner: OperationId,
@@ -96,11 +93,6 @@ pub(super) fn unfenced_submit_failure(
     error: SubmitCommandError,
 ) -> UnfencedSubmitFailure {
     match submit_failure(error) {
-        SubmitFailure::InvalidDeployTarget => UnfencedSubmitFailure::Unavailable {
-            message: corrupt(format_args!(
-                "{operation} submit returned deploy target failure"
-            )),
-        },
         SubmitFailure::ResourceBusy {
             namespace_id,
             owner,
@@ -178,11 +170,6 @@ pub(super) fn deploy_submit_error_from_submit_error(
         }) => error,
     };
     match submit_failure(error) {
-        SubmitFailure::InvalidDeployTarget => DeploySubmitError::InvalidTarget {
-            operation_id,
-            message: FailureMessage::try_new("deploy target must include at least one service")
-                .expect("static deploy target failure message is non-empty"),
-        },
         SubmitFailure::ResourceBusy {
             namespace_id,
             owner,
