@@ -242,6 +242,13 @@ impl RunningNatsService {
         self.health.snapshot()
     }
 
+    #[must_use]
+    pub fn health_reader(&self) -> NatsServiceHealthReader {
+        NatsServiceHealthReader {
+            health: Arc::clone(&self.health),
+        }
+    }
+
     pub async fn shutdown(mut self) -> Result<(), NatsServiceShutdownError> {
         if let Some(service) = self.service.take() {
             service
@@ -396,6 +403,18 @@ pub struct NatsServiceHealth {
     pub handler_failures: usize,
     pub domain_failures: usize,
     pub response_failures: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct NatsServiceHealthReader {
+    health: Arc<NatsServiceHealthCounters>,
+}
+
+impl NatsServiceHealthReader {
+    #[must_use]
+    pub fn snapshot(&self) -> NatsServiceHealth {
+        self.health.snapshot()
+    }
 }
 
 #[derive(Debug, Default)]

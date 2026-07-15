@@ -14,12 +14,6 @@ mod adapters {
 mod certificate;
 pub mod config;
 mod control;
-pub use control::process::RunningControlProcess;
-pub use control::projection::runtime::{RuntimeProjectionHealthState, RuntimeProjectionLoopHealth};
-pub use control::reconciler::certificate::{
-    CertificateRenewalAttempt, CertificateRenewalHealthFailure, CertificateRenewalHealthState,
-    CertificateRenewalOutcome,
-};
 mod recovery;
 mod role_testimony;
 mod roles {
@@ -40,10 +34,6 @@ mod roles {
     }
     pub mod machine;
 }
-pub use roles::gateway::process::{
-    GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessHealth, GatewayStatusPublishFailure,
-    GatewayWatchFailure, RunningGatewayProcess,
-};
 pub mod dispatch;
 mod lease;
 mod process_support;

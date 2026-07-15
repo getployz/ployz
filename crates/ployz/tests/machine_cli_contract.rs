@@ -236,6 +236,7 @@ fn machine_snapshot(machine_id: &str, gateway: Option<GatewayServingStatus>) -> 
                 listen_addr: "127.0.0.1:8080".parse().expect("valid listen addr"),
                 serving,
                 route_count: 2,
+                process_health: ployz_core::machine::GatewayProcessHealth::default(),
             }),
             observed_container_count: 3,
             disk_space: ployz_test_support::fixtures::test_disk_space(),

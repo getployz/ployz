@@ -7,6 +7,10 @@ use ployz_core::operation::{
     CertOperationFailure, CertificateProvisionFailure, FailureMessage, OperationStatus,
 };
 use ployz_core::roles::GatewayRole;
+use ployz_sdk_types::{
+    ControlCertificateRenewalAttempt, ControlCertificateRenewalFailure,
+    ControlCertificateRenewalHealth, ControlCertificateRenewalOutcome,
+};
 
 use crate::certificate::{
     CertificateManager, GatewayCertificateTarget, gateway_certificate_targets,
@@ -333,6 +337,55 @@ impl CertificateRenewalHealth {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    #[must_use]
+    pub(crate) fn operational_health(&self) -> ControlCertificateRenewalHealth {
+        let state = self.snapshot();
+        ControlCertificateRenewalHealth {
+            last_attempt: state.last_attempt.map(|attempt| match attempt {
+                CertificateRenewalAttempt::Completed { outcome } => {
+                    ControlCertificateRenewalAttempt::Completed {
+                        outcome: match outcome {
+                            CertificateRenewalOutcome::NoAction => {
+                                ControlCertificateRenewalOutcome::NoAction
+                            }
+                            CertificateRenewalOutcome::AwaitingPloyzWildcard => {
+                                ControlCertificateRenewalOutcome::AwaitingPloyzWildcard
+                            }
+                            CertificateRenewalOutcome::Attempted { attempted, failed } => {
+                                ControlCertificateRenewalOutcome::Attempted { attempted, failed }
+                            }
+                        },
+                    }
+                }
+                CertificateRenewalAttempt::Failed { failure } => {
+                    ControlCertificateRenewalAttempt::Failed {
+                        failure: match failure {
+                            CertificateRenewalHealthFailure::IntentStore { message } => {
+                                ControlCertificateRenewalFailure::IntentStore { message }
+                            }
+                            CertificateRenewalHealthFailure::RenewalEvidence { failure } => {
+                                ControlCertificateRenewalFailure::RenewalEvidence { failure }
+                            }
+                            CertificateRenewalHealthFailure::OperationStatus { message } => {
+                                ControlCertificateRenewalFailure::OperationStatus { message }
+                            }
+                            CertificateRenewalHealthFailure::OperationEvidence { message } => {
+                                ControlCertificateRenewalFailure::OperationEvidence { message }
+                            }
+                            CertificateRenewalHealthFailure::PloyzDnsTarget { message } => {
+                                ControlCertificateRenewalFailure::PloyzDnsTarget { message }
+                            }
+                            CertificateRenewalHealthFailure::Worker { message } => {
+                                ControlCertificateRenewalFailure::Worker { message }
+                            }
+                        },
+                    }
+                }
+            }),
+            consecutive_failures: state.consecutive_failures,
+        }
     }
 }
 

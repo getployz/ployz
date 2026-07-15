@@ -1,9 +1,6 @@
 use crate::control::intent::namespace_intent::NamespaceIntentStore;
 use crate::control::intent::service::{RunningIntentService, start_intent_service};
-use crate::roles::gateway::process::{
-    GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessError,
-    start_gateway_process_with_client,
-};
+use crate::roles::gateway::process::{GatewayProcessError, start_gateway_process_with_client};
 use crate::roles::gateway::projection::GatewayUpstream;
 use crate::service_catalog::{intent_get_endpoint_spec, intent_service};
 use futures_util::StreamExt;
@@ -15,11 +12,11 @@ use ployz_core::certificate::{
 };
 use ployz_core::intent::recovery::ControlPlaneEpoch;
 use ployz_core::intent::{IntentSnapshot, RouteBindingState};
-use ployz_core::machine::GatewayServingStatus;
 use ployz_core::machine::rpc::MachineRpcResponse;
 use ployz_core::machine::runtime::{
     MachineContainerObservationSnapshot, MachineFactsSnapshot, ManagedContainerObservation,
 };
+use ployz_core::machine::{GatewayHttpFailure, GatewayProcessAttempt, GatewayServingStatus};
 use ployz_core::operation::RouteTarget;
 use ployz_nats::service_runtime::{
     NatsJsonServiceRequestError, NatsServiceRequestFailure, NatsServiceResponse,

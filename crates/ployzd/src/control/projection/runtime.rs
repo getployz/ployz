@@ -12,11 +12,14 @@ use futures_util::StreamExt;
 use ployz_core::intent::IntentSnapshot;
 use ployz_nats::service_protocol::NatsServiceError;
 use ployz_nats::service_runtime::{
-    NatsServiceHealth, NatsServiceResponse, NatsServiceShutdownError, RunningNatsService,
+    NatsServiceHealthReader, NatsServiceResponse, NatsServiceShutdownError, RunningNatsService,
     decode_json_request, start_nats_service,
 };
 use ployz_nats::subjects::{INGRESS_ENDPOINT_CHANGED, INTENT_CHANGED, RUNTIME_SNAPSHOT_STREAM};
-use ployz_sdk_types::RuntimeSnapshot;
+use ployz_sdk_types::{
+    ControlRuntimeProjectionHealth, ControlRuntimeProjectionLoopHealth,
+    ControlRuntimeProjectionServiceHealth, RuntimeSnapshot,
+};
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -39,10 +42,11 @@ pub(crate) struct RunningRuntimeProjection {
 
 impl RunningRuntimeProjection {
     #[must_use]
-    pub(crate) fn health(&self) -> RuntimeProjectionHealthState {
-        let mut snapshot = self.health.snapshot();
-        snapshot.seed = self.seed_service.health();
-        snapshot
+    pub(crate) fn health_reader(&self) -> RuntimeProjectionHealthReader {
+        RuntimeProjectionHealthReader {
+            health: self.health.clone(),
+            seed_service: self.seed_service.health_reader(),
+        }
     }
 
     pub(crate) async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
@@ -62,14 +66,13 @@ impl RunningRuntimeProjection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimeProjectionHealthState {
+struct RuntimeProjectionHealthState {
     pub projection: RuntimeProjectionLoopHealth,
     pub publisher: RuntimeProjectionLoopHealth,
-    pub seed: NatsServiceHealth,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RuntimeProjectionLoopHealth {
+struct RuntimeProjectionLoopHealth {
     pub running: bool,
     pub consecutive_failures: u64,
 }
@@ -77,6 +80,38 @@ pub struct RuntimeProjectionLoopHealth {
 #[derive(Debug, Clone)]
 struct RuntimeProjectionHealth {
     state: Arc<Mutex<RuntimeProjectionHealthState>>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RuntimeProjectionHealthReader {
+    health: RuntimeProjectionHealth,
+    seed_service: NatsServiceHealthReader,
+}
+
+impl RuntimeProjectionHealthReader {
+    #[must_use]
+    pub(crate) fn snapshot(&self) -> ControlRuntimeProjectionHealth {
+        let state = self.health.snapshot();
+        let seed = self.seed_service.snapshot();
+        ControlRuntimeProjectionHealth {
+            projection: ControlRuntimeProjectionLoopHealth {
+                running: state.projection.running,
+                consecutive_failures: state.projection.consecutive_failures,
+            },
+            publisher: ControlRuntimeProjectionLoopHealth {
+                running: state.publisher.running,
+                consecutive_failures: state.publisher.consecutive_failures,
+            },
+            seed_service: ControlRuntimeProjectionServiceHealth {
+                endpoint_tasks_started: seed.endpoint_tasks_started,
+                endpoint_tasks_finished: seed.endpoint_tasks_finished,
+                request_timeouts: seed.request_timeouts,
+                handler_failures: seed.handler_failures,
+                domain_failures: seed.domain_failures,
+                response_failures: seed.response_failures,
+            },
+        }
+    }
 }
 
 impl Default for RuntimeProjectionHealth {
@@ -90,14 +125,6 @@ impl Default for RuntimeProjectionHealth {
                 publisher: RuntimeProjectionLoopHealth {
                     running: true,
                     consecutive_failures: 0,
-                },
-                seed: NatsServiceHealth {
-                    endpoint_tasks_started: 0,
-                    endpoint_tasks_finished: 0,
-                    request_timeouts: 0,
-                    handler_failures: 0,
-                    domain_failures: 0,
-                    response_failures: 0,
                 },
             })),
         }
@@ -410,6 +437,7 @@ mod tests {
             listen_addr: "127.0.0.1:443".parse().expect("socket address"),
             serving: GatewayServingStatus::Current,
             route_count: 3,
+            process_health: ployz_core::machine::GatewayProcessHealth::default(),
         });
         projection.refresh();
         snapshots.changed().await.expect("gateway replacement");

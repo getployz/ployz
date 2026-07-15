@@ -30,12 +30,8 @@ use crate::control::operator_api::{OperationApiHandlers, OperationWorkers};
 use crate::control::projection::ingress_endpoint::{
     IngressEndpointStartError, RunningIngressEndpointProjection, start_ingress_endpoint_projection,
 };
-use crate::control::projection::runtime::RuntimeProjectionHealthState;
 use crate::control::projection::runtime::{RunningRuntimeProjection, start_runtime_projection};
-use crate::control::reconciler::certificate::CertificateRenewalHealthState;
-use crate::control::reconciler::certificate::{
-    CertificateRenewalHealth, start_certificate_renewal_task,
-};
+use crate::control::reconciler::certificate::start_certificate_renewal_task;
 use crate::control::reconciler::managed_dns::start_managed_dns_task;
 use crate::control::role_client::machine::{
     NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
@@ -81,7 +77,6 @@ pub struct RunningControlProcess {
     managed_dns_tasks: TaskRegistry,
     certificate_issuance_tasks: TaskRegistry,
     certificate_renewal_tasks: TaskRegistry,
-    certificate_renewal_health: CertificateRenewalHealth,
     testimony_cache: RunningRoleTestimonyCache,
     runtime_projection: RunningRuntimeProjection,
     ingress_endpoint_projection: RunningIngressEndpointProjection,
@@ -89,16 +84,6 @@ pub struct RunningControlProcess {
 }
 
 impl RunningControlProcess {
-    #[must_use]
-    pub fn certificate_renewal_health(&self) -> CertificateRenewalHealthState {
-        self.certificate_renewal_health.snapshot()
-    }
-
-    #[must_use]
-    pub fn runtime_projection_health(&self) -> RuntimeProjectionHealthState {
-        self.runtime_projection.health()
-    }
-
     pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
         self.operation_api.shutdown().await?;
         self.ingress_endpoint_projection.shutdown().await?;
@@ -403,6 +388,7 @@ async fn start_control_process_with_client_reload_and_issuer(
     .map_err(|error| ControlProcessError::StartRuntimeProjection {
         message: error.to_string(),
     })?;
+    let runtime_projection_health = runtime_projection.health_reader();
     let machine_updater = NatsMachineSubstrateUpdater::new(client.clone());
     let machine_update = MachineUpdateOperation::new(
         controllers.clone(),
@@ -444,6 +430,8 @@ async fn start_control_process_with_client_reload_and_issuer(
             facts_reader,
             intent_reader,
             logs_tailer,
+            runtime_projection_health,
+            certificate_renewal_health.clone(),
         ),
     )
     .await
@@ -466,7 +454,6 @@ async fn start_control_process_with_client_reload_and_issuer(
         managed_dns_tasks,
         certificate_issuance_tasks,
         certificate_renewal_tasks,
-        certificate_renewal_health,
         testimony_cache,
         runtime_projection,
         ingress_endpoint_projection,

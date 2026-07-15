@@ -635,6 +635,7 @@ mod tests {
             listen_addr: "203.0.113.10:443".parse().expect("valid socket addr"),
             serving: ployz_core::machine::GatewayServingStatus::Current,
             route_count: 1,
+            process_health: ployz_core::machine::GatewayProcessHealth::default(),
         };
 
         ingest_gateway_status(

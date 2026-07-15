@@ -443,6 +443,7 @@ async fn gateway_status_endpoint_reads_fresh_process_state() {
             listen_addr: "0.0.0.0:0".parse().expect("listen address"),
             serving: GatewayServingStatus::Unavailable,
             route_count: 0,
+            process_health: ployz_core::machine::GatewayProcessHealth::default(),
         }
     );
     service.shutdown().await.expect("service shutdown");
@@ -472,6 +473,7 @@ async fn gateway_status_client_rejects_wrong_machine_response() {
                         listen_addr: "192.0.2.8:80".parse().expect("listen address"),
                         serving: GatewayServingStatus::Current,
                         route_count: 1,
+                        process_health: ployz_core::machine::GatewayProcessHealth::default(),
                     },
                 }))
             },

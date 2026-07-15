@@ -53,8 +53,9 @@ pub use ployz_core::machine::{
     MachineReadinessCheck, MachineReadinessEvidence, WireGuardReadinessFailure,
 };
 pub use ployz_core::machine::{
-    DataplaneUnavailableReason, GatewayServingStatus, GatewayStatusObservation,
-    MachineEndpointObservation, MachineLifecycle, MachineUsabilityReason,
+    DataplaneUnavailableReason, GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessHealth,
+    GatewayServingStatus, GatewayStatusObservation, GatewayStatusPublishFailure,
+    GatewayWatchFailure, MachineEndpointObservation, MachineLifecycle, MachineUsabilityReason,
 };
 pub use ployz_core::nats_config::{
     CredentialGrant, CredentialName, CredentialNameError, CredentialRole, NatsAuthorizationGrant,

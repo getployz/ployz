@@ -8,15 +8,20 @@ use ployz_sdk_types::{
     CloudBootstrapDecision, CloudBootstrapEnvelope, CloudBootstrapIntent, CloudBootstrapOutcome,
     CloudBootstrapRedemptionId, CloudBootstrapSessionCreateRequest, CloudBootstrapSessionCreated,
     CloudBootstrapSessionPollRequest, CloudBootstrapToken, CloudBootstrapTokenRedeemRequest,
-    CloudFounderBootstrapResult, ControlPlaneEpoch, CoreReplaceError, CoreReplaceReportError,
+    CloudFounderBootstrapResult, ControlCertificateRenewalAttempt,
+    ControlCertificateRenewalFailure, ControlCertificateRenewalHealth,
+    ControlCertificateRenewalOutcome, ControlHealth, ControlPlaneEpoch,
+    ControlRuntimeProjectionHealth, ControlRuntimeProjectionLoopHealth,
+    ControlRuntimeProjectionServiceHealth, CoreReplaceError, CoreReplaceReportError,
     CoreReplaceReportRequest, CoreReplaceReported, CoreReplaceRequest, CredentialAddError,
     CredentialAddRequest, CredentialListError, CredentialListRequest, CredentialListResult,
     CredentialRemoveError, CredentialRemoveRequest, DependencyCondition, DeployOperationState,
     DeployPhaseNumber, DeployPhaseNumberError, DeployRequest, DeployReservationId,
     DeployReserveError, DeployReserveRequest, DeployReserved, DeployRunningStage,
     DeployServiceSpec, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse, EventSequence,
-    EventSequenceError, HostPortAssurance, ImageReference, ImageReferenceError,
-    IngressConfiguration, IngressConfigureError, IngressConfigureRequest,
+    EventSequenceError, GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessHealth,
+    GatewayStatusPublishFailure, GatewayWatchFailure, HostPortAssurance, ImageReference,
+    ImageReferenceError, IngressConfiguration, IngressConfigureError, IngressConfigureRequest,
     IngressEndpointProjectionIdentity, InitFirstMachineActivateError,
     InitFirstMachineActivateRequest, InitFirstMachineActivated, InstallContractError,
     InstallRolePolicy, LogsTailError, LogsTailRequest, LogsTailResult,
@@ -747,6 +752,29 @@ fn sdk_exports_constructor_error_types() {
         MachineJoinToken::try_new("join token"),
         Err(ployz_sdk_types::BootstrapCommandError::InvalidJoinToken)
     ));
+}
+
+#[test]
+fn sdk_exports_operational_health_wire_types() {
+    assert_wire_type::<GatewayProcessHealth>();
+    assert_wire_type::<GatewayProcessAttempt>();
+    assert_wire_type::<GatewayHttpFailure>();
+    assert_wire_type::<GatewayWatchFailure>();
+    assert_wire_type::<GatewayStatusPublishFailure>();
+    assert_wire_type::<ControlHealth>();
+    assert_wire_type::<ControlRuntimeProjectionHealth>();
+    assert_wire_type::<ControlRuntimeProjectionLoopHealth>();
+    assert_wire_type::<ControlRuntimeProjectionServiceHealth>();
+    assert_wire_type::<ControlCertificateRenewalHealth>();
+    assert_wire_type::<ControlCertificateRenewalAttempt>();
+    assert_wire_type::<ControlCertificateRenewalFailure>();
+    assert_wire_type::<ControlCertificateRenewalOutcome>();
+}
+
+fn assert_wire_type<T>()
+where
+    T: serde::Serialize + for<'de> serde::Deserialize<'de> + TS,
+{
 }
 
 fn valid_at(value: u64) -> CertValidAt {

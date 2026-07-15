@@ -8,9 +8,6 @@
 use crate::certificate::{AcmeIssueContext, AcmeIssuer, AcmeIssuerError, IssuedCertificate};
 use crate::control::intent::machine_roster::MachineRosterStore;
 use crate::control::intent::namespace_intent::NamespaceIntentStore;
-use crate::control::reconciler::certificate::{
-    CertificateRenewalAttempt, CertificateRenewalOutcome,
-};
 use crate::control::sequencer::MachineAddBootstrapConfig;
 use crate::lease::LeaseWorkerUrl;
 use crate::roles::gateway::process::start_gateway_process_with_client;
@@ -57,12 +54,13 @@ use ployz_nats::subjects::{
     machine_service,
 };
 use ployz_sdk_types::{
-    DeployReserveRequest, DeploySubmitRequest, MachineAddError, MachineAddRequest,
-    MachineInspectRequest, MachineJoinReportOutcome, MachineJoinReportRequest, MachineListRequest,
-    MachineTestimony, MachineUpdateError, MachineUpdateRequest, OpsWatchRequest,
-    RuntimeDerivedCollectionStatus, RuntimePloyzDnsTargetAllocation,
-    RuntimePloyzDnsTargetPublication, RuntimeSnapshot, RuntimeSnapshotRequest,
-    ServiceInspectRequest, ServiceListRequest, VolumeListRequest, VolumeStatus,
+    ControlCertificateRenewalAttempt, ControlCertificateRenewalOutcome, DeployReserveRequest,
+    DeploySubmitRequest, MachineAddError, MachineAddRequest, MachineInspectRequest,
+    MachineJoinReportOutcome, MachineJoinReportRequest, MachineListRequest, MachineTestimony,
+    MachineUpdateError, MachineUpdateRequest, OpsWatchRequest, RuntimeDerivedCollectionStatus,
+    RuntimePloyzDnsTargetAllocation, RuntimePloyzDnsTargetPublication, RuntimeSnapshot,
+    RuntimeSnapshotRequest, ServiceInspectRequest, ServiceListRequest, VolumeListRequest,
+    VolumeStatus,
 };
 use ployz_test_support::ops::wait_for_terminal_status;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -85,12 +83,18 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
     let runtime = nats.start_control(&config).await;
     let api = nats.api();
 
-    let renewal_health = runtime.certificate_renewal_health();
+    let renewal_health = api
+        .runtime_snapshot(&RuntimeSnapshotRequest {})
+        .await
+        .expect("runtime snapshot includes Control health")
+        .control_health
+        .expect("Control health is present")
+        .certificate_renewal;
     assert_eq!(renewal_health.consecutive_failures, 0);
     assert!(matches!(
         renewal_health.last_attempt,
-        None | Some(CertificateRenewalAttempt::Completed {
-            outcome: CertificateRenewalOutcome::NoAction,
+        None | Some(ControlCertificateRenewalAttempt::Completed {
+            outcome: ControlCertificateRenewalOutcome::NoAction,
         })
     ));
 
@@ -255,6 +259,7 @@ async fn control_runtime_uses_configured_machine_bootstrap_url() {
             listen_addr: SocketAddr::from(([127, 0, 0, 1], 8080)),
             serving: GatewayServingStatus::Current,
             route_count: 0,
+            process_health: ployz_core::machine::GatewayProcessHealth::default(),
         },
     )
     .await;
@@ -503,11 +508,18 @@ async fn secured_operator_receives_passive_runtime_snapshot_replacements() {
         initial.automatic_hostname_configuration
     );
     assert!(seeded.updated_at_unix_seconds >= initial.updated_at_unix_seconds);
-    let health = runtime.runtime_projection_health();
+    let health = nats
+        .api()
+        .runtime_snapshot(&RuntimeSnapshotRequest {})
+        .await
+        .expect("runtime snapshot includes Control health")
+        .control_health
+        .expect("Control health is present")
+        .runtime_projection;
     assert_eq!(health.projection.consecutive_failures, 0);
     assert_eq!(health.publisher.consecutive_failures, 0);
-    assert_eq!(health.seed.endpoint_tasks_started, 1);
-    assert_eq!(health.seed.endpoint_tasks_finished, 0);
+    assert_eq!(health.seed_service.endpoint_tasks_started, 1);
+    assert_eq!(health.seed_service.endpoint_tasks_finished, 0);
 
     machine_roster
         .replace_active_machine(&active_machine("machine_a"))
@@ -553,6 +565,7 @@ async fn secured_operator_receives_passive_runtime_snapshot_replacements() {
             listen_addr: "127.0.0.1:443".parse().expect("gateway address"),
             serving: GatewayServingStatus::Current,
             route_count: 2,
+            process_health: ployz_core::machine::GatewayProcessHealth::default(),
         },
     )
     .await;

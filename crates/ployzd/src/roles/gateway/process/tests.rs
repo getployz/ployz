@@ -107,12 +107,18 @@ fn gateway_status_reads_current_process_state() {
     let listen_addr = "192.0.2.7:80".parse().expect("listen address");
 
     assert_eq!(
-        gateway_status_observation(&machine_id, listen_addr, &runtime),
+        gateway_status_observation(
+            &machine_id,
+            listen_addr,
+            &runtime,
+            &Mutex::new(GatewayProcessHealth::default()),
+        ),
         GatewayStatusObservation {
             machine_id,
             listen_addr,
             serving: GatewayServingStatus::Current,
             route_count: 0,
+            process_health: GatewayProcessHealth::default(),
         }
     );
 }
@@ -143,6 +149,7 @@ fn gateway_status_reports_last_known_good_after_source_failure() {
             &machine_id,
             "192.0.2.7:80".parse().expect("listen address"),
             &runtime,
+            &Mutex::new(GatewayProcessHealth::default()),
         )
         .serving,
         GatewayServingStatus::LastKnownGood

@@ -6,9 +6,11 @@ mod volume;
 pub use volume::VolumeQueryService;
 
 use crate::control::intent::service::NatsIntentReader;
+use crate::control::projection::runtime::RuntimeProjectionHealthReader;
 use crate::control::projection::runtime_state::{
     from_sources as runtime_snapshot_from_sources, load_ingress_sources, service_snapshot,
 };
+use crate::control::reconciler::certificate::CertificateRenewalHealth;
 use crate::control::role_client::machine::{
     MachineLogsTailError, NatsMachineFactsReader, NatsMachineLogsTailer,
     read_available_machine_facts, read_available_machine_facts_by_id,
@@ -25,11 +27,11 @@ use ployz_core::operation::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationStatus, OperationStatusSnapshot,
 };
 use ployz_sdk_types::{
-    CredentialListError, CredentialListResult, LogsTailError, LogsTailRequest, LogsTailResult,
-    LogsTailResultTarget, LogsTailTarget, MachineInspectError, MachineListError, MachineListResult,
-    MachineSnapshot, MachineTestimony, OpsListError, OpsListRequest, OpsListResult, OpsStatusError,
-    OpsWatchError, RuntimeSnapshotError, RuntimeSnapshotResult, ServiceInspectError,
-    ServiceListError, ServiceListResult, ServiceSnapshot,
+    ControlHealth, CredentialListError, CredentialListResult, LogsTailError, LogsTailRequest,
+    LogsTailResult, LogsTailResultTarget, LogsTailTarget, MachineInspectError, MachineListError,
+    MachineListResult, MachineSnapshot, MachineTestimony, OpsListError, OpsListRequest,
+    OpsListResult, OpsStatusError, OpsWatchError, RuntimeSnapshotError, RuntimeSnapshotResult,
+    ServiceInspectError, ServiceListError, ServiceListResult, ServiceSnapshot,
 };
 
 pub async fn credential_list(
@@ -83,6 +85,8 @@ pub struct RuntimeSnapshotQueryService {
     facts: RoleTestimonyCache,
     facts_reader: NatsMachineFactsReader,
     core_store: CoreStore,
+    runtime_projection_health: RuntimeProjectionHealthReader,
+    certificate_renewal_health: CertificateRenewalHealth,
 }
 
 impl RuntimeSnapshotQueryService {
@@ -92,12 +96,16 @@ impl RuntimeSnapshotQueryService {
         facts: RoleTestimonyCache,
         facts_reader: NatsMachineFactsReader,
         core_store: CoreStore,
+        runtime_projection_health: RuntimeProjectionHealthReader,
+        certificate_renewal_health: CertificateRenewalHealth,
     ) -> Self {
         Self {
             intent_reader,
             facts,
             facts_reader,
             core_store,
+            runtime_projection_health,
+            certificate_renewal_health,
         }
     }
 
@@ -132,6 +140,10 @@ impl RuntimeSnapshotQueryService {
                 ingress,
                 read_at_unix_seconds,
             ),
+            control_health: Some(ControlHealth {
+                runtime_projection: self.runtime_projection_health.snapshot(),
+                certificate_renewal: self.certificate_renewal_health.operational_health(),
+            }),
         })
     }
 }

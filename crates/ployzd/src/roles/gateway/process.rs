@@ -33,8 +33,10 @@ use pingora::listeners::tls::TlsSettings;
 use pingora::server::configuration::ServerConf;
 use pingora::server::{RunArgs, Server, ShutdownSignal, ShutdownSignalWatch};
 use ployz_core::ids::MachineId;
-use ployz_core::machine::GatewayServingStatus;
-use ployz_core::machine::GatewayStatusObservation;
+use ployz_core::machine::{
+    GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessHealth, GatewayServingStatus,
+    GatewayStatusObservation, GatewayStatusPublishFailure, GatewayWatchFailure,
+};
 use ployz_core::operation::RoutePort;
 
 use ployz_nats::connect::{NatsConnectError, connect_authenticated_pool};
@@ -64,7 +66,7 @@ use service::start_gateway_role_service;
 
 pub struct RunningGatewayProcess {
     _runtime: Arc<Mutex<GatewayProjector>>,
-    health: Arc<Mutex<GatewayProcessHealth>>,
+    _health: Arc<Mutex<GatewayProcessHealth>>,
     _listen_addr: SocketAddr,
     shutdown: broadcast::Sender<()>,
     pingora_shutdown: watch::Sender<bool>,
@@ -103,8 +105,9 @@ impl RunningGatewayProcess {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn health(&self) -> GatewayProcessHealth {
-        self.health
+        self._health
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -223,6 +226,7 @@ async fn start_gateway_process_inner(
     let runtime = Arc::new(Mutex::new(GatewayProjector::new()));
     let registry = PingoraRouteRegistry::new();
     let certificate_store = GatewayCertificateStore::new(certificate_state_dir);
+    let health = Arc::new(Mutex::new(GatewayProcessHealth::default()));
     let testimony_cache = start_role_testimony_cache(client.clone())
         .await
         .map_err(GatewayProcessError::StartFactsCache)?;
@@ -232,6 +236,7 @@ async fn start_gateway_process_inner(
         certificate_store.clone(),
         registry.clone(),
         Arc::clone(&runtime),
+        Arc::clone(&health),
         listen_addr,
     )
     .await
@@ -243,16 +248,6 @@ async fn start_gateway_process_inner(
         }
     };
     let facts = testimony_cache.cache();
-    let health = Arc::new(Mutex::new(GatewayProcessHealth {
-        last_attempt: None,
-        consecutive_failures: 0,
-        last_http_failure: None,
-        consecutive_http_failures: 0,
-        last_watch_failure: None,
-        consecutive_watch_failures: 0,
-        last_status_publish_failure: None,
-        consecutive_status_publish_failures: 0,
-    }));
     let (shutdown, _) = broadcast::channel(2);
     let mut tasks = Vec::new();
     if let Some(failover) = failover {
@@ -311,8 +306,9 @@ async fn start_gateway_process_inner(
                 attempt = source.refresh_with_timeout(&task_runtime, &task_registry) => attempt,
                 _ = refresh_shutdown.recv() => break,
             };
-            let observed = gateway_observation_from_attempt(&machine_id, listen_addr, &attempt);
             backoff = record_gateway_attempt(&task_health, attempt, refresh_interval, backoff);
+            let observed =
+                gateway_observation_from_attempt(&machine_id, listen_addr, &attempt, &task_health);
             let status_publish = tokio::select! {
                 result = source.replace_gateway_status(&observed) => result,
                 _ = refresh_shutdown.recv() => break,
@@ -351,7 +347,7 @@ async fn start_gateway_process_inner(
 
     Ok(RunningGatewayProcess {
         _runtime: runtime,
-        health,
+        _health: health,
         _listen_addr: listen_addr,
         shutdown,
         pingora_shutdown,
@@ -360,41 +356,6 @@ async fn start_gateway_process_inner(
         _certificate_state_guard: certificate_state_guard,
         tasks,
     })
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GatewayProcessHealth {
-    pub last_attempt: Option<GatewayProcessAttempt>,
-    pub consecutive_failures: u64,
-    pub last_http_failure: Option<GatewayHttpFailure>,
-    pub consecutive_http_failures: u64,
-    pub last_watch_failure: Option<GatewayWatchFailure>,
-    pub consecutive_watch_failures: u64,
-    pub last_status_publish_failure: Option<GatewayStatusPublishFailure>,
-    pub consecutive_status_publish_failures: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GatewayProcessAttempt {
-    Current { route_count: usize },
-    ServingLastKnownGood { route_count: usize, message: String },
-    Failed { message: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GatewayHttpFailure {
-    Proxy { message: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GatewayWatchFailure {
-    Open { message: String },
-    Ended { source: &'static str },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GatewayStatusPublishFailure {
-    Write { message: String },
 }
 
 struct GatewayProcessSource {
@@ -613,7 +574,9 @@ fn watch_plain_change(
 ) -> GatewayWatchEvent {
     match event {
         Some(_) => GatewayWatchEvent::Changed,
-        None => GatewayWatchEvent::Failed(GatewayWatchFailure::Ended { source }),
+        None => GatewayWatchEvent::Failed(GatewayWatchFailure::Ended {
+            source: source.to_owned(),
+        }),
     }
 }
 
@@ -733,34 +696,29 @@ fn gateway_observation_from_attempt(
     machine_id: &MachineId,
     listen_addr: SocketAddr,
     attempt: &Result<GatewayProjectorTick, GatewayProcessError>,
+    health: &Mutex<GatewayProcessHealth>,
 ) -> GatewayStatusObservation {
-    match attempt {
+    let (serving, route_count) = match attempt {
         Ok(tick) => match &tick.serving {
-            GatewayServingState::Current { route_count } => GatewayStatusObservation {
-                machine_id: machine_id.clone(),
-                listen_addr,
-                serving: GatewayServingStatus::Current,
-                route_count: *route_count,
-            },
-            GatewayServingState::LastKnownGood { route_count, .. } => GatewayStatusObservation {
-                machine_id: machine_id.clone(),
-                listen_addr,
-                serving: GatewayServingStatus::LastKnownGood,
-                route_count: *route_count,
-            },
-            GatewayServingState::Unavailable { .. } => GatewayStatusObservation {
-                machine_id: machine_id.clone(),
-                listen_addr,
-                serving: GatewayServingStatus::Unavailable,
-                route_count: 0,
-            },
+            GatewayServingState::Current { route_count } => {
+                (GatewayServingStatus::Current, *route_count)
+            }
+            GatewayServingState::LastKnownGood { route_count, .. } => {
+                (GatewayServingStatus::LastKnownGood, *route_count)
+            }
+            GatewayServingState::Unavailable { .. } => (GatewayServingStatus::Unavailable, 0),
         },
-        Err(_) => GatewayStatusObservation {
-            machine_id: machine_id.clone(),
-            listen_addr,
-            serving: GatewayServingStatus::Unavailable,
-            route_count: 0,
-        },
+        Err(_) => (GatewayServingStatus::Unavailable, 0),
+    };
+    GatewayStatusObservation {
+        machine_id: machine_id.clone(),
+        listen_addr,
+        serving,
+        route_count,
+        process_health: health
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone(),
     }
 }
 

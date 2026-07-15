@@ -21,7 +21,11 @@ pub use roles::{
 };
 pub use rpc::{MachineRpcResponder, MachineRpcResponse};
 pub use runtime::*;
-pub use testimony::{GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation};
+pub use testimony::{
+    GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessHealth, GatewayServingStatus,
+    GatewayStatusObservation, GatewayStatusPublishFailure, GatewayWatchFailure,
+    MachineEndpointObservation,
+};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
