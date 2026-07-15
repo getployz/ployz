@@ -109,6 +109,7 @@ pub(super) enum RecordedOperation {
     CleanupFinished {
         removed: Vec<DeployCleanupContainer>,
         failed: Vec<DeployCleanupFailure>,
+        images: Vec<ployz_core::operation::DeployImageCleanup>,
     },
 }
 
@@ -178,15 +179,22 @@ impl DeployOperationRecorder for RecordingOperations {
                 }
                 self.phase_records.push(evidence);
             }
-            DeployEvidence::CleanupFinished { removed, failed } => {
+            DeployEvidence::CleanupFinished {
+                removed,
+                failed,
+                images,
+            } => {
                 if self.fail_cleanup_evidence_remaining > 0 {
                     self.fail_cleanup_evidence_remaining -= 1;
                     return Err(DeployOperationRecordError::Synthetic {
                         message: "cleanup evidence record failed",
                     });
                 }
-                self.records
-                    .push(RecordedOperation::CleanupFinished { removed, failed });
+                self.records.push(RecordedOperation::CleanupFinished {
+                    removed,
+                    failed,
+                    images,
+                });
             }
         }
         Ok(())
@@ -716,6 +724,20 @@ impl MachineContainerRuntime for RecordingRuntime {
         })
     }
 
+    async fn remove_image(
+        &mut self,
+        machine_id: &MachineId,
+        _request: ployz_core::image::ImageRemoveRequest,
+    ) -> Result<
+        ployz_core::image::ImageRemoveOk,
+        crate::control::role_client::machine::MachineImageRemoveError,
+    > {
+        Ok(ployz_core::image::ImageRemoveOk {
+            machine_id: machine_id.clone(),
+            outcome: ployz_core::image::ImageRemoveOutcome::RetainedInUse,
+        })
+    }
+
     async fn run_container(
         &mut self,
         machine_id: &MachineId,
@@ -1157,6 +1179,7 @@ fn routed_deploy_request(replicas: u16) -> DeployRequest {
         origin: None,
         volumes: std::collections::BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_api"),
             image: image("registry.example/api:rev_2"),
             image_source: ployz_core::deploy::ImageSource::Registry,
@@ -1183,6 +1206,7 @@ pub(super) fn ployz_automatic_deploy_command() -> DeployExecutionInput {
             origin: None,
             volumes: std::collections::BTreeMap::new(),
             services: vec![DeployServiceSpec {
+                keep: None,
                 service_id: service_id("svc_api"),
                 image: image("registry.example/api:rev_2"),
                 image_source: ployz_core::deploy::ImageSource::Registry,
@@ -1232,6 +1256,7 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
         origin: None,
         volumes: std::collections::BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_api"),
             image: image("local/api:rev_2"),
             image_source: ployz_core::deploy::ImageSource::PushedToSeed(
@@ -1422,12 +1447,61 @@ pub(super) fn deploy_command_replacing_old_container(
     )
 }
 
+pub(super) fn deploy_command_replacing_old_container_with_keep(
+    machine_id: &str,
+    container_id: &str,
+) -> DeployExecutionInput {
+    let image_identity = ployz_core::image::OciDigest::sha256(b"old image");
+    let snapshot = MachineContainerObservationSnapshot::try_new(
+        self::machine_id(machine_id),
+        [containers::observation(machine_id, container_id)
+            .with(
+                containers::identity("svc_api")
+                    .entry("entry_old")
+                    .operation("op_existing")
+                    .step(&format!("existing_{container_id}")),
+            )
+            .running_unroutable()
+            .resolved_image_identity(image_identity.as_str())
+            .created_at_unix_seconds(10)
+            .build()],
+    )
+    .expect("valid machine observation snapshot");
+    let mut request = target_deploy_request(1);
+    let [service] = request.services.as_mut_slice() else {
+        panic!("target request has one service");
+    };
+    service.keep = Some(ployz_core::deploy::ContainerRetentionCount::new(0));
+    deploy_execution_input(
+        operation_id("op_123"),
+        request,
+        DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
+            unusable_machines: Vec::new(),
+            namespace_route_bindings: Vec::new(),
+            namespace_serving_entries: Vec::new(),
+            namespace_volume_pins: Vec::new(),
+            dataplane_members: Vec::new(),
+            eligible_machines: vec![self::machine_id("machine_a"), self::machine_id(machine_id)],
+            namespace_cleanup_candidates: namespace_cleanup_candidates(std::slice::from_ref(
+                &snapshot,
+            )),
+            observed_machines: vec![snapshot],
+            automatic_hostname_mode: AutomaticHostnameMode::Disabled,
+            gateway_certificate_targets: Vec::new(),
+            ployz_gateway_certificate_targets: Vec::new(),
+            step_timeout: Duration::from_secs(5),
+        },
+    )
+}
+
 pub(super) fn target_deploy_request(replicas: u16) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
         origin: None,
         volumes: std::collections::BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_api"),
             image: image("registry.example/api:rev_2"),
             image_source: ployz_core::deploy::ImageSource::Registry,
@@ -1659,6 +1733,10 @@ pub(super) fn cleanup_container_with_entry(
             .operation("op_existing")
             .step(&format!("existing_{container_id}"))
             .build(),
+        state: ployz_core::machine::runtime::ContainerRuntimeState::running_unroutable(),
+        created_at_unix_seconds: None,
+        resolved_image_identity: None,
+        image_reclamation: ployz_core::deploy::DeployImageReclamation::EligibleSuperseded,
     }
 }
 

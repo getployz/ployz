@@ -280,6 +280,7 @@ fn deploy_submit_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCli
             origin,
             volumes: BTreeMap::new(),
             services: vec![DeployServiceSpec {
+                keep: None,
                 service_id,
                 image,
                 image_source: ployz_core::deploy::ImageSource::Registry,

@@ -53,6 +53,32 @@ pub struct DeployCleanupContainer {
     pub machine_id: MachineId,
     pub container_id: ContainerId,
     pub identity: ManagedContainerIdentity,
+    #[serde(default = "default_cleanup_container_state")]
+    pub state: crate::machine::runtime::ContainerRuntimeState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at_unix_seconds: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_image_identity: Option<String>,
+    #[serde(default = "default_image_reclamation")]
+    pub image_reclamation: DeployImageReclamation,
+}
+
+fn default_cleanup_container_state() -> crate::machine::runtime::ContainerRuntimeState {
+    crate::machine::runtime::ContainerRuntimeState::Exited
+}
+
+const fn default_image_reclamation() -> DeployImageReclamation {
+    DeployImageReclamation::IneligibleRunningPolicy
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum DeployImageReclamation {
+    EligibleSuperseded,
+    IneligibleRunningPolicy,
+    IneligibleNamespaceOmitted,
+    IneligibleFailedPhase,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -259,6 +285,7 @@ pub fn prepare_deploy(
         input.request.namespace_id(),
         service,
         &input.observed_machines,
+        &input.draining_machines,
     );
 
     Ok(PreparedDeploy {
@@ -371,6 +398,7 @@ fn cleanup_candidates(
     namespace_id: &NamespaceId,
     service: &DeployServiceSpec,
     observed_machines: &[MachineContainerObservationSnapshot],
+    draining_machines: &[MachineId],
 ) -> Vec<DeployCleanupContainer> {
     observed_machines
         .iter()
@@ -384,6 +412,18 @@ fn cleanup_candidates(
             machine_id: container.machine_id.clone(),
             container_id: container.container_id.clone(),
             identity: container.identity.clone(),
+            state: container.state.clone(),
+            created_at_unix_seconds: container.created_at_unix_seconds,
+            resolved_image_identity: container.resolved_image_identity.clone(),
+            image_reclamation: if !container.state.is_running()
+                || (!draining_machines.contains(&container.machine_id)
+                    && container.identity.namespace_revision_entry_id
+                        != service.namespace_revision_entry_id(namespace_id))
+            {
+                DeployImageReclamation::EligibleSuperseded
+            } else {
+                DeployImageReclamation::IneligibleRunningPolicy
+            },
         })
         .collect()
 }
@@ -792,6 +832,31 @@ fn plan_deploy_service(
         .collect::<Vec<_>>();
     let mut cleanup_containers = input.cleanup_candidates;
     cleanup_containers.retain(|candidate| !selected_containers.contains(&&candidate.container_id));
+    if let Some(keep) = service.keep {
+        let mut retained = cleanup_containers
+            .iter()
+            .filter(|candidate| !candidate.state.is_running())
+            .collect::<Vec<_>>();
+        retained.sort_by(|left, right| {
+            match (left.created_at_unix_seconds, right.created_at_unix_seconds) {
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (left, right) => right.cmp(&left),
+            }
+            .then_with(|| left.machine_id.cmp(&right.machine_id))
+            .then_with(|| left.container_id.cmp(&right.container_id))
+        });
+        let retained = retained
+            .into_iter()
+            .take(usize::from(keep.get()))
+            .map(|candidate| (candidate.machine_id.clone(), candidate.container_id.clone()))
+            .collect::<std::collections::BTreeSet<_>>();
+        cleanup_containers.retain(|candidate| {
+            candidate.state.is_running()
+                || !retained
+                    .contains(&(candidate.machine_id.clone(), candidate.container_id.clone()))
+        });
+    }
     cleanup_containers.sort_by(|left, right| {
         left.machine_id
             .cmp(&right.machine_id)

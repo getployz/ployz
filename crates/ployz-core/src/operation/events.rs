@@ -143,6 +143,8 @@ pub enum OperationEvent {
         operation_id: OperationId,
         removed: Vec<DeployCleanupContainer>,
         failed: Vec<DeployCleanupFailure>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<super::deploy::DeployImageCleanup>,
     },
     DeployCompleted {
         operation_id: OperationId,
@@ -606,10 +608,14 @@ impl OperationEvent {
                 services: services.clone(),
             }),
             Self::DeployCleanupFinished {
-                removed, failed, ..
+                removed,
+                failed,
+                images,
+                ..
             } => Some(DeployEvidence::CleanupFinished {
                 removed: removed.clone(),
                 failed: failed.clone(),
+                images: images.clone(),
             }),
             Self::DeploySubmitted { .. }
             | Self::DeployPlanningStarted { .. }
@@ -865,9 +871,14 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 removed,
                 failed,
+                images,
             } => Self::Deploy {
                 operation_id,
-                event: DeployEvent::Evidence(DeployEvidence::CleanupFinished { removed, failed }),
+                event: DeployEvent::Evidence(DeployEvidence::CleanupFinished {
+                    removed,
+                    failed,
+                    images,
+                }),
             },
             OperationEvent::DeployCompleted {
                 operation_id,

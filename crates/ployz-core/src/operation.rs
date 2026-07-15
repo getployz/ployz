@@ -56,11 +56,12 @@ pub use credential_grant::{
 };
 pub use deploy::{
     ArtifactUnavailableReason, ControlPlaneCommitScope, DeployCleanupFailure,
-    DeployCompletionOutcome, DeployEvidence, DeployFailureClass, DeployOperationFailure,
-    DeployOperationState, DeployPhaseNumber, DeployPhaseNumberError, DeployPhaseOutcome,
-    DeployRunningStage, DeployServiceResult, DeployTransition, HealthCheckFailure,
-    PreStartHookFailure, RetainedArtifact, RouteCutoverFailureReason, UnusableMachine,
-    project_deploy_transition, validate_fresh_deploy_evidence,
+    DeployCompletionOutcome, DeployEvidence, DeployFailureClass, DeployImageCleanup,
+    DeployImageCleanupOutcome, DeployOperationFailure, DeployOperationState, DeployPhaseNumber,
+    DeployPhaseNumberError, DeployPhaseOutcome, DeployRunningStage, DeployServiceResult,
+    DeployTransition, HealthCheckFailure, PreStartHookFailure, RetainedArtifact,
+    RouteCutoverFailureReason, UnusableMachine, project_deploy_transition,
+    validate_fresh_deploy_evidence,
 };
 pub use events::{OperationEvent, OperationSubject, OperationSubjectRef};
 pub use ingress_configure::{

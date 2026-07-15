@@ -304,6 +304,7 @@ mod tests {
             origin: None,
             volumes: std::collections::BTreeMap::new(),
             services: vec![DeployServiceSpec {
+                keep: None,
                 service_id: ServiceId::try_new("web").expect("valid service"),
                 image: ImageReference::try_new(image).expect("valid image"),
                 image_source: ImageSource::Registry,

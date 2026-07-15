@@ -544,6 +544,40 @@ impl MachineRpcResponder for ImageEnsureOk {
 pub type ImageEnsureResponse = MachineRpcResponse<ImageEnsureOk, ImageRpcDomainError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageRemoveRequest {
+    pub operation_id: crate::ids::OperationId,
+    pub image_identity: OciDigest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageRemoveOutcome {
+    Removed,
+    AlreadyAbsent,
+    RetainedInUse,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageRemoveOk {
+    pub machine_id: MachineId,
+    pub outcome: ImageRemoveOutcome,
+}
+
+impl MachineRpcResponder for ImageRemoveOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        let Self {
+            machine_id,
+            outcome: _,
+        } = self;
+        machine_id
+    }
+}
+
+pub type ImageRemoveResponse = MachineRpcResponse<ImageRemoveOk, ImageRpcDomainError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ImageRpcDomainError {
     InvalidRequest {

@@ -757,6 +757,7 @@ async fn deploy_worker_removes_superseded_containers_after_active_commit() {
             .contains(&RecordedOperation::CleanupFinished {
                 removed: vec![cleanup_target],
                 failed: Vec::new(),
+                images: Vec::new(),
             })
     );
 }
@@ -804,6 +805,7 @@ async fn deploy_worker_reports_cleanup_failure_without_failing_successful_deploy
                     target: cleanup_target,
                     message: failure_message("container remove failed: busy"),
                 }],
+                images: Vec::new(),
             })
     );
     assert_eq!(
@@ -814,6 +816,43 @@ async fn deploy_worker_reports_cleanup_failure_without_failing_successful_deploy
             }
         ))
     );
+}
+
+#[tokio::test]
+async fn deploy_worker_reclaims_only_the_image_of_successfully_removed_superseded_container() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_new"]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+    let command = deploy_command_replacing_old_container_with_keep("machine_b", "ctr_old");
+
+    let outcome = execute_deploy(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("deploy succeeds");
+
+    assert_eq!(
+        outcome.completion_outcome(),
+        DeployCompletionOutcome::Completed
+    );
+    let expected = ployz_core::operation::DeployImageCleanup {
+        machine_id: machine_id("machine_b"),
+        service_id: service_id("svc_api"),
+        image_identity: Some(ployz_core::image::OciDigest::sha256(b"old image")),
+        outcome: ployz_core::operation::DeployImageCleanupOutcome::RetainedInUse,
+    };
+    assert!(recorder.records.iter().any(|record| matches!(
+        record,
+        RecordedOperation::CleanupFinished { images, .. } if images == &[expected.clone()]
+    )));
 }
 
 #[tokio::test]
@@ -837,7 +876,9 @@ async fn empty_deploy_removes_running_namespace_containers() {
     .await
     .expect("empty deploy succeeds");
 
-    let cleanup_target = cleanup_container("machine_b", "ctr_old", "entry_old");
+    let mut cleanup_target = cleanup_container("machine_b", "ctr_old", "entry_old");
+    cleanup_target.image_reclamation =
+        ployz_core::deploy::DeployImageReclamation::IneligibleNamespaceOmitted;
     assert_eq!(
         runtime.removals,
         vec![(
@@ -873,6 +914,7 @@ async fn empty_deploy_removes_running_namespace_containers() {
             .contains(&RecordedOperation::CleanupFinished {
                 removed: vec![cleanup_target],
                 failed: Vec::new(),
+                images: Vec::new(),
             })
     );
 }
@@ -1087,7 +1129,7 @@ async fn deploy_worker_records_failure_when_container_run_fails() {
     assert_eq!(runtime.removals.len(), 1);
     assert!(recorder.records.iter().any(|record| matches!(
         record,
-        RecordedOperation::CleanupFinished { removed, failed }
+        RecordedOperation::CleanupFinished { removed, failed, .. }
             if removed.len() == 1 && failed.is_empty()
     )));
     assert!(matches!(

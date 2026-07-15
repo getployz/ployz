@@ -228,6 +228,10 @@ pub struct DeployServiceSpec {
     )]
     pub image_source: ImageSource,
     pub replicas: ReplicaCount,
+    /// Number of newest stopped superseded containers retained for inspection.
+    /// Absence preserves full container cleanup and disables image reclamation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep: Option<ContainerRetentionCount>,
     pub runtime: ContainerRuntimeSpec,
     // Pre-start hooks and dependencies guide planning and execution, not container identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -236,6 +240,39 @@ pub struct DeployServiceSpec {
     pub depends_on: Vec<ServiceDependency>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<DeployRoute>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(type = "SafeInteger<\"ContainerRetentionCount\">")
+)]
+#[serde(transparent)]
+pub struct ContainerRetentionCount(u16);
+
+impl ContainerRetentionCount {
+    #[must_use]
+    pub const fn new(value: u16) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0
+    }
+}
+
+impl From<u16> for ContainerRetentionCount {
+    fn from(value: u16) -> Self {
+        Self(value)
+    }
+}
+
+impl From<ContainerRetentionCount> for u16 {
+    fn from(value: ContainerRetentionCount) -> Self {
+        value.0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

@@ -266,6 +266,7 @@ fn deploy_request() -> ployz_core::deploy::DeployRequest {
         origin: None,
         volumes: std::collections::BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_api"),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
             image_source: ployz_core::deploy::ImageSource::Registry,

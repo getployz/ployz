@@ -5,9 +5,9 @@ use ployz_core::deploy::{
 use ployz_core::ids::{OperationId, ServiceId};
 use ployz_core::image::OciPlatform;
 use ployz_core::operation::{
-    CancellationReason, DeployCleanupFailure, DeployCompletionOutcome, DeployOperationFailure,
-    DeployRunningStage, OperationEvent, OperationInterruptionEvidence, OperationKind,
-    ReplayedOperationEvent,
+    CancellationReason, DeployCleanupFailure, DeployCompletionOutcome, DeployImageCleanup,
+    DeployImageCleanupOutcome, DeployOperationFailure, DeployRunningStage, OperationEvent,
+    OperationInterruptionEvidence, OperationKind, ReplayedOperationEvent,
 };
 use std::collections::BTreeSet;
 
@@ -35,10 +35,14 @@ struct ObservedDeploy {
 enum DeployWork {
     Planning,
     Planned {
-        plan: DeployPlan,
+        plan: Box<DeployPlan>,
         stage: PlannedStage,
         started_containers: usize,
-        cleanup: Option<(Vec<DeployCleanupContainer>, Vec<DeployCleanupFailure>)>,
+        cleanup: Option<(
+            Vec<DeployCleanupContainer>,
+            Vec<DeployCleanupFailure>,
+            Vec<DeployImageCleanup>,
+        )>,
     },
 }
 
@@ -157,7 +161,7 @@ impl DeployTree {
                 }
                 if let Some(deploy) = &mut self.deploy {
                     deploy.work = DeployWork::Planned {
-                        plan: plan.clone(),
+                        plan: Box::new(plan.clone()),
                         stage: PlannedStage::Queued,
                         started_containers: 0,
                         cleanup: None,
@@ -240,6 +244,7 @@ impl DeployTree {
                 operation_id,
                 removed,
                 failed,
+                images,
             } => {
                 for container in removed {
                     self.plain_lines.push(format!(
@@ -258,12 +263,24 @@ impl DeployTree {
                         failure.message.as_str()
                     ));
                 }
+                for image in images {
+                    self.plain_lines.push(format!(
+                        "deploy {}: image cleanup — {} on {}: {}",
+                        operation_id.as_str(),
+                        image
+                            .image_identity
+                            .as_ref()
+                            .map_or("unknown", ployz_core::image::OciDigest::as_str),
+                        image.machine_id.as_str(),
+                        image_cleanup_text(&image.outcome)
+                    ));
+                }
                 if let Some(ObservedDeploy {
                     work: DeployWork::Planned { cleanup, .. },
                     ..
                 }) = &mut self.deploy
                 {
-                    *cleanup = Some((removed.clone(), failed.clone()));
+                    *cleanup = Some((removed.clone(), failed.clone(), images.clone()));
                 }
             }
             OperationEvent::DeployCompleted {
@@ -468,7 +485,7 @@ impl DeployTree {
         let deploy = self.deploy.as_ref()?;
         match &deploy.work {
             DeployWork::Planning => None,
-            DeployWork::Planned { plan, .. } => Some(plan),
+            DeployWork::Planned { plan, .. } => Some(plan.as_ref()),
         }
     }
 
@@ -499,7 +516,13 @@ impl DeployTree {
         }
     }
 
-    fn cleanup(&self) -> Option<&(Vec<DeployCleanupContainer>, Vec<DeployCleanupFailure>)> {
+    fn cleanup(
+        &self,
+    ) -> Option<&(
+        Vec<DeployCleanupContainer>,
+        Vec<DeployCleanupFailure>,
+        Vec<DeployImageCleanup>,
+    )> {
         let deploy = self.deploy.as_ref()?;
         match &deploy.work {
             DeployWork::Planning => None,
@@ -605,10 +628,13 @@ pub(crate) fn render_frame(tree: &DeployTree) -> String {
     if !routes.is_empty() {
         groups.push(("routes".to_owned(), routes));
     }
-    if let Some((removed, failed)) = tree.cleanup()
-        && (!removed.is_empty() || !failed.is_empty())
+    if let Some((removed, failed, images)) = tree.cleanup()
+        && (!removed.is_empty() || !failed.is_empty() || !images.is_empty())
     {
-        groups.push(("cleanup".to_owned(), render_cleanup_lines(removed, failed)));
+        groups.push((
+            "cleanup".to_owned(),
+            render_cleanup_lines(removed, failed, images),
+        ));
     }
 
     // The spinner belongs to the first pending line in display order, and
@@ -978,6 +1004,7 @@ fn render_route_line(
 fn render_cleanup_lines(
     removed: &[DeployCleanupContainer],
     failed: &[DeployCleanupFailure],
+    images: &[DeployImageCleanup],
 ) -> Vec<TreeLine> {
     removed
         .iter()
@@ -996,7 +1023,37 @@ fn render_cleanup_lines(
                 failure.message.as_str()
             ),
         }))
+        .chain(images.iter().map(|image| TreeLine::Settled {
+            text: format!(
+                "{} image {} on {} — {}",
+                if matches!(
+                    image.outcome,
+                    DeployImageCleanupOutcome::Failed { .. }
+                        | DeployImageCleanupOutcome::MissingIdentity
+                ) {
+                    "✗"
+                } else {
+                    "✓"
+                },
+                image
+                    .image_identity
+                    .as_ref()
+                    .map_or("unknown", ployz_core::image::OciDigest::as_str),
+                image.machine_id.as_str(),
+                image_cleanup_text(&image.outcome)
+            ),
+        }))
         .collect()
+}
+
+fn image_cleanup_text(outcome: &DeployImageCleanupOutcome) -> &str {
+    match outcome {
+        DeployImageCleanupOutcome::Removed => "removed",
+        DeployImageCleanupOutcome::AlreadyAbsent => "already absent",
+        DeployImageCleanupOutcome::RetainedInUse => "retained in use",
+        DeployImageCleanupOutcome::MissingIdentity => "missing observed image identity",
+        DeployImageCleanupOutcome::Failed { message } => message.as_str(),
+    }
 }
 
 impl DeployTree {

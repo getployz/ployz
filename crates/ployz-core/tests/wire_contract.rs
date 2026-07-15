@@ -699,6 +699,7 @@ fn request_with_volume_mount(
         origin: None,
         volumes,
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_api"),
             image: ImageReference::try_new("nginx:latest").expect("image"),
             image_source: ImageSource::Registry,
@@ -976,6 +977,10 @@ fn deploy_cleanup_container_wire_shape_nests_identity() {
             .operation("op_old")
             .step("step_old")
             .build(),
+        state: ployz_core::machine::runtime::ContainerRuntimeState::Exited,
+        created_at_unix_seconds: None,
+        resolved_image_identity: None,
+        image_reclamation: ployz_core::deploy::DeployImageReclamation::EligibleSuperseded,
     };
 
     assert_eq!(
@@ -991,6 +996,52 @@ fn deploy_cleanup_container_wire_shape_nests_identity() {
                 "step_id": "step_old",
                 "kind": "service",
             },
+            "state": { "state": "exited" },
+            "image_reclamation": "eligible_superseded",
         })
+    );
+    let legacy = serde_json::json!({
+        "machine_id": "machine_a",
+        "container_id": "ctr_old",
+        "identity": {
+            "namespace_id": "default",
+            "service_id": "svc_api",
+            "namespace_revision_entry_id": "entry_old",
+            "operation_id": "op_old",
+            "step_id": "step_old",
+            "kind": "service",
+        },
+    });
+    let legacy: ployz_core::deploy::DeployCleanupContainer =
+        serde_json::from_value(legacy).expect("legacy cleanup evidence deserializes");
+    assert_eq!(
+        legacy.image_reclamation,
+        ployz_core::deploy::DeployImageReclamation::IneligibleRunningPolicy
+    );
+}
+
+#[test]
+fn service_retention_count_accepts_zero_and_defaults_absent() {
+    let mut request = request_with_volume_mount(std::collections::BTreeMap::new());
+    let service = request
+        .services
+        .first_mut()
+        .expect("request has one service");
+    assert_eq!(service.keep, None);
+
+    service.keep = Some(ployz_core::deploy::ContainerRetentionCount::new(0));
+    let encoded = serde_json::to_value(&request).expect("request serializes");
+    assert_eq!(
+        encoded.pointer("/services/0/keep"),
+        Some(&serde_json::json!(0))
+    );
+
+    let decoded: DeployRequest = serde_json::from_value(encoded).expect("request deserializes");
+    let [service] = decoded.services.as_slice() else {
+        panic!("decoded request has one service");
+    };
+    assert_eq!(
+        service.keep,
+        Some(ployz_core::deploy::ContainerRetentionCount::new(0))
     );
 }

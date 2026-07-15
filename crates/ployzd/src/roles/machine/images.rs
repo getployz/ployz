@@ -2,6 +2,7 @@
 
 use super::protocol::MachineImagePull;
 use super::response::{failure_message, machine_domain_error, machine_success};
+use super::runner::MachineContainerRunner;
 use crate::roles::machine::execution::containerd_content::{
     ContainerdContentStore, ContentIngest, ContentLease,
 };
@@ -13,8 +14,8 @@ use ployz_core::image::{
     ImageBlobCheckRequest, ImageBlobCheckResponse, ImageBlobPushOk, ImageBlobPushOutcome,
     ImageBlobPushRequest, ImageBlobPushResponse, ImageEnsureOk, ImageEnsureRequest,
     ImageEnsureResponse, ImageManifestPushOk, ImageManifestPushRequest, ImageManifestPushResponse,
-    ImageRpcDomainError, ImageUploadId, OCI_IMAGE_CONFIG_MEDIA_TYPE, OCI_IMAGE_MANIFEST_MEDIA_TYPE,
-    OciDigest, OciPlatform,
+    ImageRemoveOk, ImageRemoveRequest, ImageRemoveResponse, ImageRpcDomainError, ImageUploadId,
+    OCI_IMAGE_CONFIG_MEDIA_TYPE, OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciDigest, OciPlatform,
 };
 use ployz_core::machine::rpc::MachineRpcResponse;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse};
@@ -527,6 +528,36 @@ pub(crate) async fn handle_image_ensure(
         machine_id,
         platform: inspected.platform,
     }))
+}
+
+pub(crate) async fn handle_image_remove<R>(
+    machine_id: MachineId,
+    docker: R,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse
+where
+    R: MachineContainerRunner,
+{
+    let request = match serde_json::from_slice::<ImageRemoveRequest>(&request.payload) {
+        Ok(request) => request,
+        Err(error) => return invalid_request(machine_id, error),
+    };
+    let ImageRemoveRequest {
+        operation_id: _,
+        image_identity,
+    } = request;
+    match docker.remove_image(&image_identity).await {
+        Ok(outcome) => machine_success(ImageRemoveResponse::Ok(ImageRemoveOk {
+            machine_id,
+            outcome,
+        })),
+        Err(error) => image_error(
+            machine_id,
+            ImageRpcDomainError::StorageFailed {
+                message: failure_message(runner_error_message(error)),
+            },
+        ),
+    }
 }
 
 struct InspectedImage {

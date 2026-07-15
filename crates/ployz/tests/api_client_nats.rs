@@ -760,6 +760,7 @@ fn deploy_target(service_id: &str) -> DeployRequest {
         origin: None,
         volumes: std::collections::BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: ployz_core::ids::ServiceId::try_new(service_id).expect("valid service id"),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
             image_source: ployz_core::deploy::ImageSource::Registry,

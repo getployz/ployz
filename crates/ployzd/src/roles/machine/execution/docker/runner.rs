@@ -22,8 +22,8 @@ use bollard::models::{
 };
 use bollard::query_parameters::{
     CreateImageOptionsBuilder, InspectContainerOptions, ListContainersOptionsBuilder,
-    LogsOptionsBuilder, RemoveContainerOptionsBuilder, RemoveVolumeOptionsBuilder,
-    RestartContainerOptions, StopContainerOptionsBuilder,
+    LogsOptionsBuilder, RemoveContainerOptionsBuilder, RemoveImageOptionsBuilder,
+    RemoveVolumeOptionsBuilder, RestartContainerOptions, StopContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
 use ployz_core::deploy::{
@@ -71,6 +71,26 @@ enum DockerHandle {
 }
 
 impl DockerManagedContainerRunner {
+    pub(crate) async fn remove_image(
+        &self,
+        image_identity: &OciDigest,
+    ) -> Result<ployz_core::image::ImageRemoveOutcome, String> {
+        let docker = self.docker().await.map_err(|error| error.to_string())?;
+        match docker
+            .remove_image(image_identity.as_str(), Some(remove_image_options()), None)
+            .await
+        {
+            Ok(_) => Ok(ployz_core::image::ImageRemoveOutcome::Removed),
+            Err(error) if is_docker_object_missing(&error) => {
+                Ok(ployz_core::image::ImageRemoveOutcome::AlreadyAbsent)
+            }
+            Err(BollardError::DockerResponseServerError {
+                status_code: 409, ..
+            }) => Ok(ployz_core::image::ImageRemoveOutcome::RetainedInUse),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
     #[cfg(test)]
     pub fn local_defaults(
         endpoint_network_subnet: impl Into<String>,
@@ -116,6 +136,13 @@ impl DockerManagedContainerRunner {
     }
 }
 
+fn remove_image_options() -> bollard::query_parameters::RemoveImageOptions {
+    RemoveImageOptionsBuilder::new()
+        .force(false)
+        .noprune(false)
+        .build()
+}
+
 fn connect_local_defaults() -> Result<Docker, DockerManagedContainerRunnerConnectError> {
     Docker::connect_with_local_defaults().map_err(|source| {
         DockerManagedContainerRunnerConnectError {
@@ -125,6 +152,15 @@ fn connect_local_defaults() -> Result<Docker, DockerManagedContainerRunnerConnec
 }
 
 impl MachineContainerRunner for DockerManagedContainerRunner {
+    async fn remove_image(
+        &self,
+        image_identity: &OciDigest,
+    ) -> Result<ployz_core::image::ImageRemoveOutcome, MachineContainerRunnerError> {
+        DockerManagedContainerRunner::remove_image(self, image_identity)
+            .await
+            .map_err(|message| MachineContainerRunnerError::ImagePull { message })
+    }
+
     async fn existing_managed_containers(
         &self,
     ) -> Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError> {
@@ -1047,6 +1083,14 @@ mod tests {
     use tokio::net::UnixListener;
 
     const TEST_ENDPOINT_SUBNET: &str = "10.42.7.0/24";
+
+    #[test]
+    fn image_reclamation_never_forces_removal_of_an_in_use_image() {
+        let options = remove_image_options();
+
+        assert!(!options.force);
+        assert!(!options.noprune);
+    }
 
     #[tokio::test]
     async fn registry_resolution_retries_transient_server_failures() {

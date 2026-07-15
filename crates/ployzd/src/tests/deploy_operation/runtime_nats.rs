@@ -1270,6 +1270,7 @@ fn deploy_request(replicas: u16) -> DeployRequest {
         origin: None,
         volumes: std::collections::BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_api"),
             image: image("registry.example/api:rev_2"),
             image_source: ployz_core::deploy::ImageSource::Registry,

@@ -873,6 +873,17 @@ fn merge_docker_daemon_config(
         insecure_registries.push(serde_json::Value::String(endpoint_supernet.to_owned()));
         changed = true;
     }
+    if !config.contains_key("log-driver") && !config.contains_key("log-opts") {
+        config.insert(
+            "log-driver".to_owned(),
+            serde_json::Value::String("json-file".to_owned()),
+        );
+        config.insert(
+            "log-opts".to_owned(),
+            serde_json::json!({"max-size": "10m", "max-file": "3"}),
+        );
+        changed = true;
+    }
     if !changed {
         return Ok(false);
     }

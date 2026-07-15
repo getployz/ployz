@@ -143,6 +143,70 @@ fn image_ensure_is_controller_scoped_not_operator_image_scoped() {
 }
 
 #[test]
+fn image_remove_is_controller_scoped_and_operator_image_wildcards_do_not_match() {
+    let subject = machine_service(
+        &machine_id("machine_7"),
+        MachineServiceEndpoint::ImageRemove,
+    );
+    let controller = NatsPermissionProfile::render(NatsPrincipal::Controller);
+    let operator = NatsPermissionProfile::render(NatsPrincipal::Operator);
+    let machine = NatsPermissionProfile::render(NatsPrincipal::Machine {
+        machine_id: machine_id("machine_7"),
+    });
+    let other_machine_subject = machine_service(
+        &machine_id("machine_8"),
+        MachineServiceEndpoint::ImageRemove,
+    );
+
+    assert!(
+        controller
+            .publish
+            .allowed_subjects()
+            .iter()
+            .any(|pattern| nats_subject_matches(pattern, &subject))
+    );
+    assert!(
+        operator
+            .publish
+            .allowed_subjects()
+            .iter()
+            .all(|pattern| !nats_subject_matches(pattern, &subject))
+    );
+    assert!(
+        machine
+            .subscribe
+            .allowed_subjects()
+            .iter()
+            .any(|pattern| nats_subject_matches(pattern, &subject))
+    );
+    assert!(
+        machine
+            .subscribe
+            .allowed_subjects()
+            .iter()
+            .all(|pattern| !nats_subject_matches(pattern, &other_machine_subject))
+    );
+    assert_eq!(
+        subject,
+        "plz.v1.rpc.machine.command.machine_7.container.remove_image"
+    );
+}
+
+fn nats_subject_matches(pattern: &str, subject: &str) -> bool {
+    let mut pattern = pattern.split('.');
+    let mut subject = subject.split('.');
+    loop {
+        match (pattern.next(), subject.next()) {
+            (Some(">"), _) => return true,
+            (Some("*"), Some(_)) => {}
+            (Some(expected), Some(actual)) if expected == actual => {}
+            (None, None) => return true,
+            _ => return false,
+        }
+    }
+}
+
+#[test]
 fn runtime_snapshot_endpoint_is_inside_the_operator_query_scope() {
     assert!(OPERATOR_RUNTIME_SNAPSHOT.starts_with("plz.v1.rpc.operator.query."));
     let profile = NatsPermissionProfile::render(NatsPrincipal::Operator);

@@ -162,6 +162,7 @@ fn automatic_deploy_request() -> DeployRequest {
         origin: None,
         volumes: std::collections::BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_api"),
             image: ImageReference::try_new("registry.example/api:latest")
                 .expect("image reference is valid"),

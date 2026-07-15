@@ -1090,6 +1090,7 @@ async fn assert_direct_push_multi_machine_deploy(core: &CoreContext) {
 
         let namespace = namespace_id("direct_push");
         let mut services = vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_direct_push"),
             image: ImageReference::try_new(&tag).expect("valid pushed image reference"),
             image_source: ployz_core::deploy::ImageSource::Registry,
@@ -1263,6 +1264,7 @@ exit 1",
                     origin: None,
                     volumes: BTreeMap::new(),
                     services: vec![DeployServiceSpec {
+                        keep: None,
                         service_id: service.clone(),
                         image: requested.clone(),
                         image_source: ployz_core::deploy::ImageSource::Registry,
@@ -2261,6 +2263,7 @@ fn smoke_deploy_target() -> DeployRequest {
         origin: None,
         volumes: BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_smoke"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
             image_source: ployz_core::deploy::ImageSource::Registry,
@@ -2285,6 +2288,7 @@ fn auto_hostname_deploy_target() -> DeployRequest {
         origin: None,
         volumes: BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_auto"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
             image_source: ployz_core::deploy::ImageSource::Registry,
@@ -2310,6 +2314,7 @@ fn internal_dns_deploy_target() -> DeployRequest {
         volumes: BTreeMap::new(),
         services: vec![
             DeployServiceSpec {
+                keep: None,
                 service_id: service_id("server"),
                 image: ImageReference::try_new(WORKLOAD_IMAGE)
                     .expect("valid workload image reference"),
@@ -2321,6 +2326,7 @@ fn internal_dns_deploy_target() -> DeployRequest {
                 routes: Vec::new(),
             },
             DeployServiceSpec {
+                keep: None,
                 service_id: service_id("client"),
                 image: ImageReference::try_new(WORKLOAD_IMAGE)
                     .expect("valid workload image reference"),
@@ -2341,6 +2347,7 @@ fn runtime_fields_deploy_target(workload_image: &ImageReference) -> DeployReques
         origin: None,
         volumes: BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_runtime"),
             image: workload_image.clone(),
             image_source: ployz_core::deploy::ImageSource::Registry,
@@ -2409,6 +2416,7 @@ fn failing_healthcheck_deploy_target(workload_image: &ImageReference) -> DeployR
         origin: None,
         volumes: BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_bad_health"),
             image: workload_image.clone(),
             image_source: ployz_core::deploy::ImageSource::Registry,
@@ -2455,6 +2463,7 @@ fn pre_start_deploy_target(namespace: &str, hook_command: &str) -> DeployRequest
             ployz_core::deploy::VolumeSpec::Plain,
         )]),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_hooked"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image"),
             image_source: ployz_core::deploy::ImageSource::Registry,
@@ -2520,6 +2529,7 @@ fn depends_on_deploy_target() -> DeployRequest {
         volumes: BTreeMap::new(),
         services: vec![
             DeployServiceSpec {
+                keep: None,
                 service_id: service_id("b"),
                 image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image"),
                 image_source: ployz_core::deploy::ImageSource::Registry,
@@ -2533,6 +2543,7 @@ fn depends_on_deploy_target() -> DeployRequest {
                 routes: Vec::new(),
             },
             DeployServiceSpec {
+                keep: None,
                 service_id: service_id("a"),
                 image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image"),
                 image_source: ployz_core::deploy::ImageSource::Registry,
@@ -2593,6 +2604,7 @@ fn convergence_deploy_target(command: &str) -> DeployRequest {
         origin: None,
         volumes: BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_converge"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
             image_source: ployz_core::deploy::ImageSource::Registry,

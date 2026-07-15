@@ -669,6 +669,7 @@ mod tests {
             origin: None,
             volumes: std::collections::BTreeMap::new(),
             services: vec![ployz_core::deploy::DeployServiceSpec {
+                keep: None,
                 service_id: service_id("svc_api"),
                 image: ployz_core::deploy::ImageReference::try_new("nginx:latest").expect("image"),
                 image_source: ployz_core::deploy::ImageSource::Registry,

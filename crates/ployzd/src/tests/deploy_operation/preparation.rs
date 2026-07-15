@@ -62,7 +62,7 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
         service.cleanup_candidates(),
         [
             cleanup_container("machine_a", "ctr_old", "entry_old"),
-            cleanup_container("machine_a", "ctr_stopped", "entry_target"),
+            stopped_cleanup_container("machine_a", "ctr_stopped", "entry_target"),
         ]
     );
 }
@@ -363,6 +363,7 @@ fn deploy_request() -> DeployRequest {
         origin: None,
         volumes: std::collections::BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_api"),
             image: ImageReference::try_new("registry.example/api:rev_2")
                 .expect("valid image reference"),
@@ -420,7 +421,26 @@ fn cleanup_container_with_entry(
             .operation("op_existing")
             .step(&format!("existing_{container_id}"))
             .build(),
+        state: ployz_core::machine::runtime::ContainerRuntimeState::running_unroutable(),
+        created_at_unix_seconds: None,
+        resolved_image_identity: None,
+        image_reclamation: if namespace_revision_entry_id.as_str() == "entry_old" {
+            ployz_core::deploy::DeployImageReclamation::EligibleSuperseded
+        } else {
+            ployz_core::deploy::DeployImageReclamation::IneligibleRunningPolicy
+        },
     }
+}
+
+fn stopped_cleanup_container(
+    machine_id: &str,
+    container_id: &str,
+    namespace_revision_entry_id: &str,
+) -> DeployCleanupContainer {
+    let mut target = cleanup_container(machine_id, container_id, namespace_revision_entry_id);
+    target.state = ployz_core::machine::runtime::ContainerRuntimeState::Exited;
+    target.image_reclamation = ployz_core::deploy::DeployImageReclamation::EligibleSuperseded;
+    target
 }
 
 fn observed_service_container(

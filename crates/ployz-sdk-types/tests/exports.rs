@@ -74,6 +74,7 @@ fn sdk_exports_core_wire_types() {
         origin: None,
         volumes: std::collections::BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id.clone(),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
             image_source: ployz_core::deploy::ImageSource::Registry,
@@ -221,6 +222,7 @@ fn sdk_exports_operation_api_wire_types() {
             origin: None,
             volumes: std::collections::BTreeMap::new(),
             services: vec![DeployServiceSpec {
+                keep: None,
                 service_id: ServiceId::try_new("svc_api").expect("valid service id"),
                 image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
                 image_source: ployz_core::deploy::ImageSource::Registry,

@@ -13,7 +13,7 @@ use super::facts::{
 };
 use super::images::{
     AvailableImageService, handle_image_blob_check, handle_image_blob_push, handle_image_ensure,
-    handle_image_manifest_push,
+    handle_image_manifest_push, handle_image_remove,
 };
 use super::logs::handle_logs_tail;
 use super::substrate::{handle_substrate_report, handle_substrate_update};
@@ -362,8 +362,16 @@ where
         &mut runtime,
         &machine_id,
         MachineServiceEndpoint::LogsTail,
-        (runner, log_reader),
+        (runner.clone(), log_reader),
         handle_logs_tail,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::ImageRemove,
+        runner,
+        handle_image_remove,
     )
     .await?;
     bind_machine_endpoint(

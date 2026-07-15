@@ -23,7 +23,9 @@ use crate::roles::machine::protocol::{
 use futures_util::{StreamExt, stream};
 use ployz_core::deploy::VolumeName;
 use ployz_core::ids::{MachineId, NamespaceId, OperationId};
-use ployz_core::image::{ImageEnsureOk, ImageEnsureRequest, ImageRpcDomainError};
+use ployz_core::image::{
+    ImageEnsureOk, ImageEnsureRequest, ImageRemoveOk, ImageRemoveRequest, ImageRpcDomainError,
+};
 use ployz_core::machine::MachineLifecycle;
 use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::network::{MachineDataplaneStatus, NetworkStatusMode};
@@ -67,6 +69,18 @@ pub struct NatsMachineSubstrateUpdater {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MachineImageEnsureError {
+    Domain {
+        machine_id: MachineId,
+        error: ImageRpcDomainError,
+    },
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineImageRemoveError {
     Domain {
         machine_id: MachineId,
         error: ImageRpcDomainError,
@@ -183,6 +197,7 @@ pub enum MachineVolumeRemoveError {
 
 /// Outcome of one machine RPC round trip: either the machine answered with a typed
 /// domain error, or the call never produced a usable answer.
+#[derive(Debug)]
 pub(crate) enum MachineCallError<E> {
     Unavailable(MachineRuntimeUnavailableReason),
     Domain(E),
@@ -603,6 +618,21 @@ impl NatsMachineContainerRuntime {
             self.request_timeout,
             machine_id,
             MachineServiceEndpoint::ImageEnsure,
+            request,
+        )
+        .await
+    }
+
+    pub(crate) async fn request_remove_image(
+        &self,
+        machine_id: &MachineId,
+        request: &ImageRemoveRequest,
+    ) -> Result<ImageRemoveOk, MachineCallError<ImageRpcDomainError>> {
+        call_machine(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::ImageRemove,
             request,
         )
         .await

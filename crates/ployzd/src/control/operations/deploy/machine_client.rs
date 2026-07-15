@@ -1,10 +1,12 @@
 //! Deploy-policy mapping for typed Machine role RPC outcomes.
 
 use ployz_core::ids::MachineId;
-use ployz_core::image::{ImageEnsureOk, ImageEnsureRequest, OciDigest};
+use ployz_core::image::{
+    ImageEnsureOk, ImageEnsureRequest, ImageRemoveOk, ImageRemoveRequest, OciDigest,
+};
 
 use crate::control::role_client::machine::{
-    MachineCallError, MachineImageEnsureError, MachineImageResolveError,
+    MachineCallError, MachineImageEnsureError, MachineImageRemoveError, MachineImageResolveError,
     NatsMachineContainerRuntime,
 };
 use crate::roles::machine::MachineRuntimeUnavailableReason;
@@ -55,6 +57,25 @@ impl MachineContainerRuntime for NatsMachineContainerRuntime {
                     reason,
                 },
                 MachineCallError::Domain(error) => MachineImageEnsureError::Domain {
+                    machine_id: machine_id.clone(),
+                    error,
+                },
+            })
+    }
+
+    async fn remove_image(
+        &mut self,
+        machine_id: &MachineId,
+        request: ImageRemoveRequest,
+    ) -> Result<ImageRemoveOk, MachineImageRemoveError> {
+        self.request_remove_image(machine_id, &request)
+            .await
+            .map_err(|error| match error {
+                MachineCallError::Unavailable(reason) => MachineImageRemoveError::Unavailable {
+                    machine_id: machine_id.clone(),
+                    reason,
+                },
+                MachineCallError::Domain(error) => MachineImageRemoveError::Domain {
                     machine_id: machine_id.clone(),
                     error,
                 },

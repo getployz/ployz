@@ -44,6 +44,7 @@ fn route_port(value: u16) -> RoutePort {
 
 fn service(name: &str, image: &str, replicas: u16, routes: Vec<DeployRoute>) -> DeployServiceSpec {
     DeployServiceSpec {
+        keep: None,
         service_id: service_id(name),
         image: ImageReference::try_new(image).expect("valid image reference"),
         image_source: ImageSource::Registry,

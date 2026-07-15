@@ -392,6 +392,7 @@ pub(crate) fn classify_service(
 
     let spec = if service_valid && deploy_valid {
         Some(DeployServiceSpec {
+            keep: None,
             service_id,
             image,
             image_source: ployz_core::deploy::ImageSource::Registry,

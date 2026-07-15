@@ -113,6 +113,23 @@ fn mutable_tag_repeats_as_same_namespace_revision_entry_identity() {
 }
 
 #[test]
+fn retention_policy_changes_neither_service_entry_nor_namespace_revision_identity() {
+    let without_keep = deploy_request(1);
+    let mut with_keep = without_keep.clone();
+    with_keep.keep = Some(ployz_core::deploy::ContainerRetentionCount::new(2));
+    let namespace = namespace_id("default");
+
+    assert_eq!(
+        without_keep.namespace_revision_entry_id(&namespace),
+        with_keep.namespace_revision_entry_id(&namespace)
+    );
+    assert_eq!(
+        normalized_services(vec![without_keep], BTreeMap::new()).namespace_revision_id(),
+        normalized_services(vec![with_keep], BTreeMap::new()).namespace_revision_id()
+    );
+}
+
+#[test]
 fn pushed_image_identity_uses_index_digest_across_platform_receipts() {
     let mut left = service_spec("svc_api", "api:latest", 1, None);
     left.image_source =
@@ -341,6 +358,89 @@ fn service_plan_cleans_up_unselected_service_containers_after_success() {
                 cleanup_container("machine_b", "ctr_target_keep"),
             ],
         )
+    );
+}
+
+#[test]
+fn service_keep_retains_newest_stopped_superseded_containers_without_counting_running_cleanup() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    input.service.keep = Some(ployz_core::deploy::ContainerRetentionCount::new(1));
+    input.cleanup_candidates = vec![
+        cleanup_container_observed("machine_a", "ctr_stopped_old", false, Some(10)),
+        cleanup_container_observed("machine_a", "ctr_running_scale_down", true, Some(30)),
+        cleanup_container_observed("machine_a", "ctr_stopped_new", false, Some(20)),
+    ];
+
+    let plan = plan_single_service(&input).expect("retention plan succeeds");
+
+    assert_eq!(
+        plan.cleanup_containers,
+        vec![
+            cleanup_container_observed("machine_a", "ctr_running_scale_down", true, Some(30)),
+            cleanup_container_observed("machine_a", "ctr_stopped_old", false, Some(10)),
+        ]
+    );
+}
+
+#[test]
+fn service_keep_treats_missing_created_time_as_newest_retained_evidence() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    input.service.keep = Some(ployz_core::deploy::ContainerRetentionCount::new(1));
+    input.cleanup_candidates = vec![
+        cleanup_container_observed("machine_a", "ctr_known", false, Some(20)),
+        cleanup_container_observed("machine_a", "ctr_unknown", false, None),
+    ];
+
+    let plan = plan_single_service(&input).expect("retention plan succeeds");
+
+    assert_eq!(
+        plan.cleanup_containers,
+        vec![cleanup_container_observed(
+            "machine_a",
+            "ctr_known",
+            false,
+            Some(20)
+        )]
+    );
+}
+
+#[test]
+fn service_keep_zero_retains_no_stopped_superseded_containers() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    input.service.keep = Some(ployz_core::deploy::ContainerRetentionCount::new(0));
+    input.cleanup_candidates = vec![cleanup_container_observed(
+        "machine_a",
+        "ctr_stopped",
+        false,
+        Some(10),
+    )];
+
+    let plan = plan_single_service(&input).expect("retention plan succeeds");
+
+    assert_eq!(plan.cleanup_containers, input.cleanup_candidates);
+}
+
+#[test]
+fn service_keep_breaks_created_time_ties_deterministically_after_excluding_selected_reuse() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    input.service.keep = Some(ployz_core::deploy::ContainerRetentionCount::new(1));
+    input.existing_replicas = vec![existing_replica("machine_a", "ctr_selected")];
+    input.cleanup_candidates = vec![
+        cleanup_container_observed("machine_b", "ctr_b", false, Some(10)),
+        cleanup_container_observed("machine_a", "ctr_a", false, Some(10)),
+        cleanup_container_observed("machine_a", "ctr_selected", true, Some(30)),
+    ];
+
+    let plan = plan_single_service(&input).expect("retention plan succeeds");
+
+    assert_eq!(
+        plan.cleanup_containers,
+        vec![cleanup_container_observed(
+            "machine_b",
+            "ctr_b",
+            false,
+            Some(10)
+        )]
     );
 }
 
@@ -931,12 +1031,17 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
         prepared.existing_replicas,
         vec![existing_replica("machine_b", "ctr_target")]
     );
+    let mut exited_cleanup =
+        cleanup_container_with_entry("machine_b", "ctr_exited", entry_id.as_str());
+    exited_cleanup.state = ContainerRuntimeState::Exited;
+    exited_cleanup.image_reclamation =
+        ployz_core::deploy::DeployImageReclamation::EligibleSuperseded;
     assert_eq!(
         prepared.cleanup_candidates,
         vec![
             cleanup_container_with_entry("machine_b", "ctr_target", entry_id.as_str()),
             cleanup_container_with_entry("machine_b", "ctr_old", "entry_old"),
-            cleanup_container_with_entry("machine_b", "ctr_exited", entry_id.as_str()),
+            exited_cleanup,
         ]
     );
 }
@@ -1637,6 +1742,7 @@ fn service_spec(
     route: Option<SpecRoute>,
 ) -> ployz_core::deploy::DeployServiceSpec {
     ployz_core::deploy::DeployServiceSpec {
+        keep: None,
         service_id: service_id(service),
         image: ImageReference::try_new(image).expect("valid image"),
         image_source: ployz_core::deploy::ImageSource::Registry,
@@ -1656,6 +1762,7 @@ fn service_spec_with_runtime(
     runtime: ContainerRuntimeSpec,
 ) -> ployz_core::deploy::DeployServiceSpec {
     ployz_core::deploy::DeployServiceSpec {
+        keep: None,
         service_id: service_id(service),
         image: ImageReference::try_new(image).expect("valid image"),
         image_source: ployz_core::deploy::ImageSource::Registry,
@@ -1745,6 +1852,7 @@ fn route_binding_state(hostname: &str, service: &str) -> RouteBindingState {
 
 fn deploy_request(replicas: u16) -> DeployServiceSpec {
     DeployServiceSpec {
+        keep: None,
         service_id: service_id("svc_api"),
         image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
         image_source: ployz_core::deploy::ImageSource::Registry,
@@ -1991,7 +2099,35 @@ fn cleanup_container_with_entry(
             .operation("op_existing")
             .step(container)
             .build(),
+        state: ployz_core::machine::runtime::ContainerRuntimeState::running_unroutable(),
+        created_at_unix_seconds: None,
+        resolved_image_identity: None,
+        image_reclamation: if namespace_revision_entry == "entry_old" {
+            ployz_core::deploy::DeployImageReclamation::EligibleSuperseded
+        } else {
+            ployz_core::deploy::DeployImageReclamation::IneligibleRunningPolicy
+        },
     }
+}
+
+fn cleanup_container_observed(
+    machine: &str,
+    container: &str,
+    running: bool,
+    created_at_unix_seconds: Option<i64>,
+) -> DeployCleanupContainer {
+    let mut target = cleanup_container(machine, container);
+    target.state = if running {
+        ployz_core::machine::runtime::ContainerRuntimeState::running_unroutable()
+    } else {
+        ployz_core::machine::runtime::ContainerRuntimeState::Exited
+    };
+    target.created_at_unix_seconds = created_at_unix_seconds;
+    target.resolved_image_identity = Some(format!("sha256:{container}"));
+    if !running {
+        target.image_reclamation = ployz_core::deploy::DeployImageReclamation::EligibleSuperseded;
+    }
+    target
 }
 
 fn observed_machine(

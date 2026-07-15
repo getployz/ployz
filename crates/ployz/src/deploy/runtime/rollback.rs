@@ -193,6 +193,7 @@ mod tests {
             origin: None,
             volumes: BTreeMap::new(),
             services: vec![DeployServiceSpec {
+                keep: None,
                 service_id: service_id("web"),
                 image: ImageReference::try_new(image).expect("valid image"),
                 image_source: ImageSource::Registry,

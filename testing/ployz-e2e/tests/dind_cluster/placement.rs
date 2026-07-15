@@ -497,6 +497,7 @@ fn placement_target(namespace: &str) -> DeployRequest {
         origin: None,
         volumes: BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("server"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("workload image reference"),
             image_source: ImageSource::Registry,

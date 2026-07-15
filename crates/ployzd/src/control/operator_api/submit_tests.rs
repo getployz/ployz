@@ -75,6 +75,7 @@ fn pushed_image_digest_must_match_the_index_digest() {
             origin: None,
             volumes: std::collections::BTreeMap::new(),
             services: vec![DeployServiceSpec {
+                keep: None,
                 service_id: ServiceId::try_new("api").expect("valid service id"),
                 image,
                 image_source: ImageSource::PushedToSeed(
@@ -123,6 +124,7 @@ fn deploy_admission_rejects_a_mounted_volume_without_a_declaration() {
             origin: None,
             volumes: BTreeMap::new(),
             services: vec![DeployServiceSpec {
+                keep: None,
                 service_id: ServiceId::try_new("api").expect("service id"),
                 image: ImageReference::try_new("nginx:latest").expect("image"),
                 image_source: ImageSource::Registry,

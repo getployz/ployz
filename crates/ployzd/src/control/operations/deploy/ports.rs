@@ -1,6 +1,6 @@
 use ployz_core::certificate::ActiveCertState;
 use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::image::{ImageEnsureOk, ImageEnsureRequest};
+use ployz_core::image::{ImageEnsureOk, ImageEnsureRequest, ImageRemoveOk, ImageRemoveRequest};
 use ployz_core::ingress::CertificateOwner;
 use ployz_core::intent::RouteBindingState;
 use ployz_core::intent::ServingTargetEntry;
@@ -14,7 +14,9 @@ use std::future::Future;
 
 use crate::certificate::GatewayCertificateTarget;
 
-use crate::control::role_client::machine::{MachineImageEnsureError, MachineImageResolveError};
+use crate::control::role_client::machine::{
+    MachineImageEnsureError, MachineImageRemoveError, MachineImageResolveError,
+};
 use crate::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerResolveImageRpcRequest,
     MachineContainerRestartRpcRequest, MachineContainerRunHookRpcOk,
@@ -53,6 +55,12 @@ pub trait MachineContainerRuntime {
         machine_id: &MachineId,
         request: ImageEnsureRequest,
     ) -> impl Future<Output = Result<ImageEnsureOk, MachineImageEnsureError>> + Send;
+
+    fn remove_image(
+        &mut self,
+        machine_id: &MachineId,
+        request: ImageRemoveRequest,
+    ) -> impl Future<Output = Result<ImageRemoveOk, MachineImageRemoveError>> + Send;
 
     fn run_container(
         &mut self,

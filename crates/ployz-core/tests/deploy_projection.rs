@@ -352,6 +352,7 @@ fn deploy_cleanup_evidence_can_record_from_active_service_commit() {
                 operation_id: operation_id("op_123"),
                 removed: Vec::new(),
                 failed: Vec::new(),
+                images: Vec::new(),
             },
             event_sequence(7),
         ),

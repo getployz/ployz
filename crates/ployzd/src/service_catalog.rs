@@ -243,6 +243,7 @@ pub fn machine_role_service(machine_id: &MachineId) -> NatsServiceSpec {
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ImageBlobPush),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ImageManifestPush),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ImageEnsure),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::ImageRemove),
         ],
     )
 }
@@ -342,6 +343,7 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         MachineServiceEndpoint::ImageBlobPush => "machine.image.blob.push",
         MachineServiceEndpoint::ImageManifestPush => "machine.image.manifest.push",
         MachineServiceEndpoint::ImageEnsure => "machine.image.ensure",
+        MachineServiceEndpoint::ImageRemove => "machine.image.remove",
         MachineServiceEndpoint::CertificateArtifactStatus => "machine.certificate.artifact.status",
         MachineServiceEndpoint::CertificateArtifactPush => "machine.certificate.artifact.push",
         MachineServiceEndpoint::CertificateArtifactRemove => "machine.certificate.artifact.remove",

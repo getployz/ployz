@@ -596,6 +596,28 @@ pub struct DeployCleanupFailure {
     pub message: FailureMessage,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct DeployImageCleanup {
+    pub machine_id: MachineId,
+    pub service_id: ServiceId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_identity: Option<OciDigest>,
+    pub outcome: DeployImageCleanupOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeployImageCleanupOutcome {
+    Removed,
+    AlreadyAbsent,
+    RetainedInUse,
+    MissingIdentity,
+    Failed { message: FailureMessage },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployTransition {
     Planning,
@@ -691,6 +713,7 @@ pub enum DeployEvidence {
     CleanupFinished {
         removed: Vec<DeployCleanupContainer>,
         failed: Vec<DeployCleanupFailure>,
+        images: Vec<DeployImageCleanup>,
     },
 }
 
@@ -754,10 +777,15 @@ impl DeployEvidence {
                 outcome: *outcome,
                 services: services.clone(),
             },
-            Self::CleanupFinished { removed, failed } => OperationEvent::DeployCleanupFinished {
+            Self::CleanupFinished {
+                removed,
+                failed,
+                images,
+            } => OperationEvent::DeployCleanupFinished {
                 operation_id: operation_id.clone(),
                 removed: removed.clone(),
                 failed: failed.clone(),
+                images: images.clone(),
             },
         }
     }
