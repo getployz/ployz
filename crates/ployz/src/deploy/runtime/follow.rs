@@ -13,12 +13,15 @@ use crate::deploy::render::{
 
 use super::history as deploy_history;
 use crate::dispatcher::PloyzctlRuntimeConfig;
+use crate::execution_error::PloyzctlExecutionError;
 use crate::execution_support::{
-    CommandExit, PloyzctlExecutionError, PloyzctlExecutionOutput, api_error, nats_connect_config,
+    CommandExit, PloyzctlExecutionOutput, api_error, nats_connect_config,
     operation_api_client_with_connect, watch_operation_until_terminal_with,
     with_cluster_context_from_disk,
 };
 use crate::operation::runtime::replay_request;
+
+use super::DeployExecutionError;
 
 pub(crate) async fn execute_deploy(
     mut command: DeployCommand,
@@ -40,7 +43,7 @@ pub(crate) async fn execute_deploy(
         command.from_registry,
     )
     .await
-    .map_err(|source| PloyzctlExecutionError::ImagePush { source })?;
+    .map_err(|source| DeployExecutionError::ImagePush { source })?;
     let receipt_output = receipts
         .iter()
         .map(crate::deploy::image_push::ImagePushReceipt::render)
@@ -75,6 +78,7 @@ pub(super) async fn reserve_deploy(
         .await
         .map(|reservation| reservation.reservation_id)
         .map_err(api_error)
+        .map_err(PloyzctlExecutionError::from)
 }
 
 pub(super) async fn submit_deploy(
@@ -84,8 +88,11 @@ pub(super) async fn submit_deploy(
     request.registry_credentials =
         crate::deploy::registry_auth::deploy_registry_credentials(&request.target.services)
             .await
-            .map_err(|source| PloyzctlExecutionError::RegistryAuth { source })?;
-    api.deploy_submit(&request).await.map_err(api_error)
+            .map_err(|source| DeployExecutionError::RegistryAuth { source })?;
+    api.deploy_submit(&request)
+        .await
+        .map_err(api_error)
+        .map_err(PloyzctlExecutionError::from)
 }
 
 pub(super) async fn follow_accepted_deploy(
@@ -231,9 +238,10 @@ fn redraw_frame(
 }
 
 fn write_error(error: io::Error) -> PloyzctlExecutionError {
-    PloyzctlExecutionError::WriteDeployProgress {
+    DeployExecutionError::WriteProgress {
         message: error.to_string(),
     }
+    .into()
 }
 
 #[cfg(test)]

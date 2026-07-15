@@ -3,9 +3,9 @@ use std::time::Instant;
 use tokio::time::sleep as async_sleep;
 
 use crate::dispatcher::PloyzctlRuntimeConfig;
+use crate::execution_error::PloyzctlExecutionError;
 use crate::execution_support::{
-    PloyzctlExecutionError, PloyzctlExecutionOutput, api_error, current_unix_seconds,
-    operation_api_client, render_api_call,
+    PloyzctlExecutionOutput, api_error, current_unix_seconds, operation_api_client, render_api_call,
 };
 use crate::logs::command::{LogsTailCommand, LogsTailOutput};
 
@@ -14,12 +14,12 @@ pub(crate) async fn tail(
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
     if !command.follow {
-        return render_api_call(
+        return Ok(render_api_call(
             config,
             async |api| api.logs_tail(&command.into_request()).await,
             |result| LogsTailOutput::new(result).render(),
         )
-        .await;
+        .await?);
     }
     let api = operation_api_client(config).await?;
     let started_at = Instant::now();

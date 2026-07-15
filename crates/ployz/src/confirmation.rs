@@ -2,7 +2,7 @@
 
 use std::io::{self, Write};
 
-use crate::execution_support::PloyzctlExecutionError;
+use crate::execution_error::PloyzctlExecutionError;
 
 /// Prompt on stderr, read one line from stdin, and require it to equal
 /// `expected`. `read_error` classifies an stderr/stdin I/O failure;

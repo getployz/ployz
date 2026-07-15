@@ -1,7 +1,6 @@
 use crate::dispatcher::PloyzctlRuntimeConfig;
-use crate::execution_support::{
-    PloyzctlExecutionError, PloyzctlExecutionOutput, api_error, operation_api_client,
-};
+use crate::execution_error::PloyzctlExecutionError;
+use crate::execution_support::{PloyzctlExecutionOutput, api_error, operation_api_client};
 use crate::ingress::command::IngressConfigureCommand;
 
 pub(crate) async fn configure(

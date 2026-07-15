@@ -10,8 +10,6 @@ use crate::dispatcher::PloyzctlRuntimeConfig;
 #[cfg(test)]
 use crate::machine::operator_context::ClusterContext;
 use crate::machine::operator_context::{ClusterContextError, load_cluster_context};
-use crate::machine::runtime::host_runner::LocalHostRunnerInstallError;
-use crate::machine::runtime::remote::RemoteMachineExecutionError;
 use ployz_core::ids::OperationId;
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::operation::{
@@ -23,7 +21,7 @@ use ployz_nats::connect::{
     NatsClientAuth, NatsClientUrl, NatsClientUrlError, NatsConnectConfig, NatsConnectError,
     NatsTlsTrust, connect_authenticated,
 };
-use ployz_sdk_types::{InitFirstMachineActivateError, OpsStatusRequest};
+use ployz_sdk_types::OpsStatusRequest;
 use tokio::time::sleep as async_sleep;
 
 mod client_ids;
@@ -42,7 +40,7 @@ pub const DEFAULT_OPS_WATCH_POLL_INTERVAL: Duration = Duration::from_millis(250)
 
 pub(crate) fn with_cluster_context_from_disk(
     config: PloyzctlRuntimeConfig,
-) -> Result<PloyzctlRuntimeConfig, PloyzctlExecutionError> {
+) -> Result<PloyzctlRuntimeConfig, ExecutionSupportError> {
     if config.nats_url.is_some()
         && config.nats_ca_file.is_some()
         && config.nats_seed_file.is_some()
@@ -58,7 +56,7 @@ pub(crate) fn with_cluster_context_from_disk(
         return Ok(config);
     };
     let context = load_cluster_context(&path)
-        .map_err(|source| PloyzctlExecutionError::ClusterContext { source })?;
+        .map_err(|source| ExecutionSupportError::ClusterContext { source })?;
     Ok(config.with_cluster_context(context))
 }
 
@@ -68,7 +66,7 @@ pub(crate) async fn render_api_call<T, E>(
     config: &PloyzctlRuntimeConfig,
     call: impl AsyncFnOnce(OperationApiClient) -> Result<T, OperationApiClientError<E>>,
     render: impl FnOnce(T) -> String,
-) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError>
+) -> Result<PloyzctlExecutionOutput, ExecutionSupportError>
 where
     E: fmt::Display,
 {
@@ -79,7 +77,7 @@ where
 
 /// Operation API failures are terminal for the CLI, so carry the rendered
 /// message instead of one error variant per endpoint.
-pub(crate) fn api_error<E>(source: OperationApiClientError<E>) -> PloyzctlExecutionError
+pub(crate) fn api_error<E>(source: OperationApiClientError<E>) -> ExecutionSupportError
 where
     E: fmt::Display,
 {
@@ -91,7 +89,7 @@ where
         | OperationApiClientError::ServiceProtocol { .. }
         | OperationApiClientError::DecodeResponse { .. }) => error.to_string(),
     };
-    PloyzctlExecutionError::OperationApi { message }
+    ExecutionSupportError::OperationApi { message }
 }
 
 pub(crate) async fn watch_operation_until_terminal(
@@ -99,23 +97,30 @@ pub(crate) async fn watch_operation_until_terminal(
     request: OperationEventReplayRequest,
     timeout: Duration,
     poll_interval: Duration,
-) -> Result<(Vec<ReplayedOperationEvent>, Option<OperationOutcome>), PloyzctlExecutionError> {
+) -> Result<(Vec<ReplayedOperationEvent>, Option<OperationOutcome>), ExecutionSupportError> {
     watch_operation_until_terminal_with(api, request, timeout, poll_interval, |_| Ok(())).await
 }
 
-pub(crate) async fn watch_operation_until_terminal_with(
+pub(crate) async fn watch_operation_until_terminal_with<E>(
     api: &OperationApiClient,
     mut request: OperationEventReplayRequest,
     timeout: Duration,
     poll_interval: Duration,
-    mut observe_page: impl FnMut(&[ReplayedOperationEvent]) -> Result<(), PloyzctlExecutionError>,
-) -> Result<(Vec<ReplayedOperationEvent>, Option<OperationOutcome>), PloyzctlExecutionError> {
+    mut observe_page: impl FnMut(&[ReplayedOperationEvent]) -> Result<(), E>,
+) -> Result<(Vec<ReplayedOperationEvent>, Option<OperationOutcome>), E>
+where
+    E: From<ExecutionSupportError>,
+{
     let operation_id = request.operation_id.clone();
     let started_at = Instant::now();
     let mut events = Vec::new();
 
     loop {
-        let page = api.ops_watch(&request).await.map_err(api_error)?;
+        let page = api
+            .ops_watch(&request)
+            .await
+            .map_err(api_error)
+            .map_err(E::from)?;
 
         let cursor = page.cursor;
         observe_page(&page.events)?;
@@ -134,17 +139,19 @@ pub(crate) async fn watch_operation_until_terminal_with(
                 continue;
             }
             OperationEventReplayCursor::Terminal => {
-                let outcome = operation_terminal_outcome(api, &operation_id).await?;
+                let outcome = operation_terminal_outcome(api, &operation_id)
+                    .await
+                    .map_err(E::from)?;
                 return Ok((events, outcome));
             }
             OperationEventReplayCursor::CaughtUp => {}
         }
 
         if started_at.elapsed() >= timeout {
-            return Err(PloyzctlExecutionError::OpsWatchTimedOut {
+            return Err(E::from(ExecutionSupportError::OpsWatchTimedOut {
                 operation_id,
                 timeout,
-            });
+            }));
         }
 
         async_sleep(poll_interval).await;
@@ -156,7 +163,7 @@ pub(crate) async fn watch_operation_until_terminal_with(
 async fn operation_terminal_outcome(
     api: &OperationApiClient,
     operation_id: &OperationId,
-) -> Result<Option<OperationOutcome>, PloyzctlExecutionError> {
+) -> Result<Option<OperationOutcome>, ExecutionSupportError> {
     let snapshot = api
         .ops_status(&OpsStatusRequest {
             operation_id: operation_id.clone(),
@@ -180,7 +187,7 @@ pub(crate) fn current_unix_seconds() -> u64 {
 
 pub(crate) async fn operation_api_client(
     config: &PloyzctlRuntimeConfig,
-) -> Result<OperationApiClient, PloyzctlExecutionError> {
+) -> Result<OperationApiClient, ExecutionSupportError> {
     let config = with_cluster_context_from_disk(config.clone())?;
     let connect = nats_connect_config(&config)?;
     operation_api_client_with_connect(&config, connect).await
@@ -189,36 +196,36 @@ pub(crate) async fn operation_api_client(
 pub(crate) async fn operation_api_client_with_connect(
     config: &PloyzctlRuntimeConfig,
     connect: NatsConnectConfig,
-) -> Result<OperationApiClient, PloyzctlExecutionError> {
+) -> Result<OperationApiClient, ExecutionSupportError> {
     connect_authenticated(&connect, config.nats_connect_timeout())
         .await
         .map(OperationApiClient::new)
-        .map_err(PloyzctlExecutionError::NatsConnect)
+        .map_err(ExecutionSupportError::NatsConnect)
 }
 
 pub(crate) fn nats_connect_config(
     config: &PloyzctlRuntimeConfig,
-) -> Result<NatsConnectConfig, PloyzctlExecutionError> {
+) -> Result<NatsConnectConfig, ExecutionSupportError> {
     let nats_url = config.nats_url.clone();
     let Some(nats_url) = nats_url else {
-        return Err(PloyzctlExecutionError::MissingNatsUrl);
+        return Err(ExecutionSupportError::MissingNatsUrl);
     };
     let nats_url =
-        NatsClientUrl::try_new(nats_url).map_err(PloyzctlExecutionError::InvalidNatsUrl)?;
+        NatsClientUrl::try_new(nats_url).map_err(ExecutionSupportError::InvalidNatsUrl)?;
     let Some(ca_file) = config.nats_ca_file.clone() else {
-        return Err(PloyzctlExecutionError::MissingNatsCaFile);
+        return Err(ExecutionSupportError::MissingNatsCaFile);
     };
     let Some(seed_file) = config.nats_seed_file.clone() else {
-        return Err(PloyzctlExecutionError::MissingNatsSeedFile);
+        return Err(ExecutionSupportError::MissingNatsSeedFile);
     };
     let raw_seed = fs::read_to_string(&seed_file).map_err(|error| {
-        PloyzctlExecutionError::ReadNatsSeedFile {
+        ExecutionSupportError::ReadNatsSeedFile {
             path: seed_file.clone(),
             message: error.to_string(),
         }
     })?;
     let seed = NatsUserSeed::try_new(raw_seed.trim()).map_err(|_| {
-        PloyzctlExecutionError::InvalidNatsSeedFile {
+        ExecutionSupportError::InvalidNatsSeedFile {
             path: seed_file.clone(),
         }
     })?;
@@ -231,13 +238,7 @@ pub(crate) fn nats_connect_config(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum PloyzctlExecutionError {
-    #[error("telemetry preferences are handled locally by the ployz binary")]
-    LocalCommand,
-    #[error(
-        "ployz {command} is reserved for Ployz Cloud and no Cloud connection is configured; configure a Ployz Cloud connection before using Cloud verbs"
-    )]
-    CloudUnconfigured { command: &'static str },
+pub enum ExecutionSupportError {
     #[error(
         "no cluster context: run `ployz init USER@HOST` to create one, pass --nats, or set {PLOYZ_NATS_URL_ENV}"
     )]
@@ -258,60 +259,12 @@ pub enum PloyzctlExecutionError {
         path.display()
     )]
     InvalidNatsSeedFile { path: PathBuf },
-    #[error(
-        "machine add requires a join seed from the cluster context or {PLOYZ_JOIN_NKEY_SEED_FILE_ENV}; run `ployz init USER@HOST` with the current CLI to refresh the context"
-    )]
-    MissingJoinSeedFile,
-    #[error(
-        "join seed file {} is unreadable (set {PLOYZ_JOIN_NKEY_SEED_FILE_ENV}): {message}",
-        path.display()
-    )]
-    ReadJoinSeedFile { path: PathBuf, message: String },
-    #[error("join seed file {} does not contain an SU-prefixed user seed", path.display())]
-    InvalidJoinSeedFile { path: PathBuf },
     #[error("{0}")]
     NatsConnect(NatsConnectError),
     #[error("{source}")]
-    HostRunnerFirstMachineInstall {
-        source: Box<LocalHostRunnerInstallError>,
-    },
-    #[error("{source}")]
     ClusterContext { source: ClusterContextError },
-    #[error("{source}")]
-    RemoteMachine {
-        source: Box<RemoteMachineExecutionError>,
-    },
     #[error("{message}")]
     OperationApi { message: String },
-    #[error("image push failed: {source}")]
-    ImagePush {
-        source: crate::deploy::image_push::ImagePushError,
-    },
-    #[error("registry credential lookup failed: {source}")]
-    RegistryAuth {
-        source: crate::deploy::registry_auth::RegistryAuthError,
-    },
-    #[error("namespace rm {} was not confirmed", namespace_id.as_str())]
-    NamespaceRemoveNotConfirmed {
-        namespace_id: ployz_core::ids::NamespaceId,
-    },
-    #[error("failed to read namespace rm confirmation: {message}")]
-    ReadNamespaceRemoveConfirmation { message: String },
-    #[error(
-        "volume rm {}/{} was not confirmed",
-        namespace_id.as_str(),
-        volume_name.as_str()
-    )]
-    VolumeRemoveNotConfirmed {
-        namespace_id: ployz_core::ids::NamespaceId,
-        volume_name: ployz_core::deploy::VolumeName,
-    },
-    #[error("failed to read volume rm confirmation: {message}")]
-    ReadVolumeRemoveConfirmation { message: String },
-    #[error("first machine activation failed: {source}")]
-    FirstMachineActivateApi {
-        source: OperationApiClientError<InitFirstMachineActivateError>,
-    },
     #[error(
         "operation {} did not reach a terminal state within {}s",
         operation_id.as_str(),
@@ -321,12 +274,6 @@ pub enum PloyzctlExecutionError {
         operation_id: OperationId,
         timeout: Duration,
     },
-    #[error("failed to write deploy progress: {message}")]
-    WriteDeployProgress { message: String },
-    #[error("could not generate client operation ids: {message}")]
-    GenerateClientOperationIds { message: String },
-    #[error("{message}")]
-    DeployHistory { message: String },
 }
 
 #[cfg(test)]
@@ -343,7 +290,7 @@ mod tests {
                 message: "operation status CAS conflict: contended".to_owned(),
             },
         });
-        let PloyzctlExecutionError::OperationApi { message } = error else {
+        let ExecutionSupportError::OperationApi { message } = error else {
             panic!("api_error maps to the operation API execution error");
         };
         assert_eq!(

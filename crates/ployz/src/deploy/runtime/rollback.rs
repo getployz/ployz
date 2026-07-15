@@ -9,10 +9,13 @@ use crate::execution_support::generate_client_deploy_rollback_id;
 
 use super::{follow as deploy_follow, history as deploy_history};
 use crate::dispatcher::PloyzctlRuntimeConfig;
+use crate::execution_error::PloyzctlExecutionError;
 use crate::execution_support::{
-    PloyzctlExecutionError, PloyzctlExecutionOutput, nats_connect_config,
-    operation_api_client_with_connect, with_cluster_context_from_disk,
+    PloyzctlExecutionOutput, nats_connect_config, operation_api_client_with_connect,
+    with_cluster_context_from_disk,
 };
+
+use super::DeployExecutionError;
 
 pub(crate) async fn execute(
     command: DeployRollbackCommand,
@@ -26,7 +29,7 @@ pub(crate) async fn execute(
     let api = operation_api_client_with_connect(&config, connect).await?;
     let reservation_id = deploy_follow::reserve_deploy(&api, namespace_id.clone()).await?;
     let generated = generate_client_deploy_rollback_id().map_err(|error| {
-        PloyzctlExecutionError::GenerateClientOperationIds {
+        DeployExecutionError::GenerateClientOperationIds {
             message: error.to_string(),
         }
     })?;
@@ -163,9 +166,10 @@ fn select_request_with_io<R: BufRead, W: Write>(
 }
 
 fn deploy_history_error(message: impl Into<String>) -> PloyzctlExecutionError {
-    PloyzctlExecutionError::DeployHistory {
+    DeployExecutionError::History {
         message: message.into(),
     }
+    .into()
 }
 
 #[cfg(test)]

@@ -16,7 +16,7 @@ use ployz::machine::local_release::LocalReleaseBundle;
 use ployz::machine::operator_context::{
     ClusterContext, ClusterContextMachine, load_cluster_context, save_cluster_context,
 };
-use ployz::machine::runtime::remote::RemoteMachineExecutionError;
+use ployz::machine::runtime::{MachineExecutionError, remote::RemoteMachineExecutionError};
 use ployz::machine::ssh::SshTarget;
 use ployz_core::install::{
     AbsoluteInstallPath, InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion,
@@ -953,9 +953,9 @@ async fn machine_init_invalid_hostname_fails_before_install() {
 
     assert!(matches!(
         error,
-        PloyzctlExecutionError::RemoteMachine {
-            ref source
-        } if matches!(&**source, RemoteMachineExecutionError::MachineIdentity { .. })
+        PloyzctlExecutionError::Machine(MachineExecutionError::RemoteMachine {
+            ref source,
+        }) if matches!(&**source, RemoteMachineExecutionError::MachineIdentity { .. })
     ));
     let rendered = error.to_string();
     assert!(rendered.contains("sg.core.1"));
@@ -1207,7 +1207,8 @@ async fn machine_add_remote_local_release_mismatch_reports_accepted_operation() 
     .await
     .expect_err("mismatched local release fails remote machine add");
 
-    let PloyzctlExecutionError::RemoteMachine { source } = &error else {
+    let PloyzctlExecutionError::Machine(MachineExecutionError::RemoteMachine { source }) = &error
+    else {
         panic!("expected remote machine error, got {error:?}");
     };
     let RemoteMachineExecutionError::LocalReleaseAfterMachineAdd {
@@ -1297,7 +1298,8 @@ async fn machine_add_remote_installer_failure_carries_operation_and_phase() {
     .await
     .expect_err("failed join installer fails remote machine add");
 
-    let PloyzctlExecutionError::RemoteMachine { source } = &error else {
+    let PloyzctlExecutionError::Machine(MachineExecutionError::RemoteMachine { source }) = &error
+    else {
         panic!("expected remote machine error, got {error:?}");
     };
     let RemoteMachineExecutionError::RemoteJoinInstall { operation_id, .. } = &**source else {

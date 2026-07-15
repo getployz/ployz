@@ -9,9 +9,10 @@ use std::path::PathBuf;
 
 use crate::core::command::{CorePromoteCommand, CoreReplaceCommand};
 use crate::dispatcher::PloyzctlRuntimeConfig;
+use crate::execution_error::PloyzctlExecutionError;
 use crate::execution_support::generate_client_machine_add_ids;
 use crate::execution_support::{
-    CommandExit, PloyzctlExecutionError, PloyzctlExecutionOutput, api_error, operation_api_client,
+    CommandExit, ExecutionSupportError, PloyzctlExecutionOutput, api_error, operation_api_client,
     watch_operation_until_terminal, with_cluster_context_from_disk,
 };
 use crate::machine::bootstrap::{
@@ -29,6 +30,7 @@ use crate::machine::operator_context::{
     load_cluster_context, publish_cluster_context, save_cluster_context,
     save_cluster_context_machine_ssh,
 };
+use crate::machine::runtime::MachineExecutionError;
 use crate::machine::ssh::{
     DEFAULT_SSH_COMMAND_TIMEOUT, SshClient, SshCommandError, SshPhase, SshTarget,
 };
@@ -92,9 +94,10 @@ fn extract_marker_json<'a>(
 }
 
 fn remote_machine_error(source: RemoteMachineExecutionError) -> PloyzctlExecutionError {
-    PloyzctlExecutionError::RemoteMachine {
+    MachineExecutionError::RemoteMachine {
         source: Box::new(source),
     }
+    .into()
 }
 
 fn ssh_error(source: Box<SshCommandError>) -> PloyzctlExecutionError {
@@ -172,7 +175,7 @@ pub(crate) async fn execute_core_replace_remote(
         .nats_url
         .as_deref()
         .and_then(|url| NatsClientUrl::try_new(url).ok())
-        .ok_or(PloyzctlExecutionError::MissingNatsUrl)?;
+        .ok_or_else(|| PloyzctlExecutionError::from(ExecutionSupportError::MissingNatsUrl))?;
     let successor_runtime_nats_url =
         MachineJoinRuntimeNatsUrl::try_new(successor_nats_url.as_str()).map_err(|error| {
             remote_machine_error(

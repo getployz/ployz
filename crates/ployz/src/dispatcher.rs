@@ -6,11 +6,11 @@ use std::time::Duration;
 use crate::commands::PloyzctlCommand;
 use crate::machine::operator_context::ClusterContext;
 
+pub use crate::execution_error::PloyzctlExecutionError;
 pub use crate::execution_support::{
     CommandExit, DEFAULT_NATS_CONNECT_TIMEOUT, DEFAULT_OPS_WATCH_POLL_INTERVAL,
     DEFAULT_OPS_WATCH_TIMEOUT, PLOYZ_JOIN_NKEY_SEED_FILE_ENV, PLOYZ_NATS_CA_FILE_ENV,
-    PLOYZ_NATS_NKEY_SEED_FILE_ENV, PLOYZ_NATS_URL_ENV, PloyzctlExecutionError,
-    PloyzctlExecutionOutput,
+    PLOYZ_NATS_NKEY_SEED_FILE_ENV, PLOYZ_NATS_URL_ENV, PloyzctlExecutionOutput,
 };
 
 /// Stand-in for the system `ssh` (test/automation seam for the remote

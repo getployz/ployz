@@ -1,6 +1,7 @@
 use crate::core::command::{CorePromoteCommand, CoreReplaceCommand};
 use crate::dispatcher::PloyzctlRuntimeConfig;
-use crate::execution_support::{PloyzctlExecutionError, PloyzctlExecutionOutput};
+use crate::execution_error::PloyzctlExecutionError;
+use crate::execution_support::PloyzctlExecutionOutput;
 
 pub(crate) async fn promote(
     command: CorePromoteCommand,

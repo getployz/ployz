@@ -1,14 +1,16 @@
 //! Execution of Machine installation and lifecycle commands.
 
 use std::fs;
+use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::api_client::{NatsServiceRequestFailure, OperationApiClientError};
 use crate::dispatcher::PloyzctlRuntimeConfig;
+use crate::execution_error::PloyzctlExecutionError;
 use crate::execution_support::{
-    CommandExit, PloyzctlExecutionError, PloyzctlExecutionOutput, api_error, nats_connect_config,
-    operation_api_client, operation_api_client_with_connect, render_api_call,
-    with_cluster_context_from_disk,
+    CommandExit, ExecutionSupportError, PLOYZ_JOIN_NKEY_SEED_FILE_ENV, PloyzctlExecutionOutput,
+    api_error, nats_connect_config, operation_api_client, operation_api_client_with_connect,
+    render_api_call, with_cluster_context_from_disk,
 };
 use crate::machine::command::{
     AcceptedOperationOutput, MachineAddCommand, MachineAddOutput, MachineInspectCommand,
@@ -28,6 +30,39 @@ use tokio::time::sleep as async_sleep;
 
 pub mod host_runner;
 pub mod remote;
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MachineExecutionError {
+    #[error(
+        "machine add requires a join seed from the cluster context or {PLOYZ_JOIN_NKEY_SEED_FILE_ENV}; run `ployz init USER@HOST` with the current CLI to refresh the context"
+    )]
+    MissingJoinSeedFile,
+    #[error(
+        "join seed file {} is unreadable (set {PLOYZ_JOIN_NKEY_SEED_FILE_ENV}): {message}",
+        path.display()
+    )]
+    ReadJoinSeedFile { path: PathBuf, message: String },
+    #[error("join seed file {} does not contain an SU-prefixed user seed", path.display())]
+    InvalidJoinSeedFile { path: PathBuf },
+    #[error("{source}")]
+    HostRunnerFirstMachineInstall {
+        source: Box<host_runner::LocalHostRunnerInstallError>,
+    },
+    #[error("{source}")]
+    RemoteMachine {
+        source: Box<remote::RemoteMachineExecutionError>,
+    },
+    #[error("first machine activation failed: {source}")]
+    FirstMachineActivateApi {
+        source: OperationApiClientError<InitFirstMachineActivateError>,
+    },
+}
+
+impl From<MachineExecutionError> for PloyzctlExecutionError {
+    fn from(error: MachineExecutionError) -> Self {
+        Self::Machine(error)
+    }
+}
 
 pub(super) async fn activate_first_machine(
     command: &FirstMachineActivateCommand,
@@ -53,7 +88,7 @@ async fn activate_first_machine_once(
     let activated = api
         .init_first_machine_activate(&command.clone().into_request())
         .await
-        .map_err(|source| PloyzctlExecutionError::FirstMachineActivateApi { source })?;
+        .map_err(|source| MachineExecutionError::FirstMachineActivateApi { source })?;
 
     Ok(crate::machine::founder::FirstMachineActivationOutput {
         operation_id: activated.operation_id,
@@ -62,13 +97,15 @@ async fn activate_first_machine_once(
 }
 
 fn activation_retryable(error: &PloyzctlExecutionError) -> bool {
-    if let PloyzctlExecutionError::NatsConnect(
+    if let PloyzctlExecutionError::Support(ExecutionSupportError::NatsConnect(
         NatsConnectError::Connect { .. } | NatsConnectError::Timeout { .. },
-    ) = error
+    )) = error
     {
         return true;
     }
-    let PloyzctlExecutionError::FirstMachineActivateApi { source } = error else {
+    let PloyzctlExecutionError::Machine(MachineExecutionError::FirstMachineActivateApi { source }) =
+        error
+    else {
         return false;
     };
     matches!(
@@ -93,15 +130,15 @@ pub(super) fn read_join_seed(
     config: &PloyzctlRuntimeConfig,
 ) -> Result<NatsUserSeed, PloyzctlExecutionError> {
     let Some(path) = config.join_seed_file.clone() else {
-        return Err(PloyzctlExecutionError::MissingJoinSeedFile);
+        return Err(MachineExecutionError::MissingJoinSeedFile.into());
     };
     let raw =
-        fs::read_to_string(&path).map_err(|error| PloyzctlExecutionError::ReadJoinSeedFile {
+        fs::read_to_string(&path).map_err(|error| MachineExecutionError::ReadJoinSeedFile {
             path: path.clone(),
             message: error.to_string(),
         })?;
     NatsUserSeed::try_new(raw.trim())
-        .map_err(|_| PloyzctlExecutionError::InvalidJoinSeedFile { path })
+        .map_err(|_| MachineExecutionError::InvalidJoinSeedFile { path }.into())
 }
 
 pub(crate) fn founder_init(
@@ -118,7 +155,7 @@ pub(crate) fn founder_init(
                 host_runner_install,
                 config.host_runner_install_timeout(),
             )
-            .map_err(|source| PloyzctlExecutionError::HostRunnerFirstMachineInstall { source })?;
+            .map_err(|source| MachineExecutionError::HostRunnerFirstMachineInstall { source })?;
             Ok(PloyzctlExecutionOutput {
                 stdout: output.stdout,
                 stderr: output.stderr,
@@ -206,24 +243,24 @@ pub(crate) async fn list(
     command: MachineListCommand,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
-    render_api_call(
+    Ok(render_api_call(
         config,
         async |api| api.machine_list(&command.into_request()).await,
         |result| MachineListOutput::from_result(result).render(),
     )
-    .await
+    .await?)
 }
 
 pub(crate) async fn inspect(
     command: MachineInspectCommand,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
-    render_api_call(
+    Ok(render_api_call(
         config,
         async |api| api.machine_inspect(&command.into_request()).await,
         |machine| MachineInspectOutput::new(machine).render(),
     )
-    .await
+    .await?)
 }
 
 #[cfg(test)]
@@ -235,7 +272,7 @@ mod tests {
     fn machine_add_join_seed_requires_context_or_explicit_seed_path() {
         assert_eq!(
             read_join_seed(&PloyzctlRuntimeConfig::default()),
-            Err(PloyzctlExecutionError::MissingJoinSeedFile)
+            Err(MachineExecutionError::MissingJoinSeedFile.into())
         );
     }
 
@@ -256,21 +293,22 @@ mod tests {
 
     #[test]
     fn first_machine_activation_retries_consumed_token_replay() {
-        let error = PloyzctlExecutionError::FirstMachineActivateApi {
+        let error = MachineExecutionError::FirstMachineActivateApi {
             source: OperationApiClientError::Domain {
                 endpoint: ployz_nats::subjects::OperationApiEndpoint::InitFirstMachineActivate,
                 error: InitFirstMachineActivateError::JoinRedeem {
                     failure: MachineJoinRedeemError::UnknownJoinToken,
                 },
             },
-        };
+        }
+        .into();
 
         assert!(activation_retryable(&error));
     }
 
     #[test]
     fn first_machine_activation_retries_completed_operation_replay() {
-        let error = PloyzctlExecutionError::FirstMachineActivateApi {
+        let error = MachineExecutionError::FirstMachineActivateApi {
             source: OperationApiClientError::Domain {
                 endpoint: ployz_nats::subjects::OperationApiEndpoint::InitFirstMachineActivate,
                 error: InitFirstMachineActivateError::JoinRedeem {
@@ -281,7 +319,8 @@ mod tests {
                     },
                 },
             },
-        };
+        }
+        .into();
 
         assert!(activation_retryable(&error));
     }

@@ -9,6 +9,7 @@ mod confirmation;
 pub mod core;
 pub mod deploy;
 pub mod dispatcher;
+mod execution_error;
 mod execution_support;
 pub mod ingress;
 pub mod logs;

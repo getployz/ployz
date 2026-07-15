@@ -2,9 +2,9 @@
 
 use crate::api_client::OperationApiClient;
 use crate::dispatcher::PloyzctlRuntimeConfig;
+use crate::execution_error::PloyzctlExecutionError;
 use crate::execution_support::{
-    PloyzctlExecutionError, PloyzctlExecutionOutput, api_error, operation_api_client,
-    watch_operation_until_terminal,
+    PloyzctlExecutionOutput, api_error, operation_api_client, watch_operation_until_terminal,
 };
 use crate::operation::command::{
     ListOutput, OpsListCommand, OpsStatusCommand, OpsWatchCommand, OpsWatchOutput, StatusOutput,

@@ -1,8 +1,23 @@
 use crate::dispatcher::PloyzctlRuntimeConfig;
-use crate::execution_support::{
-    PloyzctlExecutionError, PloyzctlExecutionOutput, api_error, operation_api_client,
-};
+use crate::execution_error::PloyzctlExecutionError;
+use crate::execution_support::{PloyzctlExecutionOutput, api_error, operation_api_client};
 use crate::namespace::command::{NamespaceRemoveCommand, NamespaceRemoveConfirmation};
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum NamespaceExecutionError {
+    #[error("namespace rm {} was not confirmed", namespace_id.as_str())]
+    RemoveNotConfirmed {
+        namespace_id: ployz_core::ids::NamespaceId,
+    },
+    #[error("failed to read namespace rm confirmation: {message}")]
+    ReadRemoveConfirmation { message: String },
+}
+
+impl From<NamespaceExecutionError> for PloyzctlExecutionError {
+    fn from(error: NamespaceExecutionError) -> Self {
+        Self::Namespace(error)
+    }
+}
 
 fn confirm_remove(command: &NamespaceRemoveCommand) -> Result<(), PloyzctlExecutionError> {
     let prompt = NamespaceRemoveConfirmation {
@@ -13,9 +28,12 @@ fn confirm_remove(command: &NamespaceRemoveCommand) -> Result<(), PloyzctlExecut
     crate::confirmation::read_typed_confirmation(
         &prompt,
         command.namespace_id.as_str(),
-        |message| PloyzctlExecutionError::ReadNamespaceRemoveConfirmation { message },
-        || PloyzctlExecutionError::NamespaceRemoveNotConfirmed {
-            namespace_id: command.namespace_id.clone(),
+        |message| NamespaceExecutionError::ReadRemoveConfirmation { message }.into(),
+        || {
+            NamespaceExecutionError::RemoveNotConfirmed {
+                namespace_id: command.namespace_id.clone(),
+            }
+            .into()
         },
     )
 }

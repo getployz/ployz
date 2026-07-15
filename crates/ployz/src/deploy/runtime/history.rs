@@ -10,9 +10,10 @@ use crate::deploy::history_store::{
 };
 
 use crate::dispatcher::PloyzctlRuntimeConfig;
-use crate::execution_support::{
-    PloyzctlExecutionError, PloyzctlExecutionOutput, with_cluster_context_from_disk,
-};
+use crate::execution_error::PloyzctlExecutionError;
+use crate::execution_support::{PloyzctlExecutionOutput, with_cluster_context_from_disk};
+
+use super::DeployExecutionError;
 
 pub(crate) fn inspect(
     command: DeployHistoryCommand,
@@ -173,9 +174,10 @@ fn evidence_error_for(
 }
 
 fn execution_error(source: DeployHistoryRuntimeError) -> PloyzctlExecutionError {
-    PloyzctlExecutionError::DeployHistory {
+    DeployExecutionError::History {
         message: source.to_string(),
     }
+    .into()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
