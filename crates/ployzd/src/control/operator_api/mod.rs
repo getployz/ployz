@@ -13,6 +13,7 @@ pub use core_replace::core_replace_report;
 pub use first_machine::init_first_machine_activate;
 pub use machine_join::{machine_join_redeem, machine_join_report};
 pub use network_query::NetworkQueryService;
+pub(crate) use queries::ControlHealthReaders;
 #[cfg(test)]
 pub use queries::ops_status_missing;
 pub use queries::{
@@ -41,9 +42,6 @@ use crate::control::operations::namespace_remove::NamespaceRemoveOperation;
 use crate::control::operations::network_repair::NetworkRepairOperation;
 use crate::control::operations::service_restart::ServiceRestartOperation;
 use crate::control::operations::volume_remove::VolumeRemoveOperation;
-use crate::control::projection::ingress_endpoint::IngressEndpointProjectionHealth;
-use crate::control::projection::runtime::RuntimeProjectionHealthReader;
-use crate::control::reconciler::certificate::CertificateRenewalHealth;
 use crate::control::role_client::machine::{NatsMachineFactsReader, NatsMachineLogsTailer};
 use crate::control::sequencer::OperationControllers;
 use crate::control::store::CoreStore;
@@ -111,9 +109,7 @@ impl OperationApiHandlers {
         facts_reader: NatsMachineFactsReader,
         intent_reader: NatsIntentReader,
         logs_tailer: NatsMachineLogsTailer,
-        runtime_projection_health: RuntimeProjectionHealthReader,
-        ingress_endpoint_projection_health: IngressEndpointProjectionHealth,
-        certificate_renewal_health: CertificateRenewalHealth,
+        control_health: queries::ControlHealthReaders,
     ) -> Self {
         let OperationWorkers {
             credential_grant,
@@ -138,9 +134,7 @@ impl OperationApiHandlers {
             facts.clone(),
             facts_reader.clone(),
             core_store.clone(),
-            runtime_projection_health,
-            ingress_endpoint_projection_health,
-            certificate_renewal_health,
+            control_health,
         );
         let logs_query = LogsQueryService::new(intent_reader.clone(), facts_reader, logs_tailer);
         let ingress_intent = IngressIntentStore::new(core_store.clone());

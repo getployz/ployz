@@ -192,7 +192,7 @@ async fn interruption_recovery_is_uncapped_idempotent_and_excludes_other_owners(
         .expect("seed statuses");
 
     let first = repository
-        .record_interrupted_operations(OperationInterruptionCause::PriorProcessLoss)
+        .record_interrupted_operations(OperationInterruptionCause::PriorCoreProcessLoss)
         .await
         .expect("recover interrupted operations");
     assert_eq!(first.recorded, 102);
@@ -219,7 +219,7 @@ async fn interruption_recovery_is_uncapped_idempotent_and_excludes_other_owners(
     );
 
     let second = repository
-        .record_interrupted_operations(OperationInterruptionCause::PriorProcessLoss)
+        .record_interrupted_operations(OperationInterruptionCause::PriorCoreProcessLoss)
         .await
         .expect("repeat recovery");
     assert_eq!(second.recorded, 0);
@@ -281,7 +281,7 @@ async fn quiesced_running_worker_cannot_race_interruption_sealing() {
         .expect("worker quiesces");
     assert!(release_tx.send(()).is_err(), "worker receiver must be gone");
     repository
-        .record_interrupted_operations(OperationInterruptionCause::ControlShutdown)
+        .record_interrupted_operations(OperationInterruptionCause::CoreShutdown)
         .await
         .expect("interruption seals after quiescence");
 

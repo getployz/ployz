@@ -157,7 +157,7 @@ async fn graceful_shutdown_records_owned_operation_interruption() {
                 evidence,
             },
             ..
-        } if evidence.cause() == OperationInterruptionCause::ControlShutdown
+        } if evidence.cause() == OperationInterruptionCause::CoreShutdown
     ));
     assert!(matches!(
         repository
@@ -239,7 +239,7 @@ async fn startup_recovers_process_loss_without_mutating_committed_intent() {
                 evidence,
             },
             ..
-        } if evidence.cause() == OperationInterruptionCause::PriorProcessLoss
+        } if evidence.cause() == OperationInterruptionCause::PriorCoreProcessLoss
     ));
     assert_eq!(
         intent.load().await.expect("intent loads").volume_pins,

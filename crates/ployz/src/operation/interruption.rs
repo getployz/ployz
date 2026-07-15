@@ -17,8 +17,8 @@ pub(crate) fn render_interruption(evidence: &OperationInterruptionEvidence) -> S
 
 const fn cause(cause: OperationInterruptionCause) -> &'static str {
     match cause {
-        OperationInterruptionCause::ControlShutdown => "control shutdown",
-        OperationInterruptionCause::PriorProcessLoss => "prior process loss",
+        OperationInterruptionCause::CoreShutdown => "core shutdown",
+        OperationInterruptionCause::PriorCoreProcessLoss => "prior core process loss",
     }
 }
 
@@ -138,13 +138,13 @@ mod tests {
             last_event_sequence: EventSequence::first(),
         };
         let evidence = status
-            .interruption_evidence(OperationInterruptionCause::PriorProcessLoss)
+            .interruption_evidence(OperationInterruptionCause::PriorCoreProcessLoss)
             .expect("running deploy interruption evidence");
         let rendered = render_interruption(&evidence);
 
         assert_eq!(
             rendered,
-            "core interruption: cause prior process loss; last durable stage deploy running starting containers; uncertain work intent and runtime; next action retry from observed reality"
+            "core interruption: cause prior core process loss; last durable stage deploy running starting containers; uncertain work intent and runtime; next action retry from observed reality"
         );
     }
 }

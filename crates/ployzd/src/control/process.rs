@@ -26,7 +26,7 @@ use crate::control::operations::machine_update::MachineUpdateOperation;
 use crate::control::operator_api::service::{
     ApiServiceError, start_operation_api_service_with_handlers,
 };
-use crate::control::operator_api::{OperationApiHandlers, OperationWorkers};
+use crate::control::operator_api::{ControlHealthReaders, OperationApiHandlers, OperationWorkers};
 use crate::control::projection::ingress_endpoint::{
     IngressEndpointStartError, RunningIngressEndpointProjection, start_ingress_endpoint_projection,
 };
@@ -113,7 +113,7 @@ impl RunningControlProcess {
         let interruption_result = if quiesce_result.is_ok() {
             Some(
                 operation_repository
-                    .record_interrupted_operations(OperationInterruptionCause::ControlShutdown)
+                    .record_interrupted_operations(OperationInterruptionCause::CoreShutdown)
                     .await,
             )
         } else {
@@ -272,7 +272,7 @@ async fn start_control_process_with_client_reload_and_issuer(
     reject_stale_core_epoch(&core_store, config.epoch_fence_mirror.as_deref()).await?;
     let repository = OperationRepository::open(core_store.clone(), client.clone());
     repository
-        .record_interrupted_operations(OperationInterruptionCause::PriorProcessLoss)
+        .record_interrupted_operations(OperationInterruptionCause::PriorCoreProcessLoss)
         .await
         .map_err(ControlProcessError::RecoverInterruptedOperations)?;
     let pending_join_recovery = if let Some(mirror_path) = &config.seed_from_mirror {
@@ -515,9 +515,12 @@ async fn start_control_process_with_client_reload_and_issuer(
             facts_reader,
             intent_reader,
             logs_tailer,
-            runtime_projection_health,
-            ingress_endpoint_projection_health,
-            certificate_renewal_health.clone(),
+            ControlHealthReaders {
+                task_supervisor: control_tasks.health_reader(),
+                runtime_projection: runtime_projection_health,
+                ingress_endpoint_projection: ingress_endpoint_projection_health,
+                certificate_renewal: certificate_renewal_health.clone(),
+            },
         ),
     )
     .await

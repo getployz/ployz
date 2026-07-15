@@ -181,10 +181,7 @@ async fn rejected_worker_admission_records_terminal_interruption_evidence() {
     else {
         panic!("rejected worker admission must be terminal: {status:?}");
     };
-    assert_eq!(
-        evidence.cause(),
-        OperationInterruptionCause::ControlShutdown
-    );
+    assert_eq!(evidence.cause(), OperationInterruptionCause::CoreShutdown);
     let events = controllers
         .repository()
         .replay_operation_events(OperationEventReplayRequest {
@@ -197,7 +194,7 @@ async fn rejected_worker_admission_records_terminal_interruption_evidence() {
     assert!(matches!(
         events.events.last().map(|event| &event.event),
         Some(OperationEvent::OperationInterrupted { evidence, .. })
-            if evidence.cause() == OperationInterruptionCause::ControlShutdown
+            if evidence.cause() == OperationInterruptionCause::CoreShutdown
     ));
 }
 

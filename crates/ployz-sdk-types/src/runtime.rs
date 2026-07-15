@@ -23,9 +23,25 @@ pub struct RuntimeSnapshotResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ControlHealth {
+    pub task_supervisor: ControlTaskSupervisorHealth,
     pub runtime_projection: ControlRuntimeProjectionHealth,
     pub ingress_endpoint_projection: ControlIngressEndpointProjectionHealth,
     pub certificate_renewal: ControlCertificateRenewalHealth,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ControlTaskSupervisorHealth {
+    pub active_tasks: usize,
+    pub panicked_tasks: u64,
+    pub last_failure: Option<ControlTaskSupervisorFailure>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ControlTaskSupervisorFailure {
+    pub task_id: u64,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

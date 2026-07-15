@@ -32,7 +32,7 @@ fn running_deploy_interruption_preserves_typed_stage_and_retry_contract() {
     };
 
     let evidence = status
-        .interruption_evidence(OperationInterruptionCause::PriorProcessLoss)
+        .interruption_evidence(OperationInterruptionCause::PriorCoreProcessLoss)
         .expect("worker-owned deploy is recoverable");
 
     assert_eq!(
@@ -52,8 +52,17 @@ fn running_deploy_interruption_preserves_typed_stage_and_retry_contract() {
         OperationInterruptionNextAction::RetryFromObservedReality
     );
     let encoded = serde_json::to_value(&evidence).expect("interruption evidence serializes");
-    assert_eq!(encoded["cause"], "prior_process_loss");
-    assert_eq!(encoded["last_durable_stage"]["kind"], "deploy");
+    assert_eq!(
+        encoded.get("cause").and_then(serde_json::Value::as_str),
+        Some("prior_core_process_loss")
+    );
+    assert_eq!(
+        encoded
+            .get("last_durable_stage")
+            .and_then(|stage| stage.get("kind"))
+            .and_then(serde_json::Value::as_str),
+        Some("deploy")
+    );
     assert!(encoded.get("uncertain_work").is_none());
     assert!(encoded.get("next_action").is_none());
     assert_eq!(
@@ -121,7 +130,7 @@ fn separately_recovered_operation_is_not_eligible_for_generic_interruption() {
     );
     assert!(
         accepted
-            .interruption_evidence(OperationInterruptionCause::ControlShutdown)
+            .interruption_evidence(OperationInterruptionCause::CoreShutdown)
             .is_some()
     );
 
@@ -131,7 +140,7 @@ fn separately_recovered_operation_is_not_eligible_for_generic_interruption() {
         EventSequence::first(),
     );
     assert!(
-        cert.interruption_evidence(OperationInterruptionCause::PriorProcessLoss)
+        cert.interruption_evidence(OperationInterruptionCause::PriorCoreProcessLoss)
             .is_none()
     );
 }

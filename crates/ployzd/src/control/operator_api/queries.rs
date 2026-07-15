@@ -28,11 +28,12 @@ use ployz_core::operation::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationStatus, OperationStatusSnapshot,
 };
 use ployz_sdk_types::{
-    ControlHealth, CredentialListError, CredentialListResult, LogsTailError, LogsTailRequest,
-    LogsTailResult, LogsTailResultTarget, LogsTailTarget, MachineInspectError, MachineListError,
-    MachineListResult, MachineSnapshot, MachineTestimony, OpsListError, OpsListRequest,
-    OpsListResult, OpsStatusError, OpsWatchError, RuntimeSnapshotError, RuntimeSnapshotResult,
-    ServiceInspectError, ServiceListError, ServiceListResult, ServiceSnapshot,
+    ControlHealth, ControlTaskSupervisorFailure, ControlTaskSupervisorHealth, CredentialListError,
+    CredentialListResult, LogsTailError, LogsTailRequest, LogsTailResult, LogsTailResultTarget,
+    LogsTailTarget, MachineInspectError, MachineListError, MachineListResult, MachineSnapshot,
+    MachineTestimony, OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsWatchError,
+    RuntimeSnapshotError, RuntimeSnapshotResult, ServiceInspectError, ServiceListError,
+    ServiceListResult, ServiceSnapshot,
 };
 
 pub async fn credential_list(
@@ -86,9 +87,17 @@ pub struct RuntimeSnapshotQueryService {
     facts: RoleTestimonyCache,
     facts_reader: NatsMachineFactsReader,
     core_store: CoreStore,
+    task_supervisor_health: crate::tasks::TaskSupervisorHealthReader,
     runtime_projection_health: RuntimeProjectionHealthReader,
     ingress_endpoint_projection_health: IngressEndpointProjectionHealth,
     certificate_renewal_health: CertificateRenewalHealth,
+}
+
+pub(crate) struct ControlHealthReaders {
+    pub(crate) task_supervisor: crate::tasks::TaskSupervisorHealthReader,
+    pub(crate) runtime_projection: RuntimeProjectionHealthReader,
+    pub(crate) ingress_endpoint_projection: IngressEndpointProjectionHealth,
+    pub(crate) certificate_renewal: CertificateRenewalHealth,
 }
 
 impl RuntimeSnapshotQueryService {
@@ -98,18 +107,17 @@ impl RuntimeSnapshotQueryService {
         facts: RoleTestimonyCache,
         facts_reader: NatsMachineFactsReader,
         core_store: CoreStore,
-        runtime_projection_health: RuntimeProjectionHealthReader,
-        ingress_endpoint_projection_health: IngressEndpointProjectionHealth,
-        certificate_renewal_health: CertificateRenewalHealth,
+        health: ControlHealthReaders,
     ) -> Self {
         Self {
             intent_reader,
             facts,
             facts_reader,
             core_store,
-            runtime_projection_health,
-            ingress_endpoint_projection_health,
-            certificate_renewal_health,
+            task_supervisor_health: health.task_supervisor,
+            runtime_projection_health: health.runtime_projection,
+            ingress_endpoint_projection_health: health.ingress_endpoint_projection,
+            certificate_renewal_health: health.certificate_renewal,
         }
     }
 
@@ -145,6 +153,24 @@ impl RuntimeSnapshotQueryService {
                 read_at_unix_seconds,
             ),
             control_health: Some(ControlHealth {
+                task_supervisor: self
+                    .task_supervisor_health
+                    .snapshot()
+                    .map(|health| ControlTaskSupervisorHealth {
+                        active_tasks: health.active_tasks,
+                        panicked_tasks: health.panicked_tasks,
+                        last_failure: health.last_failure.map(|failure| {
+                            ControlTaskSupervisorFailure {
+                                task_id: failure.task_id,
+                                message: failure.message,
+                            }
+                        }),
+                    })
+                    .unwrap_or(ControlTaskSupervisorHealth {
+                        active_tasks: 0,
+                        panicked_tasks: 0,
+                        last_failure: None,
+                    }),
                 runtime_projection: self.runtime_projection_health.snapshot(),
                 ingress_endpoint_projection: self
                     .ingress_endpoint_projection_health

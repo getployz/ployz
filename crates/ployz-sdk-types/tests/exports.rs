@@ -12,7 +12,8 @@ use ployz_sdk_types::{
     ControlCertificateRenewalFailure, ControlCertificateRenewalHealth,
     ControlCertificateRenewalOutcome, ControlHealth, ControlIngressEndpointProjectionHealth,
     ControlPlaneEpoch, ControlRuntimeProjectionHealth, ControlRuntimeProjectionLoopHealth,
-    ControlRuntimeProjectionServiceHealth, CoreReplaceError, CoreReplaceReportError,
+    ControlRuntimeProjectionServiceHealth, ControlTaskSupervisorFailure,
+    ControlTaskSupervisorHealth, CoreReplaceError, CoreReplaceReportError,
     CoreReplaceReportRequest, CoreReplaceReported, CoreReplaceRequest, CredentialAddError,
     CredentialAddRequest, CredentialListError, CredentialListRequest, CredentialListResult,
     CredentialRemoveError, CredentialRemoveRequest, DependencyCondition, DeployOperationState,
@@ -764,6 +765,8 @@ fn sdk_exports_operational_health_wire_types() {
     assert_wire_type::<GatewayWatchFailure>();
     assert_wire_type::<GatewayStatusPublishFailure>();
     assert_wire_type::<ControlHealth>();
+    assert_wire_type::<ControlTaskSupervisorHealth>();
+    assert_wire_type::<ControlTaskSupervisorFailure>();
     assert_wire_type::<ControlRuntimeProjectionHealth>();
     assert_wire_type::<ControlRuntimeProjectionLoopHealth>();
     assert_wire_type::<ControlRuntimeProjectionServiceHealth>();

@@ -83,13 +83,16 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
     let runtime = nats.start_control(&config).await;
     let api = nats.api();
 
-    let renewal_health = api
+    let control_health = api
         .runtime_snapshot(&RuntimeSnapshotRequest {})
         .await
         .expect("runtime snapshot includes Control health")
         .control_health
-        .expect("Control health is present")
-        .certificate_renewal;
+        .expect("Control health is present");
+    assert!(control_health.task_supervisor.active_tasks > 0);
+    assert_eq!(control_health.task_supervisor.panicked_tasks, 0);
+    assert_eq!(control_health.task_supervisor.last_failure, None);
+    let renewal_health = control_health.certificate_renewal;
     assert_eq!(renewal_health.consecutive_failures, 0);
     assert!(matches!(
         renewal_health.last_attempt,

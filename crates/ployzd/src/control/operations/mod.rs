@@ -25,7 +25,7 @@ pub(super) async fn finish_rejected_task_admission(
             .repository()
             .record_interrupted_operation(
                 operation_id,
-                ployz_core::operation::OperationInterruptionCause::ControlShutdown,
+                ployz_core::operation::OperationInterruptionCause::CoreShutdown,
             )
             .await
     {
