@@ -13,6 +13,7 @@ pub enum DeployOperationRecordError {
     RecordTransition(RecordDeployTransitionError),
     #[error("deploy evidence write failed: {0:?}")]
     RecordEvidence(RecordDeployEvidenceError),
+    #[cfg(test)]
     #[error("synthetic deploy record failure: {message}")]
     Synthetic { message: &'static str },
 }

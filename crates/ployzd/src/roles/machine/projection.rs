@@ -145,6 +145,7 @@ impl RunningProjectionTask {
         let _ = (&mut self.task).await;
     }
 
+    #[cfg(test)]
     pub(crate) async fn shutdown(mut self) {
         self.request_shutdown();
         self.wait().await;

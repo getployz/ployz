@@ -384,7 +384,6 @@ impl RecordOperationEventOutcome {
 
 #[derive(Debug)]
 pub enum SubmitOperationError {
-    InvalidDeployTarget,
     StaleDeployReservation {
         namespace_id: NamespaceId,
         reservation_id: DeployReservationId,

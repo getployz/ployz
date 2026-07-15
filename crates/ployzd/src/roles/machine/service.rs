@@ -18,20 +18,23 @@ use super::images::{
 use super::logs::handle_logs_tail;
 use super::substrate::{handle_substrate_report, handle_substrate_update};
 use crate::roles::machine::execution::host_dataplane::dataplane_status_budget;
-use crate::roles::machine::projection::{
-    MachineProjectionState, RunningProjectionTask, start_projection_task,
-};
+use crate::roles::machine::projection::MachineProjectionState;
+#[cfg(test)]
+use crate::roles::machine::projection::{RunningProjectionTask, start_projection_task};
 use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
 use crate::service_catalog::{machine_endpoint_spec, machine_role_service_base};
 use ployz_core::ids::MachineId;
+#[cfg(test)]
 use ployz_core::machine::MachineEndpointObservation;
 use ployz_core::network::{
     PloyzNativeMeshReady, WireGuardEbpfEndpointRoute, WireGuardEbpfPrepareError, WireGuardPeer,
     WireGuardPublicKey, WireGuardReady,
 };
+#[cfg(test)]
+use ployz_nats::service_runtime::NatsServiceShutdownError;
 use ployz_nats::service_runtime::{
     EndpointExecutionPolicy, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
-    NatsServiceShutdownError, RunningNatsService, start_nats_service,
+    RunningNatsService, start_nats_service,
 };
 use ployz_nats::subjects::MachineServiceEndpoint;
 use std::future::Future;
@@ -48,11 +51,13 @@ const DATAPLANE_STATUS_ENDPOINT_TIMEOUT: Duration =
     dataplane_status_budget(ployz_core::network::NetworkStatusMode::ProbePathMtu)
         .saturating_add(Duration::from_secs(10));
 
+#[cfg(test)]
 pub struct RunningMachineRoleRuntime {
     service: RunningNatsService,
     projection: RunningProjectionTask,
 }
 
+#[cfg(test)]
 impl RunningMachineRoleRuntime {
     pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
         self.projection.shutdown().await;
@@ -60,6 +65,7 @@ impl RunningMachineRoleRuntime {
     }
 }
 
+#[cfg(test)]
 pub async fn start_machine_role_runtime<R, P, L>(
     client: ployz_nats::service_runtime::NatsClient,
     machine_id: MachineId,
@@ -83,6 +89,7 @@ where
     .await
 }
 
+#[cfg(test)]
 pub async fn start_machine_role_runtime_with_endpoint_observation<R, P, L>(
     client: ployz_nats::service_runtime::NatsClient,
     machine_id: MachineId,
@@ -107,6 +114,7 @@ where
     .await
 }
 
+#[cfg(test)]
 async fn start_machine_role_runtime_with_endpoint_cache<R, P, L>(
     client: ployz_nats::service_runtime::NatsClient,
     machine_id: MachineId,
@@ -141,6 +149,7 @@ where
     })
 }
 
+#[cfg(test)]
 pub async fn start_machine_role_service<R, P, L>(
     client: ployz_nats::service_runtime::NatsClient,
     machine_id: MachineId,
@@ -164,6 +173,7 @@ where
     .await
 }
 
+#[cfg(test)]
 pub(crate) async fn start_machine_role_service_with_endpoint_cache<R, P, L>(
     client: ployz_nats::service_runtime::NatsClient,
     machine_id: MachineId,

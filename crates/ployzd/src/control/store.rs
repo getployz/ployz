@@ -186,6 +186,7 @@ impl CoreStore {
     /// Open a private in-memory database with the schema applied. The database
     /// lives only as long as this handle and its clones (they share the one
     /// connection), which is exactly what a test wants.
+    #[cfg(test)]
     pub async fn open_in_memory() -> Result<Self, CoreStoreError> {
         Self::open_blocking(|| Connection::open_in_memory().map_err(CoreStoreError::Open)).await
     }

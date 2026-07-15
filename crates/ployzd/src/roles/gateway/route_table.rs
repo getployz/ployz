@@ -1,10 +1,12 @@
 //! Gateway serving route-table state.
 
 use crate::roles::gateway::projection::{
-    GatewayCertificateFailureAvailability, GatewayProjectedRoute, GatewayProjection,
-    GatewayProjectionError, GatewayProjectionState, GatewayProjectionUpdate, GatewayUpstream,
-    apply_gateway_update,
+    GatewayCertificateFailureAvailability, GatewayProjection, GatewayProjectionError,
+    GatewayProjectionState, GatewayProjectionUpdate, apply_gateway_update,
 };
+#[cfg(test)]
+use crate::roles::gateway::projection::{GatewayProjectedRoute, GatewayUpstream};
+#[cfg(test)]
 use ployz_core::operation::RouteTarget;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +30,7 @@ impl GatewayProjector {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn route_table(&self) -> &GatewayRouteTable {
         &self.route_table
     }
@@ -87,6 +90,7 @@ impl GatewayRouteTable {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn from_projection(projection: GatewayProjection) -> Self {
         Self {
             current: Some(projection),
@@ -99,6 +103,7 @@ impl GatewayRouteTable {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn routes(&self) -> &[GatewayProjectedRoute] {
         self.current
             .as_ref()
@@ -106,6 +111,7 @@ impl GatewayRouteTable {
             .unwrap_or(&[])
     }
 
+    #[cfg(test)]
     pub fn select_upstream(
         &self,
         target: &RouteTarget,
@@ -137,6 +143,7 @@ impl GatewayRouteTable {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GatewayRouteSelectionError {
     RouteTableUnavailable,

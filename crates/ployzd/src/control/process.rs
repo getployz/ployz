@@ -30,11 +30,13 @@ use crate::control::operator_api::{OperationApiHandlers, OperationWorkers};
 use crate::control::projection::ingress_endpoint::{
     IngressEndpointStartError, RunningIngressEndpointProjection, start_ingress_endpoint_projection,
 };
-use crate::control::projection::runtime::{
-    RunningRuntimeProjection, RuntimeProjectionHealthState, start_runtime_projection,
-};
+#[cfg(test)]
+use crate::control::projection::runtime::RuntimeProjectionHealthState;
+use crate::control::projection::runtime::{RunningRuntimeProjection, start_runtime_projection};
+#[cfg(test)]
+use crate::control::reconciler::certificate::CertificateRenewalHealthState;
 use crate::control::reconciler::certificate::{
-    CertificateRenewalHealth, CertificateRenewalHealthState, start_certificate_renewal_task,
+    CertificateRenewalHealth, start_certificate_renewal_task,
 };
 use crate::control::reconciler::managed_dns::start_managed_dns_task;
 use crate::control::role_client::machine::{
@@ -81,7 +83,7 @@ pub struct RunningControlProcess {
     managed_dns_tasks: TaskRegistry,
     certificate_issuance_tasks: TaskRegistry,
     certificate_renewal_tasks: TaskRegistry,
-    certificate_renewal_health: CertificateRenewalHealth,
+    _certificate_renewal_health: CertificateRenewalHealth,
     testimony_cache: RunningRoleTestimonyCache,
     runtime_projection: RunningRuntimeProjection,
     ingress_endpoint_projection: RunningIngressEndpointProjection,
@@ -90,11 +92,13 @@ pub struct RunningControlProcess {
 
 impl RunningControlProcess {
     #[must_use]
+    #[cfg(test)]
     pub fn certificate_renewal_health(&self) -> CertificateRenewalHealthState {
-        self.certificate_renewal_health.snapshot()
+        self._certificate_renewal_health.snapshot()
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn runtime_projection_health(&self) -> RuntimeProjectionHealthState {
         self.runtime_projection.health()
     }
@@ -163,6 +167,7 @@ pub async fn start_control_process_with_client_and_reload(
     start_control_process_with_client_reload_and_issuer(client, config, reload, None).await
 }
 
+#[cfg(test)]
 pub async fn start_control_process_with_client_and_test_issuer(
     client: NatsClient,
     config: &ControlProcessConfig,
@@ -465,7 +470,7 @@ async fn start_control_process_with_client_reload_and_issuer(
         managed_dns_tasks,
         certificate_issuance_tasks,
         certificate_renewal_tasks,
-        certificate_renewal_health,
+        _certificate_renewal_health: certificate_renewal_health,
         testimony_cache,
         runtime_projection,
         ingress_endpoint_projection,

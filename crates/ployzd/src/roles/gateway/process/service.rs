@@ -33,6 +33,7 @@ use ployz_nats::service_runtime::{
 };
 use ployz_nats::subjects::MachineServiceEndpoint;
 
+#[cfg(test)]
 pub async fn start_gateway_certificate_service(
     client: NatsClient,
     machine_id: MachineId,

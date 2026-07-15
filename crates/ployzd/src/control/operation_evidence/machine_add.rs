@@ -74,6 +74,7 @@ impl OperationRepository {
         }
     }
 
+    #[cfg(test)]
     pub async fn record_machine_add_joined(
         &self,
         operation_id: &OperationId,

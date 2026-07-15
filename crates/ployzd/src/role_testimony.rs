@@ -5,13 +5,9 @@
 //! cluster truth and never an owner of Core machine testimony contracts.
 
 use futures_util::StreamExt;
-#[cfg(test)]
-use ployz_core::ids::ContainerId;
 use ployz_core::ids::MachineId;
 use ployz_core::machine::GatewayStatusObservation;
 use ployz_core::machine::MachineEndpointObservation;
-#[cfg(test)]
-use ployz_core::machine::runtime::ManagedContainerObservation;
 use ployz_core::machine::runtime::{
     MachineContainerFactDelta, MachineContainerObservationSnapshot, MachineFactsSnapshot,
 };
@@ -156,6 +152,7 @@ impl RoleTestimonyCache {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn machine_facts(&self, machine_id: &MachineId) -> Option<MachineFactsSnapshot> {
         self.state
             .read()
@@ -201,17 +198,6 @@ impl RoleTestimonyCache {
             .into_iter()
             .filter_map(|facts| facts.endpoints().cloned())
             .collect()
-    }
-
-    #[must_use]
-    #[cfg(test)]
-    pub fn container(
-        &self,
-        machine_id: &MachineId,
-        container_id: &ContainerId,
-    ) -> Option<ManagedContainerObservation> {
-        self.machine_facts(machine_id)
-            .and_then(|facts| facts.containers().container(container_id).cloned())
     }
 
     #[must_use]

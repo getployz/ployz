@@ -71,9 +71,6 @@ pub(super) fn submit_failure(error: SubmitCommandError) -> SubmitFailure {
         }) => SubmitFailure::Unavailable {
             message: corrupt("non-deploy submit returned deploy reservation failure"),
         },
-        SubmitCommandError::Submit(SubmitOperationError::InvalidDeployTarget) => {
-            SubmitFailure::InvalidDeployTarget
-        }
         SubmitCommandError::Submit(SubmitOperationError::StoreStatus(source)) => {
             SubmitFailure::Unavailable {
                 message: source.to_string(),
@@ -175,7 +172,6 @@ pub(super) fn deploy_submit_error_from_submit_error(
         error @ SubmitCommandError::Clock { .. }
         | error @ SubmitCommandError::NamespaceBusy { .. }
         | error @ SubmitCommandError::IngressBusy { .. }
-        | error @ SubmitCommandError::Submit(SubmitOperationError::InvalidDeployTarget)
         | error @ SubmitCommandError::Submit(SubmitOperationError::StoreStatus(_))
         | error @ SubmitCommandError::Submit(SubmitOperationError::DuplicateSequenceMismatch {
             ..
@@ -475,26 +471,6 @@ mod tests {
                 operation_id: submitted_operation_id,
                 namespace_id,
                 owner_operation_id: owner,
-            }
-        );
-    }
-
-    #[test]
-    fn machine_add_submit_maps_unexpected_deploy_failure_to_unavailable() {
-        let operation_id = operation_id("op_123");
-
-        assert_eq!(
-            machine_add_error_from_submit_error(
-                operation_id.clone(),
-                MachineAddSubmitCommandError::Submit(SubmitCommandError::Submit(
-                    SubmitOperationError::InvalidDeployTarget,
-                )),
-            ),
-            MachineAddError::Unavailable {
-                operation_id,
-                message:
-                    "operation record corrupt: machine-add submit returned deploy target failure"
-                        .to_owned(),
             }
         );
     }

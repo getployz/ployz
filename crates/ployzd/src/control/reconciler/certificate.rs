@@ -127,6 +127,7 @@ fn record_renewal_attempt(
     }
 }
 
+#[cfg(test)]
 pub async fn run_once_at(
     manager: &CertificateManager,
     targets: &[GatewayCertificateTarget],
@@ -327,6 +328,7 @@ pub struct CertificateRenewalHealth {
 
 impl CertificateRenewalHealth {
     #[must_use]
+    #[cfg(test)]
     pub fn snapshot(&self) -> CertificateRenewalHealthState {
         self.state
             .lock()

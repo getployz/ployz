@@ -64,11 +64,13 @@ pub struct DockerManagedContainerRunner {
 /// start before Docker is reachable.
 #[derive(Debug, Clone)]
 enum DockerHandle {
+    #[cfg(test)]
     Connected(Docker),
     LazyLocalDefaults(Arc<tokio::sync::OnceCell<Docker>>),
 }
 
 impl DockerManagedContainerRunner {
+    #[cfg(test)]
     pub fn local_defaults(
         endpoint_network_subnet: impl Into<String>,
         endpoint_bridge_ifname: impl Into<String>,
@@ -103,6 +105,7 @@ impl DockerManagedContainerRunner {
 
     async fn docker(&self) -> Result<&Docker, DockerManagedContainerRunnerConnectError> {
         match &self.docker {
+            #[cfg(test)]
             DockerHandle::Connected(docker) => Ok(docker),
             DockerHandle::LazyLocalDefaults(cell) => {
                 cell.get_or_try_init(|| async { connect_local_defaults() })

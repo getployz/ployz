@@ -159,6 +159,7 @@ impl PloyzNativeMeshPreparer {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn with_command_timeout(mut self, command_timeout: Duration) -> Self {
         self.command_timeout = command_timeout;
         self

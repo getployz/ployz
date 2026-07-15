@@ -99,6 +99,7 @@ impl GatewayCertificateStore {
         }
     }
 
+    #[cfg(test)]
     pub fn artifact_path(
         &self,
         active: &ActiveCertState,

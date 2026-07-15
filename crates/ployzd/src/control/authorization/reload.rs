@@ -67,10 +67,12 @@ impl NatsReloadRunner for HostNatsReloadRunner {
 /// Reload by signalling a known server pid directly. Used where systemd is
 /// absent (fixtures, containers); command evidence is still recorded.
 #[derive(Debug, Clone)]
+#[cfg(test)]
 pub struct SignalNatsReloadRunner {
     pid: u32,
 }
 
+#[cfg(test)]
 impl SignalNatsReloadRunner {
     #[must_use]
     pub const fn new(pid: u32) -> Self {
@@ -78,6 +80,7 @@ impl SignalNatsReloadRunner {
     }
 }
 
+#[cfg(test)]
 impl NatsReloadRunner for SignalNatsReloadRunner {
     fn reload(&self) -> NatsReloadOutcome {
         let pid = self.pid.to_string();

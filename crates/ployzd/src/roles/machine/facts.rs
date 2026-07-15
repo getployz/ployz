@@ -184,6 +184,7 @@ impl MachineEndpointCache {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn with_observation(observation: MachineEndpointObservation) -> Self {
         Self {
             latest: Arc::new(Mutex::new(Some(observation))),

@@ -792,6 +792,7 @@ impl ControlProcessConfig {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn with_deploy_step_timeout(mut self, deploy_step_timeout: Duration) -> Self {
         self.deploy_step_timeout = deploy_step_timeout;
         self

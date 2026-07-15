@@ -2,9 +2,11 @@
 
 use ployz_core::ids::MachineId;
 use ployz_nats::services::{
-    EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceDiscoveryQuery,
-    ServiceMetadata, ServiceMetadataEntry, ServicePing, ServiceVersion, discover_services,
+    EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata,
+    ServiceMetadataEntry, ServiceVersion,
 };
+#[cfg(test)]
+use ployz_nats::services::{ServiceDiscoveryQuery, ServicePing, discover_services};
 use ployz_nats::subjects::{
     INGRESS_ENDPOINT_GET, INTENT_GET, MachineServiceEndpoint, OperationApiEndpoint,
     OperationApiEndpointExecution, RUNTIME_SNAPSHOT_SEED, machine_service,
@@ -66,10 +68,12 @@ pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: &[OperationApiEndpoint] = &[
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 pub struct DaemonServiceCatalog {
     services: Vec<NatsServiceSpec>,
 }
 
+#[cfg(test)]
 impl DaemonServiceCatalog {
     #[must_use]
     pub fn for_control() -> Self {
@@ -214,6 +218,7 @@ pub const fn api_endpoint_execution(execution: OperationApiEndpointExecution) ->
 }
 
 #[must_use]
+#[cfg(test)]
 pub fn machine_role_service(machine_id: &MachineId) -> NatsServiceSpec {
     machine_role_service_spec(
         machine_id,

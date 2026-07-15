@@ -1,19 +1,26 @@
 //! Supervised `nats-server` config and process command preparation.
 
+#[cfg(test)]
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::process::Command;
 
-use ployz_nats::connect::{NatsClientEndpoint, NatsClientUrl};
+#[cfg(test)]
+use ployz_nats::connect::NatsClientEndpoint;
+use ployz_nats::connect::NatsClientUrl;
+#[cfg(test)]
 pub use ployz_nats::server_config::{NatsServerConfig, NatsServerConfigError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NatsServerLaunch {
+    #[cfg(test)]
     Supervised(PreparedNatsServerService),
     External(NatsClientUrl),
 }
 
 impl NatsServerLaunch {
     #[must_use]
+    #[cfg(test)]
     pub fn client_url(&self) -> NatsClientUrl {
         match self {
             Self::Supervised(service) => service.client_url(),
@@ -22,6 +29,7 @@ impl NatsServerLaunch {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedNatsServerService {
     binary_path: PathBuf,
@@ -30,6 +38,7 @@ pub struct PreparedNatsServerService {
     client_endpoint: NatsClientEndpoint,
 }
 
+#[cfg(test)]
 impl PreparedNatsServerService {
     pub fn prepare(
         binary_path: PathBuf,
@@ -70,6 +79,7 @@ impl PreparedNatsServerService {
     }
 }
 
+#[cfg(test)]
 fn validate_process_path(field: &'static str, value: &Path) -> Result<(), NatsServerConfigError> {
     let rendered = value.to_string_lossy();
     if rendered.is_empty()

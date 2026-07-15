@@ -20,7 +20,9 @@ use crate::roles::gateway::pingora::{
     GatewayPingoraFailureRecorder, GatewayTlsAccept, PingoraRouteRegistry,
     PingoraRouteRegistryError, PloyzGatewayProxy,
 };
-use crate::roles::gateway::projection::{GatewayProjection, GatewayProjectionUpdate};
+#[cfg(test)]
+use crate::roles::gateway::projection::GatewayProjection;
+use crate::roles::gateway::projection::GatewayProjectionUpdate;
 use crate::roles::gateway::route_table::{
     GatewayProjector, GatewayProjectorTick, GatewayServingState,
 };
@@ -61,9 +63,9 @@ pub(crate) mod service;
 use service::start_gateway_role_service;
 
 pub struct RunningGatewayProcess {
-    runtime: Arc<Mutex<GatewayProjector>>,
-    health: Arc<Mutex<GatewayProcessHealth>>,
-    listen_addr: SocketAddr,
+    _runtime: Arc<Mutex<GatewayProjector>>,
+    _health: Arc<Mutex<GatewayProcessHealth>>,
+    _listen_addr: SocketAddr,
     shutdown: broadcast::Sender<()>,
     pingora_shutdown: watch::Sender<bool>,
     testimony_cache: RunningRoleTestimonyCache,
@@ -101,16 +103,18 @@ impl RunningGatewayProcess {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn health(&self) -> GatewayProcessHealth {
-        self.health
+        self._health
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn served_projection(&self) -> Option<GatewayProjection> {
-        self.runtime
+        self._runtime
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .route_table()
@@ -119,13 +123,15 @@ impl RunningGatewayProcess {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn listen_addr(&self) -> SocketAddr {
-        self.listen_addr
+        self._listen_addr
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn tls_listen_addr(&self) -> SocketAddr {
-        gateway_tls_listen_addr(self.listen_addr)
+        gateway_tls_listen_addr(self._listen_addr)
     }
 }
 
@@ -160,6 +166,7 @@ pub async fn start_gateway_process(
     .await
 }
 
+#[cfg(test)]
 pub async fn start_gateway_process_with_client(
     client: NatsClient,
     refresh_interval: Duration,
@@ -344,9 +351,9 @@ async fn start_gateway_process_inner(
     tasks.push(health_task);
 
     Ok(RunningGatewayProcess {
-        runtime,
-        health,
-        listen_addr,
+        _runtime: runtime,
+        _health: health,
+        _listen_addr: listen_addr,
         shutdown,
         pingora_shutdown,
         testimony_cache,
@@ -921,6 +928,7 @@ pub enum GatewayProcessError {
     #[error("failed to start gateway certificate service: {0}")]
     StartCertificateService(NatsServiceRuntimeError),
     #[error("failed to create isolated gateway certificate state: {0}")]
+    #[cfg(test)]
     CreateIsolatedCertificateState(std::io::Error),
     #[error("failed to encode gateway status: {0}")]
     EncodeGatewayStatus(serde_json::Error),

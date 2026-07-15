@@ -659,6 +659,7 @@ impl NamespaceCommitError {
                     retained_artifacts,
                 }
             }
+            #[cfg(test)]
             Self::ServingTargetLockLost { scope } => {
                 DeployOperationFailure::ControlPlaneCommitFailed {
                     scope: scope.clone(),

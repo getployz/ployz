@@ -78,6 +78,7 @@ impl DeployExecutionCommand {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn unusable_machines(&self) -> &[ployz_core::operation::UnusableMachine] {
         &self.unusable_machines
     }
@@ -88,6 +89,7 @@ impl DeployExecutionCommand {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn dataplane_machines(&self) -> Vec<MachineId> {
         self.dataplane_members
             .iter()
@@ -132,16 +134,19 @@ impl DeployServiceExecutionCommand {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn existing_replicas(&self) -> &[ExistingServiceReplica] {
         &self.existing_replicas
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn cleanup_candidates(&self) -> &[DeployCleanupContainer] {
         &self.cleanup_candidates
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn eligible_machines(&self) -> &[MachineId] {
         &self.eligible_machines
     }
@@ -184,6 +189,7 @@ pub struct DeployExecutionOutcome {
 
 impl DeployExecutionOutcome {
     #[must_use]
+    #[cfg(test)]
     pub fn completion_outcome(&self) -> DeployCompletionOutcome {
         DeployCleanupResult::completion_outcome(&self.cleanup)
     }

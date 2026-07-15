@@ -85,6 +85,7 @@ impl DeployExecutionInput {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub fn with_step_timeout(mut self, step_timeout: Duration) -> Self {
         self.facts.step_timeout = step_timeout;
         self
@@ -92,6 +93,7 @@ impl DeployExecutionInput {
 }
 
 #[must_use]
+#[cfg(test)]
 pub fn prepare_deploy_execution_command(
     operation_id: OperationId,
     request: DeployRequest,

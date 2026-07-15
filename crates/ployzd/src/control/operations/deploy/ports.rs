@@ -159,9 +159,8 @@ pub enum NamespaceCommitError {
         scope: ControlPlaneCommitScope,
         message: String,
     },
-    ServingTargetLockLost {
-        scope: ControlPlaneCommitScope,
-    },
+    #[cfg(test)]
+    ServingTargetLockLost { scope: ControlPlaneCommitScope },
     VolumePinStore {
         state: VolumePinState,
         message: String,
