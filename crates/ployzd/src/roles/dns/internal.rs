@@ -21,7 +21,7 @@ const DNS_CLASS_IN: u16 = 1;
 const DNS_TTL_SECONDS: u32 = 5;
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(2);
 const BIND_RETRY_INITIAL: Duration = Duration::from_millis(250);
-const BIND_RETRY_CAP: Duration = Duration::from_secs(30);
+const BIND_RETRY_CAP: Duration = Duration::from_secs(1);
 const LOCAL_QUERY_TIMEOUT: Duration = Duration::from_millis(500);
 const LOCAL_QUERY_ID: u16 = 0x504c;
 
@@ -625,6 +625,44 @@ mod tests {
         );
         let _ = shutdown.send(());
         task.await.expect("resolver task exits");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn resolver_bind_retry_stays_at_a_one_second_cadence() {
+        let reservation = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("reserve UDP port");
+        let bind = reservation.local_addr().expect("reserved address");
+        let (shutdown, receiver) = broadcast::channel(1);
+        let health = Arc::new(Mutex::new(InternalResolverHealth::AwaitingBind {
+            attempts: 0,
+        }));
+        let task = spawn_internal_resolver(
+            RoleTestimonyCache::default(),
+            InternalDnsIntentCache::default(),
+            bind,
+            receiver,
+            Arc::clone(&health),
+        );
+        tokio::task::yield_now().await;
+
+        for delay in [
+            Duration::from_millis(250),
+            Duration::from_millis(500),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        ] {
+            tokio::time::advance(delay).await;
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(
+            *health.lock().expect("resolver health lock"),
+            InternalResolverHealth::AwaitingBind { attempts: 5 }
+        );
+        let _ = shutdown.send(());
+        task.await.expect("resolver task exits");
+        drop(reservation);
     }
 
     #[test]

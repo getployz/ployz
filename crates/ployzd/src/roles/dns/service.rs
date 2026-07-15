@@ -1,6 +1,7 @@
 //! Machine-scoped query service owned by the DNS role.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crate::role_testimony::RoleTestimonyCache;
 use crate::roles::dns::InternalResolverHealth;
@@ -18,6 +19,9 @@ use ployz_nats::service_runtime::{
     decode_json_request, start_nats_service,
 };
 use ployz_nats::subjects::MachineServiceEndpoint;
+
+const RESOLVER_READY_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const RESOLVER_READY_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub(crate) async fn start_dns_role_service(
     client: async_nats::Client,
@@ -109,11 +113,7 @@ async fn resolve_from_bound_resolver(
             ),
         );
     };
-    let health = resolver_health
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone();
-    let InternalResolverHealth::Serving { bound } = health else {
+    let Some(bound) = await_bound_resolver(&resolver_health, RESOLVER_READY_TIMEOUT).await else {
         return NatsServiceResponse::transport_error(
             ployz_nats::service_protocol::NatsServiceError::unavailable(
                 "internal DNS resolver is not bound",
@@ -135,9 +135,34 @@ async fn resolve_from_bound_resolver(
     })
 }
 
+async fn await_bound_resolver(
+    health: &Mutex<InternalResolverHealth>,
+    timeout: Duration,
+) -> Option<std::net::SocketAddr> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        match health
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+        {
+            InternalResolverHealth::Serving { bound } => return Some(bound),
+            InternalResolverHealth::AwaitingBind { .. } => {}
+        }
+
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return None;
+        }
+        tokio::time::sleep_until((now + RESOLVER_READY_POLL_INTERVAL).min(deadline)).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::net::Ipv4Addr;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use ployz_core::ids::{NamespaceId, ServiceId};
     use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
@@ -147,9 +172,13 @@ mod tests {
     };
     use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse};
     use ployz_test_support::ids::machine_id;
+    use tokio::net::UdpSocket;
+    use tokio::sync::broadcast;
 
     use super::{resolve_from_bound_resolver, status_from_local_cache};
     use crate::role_testimony::RoleTestimonyCache;
+    use crate::roles::dns::InternalResolverHealth;
+    use crate::roles::dns::internal::{InternalDnsIntentCache, spawn_internal_resolver};
     use crate::roles::dns::protocol::{DnsResolveRpcRequest, DnsStatusRpcOk, DnsStatusRpcRequest};
 
     #[tokio::test]
@@ -175,6 +204,77 @@ mod tests {
             response,
             NatsServiceResponse::TransportError { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn resolve_waits_for_an_initially_unbound_resolver() {
+        let reservation = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("reserve UDP port");
+        let bind = reservation.local_addr().expect("reserved address");
+        let health = Arc::new(Mutex::new(InternalResolverHealth::AwaitingBind {
+            attempts: 0,
+        }));
+        let (shutdown, receiver) = broadcast::channel(1);
+        let resolver = spawn_internal_resolver(
+            RoleTestimonyCache::default(),
+            InternalDnsIntentCache::default(),
+            bind,
+            receiver,
+            Arc::clone(&health),
+        );
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            drop(reservation);
+        });
+        let name = InternalServiceName::try_from_ids(
+            &ServiceId::try_new("web").expect("service id"),
+            &NamespaceId::try_new("team-a").expect("namespace id"),
+        )
+        .expect("internal service name");
+
+        let response = resolve_from_bound_resolver(
+            machine_id("dns_a"),
+            Some(Arc::clone(&health)),
+            NatsServiceRequest {
+                headers: None,
+                payload: serde_json::to_vec(&DnsResolveRpcRequest { name }).expect("request"),
+            },
+        )
+        .await;
+
+        assert!(
+            matches!(response, NatsServiceResponse::Ok { .. }),
+            "resolve should wait through the resolver's bounded bind retry: {response:?}"
+        );
+        let _ = shutdown.send(());
+        resolver.await.expect("resolver task exits");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn persistently_unbound_resolver_returns_typed_unavailable() {
+        let name = InternalServiceName::try_from_ids(
+            &ServiceId::try_new("web").expect("service id"),
+            &NamespaceId::try_new("team-a").expect("namespace id"),
+        )
+        .expect("internal service name");
+
+        let response = resolve_from_bound_resolver(
+            machine_id("dns_a"),
+            Some(Arc::new(Mutex::new(InternalResolverHealth::AwaitingBind {
+                attempts: 4,
+            }))),
+            NatsServiceRequest {
+                headers: None,
+                payload: serde_json::to_vec(&DnsResolveRpcRequest { name }).expect("request"),
+            },
+        )
+        .await;
+
+        let NatsServiceResponse::TransportError { error } = response else {
+            panic!("persistently unbound resolver should be unavailable");
+        };
+        assert_eq!(error.message, "internal DNS resolver is not bound");
     }
 
     #[test]
