@@ -147,8 +147,7 @@ fn plan() -> DeployPlan {
             ],
         }],
         volume_pin_commits: Vec::new(),
-        cleanup_containers: Vec::new(),
-        image_reclamations: Vec::new(),
+        cleanup_actions: Vec::new(),
     }
 }
 

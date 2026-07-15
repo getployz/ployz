@@ -201,7 +201,7 @@ export type DeployRoute = { target: DeployRouteTarget, endpoint_port: RoutePort,
 
 export type DeployRouteTarget = { "kind": "auto_hostname", label: AutomaticHostnameLabel, } | { "kind": "hostname", hostname: RouteHostname, };
 
-export type DeployPlan = { namespace_id: NamespaceId, namespace_revision_id: NamespaceRevisionId, phases: Array<DeployPhasePlan>, volume_pin_commits?: Array<VolumePinState>, cleanup_containers?: Array<DeployCleanupContainer>, image_reclamations?: Array<DeployImageReclamation>, };
+export type DeployPlan = { namespace_id: NamespaceId, namespace_revision_id: NamespaceRevisionId, phases: Array<DeployPhasePlan>, volume_pin_commits?: Array<VolumePinState>, cleanup_actions?: Array<DeployCleanupAction>, };
 
 export type DeployPhasePlan = { services: Array<DeployServicePlan>, };
 
@@ -217,11 +217,11 @@ export type PreStartHookStep = { machine_id: MachineId, };
 
 export type DeployCleanupContainer = { machine_id: MachineId, container_id: ContainerId, identity: ManagedContainerIdentity, };
 
-export type DeployImageReclamation = { "action": "remove", target: DeployCleanupContainer, image_identity: OciDigest, } | { "action": "missing_identity", target: DeployCleanupContainer, };
+export type DeployCleanupAction = { "action": "remove_container", target: DeployCleanupContainer, } | { "action": "remove_container_and_reclaim_image", target: DeployCleanupContainer, image_identity: OciDigest, } | { "action": "remove_container_with_invalid_image_identity", target: DeployCleanupContainer, observed_identity: string | null, };
 
 export type DeployCleanupFailure = { target: DeployCleanupContainer, message: FailureMessage, };
 
-export type DeployImageCleanup = { "outcome": "removed", machine_id: MachineId, service_id: ServiceId, image_identity: OciDigest, } | { "outcome": "already_absent", machine_id: MachineId, service_id: ServiceId, image_identity: OciDigest, } | { "outcome": "retained_in_use", machine_id: MachineId, service_id: ServiceId, image_identity: OciDigest, } | { "outcome": "missing_identity", machine_id: MachineId, service_id: ServiceId, } | { "outcome": "failed", machine_id: MachineId, service_id: ServiceId, image_identity: OciDigest, message: FailureMessage, };
+export type DeployImageCleanup = { "outcome": "removed", machine_id: MachineId, service_id: ServiceId, image_identity: OciDigest, } | { "outcome": "already_absent", machine_id: MachineId, service_id: ServiceId, image_identity: OciDigest, } | { "outcome": "retained_in_use", machine_id: MachineId, service_id: ServiceId, image_identity: OciDigest, } | { "outcome": "missing_identity", machine_id: MachineId, service_id: ServiceId, container_id: ContainerId, observed_identity: string | null, } | { "outcome": "failed", machine_id: MachineId, service_id: ServiceId, image_identity: OciDigest, message: FailureMessage, };
 
 export type ManagedContainerKind = "service" | "predeploy" | "job";
 

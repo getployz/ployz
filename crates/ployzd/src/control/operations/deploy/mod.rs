@@ -34,13 +34,16 @@ pub use failure::{
     PreStartHookRuntimeError,
 };
 use failure::{DeployExecutionFailure, fail_deploy};
+#[cfg(test)]
+pub(crate) use images::execute_cleanup_actions;
 use images::{
     dataplane_membership, machine_image_pull, resolve_registry_images, validate_pushed_platforms,
 };
 use phase::{CoarsePhaseProgress, DeployRun};
 pub use ports::{
     CertificateProvisioner, DeployHealthChecker, DeployOperationRecorder, DeployPhasePromotion,
-    MachineContainerRuntime, NamespaceCommitError, NamespaceStateCommitter,
+    MachineContainerRuntime, MachineImageRemovalRuntime, NamespaceCommitError,
+    NamespaceStateCommitter,
 };
 pub use preparation::{AutomaticHostnameMode, DeployExecutionFacts, DeployExecutionInput};
 #[cfg(test)]
@@ -65,7 +68,7 @@ pub async fn execute_deploy_operation<R, N, H, C, S>(
 ) -> Result<DeployExecutionOutcome, DeployExecutionError>
 where
     R: DeployOperationRecorder,
-    N: MachineContainerRuntime,
+    N: MachineContainerRuntime + MachineImageRemovalRuntime,
     H: DeployHealthChecker,
     C: CertificateProvisioner,
     S: NamespaceStateCommitter,
@@ -198,7 +201,7 @@ async fn execute_deploy_after_planning<R, N, H, C, S>(
 ) -> Result<DeployExecutionOutcome, DeployExecutionFailure>
 where
     R: DeployOperationRecorder,
-    N: MachineContainerRuntime,
+    N: MachineContainerRuntime + MachineImageRemovalRuntime,
     H: DeployHealthChecker,
     C: CertificateProvisioner,
     S: NamespaceStateCommitter,
@@ -332,7 +335,7 @@ where
     unpublish_omitted_serving_target_entries(command, &mut *ports.namespace_state)
         .await
         .map_err(|source| run.fail(source))?;
-    if !plan.cleanup_containers.is_empty() {
+    if !plan.cleanup_actions.is_empty() {
         let _ = record_running_stage(
             command,
             &mut *ports.recorder,
@@ -340,8 +343,13 @@ where
         )
         .await;
     }
-    let (cleanup, image_cleanup) =
-        cleanup_superseded_containers(command, &mut *ports.machine_runtime, &plan).await;
+    let (cleanup, image_cleanup) = images::execute_cleanup_actions(
+        &command.operation_id,
+        command.step_timeout(),
+        &mut *ports.machine_runtime,
+        &plan.cleanup_actions,
+    )
+    .await;
     let terminal_event = record_terminal_state(
         command,
         &mut *ports.recorder,
@@ -502,56 +510,6 @@ fn hook_execution_timeout(command: &DeployExecutionCommand) -> std::time::Durati
     let bounded = millis.saturating_mul(9).div_euclid(10).max(1);
     let bounded = u64::try_from(bounded).unwrap_or(u64::MAX);
     std::time::Duration::from_millis(bounded)
-}
-
-async fn cleanup_superseded_containers<N>(
-    command: &DeployExecutionCommand,
-    machine_runtime: &mut N,
-    plan: &DeployPlan,
-) -> (Vec<DeployCleanupResult>, Vec<DeployImageCleanup>)
-where
-    N: MachineContainerRuntime,
-{
-    if plan.cleanup_containers.is_empty() {
-        return (Vec::new(), Vec::new());
-    }
-
-    let mut cleanup = Vec::new();
-    for target in &plan.cleanup_containers {
-        let result = machine_runtime.remove_container(
-            &target.machine_id,
-            MachineContainerRemoveRpcRequest {
-                operation_id: command.operation_id.clone(),
-                container_id: target.container_id.clone(),
-                expected_identity: target.identity.clone(),
-            },
-        );
-        let result = tokio::time::timeout(command.step_timeout(), result).await;
-        match result {
-            Ok(Ok(())) => cleanup.push(DeployCleanupResult::Removed(target.clone())),
-            Ok(Err(error)) => cleanup.push(DeployCleanupResult::Failed {
-                target: target.clone(),
-                message: cleanup_failure_message(error),
-            }),
-            Err(_) => cleanup.push(DeployCleanupResult::Failed {
-                target: target.clone(),
-                message: FailureMessage::try_new(format!(
-                    "container cleanup timed out after {} seconds",
-                    command.step_timeout().as_secs()
-                ))
-                .expect("generated cleanup failure message is non-empty"),
-            }),
-        }
-    }
-
-    let image_cleanup = images::reclaim_removed_images(
-        command,
-        machine_runtime,
-        &cleanup,
-        &plan.image_reclamations,
-    )
-    .await;
-    (cleanup, image_cleanup)
 }
 
 async fn cleanup_failed_phase_containers<N>(

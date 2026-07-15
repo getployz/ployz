@@ -15,55 +15,78 @@ pub struct ObservedCleanupCandidate {
     pub target: DeployCleanupContainer,
     pub state: crate::machine::runtime::ContainerRuntimeState,
     pub created_at_unix_seconds: Option<i64>,
-    pub resolved_image_identity: Option<crate::image::OciDigest>,
-    pub image_reclamation_eligible: bool,
+    pub observed_image_identity: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
-pub enum DeployImageReclamation {
-    Remove {
+pub enum DeployCleanupAction {
+    RemoveContainer {
+        target: DeployCleanupContainer,
+    },
+    RemoveContainerAndReclaimImage {
         target: DeployCleanupContainer,
         image_identity: crate::image::OciDigest,
     },
-    MissingIdentity {
+    RemoveContainerWithInvalidImageIdentity {
         target: DeployCleanupContainer,
+        observed_identity: Option<String>,
     },
+}
+
+impl DeployCleanupAction {
+    #[must_use]
+    pub const fn target(&self) -> &DeployCleanupContainer {
+        match self {
+            Self::RemoveContainer { target }
+            | Self::RemoveContainerAndReclaimImage { target, .. }
+            | Self::RemoveContainerWithInvalidImageIdentity { target, .. } => target,
+        }
+    }
 }
 
 pub(super) fn plan_cleanup(
     mut candidates: Vec<ObservedCleanupCandidate>,
     selected_containers: &[&ContainerId],
     keep: Option<ContainerRetentionCount>,
-) -> (Vec<DeployCleanupContainer>, Vec<DeployImageReclamation>) {
+) -> Vec<DeployCleanupAction> {
     candidates.retain(|candidate| !selected_containers.contains(&&candidate.target.container_id));
     if let Some(keep) = keep {
         retain_newest_stopped(&mut candidates, keep);
     }
 
-    let image_reclamations = if keep.is_some() {
-        candidates
-            .iter()
-            .filter(|candidate| candidate.image_reclamation_eligible)
-            .map(|candidate| match &candidate.resolved_image_identity {
-                Some(image_identity) => DeployImageReclamation::Remove {
-                    target: candidate.target.clone(),
-                    image_identity: image_identity.clone(),
-                },
-                None => DeployImageReclamation::MissingIdentity {
-                    target: candidate.target.clone(),
-                },
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let cleanup = candidates
+    candidates
         .into_iter()
-        .map(|candidate| candidate.target)
-        .collect();
-    (cleanup, image_reclamations)
+        .map(|candidate| {
+            let ObservedCleanupCandidate {
+                target,
+                observed_image_identity,
+                ..
+            } = candidate;
+            let Some(_) = keep else {
+                return DeployCleanupAction::RemoveContainer { target };
+            };
+            match observed_image_identity {
+                Some(observed_identity) => {
+                    match crate::image::OciDigest::try_new(observed_identity.clone()) {
+                        Ok(image_identity) => DeployCleanupAction::RemoveContainerAndReclaimImage {
+                            target,
+                            image_identity,
+                        },
+                        Err(_) => DeployCleanupAction::RemoveContainerWithInvalidImageIdentity {
+                            target,
+                            observed_identity: Some(observed_identity),
+                        },
+                    }
+                }
+                None => DeployCleanupAction::RemoveContainerWithInvalidImageIdentity {
+                    target,
+                    observed_identity: None,
+                },
+            }
+        })
+        .collect()
 }
 
 fn retain_newest_stopped(

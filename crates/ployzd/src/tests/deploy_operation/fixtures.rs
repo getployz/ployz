@@ -207,6 +207,7 @@ pub(super) struct RecordingRuntime {
     pub(super) hook_requests: Vec<(MachineId, MachineContainerRunHookRpcRequest)>,
     pub(super) stops: Vec<(MachineId, MachineContainerStopRpcRequest)>,
     pub(super) removals: Vec<(MachineId, MachineContainerRemoveRpcRequest)>,
+    pub(super) image_removals: Vec<(MachineId, ployz_core::image::ImageRemoveRequest)>,
     containers: Vec<ContainerId>,
     hook_outcomes: Vec<(ContainerId, i64)>,
     fail_after_first: bool,
@@ -572,6 +573,7 @@ impl RecordingRuntime {
             hook_requests: Vec::new(),
             stops: Vec::new(),
             removals: Vec::new(),
+            image_removals: Vec::new(),
             containers: containers.into_iter().map(container_id).rev().collect(),
             hook_outcomes: Vec::new(),
             fail_after_first: false,
@@ -591,6 +593,7 @@ impl RecordingRuntime {
             hook_requests: Vec::new(),
             stops: Vec::new(),
             removals: Vec::new(),
+            image_removals: Vec::new(),
             containers: containers.into_iter().map(container_id).rev().collect(),
             hook_outcomes: Vec::new(),
             fail_after_first: false,
@@ -610,6 +613,7 @@ impl RecordingRuntime {
             hook_requests: Vec::new(),
             stops: Vec::new(),
             removals: Vec::new(),
+            image_removals: Vec::new(),
             containers: containers.into_iter().map(container_id).rev().collect(),
             hook_outcomes: Vec::new(),
             fail_after_first: false,
@@ -629,6 +633,7 @@ impl RecordingRuntime {
             hook_requests: Vec::new(),
             stops: Vec::new(),
             removals: Vec::new(),
+            image_removals: Vec::new(),
             containers: vec![container_id("ctr_1")],
             hook_outcomes: Vec::new(),
             fail_after_first: true,
@@ -651,6 +656,7 @@ impl RecordingRuntime {
             hook_requests: Vec::new(),
             stops: Vec::new(),
             removals: Vec::new(),
+            image_removals: Vec::new(),
             containers: vec![self::container_id(container_id)],
             hook_outcomes: Vec::new(),
             fail_after_first: false,
@@ -670,6 +676,7 @@ impl RecordingRuntime {
             hook_requests: Vec::new(),
             stops: Vec::new(),
             removals: Vec::new(),
+            image_removals: Vec::new(),
             containers: vec![self::container_id(container_id)],
             hook_outcomes: Vec::new(),
             fail_after_first: false,
@@ -699,6 +706,23 @@ impl RecordingRuntime {
     }
 }
 
+impl crate::control::operations::deploy::MachineImageRemovalRuntime for RecordingRuntime {
+    async fn remove_image(
+        &mut self,
+        machine_id: &MachineId,
+        request: ployz_core::image::ImageRemoveRequest,
+    ) -> Result<
+        ployz_core::image::ImageRemoveOk,
+        crate::control::role_client::machine::MachineImageRemoveError,
+    > {
+        self.image_removals.push((machine_id.clone(), request));
+        Ok(ployz_core::image::ImageRemoveOk {
+            machine_id: machine_id.clone(),
+            outcome: ployz_core::image::ImageRemoveOutcome::RetainedInUse,
+        })
+    }
+}
+
 impl MachineContainerRuntime for RecordingRuntime {
     async fn resolve_image(
         &mut self,
@@ -721,20 +745,6 @@ impl MachineContainerRuntime for RecordingRuntime {
         Ok(ployz_core::image::ImageEnsureOk {
             machine_id: machine_id.clone(),
             platform: request.platform,
-        })
-    }
-
-    async fn remove_image(
-        &mut self,
-        machine_id: &MachineId,
-        _request: ployz_core::image::ImageRemoveRequest,
-    ) -> Result<
-        ployz_core::image::ImageRemoveOk,
-        crate::control::role_client::machine::MachineImageRemoveError,
-    > {
-        Ok(ployz_core::image::ImageRemoveOk {
-            machine_id: machine_id.clone(),
-            outcome: ployz_core::image::ImageRemoveOutcome::RetainedInUse,
         })
     }
 

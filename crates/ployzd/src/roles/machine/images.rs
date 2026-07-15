@@ -2,7 +2,7 @@
 
 use super::protocol::MachineImagePull;
 use super::response::{failure_message, machine_domain_error, machine_success};
-use super::runner::MachineContainerRunner;
+use super::runner::MachineImageRemovalRunner;
 use crate::roles::machine::execution::containerd_content::{
     ContainerdContentStore, ContentIngest, ContentLease,
 };
@@ -14,8 +14,9 @@ use ployz_core::image::{
     ImageBlobCheckRequest, ImageBlobCheckResponse, ImageBlobPushOk, ImageBlobPushOutcome,
     ImageBlobPushRequest, ImageBlobPushResponse, ImageEnsureOk, ImageEnsureRequest,
     ImageEnsureResponse, ImageManifestPushOk, ImageManifestPushRequest, ImageManifestPushResponse,
-    ImageRemoveOk, ImageRemoveRequest, ImageRemoveResponse, ImageRpcDomainError, ImageUploadId,
-    OCI_IMAGE_CONFIG_MEDIA_TYPE, OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciDigest, OciPlatform,
+    ImageRemoveDomainError, ImageRemoveOk, ImageRemoveRequest, ImageRemoveResponse,
+    ImageRpcDomainError, ImageUploadId, OCI_IMAGE_CONFIG_MEDIA_TYPE, OCI_IMAGE_MANIFEST_MEDIA_TYPE,
+    OciDigest, OciPlatform,
 };
 use ployz_core::machine::rpc::MachineRpcResponse;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse};
@@ -536,11 +537,18 @@ pub(crate) async fn handle_image_remove<R>(
     request: NatsServiceRequest,
 ) -> NatsServiceResponse
 where
-    R: MachineContainerRunner,
+    R: MachineImageRemovalRunner,
 {
     let request = match serde_json::from_slice::<ImageRemoveRequest>(&request.payload) {
         Ok(request) => request,
-        Err(error) => return invalid_request(machine_id, error),
+        Err(error) => {
+            return image_remove_error(
+                machine_id,
+                ImageRemoveDomainError::InvalidRequest {
+                    message: failure_message(format!("invalid request: {error}")),
+                },
+            );
+        }
     };
     let ImageRemoveRequest {
         operation_id,
@@ -551,17 +559,21 @@ where
             machine_id,
             outcome,
         })),
-        Err(error) => image_error(
+        Err(error) => image_remove_error(
             machine_id,
-            ImageRpcDomainError::StorageFailed {
+            ImageRemoveDomainError::RemoveFailed {
                 message: failure_message(format!(
                     "operation {} image removal failed: {}",
                     operation_id.as_str(),
-                    runner_error_message(error)
+                    error
                 )),
             },
         ),
     }
+}
+
+fn image_remove_error(machine_id: MachineId, error: ImageRemoveDomainError) -> NatsServiceResponse {
+    machine_domain_error(ImageRemoveResponse::DomainError { machine_id, error })
 }
 
 struct InspectedImage {
@@ -731,7 +743,6 @@ fn runner_error_message(
         | MachineContainerRunnerError::EnsureEndpointNetwork { message }
         | MachineContainerRunnerError::Create { message }
         | MachineContainerRunnerError::ImagePull { message }
-        | MachineContainerRunnerError::ImageRemove { message, .. }
         | MachineContainerRunnerError::Start { message, .. }
         | MachineContainerRunnerError::Wait { message, .. }
         | MachineContainerRunnerError::Stop { message, .. }

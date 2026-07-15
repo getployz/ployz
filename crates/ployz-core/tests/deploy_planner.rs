@@ -375,13 +375,19 @@ fn service_keep_retains_newest_stopped_superseded_containers_without_counting_ru
     let plan = plan_single_service(&input).expect("retention plan succeeds");
 
     assert_eq!(
-        plan.cleanup_containers,
+        plan.cleanup_actions
+            .iter()
+            .map(|action| action.target().clone())
+            .collect::<Vec<_>>(),
         vec![
             cleanup_container("machine_a", "ctr_running_scale_down"),
             cleanup_container("machine_a", "ctr_stopped_old"),
         ]
     );
-    assert_eq!(plan.image_reclamations.len(), 1);
+    assert!(plan.cleanup_actions.iter().all(|action| matches!(
+        action,
+        ployz_core::deploy::DeployCleanupAction::RemoveContainerAndReclaimImage { .. }
+    )));
 }
 
 #[test]
@@ -396,10 +402,13 @@ fn service_keep_treats_missing_created_time_as_newest_retained_evidence() {
     let plan = plan_single_service(&input).expect("retention plan succeeds");
 
     assert_eq!(
-        plan.cleanup_containers,
+        plan.cleanup_actions
+            .iter()
+            .map(|action| action.target().clone())
+            .collect::<Vec<_>>(),
         vec![cleanup_container("machine_a", "ctr_known")]
     );
-    assert_eq!(plan.image_reclamations.len(), 1);
+    assert_eq!(plan.cleanup_actions.len(), 1);
 }
 
 #[test]
@@ -416,7 +425,10 @@ fn service_keep_zero_retains_no_stopped_superseded_containers() {
     let plan = plan_single_service(&input).expect("retention plan succeeds");
 
     assert_eq!(
-        plan.cleanup_containers,
+        plan.cleanup_actions
+            .iter()
+            .map(|action| action.target().clone())
+            .collect::<Vec<_>>(),
         input
             .cleanup_candidates
             .iter()
@@ -424,8 +436,8 @@ fn service_keep_zero_retains_no_stopped_superseded_containers() {
             .collect::<Vec<_>>()
     );
     assert!(matches!(
-        plan.image_reclamations.as_slice(),
-        [ployz_core::deploy::DeployImageReclamation::Remove { target, image_identity }]
+        plan.cleanup_actions.as_slice(),
+        [ployz_core::deploy::DeployCleanupAction::RemoveContainerAndReclaimImage { target, image_identity }]
             if target.container_id == container_id("ctr_stopped")
                 && image_identity == &OciDigest::sha256(b"ctr_stopped")
     ));
@@ -445,7 +457,10 @@ fn service_keep_breaks_created_time_ties_deterministically_after_excluding_selec
     let plan = plan_single_service(&input).expect("retention plan succeeds");
 
     assert_eq!(
-        plan.cleanup_containers,
+        plan.cleanup_actions
+            .iter()
+            .map(|action| action.target().clone())
+            .collect::<Vec<_>>(),
         vec![cleanup_container("machine_b", "ctr_b")]
     );
 }
@@ -1947,8 +1962,10 @@ fn deploy_plan_with_volume_pins(
             }],
         }],
         volume_pin_commits,
-        cleanup_containers,
-        image_reclamations: Vec::new(),
+        cleanup_actions: cleanup_containers
+            .into_iter()
+            .map(|target| ployz_core::deploy::DeployCleanupAction::RemoveContainer { target })
+            .collect(),
     }
 }
 
@@ -2120,8 +2137,7 @@ fn cleanup_container_observed(
             ployz_core::machine::runtime::ContainerRuntimeState::Exited
         },
         created_at_unix_seconds,
-        resolved_image_identity: Some(OciDigest::sha256(container.as_bytes())),
-        image_reclamation_eligible: !running,
+        observed_image_identity: Some(OciDigest::sha256(container.as_bytes()).to_string()),
         target,
     }
 }
@@ -2136,8 +2152,7 @@ fn observed_cleanup_candidate(
     let mut candidate =
         cleanup_container_observed(machine, container, running, created_at_unix_seconds);
     candidate.target = cleanup_container_with_entry(machine, container, entry);
-    candidate.resolved_image_identity = None;
-    candidate.image_reclamation_eligible = !running || entry == "entry_old";
+    candidate.observed_image_identity = None;
     candidate
 }
 

@@ -7,7 +7,8 @@ use crate::control::operations::deploy::{
     CertificateProvisioner, DeployCleanupResult, DeployExecutionError, DeployExecutionInput,
     DeployExecutionOutcome, DeployExecutionPorts, DeployExecutionStep, DeployHealthCheckError,
     DeployHealthChecker, DeployOperationRecorder, DeployTerminalEvent, MachineContainerRuntime,
-    MachineContainerRuntimeError, NamespaceStateCommitter, execute_deploy_operation,
+    MachineContainerRuntimeError, MachineImageRemovalRuntime, NamespaceStateCommitter,
+    execute_deploy_operation,
 };
 use fixtures::*;
 use ployz_core::deploy::{ContainerCommand, ContainerRestartPolicy, ReplicaCount};
@@ -52,7 +53,7 @@ async fn execute_deploy<R, N, H, C, S>(
 ) -> Result<DeployExecutionOutcome, DeployExecutionError>
 where
     R: DeployOperationRecorder,
-    N: MachineContainerRuntime,
+    N: MachineContainerRuntime + MachineImageRemovalRuntime,
     H: DeployHealthChecker,
     C: CertificateProvisioner,
     S: NamespaceStateCommitter,
@@ -852,6 +853,65 @@ async fn deploy_worker_reclaims_only_the_image_of_successfully_removed_supersede
         record,
         RecordedOperation::CleanupFinished { images, .. } if images == &[expected.clone()]
     )));
+}
+
+#[tokio::test]
+async fn cleanup_dedupes_shared_image_removal_and_preserves_service_and_identity_evidence() {
+    let image_identity = ployz_core::image::OciDigest::sha256(b"shared image");
+    let api = cleanup_container("machine_b", "ctr_api", "entry_old");
+    let mut worker = cleanup_container("machine_b", "ctr_worker", "entry_old");
+    worker.identity.service_id = service_id("svc_worker");
+    let invalid = cleanup_container("machine_b", "ctr_invalid", "entry_old");
+    let actions = vec![
+        ployz_core::deploy::DeployCleanupAction::RemoveContainerAndReclaimImage {
+            target: api.clone(),
+            image_identity: image_identity.clone(),
+        },
+        ployz_core::deploy::DeployCleanupAction::RemoveContainerAndReclaimImage {
+            target: worker.clone(),
+            image_identity: image_identity.clone(),
+        },
+        ployz_core::deploy::DeployCleanupAction::RemoveContainerWithInvalidImageIdentity {
+            target: invalid.clone(),
+            observed_identity: Some("not-a-digest".to_owned()),
+        },
+    ];
+    let mut runtime = RecordingRuntime::with_containers([]);
+
+    let (cleanup, evidence) = crate::control::operations::deploy::execute_cleanup_actions(
+        &operation_id("op_123"),
+        std::time::Duration::from_secs(5),
+        &mut runtime,
+        &actions,
+    )
+    .await;
+
+    assert_eq!(cleanup.len(), 3);
+    assert_eq!(runtime.image_removals.len(), 1);
+    assert_eq!(runtime.image_removals[0].0, machine_id("machine_b"));
+    assert_eq!(runtime.image_removals[0].1.image_identity, image_identity);
+    assert!(
+        evidence.contains(&ployz_core::operation::DeployImageCleanup::RetainedInUse {
+            machine_id: machine_id("machine_b"),
+            service_id: service_id("svc_api"),
+            image_identity: image_identity.clone(),
+        })
+    );
+    assert!(
+        evidence.contains(&ployz_core::operation::DeployImageCleanup::RetainedInUse {
+            machine_id: machine_id("machine_b"),
+            service_id: service_id("svc_worker"),
+            image_identity,
+        })
+    );
+    assert!(evidence.contains(
+        &ployz_core::operation::DeployImageCleanup::MissingIdentity {
+            machine_id: machine_id("machine_b"),
+            service_id: service_id("svc_api"),
+            container_id: container_id("ctr_invalid"),
+            observed_identity: Some("not-a-digest".to_owned()),
+        }
+    ));
 }
 
 #[tokio::test]
@@ -1727,9 +1787,11 @@ async fn deploy_worker_records_retained_artifacts_when_namespace_lock_is_lost_be
     ));
     assert!(matches!(
         *source,
-        DeployExecutionError::CommitNamespaceState(
-            crate::control::operations::deploy::NamespaceCommitError::ServingTargetLockLost { .. }
-        )
+        DeployExecutionError::CommitNamespaceState(error)
+            if matches!(
+                *error,
+                crate::control::operations::deploy::NamespaceCommitError::ServingTargetLockLost { .. }
+            )
     ));
     assert_eq!(
         recorder.records.last(),

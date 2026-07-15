@@ -83,9 +83,7 @@ pub struct DeployPlan {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volume_pin_commits: Vec<VolumePinState>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub cleanup_containers: Vec<DeployCleanupContainer>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub image_reclamations: Vec<DeployImageReclamation>,
+    pub cleanup_actions: Vec<DeployCleanupAction>,
 }
 
 impl DeployPlan {
@@ -252,7 +250,6 @@ pub fn prepare_deploy(
         input.request.namespace_id(),
         service,
         &input.observed_machines,
-        &input.draining_machines,
     );
 
     Ok(PreparedDeploy {
@@ -365,7 +362,6 @@ fn cleanup_candidates(
     namespace_id: &NamespaceId,
     service: &DeployServiceSpec,
     observed_machines: &[MachineContainerObservationSnapshot],
-    draining_machines: &[MachineId],
 ) -> Vec<ObservedCleanupCandidate> {
     observed_machines
         .iter()
@@ -383,14 +379,7 @@ fn cleanup_candidates(
             },
             state: container.state.clone(),
             created_at_unix_seconds: container.created_at_unix_seconds,
-            resolved_image_identity: container
-                .resolved_image_identity
-                .as_ref()
-                .and_then(|identity| crate::image::OciDigest::try_new(identity.clone()).ok()),
-            image_reclamation_eligible: !container.state.is_running()
-                || (!draining_machines.contains(&container.machine_id)
-                    && container.identity.namespace_revision_entry_id
-                        != service.namespace_revision_entry_id(namespace_id)),
+            observed_image_identity: container.resolved_image_identity.clone(),
         })
         .collect()
 }
@@ -590,9 +579,8 @@ pub fn plan_namespace_deploy(
 ) -> Result<DeployPlan, DeployPlanError> {
     let phases = dependency_ordered_phases(request, services)?;
     let mut phase_plans = Vec::new();
-    let mut cleanup_containers = cleanup_containers;
     let mut volume_pin_commits = Vec::new();
-    let mut image_reclamations = Vec::new();
+    let mut cleanup_actions = Vec::new();
     let mut working_volume_pins = phases
         .iter()
         .flatten()
@@ -606,24 +594,38 @@ pub fn plan_namespace_deploy(
             let plan = plan_deploy_service(request, input)?;
             working_volume_pins.extend(plan.volume_pin_commits.clone());
             volume_pin_commits.extend(plan.volume_pin_commits);
-            image_reclamations.extend(plan.image_reclamations);
+            cleanup_actions.extend(plan.cleanup_actions);
             services.push(DeployServicePlan {
                 service_id: plan.service_id,
                 steps: plan.steps,
                 pre_start: plan.pre_start,
             });
-            cleanup_containers.extend(plan.cleanup_containers);
         }
         phase_plans.push(DeployPhasePlan { services });
     }
+
+    cleanup_actions.extend(
+        cleanup_containers
+            .into_iter()
+            .map(|target| DeployCleanupAction::RemoveContainer { target }),
+    );
+    cleanup_actions.sort_by(|left, right| {
+        left.target()
+            .machine_id
+            .cmp(&right.target().machine_id)
+            .then_with(|| left.target().container_id.cmp(&right.target().container_id))
+    });
+    cleanup_actions.dedup_by(|left, right| {
+        left.target().machine_id == right.target().machine_id
+            && left.target().container_id == right.target().container_id
+    });
 
     Ok(DeployPlan {
         namespace_id: request.namespace_id().clone(),
         namespace_revision_id: request.namespace_revision_id(),
         phases: phase_plans,
         volume_pin_commits,
-        cleanup_containers,
-        image_reclamations,
+        cleanup_actions,
     })
 }
 
@@ -731,8 +733,7 @@ pub struct DeploySingleServicePlan {
     pub steps: Vec<DeployPlanStep>,
     pub pre_start: Option<PreStartHookStep>,
     pub volume_pin_commits: Vec<VolumePinState>,
-    pub cleanup_containers: Vec<DeployCleanupContainer>,
-    pub image_reclamations: Vec<DeployImageReclamation>,
+    pub cleanup_actions: Vec<DeployCleanupAction>,
 }
 
 fn plan_deploy_service(
@@ -801,18 +802,20 @@ fn plan_deploy_service(
             DeployPlanStep::RunContainer { .. } => None,
         })
         .collect::<Vec<_>>();
-    let (mut cleanup_containers, image_reclamations) = super::retention::plan_cleanup(
+    let mut cleanup_actions = super::retention::plan_cleanup(
         input.cleanup_candidates,
         &selected_containers,
         service.keep,
     );
-    cleanup_containers.sort_by(|left, right| {
-        left.machine_id
-            .cmp(&right.machine_id)
-            .then_with(|| left.container_id.cmp(&right.container_id))
+    cleanup_actions.sort_by(|left, right| {
+        left.target()
+            .machine_id
+            .cmp(&right.target().machine_id)
+            .then_with(|| left.target().container_id.cmp(&right.target().container_id))
     });
-    cleanup_containers.dedup_by(|left, right| {
-        left.machine_id == right.machine_id && left.container_id == right.container_id
+    cleanup_actions.dedup_by(|left, right| {
+        left.target().machine_id == right.target().machine_id
+            && left.target().container_id == right.target().container_id
     });
     let pre_start = service.pre_start.as_ref().and_then(|_| {
         steps.iter().find_map(|step| match step {
@@ -829,8 +832,7 @@ fn plan_deploy_service(
         steps,
         pre_start,
         volume_pin_commits: volume_placement.commits,
-        cleanup_containers,
-        image_reclamations,
+        cleanup_actions,
     })
 }
 

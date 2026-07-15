@@ -618,6 +618,8 @@ pub enum DeployImageCleanup {
     MissingIdentity {
         machine_id: MachineId,
         service_id: ServiceId,
+        container_id: ContainerId,
+        observed_identity: Option<String>,
     },
     Failed {
         machine_id: MachineId,

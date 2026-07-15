@@ -575,7 +575,14 @@ impl MachineRpcResponder for ImageRemoveOk {
     }
 }
 
-pub type ImageRemoveResponse = MachineRpcResponse<ImageRemoveOk, ImageRpcDomainError>;
+pub type ImageRemoveResponse = MachineRpcResponse<ImageRemoveOk, ImageRemoveDomainError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImageRemoveDomainError {
+    InvalidRequest { message: FailureMessage },
+    RemoveFailed { message: FailureMessage },
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]

@@ -8,7 +8,7 @@ pub use ployz_core::deploy::{
     ContainerCommand, ContainerCommandError, ContainerEntrypoint, ContainerHealthcheck,
     ContainerHealthcheckTest, ContainerMountPath, ContainerMountPathError, ContainerResourceLimits,
     ContainerRestartPolicy, ContainerRetentionCount, ContainerRuntimeSpec, DatasetName,
-    DatasetNameError, DependencyCondition, DeployCleanupContainer, DeployImageReclamation,
+    DatasetNameError, DependencyCondition, DeployCleanupAction, DeployCleanupContainer,
     DeployOrigin, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployRequest,
     DeployReservationExpiresAt, DeployReservationId, DeployReservationNumberError, DeployRoute,
     DeployRouteTarget, DeployServicePlan, DeployServiceSpec, EnvName, EnvNameError, EnvValue,

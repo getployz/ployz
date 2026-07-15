@@ -56,12 +56,6 @@ pub trait MachineContainerRuntime {
         request: ImageEnsureRequest,
     ) -> impl Future<Output = Result<ImageEnsureOk, MachineImageEnsureError>> + Send;
 
-    fn remove_image(
-        &mut self,
-        machine_id: &MachineId,
-        request: ImageRemoveRequest,
-    ) -> impl Future<Output = Result<ImageRemoveOk, MachineImageRemoveError>> + Send;
-
     fn run_container(
         &mut self,
         machine_id: &MachineId,
@@ -97,6 +91,14 @@ pub trait MachineContainerRuntime {
         machine_id: &MachineId,
         request: MachineContainerStopRpcRequest,
     ) -> impl Future<Output = Result<(), MachineContainerRuntimeError>> + Send;
+}
+
+pub trait MachineImageRemovalRuntime {
+    fn remove_image(
+        &mut self,
+        machine_id: &MachineId,
+        request: ImageRemoveRequest,
+    ) -> impl Future<Output = Result<ImageRemoveOk, MachineImageRemoveError>> + Send;
 }
 
 pub trait DeployHealthChecker {

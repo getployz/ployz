@@ -33,7 +33,7 @@ pub use request::{
     DeployServiceSpec, DeployVolumeDeclarationError, PreStartHook, ReplicaCount, ReplicaCountError,
     ServiceDependency, VolumeDeclaredDeployRequest,
 };
-pub use retention::{DeployCleanupContainer, DeployImageReclamation, ObservedCleanupCandidate};
+pub use retention::{DeployCleanupAction, DeployCleanupContainer, ObservedCleanupCandidate};
 pub use revision::{
     canonical_capabilities, namespace_revision_entry_id_for, namespace_revision_id_for,
 };

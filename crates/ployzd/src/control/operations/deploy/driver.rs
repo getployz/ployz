@@ -67,7 +67,7 @@ pub async fn run_deploy_operation<N, H, C>(
     step_timeout: Duration,
 ) -> Result<DeployExecutionOutcome, DeployOperationRunError>
 where
-    N: MachineContainerRuntime,
+    N: MachineContainerRuntime + super::MachineImageRemovalRuntime,
     H: DeployHealthChecker,
     C: CertificateProvisioner,
 {

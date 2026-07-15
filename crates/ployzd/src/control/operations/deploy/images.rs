@@ -3,10 +3,12 @@
 use std::collections::BTreeMap;
 
 use ployz_core::deploy::{
-    DeployImageReclamation, DeployPlan, DeployPlanStep, DeployServicePlan, ImageSource,
+    DeployCleanupAction, DeployPlan, DeployPlanStep, DeployServicePlan, ImageSource,
     VolumeDeclaredDeployRequest,
 };
-use ployz_core::image::{ImageEnsureRequest, ImageRepository, ImageRpcDomainError};
+use ployz_core::image::{
+    ImageEnsureRequest, ImageRemoveDomainError, ImageRepository, ImageRpcDomainError, OciDigest,
+};
 use ployz_core::network::DataplaneMember;
 use ployz_core::operation::{
     DeployEvidence, DeployImageCleanup, DeployOperationFailure, FailureMessage,
@@ -15,151 +17,140 @@ use ployz_core::operation::{
 use crate::control::role_client::machine::{
     MachineImageEnsureError, MachineImageRemoveError, MachineImageResolveError,
 };
+use crate::roles::machine::protocol::MachineContainerRemoveRpcRequest;
 use crate::roles::machine::protocol::{MachineContainerResolveImageRpcRequest, MachineImagePull};
 
 use super::deploy_plan;
 use super::{
     DeployCleanupResult, DeployExecutionCommand, DeployExecutionError, DeployOperationRecorder,
-    DeployServiceExecutionCommand, MachineContainerRuntime, record_evidence,
+    DeployServiceExecutionCommand, MachineContainerRuntime, MachineImageRemovalRuntime,
+    cleanup_failure_message, record_evidence,
 };
 
-pub(super) async fn reclaim_removed_images<N>(
-    command: &DeployExecutionCommand,
+pub(crate) async fn execute_cleanup_actions<N>(
+    operation_id: &ployz_core::ids::OperationId,
+    step_timeout: std::time::Duration,
     machine_runtime: &mut N,
-    cleanup: &[DeployCleanupResult],
-    actions: &[DeployImageReclamation],
-) -> Vec<DeployImageCleanup>
+    actions: &[DeployCleanupAction],
+) -> (Vec<DeployCleanupResult>, Vec<DeployImageCleanup>)
 where
-    N: MachineContainerRuntime,
+    N: MachineContainerRuntime + MachineImageRemovalRuntime,
 {
-    let removed = cleanup
-        .iter()
-        .filter_map(|result| match result {
-            DeployCleanupResult::Removed(target) => {
-                Some((target.machine_id.clone(), target.container_id.clone()))
-            }
-            DeployCleanupResult::Failed { .. } => None,
-        })
-        .collect::<std::collections::BTreeSet<_>>();
-    let mut attempted = std::collections::BTreeSet::new();
+    let mut cleanup = Vec::new();
     let mut evidence = Vec::new();
+    let mut reclamations = std::collections::BTreeMap::<_, Vec<_>>::new();
     for action in actions {
-        let (target, image_identity) = match action {
-            DeployImageReclamation::MissingIdentity { target } => {
-                if removed.contains(&(target.machine_id.clone(), target.container_id.clone())) {
-                    evidence.push(DeployImageCleanup::MissingIdentity {
-                        machine_id: target.machine_id.clone(),
-                        service_id: target.identity.service_id.clone(),
-                    });
+        let target = action.target();
+        let result = machine_runtime.remove_container(
+            &target.machine_id,
+            MachineContainerRemoveRpcRequest {
+                operation_id: operation_id.clone(),
+                container_id: target.container_id.clone(),
+                expected_identity: target.identity.clone(),
+            },
+        );
+        let result = tokio::time::timeout(step_timeout, result).await;
+        match result {
+            Ok(Ok(())) => {
+                cleanup.push(DeployCleanupResult::Removed(target.clone()));
+                match action {
+                    DeployCleanupAction::RemoveContainer { .. } => {}
+                    DeployCleanupAction::RemoveContainerAndReclaimImage {
+                        image_identity, ..
+                    } => {
+                        reclamations
+                            .entry((target.machine_id.clone(), image_identity.clone()))
+                            .or_default()
+                            .push(target.clone());
+                    }
+                    DeployCleanupAction::RemoveContainerWithInvalidImageIdentity {
+                        observed_identity,
+                        ..
+                    } => {
+                        evidence.push(DeployImageCleanup::MissingIdentity {
+                            machine_id: target.machine_id.clone(),
+                            service_id: target.identity.service_id.clone(),
+                            container_id: target.container_id.clone(),
+                            observed_identity: observed_identity.clone(),
+                        });
+                    }
                 }
-                continue;
             }
-            DeployImageReclamation::Remove {
-                target,
-                image_identity,
-            } => (target, image_identity),
-        };
-        if !removed.contains(&(target.machine_id.clone(), target.container_id.clone()))
-            || !attempted.insert((target.machine_id.clone(), image_identity.clone()))
-        {
-            continue;
+            Ok(Err(error)) => cleanup.push(DeployCleanupResult::Failed {
+                target: target.clone(),
+                message: cleanup_failure_message(error),
+            }),
+            Err(_) => cleanup.push(DeployCleanupResult::Failed {
+                target: target.clone(),
+                message: deploy_failure_message(format!(
+                    "container cleanup timed out after {} seconds",
+                    step_timeout.as_secs()
+                )),
+            }),
         }
+    }
+
+    for ((machine_id, image_identity), targets) in reclamations {
         let request = ployz_core::image::ImageRemoveRequest {
-            operation_id: command.operation_id.clone(),
+            operation_id: operation_id.clone(),
             image_identity: image_identity.clone(),
         };
         let result = tokio::time::timeout(
-            command.step_timeout(),
-            machine_runtime.remove_image(&target.machine_id, request),
+            step_timeout,
+            machine_runtime.remove_image(&machine_id, request),
         )
         .await;
-        let common = || {
-            (
-                target.machine_id.clone(),
-                target.identity.service_id.clone(),
-            )
-        };
-        let item = match result {
-            Ok(Ok(ok)) => match ok.outcome {
-                ployz_core::image::ImageRemoveOutcome::Removed => {
-                    let (machine_id, service_id) = common();
-                    DeployImageCleanup::Removed {
-                        machine_id,
-                        service_id,
+        for target in targets {
+            let item = match &result {
+                Ok(Ok(ok)) => match ok.outcome {
+                    ployz_core::image::ImageRemoveOutcome::Removed => DeployImageCleanup::Removed {
+                        machine_id: machine_id.clone(),
+                        service_id: target.identity.service_id.clone(),
                         image_identity: image_identity.clone(),
+                    },
+                    ployz_core::image::ImageRemoveOutcome::AlreadyAbsent => {
+                        DeployImageCleanup::AlreadyAbsent {
+                            machine_id: machine_id.clone(),
+                            service_id: target.identity.service_id.clone(),
+                            image_identity: image_identity.clone(),
+                        }
                     }
-                }
-                ployz_core::image::ImageRemoveOutcome::AlreadyAbsent => {
-                    let (machine_id, service_id) = common();
-                    DeployImageCleanup::AlreadyAbsent {
-                        machine_id,
-                        service_id,
-                        image_identity: image_identity.clone(),
+                    ployz_core::image::ImageRemoveOutcome::RetainedInUse => {
+                        DeployImageCleanup::RetainedInUse {
+                            machine_id: machine_id.clone(),
+                            service_id: target.identity.service_id.clone(),
+                            image_identity: image_identity.clone(),
+                        }
                     }
-                }
-                ployz_core::image::ImageRemoveOutcome::RetainedInUse => {
-                    let (machine_id, service_id) = common();
-                    DeployImageCleanup::RetainedInUse {
-                        machine_id,
-                        service_id,
-                        image_identity: image_identity.clone(),
-                    }
-                }
-            },
-            Ok(Err(error)) => {
-                let (machine_id, service_id) = common();
-                DeployImageCleanup::Failed {
-                    machine_id,
-                    service_id,
+                },
+                Ok(Err(error)) => DeployImageCleanup::Failed {
+                    machine_id: machine_id.clone(),
+                    service_id: target.identity.service_id.clone(),
                     image_identity: image_identity.clone(),
-                    message: image_remove_failure_message(error),
-                }
-            }
-            Err(_) => {
-                let (machine_id, service_id) = common();
-                DeployImageCleanup::Failed {
-                    machine_id,
-                    service_id,
+                    message: image_remove_failure_message(error.clone()),
+                },
+                Err(_) => DeployImageCleanup::Failed {
+                    machine_id: machine_id.clone(),
+                    service_id: target.identity.service_id.clone(),
                     image_identity: image_identity.clone(),
                     message: deploy_failure_message(format!(
                         "image reclamation timed out after {} seconds",
-                        command.step_timeout().as_secs()
+                        step_timeout.as_secs()
                     )),
-                }
-            }
-        };
-        evidence.push(item);
+                },
+            };
+            evidence.push(item);
+        }
     }
-    evidence
+    (cleanup, evidence)
 }
 
 fn image_remove_failure_message(error: MachineImageRemoveError) -> FailureMessage {
     match error {
         MachineImageRemoveError::Unavailable { reason, .. } => reason.failure_message(),
         MachineImageRemoveError::Domain { error, .. } => match error {
-            ImageRpcDomainError::InvalidRequest { message }
-            | ImageRpcDomainError::ServiceUnavailable { message }
-            | ImageRpcDomainError::StorageFailed { message }
-            | ImageRpcDomainError::SelfPullFailed { message } => message,
-            ImageRpcDomainError::ImageMissing { digest } => deploy_failure_message(format!(
-                "machine could not find image {} for reclamation",
-                digest.as_str()
-            )),
-            ImageRpcDomainError::DigestMismatch { expected, actual }
-            | ImageRpcDomainError::ConfigMismatch { expected, actual } => {
-                deploy_failure_message(format!(
-                    "machine reported image identity mismatch: expected {}, got {}",
-                    expected.as_str(),
-                    actual.as_str()
-                ))
-            }
-            ImageRpcDomainError::UploadNotFound { .. }
-            | ImageRpcDomainError::OffsetMismatch { .. }
-            | ImageRpcDomainError::ChunkTooLarge { .. }
-            | ImageRpcDomainError::ChunkOutOfBounds { .. }
-            | ImageRpcDomainError::UploadBusy { .. } => deploy_failure_message(
-                "machine returned an upload-only error while reclaiming an image",
-            ),
+            ImageRemoveDomainError::InvalidRequest { message }
+            | ImageRemoveDomainError::RemoveFailed { message } => message,
         },
     }
 }

@@ -58,10 +58,6 @@ pub enum MachineContainerRunnerError {
     ImagePull {
         message: String,
     },
-    ImageRemove {
-        image_identity: OciDigest,
-        message: String,
-    },
     Start {
         container_id: ContainerId,
         message: String,
@@ -119,13 +115,6 @@ pub enum MachineLogTimestamps {
 }
 
 pub trait MachineContainerRunner {
-    fn remove_image(
-        &self,
-        image_identity: &OciDigest,
-    ) -> impl Future<
-        Output = Result<ployz_core::image::ImageRemoveOutcome, MachineContainerRunnerError>,
-    > + Send;
-
     fn existing_managed_containers(
         &self,
     ) -> impl Future<Output = Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError>> + Send;
@@ -184,6 +173,13 @@ pub trait MachineContainerRunner {
         &self,
         docker_volume_name: &str,
     ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
+}
+
+pub trait MachineImageRemovalRunner {
+    fn remove_image(
+        &self,
+        image_identity: &OciDigest,
+    ) -> impl Future<Output = Result<ployz_core::image::ImageRemoveOutcome, String>> + Send;
 }
 
 pub trait MachineLogReader {

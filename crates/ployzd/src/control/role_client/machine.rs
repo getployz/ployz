@@ -83,7 +83,7 @@ pub enum MachineImageEnsureError {
 pub enum MachineImageRemoveError {
     Domain {
         machine_id: MachineId,
-        error: ImageRpcDomainError,
+        error: ployz_core::image::ImageRemoveDomainError,
     },
     Unavailable {
         machine_id: MachineId,
@@ -627,7 +627,7 @@ impl NatsMachineContainerRuntime {
         &self,
         machine_id: &MachineId,
         request: &ImageRemoveRequest,
-    ) -> Result<ImageRemoveOk, MachineCallError<ImageRpcDomainError>> {
+    ) -> Result<ImageRemoveOk, MachineCallError<ployz_core::image::ImageRemoveDomainError>> {
         call_machine(
             &self.client,
             self.request_timeout,

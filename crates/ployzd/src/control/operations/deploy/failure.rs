@@ -234,7 +234,7 @@ pub enum DeployExecutionError {
         failure: Box<CertificateProvisionFailure>,
     },
     #[error("namespace state commit failed: {0:?}")]
-    CommitNamespaceState(NamespaceCommitError),
+    CommitNamespaceState(Box<NamespaceCommitError>),
     #[error(
         "deploy failed: {failure:?}; source: {source}; failure record: {failure_record_error:?}"
     )]
@@ -685,7 +685,7 @@ impl DeployExecutionError {
 
 impl From<NamespaceCommitError> for DeployExecutionError {
     fn from(value: NamespaceCommitError) -> Self {
-        Self::CommitNamespaceState(value)
+        Self::CommitNamespaceState(Box::new(value))
     }
 }
 

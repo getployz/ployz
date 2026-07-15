@@ -21,7 +21,9 @@ use crate::roles::machine::execution::host_dataplane::dataplane_status_budget;
 use crate::roles::machine::projection::MachineProjectionState;
 #[cfg(test)]
 use crate::roles::machine::projection::{RunningProjectionTask, start_projection_task};
-use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
+use crate::roles::machine::runner::{
+    MachineContainerRunner, MachineImageRemovalRunner, MachineLogReader,
+};
 use crate::service_catalog::{machine_endpoint_spec, machine_role_service_base};
 use ployz_core::ids::MachineId;
 #[cfg(test)]
@@ -74,7 +76,7 @@ pub async fn start_machine_role_runtime<R, P, L>(
     log_reader: L,
 ) -> Result<RunningMachineRoleRuntime, MachineServiceError>
 where
-    R: Clone + MachineContainerRunner + Send + Sync + 'static,
+    R: Clone + MachineContainerRunner + MachineImageRemovalRunner + Send + Sync + 'static,
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
@@ -99,7 +101,7 @@ pub async fn start_machine_role_runtime_with_endpoint_observation<R, P, L>(
     endpoint_observation: MachineEndpointObservation,
 ) -> Result<RunningMachineRoleRuntime, MachineServiceError>
 where
-    R: Clone + MachineContainerRunner + Send + Sync + 'static,
+    R: Clone + MachineContainerRunner + MachineImageRemovalRunner + Send + Sync + 'static,
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
@@ -124,7 +126,7 @@ async fn start_machine_role_runtime_with_endpoint_cache<R, P, L>(
     endpoint_cache: MachineEndpointCache,
 ) -> Result<RunningMachineRoleRuntime, MachineServiceError>
 where
-    R: Clone + MachineContainerRunner + Send + Sync + 'static,
+    R: Clone + MachineContainerRunner + MachineImageRemovalRunner + Send + Sync + 'static,
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
@@ -158,7 +160,7 @@ pub async fn start_machine_role_service<R, P, L>(
     log_reader: L,
 ) -> Result<RunningNatsService, MachineServiceError>
 where
-    R: Clone + MachineContainerRunner + Send + Sync + 'static,
+    R: Clone + MachineContainerRunner + MachineImageRemovalRunner + Send + Sync + 'static,
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
@@ -183,7 +185,7 @@ pub(crate) async fn start_machine_role_service_with_endpoint_cache<R, P, L>(
     endpoint_cache: MachineEndpointCache,
 ) -> Result<RunningNatsService, MachineServiceError>
 where
-    R: Clone + MachineContainerRunner + Send + Sync + 'static,
+    R: Clone + MachineContainerRunner + MachineImageRemovalRunner + Send + Sync + 'static,
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
@@ -212,7 +214,7 @@ pub(crate) async fn start_machine_role_service_with_endpoint_cache_and_image<R, 
     projection_services: MachineRoleProjectionServices,
 ) -> Result<RunningNatsService, MachineServiceError>
 where
-    R: Clone + MachineContainerRunner + Send + Sync + 'static,
+    R: Clone + MachineContainerRunner + MachineImageRemovalRunner + Send + Sync + 'static,
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {

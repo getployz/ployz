@@ -425,8 +425,7 @@ fn cleanup_container_with_entry(
         },
         state: ployz_core::machine::runtime::ContainerRuntimeState::running_unroutable(),
         created_at_unix_seconds: None,
-        resolved_image_identity: None,
-        image_reclamation_eligible: namespace_revision_entry_id.as_str() == "entry_old",
+        observed_image_identity: None,
     }
 }
 
@@ -437,7 +436,6 @@ fn stopped_cleanup_container(
 ) -> ployz_core::deploy::ObservedCleanupCandidate {
     let mut target = cleanup_container(machine_id, container_id, namespace_revision_entry_id);
     target.state = ployz_core::machine::runtime::ContainerRuntimeState::Exited;
-    target.image_reclamation_eligible = true;
     target
 }
 

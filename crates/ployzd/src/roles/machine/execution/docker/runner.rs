@@ -7,8 +7,8 @@ use crate::roles::machine::execution::host_dataplane::{WireGuardMtuPolicy, resol
 use crate::roles::machine::protocol::MachineImagePull;
 use crate::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
-    MachineContainerRunner, MachineContainerRunnerError, MachineLogQuery, MachineLogReader,
-    MachineLogReaderError, MachineLogTail, MachineLogTimestamps,
+    MachineContainerRunner, MachineContainerRunnerError, MachineImageRemovalRunner,
+    MachineLogQuery, MachineLogReader, MachineLogReaderError, MachineLogTail, MachineLogTimestamps,
 };
 use crate::roles::machine::volume::docker_volume_name;
 use bollard::Docker;
@@ -151,19 +151,16 @@ fn connect_local_defaults() -> Result<Docker, DockerManagedContainerRunnerConnec
     })
 }
 
-impl MachineContainerRunner for DockerManagedContainerRunner {
+impl MachineImageRemovalRunner for DockerManagedContainerRunner {
     async fn remove_image(
         &self,
         image_identity: &OciDigest,
-    ) -> Result<ployz_core::image::ImageRemoveOutcome, MachineContainerRunnerError> {
-        DockerManagedContainerRunner::remove_image(self, image_identity)
-            .await
-            .map_err(|message| MachineContainerRunnerError::ImageRemove {
-                image_identity: image_identity.clone(),
-                message,
-            })
+    ) -> Result<ployz_core::image::ImageRemoveOutcome, String> {
+        DockerManagedContainerRunner::remove_image(self, image_identity).await
     }
+}
 
+impl MachineContainerRunner for DockerManagedContainerRunner {
     async fn existing_managed_containers(
         &self,
     ) -> Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError> {
