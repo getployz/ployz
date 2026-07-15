@@ -22,7 +22,7 @@ pub(super) fn dataplane_membership(
 ) -> Vec<DataplaneMember> {
     let mut members = command.dataplane_members.clone();
     for seed in command.services().iter().filter_map(|service| {
-        let ImageSource::PushedToSeed { seed, .. } = &service.request.image_source else {
+        let ImageSource::PushedToSeed { seed, .. } = &service.service.image_source else {
             return None;
         };
         Some(seed)
@@ -71,7 +71,7 @@ where
         let Some(service) = command
             .services()
             .iter()
-            .find(|service| service.request.service_id == service_id)
+            .find(|service| service.service.service_id == service_id)
         else {
             return Err(DeployExecutionError::PlanInconsistent { service_id });
         };
@@ -161,7 +161,7 @@ fn image_resolution_failure(
 ) -> DeployExecutionError {
     DeployExecutionError::Image {
         failure: Box::new(DeployOperationFailure::ImageResolutionFailed {
-            service_id: service.request.service_id.clone(),
+            service_id: service.service.service_id.clone(),
             machine_id: machine_id.clone(),
             image: requested.clone(),
             message,
@@ -182,7 +182,7 @@ where
     for service in command.services() {
         let Some(service_plan) = service_plans
             .iter()
-            .find(|plan| plan.service_id == service.request.service_id)
+            .find(|plan| plan.service_id == service.service.service_id)
         else {
             continue;
         };
@@ -190,14 +190,14 @@ where
             seed,
             manifest_digest,
             image_id,
-        } = &service.request.image_source
+        } = &service.service.image_source
         else {
             continue;
         };
         let request = ImageEnsureRequest {
             repository: ImageRepository::for_service(
-                service.request.namespace_id(),
-                &service.request.service_id,
+                command.request.namespace_id(),
+                &service.service.service_id,
             ),
             manifest_digest: manifest_digest.clone(),
             image_id: image_id.clone(),
@@ -209,7 +209,7 @@ where
         .await
         .map_err(|_| DeployExecutionError::Image {
             failure: Box::new(DeployOperationFailure::SeedUnavailable {
-                service_id: service.request.service_id.clone(),
+                service_id: service.service.service_id.clone(),
                 seed: seed.clone(),
                 message: deploy_failure_message("image seed ensure timed out"),
             }),
@@ -231,7 +231,7 @@ where
             if ensured.platform != *target_platform {
                 return Err(DeployExecutionError::Image {
                     failure: Box::new(DeployOperationFailure::UnsupportedTargetPlatform {
-                        service_id: service.request.service_id.clone(),
+                        service_id: service.service.service_id.clone(),
                         machine_id: machine_id.clone(),
                         image_platform: ensured.platform.clone(),
                         target_platform: target_platform.clone(),
@@ -243,7 +243,7 @@ where
             command,
             recorder,
             DeployEvidence::ImageAvailabilityVerified {
-                service_id: service.request.service_id.clone(),
+                service_id: service.service.service_id.clone(),
                 seed: seed.clone(),
                 manifest_digest: manifest_digest.clone(),
             },
@@ -264,7 +264,7 @@ fn ensure_image_failure(
             error: ImageRpcDomainError::ImageMissing { .. },
             ..
         } => DeployOperationFailure::ImageMissingOnSeed {
-            service_id: service.request.service_id.clone(),
+            service_id: service.service.service_id.clone(),
             seed: seed.clone(),
             manifest_digest: manifest_digest.clone(),
         },
@@ -274,20 +274,20 @@ fn ensure_image_failure(
                 | ImageRpcDomainError::ConfigMismatch { expected, actual },
             ..
         } => DeployOperationFailure::ImageDigestMismatch {
-            service_id: service.request.service_id.clone(),
+            service_id: service.service.service_id.clone(),
             seed: seed.clone(),
             expected,
             actual,
         },
         MachineImageEnsureError::Unavailable { reason, .. } => {
             DeployOperationFailure::SeedUnavailable {
-                service_id: service.request.service_id.clone(),
+                service_id: service.service.service_id.clone(),
                 seed: seed.clone(),
                 message: reason.failure_message(),
             }
         }
         MachineImageEnsureError::Domain { error, .. } => DeployOperationFailure::SeedUnavailable {
-            service_id: service.request.service_id.clone(),
+            service_id: service.service.service_id.clone(),
             seed: seed.clone(),
             message: deploy_failure_message(format!("image seed rejected ensure: {error:?}")),
         },
@@ -298,12 +298,13 @@ fn ensure_image_failure(
 }
 
 pub(super) fn machine_image_pull(
+    namespace_id: &ployz_core::ids::NamespaceId,
     service: &DeployServiceExecutionCommand,
     dataplane_members: &[DataplaneMember],
 ) -> Result<MachineImagePull, DeployExecutionError> {
-    match &service.request.image_source {
+    match &service.service.image_source {
         ImageSource::Registry => Ok(MachineImagePull::Registry {
-            reference: service.request.image.clone(),
+            reference: service.service.image.clone(),
             credential: service.registry_credential().cloned(),
         }),
         ImageSource::PushedToSeed {
@@ -322,10 +323,7 @@ pub(super) fn machine_image_pull(
             };
             Ok(MachineImagePull::MeshSeed {
                 seed_host,
-                repository: ImageRepository::for_service(
-                    service.request.namespace_id(),
-                    &service.request.service_id,
-                ),
+                repository: ImageRepository::for_service(namespace_id, &service.service.service_id),
                 manifest_digest: manifest_digest.clone(),
             })
         }

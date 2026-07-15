@@ -1,10 +1,10 @@
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployServiceRequest, ExistingServiceReplica, NormalizedDeployRequest,
+    DeployCleanupContainer, DeployServiceSpec, ExistingServiceReplica, NormalizedDeployRequest,
     RegistryCredential,
 };
 use ployz_core::ids::{
-    ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId, ServiceId,
-    StepId,
+    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
+    OperationId, ServiceId, StepId,
 };
 use ployz_core::image::OciPlatform;
 use ployz_core::intent::RouteBindingState;
@@ -42,7 +42,7 @@ pub struct DeployExecutionCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployServiceExecutionCommand {
-    pub(super) request: DeployServiceRequest,
+    pub(super) service: DeployServiceSpec,
     pub(super) registry_credential: Option<RegistryCredential>,
     pub(super) route_commits: Vec<RouteBindingState>,
     pub(super) volume_pins: Vec<VolumePinState>,
@@ -152,9 +152,9 @@ impl DeployServiceExecutionCommand {
     }
 
     #[must_use]
-    pub fn serving_target_entry_state(&self) -> ServingTargetEntry {
+    pub fn serving_target_entry_state(&self, namespace_id: &NamespaceId) -> ServingTargetEntry {
         let mut volume_names = self
-            .request
+            .service
             .runtime
             .volume_mounts
             .iter()
@@ -163,11 +163,11 @@ impl DeployServiceExecutionCommand {
         volume_names.sort();
         volume_names.dedup();
         ServingTargetEntry {
-            namespace_id: self.request.namespace_id().clone(),
-            service_id: self.request.service_id.clone(),
-            namespace_revision_entry_id: self.request.namespace_revision_entry_id(),
-            image: self.request.image.clone(),
-            desired_replicas: self.request.replicas,
+            namespace_id: namespace_id.clone(),
+            service_id: self.service.service_id.clone(),
+            namespace_revision_entry_id: self.service.namespace_revision_entry_id(namespace_id),
+            image: self.service.image.clone(),
+            desired_replicas: self.service.replicas,
             volume_names,
         }
     }

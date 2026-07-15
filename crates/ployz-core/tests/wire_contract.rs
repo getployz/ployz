@@ -521,12 +521,11 @@ fn normalized_service_requests_retain_mounted_volume_declarations() {
 
     let original = request.clone();
     let request = NormalizedDeployRequest::try_new(request).expect("request normalizes");
-    assert_eq!(request.to_request(), original);
-    let services = request.services();
-    let [service] = services.as_slice() else {
+    assert_eq!(request.request(), &original);
+    let [service] = request.services() else {
         panic!("request has one service");
     };
-    let declared = service.declared_volume_mounts().collect::<Vec<_>>();
+    let declared = request.declared_volume_mounts(service).collect::<Vec<_>>();
     let [declared] = declared.as_slice() else {
         panic!("service has one declared volume mount");
     };
@@ -553,14 +552,13 @@ fn normalized_image_replacement_preserves_volume_invariants_without_revalidation
     };
     service.image = resolved;
 
-    assert_eq!(normalized.to_request(), request);
-    let services = normalized.services();
-    let [service] = services.as_slice() else {
+    assert_eq!(normalized.request(), &request);
+    let [service] = normalized.services() else {
         panic!("request has one service");
     };
-    assert_eq!(service.declared_volume_mounts().count(), 1);
+    assert_eq!(normalized.declared_volume_mounts(service).count(), 1);
     assert_eq!(
-        service.namespace_revision_id(),
+        normalized.request().namespace_revision_id(),
         normalized.namespace_revision_id()
     );
 }

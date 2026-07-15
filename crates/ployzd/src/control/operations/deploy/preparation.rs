@@ -116,13 +116,13 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
     facts: DeployExecutionFacts,
     registry_credentials: &BTreeMap<ServiceId, RegistryCredential>,
 ) -> DeployExecutionCommand {
-    let service_requests = request.services();
-    let mut mint_requests = service_requests.iter().collect::<Vec<_>>();
+    let mut mint_requests = request.services().iter().collect::<Vec<_>>();
     mint_requests.sort_by(|left, right| left.service_id.cmp(&right.service_id));
     let mut declared_auto_bindings = Vec::new();
     let mut occupied_bindings = facts.namespace_route_bindings.clone();
     for service_request in mint_requests {
         let commits = auto_hostname_route_binding_commits(
+            request.namespace_id(),
             service_request,
             facts.automatic_hostname_mode.suffix(),
             &occupied_bindings,
@@ -133,7 +133,7 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         declared_auto_bindings.extend(commits);
     }
     let namespace_declared_targets = request
-        .services
+        .services()
         .iter()
         .flat_map(|service| service.routes.iter())
         .filter_map(|route| route.target.concrete_target())
@@ -144,12 +144,12 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         )
         .collect::<Vec<_>>();
     let declared_services = request
-        .services
+        .services()
         .iter()
         .map(|service| service.service_id.clone())
         .collect::<Vec<_>>();
     let route_binding_removal_targets = namespace_route_binding_removals(
-        &request.namespace_id,
+        request.namespace_id(),
         &namespace_declared_targets,
         &facts.namespace_route_bindings,
     );
@@ -160,7 +160,7 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         .cloned()
         .collect();
     let serving_target_removals = namespace_serving_target_removals(
-        &request.namespace_id,
+        request.namespace_id(),
         &declared_services,
         &facts.namespace_serving_entries,
     );
@@ -175,10 +175,11 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         .map(|unusable| unusable.machine_id.clone())
         .collect::<Vec<_>>();
     let mut services = Vec::new();
-    for service_request in service_requests {
+    for service in request.services() {
         let mut prepared = prepare_deploy(
             DeployPreparationInput {
-                request: service_request,
+                request: &request,
+                service,
                 occupied_route_bindings: occupied_bindings.clone(),
                 eligible_machines: facts.eligible_machines.clone(),
                 draining_machines: draining_machines.clone(),
@@ -189,10 +190,12 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         .expect("route bindings were validated while loading deploy facts");
         occupied_bindings.extend(prepared.route_commits.iter().cloned());
         let is_promoted = facts.namespace_serving_entries.iter().any(|entry| {
-            entry.namespace_id == *prepared.request.namespace_id()
-                && entry.service_id == prepared.request.service_id
+            entry.namespace_id == *request.namespace_id()
+                && entry.service_id == prepared.service.service_id
                 && entry.namespace_revision_entry_id
-                    == prepared.request.namespace_revision_entry_id()
+                    == prepared
+                        .service
+                        .namespace_revision_entry_id(request.namespace_id())
         });
         if !is_promoted {
             prepared.existing_replicas.clear();
@@ -201,14 +204,14 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         route_commits.extend(
             declared_auto_bindings
                 .iter()
-                .filter(|binding| binding.service_id == prepared.request.service_id)
+                .filter(|binding| binding.service_id == prepared.service.service_id)
                 .cloned(),
         );
         services.push(DeployServiceExecutionCommand {
             registry_credential: registry_credentials
-                .get(&prepared.request.service_id)
+                .get(&prepared.service.service_id)
                 .cloned(),
-            request: prepared.request,
+            service: prepared.service,
             route_commits,
             volume_pins: facts.namespace_volume_pins.clone(),
             eligible_machines: prepared.eligible_machines,

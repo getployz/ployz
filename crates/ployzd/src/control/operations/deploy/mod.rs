@@ -216,7 +216,7 @@ where
     }
     if command.services().iter().any(|service| {
         matches!(
-            service.request.image_source,
+            service.service.image_source,
             ImageSource::PushedToSeed { .. }
         )
     }) {
@@ -367,13 +367,12 @@ pub(super) fn deploy_plan(
     command: &DeployExecutionCommand,
 ) -> Result<DeployPlan, DeployExecutionError> {
     plan_namespace_deploy(
-        command.request.namespace_id.clone(),
-        command.request.namespace_revision_id(),
+        &command.request,
         command
             .services()
             .iter()
             .map(|service| DeployPlanningInput {
-                request: service.request.clone(),
+                service: service.service.clone(),
                 eligible_machines: service.eligible_machines.clone(),
                 existing_replicas: service.existing_replicas.clone(),
                 cleanup_candidates: service.cleanup_candidates.clone(),
@@ -412,26 +411,28 @@ async fn run_pre_start_hook<N>(
 where
     N: MachineContainerRuntime,
 {
-    let Some(pre_start) = &service.request.pre_start else {
+    let Some(pre_start) = &service.service.pre_start else {
         return Err(DeployExecutionError::PlanInconsistent {
-            service_id: service.request.service_id.clone(),
+            service_id: service.service.service_id.clone(),
         });
     };
     let step_id = StepId::try_new("pre_start").map_err(DeployExecutionError::StepId)?;
-    let mut runtime = service.request.runtime.clone();
+    let mut runtime = service.service.runtime.clone();
     runtime.command = Some(pre_start.command.clone());
     runtime.healthcheck = None;
     runtime.restart_policy = ContainerRestartPolicy::No;
     let identity = ManagedContainerIdentity {
-        namespace_id: service.request.namespace_id().clone(),
-        service_id: service.request.service_id.clone(),
-        namespace_revision_entry_id: service.request.namespace_revision_entry_id(),
+        namespace_id: command.request.namespace_id().clone(),
+        service_id: service.service.service_id.clone(),
+        namespace_revision_entry_id: service
+            .service
+            .namespace_revision_entry_id(command.request.namespace_id()),
         operation_id: command.operation_id.clone(),
         step_id,
         kind: ManagedContainerKind::Predeploy,
     };
     let request = MachineContainerRunHookRpcRequest {
-        pull: machine_image_pull(service, dataplane_members)?,
+        pull: machine_image_pull(command.request.namespace_id(), service, dataplane_members)?,
         runtime,
         container: identity.clone(),
         timeout_millis: hook_execution_timeout(command).as_millis() as u64,
@@ -612,7 +613,7 @@ fn container_stop_failed_artifact(
 /// guarantee a health report, so waiting on them would hang until timeout.
 fn requires_docker_healthcheck(service: &DeployServiceExecutionCommand) -> bool {
     service
-        .request
+        .service
         .runtime
         .healthcheck
         .as_ref()
@@ -624,7 +625,7 @@ fn retained_container_identity(
     container: &DeployContainer,
 ) -> ManagedContainerIdentity {
     ManagedContainerIdentity {
-        namespace_id: command.request.namespace_id.clone(),
+        namespace_id: command.request.namespace_id().clone(),
         service_id: container.service_id.clone(),
         namespace_revision_entry_id: container.namespace_revision_entry_id.clone(),
         operation_id: command.operation_id.clone(),
@@ -728,7 +729,7 @@ where
         !command
             .services()
             .iter()
-            .any(|service| service.request.service_id == binding.service_id)
+            .any(|service| service.service.service_id == binding.service_id)
     }) {
         with_step_timeout(
             command,
@@ -872,12 +873,14 @@ where
     let step_id = deploy_step_id(slot).map_err(DeployExecutionError::StepId)?;
     let requires_docker_healthcheck = requires_docker_healthcheck(service);
     let request = MachineContainerRunRpcRequest {
-        pull: machine_image_pull(service, dataplane_members)?,
-        runtime: service.request.runtime.clone(),
+        pull: machine_image_pull(command.request.namespace_id(), service, dataplane_members)?,
+        runtime: service.service.runtime.clone(),
         container: ManagedContainerIdentity {
-            namespace_id: service.request.namespace_id().clone(),
-            service_id: service.request.service_id.clone(),
-            namespace_revision_entry_id: service.request.namespace_revision_entry_id(),
+            namespace_id: command.request.namespace_id().clone(),
+            service_id: service.service.service_id.clone(),
+            namespace_revision_entry_id: service
+                .service
+                .namespace_revision_entry_id(command.request.namespace_id()),
             operation_id: command.operation_id.clone(),
             step_id: step_id.clone(),
             kind: ManagedContainerKind::Service,
@@ -901,8 +904,10 @@ where
             };
             (
                 DeployContainer {
-                    service_id: service.request.service_id.clone(),
-                    namespace_revision_entry_id: service.request.namespace_revision_entry_id(),
+                    service_id: service.service.service_id.clone(),
+                    namespace_revision_entry_id: service
+                        .service
+                        .namespace_revision_entry_id(command.request.namespace_id()),
                     machine_id: machine_id.clone(),
                     container_id: outcome.container_id().clone(),
                     step_id,

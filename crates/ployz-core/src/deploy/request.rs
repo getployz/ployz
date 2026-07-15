@@ -124,7 +124,7 @@ impl DeployRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NormalizedDeployRequest(Arc<DeployRequest>);
+pub struct NormalizedDeployRequest(DeployRequest);
 
 impl NormalizedDeployRequest {
     pub fn try_new(request: DeployRequest) -> Result<Self, DeployVolumeDeclarationError> {
@@ -138,7 +138,7 @@ impl NormalizedDeployRequest {
                 }
             }
         }
-        Ok(Self(Arc::new(request)))
+        Ok(Self(request))
     }
 
     #[must_use]
@@ -157,23 +157,18 @@ impl NormalizedDeployRequest {
     }
 
     #[must_use]
-    pub fn services(&self) -> Vec<DeployServiceRequest> {
-        (0..self.0.services.len())
-            .map(|service_index| DeployServiceRequest {
-                request: Arc::clone(&self.0),
-                service_index,
-            })
-            .collect()
+    pub fn request(&self) -> &DeployRequest {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn services(&self) -> &[DeployServiceSpec] {
+        &self.0.services
     }
 
     #[must_use]
     pub fn into_request(self) -> DeployRequest {
-        Arc::try_unwrap(self.0).unwrap_or_else(|request| (*request).clone())
-    }
-
-    #[must_use]
-    pub fn to_request(&self) -> DeployRequest {
-        (*self.0).clone()
+        self.0
     }
 
     pub fn replace_service_image(
@@ -181,8 +176,8 @@ impl NormalizedDeployRequest {
         service_id: &ServiceId,
         image: ImageReference,
     ) -> Result<(), NormalizedDeployInvariantError> {
-        let request = Arc::make_mut(&mut self.0);
-        let Some(service) = request
+        let Some(service) = self
+            .0
             .services
             .iter_mut()
             .find(|service| service.service_id == *service_id)
@@ -193,14 +188,6 @@ impl NormalizedDeployRequest {
         };
         service.image = image;
         Ok(())
-    }
-}
-
-impl std::ops::Deref for NormalizedDeployRequest {
-    type Target = DeployRequest;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
     }
 }
 
@@ -288,12 +275,6 @@ impl DeployServiceSpec {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeployServiceRequest {
-    request: Arc<DeployRequest>,
-    service_index: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclaredVolumeMount<'a> {
     mount: &'a ServiceVolumeMount,
     spec: &'a VolumeSpec,
@@ -311,52 +292,23 @@ impl DeclaredVolumeMount<'_> {
     }
 }
 
-impl DeployServiceRequest {
-    #[must_use]
-    pub fn namespace_id(&self) -> &NamespaceId {
-        &self.request.namespace_id
-    }
-
-    #[must_use]
-    pub fn namespace_revision_id(&self) -> NamespaceRevisionId {
-        self.request.namespace_revision_id()
-    }
-
-    #[must_use]
-    pub fn namespace_revision_entry_id(&self) -> NamespaceRevisionEntryId {
-        self.service()
-            .namespace_revision_entry_id(&self.request.namespace_id)
-    }
-
-    pub fn declared_volume_mounts(&self) -> impl Iterator<Item = DeclaredVolumeMount<'_>> {
-        self.runtime
+impl NormalizedDeployRequest {
+    pub fn declared_volume_mounts<'a>(
+        &'a self,
+        service: &'a DeployServiceSpec,
+    ) -> impl Iterator<Item = DeclaredVolumeMount<'a>> {
+        service
+            .runtime
             .volume_mounts
             .iter()
             .map(|mount| DeclaredVolumeMount {
                 mount,
                 spec: self
-                    .request
+                    .0
                     .volumes
                     .get(&mount.volume_name)
                     .expect("normalized deploy validates every mounted volume declaration"),
             })
-    }
-}
-
-impl std::ops::Deref for DeployServiceRequest {
-    type Target = DeployServiceSpec;
-
-    fn deref(&self) -> &Self::Target {
-        self.service()
-    }
-}
-
-impl DeployServiceRequest {
-    fn service(&self) -> &DeployServiceSpec {
-        self.request
-            .services
-            .get(self.service_index)
-            .expect("service views are created only from canonical request indices")
     }
 }
 

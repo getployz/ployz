@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::{NonZeroI64, NonZeroU16, NonZeroU64};
-use std::sync::Arc;
 
 use crate::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
@@ -29,9 +28,9 @@ pub use planning::*;
 pub use request::{
     DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS, DeclaredVolumeMount, DependencyCondition, DeployOrigin,
     DeployOriginError, DeployRequest, DeployReservationExpiresAt, DeployReservationId,
-    DeployReservationNumberError, DeployServiceRequest, DeployServiceSpec,
-    DeployVolumeDeclarationError, NormalizedDeployInvariantError, NormalizedDeployRequest,
-    PreStartHook, ReplicaCount, ReplicaCountError, ServiceDependency,
+    DeployReservationNumberError, DeployServiceSpec, DeployVolumeDeclarationError,
+    NormalizedDeployInvariantError, NormalizedDeployRequest, PreStartHook, ReplicaCount,
+    ReplicaCountError, ServiceDependency,
 };
 pub use revision::{
     canonical_capabilities, namespace_revision_entry_id_for, namespace_revision_id_for,

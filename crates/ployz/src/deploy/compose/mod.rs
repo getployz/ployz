@@ -9,9 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
-use ployz_core::deploy::{
-    DependencyCondition, DeployRequest, DeployServiceSpec, VolumeName, VolumeSpec,
-};
+use ployz_core::deploy::{DependencyCondition, DeployRequest};
 use ployz_core::ids::NamespaceId;
 use serde_yaml::Value;
 
@@ -36,7 +34,7 @@ pub fn parse_compose_file(
     file: &Path,
     namespace_override: Option<NamespaceId>,
     mode: UnsupportedFieldMode,
-) -> Result<(ParsedComposeDeploy, Vec<RenderedWarning>), PloyzctlCliError> {
+) -> Result<(DeployRequest, Vec<RenderedWarning>), PloyzctlCliError> {
     let source = fs::read_to_string(file)
         .map_err(|error| cli_error(format!("could not read {}: {error}", file.display())))?;
     let base_dir = file.parent().unwrap_or_else(|| Path::new("."));
@@ -51,7 +49,7 @@ pub fn parse_compose_file(
 
 pub fn parse_deploy_file(
     input: ComposeInput<'_>,
-) -> Result<(ParsedComposeDeploy, Vec<RenderedWarning>), PloyzctlCliError> {
+) -> Result<(DeployRequest, Vec<RenderedWarning>), PloyzctlCliError> {
     let ComposeInput {
         source,
         base_dir,
@@ -252,14 +250,7 @@ pub fn parse_deploy_file(
         services: deploy_services,
     };
     request.synthesize_plain_volume_declarations();
-    Ok((
-        ParsedComposeDeploy {
-            namespace_id: request.namespace_id,
-            volumes: request.volumes,
-            services: request.services,
-        },
-        warnings,
-    ))
+    Ok((request, warnings))
 }
 
 fn interpolation_findings(
@@ -294,13 +285,6 @@ fn path_from_interpolation(path: &str) -> ComposePath {
     }
     path.split('.')
         .fold(ComposePath::root(), |path, field| path.field(field))
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParsedComposeDeploy {
-    pub namespace_id: NamespaceId,
-    pub volumes: BTreeMap<VolumeName, VolumeSpec>,
-    pub services: Vec<DeployServiceSpec>,
 }
 
 pub(crate) fn interpolation_env(

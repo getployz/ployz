@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use clap::{Args, Subcommand};
 use ployz_core::deploy::{
     DeployOrigin, DeployRequest, DeployReservationId, DeployRoute, DeployRouteTarget,
-    DeployServiceSpec, ImageReference, ReplicaCount, VolumeName, VolumeSpec,
+    DeployServiceSpec, ImageReference, ReplicaCount,
 };
 use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
 use ployz_core::operation::{OperationIdempotencyKey, RouteHostname, RoutePort};
@@ -22,10 +22,7 @@ const DEFAULT_REPLICA_COUNT: u16 = 1;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployCommand {
     pub idempotency_key: OperationIdempotencyKey,
-    pub namespace_id: NamespaceId,
-    pub origin: Option<DeployOrigin>,
-    pub volumes: BTreeMap<VolumeName, VolumeSpec>,
-    pub services: Vec<DeployServiceSpec>,
+    pub target: DeployRequest,
     pub warnings: Vec<String>,
     pub detach: bool,
     pub from_registry: bool,
@@ -38,18 +35,13 @@ impl DeployCommand {
             registry_credentials: std::collections::BTreeMap::new(),
             idempotency_key: self.idempotency_key,
             reservation_id,
-            target: DeployRequest {
-                namespace_id: self.namespace_id,
-                origin: self.origin,
-                volumes: self.volumes,
-                services: self.services,
-            },
+            target: self.target,
         }
     }
 
     #[must_use]
     pub fn first_service(&self) -> Option<&DeployServiceSpec> {
-        self.services.first()
+        self.target.services.first()
     }
 }
 
@@ -216,7 +208,7 @@ fn deploy_submit_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCli
             .map(NamespaceId::try_new)
             .transpose()
             .map_err(|error| invalid_value("--namespace", error))?;
-        let (parsed, warnings) = crate::deploy::compose::parse_compose_file(
+        let (mut target, warnings) = crate::deploy::compose::parse_compose_file(
             &file,
             namespace_override,
             if allow_unsupported {
@@ -225,7 +217,8 @@ fn deploy_submit_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCli
                 UnsupportedFieldMode::Strict
             },
         )?;
-        let service_id = parsed
+        target.origin = origin;
+        let service_id = target
             .services
             .first()
             .map(|service| service.service_id.clone())
@@ -235,10 +228,7 @@ fn deploy_submit_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCli
         })?;
         return Ok(DeployCommand {
             idempotency_key: generated_ids.idempotency_key,
-            namespace_id: parsed.namespace_id,
-            origin,
-            volumes: parsed.volumes,
-            services: parsed.services,
+            target,
             warnings: warnings.into_iter().map(|warning| warning.0).collect(),
             detach,
             from_registry,
@@ -285,19 +275,21 @@ fn deploy_submit_command(parsed: DeployCli) -> Result<DeployCommand, PloyzctlCli
 
     Ok(DeployCommand {
         idempotency_key: generated_ids.idempotency_key,
-        namespace_id,
-        origin,
-        volumes: BTreeMap::new(),
-        services: vec![DeployServiceSpec {
-            service_id,
-            image,
-            image_source: ployz_core::deploy::ImageSource::Registry,
-            replicas,
-            runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
-            pre_start: None,
-            depends_on: Vec::new(),
-            routes,
-        }],
+        target: DeployRequest {
+            namespace_id,
+            origin,
+            volumes: BTreeMap::new(),
+            services: vec![DeployServiceSpec {
+                service_id,
+                image,
+                image_source: ployz_core::deploy::ImageSource::Registry,
+                replicas,
+                runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+                pre_start: None,
+                depends_on: Vec::new(),
+                routes,
+            }],
+        },
         warnings: Vec::new(),
         detach,
         from_registry,

@@ -247,13 +247,14 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
         panic!("deploy target has one service");
     };
     resolved_service.image = resolved_image.clone();
-    let resolved_service_target =
+    let normalized_resolved_target =
         ployz_core::deploy::NormalizedDeployRequest::try_new(resolved_target.clone())
-            .expect("request normalizes")
-            .services()
-            .first()
-            .expect("resolved deploy target has one service")
-            .clone();
+            .expect("request normalizes");
+    let resolved_service_target = normalized_resolved_target
+        .services()
+        .first()
+        .expect("resolved deploy target has one service")
+        .clone();
     assert_eq!(
         api.service_inspect(&ServiceInspectRequest {
             namespace_id: namespace_id("default"),
@@ -262,7 +263,7 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
         .await?
         .active
         .namespace_revision_entry_id,
-        resolved_service_target.namespace_revision_entry_id()
+        resolved_service_target.namespace_revision_entry_id(&namespace_id("default"))
     );
     assert_eq!(
         operation_events(&api, deploy_operation.clone(), accepted.start_sequence).await?,
@@ -286,10 +287,9 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
             OperationEvent::DeployPlanCreated {
                 operation_id: deploy_operation.clone(),
                 plan: plan_namespace_deploy(
-                    namespace_id("default"),
-                    resolved_target.namespace_revision_id(),
+                    &normalized_resolved_target,
                     vec![DeployPlanningInput {
-                        request: resolved_service_target,
+                        service: resolved_service_target,
                         eligible_machines: vec![machine_id("machine_a")],
                         existing_replicas: Vec::new(),
                         cleanup_candidates: Vec::new(),

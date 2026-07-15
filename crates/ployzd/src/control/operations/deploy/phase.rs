@@ -207,7 +207,7 @@ impl<'a> DeployRun<'a> {
             DeployRunPhase::During(phase) => phase.phase_created_containers.as_slice(),
         };
         let failure = DeployExecutionFailure::with_stop_targets(self.command, source, &[], cleanup);
-        self.with_phase_context(failure, Some(service.request.service_id.clone()))
+        self.with_phase_context(failure, Some(service.service.service_id.clone()))
     }
 
     fn with_phase_context(
@@ -246,9 +246,9 @@ where
 {
     if phase.services.iter().any(|planned| {
         command.services().iter().any(|service| {
-            service.request.service_id == planned.service_id
+            service.service.service_id == planned.service_id
                 && matches!(
-                    service.request.image_source,
+                    service.service.image_source,
                     ImageSource::PushedToSeed { .. }
                 )
         })
@@ -262,7 +262,7 @@ where
         let Some(service) = command
             .services()
             .iter()
-            .find(|service| service.request.service_id == service_plan.service_id)
+            .find(|service| service.service.service_id == service_plan.service_id)
         else {
             return Err(run.fail(DeployExecutionError::PlanInconsistent {
                 service_id: service_plan.service_id.clone(),
@@ -277,7 +277,7 @@ where
                 machine_runtime,
             )
             .await
-            .map_err(|source| run.fail_service(source, service.request.service_id.clone()))?;
+            .map_err(|source| run.fail_service(source, service.service.service_id.clone()))?;
         }
         for step in &service_plan.steps {
             match step {
@@ -286,14 +286,16 @@ where
                     container_id,
                     slot,
                 } => containers.push(DeployContainer {
-                    service_id: service.request.service_id.clone(),
-                    namespace_revision_entry_id: service.request.namespace_revision_entry_id(),
+                    service_id: service.service.service_id.clone(),
+                    namespace_revision_entry_id: service
+                        .service
+                        .namespace_revision_entry_id(command.request.namespace_id()),
                     machine_id: machine_id.clone(),
                     container_id: container_id.clone(),
                     step_id: deploy_step_id(*slot).map_err(|source| {
                         run.fail_service(
                             DeployExecutionError::StepId(source),
-                            service.request.service_id.clone(),
+                            service.service.service_id.clone(),
                         )
                     })?,
                     requires_docker_healthcheck: false,
@@ -330,7 +332,7 @@ where
                     )
                     .await
                     .map_err(|source| {
-                        run.fail_service(source, service.request.service_id.clone())
+                        run.fail_service(source, service.service.service_id.clone())
                     })?;
                 }
             }
@@ -387,7 +389,7 @@ where
             phase
                 .services
                 .iter()
-                .any(|planned| planned.service_id == service.request.service_id)
+                .any(|planned| planned.service_id == service.service.service_id)
         })
         .collect::<Vec<_>>();
     let ployz_automatic_route = command
@@ -483,7 +485,7 @@ where
         .filter(|binding| {
             phase_services
                 .iter()
-                .any(|service| service.request.service_id == binding.service_id)
+                .any(|service| service.service.service_id == binding.service_id)
         })
         .map(|binding| binding.target.clone())
         .collect();
@@ -518,10 +520,11 @@ where
         scope: scope.clone(),
         route_bindings,
         route_binding_removals,
-        first_serving_target_entry: first_service.serving_target_entry_state(),
+        first_serving_target_entry: first_service
+            .serving_target_entry_state(command.request.namespace_id()),
         remaining_serving_target_entries: remaining_services
             .iter()
-            .map(|service| service.serving_target_entry_state())
+            .map(|service| service.serving_target_entry_state(command.request.namespace_id()))
             .collect(),
     };
     with_step_timeout(

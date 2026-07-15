@@ -359,14 +359,14 @@ fn validate_registry_credentials(command: &DeploySubmitCommand) -> Result<(), De
         let Some(pinned_digest) = service.image.pinned_digest() else {
             return Err(invalid_pushed_image(
                 command,
-                &service,
+                service,
                 "must be digest-pinned",
             ));
         };
         if &pinned_digest != manifest_digest {
             return Err(invalid_pushed_image(
                 command,
-                &service,
+                service,
                 "digest must match its pushed manifest digest",
             ));
         }
@@ -376,7 +376,7 @@ fn validate_registry_credentials(command: &DeploySubmitCommand) -> Result<(), De
 
 fn invalid_pushed_image(
     command: &DeploySubmitCommand,
-    service: &ployz_core::deploy::DeployServiceRequest,
+    service: &ployz_core::deploy::DeployServiceSpec,
     reason: &str,
 ) -> DeploySubmitError {
     DeploySubmitError::InvalidTarget {

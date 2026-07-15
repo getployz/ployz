@@ -66,7 +66,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
             .services()
             .first()
             .expect("resolved fixture has one service")
-            .namespace_revision_entry_id();
+            .namespace_revision_entry_id(&namespace_id("default"));
 
     let outcome = run_deploy_operation(
         accepted,
