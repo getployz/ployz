@@ -13,7 +13,7 @@ use ployz_core::roles::GatewayRole;
 use ployz_sdk_types::{OpsListRequest, OpsListResult, OpsStatusRequest};
 
 use crate::commands::PloyzctlCliError;
-use crate::commands::deploy_failure::{DeployFailureView, certificate_provision_failure_detail};
+use crate::deploy::failure::{DeployFailureView, certificate_provision_failure_detail};
 
 mod network_repair;
 

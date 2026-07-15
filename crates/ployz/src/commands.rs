@@ -8,8 +8,6 @@ use ployz_core::state::MachineLifecycle;
 pub mod compose;
 pub mod core;
 pub mod deploy;
-pub(crate) mod deploy_failure;
-pub(crate) mod deploy_render;
 pub mod ingress;
 pub mod init;
 pub mod logs;

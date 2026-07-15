@@ -1772,8 +1772,8 @@ mod tests {
     use ployz_core::ids::ServiceId;
 
     use super::{parse_compose_duration, parse_depends_on, parse_pre_start};
-    use crate::compose::diagnostics::{ComposePath, UnsupportedFieldMode};
-    use crate::compose::{ComposeInput, parse_deploy_file};
+    use crate::deploy::compose::diagnostics::{ComposePath, UnsupportedFieldMode};
+    use crate::deploy::compose::{ComposeInput, parse_deploy_file};
 
     #[test]
     fn depends_on_reports_every_invalid_entry() {

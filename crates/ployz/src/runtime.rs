@@ -21,10 +21,6 @@ use crate::remote_machine_runtime::{
 use ployz_sdk_types::OpsStatusRequest;
 use tokio::time::sleep as async_sleep;
 
-mod compose;
-mod deploy_follow;
-mod deploy_history;
-mod deploy_rollback;
 mod network;
 
 pub use crate::execution_support::{
@@ -190,10 +186,18 @@ pub async fn execute_command(
         PloyzctlCommand::Telemetry(_) => Err(PloyzctlExecutionError::LocalCommand),
         PloyzctlCommand::CorePromote(command) => execute_core_promote_remote(command, config).await,
         PloyzctlCommand::CoreReplace(command) => execute_core_replace_remote(command, config).await,
-        PloyzctlCommand::ComposeCheck(command) => Ok(compose::check(command)),
-        PloyzctlCommand::Deploy(command) => deploy_follow::execute_deploy(command, config).await,
-        PloyzctlCommand::DeployHistory(command) => deploy_history::inspect(command, config),
-        PloyzctlCommand::DeployRollback(command) => deploy_rollback::execute(command, config).await,
+        PloyzctlCommand::ComposeCheck(command) => {
+            Ok(crate::deploy::runtime::compose::check(command))
+        }
+        PloyzctlCommand::Deploy(command) => {
+            crate::deploy::runtime::follow::execute_deploy(command, config).await
+        }
+        PloyzctlCommand::DeployHistory(command) => {
+            crate::deploy::runtime::history::inspect(command, config)
+        }
+        PloyzctlCommand::DeployRollback(command) => {
+            crate::deploy::runtime::rollback::execute(command, config).await
+        }
         PloyzctlCommand::InternalInit(command) => match &command.mode {
             FirstMachineInitMode::RunHostRunnerInstall {
                 host_runner_install,

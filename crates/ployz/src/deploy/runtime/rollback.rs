@@ -4,16 +4,17 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use ployz_core::deploy::{DeployOrigin, DeployRequest};
 use ployz_sdk_types::DeploySubmitRequest;
 
-use crate::commands::deploy::{DeployRollbackCommand, DeployRollbackSelection};
+use crate::deploy::command::{DeployRollbackCommand, DeployRollbackSelection};
 use crate::execution_support::generate_client_deploy_rollback_id;
 
-use super::{PloyzctlRuntimeConfig, deploy_follow, deploy_history};
+use super::{follow as deploy_follow, history as deploy_history};
 use crate::execution_support::{
     PloyzctlExecutionError, PloyzctlExecutionOutput, nats_connect_config,
     operation_api_client_with_connect, with_cluster_context_from_disk,
 };
+use crate::runtime::PloyzctlRuntimeConfig;
 
-pub(super) async fn execute(
+pub(crate) async fn execute(
     command: DeployRollbackCommand,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
@@ -207,15 +208,16 @@ mod tests {
     }
 
     fn append_history_entry(
-        history: &crate::deploy_history::DeployHistory,
+        history: &crate::deploy::history_store::DeployHistory,
         operation: &str,
         image: &str,
     ) {
         history
-            .append_success(crate::deploy_history::DeployHistoryEntry {
-                recorded_at: crate::deploy_history::DeployHistoryTimestamp::from_unix_seconds(
-                    1_750_000_000,
-                ),
+            .append_success(crate::deploy::history_store::DeployHistoryEntry {
+                recorded_at:
+                    crate::deploy::history_store::DeployHistoryTimestamp::from_unix_seconds(
+                        1_750_000_000,
+                    ),
                 operation_id: operation_id(operation),
                 request: request(image),
             })

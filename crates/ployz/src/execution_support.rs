@@ -388,11 +388,11 @@ pub enum PloyzctlExecutionError {
     OperationApi { message: String },
     #[error("image push failed: {source}")]
     ImagePush {
-        source: crate::image_push::ImagePushError,
+        source: crate::deploy::image_push::ImagePushError,
     },
     #[error("registry credential lookup failed: {source}")]
     RegistryAuth {
-        source: crate::registry_auth::RegistryAuthError,
+        source: crate::deploy::registry_auth::RegistryAuthError,
     },
     #[error("namespace rm {} was not confirmed", namespace_id.as_str())]
     NamespaceRemoveNotConfirmed {

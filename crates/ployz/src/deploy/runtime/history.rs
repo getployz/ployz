@@ -3,18 +3,18 @@ use std::path::PathBuf;
 use ployz_core::ids::{NamespaceId, OperationId};
 use ployz_core::ops::{DeployCompletionOutcome, OperationEvent, ReplayedOperationEvent};
 
-use crate::commands::deploy::DeployHistoryCommand;
-use crate::deploy_history::{
+use crate::deploy::command::DeployHistoryCommand;
+use crate::deploy::history_store::{
     ClusterFingerprint, DeployHistory, DeployHistoryEntry, DeployHistoryTimestamp,
     default_deploy_history_root, render_history,
 };
 
-use super::PloyzctlRuntimeConfig;
 use crate::execution_support::{
     PloyzctlExecutionError, PloyzctlExecutionOutput, with_cluster_context_from_disk,
 };
+use crate::runtime::PloyzctlRuntimeConfig;
 
-pub(super) fn inspect(
+pub(crate) fn inspect(
     command: DeployHistoryCommand,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
@@ -195,8 +195,8 @@ pub(super) enum DeployHistoryRuntimeError {
     },
 }
 
-impl From<crate::deploy_history::DeployHistoryError> for DeployHistoryRuntimeError {
-    fn from(source: crate::deploy_history::DeployHistoryError) -> Self {
+impl From<crate::deploy::history_store::DeployHistoryError> for DeployHistoryRuntimeError {
+    fn from(source: crate::deploy::history_store::DeployHistoryError) -> Self {
         Self::Store {
             message: source.to_string(),
         }

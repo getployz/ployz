@@ -1,8 +1,8 @@
-use crate::commands::compose::ComposeCheckCommand;
+use crate::deploy::compose_command::ComposeCheckCommand;
 
 use crate::execution_support::{CommandExit, PloyzctlExecutionOutput};
 
-pub(super) fn check(command: ComposeCheckCommand) -> PloyzctlExecutionOutput {
+pub(crate) fn check(command: ComposeCheckCommand) -> PloyzctlExecutionOutput {
     let stderr = command.diagnostics.join("\n");
     PloyzctlExecutionOutput {
         stdout: String::new(),
@@ -18,7 +18,7 @@ pub(super) fn check(command: ComposeCheckCommand) -> PloyzctlExecutionOutput {
 #[cfg(test)]
 mod tests {
     use super::check;
-    use crate::commands::compose::ComposeCheckCommand;
+    use crate::deploy::compose_command::ComposeCheckCommand;
     use crate::execution_support::{CommandExit, PloyzctlExecutionOutput};
 
     #[test]

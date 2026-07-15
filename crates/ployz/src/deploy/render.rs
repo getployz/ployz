@@ -8,7 +8,7 @@ use ployz_core::ops::{
     DeployRunningStage, OperationEvent, OperationKind, ReplayedOperationEvent,
 };
 
-use super::deploy_failure::{
+use super::failure::{
     DeployFailureView, FailureSafety, artifact_unavailable_reason, failure_cause,
 };
 
