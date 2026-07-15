@@ -1079,6 +1079,7 @@ fn ops_list_renders_deploy_origin() {
             state: DeployOperationState::Accepted,
             last_event_sequence: event_sequence(1),
         })],
+        has_more: false,
     })
     .render();
 
@@ -1280,6 +1281,7 @@ fn ops_list_renders_empty_managed_lease_renewal_address_families_as_none() {
                 last_event_sequence: event_sequence(1),
             },
         )],
+        has_more: false,
     })
     .render();
 

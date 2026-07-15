@@ -1131,6 +1131,9 @@ fn machine_service_failure_reason(error: NatsServiceError) -> MachineRuntimeUnav
         NatsServiceErrorCode::Conflict => MachineRuntimeUnavailableReason::ServiceConflict {
             message: error.message,
         },
+        NatsServiceErrorCode::ResponseTooLarge => {
+            MachineRuntimeUnavailableReason::ServiceResponseTooLarge
+        }
         NatsServiceErrorCode::Unavailable => MachineRuntimeUnavailableReason::ServiceUnavailable {
             message: error.message,
         },

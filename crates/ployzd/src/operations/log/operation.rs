@@ -1,7 +1,8 @@
 use super::{
     OperationRepository, RecordOperationEventError, RecordOperationEventOutcome, RecordTxn,
     ReplayOperationEventsError, ReplayTxn, index_error, publish_progress, read_event_error,
-    record_operation_event_txn, replay_operation_events_txn, select_all_statuses, select_status,
+    record_operation_event_txn, replay_operation_events_txn, select_all_statuses,
+    select_all_statuses_newest_first, select_status,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{
@@ -60,6 +61,15 @@ impl OperationRepository {
             .await
             .map_err(|error| index_error(&error))
             .map(|status| status.map(OperationStatusSnapshot::new))
+    }
+
+    pub async fn operation_statuses_newest_first(
+        &self,
+    ) -> Result<Vec<OperationStatus>, super::OperationStatusStoreError> {
+        self.store
+            .call(select_all_statuses_newest_first)
+            .await
+            .map_err(|error| index_error(&error))
     }
 
     pub async fn operation_statuses(

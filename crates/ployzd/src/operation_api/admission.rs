@@ -728,10 +728,10 @@ impl OperationControllers {
             .await
     }
 
-    pub async fn operation_statuses(
+    pub async fn operation_statuses_newest_first(
         &self,
     ) -> Result<Vec<OperationStatus>, OperationStatusStoreError> {
-        self.repository.operation_statuses().await
+        self.repository.operation_statuses_newest_first().await
     }
 
     async fn claim_namespace(

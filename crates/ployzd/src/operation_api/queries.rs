@@ -19,7 +19,7 @@ use ployz_core::ids::{
 use ployz_core::machine_runtime::{ManagedContainerKind, ManagedContainerObservation};
 use ployz_core::nats_config::NatsAuthorizationGrant;
 use ployz_core::ops::{
-    OperationEventReplayPage, OperationEventReplayRequest, OperationStatusSnapshot,
+    OperationEventReplayPage, OperationEventReplayRequest, OperationStatus, OperationStatusSnapshot,
 };
 use ployz_core::state::{ActiveMachineState, RouteBindingState, ServingTargetEntry};
 use ployz_sdk_types::{
@@ -967,17 +967,30 @@ pub async fn ops_list(
     controllers: &OperationControllers,
     request: OpsListRequest,
 ) -> Result<OpsListResult, OpsListError> {
-    let operations = controllers
-        .operation_statuses()
+    let statuses = controllers
+        .operation_statuses_newest_first()
         .await
         .map_err(|error| OpsListError::Unavailable {
             message: error.to_string(),
-        })?
+        })?;
+    Ok(bounded_ops_list(statuses, request.active_only))
+}
+
+const OPS_LIST_LIMIT: usize = 100;
+
+fn bounded_ops_list(statuses: Vec<OperationStatus>, active_only: bool) -> OpsListResult {
+    let mut operations = statuses
         .into_iter()
-        .filter(|status| !request.active_only || !status.is_terminal())
+        .filter(|status| !active_only || !status.is_terminal())
         .map(OperationStatusSnapshot::new)
-        .collect();
-    Ok(OpsListResult { operations })
+        .take(OPS_LIST_LIMIT + 1)
+        .collect::<Vec<_>>();
+    let has_more = operations.len() > OPS_LIST_LIMIT;
+    operations.truncate(OPS_LIST_LIMIT);
+    OpsListResult {
+        operations,
+        has_more,
+    }
 }
 
 pub async fn ops_watch(
@@ -996,13 +1009,16 @@ pub async fn ops_watch(
 mod tests {
     use super::{
         ServiceLogLine, ServiceMachineTestimony, ServiceSnapshot, ServiceTestimony,
-        derive_runtime_instances, derive_runtime_releases, derive_runtime_revisions,
-        missing_machine_ids, service_log_lines,
+        bounded_ops_list, derive_runtime_instances, derive_runtime_releases,
+        derive_runtime_revisions, missing_machine_ids, service_log_lines,
     };
     use ployz_core::machine_runtime::{
         MachineContainerObservationSnapshot, MachineFactsSnapshot, ManagedContainerKind,
     };
-    use ployz_core::ops::{RouteHostname, RoutePort, RouteTarget};
+    use ployz_core::ops::{
+        EventSequence, ManagedLeaseOperationState, ManagedLeaseSubject, OperationStatus,
+        RouteHostname, RoutePort, RouteTarget,
+    };
     use ployz_core::state::RouteBindingState;
     use ployz_sdk_types::ServiceContainerMembership;
     use ployz_test_support::containers;
@@ -1011,6 +1027,50 @@ mod tests {
         container_id, machine_id, namespace_id, namespace_revision_entry_id, service_id,
     };
     use std::collections::BTreeMap;
+
+    #[test]
+    fn operation_list_returns_newest_hundred_with_more_evidence() {
+        let statuses = (0..101)
+            .rev()
+            .map(|index| managed_lease_status(index, false))
+            .collect::<Vec<_>>();
+
+        let result = bounded_ops_list(statuses, false);
+
+        assert!(result.has_more);
+        assert_eq!(result.operations.len(), 100);
+        assert_eq!(result.operations[0].status.id().as_str(), "op_100");
+        assert_eq!(result.operations[99].status.id().as_str(), "op_001");
+    }
+
+    #[test]
+    fn operation_list_applies_active_filter_before_cap() {
+        let mut statuses = (0..101)
+            .map(|index| managed_lease_status(index, false))
+            .collect::<Vec<_>>();
+        statuses.extend((101..151).map(|index| managed_lease_status(index, true)));
+        statuses.reverse();
+
+        let result = bounded_ops_list(statuses, true);
+
+        assert!(result.has_more);
+        assert_eq!(result.operations.len(), 100);
+        assert_eq!(result.operations[0].status.id().as_str(), "op_100");
+        assert_eq!(result.operations[99].status.id().as_str(), "op_001");
+    }
+
+    fn managed_lease_status(index: usize, terminal: bool) -> OperationStatus {
+        OperationStatus::ManagedLease {
+            id: ployz_test_support::ids::operation_id(&format!("op_{index:03}")),
+            subject: ManagedLeaseSubject::Acquire,
+            state: if terminal {
+                ManagedLeaseOperationState::Completed
+            } else {
+                ManagedLeaseOperationState::Accepted
+            },
+            last_event_sequence: EventSequence::first(),
+        }
+    }
 
     #[test]
     fn service_snapshot_keeps_silent_machines_as_no_answer() {

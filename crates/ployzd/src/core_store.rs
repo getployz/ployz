@@ -193,6 +193,20 @@ const MIGRATIONS: &[&str] = &[
         WHERE idempotency_key IN (SELECT idempotency_key FROM legacy_machine_adds);
     DROP TABLE legacy_machine_adds;
     ",
+    // Operation ids identify records but do not encode creation chronology.
+    // Preserve the existing insertion order once, then keep an explicit durable
+    // order for newest-first operation queries.
+    "
+    CREATE TABLE operations_with_created_order (
+        created_order INTEGER PRIMARY KEY AUTOINCREMENT,
+        operation_id  TEXT NOT NULL UNIQUE,
+        status_json   TEXT NOT NULL
+    );
+    INSERT INTO operations_with_created_order (created_order, operation_id, status_json)
+        SELECT rowid, operation_id, status_json FROM operations ORDER BY rowid;
+    DROP TABLE operations;
+    ALTER TABLE operations_with_created_order RENAME TO operations;
+    ",
 ];
 
 /// A cloneable handle to the core database. Clones share one connection and one
@@ -489,7 +503,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("ployz-core.db");
         let conn = Connection::open(&path).expect("open legacy db");
-        let Some(legacy_migrations) = MIGRATIONS.get(..MIGRATIONS.len() - 1) else {
+        const ENDPOINT_SUBNET_MIGRATION_INDEX: usize = 9;
+        let Some(legacy_migrations) = MIGRATIONS.get(..ENDPOINT_SUBNET_MIGRATION_INDEX) else {
             panic!("endpoint-subnet migration must follow an existing schema");
         };
         for migration in legacy_migrations {
@@ -509,8 +524,10 @@ mod tests {
             ),
         )
         .expect("insert legacy submission");
-        conn.execute_batch(&format!("PRAGMA user_version = {}", MIGRATIONS.len() - 1))
-            .expect("set legacy version");
+        conn.execute_batch(&format!(
+            "PRAGMA user_version = {ENDPOINT_SUBNET_MIGRATION_INDEX}"
+        ))
+        .expect("set legacy version");
         drop(conn);
 
         let store = CoreStore::open(path).await.expect("migrate legacy db");
@@ -524,6 +541,49 @@ mod tests {
             .expect("count submissions");
 
         assert_eq!(remaining, 0);
+    }
+
+    #[tokio::test]
+    async fn operation_creation_order_migration_preserves_existing_order() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("ployz-core.db");
+        let conn = Connection::open(&path).expect("open previous schema");
+        let Some(previous_migrations) = MIGRATIONS.get(..MIGRATIONS.len() - 1) else {
+            panic!("operation-order migration must follow an existing schema");
+        };
+        for migration in previous_migrations {
+            conn.execute_batch(migration)
+                .expect("apply previous migration");
+        }
+        conn.execute(
+            "INSERT INTO operations (operation_id, status_json) VALUES (?1, ?2)",
+            ("op_z_oldest", "{}"),
+        )
+        .expect("insert oldest operation");
+        conn.execute(
+            "INSERT INTO operations (operation_id, status_json) VALUES (?1, ?2)",
+            ("op_a_newest", "{}"),
+        )
+        .expect("insert newest operation");
+        conn.pragma_update(None, "user_version", previous_migrations.len())
+            .expect("stamp previous schema");
+        drop(conn);
+
+        let store = CoreStore::open(path)
+            .await
+            .expect("migrate operation order");
+        let operation_ids = store
+            .call(|conn| {
+                let mut statement = conn
+                    .prepare("SELECT operation_id FROM operations ORDER BY created_order DESC")?;
+                statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .await
+            .expect("read migrated operation order");
+
+        assert_eq!(operation_ids, ["op_a_newest", "op_z_oldest"]);
     }
 
     #[test]

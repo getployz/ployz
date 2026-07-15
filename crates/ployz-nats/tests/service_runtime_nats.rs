@@ -178,6 +178,46 @@ async fn service_runtime_returns_service_error_headers() {
 }
 
 #[tokio::test]
+async fn service_runtime_returns_response_too_large_instead_of_timing_out() {
+    let nats = test_nats().await;
+    let spec = test_service_spec("plz.v1.rpc.operator.query.test.oversized");
+    let endpoint = spec.endpoints.first().expect("test endpoint is present");
+    let oversized_response = vec![b'x'; nats.service_client.max_payload() + 1];
+    let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
+        .await
+        .expect("service starts");
+
+    runtime
+        .bind_endpoint(endpoint, move |_request| {
+            let oversized_response = oversized_response.clone();
+            async move { NatsServiceResponse::ok(oversized_response) }
+        })
+        .await
+        .expect("endpoint binds");
+    wait_for_requester_interest(&nats.request_client).await;
+
+    let error = request_json::<_, TestJsonPayload>(
+        &nats.request_client,
+        "plz.v1.rpc.operator.query.test.oversized".to_owned(),
+        &TestJsonPayload {
+            value: "hello".to_owned(),
+        },
+        Duration::from_secs(1),
+    )
+    .await
+    .expect_err("oversized response returns a service error");
+
+    assert_eq!(
+        error,
+        NatsJsonServiceRequestError::Service {
+            failure: NatsServiceError::response_too_large(),
+        }
+    );
+    assert_eq!(runtime.health().handler_failures, 1);
+    assert_eq!(runtime.health().response_failures, 0);
+}
+
+#[tokio::test]
 async fn service_runtime_counts_domain_error_payloads_without_service_error_headers() {
     let nats = test_nats().await;
     let spec = test_service_spec("plz.v1.rpc.operator.query.test.domain_error");

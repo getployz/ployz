@@ -176,6 +176,7 @@ impl RunningNatsService {
 
         let handler = Arc::new(handler);
         let health = Arc::clone(&self.health);
+        let client = self.client.clone();
         health
             .endpoint_tasks_started
             .fetch_add(1, Ordering::Relaxed);
@@ -184,6 +185,7 @@ impl RunningNatsService {
                 .for_each_concurrent(policy.max_concurrent_requests.get(), |request| {
                     let handler = Arc::clone(&handler);
                     let health = Arc::clone(&health);
+                    let client = client.clone();
                     async move {
                         let payload = request.message.payload.to_vec();
                         let headers = request.message.headers.clone();
@@ -193,22 +195,28 @@ impl RunningNatsService {
                         )
                         .await
                         {
-                            Ok(NatsServiceResponse::Ok { payload }) => Ok(payload.into()),
-                            Ok(NatsServiceResponse::DomainError { payload }) => {
-                                health.domain_failures.fetch_add(1, Ordering::Relaxed);
-                                Ok(payload.into())
-                            }
-                            Ok(NatsServiceResponse::TransportError { error }) => {
-                                health.handler_failures.fetch_add(1, Ordering::Relaxed);
-                                Err(error.into_nats_error())
+                            Ok(response) => {
+                                response_within_max_payload(response, client.max_payload())
                             }
                             Err(_) => {
                                 health.request_timeouts.fetch_add(1, Ordering::Relaxed);
-                                Err(NatsServiceError::timeout(format!(
-                                    "request timed out after {}ms",
-                                    policy.request_timeout.as_millis(),
+                                NatsServiceResponse::transport_error(NatsServiceError::timeout(
+                                    format!(
+                                        "request timed out after {}ms",
+                                        policy.request_timeout.as_millis(),
+                                    ),
                                 ))
-                                .into_nats_error())
+                            }
+                        };
+                        let response = match response {
+                            NatsServiceResponse::Ok { payload } => Ok(payload.into()),
+                            NatsServiceResponse::DomainError { payload } => {
+                                health.domain_failures.fetch_add(1, Ordering::Relaxed);
+                                Ok(payload.into())
+                            }
+                            NatsServiceResponse::TransportError { error } => {
+                                health.handler_failures.fetch_add(1, Ordering::Relaxed);
+                                Err(error.into_nats_error())
                             }
                         };
 
@@ -251,6 +259,39 @@ impl RunningNatsService {
 
         Ok(())
     }
+}
+
+fn response_within_max_payload(
+    response: NatsServiceResponse,
+    max_payload: usize,
+) -> NatsServiceResponse {
+    match response {
+        NatsServiceResponse::Ok { payload } | NatsServiceResponse::DomainError { payload }
+            if payload.len() > max_payload =>
+        {
+            NatsServiceResponse::transport_error(NatsServiceError::response_too_large())
+        }
+        NatsServiceResponse::TransportError { error }
+            if service_error_wire_len(&error) > max_payload =>
+        {
+            NatsServiceResponse::transport_error(NatsServiceError::response_too_large())
+        }
+        response => response,
+    }
+}
+
+fn service_error_wire_len(error: &NatsServiceError) -> usize {
+    // Service errors are header-only replies. This mirrors the two headers
+    // async-nats adds in Request::respond so an oversized header-only reply is
+    // replaced before publish and the requester receives the small typed error.
+    b"NATS/1.0\r\n".len()
+        + NATS_SERVICE_ERROR_HEADER.len()
+        + b": \r\n".len()
+        + error.message.len()
+        + NATS_SERVICE_ERROR_CODE_HEADER.len()
+        + b": \r\n".len()
+        + error.code.http_status_code().to_string().len()
+        + b"\r\n".len()
 }
 
 impl Drop for RunningNatsService {
@@ -477,4 +518,20 @@ fn service_metadata_map(metadata: &ServiceMetadata) -> HashMap<String, String> {
         .iter()
         .map(|entry| (entry.key.to_owned(), entry.value.clone()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oversized_service_error_is_replaced_with_response_too_large() {
+        let response =
+            NatsServiceResponse::transport_error(NatsServiceError::internal("x".repeat(256)));
+
+        assert_eq!(
+            response_within_max_payload(response, 256),
+            NatsServiceResponse::transport_error(NatsServiceError::response_too_large())
+        );
+    }
 }

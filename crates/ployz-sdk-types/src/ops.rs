@@ -15,6 +15,7 @@ pub struct OpsListRequest {
 #[serde(deny_unknown_fields)]
 pub struct OpsListResult {
     pub operations: Vec<OperationStatusSnapshot>,
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

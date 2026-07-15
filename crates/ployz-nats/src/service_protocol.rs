@@ -95,6 +95,14 @@ impl NatsServiceError {
         }
     }
 
+    #[must_use]
+    pub fn response_too_large() -> Self {
+        Self {
+            code: NatsServiceErrorCode::ResponseTooLarge,
+            message: "response_too_large".to_owned(),
+        }
+    }
+
     pub(crate) fn into_nats_error(self) -> async_nats::service::error::Error {
         async_nats::service::error::Error {
             status: self.message,
@@ -107,6 +115,7 @@ impl NatsServiceError {
 pub enum NatsServiceErrorCode {
     BadRequest,
     Conflict,
+    ResponseTooLarge,
     Unavailable,
     Timeout,
     Internal,
@@ -118,6 +127,7 @@ impl NatsServiceErrorCode {
         match self {
             Self::BadRequest => 400,
             Self::Conflict => 409,
+            Self::ResponseTooLarge => 413,
             Self::Unavailable => 503,
             Self::Timeout => 504,
             Self::Internal => 500,
@@ -129,6 +139,7 @@ impl NatsServiceErrorCode {
         match code {
             400 => Some(Self::BadRequest),
             409 => Some(Self::Conflict),
+            413 => Some(Self::ResponseTooLarge),
             503 => Some(Self::Unavailable),
             504 => Some(Self::Timeout),
             500 => Some(Self::Internal),

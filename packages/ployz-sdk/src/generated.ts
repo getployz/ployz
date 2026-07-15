@@ -728,7 +728,7 @@ export type MachineJoinReportError = { "error": "invalid_join_token" } | { "erro
 
 export type OpsListRequest = { active_only: boolean, };
 
-export type OpsListResult = { operations: Array<OperationStatusSnapshot>, };
+export type OpsListResult = { operations: Array<OperationStatusSnapshot>, has_more: boolean, };
 
 export type OpsListError = { "error": "unavailable", message: string, };
 

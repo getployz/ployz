@@ -393,6 +393,15 @@ fn select_status(
     )
 }
 
+fn select_all_statuses_newest_first(
+    conn: &mut Connection,
+) -> Result<Vec<OperationStatus>, rusqlite::Error> {
+    query_json_list(
+        conn,
+        "SELECT status_json FROM operations ORDER BY created_order DESC",
+    )
+}
+
 fn select_all_statuses(conn: &mut Connection) -> Result<Vec<OperationStatus>, rusqlite::Error> {
     query_json_list(
         conn,
@@ -429,6 +438,70 @@ fn insert_event(
         ],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod operation_query_tests {
+    use super::{select_all_statuses_newest_first, select_status, upsert_status};
+    use ployz_core::ops::{
+        EventSequence, ManagedLeaseOperationState, ManagedLeaseSubject, OperationStatus,
+    };
+    use ployz_test_support::ids::operation_id;
+    use rusqlite::Connection;
+
+    #[test]
+    fn newest_status_order_is_durable_and_old_status_remains_addressable() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let path = directory.path().join("operation-order.db");
+        let connection = Connection::open(&path).expect("open operation database");
+        connection
+            .execute_batch(
+                "CREATE TABLE operations (
+                    created_order INTEGER PRIMARY KEY AUTOINCREMENT,
+                    operation_id  TEXT NOT NULL UNIQUE,
+                    status_json   TEXT NOT NULL
+                );",
+            )
+            .expect("create operations table");
+
+        let oldest_id = operation_id("op_z_oldest");
+        upsert_status(
+            &connection,
+            &oldest_id,
+            &managed_lease_status("op_z_oldest"),
+        )
+        .expect("insert oldest operation");
+        for index in 0..100 {
+            let id = format!("op_{index:03}");
+            upsert_status(&connection, &operation_id(&id), &managed_lease_status(&id))
+                .expect("insert newer operation");
+        }
+        drop(connection);
+
+        let mut reopened = Connection::open(&path).expect("reopen operation database");
+        let newest =
+            select_all_statuses_newest_first(&mut reopened).expect("read operations newest first");
+
+        assert_eq!(newest[0].id().as_str(), "op_099");
+        assert_eq!(newest[99].id().as_str(), "op_000");
+        assert_eq!(newest[100].id(), &oldest_id);
+        assert_eq!(
+            select_status(&reopened, &oldest_id)
+                .expect("read old operation status")
+                .expect("old operation remains stored")
+                .id(),
+            &oldest_id
+        );
+    }
+
+    fn managed_lease_status(id: &str) -> OperationStatus {
+        OperationStatus::ManagedLease {
+            id: operation_id(id),
+            subject: ManagedLeaseSubject::Acquire,
+            state: ManagedLeaseOperationState::Accepted,
+            last_event_sequence: EventSequence::first(),
+        }
+    }
 }
 
 fn singleton_event_exists(

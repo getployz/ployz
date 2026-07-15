@@ -232,7 +232,7 @@ test("ops list returns operation snapshots", async () => {
   const client = new PloyzClient(transport);
   const result: OpsListResult = await client.opsList({ activeOnly: true });
 
-  assert.deepEqual(result, { operations: [] });
+  assert.deepEqual(result, { operations: [], has_more: false });
   assert.deepEqual(transport.opsListRequests, [opsListRequest({ activeOnly: true })]);
 });
 
@@ -992,7 +992,7 @@ class RecordingTransport implements PloyzOperationTransport {
         this.opsListRequests.push(request as OpsListRequest);
         return ({
           status: "ok",
-          value: { operations: [] },
+          value: { operations: [], has_more: false },
         } as any);
       case "ops.status":
         this.statusRequests.push(request as OpsStatusRequest);

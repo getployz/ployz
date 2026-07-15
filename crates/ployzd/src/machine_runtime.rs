@@ -14,6 +14,7 @@ pub enum MachineRuntimeUnavailableReason {
     RequestFailed { message: String },
     ServiceBadRequest { message: String },
     ServiceConflict { message: String },
+    ServiceResponseTooLarge,
     ServiceUnavailable { message: String },
     ServiceTimedOut { message: String },
     ServiceInternal { message: String },
@@ -51,6 +52,7 @@ impl MachineRuntimeUnavailableReason {
             Self::ServiceConflict { message } => {
                 format!("machine runtime reported a conflict: {message}")
             }
+            Self::ServiceResponseTooLarge => "machine runtime response_too_large".to_owned(),
             Self::ServiceUnavailable { message } => {
                 format!("machine runtime service unavailable: {message}")
             }
@@ -106,6 +108,9 @@ impl MachineRuntimeUnavailableReason {
             | Self::ServiceUnavailable { message }
             | Self::ServiceInternal { message } => MachineRequestFailure::RequestFailed {
                 message: request_failure_message(format!("service returned an error: {message}")),
+            },
+            Self::ServiceResponseTooLarge => MachineRequestFailure::RequestFailed {
+                message: request_failure_message("service returned response_too_large".to_owned()),
             },
         }
     }
