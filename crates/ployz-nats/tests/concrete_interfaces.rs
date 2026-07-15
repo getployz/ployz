@@ -5,13 +5,13 @@ use ployz_core::nats_config::{
     NatsUserPublicKey,
 };
 use ployz_core::security::NatsPrincipal;
-use ployz_nats::endpoints::OperationApiEndpoint;
 use ployz_nats::permissions::{
     NatsPermissionProfile, inbox_prefix, parse_authorized_users, render_authorized_users,
 };
 use ployz_nats::server_config::{
     NatsAdvertisedHost, NatsListener, NatsServerConfig, NatsServerConfigError, NatsServerTlsFiles,
 };
+use ployz_nats::subjects::OperationApiEndpoint;
 use ployz_test_support::ids::machine_id;
 
 #[test]

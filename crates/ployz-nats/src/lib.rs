@@ -7,7 +7,6 @@
 //! belongs in `ployzd`.
 
 pub mod connect;
-pub mod endpoints;
 pub mod operation_api_client;
 pub mod operation_event_subject;
 pub mod permissions;

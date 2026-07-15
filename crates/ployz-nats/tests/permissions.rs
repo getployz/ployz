@@ -1,8 +1,8 @@
 use ployz_core::security::NatsPrincipal;
-use ployz_nats::endpoints::MachineServiceEndpoint;
 use ployz_nats::permissions::{
     NatsPermissionProfile, ResponsePermission, inbox_prefix, inbox_subscribe_scope,
 };
+use ployz_nats::subjects::MachineServiceEndpoint;
 use ployz_nats::subjects::{
     CORE_RPC_QUERY_SCOPE, INGRESS_ENDPOINT_CHANGED, INGRESS_ENDPOINT_GET, INTENT_CHANGED,
     INTENT_GET, JOIN_MACHINE_REDEEM, JOIN_MACHINE_REPORT, MACHINE_RPC_COMMAND_SCOPE,
