@@ -20,7 +20,7 @@ fn retained_last_good_attempt_keeps_steady_refresh_interval() {
 
     let next = record_gateway_attempt(
         &health,
-        Ok(GatewayProjectorTick {
+        &Ok(GatewayProjectorTick {
             state: crate::roles::gateway::projection::GatewayProjectionState {
                 last_good: None,
                 last_error: Some(GatewayProjectionError::SourceUnavailable {
@@ -67,7 +67,7 @@ fn refresh_runtime_error_uses_exponential_backoff() {
 
     let next = record_gateway_attempt(
         &health,
-        Err(GatewayProcessError::RefreshTimedOut {
+        &Err(GatewayProcessError::RefreshTimedOut {
             timeout: Duration::from_secs(5),
         }),
         Duration::from_secs(1),

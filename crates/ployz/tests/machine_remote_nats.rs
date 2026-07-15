@@ -143,10 +143,6 @@ esac
             .filter(|entry| !entry.trim().is_empty())
             .collect()
     }
-
-    fn stdin_text(&self) -> String {
-        fs::read_to_string(&self.stdin_log).unwrap_or_default()
-    }
 }
 
 fn first_machine_installer_success_body(machine_id: &str) -> String {
