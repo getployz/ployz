@@ -294,10 +294,6 @@ impl CertificateManager {
         &self.repository
     }
 
-    pub(crate) const fn nats_client(&self) -> &async_nats::Client {
-        &self.client
-    }
-
     async fn spawn_issue(
         &self,
         hostname: RouteHostname,

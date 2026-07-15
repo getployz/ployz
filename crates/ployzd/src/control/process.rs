@@ -351,6 +351,7 @@ async fn start_control_process_with_client_reload_and_issuer(
     );
     let certificate_renewal_health = start_certificate_renewal_task(
         &certificate_renewal_tasks,
+        client.clone(),
         certificate_manager,
         NatsMachineFactsReader::new(client.clone()),
         machine_roster.clone(),
@@ -377,6 +378,7 @@ async fn start_control_process_with_client_reload_and_issuer(
     )
     .await
     .map_err(ControlProcessError::StartIngressEndpointProjection)?;
+    let ingress_endpoint_projection_health = ingress_endpoint_projection.health_reader();
     let runtime_projection = start_runtime_projection(
         client.clone(),
         intent_reader.clone(),
@@ -430,6 +432,7 @@ async fn start_control_process_with_client_reload_and_issuer(
             intent_reader,
             logs_tailer,
             runtime_projection_health,
+            ingress_endpoint_projection_health,
             certificate_renewal_health.clone(),
         ),
     )

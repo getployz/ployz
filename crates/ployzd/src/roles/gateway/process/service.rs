@@ -252,22 +252,7 @@ fn handle_certificate_artifact_push(
             },
         )),
         Err(error) => {
-            let rpc_error = match &error {
-                GatewayCertificateStoreError::ArtifactFile { .. } => {
-                    GatewayCertificateRpcError::ArtifactStoreFailed {
-                        message: failure_message(error.to_string()),
-                    }
-                }
-                GatewayCertificateStoreError::DuplicateDesiredCertificate { .. }
-                | GatewayCertificateStoreError::SizeMismatch { .. }
-                | GatewayCertificateStoreError::DigestMismatch { .. }
-                | GatewayCertificateStoreError::InvalidMaterial { .. }
-                | GatewayCertificateStoreError::NotUsable { .. } => {
-                    GatewayCertificateRpcError::InvalidRequest {
-                        message: failure_message(error.to_string()),
-                    }
-                }
-            };
+            let rpc_error = certificate_store_rpc_error(&error);
             NatsServiceResponse::json_domain_error(&CertificateArtifactPushResponse::DomainError {
                 machine_id,
                 error: rpc_error,
@@ -293,28 +278,32 @@ fn handle_certificate_artifact_status(
             }),
         ),
         Err(error) => {
-            let rpc_error = match &error {
-                GatewayCertificateStoreError::ArtifactFile { .. } => {
-                    GatewayCertificateRpcError::ArtifactStoreFailed {
-                        message: failure_message(error.to_string()),
-                    }
-                }
-                GatewayCertificateStoreError::DuplicateDesiredCertificate { .. }
-                | GatewayCertificateStoreError::SizeMismatch { .. }
-                | GatewayCertificateStoreError::DigestMismatch { .. }
-                | GatewayCertificateStoreError::InvalidMaterial { .. }
-                | GatewayCertificateStoreError::NotUsable { .. } => {
-                    GatewayCertificateRpcError::InvalidRequest {
-                        message: failure_message(error.to_string()),
-                    }
-                }
-            };
+            let rpc_error = certificate_store_rpc_error(&error);
             NatsServiceResponse::json_domain_error(
                 &CertificateArtifactStatusResponse::DomainError {
                     machine_id,
                     error: rpc_error,
                 },
             )
+        }
+    }
+}
+
+fn certificate_store_rpc_error(error: &GatewayCertificateStoreError) -> GatewayCertificateRpcError {
+    match error {
+        GatewayCertificateStoreError::ArtifactFile { .. } => {
+            GatewayCertificateRpcError::ArtifactStoreFailed {
+                message: failure_message(error.to_string()),
+            }
+        }
+        GatewayCertificateStoreError::DuplicateDesiredCertificate { .. }
+        | GatewayCertificateStoreError::SizeMismatch { .. }
+        | GatewayCertificateStoreError::DigestMismatch { .. }
+        | GatewayCertificateStoreError::InvalidMaterial { .. }
+        | GatewayCertificateStoreError::NotUsable { .. } => {
+            GatewayCertificateRpcError::InvalidRequest {
+                message: failure_message(error.to_string()),
+            }
         }
     }
 }

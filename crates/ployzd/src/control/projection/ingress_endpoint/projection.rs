@@ -1,6 +1,6 @@
 use std::net::IpAddr;
 
-use super::{CandidateOutcome, CandidatePublication, GatewayOutcome, ProjectionEvidenceRecord};
+use super::{CandidateOutcome, ProjectionEvidenceRecord};
 use ployz_core::ingress::{
     IngressEndpointProjection, IngressEndpointProjectionState, IngressEndpointSet,
     IngressEndpointUnavailableReason,
@@ -15,18 +15,12 @@ pub(super) fn project_refresh(
         IngressEndpointProjectionState::Unavailable {
             reason: IngressEndpointUnavailableReason::NoDeclaredGateways,
         }
-    } else if !outcomes
-        .iter()
-        .any(|outcome| gateway_is_valid_reply(outcome.gateway))
-    {
+    } else if !outcomes.iter().any(|outcome| outcome.gateway_replied) {
         retained_after_total_silence(&previous.projection.state)
     } else {
         let addresses = outcomes
             .iter()
-            .flat_map(|outcome| match &outcome.publication {
-                CandidatePublication::Published { addresses } => addresses.as_slice(),
-                CandidatePublication::Excluded { .. } => &[],
-            })
+            .flat_map(|outcome| outcome.public_addresses.iter())
             .copied()
             .collect::<Vec<_>>();
         endpoint_state(addresses)
@@ -35,7 +29,7 @@ pub(super) fn project_refresh(
         previous.projection.revision + u64::from(next_state != previous.projection.state);
     let publishable_gateway_ids = outcomes
         .iter()
-        .filter(|outcome| matches!(outcome.publication, CandidatePublication::Published { .. }))
+        .filter(|outcome| !outcome.public_addresses.is_empty())
         .map(|outcome| outcome.machine_id.clone())
         .collect();
     ProjectionEvidenceRecord {
@@ -52,8 +46,12 @@ fn retained_after_total_silence(
     previous: &IngressEndpointProjectionState,
 ) -> IngressEndpointProjectionState {
     match previous {
-        IngressEndpointProjectionState::Current { endpoints }
-        | IngressEndpointProjectionState::Retained { endpoints } => {
+        IngressEndpointProjectionState::Current { endpoints } => {
+            IngressEndpointProjectionState::Retained {
+                endpoints: endpoints.clone(),
+            }
+        }
+        IngressEndpointProjectionState::Retained { endpoints } => {
             IngressEndpointProjectionState::Retained {
                 endpoints: endpoints.clone(),
             }
@@ -82,16 +80,8 @@ fn endpoint_state(addresses: Vec<IpAddr>) -> IngressEndpointProjectionState {
     }
 }
 
-const fn gateway_is_valid_reply(outcome: GatewayOutcome) -> bool {
-    matches!(
-        outcome,
-        GatewayOutcome::Current | GatewayOutcome::LastKnownGood | GatewayOutcome::Unavailable
-    )
-}
-
 #[cfg(test)]
 mod tests {
-    use super::super::{ExclusionReason, FactsOutcome};
     use super::*;
     use ployz_core::ids::MachineId;
     use ployz_core::intent::recovery::ControlPlaneEpoch;
@@ -100,18 +90,15 @@ mod tests {
         ProjectionEvidenceRecord::pending(ControlPlaneEpoch::initial())
     }
 
-    fn outcome(machine: &str, gateway: GatewayOutcome, addresses: &[&str]) -> CandidateOutcome {
-        let addresses = addresses
+    fn outcome(machine: &str, gateway_replied: bool, addresses: &[&str]) -> CandidateOutcome {
+        let public_addresses = addresses
             .iter()
             .map(|address| address.parse().expect("address"))
             .collect::<Vec<_>>();
         CandidateOutcome {
             machine_id: MachineId::try_new(machine).expect("machine id"),
-            gateway,
-            facts: FactsOutcome::Responded {
-                public_control_endpoints: addresses.clone(),
-            },
-            publication: CandidatePublication::Published { addresses },
+            gateway_replied,
+            public_addresses,
         }
     }
 
@@ -131,14 +118,11 @@ mod tests {
         let projected = project_refresh(
             &pending(),
             vec![
-                outcome("machine_a", GatewayOutcome::Current, &["8.8.8.8"]),
+                outcome("machine_a", true, &["8.8.8.8"]),
                 CandidateOutcome {
                     machine_id: MachineId::try_new("machine_b").expect("machine id"),
-                    gateway: GatewayOutcome::TimedOut,
-                    facts: FactsOutcome::TimedOut,
-                    publication: CandidatePublication::Excluded {
-                        reason: ExclusionReason::GatewayTestimonyFailed,
-                    },
+                    gateway_replied: false,
+                    public_addresses: Vec::new(),
                 },
             ],
         );
@@ -154,19 +138,13 @@ mod tests {
 
     #[test]
     fn total_silence_retains_current_complete_set() {
-        let current = project_refresh(
-            &pending(),
-            vec![outcome("machine_a", GatewayOutcome::Current, &["1.1.1.1"])],
-        );
+        let current = project_refresh(&pending(), vec![outcome("machine_a", true, &["1.1.1.1"])]);
         let retained = project_refresh(
             &current,
             vec![CandidateOutcome {
                 machine_id: MachineId::try_new("machine_a").expect("machine id"),
-                gateway: GatewayOutcome::TimedOut,
-                facts: FactsOutcome::TimedOut,
-                publication: CandidatePublication::Excluded {
-                    reason: ExclusionReason::GatewayTestimonyFailed,
-                },
+                gateway_replied: false,
+                public_addresses: Vec::new(),
             }],
         );
         assert!(matches!(
@@ -185,11 +163,8 @@ mod tests {
             &pending(),
             vec![CandidateOutcome {
                 machine_id: MachineId::try_new("machine_a").expect("machine id"),
-                gateway: GatewayOutcome::Current,
-                facts: FactsOutcome::TimedOut,
-                publication: CandidatePublication::Excluded {
-                    reason: ExclusionReason::FactsTestimonyFailed,
-                },
+                gateway_replied: true,
+                public_addresses: Vec::new(),
             }],
         );
         assert_eq!(
@@ -202,14 +177,8 @@ mod tests {
 
     #[test]
     fn identical_refresh_keeps_revision_stable() {
-        let first = project_refresh(
-            &pending(),
-            vec![outcome("machine_a", GatewayOutcome::Current, &["1.1.1.1"])],
-        );
-        let repeated = project_refresh(
-            &first,
-            vec![outcome("machine_a", GatewayOutcome::Current, &["1.1.1.1"])],
-        );
+        let first = project_refresh(&pending(), vec![outcome("machine_a", true, &["1.1.1.1"])]);
+        let repeated = project_refresh(&first, vec![outcome("machine_a", true, &["1.1.1.1"])]);
         assert_eq!(repeated, first);
     }
 }

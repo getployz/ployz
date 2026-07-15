@@ -3,12 +3,10 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-#[cfg(test)]
-use crate::certificate::material::custom_certificate_material_path;
 use crate::certificate::material::{
-    CertificateMaterialError, certificate_material_path_for_digest, load_custom_certificate,
-    validate_custom_certificate, validate_custom_certificate_for_activation,
-    write_custom_certificate,
+    CertificateMaterialError, certificate_material_path_for_digest,
+    custom_certificate_material_path, load_custom_certificate, validate_custom_certificate,
+    validate_custom_certificate_for_activation, write_custom_certificate,
 };
 use ployz_core::certificate::{
     ActiveCertState, CertificateArtifactPushRequest, CertificateArtifactRemoveRequest,
@@ -99,21 +97,25 @@ impl GatewayCertificateStore {
 
         let mut missing = Vec::new();
         for active in desired {
+            let path =
+                custom_certificate_material_path(&self.state_dir, active).map_err(store_error)?;
+            match path.try_exists() {
+                Ok(false) => {
+                    missing.push(active.cert_id.clone());
+                    continue;
+                }
+                Ok(true) => {}
+                Err(error) => {
+                    return Err(GatewayCertificateStoreError::ArtifactFile {
+                        path,
+                        message: error.to_string(),
+                    });
+                }
+            }
             match self.load(active) {
                 Ok(_) => {}
                 Err(GatewayCertificateStoreError::InvalidMaterial { .. }) => {
                     missing.push(active.cert_id.clone());
-                }
-                Err(GatewayCertificateStoreError::ArtifactFile { path, message }) => {
-                    match path.try_exists() {
-                        Ok(false) => missing.push(active.cert_id.clone()),
-                        Ok(true) | Err(_) => {
-                            return Err(GatewayCertificateStoreError::ArtifactFile {
-                                path,
-                                message,
-                            });
-                        }
-                    }
                 }
                 Err(error) => return Err(error),
             }

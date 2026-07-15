@@ -655,7 +655,9 @@ export type RuntimeSnapshotRequest = Record<symbol, never>;
 
 export type RuntimeSnapshotResult = { snapshot: RuntimeSnapshot, control_health: ControlHealth | null, };
 
-export type ControlHealth = { runtime_projection: ControlRuntimeProjectionHealth, certificate_renewal: ControlCertificateRenewalHealth, };
+export type ControlHealth = { runtime_projection: ControlRuntimeProjectionHealth, ingress_endpoint_projection: ControlIngressEndpointProjectionHealth, certificate_renewal: ControlCertificateRenewalHealth, };
+
+export type ControlIngressEndpointProjectionHealth = { consecutive_failures: number, last_failure: string | null, };
 
 export type ControlRuntimeProjectionHealth = { projection: ControlRuntimeProjectionLoopHealth, publisher: ControlRuntimeProjectionLoopHealth, seed_service: ControlRuntimeProjectionServiceHealth, };
 
@@ -667,9 +669,9 @@ export type ControlCertificateRenewalHealth = { last_attempt: ControlCertificate
 
 export type ControlCertificateRenewalAttempt = { "status": "completed", outcome: ControlCertificateRenewalOutcome, } | { "status": "failed", failure: ControlCertificateRenewalFailure, };
 
-export type ControlCertificateRenewalFailure = { "failure_kind": "intent_store", message: string, } | { "failure_kind": "machine_roster", message: string, } | { "failure_kind": "gateway_artifact_status", machine_ids: Array<MachineId>, } | { "failure_kind": "operation_status", message: string, } | { "failure_kind": "operation_evidence", message: string, } | { "failure_kind": "ployz_dns_target", message: string, } | { "failure_kind": "worker", message: string, };
+export type ControlCertificateRenewalFailure = { "failure_kind": "intent_store", message: string, } | { "failure_kind": "machine_roster", message: string, } | { "failure_kind": "operation_status", message: string, } | { "failure_kind": "operation_evidence", message: string, } | { "failure_kind": "ployz_dns_target", message: string, } | { "failure_kind": "worker", message: string, };
 
-export type ControlCertificateRenewalOutcome = { "outcome": "no_action" } | { "outcome": "awaiting_ployz_wildcard" } | { "outcome": "attempted", attempted: number, failed: number, };
+export type ControlCertificateRenewalOutcome = { "outcome": "no_action" } | { "outcome": "awaiting_ployz_wildcard" } | { "outcome": "attempted", attempted: number, failed: number, } | { "outcome": "degraded", attempted: number, failed: number, unknown_machine_ids: Array<MachineId>, };
 
 export type RuntimeSnapshot = { automatic_hostname_configuration: AutomaticHostnameConfiguration, ployz_dns_target: RuntimePloyzDnsTarget, ingress_endpoint_projection: IngressEndpointProjection, active_certificates: Array<ActiveCertificateMetadata>, route_tls: Array<RouteTlsStatus>, machines: Array<MachineSnapshot>, services: Array<ServiceSnapshot>, routes: Array<RouteBindingState>, containers: Array<ManagedContainerObservation>, revisions: Array<RuntimeServiceRevision>, releases: Array<RuntimeServiceRelease>, instances: Array<RuntimeServiceInstance>, projection_sources: RuntimeProjectionSources, updated_at_unix_seconds: number, };
 

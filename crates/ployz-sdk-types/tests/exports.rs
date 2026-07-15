@@ -10,6 +10,7 @@ use ployz_sdk_types::{
     CloudBootstrapSessionPollRequest, CloudBootstrapToken, CloudBootstrapTokenRedeemRequest,
     CloudFounderBootstrapResult, ControlCertificateRenewalAttempt,
     ControlCertificateRenewalFailure, ControlCertificateRenewalHealth,
+    ControlIngressEndpointProjectionHealth,
     ControlCertificateRenewalOutcome, ControlHealth, ControlPlaneEpoch,
     ControlRuntimeProjectionHealth, ControlRuntimeProjectionLoopHealth,
     ControlRuntimeProjectionServiceHealth, CoreReplaceError, CoreReplaceReportError,
@@ -766,6 +767,7 @@ fn sdk_exports_operational_health_wire_types() {
     assert_wire_type::<ControlRuntimeProjectionLoopHealth>();
     assert_wire_type::<ControlRuntimeProjectionServiceHealth>();
     assert_wire_type::<ControlCertificateRenewalHealth>();
+    assert_wire_type::<ControlIngressEndpointProjectionHealth>();
     assert_wire_type::<ControlCertificateRenewalAttempt>();
     assert_wire_type::<ControlCertificateRenewalFailure>();
     assert_wire_type::<ControlCertificateRenewalOutcome>();

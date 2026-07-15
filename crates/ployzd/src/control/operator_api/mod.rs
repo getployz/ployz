@@ -41,6 +41,7 @@ use crate::control::operations::namespace_remove::NamespaceRemoveOperation;
 use crate::control::operations::network_repair::NetworkRepairOperation;
 use crate::control::operations::service_restart::ServiceRestartOperation;
 use crate::control::operations::volume_remove::VolumeRemoveOperation;
+use crate::control::projection::ingress_endpoint::IngressEndpointProjectionHealth;
 use crate::control::projection::runtime::RuntimeProjectionHealthReader;
 use crate::control::reconciler::certificate::CertificateRenewalHealth;
 use crate::control::role_client::machine::{NatsMachineFactsReader, NatsMachineLogsTailer};
@@ -111,6 +112,7 @@ impl OperationApiHandlers {
         intent_reader: NatsIntentReader,
         logs_tailer: NatsMachineLogsTailer,
         runtime_projection_health: RuntimeProjectionHealthReader,
+        ingress_endpoint_projection_health: IngressEndpointProjectionHealth,
         certificate_renewal_health: CertificateRenewalHealth,
     ) -> Self {
         let OperationWorkers {
@@ -137,6 +139,7 @@ impl OperationApiHandlers {
             facts_reader.clone(),
             core_store.clone(),
             runtime_projection_health,
+            ingress_endpoint_projection_health,
             certificate_renewal_health,
         );
         let logs_query = LogsQueryService::new(intent_reader.clone(), facts_reader, logs_tailer);

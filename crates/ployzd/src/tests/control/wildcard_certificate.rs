@@ -6,7 +6,7 @@ use crate::certificate::{
     GatewayCertificateTarget, IssuedCertificate,
 };
 use crate::control::operation_evidence::OperationRepository;
-use crate::control::reconciler::certificate::{CertificateRenewalTaskError, run_once_at};
+use crate::control::reconciler::certificate::{CertificateRenewalOutcome, run_once_at};
 use crate::control::store::CoreStore;
 use crate::roles::gateway::projection::{
     GatewayCertificateMaterialFailure, GatewayCertificateMaterialFailureKind,
@@ -89,17 +89,17 @@ async fn returning_gateway_is_repaired_even_when_another_gateway_is_silent() {
         .install_ployz_wildcard(worker_bundle(), &[target(first.clone())])
         .await
         .expect("wildcard installed");
-    let error = run_once_at(
+    let outcome = run_once_at(
         &manager,
         &[target(first), target(returning), target(silent.clone())],
         u64::MAX,
     )
     .await
-    .expect_err("silent gateway remains unknown");
+    .expect("known missing gateway is repaired");
 
     assert!(matches!(
-        error,
-        CertificateRenewalTaskError::GatewayArtifactStatus { unknown }
+        outcome,
+        CertificateRenewalOutcome::Degraded { attempted: 1, failed: 0, unknown }
             if unknown.len() == 1 && unknown[0].machine_id == silent
     ));
     assert_eq!(first_pushes.load(Ordering::Relaxed), 1);
