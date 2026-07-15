@@ -7,6 +7,8 @@ use std::time::Duration;
 use crate::certificate::{AcmeIssueContext, AcmeIssuer, AcmeIssuerError, IssuedCertificate};
 use crate::config::ControlProcessConfig;
 use crate::control::intent::machine_roster::MachineRosterStore;
+use crate::control::intent::namespace_intent::NamespaceIntentStore;
+use crate::control::operation_evidence::{NamespaceRemoveOperationSubmission, OperationRepository};
 use crate::control::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
 };
@@ -26,11 +28,11 @@ use async_trait::async_trait;
 use ployz::api_client::OperationApiClient;
 use ployz_core::deploy::{
     DeployPlanningInput, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec,
-    ImageReference, ReplicaCount, plan_namespace_deploy,
+    ImageReference, ReplicaCount, VolumeName, plan_namespace_deploy,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::install::MachineBootstrapUrl;
-use ployz_core::intent::ActiveMachineState;
+use ployz_core::intent::{ActiveMachineState, VolumePinState};
 use ployz_core::machine::MachineName;
 use ployz_core::machine::roles::InstallRolePolicy;
 use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
@@ -38,7 +40,8 @@ use ployz_core::machine::{MachineEndpointObservation, MachineLifecycle};
 use ployz_core::operation::{
     DeployCompletionOutcome, DeployOperationState, DeployPhaseNumber, DeployPhaseOutcome,
     DeployRunningStage, DeployServiceResult, EventSequence, OperationEvent,
-    OperationEventReplayCursor, OperationEventReplayRequest, OperationStatus,
+    OperationEventReplayCursor, OperationEventReplayRequest, OperationInterruptionCause,
+    OperationInterruptionEvidence, OperationStatus,
 };
 use ployz_nats::operation_api_client::OperationApiClientError;
 use ployz_nats::service_runtime::request_json;
@@ -67,6 +70,103 @@ use ployz_test_support::ids::{
     event_replay_limit, event_sequence, idempotency_key, machine_id, namespace_id, route_hostname,
     route_port, service_id,
 };
+
+#[tokio::test]
+async fn graceful_shutdown_records_owned_operation_interruption() {
+    let nats = TestNats::start_with_machines(&[]).await;
+    let config = nats
+        .control_config(machine_id("core_1"))
+        .with_machine_bootstrap(machine_bootstrap_config());
+    let runtime = nats.start_control(&config).await.expect("control starts");
+    let store = CoreStore::open(config.core_db_path.clone())
+        .await
+        .expect("core store opens");
+    let repository = OperationRepository::open(store, nats.controller_client());
+    let operation_id =
+        OperationId::try_new("op_shutdown_interruption").expect("valid operation id");
+    repository
+        .submit_namespace_remove(NamespaceRemoveOperationSubmission {
+            operation_id: operation_id.clone(),
+            namespace_id: namespace_id("team-a"),
+        })
+        .await
+        .expect("operation is accepted");
+
+    runtime.shutdown().await.expect("control shuts down");
+
+    let status = repository
+        .get(&operation_id)
+        .await
+        .expect("status reads")
+        .expect("status exists");
+    assert!(matches!(
+        status,
+        OperationStatus::NamespaceRemove {
+            state: ployz_core::operation::NamespaceRemoveOperationState::Interrupted {
+                evidence: OperationInterruptionEvidence {
+                    cause: OperationInterruptionCause::ControlShutdown,
+                    ..
+                },
+            },
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn startup_recovers_process_loss_without_mutating_committed_intent() {
+    let nats = TestNats::start_with_machines(&[]).await;
+    let config = nats
+        .control_config(machine_id("core_1"))
+        .with_machine_bootstrap(machine_bootstrap_config());
+    let store = CoreStore::open(config.core_db_path.clone())
+        .await
+        .expect("core store opens");
+    let repository = OperationRepository::open(store.clone(), nats.controller_client());
+    let operation_id = OperationId::try_new("op_process_loss").expect("valid operation id");
+    repository
+        .submit_namespace_remove(NamespaceRemoveOperationSubmission {
+            operation_id: operation_id.clone(),
+            namespace_id: namespace_id("team-a"),
+        })
+        .await
+        .expect("operation is accepted");
+    let volume_pin = VolumePinState {
+        namespace_id: namespace_id("team-a"),
+        volume_name: VolumeName::try_new("uploads").expect("volume name"),
+        machine_id: machine_id("edge_1"),
+    };
+    let intent = NamespaceIntentStore::new(store);
+    intent
+        .replace_volume_pin(volume_pin.clone())
+        .await
+        .expect("intent commits");
+
+    let runtime = nats.start_control(&config).await.expect("control restarts");
+
+    let status = repository
+        .get(&operation_id)
+        .await
+        .expect("status reads")
+        .expect("status exists");
+    assert!(matches!(
+        status,
+        OperationStatus::NamespaceRemove {
+            state: ployz_core::operation::NamespaceRemoveOperationState::Interrupted {
+                evidence: OperationInterruptionEvidence {
+                    cause: OperationInterruptionCause::PriorProcessLoss,
+                    ..
+                },
+            },
+            ..
+        }
+    ));
+    assert_eq!(
+        intent.load().await.expect("intent loads").volume_pins,
+        [volume_pin]
+    );
+    runtime.shutdown().await.expect("control shuts down");
+}
 
 #[tokio::test]
 async fn e2e_operations_over_real_nats() -> Result<(), Box<dyn Error + Send + Sync>> {

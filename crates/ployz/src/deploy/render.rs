@@ -5,7 +5,8 @@ use ployz_core::deploy::{
 use ployz_core::ids::{OperationId, ServiceId};
 use ployz_core::operation::{
     CancellationReason, DeployCleanupFailure, DeployCompletionOutcome, DeployOperationFailure,
-    DeployRunningStage, OperationEvent, OperationKind, ReplayedOperationEvent,
+    DeployRunningStage, OperationEvent, OperationInterruptionEvidence, OperationKind,
+    ReplayedOperationEvent,
 };
 
 use super::failure::{
@@ -45,9 +46,23 @@ enum PlannedStage {
 
 enum DeployResult {
     Active,
-    Completed { outcome: DeployCompletionOutcome },
-    Failed { failure: DeployOperationFailure },
-    Cancelled { reason: CancellationReason },
+    Completed {
+        outcome: DeployCompletionOutcome,
+    },
+    Failed {
+        failure: DeployOperationFailure,
+    },
+    Cancelled {
+        reason: CancellationReason,
+    },
+    Interrupted {
+        evidence: OperationInterruptionEvidence,
+    },
+}
+
+fn interruption_detail(evidence: &OperationInterruptionEvidence) -> String {
+    serde_json::to_string(evidence)
+        .unwrap_or_else(|_| "interruption evidence unavailable".to_owned())
 }
 
 impl DeployTree {
@@ -313,6 +328,21 @@ impl DeployTree {
                 | OperationKind::NamespaceRemove
                 | OperationKind::VolumeRemove => {}
             },
+            OperationEvent::OperationInterrupted {
+                operation_id,
+                evidence,
+            } if evidence.kind() == OperationKind::Deploy => {
+                self.plain_lines.push(format!(
+                    "deploy {}: interrupted — {}",
+                    operation_id.as_str(),
+                    interruption_detail(evidence)
+                ));
+                if let Some(deploy) = &mut self.deploy {
+                    deploy.result = DeployResult::Interrupted {
+                        evidence: evidence.clone(),
+                    };
+                }
+            }
             OperationEvent::ManagedDnsReconcileSubmitted { .. }
             | OperationEvent::ManagedDnsReconcileCompleted { .. }
             | OperationEvent::ManagedDnsReconcileFailed { .. }
@@ -364,7 +394,8 @@ impl DeployTree {
             | OperationEvent::VolumeRemoveSubmitted { .. }
             | OperationEvent::VolumeRemoveRunning { .. }
             | OperationEvent::VolumeRemoveCompleted { .. }
-            | OperationEvent::VolumeRemoveFailed { .. } => {}
+            | OperationEvent::VolumeRemoveFailed { .. }
+            | OperationEvent::OperationInterrupted { .. } => {}
         }
     }
 
@@ -642,9 +673,10 @@ fn render_success(tree: &DeployTree) -> String {
         DeployResult::Completed { outcome } => {
             format!("Deploy {}.\n", completion_text(*outcome))
         }
-        DeployResult::Active | DeployResult::Failed { .. } | DeployResult::Cancelled { .. } => {
-            String::new()
-        }
+        DeployResult::Active
+        | DeployResult::Failed { .. }
+        | DeployResult::Cancelled { .. }
+        | DeployResult::Interrupted { .. } => String::new(),
     }
 }
 
@@ -658,6 +690,9 @@ pub(crate) fn render_terminal(tree: &DeployTree) -> String {
         DeployResult::Failed { .. } => render_failure_block(tree),
         DeployResult::Cancelled { reason } => {
             format!("Deploy cancelled — {}.\n", reason.as_str())
+        }
+        DeployResult::Interrupted { evidence } => {
+            format!("Deploy interrupted — {}.\n", interruption_detail(evidence))
         }
     }
 }
@@ -973,7 +1008,8 @@ impl DeployTree {
             DeployResult::Failed { failure, .. } => Some(failure),
             DeployResult::Active
             | DeployResult::Completed { .. }
-            | DeployResult::Cancelled { .. } => None,
+            | DeployResult::Cancelled { .. }
+            | DeployResult::Interrupted { .. } => None,
         }
     }
 

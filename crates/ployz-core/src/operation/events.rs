@@ -377,6 +377,10 @@ pub enum OperationEvent {
         operation_id: OperationId,
         failure: VolumeRemoveFailure,
     },
+    OperationInterrupted {
+        operation_id: OperationId,
+        evidence: super::OperationInterruptionEvidence,
+    },
     Cancelled {
         operation_id: OperationId,
         kind: OperationKind,
@@ -453,6 +457,7 @@ impl OperationEvent {
             | Self::VolumeRemoveRunning { operation_id, .. }
             | Self::VolumeRemoveCompleted { operation_id }
             | Self::VolumeRemoveFailed { operation_id, .. }
+            | Self::OperationInterrupted { operation_id, .. }
             | Self::Cancelled { operation_id, .. } => operation_id,
         }
     }
@@ -535,6 +540,7 @@ impl OperationEvent {
             | Self::VolumeRemoveRunning { .. }
             | Self::VolumeRemoveCompleted { .. }
             | Self::VolumeRemoveFailed { .. }
+            | Self::OperationInterrupted { .. }
             | Self::Cancelled { .. } => None,
         }
     }
@@ -659,6 +665,7 @@ impl OperationEvent {
             | Self::VolumeRemoveRunning { .. }
             | Self::VolumeRemoveCompleted { .. }
             | Self::VolumeRemoveFailed { .. }
+            | Self::OperationInterrupted { .. }
             | Self::Cancelled { .. } => None,
         }
     }
@@ -1311,6 +1318,66 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
             } => Self::VolumeRemove {
                 operation_id,
                 event: VolumeRemoveEvent::Transition(VolumeRemoveTransition::Failed { failure }),
+            },
+            OperationEvent::OperationInterrupted {
+                operation_id,
+                evidence,
+            } => match evidence.last_durable_stage {
+                super::OperationInterruptionStage::Deploy { .. } => Self::Deploy {
+                    operation_id,
+                    event: DeployEvent::Interrupted(evidence),
+                },
+                super::OperationInterruptionStage::CredentialGrantAccepted => {
+                    Self::CredentialGrant {
+                        operation_id,
+                        event: CredentialGrantEvent::Interrupted(evidence),
+                    }
+                }
+                super::OperationInterruptionStage::IngressConfigureAccepted => {
+                    Self::IngressConfigure {
+                        operation_id,
+                        event: IngressConfigureEvent::Interrupted(evidence),
+                    }
+                }
+                super::OperationInterruptionStage::MachineUpdateAccepted
+                | super::OperationInterruptionStage::MachineUpdateRunning => Self::MachineUpdate {
+                    operation_id,
+                    event: MachineUpdateEvent::Interrupted(evidence),
+                },
+                super::OperationInterruptionStage::MachineLifecycleAccepted => {
+                    Self::MachineLifecycle {
+                        operation_id,
+                        event: MachineLifecycleEvent::Interrupted(evidence),
+                    }
+                }
+                super::OperationInterruptionStage::NetworkRepairAccepted
+                | super::OperationInterruptionStage::NetworkRepairRunning { .. } => {
+                    Self::NetworkRepair {
+                        operation_id,
+                        event: NetworkRepairEvent::Interrupted(evidence),
+                    }
+                }
+                super::OperationInterruptionStage::ServiceRestartAccepted
+                | super::OperationInterruptionStage::ServiceRestartRunning { .. } => {
+                    Self::ServiceRestart {
+                        operation_id,
+                        event: ServiceRestartEvent::Interrupted(evidence),
+                    }
+                }
+                super::OperationInterruptionStage::NamespaceRemoveAccepted
+                | super::OperationInterruptionStage::NamespaceRemoveRunning { .. } => {
+                    Self::NamespaceRemove {
+                        operation_id,
+                        event: NamespaceRemoveEvent::Interrupted(evidence),
+                    }
+                }
+                super::OperationInterruptionStage::VolumeRemoveAccepted
+                | super::OperationInterruptionStage::VolumeRemoveRunning { .. } => {
+                    Self::VolumeRemove {
+                        operation_id,
+                        event: VolumeRemoveEvent::Interrupted(evidence),
+                    }
+                }
             },
             OperationEvent::Cancelled {
                 operation_id,

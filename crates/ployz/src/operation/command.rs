@@ -426,6 +426,7 @@ const fn machine_lifecycle_state(
         ployz_sdk_types::MachineLifecycleOperationState::Completed => "completed",
         ployz_sdk_types::MachineLifecycleOperationState::Failed { .. } => "failed",
         ployz_sdk_types::MachineLifecycleOperationState::Cancelled { .. } => "cancelled",
+        ployz_sdk_types::MachineLifecycleOperationState::Interrupted { .. } => "interrupted",
     }
 }
 
@@ -460,6 +461,7 @@ const fn ingress_configure_state(
         ployz_sdk_types::IngressConfigureOperationState::Accepted => "accepted",
         ployz_sdk_types::IngressConfigureOperationState::Completed => "completed",
         ployz_sdk_types::IngressConfigureOperationState::Failed { .. } => "failed",
+        ployz_sdk_types::IngressConfigureOperationState::Interrupted { .. } => "interrupted",
     }
 }
 
@@ -484,6 +486,7 @@ const fn service_restart_state(
         ployz_sdk_types::ServiceRestartOperationState::Completed => "completed",
         ployz_sdk_types::ServiceRestartOperationState::Failed { .. } => "failed",
         ployz_sdk_types::ServiceRestartOperationState::Cancelled { .. } => "cancelled",
+        ployz_sdk_types::ServiceRestartOperationState::Interrupted { .. } => "interrupted",
     }
 }
 
@@ -511,6 +514,7 @@ const fn namespace_remove_state(
         ployz_sdk_types::NamespaceRemoveOperationState::Completed => "completed",
         ployz_sdk_types::NamespaceRemoveOperationState::Failed { .. } => "failed",
         ployz_sdk_types::NamespaceRemoveOperationState::Cancelled { .. } => "cancelled",
+        ployz_sdk_types::NamespaceRemoveOperationState::Interrupted { .. } => "interrupted",
     }
 }
 
@@ -540,10 +544,68 @@ const fn volume_remove_state(state: &ployz_sdk_types::VolumeRemoveOperationState
         },
         ployz_sdk_types::VolumeRemoveOperationState::Completed => "completed",
         ployz_sdk_types::VolumeRemoveOperationState::Failed { .. } => "failed",
+        ployz_sdk_types::VolumeRemoveOperationState::Interrupted { .. } => "interrupted",
     }
 }
 
 fn status_failure_detail(status: &OperationStatus) -> Option<String> {
+    let interruption = match status {
+        OperationStatus::Deploy {
+            state: DeployOperationState::Interrupted { evidence },
+            ..
+        }
+        | OperationStatus::CredentialGrant {
+            state: CredentialGrantOperationState::Interrupted { evidence },
+            ..
+        }
+        | OperationStatus::MachineUpdate {
+            state: MachineUpdateOperationState::Interrupted { evidence },
+            ..
+        } => Some(evidence),
+        OperationStatus::IngressConfigure {
+            state: ployz_sdk_types::IngressConfigureOperationState::Interrupted { evidence },
+            ..
+        }
+        | OperationStatus::MachineLifecycle {
+            state: ployz_sdk_types::MachineLifecycleOperationState::Interrupted { evidence },
+            ..
+        }
+        | OperationStatus::NetworkRepair {
+            state: ployz_sdk_types::NetworkRepairOperationState::Interrupted { evidence },
+            ..
+        }
+        | OperationStatus::ServiceRestart {
+            state: ployz_sdk_types::ServiceRestartOperationState::Interrupted { evidence },
+            ..
+        }
+        | OperationStatus::NamespaceRemove {
+            state: ployz_sdk_types::NamespaceRemoveOperationState::Interrupted { evidence },
+            ..
+        }
+        | OperationStatus::VolumeRemove {
+            state: ployz_sdk_types::VolumeRemoveOperationState::Interrupted { evidence },
+            ..
+        } => Some(evidence),
+        OperationStatus::Deploy { .. }
+        | OperationStatus::Cert { .. }
+        | OperationStatus::MachineAdd { .. }
+        | OperationStatus::MachineUpdate { .. }
+        | OperationStatus::MachineLifecycle { .. }
+        | OperationStatus::CoreReplace { .. }
+        | OperationStatus::CredentialGrant { .. }
+        | OperationStatus::NetworkRepair { .. }
+        | OperationStatus::ServiceRestart { .. }
+        | OperationStatus::ManagedDnsReconcile { .. }
+        | OperationStatus::IngressConfigure { .. }
+        | OperationStatus::NamespaceRemove { .. }
+        | OperationStatus::VolumeRemove { .. } => None,
+    };
+    if let Some(evidence) = interruption {
+        return Some(format!(
+            "interruption {}",
+            serde_json::to_string(evidence).unwrap_or_else(|_| "evidence unavailable".to_owned())
+        ));
+    }
     match status {
         OperationStatus::Deploy {
             service_id,
@@ -610,6 +672,7 @@ const fn credential_grant_state(state: &CredentialGrantOperationState) -> &'stat
         CredentialGrantOperationState::Completed => "completed",
         CredentialGrantOperationState::Failed { .. } => "failed",
         CredentialGrantOperationState::Cancelled { .. } => "cancelled",
+        CredentialGrantOperationState::Interrupted { .. } => "interrupted",
     }
 }
 
@@ -676,6 +739,7 @@ const fn deploy_state(state: &DeployOperationState) -> &'static str {
         DeployOperationState::Completed { outcome } => deploy_completion_outcome(*outcome),
         DeployOperationState::Failed { .. } => "failed",
         DeployOperationState::Cancelled { .. } => "cancelled",
+        DeployOperationState::Interrupted { .. } => "interrupted",
     }
 }
 
@@ -742,6 +806,7 @@ const fn machine_update_state(state: &MachineUpdateOperationState) -> &'static s
         MachineUpdateOperationState::Completed { .. } => "completed",
         MachineUpdateOperationState::Failed { .. } => "failed",
         MachineUpdateOperationState::Cancelled { .. } => "cancelled",
+        MachineUpdateOperationState::Interrupted { .. } => "interrupted",
     }
 }
 
@@ -819,6 +884,7 @@ impl DeployEventRenderContext {
             | OperationEvent::VolumeRemoveRunning { .. }
             | OperationEvent::VolumeRemoveCompleted { .. }
             | OperationEvent::VolumeRemoveFailed { .. }
+            | OperationEvent::OperationInterrupted { .. }
             | OperationEvent::Cancelled { .. } => {}
         }
     }
@@ -852,6 +918,13 @@ fn render_replayed_event_text(
             event.sequence.get(),
             label,
             render_network_repair_failure(failure)
+        ),
+        OperationEvent::OperationInterrupted { evidence, .. } => format!(
+            "{} {} {}",
+            event.sequence.get(),
+            label,
+            serde_json::to_string(evidence)
+                .unwrap_or_else(|_| "interruption evidence unavailable".to_owned())
         ),
         OperationEvent::CredentialGrantFailed { failure, .. } => format!(
             "{} {} {}",
@@ -1050,6 +1123,7 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::VolumeRemoveRunning { .. } => "volume.remove.running",
         OperationEvent::VolumeRemoveCompleted { .. } => "volume.remove.completed",
         OperationEvent::VolumeRemoveFailed { .. } => "volume.remove.failed",
+        OperationEvent::OperationInterrupted { .. } => "operation.interrupted",
         OperationEvent::Cancelled { .. } => "cancelled",
     }
 }

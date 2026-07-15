@@ -11,7 +11,7 @@ use super::projection::{
 };
 use super::routes::RouteTarget;
 use super::text::{CancellationReason, FailureMessage, OperatorHint};
-use super::{EventSequence, OperationKind, OperationStatus};
+use super::{EventSequence, OperationInterruptionEvidence, OperationKind, OperationStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -27,17 +27,29 @@ pub enum NamespaceRemoveRunningStage {
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NamespaceRemoveOperationState {
     Accepted,
-    Running { stage: NamespaceRemoveRunningStage },
+    Running {
+        stage: NamespaceRemoveRunningStage,
+    },
     Completed,
-    Failed { failure: NamespaceRemoveFailure },
-    Cancelled { reason: CancellationReason },
+    Failed {
+        failure: NamespaceRemoveFailure,
+    },
+    Cancelled {
+        reason: CancellationReason,
+    },
+    Interrupted {
+        evidence: OperationInterruptionEvidence,
+    },
 }
 
 impl NamespaceRemoveOperationState {
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
-            Self::Completed | Self::Failed { .. } | Self::Cancelled { .. } => true,
+            Self::Completed
+            | Self::Failed { .. }
+            | Self::Cancelled { .. }
+            | Self::Interrupted { .. } => true,
             Self::Accepted | Self::Running { .. } => false,
         }
     }
@@ -130,6 +142,7 @@ pub(super) enum NamespaceRemoveEvent {
         container_id: ContainerId,
     },
     Transition(NamespaceRemoveTransition),
+    Interrupted(OperationInterruptionEvidence),
 }
 
 pub(super) fn project_event(
@@ -180,6 +193,13 @@ pub(super) fn project_event(
         NamespaceRemoveEvent::Transition(transition) => {
             project_state(id, namespace_id, state, transition.state(), event_sequence)
         }
+        NamespaceRemoveEvent::Interrupted(evidence) => project_state(
+            id,
+            namespace_id,
+            state,
+            NamespaceRemoveOperationState::Interrupted { evidence },
+            event_sequence,
+        ),
     }
 }
 
@@ -269,13 +289,15 @@ fn transition_allowed(
         | (
             NamespaceRemoveOperationState::Accepted | NamespaceRemoveOperationState::Running { .. },
             NamespaceRemoveOperationState::Failed { .. }
-            | NamespaceRemoveOperationState::Cancelled { .. },
+            | NamespaceRemoveOperationState::Cancelled { .. }
+            | NamespaceRemoveOperationState::Interrupted { .. },
         ) => true,
         (
             NamespaceRemoveOperationState::Accepted
             | NamespaceRemoveOperationState::Completed
             | NamespaceRemoveOperationState::Failed { .. }
-            | NamespaceRemoveOperationState::Cancelled { .. },
+            | NamespaceRemoveOperationState::Cancelled { .. }
+            | NamespaceRemoveOperationState::Interrupted { .. },
             _,
         )
         | (

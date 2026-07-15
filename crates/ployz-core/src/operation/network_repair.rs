@@ -19,7 +19,7 @@ use super::projection::{
     project_transition,
 };
 use super::text::{CancellationReason, FailureMessage};
-use super::{EventSequence, OperationKind, OperationStatus};
+use super::{EventSequence, OperationInterruptionEvidence, OperationKind, OperationStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -35,17 +35,29 @@ pub enum NetworkRepairRunningStage {
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NetworkRepairOperationState {
     Accepted,
-    Running { stage: NetworkRepairRunningStage },
+    Running {
+        stage: NetworkRepairRunningStage,
+    },
     Completed,
-    Failed { failure: NetworkRepairFailure },
-    Cancelled { reason: CancellationReason },
+    Failed {
+        failure: NetworkRepairFailure,
+    },
+    Cancelled {
+        reason: CancellationReason,
+    },
+    Interrupted {
+        evidence: OperationInterruptionEvidence,
+    },
 }
 
 impl NetworkRepairOperationState {
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
-            Self::Completed | Self::Failed { .. } | Self::Cancelled { .. } => true,
+            Self::Completed
+            | Self::Failed { .. }
+            | Self::Cancelled { .. }
+            | Self::Interrupted { .. } => true,
             Self::Accepted | Self::Running { .. } => false,
         }
     }
@@ -205,6 +217,7 @@ pub(super) enum NetworkRepairEvent {
     Submitted,
     Evidence(NetworkRepairEvidence),
     Transition(NetworkRepairTransition),
+    Interrupted(OperationInterruptionEvidence),
 }
 
 pub(super) fn project_event(
@@ -248,6 +261,13 @@ pub(super) fn project_event(
             transition.state(),
             event_sequence,
         ),
+        NetworkRepairEvent::Interrupted(evidence) => project_state(
+            id,
+            target_machine_id,
+            state,
+            NetworkRepairOperationState::Interrupted { evidence },
+            event_sequence,
+        ),
     }
 }
 
@@ -284,7 +304,8 @@ fn transition_allowed(
             NetworkRepairOperationState::Running {
                 stage: NetworkRepairRunningStage::AwaitingDataplane,
             }
-            | NetworkRepairOperationState::Cancelled { .. },
+            | NetworkRepairOperationState::Cancelled { .. }
+            | NetworkRepairOperationState::Interrupted { .. },
         )
         | (
             NetworkRepairOperationState::Accepted,
@@ -300,7 +321,8 @@ fn transition_allowed(
                 stage: NetworkRepairRunningStage::RefreshingMachineFacts,
             }
             | NetworkRepairOperationState::Failed { .. }
-            | NetworkRepairOperationState::Cancelled { .. },
+            | NetworkRepairOperationState::Cancelled { .. }
+            | NetworkRepairOperationState::Interrupted { .. },
         )
         | (
             NetworkRepairOperationState::Running {
@@ -310,7 +332,8 @@ fn transition_allowed(
                 stage: NetworkRepairRunningStage::ConfirmingDnsRefresh,
             }
             | NetworkRepairOperationState::Failed { .. }
-            | NetworkRepairOperationState::Cancelled { .. },
+            | NetworkRepairOperationState::Cancelled { .. }
+            | NetworkRepairOperationState::Interrupted { .. },
         )
         | (
             NetworkRepairOperationState::Running {
@@ -318,13 +341,15 @@ fn transition_allowed(
             },
             NetworkRepairOperationState::Completed
             | NetworkRepairOperationState::Failed { .. }
-            | NetworkRepairOperationState::Cancelled { .. },
+            | NetworkRepairOperationState::Cancelled { .. }
+            | NetworkRepairOperationState::Interrupted { .. },
         ) => true,
         (
             NetworkRepairOperationState::Accepted
             | NetworkRepairOperationState::Completed
             | NetworkRepairOperationState::Failed { .. }
-            | NetworkRepairOperationState::Cancelled { .. },
+            | NetworkRepairOperationState::Cancelled { .. }
+            | NetworkRepairOperationState::Interrupted { .. },
             _,
         )
         | (

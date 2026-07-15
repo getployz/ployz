@@ -4,8 +4,9 @@ use super::{
 };
 use crate::control::store::CoreStore;
 use ployz_core::operation::{
-    EventSequence, NamespaceRemoveRunningStage, NamespaceRemoveTransition,
-    OperationEventReplayRequest, OperationStatus,
+    EventSequence, NamespaceRemoveOperationState, NamespaceRemoveRunningStage,
+    NamespaceRemoveTransition, OperationEventReplayRequest, OperationInterruptionCause,
+    OperationStatus,
 };
 use ployz_test_support::ids::{event_replay_limit, event_sequence, namespace_id, operation_id};
 use rusqlite::Connection;
@@ -147,4 +148,77 @@ fn namespace_remove_status(id: &str) -> OperationStatus {
         namespace_id("team-a"),
         EventSequence::first(),
     )
+}
+
+#[tokio::test]
+async fn interruption_recovery_is_uncapped_idempotent_and_excludes_other_owners() {
+    let nats = ployz_test_support::nats::TestNats::start().await;
+    let store = CoreStore::open_in_memory()
+        .await
+        .expect("open operation store");
+    let repository = OperationRepository::open(store.clone(), nats.controller);
+    store
+        .call(|conn| {
+            for index in 0..102 {
+                let id = format!("op_interrupted_{index:03}");
+                upsert_status(conn, &operation_id(&id), &namespace_remove_status(&id))?;
+            }
+            let terminal_id = operation_id("op_terminal");
+            upsert_status(
+                conn,
+                &terminal_id,
+                &OperationStatus::NamespaceRemove {
+                    id: terminal_id.clone(),
+                    namespace_id: namespace_id("team-a"),
+                    state: NamespaceRemoveOperationState::Completed,
+                    last_event_sequence: EventSequence::first(),
+                },
+            )?;
+            let cert_id = operation_id("op_cert_owned_elsewhere");
+            upsert_status(
+                conn,
+                &cert_id,
+                &OperationStatus::cert_accepted(
+                    cert_id.clone(),
+                    ployz_core::ids::CertId::try_new("cert-a").expect("cert id"),
+                    EventSequence::first(),
+                ),
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("seed statuses");
+
+    let first = repository
+        .record_interrupted_operations(OperationInterruptionCause::PriorProcessLoss)
+        .await
+        .expect("recover interrupted operations");
+    assert_eq!(first.recorded, 102);
+
+    let recovered = repository
+        .get(&operation_id("op_interrupted_000"))
+        .await
+        .expect("read recovered status")
+        .expect("recovered status exists");
+    assert!(matches!(
+        recovered,
+        OperationStatus::NamespaceRemove {
+            state: NamespaceRemoveOperationState::Interrupted { .. },
+            ..
+        }
+    ));
+    assert!(
+        !repository
+            .get(&operation_id("op_cert_owned_elsewhere"))
+            .await
+            .expect("read cert")
+            .expect("cert exists")
+            .is_terminal()
+    );
+
+    let second = repository
+        .record_interrupted_operations(OperationInterruptionCause::PriorProcessLoss)
+        .await
+        .expect("repeat recovery");
+    assert_eq!(second.recorded, 0);
 }

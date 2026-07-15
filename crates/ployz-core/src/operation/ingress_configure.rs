@@ -9,7 +9,7 @@ use super::events::OperationEvent;
 use super::projection::{
     OperationProjection, ProjectionOperationState, StatusProjectionError, project_transition,
 };
-use super::{EventSequence, FailureMessage, OperationStatus};
+use super::{EventSequence, FailureMessage, OperationInterruptionEvidence, OperationStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -17,7 +17,12 @@ use super::{EventSequence, FailureMessage, OperationStatus};
 pub enum IngressConfigureOperationState {
     Accepted,
     Completed,
-    Failed { failure: IngressConfigureFailure },
+    Failed {
+        failure: IngressConfigureFailure,
+    },
+    Interrupted {
+        evidence: OperationInterruptionEvidence,
+    },
 }
 
 impl IngressConfigureOperationState {
@@ -68,6 +73,7 @@ impl IngressConfigureTransition {
 pub(super) enum IngressConfigureEvent {
     Submitted { configuration: IngressConfiguration },
     Transition(IngressConfigureTransition),
+    Interrupted(OperationInterruptionEvidence),
     UnsupportedCancellation,
 }
 
@@ -90,6 +96,9 @@ pub(super) fn project_event(
             return Ok(OperationProjection::AlreadySatisfied);
         }
         IngressConfigureEvent::Transition(transition) => transition.state(),
+        IngressConfigureEvent::Interrupted(evidence) => {
+            IngressConfigureOperationState::Interrupted { evidence }
+        }
         IngressConfigureEvent::UnsupportedCancellation => {
             return Ok(OperationProjection::AlreadySatisfied);
         }

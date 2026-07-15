@@ -64,6 +64,8 @@ pub enum StatusProjectionError {
     CredentialGrantActionMismatch { operation_id: OperationId },
     #[error("ingress configuration operation {} does not match its submitted configuration", .operation_id.as_str())]
     IngressConfigurationMismatch { operation_id: OperationId },
+    #[error("operation {} interruption evidence does not match its last durable status", .operation_id.as_str())]
+    OperationInterruptionMismatch { operation_id: OperationId },
     #[error(
         "operation {} is terminal in its {} state; a {} transition was attempted",
         .operation_id.as_str(),
@@ -242,6 +244,12 @@ pub fn project_operation_event(
     event: OperationEvent,
     event_sequence: EventSequence,
 ) -> Result<OperationProjection, StatusProjectionError> {
+    let interruption_matches = match &event {
+        OperationEvent::OperationInterrupted { evidence, .. } => {
+            Some(evidence.matches_status(current))
+        }
+        _ => None,
+    };
     let event = ClassifiedOperationEvent::from(event);
     let event_operation_id = event.operation_id();
     let current_operation_id = current.id();
@@ -255,6 +263,11 @@ pub fn project_operation_event(
     let last_event_sequence = current.last_event_sequence();
     if event_sequence <= last_event_sequence {
         return Ok(OperationProjection::AlreadySatisfied);
+    }
+    if interruption_matches == Some(false) {
+        return Err(StatusProjectionError::OperationInterruptionMismatch {
+            operation_id: current.id().clone(),
+        });
     }
 
     match event {

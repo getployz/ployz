@@ -12,7 +12,7 @@ use super::projection::{
 };
 use super::text::CancellationReason;
 use super::text::FailureMessage;
-use super::{EventSequence, OperationKind, OperationStatus};
+use super::{EventSequence, OperationInterruptionEvidence, OperationKind, OperationStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -26,16 +26,23 @@ pub enum VolumeRemoveRunningStage {
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VolumeRemoveOperationState {
     Accepted,
-    Running { stage: VolumeRemoveRunningStage },
+    Running {
+        stage: VolumeRemoveRunningStage,
+    },
     Completed,
-    Failed { failure: VolumeRemoveFailure },
+    Failed {
+        failure: VolumeRemoveFailure,
+    },
+    Interrupted {
+        evidence: OperationInterruptionEvidence,
+    },
 }
 
 impl VolumeRemoveOperationState {
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
-            Self::Completed | Self::Failed { .. } => true,
+            Self::Completed | Self::Failed { .. } | Self::Interrupted { .. } => true,
             Self::Accepted | Self::Running { .. } => false,
         }
     }
@@ -119,6 +126,7 @@ pub(super) enum VolumeRemoveEvent {
     },
     Transition(VolumeRemoveTransition),
     Cancelled(CancellationReason),
+    Interrupted(OperationInterruptionEvidence),
 }
 
 pub(super) fn project_event(
@@ -160,6 +168,15 @@ pub(super) fn project_event(
                 attempted: Box::new(ProjectionOperationState::VolumeRemove(state.clone())),
             })
         }
+        VolumeRemoveEvent::Interrupted(evidence) => project_transition(
+            id,
+            state,
+            VolumeRemoveOperationState::Interrupted { evidence },
+            VolumeRemoveOperationState::is_terminal,
+            transition_allowed,
+            ProjectionOperationState::VolumeRemove,
+            |state| status(id, namespace_id, volume_name, state, event_sequence),
+        ),
     }
 }
 
@@ -198,20 +215,25 @@ fn transition_allowed(
         )
         | (
             VolumeRemoveOperationState::Accepted | VolumeRemoveOperationState::Running { .. },
-            VolumeRemoveOperationState::Failed { .. },
+            VolumeRemoveOperationState::Failed { .. }
+            | VolumeRemoveOperationState::Interrupted { .. },
         ) => true,
         (
             VolumeRemoveOperationState::Accepted
             | VolumeRemoveOperationState::Running { .. }
             | VolumeRemoveOperationState::Completed
-            | VolumeRemoveOperationState::Failed { .. },
+            | VolumeRemoveOperationState::Failed { .. }
+            | VolumeRemoveOperationState::Interrupted { .. },
             VolumeRemoveOperationState::Accepted
             | VolumeRemoveOperationState::Running { .. }
             | VolumeRemoveOperationState::Completed,
         )
         | (
-            VolumeRemoveOperationState::Completed | VolumeRemoveOperationState::Failed { .. },
-            VolumeRemoveOperationState::Failed { .. },
+            VolumeRemoveOperationState::Completed
+            | VolumeRemoveOperationState::Failed { .. }
+            | VolumeRemoveOperationState::Interrupted { .. },
+            VolumeRemoveOperationState::Failed { .. }
+            | VolumeRemoveOperationState::Interrupted { .. },
         ) => false,
     }
 }

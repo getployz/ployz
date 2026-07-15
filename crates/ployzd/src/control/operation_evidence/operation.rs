@@ -1,18 +1,35 @@
 #[cfg(test)]
 use super::select_all_statuses;
 use super::{
-    OperationRepository, RecordOperationEventError, RecordOperationEventOutcome, RecordTxn,
-    ReplayOperationEventsError, ReplayTxn, index_error, publish_progress, read_event_error,
+    InterruptedOperationsSummary, OperationRepository, RecordOperationEventError,
+    RecordOperationEventOutcome, RecordTxn, ReplayOperationEventsError, ReplayTxn, from_json,
+    index_error, publish_progress, read_event_error, record_operation_event_in_txn,
     record_operation_event_txn, replay_operation_events_txn, select_all_statuses_newest_first,
     select_status, select_statuses_before,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::operation::{
-    OperationEvent, OperationEventReplayPage, OperationEventReplayRequest, OperationStatus,
-    OperationStatusSnapshot,
+    OperationEvent, OperationEventReplayPage, OperationEventReplayRequest,
+    OperationInterruptionCause, OperationStatus, OperationStatusSnapshot,
 };
 
 impl OperationRepository {
+    pub async fn record_interrupted_operations(
+        &self,
+        cause: OperationInterruptionCause,
+    ) -> Result<InterruptedOperationsSummary, super::OperationStatusStoreError> {
+        let stored = self
+            .store
+            .call(move |conn| record_interrupted_operations_txn(conn, cause))
+            .await
+            .map_err(|error| index_error(&error))?;
+        let recorded = stored.len();
+        for (event, status) in stored {
+            publish_progress(&self.progress, event, &status).await;
+        }
+        Ok(InterruptedOperationsSummary { recorded })
+    }
+
     pub(super) async fn record_operation_event(
         &self,
         operation_id: &OperationId,
@@ -120,4 +137,53 @@ impl OperationRepository {
             ReplayTxn::Page(page) => Ok(page),
         }
     }
+}
+
+fn record_interrupted_operations_txn(
+    conn: &mut rusqlite::Connection,
+    cause: OperationInterruptionCause,
+) -> Result<Vec<(OperationEvent, OperationStatus)>, rusqlite::Error> {
+    let transaction = conn.transaction()?;
+    let statuses = {
+        let mut statement = transaction.prepare("SELECT status_json FROM operations")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut statuses = Vec::new();
+        for row in rows {
+            statuses.push(from_json::<OperationStatus>(&row?)?);
+        }
+        statuses
+    };
+    let mut stored = Vec::new();
+    for status in statuses {
+        let Some(evidence) = status.interruption_evidence(cause) else {
+            continue;
+        };
+        let event = OperationEvent::OperationInterrupted {
+            operation_id: status.id().clone(),
+            evidence,
+        };
+        match record_operation_event_in_txn(&transaction, status.id(), event.clone())? {
+            RecordTxn::Stored { status, .. } => stored.push((event, *status)),
+            RecordTxn::AlreadySatisfied { .. } => {}
+            RecordTxn::Missing => {
+                return Err(interruption_record_error(
+                    "operation disappeared during recovery",
+                ));
+            }
+            RecordTxn::InvalidNextSequence(error) => {
+                return Err(interruption_record_error(&error.to_string()));
+            }
+            RecordTxn::Projection(error) => {
+                return Err(interruption_record_error(&error.to_string()));
+            }
+        }
+    }
+    transaction.commit()?;
+    Ok(stored)
+}
+
+fn interruption_record_error(message: &str) -> rusqlite::Error {
+    rusqlite::Error::ToSqlConversionFailure(
+        std::io::Error::other(format!("record interrupted operation: {message}")).into(),
+    )
 }

@@ -96,10 +96,21 @@ pub enum DeployPhaseOutcome {
 pub enum DeployOperationState {
     Accepted,
     Planning,
-    Running { stage: DeployRunningStage },
-    Completed { outcome: DeployCompletionOutcome },
-    Failed { failure: DeployOperationFailure },
-    Cancelled { reason: CancellationReason },
+    Running {
+        stage: DeployRunningStage,
+    },
+    Completed {
+        outcome: DeployCompletionOutcome,
+    },
+    Failed {
+        failure: DeployOperationFailure,
+    },
+    Cancelled {
+        reason: CancellationReason,
+    },
+    Interrupted {
+        evidence: super::OperationInterruptionEvidence,
+    },
 }
 
 impl DeployOperationState {
@@ -113,7 +124,10 @@ impl DeployOperationState {
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
-            Self::Completed { .. } | Self::Failed { .. } | Self::Cancelled { .. } => true,
+            Self::Completed { .. }
+            | Self::Failed { .. }
+            | Self::Cancelled { .. }
+            | Self::Interrupted { .. } => true,
             Self::Accepted | Self::Planning | Self::Running { .. } => false,
         }
     }
@@ -722,6 +736,7 @@ pub(super) enum DeployEvent {
     Submitted,
     Evidence(DeployEvidence),
     Transition(DeployTransition),
+    Interrupted(super::OperationInterruptionEvidence),
 }
 
 /// What a piece of deploy evidence requires of the operation state to count
@@ -920,6 +935,15 @@ pub(super) fn project_event(
             transition.state(),
             event_sequence,
         ),
+        DeployEvent::Interrupted(evidence) => project_state(
+            id,
+            namespace_id,
+            service_id,
+            origin,
+            state,
+            DeployOperationState::Interrupted { evidence },
+            event_sequence,
+        ),
         DeployEvent::Submitted => Ok(OperationProjection::AlreadySatisfied),
     }
 }
@@ -957,7 +981,8 @@ fn transition_satisfied(current: &DeployOperationState, attempted: &DeployOperat
             | DeployOperationState::Planning
             | DeployOperationState::Completed { .. }
             | DeployOperationState::Failed { .. }
-            | DeployOperationState::Cancelled { .. } => false,
+            | DeployOperationState::Cancelled { .. }
+            | DeployOperationState::Interrupted { .. } => false,
         },
         DeployOperationState::Completed { outcome: attempted } => {
             matches!(current, DeployOperationState::Completed { outcome } if outcome == attempted)
@@ -967,6 +992,11 @@ fn transition_satisfied(current: &DeployOperationState, attempted: &DeployOperat
         }
         DeployOperationState::Cancelled { reason: attempted } => {
             matches!(current, DeployOperationState::Cancelled { reason } if reason == attempted)
+        }
+        DeployOperationState::Interrupted {
+            evidence: attempted,
+        } => {
+            matches!(current, DeployOperationState::Interrupted { evidence } if evidence == attempted)
         }
     }
 }
@@ -1003,7 +1033,13 @@ fn transition_allowed(current: &DeployOperationState, attempted: &DeployOperatio
         | (DeployOperationState::Planning, DeployOperationState::Cancelled { .. })
         | (DeployOperationState::Planning, DeployOperationState::Failed { .. })
         | (DeployOperationState::Running { .. }, DeployOperationState::Cancelled { .. })
-        | (DeployOperationState::Running { .. }, DeployOperationState::Failed { .. }) => true,
+        | (DeployOperationState::Running { .. }, DeployOperationState::Failed { .. })
+        | (
+            DeployOperationState::Accepted
+            | DeployOperationState::Planning
+            | DeployOperationState::Running { .. },
+            DeployOperationState::Interrupted { .. },
+        ) => true,
         (
             DeployOperationState::Running {
                 stage: DeployRunningStage::ServingTargetCommit,
@@ -1036,6 +1072,7 @@ fn transition_allowed(current: &DeployOperationState, attempted: &DeployOperatio
         | (DeployOperationState::Completed { .. }, _)
         | (DeployOperationState::Failed { .. }, _)
         | (DeployOperationState::Cancelled { .. }, _)
+        | (DeployOperationState::Interrupted { .. }, _)
         | (DeployOperationState::Planning, _)
         | (DeployOperationState::Running { .. }, _) => false,
     }

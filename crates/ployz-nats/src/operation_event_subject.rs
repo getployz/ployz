@@ -169,6 +169,7 @@ pub fn operation_event_subject_suffix(event: &OperationEvent) -> String {
         }
         OperationEvent::VolumeRemoveCompleted { .. } => "volume.remove.completed".to_owned(),
         OperationEvent::VolumeRemoveFailed { .. } => "volume.remove.failed".to_owned(),
+        OperationEvent::OperationInterrupted { .. } => "operation.interrupted".to_owned(),
         OperationEvent::Cancelled { .. } => "cancelled".to_owned(),
     }
 }

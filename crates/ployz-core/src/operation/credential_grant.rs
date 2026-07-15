@@ -10,7 +10,7 @@ use super::projection::{
     OperationProjection, ProjectionOperationState, StatusProjectionError, project_transition,
 };
 use super::text::{CancellationReason, FailureMessage};
-use super::{EventSequence, OperationStatus};
+use super::{EventSequence, OperationInterruptionEvidence, OperationStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -26,15 +26,25 @@ pub enum CredentialGrantAction {
 pub enum CredentialGrantOperationState {
     Accepted,
     Completed,
-    Failed { failure: CredentialGrantFailure },
-    Cancelled { reason: CancellationReason },
+    Failed {
+        failure: CredentialGrantFailure,
+    },
+    Cancelled {
+        reason: CancellationReason,
+    },
+    Interrupted {
+        evidence: OperationInterruptionEvidence,
+    },
 }
 
 impl CredentialGrantOperationState {
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
-            Self::Completed | Self::Failed { .. } | Self::Cancelled { .. } => true,
+            Self::Completed
+            | Self::Failed { .. }
+            | Self::Cancelled { .. }
+            | Self::Interrupted { .. } => true,
             Self::Accepted => false,
         }
     }
@@ -98,6 +108,7 @@ pub(super) enum CredentialGrantEvent {
     Submitted { action: CredentialGrantAction },
     Transition(CredentialGrantTransition),
     Cancelled(CancellationReason),
+    Interrupted(OperationInterruptionEvidence),
 }
 
 pub(super) fn project_event(
@@ -126,6 +137,13 @@ pub(super) fn project_event(
             action,
             state,
             CredentialGrantOperationState::Cancelled { reason },
+            event_sequence,
+        ),
+        CredentialGrantEvent::Interrupted(evidence) => project_state(
+            id,
+            action,
+            state,
+            CredentialGrantOperationState::Interrupted { evidence },
             event_sequence,
         ),
     }
@@ -163,13 +181,15 @@ fn transition_allowed(
             CredentialGrantOperationState::Accepted,
             CredentialGrantOperationState::Completed
             | CredentialGrantOperationState::Failed { .. }
-            | CredentialGrantOperationState::Cancelled { .. },
+            | CredentialGrantOperationState::Cancelled { .. }
+            | CredentialGrantOperationState::Interrupted { .. },
         ) => true,
         (CredentialGrantOperationState::Accepted, CredentialGrantOperationState::Accepted)
         | (
             CredentialGrantOperationState::Completed
             | CredentialGrantOperationState::Failed { .. }
-            | CredentialGrantOperationState::Cancelled { .. },
+            | CredentialGrantOperationState::Cancelled { .. }
+            | CredentialGrantOperationState::Interrupted { .. },
             _,
         ) => false,
     }

@@ -332,6 +332,11 @@ pub enum OperationStatusWrite {
     AlreadySatisfied { current_sequence: EventSequence },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InterruptedOperationsSummary {
+    pub recorded: usize,
+}
+
 pub(super) enum RecordOperationEventOutcome {
     AlreadySatisfied {
         current_sequence: EventSequence,

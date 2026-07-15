@@ -17,6 +17,7 @@ pub(super) const fn network_repair_state(
         ployz_sdk_types::NetworkRepairOperationState::Completed => "completed",
         ployz_sdk_types::NetworkRepairOperationState::Failed { .. } => "failed",
         ployz_sdk_types::NetworkRepairOperationState::Cancelled { .. } => "cancelled",
+        ployz_sdk_types::NetworkRepairOperationState::Interrupted { .. } => "interrupted",
     }
 }
 

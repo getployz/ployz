@@ -13,7 +13,7 @@ use super::projection::{
     verify_subject,
 };
 use super::text::{CancellationReason, FailureMessage};
-use super::{EventSequence, OperationKind, OperationStatus};
+use super::{EventSequence, OperationInterruptionEvidence, OperationKind, OperationStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -21,16 +21,28 @@ use super::{EventSequence, OperationKind, OperationStatus};
 pub enum MachineUpdateOperationState {
     Accepted,
     Running,
-    Completed { reported: MachineSubstrateVersions },
-    Failed { failure: MachineUpdateFailure },
-    Cancelled { reason: CancellationReason },
+    Completed {
+        reported: MachineSubstrateVersions,
+    },
+    Failed {
+        failure: MachineUpdateFailure,
+    },
+    Cancelled {
+        reason: CancellationReason,
+    },
+    Interrupted {
+        evidence: OperationInterruptionEvidence,
+    },
 }
 
 impl MachineUpdateOperationState {
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
-            Self::Completed { .. } | Self::Failed { .. } | Self::Cancelled { .. } => true,
+            Self::Completed { .. }
+            | Self::Failed { .. }
+            | Self::Cancelled { .. }
+            | Self::Interrupted { .. } => true,
             Self::Accepted | Self::Running => false,
         }
     }
@@ -134,6 +146,7 @@ pub(super) enum MachineUpdateEvent {
         transition: MachineUpdateTransition,
     },
     Cancelled(CancellationReason),
+    Interrupted(OperationInterruptionEvidence),
 }
 
 pub(super) fn project_event(
@@ -183,6 +196,14 @@ pub(super) fn project_event(
             MachineUpdateOperationState::Cancelled { reason },
             event_sequence,
         ),
+        MachineUpdateEvent::Interrupted(evidence) => project_state(
+            id,
+            machine_id,
+            target_version,
+            state,
+            MachineUpdateOperationState::Interrupted { evidence },
+            event_sequence,
+        ),
     }
 }
 
@@ -218,25 +239,30 @@ fn transition_allowed(
     match (current, attempted) {
         (
             MachineUpdateOperationState::Accepted,
-            MachineUpdateOperationState::Running | MachineUpdateOperationState::Cancelled { .. },
+            MachineUpdateOperationState::Running
+            | MachineUpdateOperationState::Cancelled { .. }
+            | MachineUpdateOperationState::Interrupted { .. },
         )
         | (
             MachineUpdateOperationState::Running,
             MachineUpdateOperationState::Completed { .. }
             | MachineUpdateOperationState::Failed { .. }
-            | MachineUpdateOperationState::Cancelled { .. },
+            | MachineUpdateOperationState::Cancelled { .. }
+            | MachineUpdateOperationState::Interrupted { .. },
         ) => true,
         (
             MachineUpdateOperationState::Accepted
             | MachineUpdateOperationState::Running
             | MachineUpdateOperationState::Completed { .. }
             | MachineUpdateOperationState::Failed { .. }
-            | MachineUpdateOperationState::Cancelled { .. },
+            | MachineUpdateOperationState::Cancelled { .. }
+            | MachineUpdateOperationState::Interrupted { .. },
             MachineUpdateOperationState::Accepted
             | MachineUpdateOperationState::Running
             | MachineUpdateOperationState::Completed { .. }
             | MachineUpdateOperationState::Failed { .. }
-            | MachineUpdateOperationState::Cancelled { .. },
+            | MachineUpdateOperationState::Cancelled { .. }
+            | MachineUpdateOperationState::Interrupted { .. },
         ) => false,
     }
 }

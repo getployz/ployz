@@ -29,6 +29,7 @@ mod credential_grant;
 mod deploy;
 mod events;
 mod ingress_configure;
+mod interruption;
 mod machine_add;
 mod machine_lifecycle;
 mod machine_update;
@@ -63,6 +64,11 @@ pub use deploy::{
 pub use events::{OperationEvent, OperationSubject, OperationSubjectRef};
 pub use ingress_configure::{
     IngressConfigureFailure, IngressConfigureOperationState, IngressConfigureTransition,
+};
+pub use interruption::{
+    DeployInterruptionStage, OperationInterruptionCause, OperationInterruptionEvidence,
+    OperationInterruptionNextAction, OperationInterruptionStage,
+    OperationInterruptionUncertainWork,
 };
 pub use machine_add::{MachineAddOperationState, MachineAddOperationStateName};
 pub use machine_lifecycle::{

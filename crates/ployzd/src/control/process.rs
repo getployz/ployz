@@ -17,7 +17,7 @@ use crate::control::intent::nats_authorizations::{
 use crate::control::intent::service::{
     NatsIntentReader, RunningIntentService, start_intent_service,
 };
-use crate::control::operation_evidence::OperationRepository;
+use crate::control::operation_evidence::{OperationRepository, OperationStatusStoreError};
 use crate::control::operations::credential_grant::CredentialGrantOperation;
 use crate::control::operations::deploy::driver::{DeployOperationDriver, DeployOperationStores};
 use crate::control::operations::ingress_configure::IngressConfigureOperation;
@@ -49,6 +49,7 @@ use crate::seed::{SeedCoreError, seed_core_from_snapshot};
 use crate::tasks::TaskRegistry;
 use ployz_core::intent::recovery::ControlPlaneEpoch;
 use ployz_core::intent::recovery::PendingMachineJoinRecovery;
+use ployz_core::operation::OperationInterruptionCause;
 
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
@@ -81,14 +82,12 @@ pub struct RunningControlProcess {
     runtime_projection: RunningRuntimeProjection,
     ingress_endpoint_projection: RunningIngressEndpointProjection,
     authorization: NatsAuthorizationWriter,
+    operation_repository: OperationRepository,
 }
 
 impl RunningControlProcess {
-    pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
-        self.operation_api.shutdown().await?;
-        self.ingress_endpoint_projection.shutdown().await?;
-        self.runtime_projection.shutdown().await?;
-        self.intent.shutdown().await?;
+    pub async fn shutdown(self) -> Result<(), ControlProcessShutdownError> {
+        let mut nats_service_error = self.operation_api.shutdown().await.err();
         self.credential_grant_tasks.abort_all();
         self.ingress_configure_tasks.abort_all();
         self.deploy_tasks.abort_all();
@@ -98,6 +97,25 @@ impl RunningControlProcess {
         self.volume_remove_tasks.abort_all();
         self.machine_update_tasks.abort_all();
         self.machine_lifecycle_tasks.abort_all();
+        let interruption_result = self
+            .operation_repository
+            .record_interrupted_operations(OperationInterruptionCause::ControlShutdown)
+            .await;
+        if let Err(error) = self.ingress_endpoint_projection.shutdown().await
+            && nats_service_error.is_none()
+        {
+            nats_service_error = Some(error);
+        }
+        if let Err(error) = self.runtime_projection.shutdown().await
+            && nats_service_error.is_none()
+        {
+            nats_service_error = Some(error);
+        }
+        if let Err(error) = self.intent.shutdown().await
+            && nats_service_error.is_none()
+        {
+            nats_service_error = Some(error);
+        }
         self.mint_tasks.abort_all();
         self.reachability_tasks.abort_all();
         self.managed_dns_tasks.abort_all();
@@ -105,8 +123,20 @@ impl RunningControlProcess {
         self.certificate_renewal_tasks.abort_all();
         self.testimony_cache.shutdown().await;
         self.authorization.shutdown();
+        interruption_result.map_err(ControlProcessShutdownError::OperationEvidence)?;
+        if let Some(error) = nats_service_error {
+            return Err(ControlProcessShutdownError::NatsService(error));
+        }
         Ok(())
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ControlProcessShutdownError {
+    #[error("failed to stop control NATS service: {0}")]
+    NatsService(NatsServiceShutdownError),
+    #[error("failed to record interrupted operation evidence: {0}")]
+    OperationEvidence(OperationStatusStoreError),
 }
 
 /// Record each machine's advertised endpoints onto the roster from the machine
@@ -177,6 +207,10 @@ async fn start_control_process_with_client_reload_and_issuer(
         .map_err(ControlProcessError::OpenCoreStore)?;
     reject_stale_core_epoch(&core_store, config.epoch_fence_mirror.as_deref()).await?;
     let repository = OperationRepository::open(core_store.clone(), client.clone());
+    repository
+        .record_interrupted_operations(OperationInterruptionCause::PriorProcessLoss)
+        .await
+        .map_err(ControlProcessError::RecoverInterruptedOperations)?;
     let pending_join_recovery = if let Some(mirror_path) = &config.seed_from_mirror {
         seed_core_from_mirror(
             &core_store,
@@ -189,10 +223,10 @@ async fn start_control_process_with_client_reload_and_issuer(
         Vec::new()
     };
     let controllers = if pending_join_recovery.is_empty() {
-        OperationControllers::new(repository, config.machine_bootstrap.clone())
+        OperationControllers::new(repository.clone(), config.machine_bootstrap.clone())
     } else {
         OperationControllers::new_with_pending_join_recovery(
-            repository,
+            repository.clone(),
             config.machine_bootstrap.clone(),
             pending_join_recovery,
         )
@@ -460,6 +494,7 @@ async fn start_control_process_with_client_reload_and_issuer(
         runtime_projection,
         ingress_endpoint_projection,
         authorization,
+        operation_repository: repository,
     })
 }
 
@@ -474,7 +509,7 @@ pub async fn run_control_until_shutdown(
     runtime
         .shutdown()
         .await
-        .map_err(ControlProcessError::ShutdownOperationApi)
+        .map_err(ControlProcessError::ShutdownControl)
 }
 
 /// Seed a fresh core store from the machine's local intent mirror at promotion
@@ -610,6 +645,8 @@ pub enum ControlProcessError {
     RenderNatsAuthorization(RenderFailure),
     #[error("failed to reconcile unfinished machine-add mints: {0}")]
     ResumeMachineAddMints(MintResumeError),
+    #[error("failed to recover operations interrupted by prior control process loss: {0}")]
+    RecoverInterruptedOperations(OperationStatusStoreError),
     #[error("failed to start intent service: {0}")]
     StartIntent(ployz_nats::service_runtime::NatsServiceRuntimeError),
     #[error("failed to start ingress endpoint projection: {0}")]
@@ -620,8 +657,8 @@ pub enum ControlProcessError {
     StartOperationApi(ApiServiceError),
     #[error("failed to wait for shutdown: {0}")]
     ShutdownSignal(std::io::Error),
-    #[error("failed to stop operation API service: {0}")]
-    ShutdownOperationApi(NatsServiceShutdownError),
+    #[error("failed to stop control process: {0}")]
+    ShutdownControl(ControlProcessShutdownError),
 }
 
 #[cfg(test)]
