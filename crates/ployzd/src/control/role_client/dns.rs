@@ -12,17 +12,17 @@ use crate::roles::dns::protocol::{
 };
 
 #[derive(Debug, Clone)]
-pub struct NatsDnsClient {
+pub(crate) struct NatsDnsClient {
     client: async_nats::Client,
 }
 
 impl NatsDnsClient {
     #[must_use]
-    pub fn new(client: async_nats::Client) -> Self {
+    pub(crate) fn new(client: async_nats::Client) -> Self {
         Self { client }
     }
 
-    pub async fn resolve(
+    pub(crate) async fn resolve(
         &self,
         machine_id: &MachineId,
         name: &InternalServiceName,
@@ -37,7 +37,7 @@ impl NatsDnsClient {
         .await
     }
 
-    pub async fn status(
+    pub(crate) async fn status(
         &self,
         machine_id: &MachineId,
         timeout: Duration,
