@@ -2,7 +2,7 @@ use super::support;
 
 use crate::execution::SupervisorUnitTarget;
 use crate::execution::{ArtifactKind, ArtifactTarget};
-use crate::lifecycle::execute_host_runner_join;
+use crate::lifecycle::machine_join::execution::execute_host_runner_join;
 use crate::plan::HostRunnerPlanFailure;
 use crate::plan::{
     ContainerRuntime, HostRunnerJoinTarget, HostRunnerStep, HostRunnerStepFailure,

@@ -10,7 +10,7 @@ use super::artifacts::{
 };
 use crate::execution::{ArtifactKind, ArtifactTarget, DataplaneArtifactTargets};
 use crate::execution::{PloyzdRoleEnvironmentFile, SupervisorUnitTarget};
-use crate::lifecycle::{
+use crate::lifecycle::machine_join::execution::{
     HostRunnerJoinRedeemer, HostRunnerJoinReporter, HostRunnerJoinTokenConsumer,
     RedeemedHostRunnerJoin,
 };

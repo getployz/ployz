@@ -11,12 +11,12 @@ use crate::execution::{ArtifactKind, ArtifactSource, ArtifactTarget, DataplaneAr
 use crate::execution::{HostRunnerCommandOutput, HostRunnerCommandRunner};
 use crate::execution::{HostRunnerLocalConfig, HostRunnerLocalEffects};
 use crate::execution::{NatsServerUnitTarget, PloyzdRoleEnvironmentFile, SupervisorUnitTarget};
-use crate::lifecycle::{
-    AssignedSubstrateState, SubstrateAssignment, load_assigned_substrate_state,
-};
-use crate::lifecycle::{
+use crate::lifecycle::machine_join::execution::{
     HostRunnerJoinRedeemer, HostRunnerJoinReporter, HostRunnerJoinTokenConsumer,
     RedeemedHostRunnerJoin, execute_host_runner_join,
+};
+use crate::lifecycle::{
+    AssignedSubstrateState, SubstrateAssignment, load_assigned_substrate_state,
 };
 use crate::lifecycle::{
     JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_NATS_CREDENTIALS_FILE, JOIN_RECOVERY_KEY_FILE,

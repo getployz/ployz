@@ -306,7 +306,7 @@ async fn start_gateway_process_inner(
                 attempt = source.refresh_with_timeout(&task_runtime, &task_registry) => attempt,
                 _ = refresh_shutdown.recv() => break,
             };
-            backoff = record_gateway_attempt(&task_health, attempt, refresh_interval, backoff);
+            backoff = record_gateway_attempt(&task_health, &attempt, refresh_interval, backoff);
             let observed =
                 gateway_observation_from_attempt(&machine_id, listen_addr, &attempt, &task_health);
             let status_publish = tokio::select! {
@@ -633,7 +633,7 @@ fn record_gateway_status_publish_result(
 
 fn record_gateway_attempt(
     health: &Mutex<GatewayProcessHealth>,
-    attempt: Result<GatewayProjectorTick, GatewayProcessError>,
+    attempt: &Result<GatewayProjectorTick, GatewayProcessError>,
     interval: Duration,
     current_backoff: Duration,
 ) -> Duration {
@@ -673,19 +673,20 @@ fn record_gateway_attempt(
     )
 }
 
-fn gateway_attempt_from_tick(tick: GatewayProjectorTick) -> GatewayProcessAttempt {
-    match tick.serving {
-        GatewayServingState::Current { route_count } => {
-            GatewayProcessAttempt::Current { route_count }
-        }
+fn gateway_attempt_from_tick(tick: &GatewayProjectorTick) -> GatewayProcessAttempt {
+    match &tick.serving {
+        GatewayServingState::Current { route_count } => GatewayProcessAttempt::Current {
+            route_count: *route_count,
+        },
         GatewayServingState::LastKnownGood { route_count, error } => {
             GatewayProcessAttempt::ServingLastKnownGood {
-                route_count,
+                route_count: *route_count,
                 message: format!("{error:?}"),
             }
         }
         GatewayServingState::Unavailable { error } => GatewayProcessAttempt::Failed {
             message: error
+                .as_ref()
                 .map(|error| format!("{error:?}"))
                 .unwrap_or_else(|| "gateway source unavailable".to_owned()),
         },

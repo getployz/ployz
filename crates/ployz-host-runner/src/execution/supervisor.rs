@@ -52,7 +52,6 @@ impl SupervisorDirectories {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SupervisorChange {
     InstallAndStart,
-    ReloadAndRestart,
     Restart,
     Stop,
     Disable,
@@ -123,12 +122,6 @@ impl SupervisorBackend {
                 command("systemctl", ["enable", systemd_name.as_str()]),
                 command("systemctl", ["restart", systemd_name.as_str()]),
             ],
-            (Self::Systemd, SupervisorChange::ReloadAndRestart) => {
-                vec![
-                    command("systemctl", ["daemon-reload"]),
-                    command("systemctl", ["restart", systemd_name.as_str()]),
-                ]
-            }
             (Self::Systemd, SupervisorChange::Restart) => {
                 vec![command("systemctl", ["restart", systemd_name.as_str()])]
             }
@@ -150,7 +143,7 @@ impl SupervisorBackend {
                 command("rc-update", ["add", openrc_name.as_str(), "default"]),
                 command("rc-service", [openrc_name.as_str(), "restart"]),
             ],
-            (Self::OpenRc, SupervisorChange::ReloadAndRestart | SupervisorChange::Restart) => {
+            (Self::OpenRc, SupervisorChange::Restart) => {
                 vec![command("rc-service", [openrc_name.as_str(), "restart"])]
             }
             (Self::OpenRc, SupervisorChange::Stop) => {
@@ -204,7 +197,7 @@ impl SupervisorBackend {
             (Self::Systemd, SupervisorChange::InstallAndStart) => {
                 vec![command("systemctl", ["enable", "--now", "docker"])]
             }
-            (Self::Systemd, SupervisorChange::ReloadAndRestart | SupervisorChange::Restart) => {
+            (Self::Systemd, SupervisorChange::Restart) => {
                 vec![command("systemctl", ["restart", "docker"])]
             }
             (Self::Systemd, SupervisorChange::Stop) => {
@@ -223,7 +216,7 @@ impl SupervisorBackend {
                 command("rc-update", ["add", "docker", "default"]),
                 command("rc-service", ["docker", "start"]),
             ],
-            (Self::OpenRc, SupervisorChange::ReloadAndRestart | SupervisorChange::Restart) => {
+            (Self::OpenRc, SupervisorChange::Restart) => {
                 vec![command("rc-service", ["docker", "restart"])]
             }
             (Self::OpenRc, SupervisorChange::Stop) => {
