@@ -378,6 +378,10 @@ fn network_repair_watch_renders_dataplane_failure_evidence() {
     let output = WatchOutput {
         events: vec![ployz_sdk_types::ReplayedOperationEvent {
             sequence: event_sequence(3),
+            recorded_at_unix_ms: ployz_sdk_types::OperationEventRecordedAtUnixMs::try_new(
+                1_784_116_800_003,
+            )
+            .expect("valid recorded-at timestamp"),
             event: ployz_sdk_types::OperationEvent::NetworkRepairFailed {
                 operation_id: operation_id("op_network_repair"),
                 failure: ployz_sdk_types::NetworkRepairFailure::DataplaneUnavailable {
@@ -408,6 +412,10 @@ fn network_repair_watch_renders_dataplane_converged_evidence() {
     let output = WatchOutput {
         events: vec![ployz_sdk_types::ReplayedOperationEvent {
             sequence: event_sequence(3),
+            recorded_at_unix_ms: ployz_sdk_types::OperationEventRecordedAtUnixMs::try_new(
+                1_784_116_800_003,
+            )
+            .expect("valid recorded-at timestamp"),
             event: ployz_sdk_types::OperationEvent::NetworkRepairDataplaneConverged {
                 operation_id: operation_id("op_network_repair"),
                 revision,

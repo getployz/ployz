@@ -5,10 +5,10 @@ use ployz_core::machine::MachineUsabilityReason;
 use ployz_core::operation::{
     ArtifactUnavailableReason, ControlPlaneCommitScope, DeployFailureClass, DeployOperationFailure,
     DeployOperationState, DeployRunningStage, EventSequence, HealthCheckFailure,
-    MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEvent, OperationEventReplayCursor,
-    OperationEventReplayLimit, OperationEventReplayPage, OperationEventReplayRequest,
-    OperationKind, OperationStatus, OperatorHint, ReplayedOperationEvent, RetainedArtifact,
-    RouteCutoverFailureReason, RouteTarget,
+    MAX_OPERATION_EVENT_REPLAY_LIMIT, OperationEvent, OperationEventRecordedAtUnixMs,
+    OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayPage,
+    OperationEventReplayRequest, OperationKind, OperationStatus, OperatorHint,
+    ReplayedOperationEvent, RetainedArtifact, RouteCutoverFailureReason, RouteTarget,
 };
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
@@ -334,6 +334,8 @@ fn operation_event_replay_page_carries_explicit_cursor() {
     let page = OperationEventReplayPage::more(
         vec![ReplayedOperationEvent {
             sequence: event_sequence(4),
+            recorded_at_unix_ms: OperationEventRecordedAtUnixMs::try_new(1_784_116_800_123)
+                .expect("valid recorded-at timestamp"),
             event: OperationEvent::DeployPlanningStarted {
                 operation_id: operation_id("op_123"),
             },
@@ -343,7 +345,7 @@ fn operation_event_replay_page_carries_explicit_cursor() {
 
     assert_eq!(
         serde_json::to_string(&page).expect("page serializes"),
-        r#"{"events":[{"sequence":"4","event":{"event":"deploy_planning_started","operation_id":"op_123"}}],"cursor":{"state":"more","next_start_sequence":"5"}}"#
+        r#"{"events":[{"sequence":"4","recorded_at_unix_ms":"1784116800123","event":{"event":"deploy_planning_started","operation_id":"op_123"}}],"cursor":{"state":"more","next_start_sequence":"5"}}"#
     );
     assert_eq!(
         OperationEventReplayPage::caught_up(Vec::new()).cursor,

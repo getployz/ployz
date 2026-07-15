@@ -1,7 +1,71 @@
-use super::{select_all_statuses_newest_first, select_status, upsert_status};
-use ployz_core::operation::{EventSequence, OperationStatus};
-use ployz_test_support::ids::{namespace_id, operation_id};
+use super::{
+    NamespaceRemoveOperationSubmission, OperationRepository, select_all_statuses_newest_first,
+    select_status, upsert_status,
+};
+use crate::control::store::CoreStore;
+use ployz_core::operation::{
+    EventSequence, NamespaceRemoveRunningStage, NamespaceRemoveTransition,
+    OperationEventReplayRequest, OperationStatus,
+};
+use ployz_test_support::ids::{event_replay_limit, event_sequence, namespace_id, operation_id};
 use rusqlite::Connection;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[tokio::test]
+async fn replay_preserves_recorded_timestamps_for_ordered_events() {
+    let nats = ployz_test_support::nats::TestNats::start().await;
+    let store = CoreStore::open_in_memory()
+        .await
+        .expect("open operation store");
+    let repository = OperationRepository::open(store, nats.controller);
+    let operation_id = operation_id("op_recorded_timestamps");
+    let lower_bound = unix_millis_now();
+
+    repository
+        .submit_namespace_remove(NamespaceRemoveOperationSubmission {
+            operation_id: operation_id.clone(),
+            namespace_id: namespace_id("team-a"),
+        })
+        .await
+        .expect("submit operation");
+    repository
+        .record_namespace_remove_transition(
+            &operation_id,
+            NamespaceRemoveTransition::Running {
+                stage: NamespaceRemoveRunningStage::RemovingRouteBindings,
+            },
+        )
+        .await
+        .expect("append second event");
+    let upper_bound = unix_millis_now();
+    let request = OperationEventReplayRequest {
+        operation_id,
+        start_sequence: event_sequence(1),
+        limit: event_replay_limit(10),
+    };
+
+    let first_replay = repository
+        .replay_operation_events(request.clone())
+        .await
+        .expect("replay events");
+    let second_replay = repository
+        .replay_operation_events(request)
+        .await
+        .expect("replay events again");
+
+    assert_eq!(
+        first_replay
+            .events
+            .iter()
+            .map(|event| event.sequence)
+            .collect::<Vec<_>>(),
+        [event_sequence(1), event_sequence(2)]
+    );
+    assert!(first_replay.events.iter().all(|event| {
+        (lower_bound..=upper_bound).contains(&event.recorded_at_unix_ms.unix_millis())
+    }));
+    assert_eq!(first_replay, second_replay);
+}
 
 #[test]
 fn newest_status_order_is_durable_and_old_status_remains_addressable() {
@@ -64,4 +128,14 @@ fn namespace_remove_status(id: &str) -> OperationStatus {
         namespace_id("team-a"),
         EventSequence::first(),
     )
+}
+
+fn unix_millis_now() -> u64 {
+    u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after Unix epoch")
+            .as_millis(),
+    )
+    .expect("current Unix milliseconds fit in u64")
 }

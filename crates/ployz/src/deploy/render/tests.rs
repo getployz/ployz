@@ -146,6 +146,10 @@ fn plan() -> DeployPlan {
 fn replay(sequence: u64, event: OperationEvent) -> ReplayedOperationEvent {
     ReplayedOperationEvent {
         sequence: EventSequence::try_new(sequence).expect("valid event sequence"),
+        recorded_at_unix_ms: ployz_core::operation::OperationEventRecordedAtUnixMs::try_new(
+            1_784_116_800_000 + sequence,
+        )
+        .expect("valid recorded-at timestamp"),
         event,
     }
 }

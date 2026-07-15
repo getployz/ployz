@@ -90,6 +90,7 @@ pub use projection::{
     OperationProjection, ProjectionOperationState, StatusProjectionError, project_operation_event,
 };
 pub use replay::{
+    OperationEventRecordedAtUnixMs, OperationEventRecordedAtUnixMsError,
     OperationEventReplayCursor, OperationEventReplayLimit, OperationEventReplayLimitError,
     OperationEventReplayPage, OperationEventReplayRequest, ReplayedOperationEvent,
 };

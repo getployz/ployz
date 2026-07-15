@@ -1410,6 +1410,10 @@ fn service_inspect_renders_container_rows() {
 fn replayed(sequence: u64, event: ployz_core::operation::OperationEvent) -> ReplayedOperationEvent {
     ReplayedOperationEvent {
         sequence: event_sequence(sequence),
+        recorded_at_unix_ms: ployz_sdk_types::OperationEventRecordedAtUnixMs::try_new(
+            1_784_116_800_000 + sequence,
+        )
+        .expect("valid recorded-at timestamp"),
         event,
     }
 }

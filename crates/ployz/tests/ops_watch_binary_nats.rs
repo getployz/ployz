@@ -253,6 +253,10 @@ const fn endpoint_execution(execution: OperationApiEndpointExecution) -> Endpoin
 fn replayed(sequence: u64, event: OperationEvent) -> ReplayedOperationEvent {
     ReplayedOperationEvent {
         sequence: event_sequence(sequence),
+        recorded_at_unix_ms: ployz_sdk_types::OperationEventRecordedAtUnixMs::try_new(
+            1_784_116_800_000 + sequence,
+        )
+        .expect("valid recorded-at timestamp"),
         event,
     }
 }
