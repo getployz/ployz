@@ -4,12 +4,17 @@ use crate::adapters::credentials::{
     AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials,
 };
 use crate::config::GatewayProcessConfig;
-use crate::fact_cache::{FactCache, FactCacheError, RunningFactCache, start_fact_cache};
 use crate::intent::service::NatsIntentReader;
 use crate::process_support::{
     BackoffSchedule, LazyHandle, RecordedAttempt, RefreshDelay, bounded_role_shutdown,
     drain_refresh_wakes, record_attempt, shutdown_signal, sleep_or_shutdown,
     wait_for_refresh_delay,
+};
+use crate::recovery::IntentMirror;
+use crate::recovery::{IntentFailover, mirrored_server_pool, spawn_intent_failover_mirror};
+use crate::role_testimony::{
+    RoleTestimonyCache, RoleTestimonyCacheError, RunningRoleTestimonyCache,
+    start_role_testimony_cache,
 };
 use crate::roles::gateway::pingora::{
     GatewayPingoraFailureRecorder, GatewayTlsAccept, PingoraRouteRegistry,
@@ -21,10 +26,6 @@ use crate::roles::gateway::route_table::{
 };
 use crate::roles::gateway::source::GatewayCertificateStore;
 use crate::roles::gateway::source::load_gateway_projection_update_from_nats;
-use crate::roles::machine::intent_mirror::MachineIntentMirror;
-use crate::roles::nats_failover::{
-    IntentFailover, mirrored_server_pool, spawn_intent_failover_mirror,
-};
 use futures_util::StreamExt;
 use pingora::listeners::tls::TlsSettings;
 use pingora::server::configuration::ServerConf;
@@ -65,7 +66,7 @@ pub struct RunningGatewayProcess {
     listen_addr: SocketAddr,
     shutdown: broadcast::Sender<()>,
     pingora_shutdown: watch::Sender<bool>,
-    facts_cache: RunningFactCache,
+    testimony_cache: RunningRoleTestimonyCache,
     gateway_service: RunningNatsService,
     _certificate_state_guard: Option<tempfile::TempDir>,
     tasks: Vec<JoinHandle<()>>,
@@ -76,7 +77,7 @@ impl RunningGatewayProcess {
         let Self {
             shutdown,
             pingora_shutdown,
-            facts_cache,
+            testimony_cache,
             gateway_service,
             _certificate_state_guard,
             mut tasks,
@@ -89,7 +90,7 @@ impl RunningGatewayProcess {
             .map(JoinHandle::abort_handle)
             .collect::<Vec<_>>();
         let cleanup = async {
-            facts_cache.shutdown().await;
+            testimony_cache.shutdown().await;
             let service_shutdown = gateway_service.shutdown().await;
             for task in &mut tasks {
                 let _ = task.await;
@@ -140,7 +141,7 @@ pub async fn start_gateway_process(
     )
     .await
     .map_err(GatewayProcessError::AwaitCredentials)?;
-    let mirror = MachineIntentMirror::beside_seed_file(&config.nats.seed_file);
+    let mirror = IntentMirror::beside_seed_file(&config.nats.seed_file);
     let pool = mirrored_server_pool(&mirror, &connect.url);
     let client = connect_authenticated_pool(&connect, &pool, GATEWAY_NATS_CONNECT_TIMEOUT)
         .await
@@ -216,7 +217,7 @@ async fn start_gateway_process_inner(
     let runtime = Arc::new(Mutex::new(GatewayProjector::new()));
     let registry = PingoraRouteRegistry::new();
     let certificate_store = GatewayCertificateStore::new(certificate_state_dir);
-    let facts_cache = start_fact_cache(client.clone())
+    let testimony_cache = start_role_testimony_cache(client.clone())
         .await
         .map_err(GatewayProcessError::StartFactsCache)?;
     let gateway_service = match start_gateway_role_service(
@@ -231,11 +232,11 @@ async fn start_gateway_process_inner(
     {
         Ok(service) => service,
         Err(error) => {
-            facts_cache.shutdown().await;
+            testimony_cache.shutdown().await;
             return Err(GatewayProcessError::StartCertificateService(error));
         }
     };
-    let facts = facts_cache.cache();
+    let facts = testimony_cache.cache();
     let health = Arc::new(Mutex::new(GatewayProcessHealth {
         last_attempt: None,
         consecutive_failures: 0,
@@ -271,7 +272,7 @@ async fn start_gateway_process_inner(
         let _ = pingora_shutdown.send(true);
         let _ = http_task.await;
         let _ = gateway_service.shutdown().await;
-        facts_cache.shutdown().await;
+        testimony_cache.shutdown().await;
         return Err(error);
     }
     let tls_addr = gateway_tls_listen_addr(listen_addr);
@@ -281,7 +282,7 @@ async fn start_gateway_process_inner(
         let _ = pingora_shutdown.send(true);
         let _ = http_task.await;
         let _ = gateway_service.shutdown().await;
-        facts_cache.shutdown().await;
+        testimony_cache.shutdown().await;
         return Err(error);
     }
 
@@ -348,7 +349,7 @@ async fn start_gateway_process_inner(
         listen_addr,
         shutdown,
         pingora_shutdown,
-        facts_cache,
+        testimony_cache,
         gateway_service,
         _certificate_state_guard: certificate_state_guard,
         tasks,
@@ -394,7 +395,7 @@ pub enum GatewayStatusPublishFailure {
 
 struct GatewayProcessSource {
     client: NatsClient,
-    facts: FactCache,
+    facts: RoleTestimonyCache,
     stores: LazyHandle<GatewayProcessStores>,
     certificate_store: GatewayCertificateStore,
 }
@@ -402,7 +403,7 @@ struct GatewayProcessSource {
 impl GatewayProcessSource {
     fn new(
         client: NatsClient,
-        facts: FactCache,
+        facts: RoleTestimonyCache,
         certificate_store: GatewayCertificateStore,
     ) -> Self {
         Self {
@@ -917,8 +918,8 @@ pub enum GatewayProcessError {
     ReadHttpListenerAddr(std::io::Error),
     #[error("gateway HTTP listener {addr} was not ready after {}s", timeout.as_secs())]
     HttpListenerNotReady { addr: SocketAddr, timeout: Duration },
-    #[error("failed to start runtime facts cache: {0}")]
-    StartFactsCache(FactCacheError),
+    #[error("failed to start role testimony cache: {0}")]
+    StartFactsCache(RoleTestimonyCacheError),
     #[error("failed to start gateway certificate service: {0}")]
     StartCertificateService(NatsServiceRuntimeError),
     #[error("failed to create isolated gateway certificate state: {0}")]

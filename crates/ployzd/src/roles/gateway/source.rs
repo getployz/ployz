@@ -1,7 +1,7 @@
 //! Gateway projection source adapters.
 
-use crate::fact_cache::FactCache;
 use crate::intent::service::{IntentReadError, NatsIntentReader};
+use crate::role_testimony::RoleTestimonyCache;
 use crate::roles::gateway::projection::{
     GatewayCertificateBundle, GatewayCertificateMaterialFailure,
     GatewayCertificateMaterialFailureKind, GatewayProjectionError, GatewayProjectionInput,
@@ -19,7 +19,7 @@ pub use certificate_store::{GatewayCertificateStore, GatewayCertificateStoreErro
 
 pub async fn load_gateway_projection_update_from_nats(
     intent_reader: &NatsIntentReader,
-    facts: &FactCache,
+    facts: &RoleTestimonyCache,
     certificate_store: &GatewayCertificateStore,
 ) -> GatewayProjectionUpdate {
     match load_gateway_projection_input_from_nats(intent_reader, facts, certificate_store).await {
@@ -39,7 +39,7 @@ pub async fn load_gateway_projection_update_from_nats(
 
 pub async fn load_gateway_projection_input_from_nats(
     intent_reader: &NatsIntentReader,
-    facts: &FactCache,
+    facts: &RoleTestimonyCache,
     certificate_store: &GatewayCertificateStore,
 ) -> Result<GatewayProjectionInput, GatewaySourceError> {
     let intent = async {

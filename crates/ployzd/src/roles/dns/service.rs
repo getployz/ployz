@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::fact_cache::FactCache;
+use crate::role_testimony::RoleTestimonyCache;
 use crate::roles::dns::InternalResolverHealth;
 use crate::roles::dns::internal::query_bound_resolver;
 use crate::roles::dns::protocol::{
@@ -20,7 +20,7 @@ use ployz_nats::service_runtime::{
 pub(crate) async fn start_dns_role_service(
     client: async_nats::Client,
     machine_id: MachineId,
-    facts: FactCache,
+    facts: RoleTestimonyCache,
     resolver_health: Option<Arc<Mutex<InternalResolverHealth>>>,
 ) -> Result<RunningNatsService, NatsServiceRuntimeError> {
     let mut service = start_nats_service(client, &dns_role_service_base(&machine_id)).await?;
@@ -48,7 +48,7 @@ pub(crate) async fn start_dns_role_service(
 
 fn status_from_local_cache(
     machine_id: MachineId,
-    facts: FactCache,
+    facts: RoleTestimonyCache,
     resolver_health: Option<Arc<Mutex<InternalResolverHealth>>>,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse {
@@ -133,7 +133,7 @@ mod tests {
     use ployz_test_support::ids::machine_id;
 
     use super::{resolve_from_bound_resolver, status_from_local_cache};
-    use crate::fact_cache::FactCache;
+    use crate::role_testimony::RoleTestimonyCache;
     use crate::roles::dns::protocol::{DnsResolveRpcRequest, DnsStatusRpcOk, DnsStatusRpcRequest};
 
     #[tokio::test]
@@ -175,7 +175,7 @@ mod tests {
             42,
         )
         .expect("machine facts");
-        let cache = FactCache::default();
+        let cache = RoleTestimonyCache::default();
         cache.record_machine_facts(facts);
 
         let response = status_from_local_cache(

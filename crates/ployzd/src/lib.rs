@@ -17,6 +17,8 @@ pub mod adapters {
 }
 pub mod certificate;
 pub mod config;
+pub mod recovery;
+pub mod role_testimony;
 pub mod roles {
     pub mod control;
     pub mod dns {
@@ -52,6 +54,7 @@ pub mod operations {
 }
 pub mod core_store;
 pub mod dispatch;
+/// Compatibility facade for the daemon-local role testimony cache.
 pub mod fact_cache;
 pub mod ingress_endpoint;
 pub mod intent;

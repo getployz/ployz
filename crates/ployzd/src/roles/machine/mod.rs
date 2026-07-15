@@ -5,7 +5,8 @@
 //! - `client`: request-side NATS adapters used by deploy/control workers.
 //! - `runner`: the `MachineContainerRunner` port and container-run decision.
 //! - `process`: the machine role process and observation loop.
-//! - `intent_mirror`: machine-local durable copy of core intent (ADR 0031).
+//! Recovery mirroring and failover are owned by the role-neutral
+//! [`crate::recovery`] module.
 
 pub mod client;
 mod containers;
@@ -14,6 +15,7 @@ mod dataplane;
 mod endpoints;
 mod facts;
 mod images;
+/// Compatibility facade for the former Machine-owned recovery mirror.
 pub mod intent_mirror;
 mod logs;
 mod ployz_native_mesh;

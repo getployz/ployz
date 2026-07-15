@@ -10,9 +10,9 @@ use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, route_hostname, route_port, service_id,
 };
-use ployzd::fact_cache::FactCache;
 use ployzd::intent::namespace_intent::NamespaceIntentStore;
 use ployzd::intent::service::{NatsIntentReader, RunningIntentService, start_intent_service};
+use ployzd::role_testimony::RoleTestimonyCache;
 use ployzd::roles::gateway::projection::{
     GatewayProjectedRoute, GatewayProjectionUpdate, GatewayUpstream, project_gateway,
 };
@@ -85,7 +85,7 @@ async fn gateway_source_loads_routes_and_current_observations_from_nats() {
 struct TestNats {
     _nats: ployz_test_support::nats::TestNats,
     intent_reader: NatsIntentReader,
-    facts: FactCache,
+    facts: RoleTestimonyCache,
     _intent: RunningIntentService,
     _intent_dir: tempfile::TempDir,
     namespace_intent: NamespaceIntentStore,
@@ -123,7 +123,7 @@ async fn test_nats() -> TestNats {
         _nats: nats,
         intent_reader: NatsIntentReader::new(machine_client)
             .with_request_timeout(Duration::from_secs(1)),
-        facts: FactCache::default(),
+        facts: RoleTestimonyCache::default(),
         _intent: intent,
         _intent_dir: lifecycle_dir,
         namespace_intent,

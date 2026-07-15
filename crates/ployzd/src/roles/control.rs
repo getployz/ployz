@@ -10,7 +10,6 @@ use crate::certificate::task::{
 use crate::certificate::{AcmeIssuer, CertificateManager};
 use crate::config::ControlProcessConfig;
 use crate::core_store::{CoreStore, CoreStoreError};
-use crate::fact_cache::{FactCache, FactCacheError, RunningFactCache, start_fact_cache};
 use crate::ingress_endpoint::{
     IngressEndpointStartError, RunningIngressEndpointProjection, start_ingress_endpoint_projection,
 };
@@ -33,10 +32,14 @@ use crate::operations::log::OperationRepository;
 use crate::operations::machine_lifecycle::MachineLifecycleOperation;
 use crate::operations::machine_update::MachineUpdateOperation;
 use crate::process_support::shutdown_signal;
+use crate::recovery::{IntentMirror, PendingMachineJoinMirror};
+use crate::role_testimony::{
+    RoleTestimonyCache, RoleTestimonyCacheError, RunningRoleTestimonyCache,
+    start_role_testimony_cache,
+};
 use crate::roles::machine::client::{
     NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
 };
-use crate::roles::machine::intent_mirror::{MachineIntentMirror, MachinePendingJoinMirror};
 use crate::runtime_projection::{
     RunningRuntimeProjection, RuntimeProjectionHealthState, start_runtime_projection,
 };
@@ -71,7 +74,7 @@ pub struct RunningControlProcess {
     certificate_issuance_tasks: TaskRegistry,
     certificate_renewal_tasks: TaskRegistry,
     certificate_renewal_health: CertificateRenewalHealth,
-    facts_cache: RunningFactCache,
+    testimony_cache: RunningRoleTestimonyCache,
     runtime_projection: RunningRuntimeProjection,
     ingress_endpoint_projection: RunningIngressEndpointProjection,
     authorization: NatsAuthorizationWriter,
@@ -107,18 +110,18 @@ impl RunningControlProcess {
         self.managed_dns_tasks.abort_all();
         self.certificate_issuance_tasks.abort_all();
         self.certificate_renewal_tasks.abort_all();
-        self.facts_cache.shutdown().await;
+        self.testimony_cache.shutdown().await;
         self.authorization.shutdown();
         Ok(())
     }
 }
 
 /// Record each machine's advertised endpoints onto the roster from the machine
-/// testimony in the fact cache (ADR 0030). Runs on a slow tick; only writes on
+/// testimony in the role testimony cache (ADR 0030). Runs on a slow tick; only writes on
 /// change, never clears on a machine's silence — reachability is a durable
 /// address property — and relies on the intent drumbeat to propagate the update
 /// to every mirror.
-async fn reconcile_reachability_loop(facts: FactCache, roster: MachineRosterStore) {
+async fn reconcile_reachability_loop(facts: RoleTestimonyCache, roster: MachineRosterStore) {
     let mut interval = tokio::time::interval(REACHABILITY_RECONCILE_INTERVAL);
     loop {
         interval.tick().await;
@@ -226,15 +229,15 @@ async fn start_control_process_with_client_reload_and_issuer(
         .render(None)
         .await
         .map_err(ControlProcessError::RenderNatsAuthorization)?;
-    // Start the facts cache only after authorization has rendered and
+    // Start the role testimony cache only after authorization has rendered and
     // reloaded permissions: its subscription to plz.v1.testimony.* must not be
     // established before the grant exists, or NATS rejects it asynchronously
     // and the cache never resubscribes. Nothing between here and the
     // operation API consumes the cache, so this ordering is free.
-    let facts_cache = start_fact_cache(client.clone())
+    let testimony_cache = start_role_testimony_cache(client.clone())
         .await
         .map_err(ControlProcessError::StartFactsCache)?;
-    let facts = facts_cache.cache();
+    let facts = testimony_cache.cache();
     let deploy_tasks = TaskRegistry::default();
     let credential_grant_tasks = TaskRegistry::default();
     let ingress_configure_tasks = TaskRegistry::default();
@@ -462,7 +465,7 @@ async fn start_control_process_with_client_reload_and_issuer(
         certificate_issuance_tasks,
         certificate_renewal_tasks,
         certificate_renewal_health,
-        facts_cache,
+        testimony_cache,
         runtime_projection,
         ingress_endpoint_projection,
         authorization,
@@ -504,7 +507,7 @@ async fn seed_core_from_mirror(
     {
         return Ok(());
     }
-    let snapshot = MachineIntentMirror::new(mirror_path.to_path_buf())
+    let snapshot = IntentMirror::new(mirror_path.to_path_buf())
         .load()
         .ok_or_else(|| ControlProcessError::SeedMirrorMissing(mirror_path.to_path_buf()))?;
     seed_core_from_snapshot(core_store, &snapshot, certificate_state_dir)
@@ -527,7 +530,7 @@ async fn reject_stale_core_epoch(
     else {
         return Ok(());
     };
-    let Some(snapshot) = MachineIntentMirror::new(mirror_path.to_path_buf()).load() else {
+    let Some(snapshot) = IntentMirror::new(mirror_path.to_path_buf()).load() else {
         return Ok(());
     };
     if snapshot.epoch > local {
@@ -545,11 +548,11 @@ async fn reject_stale_core_epoch(
 /// from, and never for a machine the seeded roster already holds active —
 /// replaying such a hint would let a stale join overwrite roster truth.
 fn load_pending_join_recovery(mirror_path: &Path) -> Vec<PendingMachineJoinRecovery> {
-    let Some(intent) = MachineIntentMirror::new(mirror_path.to_path_buf()).load() else {
+    let Some(intent) = IntentMirror::new(mirror_path.to_path_buf()).load() else {
         return Vec::new();
     };
     let Some(snapshot) =
-        MachinePendingJoinMirror::new(mirror_path.with_file_name("pending-machine-joins.json"))
+        PendingMachineJoinMirror::new(mirror_path.with_file_name("pending-machine-joins.json"))
             .load()
     else {
         return Vec::new();
@@ -610,8 +613,8 @@ pub enum ControlProcessError {
     SeedCore(SeedCoreError),
     #[error("failed to seed authorization grants: {0}")]
     SeedAuthorizations(NatsAuthorizationStoreError),
-    #[error("failed to start runtime facts cache: {0}")]
-    StartFactsCache(FactCacheError),
+    #[error("failed to start role testimony cache: {0}")]
+    StartFactsCache(RoleTestimonyCacheError),
     #[error("failed to render NATS authorization: {0}")]
     RenderNatsAuthorization(RenderFailure),
     #[error("failed to reconcile unfinished machine-add mints: {0}")]
@@ -705,7 +708,7 @@ mod tests {
     async fn seeds_a_fresh_store_from_the_mirror() {
         let dir = tempfile::tempdir().expect("temp dir");
         let mirror_path = dir.path().join("intent-mirror.json");
-        MachineIntentMirror::new(mirror_path.clone())
+        IntentMirror::new(mirror_path.clone())
             .store(&empty_snapshot(ControlPlaneEpoch::initial().next().next()))
             .expect("write mirror");
 
@@ -734,10 +737,10 @@ mod tests {
     fn pending_join_mirror_with_stale_epoch_is_ignored() {
         let dir = tempfile::tempdir().expect("temp dir");
         let mirror_path = dir.path().join("intent-mirror.json");
-        MachineIntentMirror::new(mirror_path.clone())
+        IntentMirror::new(mirror_path.clone())
             .store(&empty_snapshot(ControlPlaneEpoch::initial().next()))
             .expect("write intent mirror");
-        MachinePendingJoinMirror::new(dir.path().join("pending-machine-joins.json"))
+        PendingMachineJoinMirror::new(dir.path().join("pending-machine-joins.json"))
             .store(&PendingMachineJoinRecoverySnapshot {
                 epoch: ControlPlaneEpoch::initial(),
                 pending: vec![pending_join("machine_b")],
@@ -753,10 +756,10 @@ mod tests {
         let mirror_path = dir.path().join("intent-mirror.json");
         let mut snapshot = empty_snapshot(ControlPlaneEpoch::initial());
         snapshot.active_machines = vec![active_machine("machine_b")];
-        MachineIntentMirror::new(mirror_path.clone())
+        IntentMirror::new(mirror_path.clone())
             .store(&snapshot)
             .expect("write intent mirror");
-        MachinePendingJoinMirror::new(dir.path().join("pending-machine-joins.json"))
+        PendingMachineJoinMirror::new(dir.path().join("pending-machine-joins.json"))
             .store(&PendingMachineJoinRecoverySnapshot {
                 epoch: ControlPlaneEpoch::initial(),
                 pending: vec![pending_join("machine_b"), pending_join("machine_c")],
@@ -775,7 +778,7 @@ mod tests {
     async fn refuses_startup_when_local_core_epoch_is_behind_machine_mirror() {
         let dir = tempfile::tempdir().expect("temp dir");
         let mirror_path = dir.path().join("intent-mirror.json");
-        MachineIntentMirror::new(mirror_path.clone())
+        IntentMirror::new(mirror_path.clone())
             .store(&empty_snapshot(ControlPlaneEpoch::initial().next()))
             .expect("write mirror");
         let store = CoreStore::open_in_memory().await.expect("store");
@@ -795,7 +798,7 @@ mod tests {
     async fn allows_startup_when_local_core_epoch_matches_machine_mirror() {
         let dir = tempfile::tempdir().expect("temp dir");
         let mirror_path = dir.path().join("intent-mirror.json");
-        MachineIntentMirror::new(mirror_path.clone())
+        IntentMirror::new(mirror_path.clone())
             .store(&empty_snapshot(ControlPlaneEpoch::initial()))
             .expect("write mirror");
         let store = CoreStore::open_in_memory().await.expect("store");

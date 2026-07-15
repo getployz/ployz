@@ -6,9 +6,9 @@ mod volume;
 pub use volume::VolumeQueryService;
 
 use crate::core_store::CoreStore;
-use crate::fact_cache::FactCache;
 use crate::intent::service::NatsIntentReader;
 use crate::operation_api::admission::OperationControllers;
+use crate::role_testimony::RoleTestimonyCache;
 use crate::roles::machine::client::{
     MachineLogsTailError, NatsMachineFactsReader, NatsMachineLogsTailer,
     read_available_machine_facts, read_available_machine_facts_by_id,
@@ -60,7 +60,7 @@ use super::error_map::ops_watch_error_from_replay_error;
 #[derive(Clone)]
 pub struct MachineQueryService {
     intent_reader: NatsIntentReader,
-    facts: FactCache,
+    facts: RoleTestimonyCache,
     facts_reader: NatsMachineFactsReader,
 }
 
@@ -80,7 +80,7 @@ pub struct LogsQueryService {
 #[derive(Clone)]
 pub struct RuntimeSnapshotQueryService {
     intent_reader: NatsIntentReader,
-    facts: FactCache,
+    facts: RoleTestimonyCache,
     facts_reader: NatsMachineFactsReader,
     core_store: CoreStore,
 }
@@ -89,7 +89,7 @@ impl RuntimeSnapshotQueryService {
     #[must_use]
     pub(crate) fn new(
         intent_reader: NatsIntentReader,
-        facts: FactCache,
+        facts: RoleTestimonyCache,
         facts_reader: NatsMachineFactsReader,
         core_store: CoreStore,
     ) -> Self {
@@ -535,7 +535,7 @@ impl MachineQueryService {
     #[must_use]
     pub(crate) fn new(
         intent_reader: NatsIntentReader,
-        facts: FactCache,
+        facts: RoleTestimonyCache,
         facts_reader: NatsMachineFactsReader,
     ) -> Self {
         Self {

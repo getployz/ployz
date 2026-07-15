@@ -448,7 +448,7 @@ mod tests {
         dns_status_testimony, gather_dns_answers, gather_network_status, network_status_intent,
         network_status_page, normalize_internal_name, validate_network_status_snapshot,
     };
-    use crate::fact_cache::FactCache;
+    use crate::role_testimony::RoleTestimonyCache;
     use crate::roles::dns::InternalResolverHealth;
     use crate::roles::dns::protocol::{DnsResolveRpcOk, DnsStatusRpcOk};
     use crate::roles::dns::service::start_dns_role_service;
@@ -731,7 +731,7 @@ mod tests {
             machine_id("dns_b"),
         ])
         .await;
-        let cache = FactCache::default();
+        let cache = RoleTestimonyCache::default();
         let observed_machine_id = machine_id("worker_a");
         let container = containers::observation("worker_a", "ctr_web")
             .with(containers::identity("web").namespace("team-a"))
@@ -826,7 +826,7 @@ mod tests {
         let dns_service = start_dns_role_service(
             nats.machine_client(&machine_a).await,
             machine_a.clone(),
-            FactCache::default(),
+            RoleTestimonyCache::default(),
             None,
         )
         .await

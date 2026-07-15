@@ -1,9 +1,9 @@
 //! Controller-owned passive runtime projection fanout.
 
 use crate::core_store::CoreStore;
-use crate::fact_cache::FactCache;
 use crate::intent::service::NatsIntentReader;
 use crate::process_support::BackoffSchedule;
+use crate::role_testimony::RoleTestimonyCache;
 use crate::runtime_snapshot::{
     RuntimeIngressSources, from_sources as runtime_snapshot_from_sources, load_ingress_sources,
 };
@@ -167,12 +167,12 @@ struct RuntimeSnapshotSeedRequest {}
 struct PassiveRuntimeProjection {
     intent: Option<IntentSnapshot>,
     ingress: Option<RuntimeIngressSources>,
-    facts: FactCache,
+    facts: RoleTestimonyCache,
     snapshots: watch::Sender<Option<RuntimeSnapshot>>,
 }
 
 impl PassiveRuntimeProjection {
-    fn new(facts: FactCache) -> (Self, watch::Receiver<Option<RuntimeSnapshot>>) {
+    fn new(facts: RoleTestimonyCache) -> (Self, watch::Receiver<Option<RuntimeSnapshot>>) {
         let (snapshots, receiver) = watch::channel(None);
         (
             Self {
@@ -206,7 +206,7 @@ impl PassiveRuntimeProjection {
 pub(crate) async fn start_runtime_projection(
     client: async_nats::Client,
     intent_reader: NatsIntentReader,
-    facts: FactCache,
+    facts: RoleTestimonyCache,
     core_store: CoreStore,
 ) -> Result<RunningRuntimeProjection, RuntimeProjectionStartError> {
     let intent_changes = subscribe(&client, INTENT_CHANGED)
@@ -340,14 +340,14 @@ mod tests {
 
     #[test]
     fn unconfigured_projection_withholds_a_runtime_snapshot() {
-        let (_projection, snapshots) = PassiveRuntimeProjection::new(FactCache::default());
+        let (_projection, snapshots) = PassiveRuntimeProjection::new(RoleTestimonyCache::default());
 
         assert!(snapshots.borrow().is_none());
     }
 
     #[test]
     fn initial_passive_projection_is_complete() {
-        let facts = FactCache::default();
+        let facts = RoleTestimonyCache::default();
         facts.record_machine_facts(machine_facts("machine_a", "ctr_initial"));
         let (mut projection, snapshots) = PassiveRuntimeProjection::new(facts);
         projection.replace_sources(
@@ -370,7 +370,7 @@ mod tests {
 
     #[tokio::test]
     async fn intent_machine_and_gateway_replacements_emit_full_snapshots() {
-        let facts = FactCache::default();
+        let facts = RoleTestimonyCache::default();
         facts.record_machine_facts(machine_facts("machine_a", "ctr_initial"));
         let (mut projection, mut snapshots) = PassiveRuntimeProjection::new(facts.clone());
         projection.replace_sources(intent(Vec::new()), ingress());
@@ -663,7 +663,7 @@ async fn retry_ingress_read(
 fn assemble_snapshot(
     intent: IntentSnapshot,
     ingress: RuntimeIngressSources,
-    facts: &FactCache,
+    facts: &RoleTestimonyCache,
 ) -> RuntimeSnapshot {
     let (machine_facts, gateway_statuses) = facts.runtime_projection_facts();
     runtime_snapshot_from_sources(

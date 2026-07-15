@@ -37,7 +37,7 @@ use support::control::{RecordingReload, TestNats, redeem_when_ready};
 
 use ployzd::core_store::CoreStore;
 use ployzd::operations::log::{OperationRepository, OperationStatusWrite};
-use ployzd::roles::machine::intent_mirror::{MachineIntentMirror, MachinePendingJoinMirror};
+use ployzd::recovery::{IntentMirror, PendingMachineJoinMirror};
 
 static MACHINE_ADD_MINT_TEST_LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
 
@@ -543,7 +543,7 @@ async fn promoted_core_recovers_pending_join_without_old_operation_log() {
 
     let mirror_dir = tempfile::tempdir().expect("mirror dir");
     let intent_mirror = mirror_dir.path().join("intent-mirror.json");
-    MachineIntentMirror::new(intent_mirror.clone())
+    IntentMirror::new(intent_mirror.clone())
         .store(&IntentSnapshot {
             epoch: ControlPlaneEpoch::initial().next(),
             core_machine_id: ployz_test_support::ids::machine_id("machine_a"),
@@ -563,7 +563,7 @@ async fn promoted_core_recovers_pending_join_without_old_operation_log() {
             active_certificates: Vec::new(),
         })
         .expect("intent mirror stores");
-    MachinePendingJoinMirror::new(mirror_dir.path().join("pending-machine-joins.json"))
+    PendingMachineJoinMirror::new(mirror_dir.path().join("pending-machine-joins.json"))
         .store(&PendingMachineJoinRecoverySnapshot {
             epoch: ControlPlaneEpoch::initial().next(),
             pending,

@@ -26,7 +26,6 @@ pub use submit::{
 
 use crate::adapters::nats_authorization::MachineCredentialMint;
 use crate::core_store::CoreStore;
-use crate::fact_cache::FactCache;
 use crate::intent::ingress_intent::IngressIntentStore;
 use crate::intent::machine_roster::MachineRosterStore;
 use crate::intent::service::{NatsIntentReader, publish_pending_machine_joins};
@@ -41,6 +40,7 @@ use crate::operations::namespace_remove::NamespaceRemoveOperation;
 use crate::operations::network_repair::NetworkRepairOperation;
 use crate::operations::service_restart::ServiceRestartOperation;
 use crate::operations::volume_remove::VolumeRemoveOperation;
+use crate::role_testimony::RoleTestimonyCache;
 use crate::roles::machine::client::{NatsMachineFactsReader, NatsMachineLogsTailer};
 use ployz_core::dataplane::MachineEndpointSupernet;
 use ployz_core::ids::MachineId;
@@ -101,7 +101,7 @@ impl OperationApiHandlers {
         local_machine_id: MachineId,
         intent_change_client: async_nats::Client,
         machine_roster: MachineRosterStore,
-        facts: FactCache,
+        facts: RoleTestimonyCache,
         facts_reader: NatsMachineFactsReader,
         intent_reader: NatsIntentReader,
         logs_tailer: NatsMachineLogsTailer,

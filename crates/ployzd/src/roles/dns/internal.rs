@@ -10,7 +10,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
-use crate::fact_cache::FactCache;
+use crate::role_testimony::RoleTestimonyCache;
 use ployz_core::internal_dns::{InternalServiceName, internal_dns_records};
 use ployz_core::state::IntentSnapshot;
 
@@ -304,7 +304,7 @@ impl InternalDnsIntentCache {
 /// Spawns the machine-local resolver. Queries read cached facts and last-known-good
 /// intent; core availability, health, and gateway status are not query dependencies.
 pub(super) fn spawn_internal_resolver(
-    facts: FactCache,
+    facts: RoleTestimonyCache,
     intent: InternalDnsIntentCache,
     bind: SocketAddr,
     mut shutdown: broadcast::Receiver<()>,
@@ -383,7 +383,7 @@ pub(super) fn spawn_internal_resolver(
 }
 
 async fn response_for_request(
-    facts: &FactCache,
+    facts: &RoleTestimonyCache,
     intent: &InternalDnsIntentCache,
     upstream: IpAddr,
     packet: Vec<u8>,
@@ -521,7 +521,7 @@ mod tests {
     async fn a_query_for_unknown_internal_name_returns_noerror_without_answers() {
         let packet = query_packet("missing.default.internal", DNS_TYPE_A);
         let response = response_for_request(
-            &FactCache::default(),
+            &RoleTestimonyCache::default(),
             &InternalDnsIntentCache::default(),
             IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
             packet,
@@ -534,7 +534,7 @@ mod tests {
 
     #[tokio::test]
     async fn aaaa_query_for_known_internal_name_returns_noerror_without_answers() {
-        let cache = FactCache::default();
+        let cache = RoleTestimonyCache::default();
         cache.record_machine_facts(facts(
             "machine_a",
             [observation(
@@ -564,7 +564,7 @@ mod tests {
         let bind = reservation.local_addr().expect("reserved address");
         drop(reservation);
 
-        let cache = FactCache::default();
+        let cache = RoleTestimonyCache::default();
         cache.record_machine_facts(facts(
             "machine_a",
             [observation(
@@ -645,7 +645,7 @@ mod tests {
 
     #[test]
     fn intent_cache_retains_last_known_good_when_refresh_is_unavailable() {
-        let cache = FactCache::default();
+        let cache = RoleTestimonyCache::default();
         cache.record_machine_facts(facts(
             "machine_a",
             [observation(

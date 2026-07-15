@@ -8,19 +8,19 @@ use crate::adapters::credentials::{
     AwaitSeedFileError, SeedFileRetryPolicy, await_role_credentials,
 };
 use crate::config::DnsProcessConfig;
-use crate::fact_cache::{FactCacheError, RunningFactCache, start_fact_cache};
 use crate::intent::service::NatsIntentReader;
 use crate::process_support::{
     RefreshDelay, bounded_role_shutdown, drain_refresh_wakes, shutdown_signal, sleep_or_shutdown,
     wait_for_refresh_delay,
 };
+use crate::recovery::IntentMirror;
+use crate::recovery::{IntentFailover, mirrored_server_pool, spawn_intent_failover_mirror};
+use crate::role_testimony::{
+    RoleTestimonyCacheError, RunningRoleTestimonyCache, start_role_testimony_cache,
+};
 use crate::roles::dns::InternalResolverHealth;
 use crate::roles::dns::internal::{InternalDnsIntentCache, spawn_internal_resolver};
 use crate::roles::dns::service::start_dns_role_service;
-use crate::roles::machine::intent_mirror::MachineIntentMirror;
-use crate::roles::nats_failover::{
-    IntentFailover, mirrored_server_pool, spawn_intent_failover_mirror,
-};
 use futures_util::StreamExt;
 use ployz_core::subjects::INTENT_CHANGED;
 use ployz_nats::connect::{NatsConnectError, connect_authenticated_pool};
@@ -43,7 +43,7 @@ pub struct RunningDnsProcess {
     internal_resolver_health: Option<Arc<Mutex<InternalResolverHealth>>>,
     shutdown: broadcast::Sender<()>,
     role_service: RunningNatsService,
-    facts_cache: RunningFactCache,
+    testimony_cache: RunningRoleTestimonyCache,
     tasks: Vec<JoinHandle<()>>,
 }
 
@@ -52,7 +52,7 @@ impl RunningDnsProcess {
         let Self {
             shutdown,
             role_service,
-            facts_cache,
+            testimony_cache,
             mut tasks,
             ..
         } = self;
@@ -62,7 +62,7 @@ impl RunningDnsProcess {
             .map(JoinHandle::abort_handle)
             .collect::<Vec<_>>();
         let cleanup = async {
-            facts_cache.shutdown().await;
+            testimony_cache.shutdown().await;
             let service_shutdown = role_service.shutdown().await;
             for task in &mut tasks {
                 let _ = task.await;
@@ -92,7 +92,7 @@ pub async fn start_dns_process(
         await_role_credentials("dns", &config.nats, &SeedFileRetryPolicy::default_policy())
             .await
             .map_err(DnsProcessError::AwaitCredentials)?;
-    let mirror = MachineIntentMirror::beside_seed_file(&config.nats.seed_file);
+    let mirror = IntentMirror::beside_seed_file(&config.nats.seed_file);
     let pool = mirrored_server_pool(&mirror, &connect.url);
     let client = connect_authenticated_pool(&connect, &pool, DNS_NATS_CONNECT_TIMEOUT)
         .await
@@ -119,7 +119,7 @@ pub async fn start_dns_process_with_client(
     failover: Option<IntentFailover>,
     internal_resolver_bind: Option<SocketAddr>,
 ) -> Result<RunningDnsProcess, DnsProcessError> {
-    let facts_cache = start_fact_cache(client.clone())
+    let testimony_cache = start_role_testimony_cache(client.clone())
         .await
         .map_err(DnsProcessError::StartFactsCache)?;
     let intent_reader = NatsIntentReader::new(client.clone());
@@ -136,7 +136,7 @@ pub async fn start_dns_process_with_client(
             attempts: 0,
         }));
         tasks.push(spawn_internal_resolver(
-            facts_cache.cache(),
+            testimony_cache.cache(),
             internal_dns_intent.clone(),
             bind,
             shutdown.subscribe(),
@@ -147,7 +147,7 @@ pub async fn start_dns_process_with_client(
     let role_service = match start_dns_role_service(
         client.clone(),
         machine_id,
-        facts_cache.cache(),
+        testimony_cache.cache(),
         internal_resolver_health.clone(),
     )
     .await
@@ -158,7 +158,7 @@ pub async fn start_dns_process_with_client(
             for task in tasks {
                 let _ = task.await;
             }
-            facts_cache.shutdown().await;
+            testimony_cache.shutdown().await;
             return Err(DnsProcessError::StartRoleService(error));
         }
     };
@@ -214,7 +214,7 @@ pub async fn start_dns_process_with_client(
         internal_resolver_health,
         shutdown,
         role_service,
-        facts_cache,
+        testimony_cache,
         tasks,
     })
 }
@@ -274,8 +274,8 @@ pub enum DnsProcessError {
     AwaitCredentials(AwaitSeedFileError),
     #[error("{0}")]
     ConnectNats(NatsConnectError),
-    #[error("failed to start runtime facts cache: {0}")]
-    StartFactsCache(FactCacheError),
+    #[error("failed to start role testimony cache: {0}")]
+    StartFactsCache(RoleTestimonyCacheError),
     #[error("failed to start DNS role query service: {0}")]
     StartRoleService(NatsServiceRuntimeError),
     #[error("failed to wait for shutdown: {0}")]
