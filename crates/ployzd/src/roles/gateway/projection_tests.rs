@@ -1,3 +1,10 @@
+use super::{
+    GatewayCertificateBundle, GatewayCertificateFailureAvailability,
+    GatewayCertificateMaterialFailure, GatewayCertificateMaterialFailureKind,
+    GatewayProjectedRoute, GatewayProjection, GatewayProjectionError, GatewayProjectionInput,
+    GatewayProjectionState, GatewayProjectionUpdate, GatewayRoute, GatewayServingEntry,
+    GatewayUnroutableContainer, GatewayUpstream, apply_gateway_update, project_gateway,
+};
 use ployz_core::certificate::{
     AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, AcmeHttp01Challenge,
     ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow, CustomCertBundle,
@@ -14,13 +21,6 @@ use ployz_test_support::containers;
 use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, route_hostname,
     route_port, service_id,
-};
-use ployzd::roles::gateway::projection::{
-    GatewayCertificateBundle, GatewayCertificateFailureAvailability,
-    GatewayCertificateMaterialFailure, GatewayCertificateMaterialFailureKind,
-    GatewayProjectedRoute, GatewayProjection, GatewayProjectionError, GatewayProjectionInput,
-    GatewayProjectionState, GatewayProjectionUpdate, GatewayRoute, GatewayServingEntry,
-    GatewayUnroutableContainer, GatewayUpstream, apply_gateway_update, project_gateway,
 };
 use std::net::SocketAddr;
 

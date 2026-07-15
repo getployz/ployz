@@ -661,3 +661,7 @@ fn host_and_port(
 
     Ok((hostname, port))
 }
+
+#[cfg(test)]
+#[path = "pingora_tests.rs"]
+mod tests;

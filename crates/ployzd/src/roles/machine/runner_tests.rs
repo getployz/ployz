@@ -1,10 +1,10 @@
-use ployz_core::machine::runtime::ManagedContainerIdentity;
-use ployz_test_support::containers;
-use ployz_test_support::ids::{container_id, operation_id, step_id};
-use ployzd::roles::machine::runner::{
+use super::{
     ExistingManagedContainer, ExistingManagedContainerState, MachineContainerRunDecision,
     decide_container_run,
 };
+use ployz_core::machine::runtime::ManagedContainerIdentity;
+use ployz_test_support::containers;
+use ployz_test_support::ids::{container_id, operation_id, step_id};
 
 #[test]
 fn matching_operation_step_and_request_labels_reuse_existing_container() {

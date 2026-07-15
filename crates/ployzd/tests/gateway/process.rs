@@ -37,8 +37,6 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-mod support;
-
 #[tokio::test]
 async fn gateway_process_reports_http_bind_failure_before_returning() {
     let nats = TestNats::start().await;
@@ -447,7 +445,7 @@ impl TestNats {
         let core_store = ployzd::control::store::CoreStore::open_in_memory()
             .await
             .expect("core store opens");
-        support::intent::initialize_disabled_ingress(&core_store).await;
+        crate::support::intent::initialize_disabled_ingress(&core_store).await;
         start_intent_service(
             self.client.clone(),
             machine_id("machine_a"),

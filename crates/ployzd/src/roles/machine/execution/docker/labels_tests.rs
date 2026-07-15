@@ -1,3 +1,7 @@
+use super::{
+    self as labels, CONTAINER_TYPE_LABEL, MANAGED_LABEL, ManagedContainerLabelError,
+    NAMESPACE_REVISION_ENTRY_LABEL, OPERATION_ID_LABEL, SERVICE_ID_LABEL, STEP_ID_LABEL,
+};
 use ployz_core::machine::runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot,
     MachineContainerObservationSnapshotError, ManagedContainerIdentity,
@@ -5,10 +9,6 @@ use ployz_core::machine::runtime::{
 };
 use ployz_test_support::containers;
 use ployz_test_support::ids::{container_id, machine_id};
-use ployzd::roles::machine::execution::docker::labels::{
-    self, CONTAINER_TYPE_LABEL, MANAGED_LABEL, ManagedContainerLabelError,
-    NAMESPACE_REVISION_ENTRY_LABEL, OPERATION_ID_LABEL, SERVICE_ID_LABEL, STEP_ID_LABEL,
-};
 
 #[test]
 fn machine_snapshot_rejects_observations_for_a_different_machine() {

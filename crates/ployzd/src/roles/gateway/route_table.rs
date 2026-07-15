@@ -234,3 +234,7 @@ mod tests {
         }))
     }
 }
+
+#[cfg(test)]
+#[path = "route_table_tests.rs"]
+mod integration_tests;

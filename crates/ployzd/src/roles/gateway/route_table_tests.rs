@@ -1,3 +1,9 @@
+use super::{GatewayProjector, GatewayRouteSelectionError, GatewayRouteTable};
+use crate::roles::gateway::projection::{
+    GatewayProjectedRoute, GatewayProjection, GatewayProjectionError, GatewayProjectionInput,
+    GatewayProjectionState, GatewayProjectionUpdate, GatewayRoute, GatewayServingEntry,
+    GatewayUpstream,
+};
 use ployz_core::ids::RouteBindingId;
 use ployz_core::ingress::{CertificateOwner, RouteBindingOrigin};
 use ployz_core::machine::runtime::{
@@ -8,14 +14,6 @@ use ployz_test_support::containers;
 use ployz_test_support::ids::{
     container_id, machine_id, namespace_id, namespace_revision_entry_id, route_hostname,
     route_port, service_id,
-};
-use ployzd::roles::gateway::projection::{
-    GatewayProjectedRoute, GatewayProjection, GatewayProjectionError, GatewayProjectionInput,
-    GatewayProjectionState, GatewayProjectionUpdate, GatewayRoute, GatewayServingEntry,
-    GatewayUpstream,
-};
-use ployzd::roles::gateway::route_table::{
-    GatewayProjector, GatewayRouteSelectionError, GatewayRouteTable,
 };
 
 #[test]

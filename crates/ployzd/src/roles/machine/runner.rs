@@ -253,3 +253,7 @@ pub fn decide_container_run(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "runner_tests.rs"]
+mod tests;

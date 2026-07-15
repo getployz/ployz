@@ -401,3 +401,7 @@ fn index_running_containers(
         unroutable_by_entry,
     }
 }
+
+#[cfg(test)]
+#[path = "projection_tests.rs"]
+mod tests;

@@ -126,3 +126,7 @@ fn parse_id<Id>(
     parse(required_label(labels, label)?.to_owned())
         .map_err(|source| ManagedContainerLabelError::InvalidId { label, source })
 }
+
+#[cfg(test)]
+#[path = "labels_tests.rs"]
+mod tests;

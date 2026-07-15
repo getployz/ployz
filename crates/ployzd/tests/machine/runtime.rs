@@ -13,9 +13,7 @@ use ployzd::roles::machine::protocol::{
 };
 use ployzd::roles::machine::service::start_machine_role_service;
 
-mod support;
-
-use support::machine_runtime::{ObservingContainerRunner, ReadyWireGuardEbpf};
+use crate::support::machine_runtime::{ObservingContainerRunner, ReadyWireGuardEbpf};
 
 #[tokio::test]
 async fn machine_runtime_serves_container_run_and_observes_created_container() {
