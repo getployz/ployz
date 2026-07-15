@@ -205,7 +205,7 @@ fn verified_attachment(
 
 #[cfg(test)]
 mod tests {
-    use super::HostCommandAction;
+    use super::super::HostCommandAction;
     use super::*;
 
     #[test]
