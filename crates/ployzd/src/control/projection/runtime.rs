@@ -329,7 +329,6 @@ async fn run_projection(
                 if message.is_none() {
                     health.projection_failed();
                     intent_changes = retry_subscription(&client, INTENT_CHANGED, &health).await;
-                    continue;
                 }
                 let intent = retry_intent_read(&intent_reader, &health).await;
                 let ingress = retry_ingress_read(&core_store, &health).await;
@@ -339,7 +338,6 @@ async fn run_projection(
                 if message.is_none() {
                     health.projection_failed();
                     ingress_changes = retry_subscription(&client, INGRESS_ENDPOINT_CHANGED, &health).await;
-                    continue;
                 }
                 let ingress = retry_ingress_read(&core_store, &health).await;
                 projection.ingress = Some(ingress);
