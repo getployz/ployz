@@ -1,10 +1,12 @@
-use std::io::IsTerminal;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use super::demote::repoint_non_core_roles;
+use super::environment::read_promotion_recovery_secret;
+use super::identity::{ServerCertificateSans, resurrect_core_identity, unwrap_core_seeds};
+use super::secret;
 use crate::cli::HostRunnerCorePromote;
-use crate::core_demote::repoint_non_core_roles;
 use crate::execution::SystemHostRunnerCommandRunner;
 use crate::execution::{ArtifactKind, ArtifactTarget, DataplaneArtifactTargets, artifact_target};
 use crate::execution::{HostRunnerLocalConfig, HostRunnerLocalEffects, SupervisorDirectories};
@@ -231,15 +233,14 @@ fn resolve_core_promote_target(
         std::fs::read(join_dir.join(JOIN_CORE_SEEDS_FILE))
             .map_err(|error| format!("cannot read the wrapped core seeds: {error}"))?,
     );
-    let secret = read_recovery_secret()?;
-    let ca_key_pem = String::from_utf8(
-        crate::recovery_secret::unwrap(&secret, &wrapped).map_err(|error| {
+    let secret = read_promotion_recovery_secret()?;
+    let ca_key_pem =
+        String::from_utf8(secret::unwrap(&secret, &wrapped).map_err(|error| {
             format!("cannot decrypt the CA key (wrong recovery secret?): {error}")
-        })?,
-    )
-    .map_err(|_| "decrypted CA key is not valid UTF-8".to_owned())?;
-    let core_seeds = crate::nats_identity::unwrap_core_seeds(&secret, &wrapped_seeds)
-        .map_err(|error| format!("{error}"))?;
+        })?)
+        .map_err(|_| "decrypted CA key is not valid UTF-8".to_owned())?;
+    let core_seeds =
+        unwrap_core_seeds(&secret, &wrapped_seeds).map_err(|error| format!("{error}"))?;
 
     // The machine persists its mirror beside its seed file; on a joined machine
     // that seed lives in the join-material directory (nats.creds), so the mirror is
@@ -275,16 +276,12 @@ fn resolve_core_promote_target(
     .map_err(|error| format!("promoted runtime NATS URL is invalid: {error}"))?;
 
     let hostname = gethostname::gethostname().into_string().ok();
-    let sans = crate::nats_identity::ServerCertificateSans::try_new_many(
-        control_endpoints.clone(),
-        hostname,
-    )
-    .map_err(|error| format!("{error}"))?;
+    let sans = ServerCertificateSans::try_new_many(control_endpoints.clone(), hostname)
+        .map_err(|error| format!("{error}"))?;
     // Reuse the old core's principals from the pre-positioned seeds; the grant set is
     // seeded into the store from the mirror by control at startup (ADR 0031).
-    let nats_identity =
-        crate::nats_identity::resurrect_core_identity(ca, ca_key_pem, core_seeds, &sans)
-            .map_err(|error| format!("{error}"))?;
+    let nats_identity = resurrect_core_identity(ca, ca_key_pem, core_seeds, &sans)
+        .map_err(|error| format!("{error}"))?;
 
     // Promotion reuses the old core's principals, so the operator's existing ployz
     // credential still authenticates — it only needs the promoted core's new address.
@@ -360,24 +357,6 @@ fn print_core_promote_result(access: &PromotedCoreAccess) {
 fn read_promote_file(path: &std::path::Path) -> Result<String, String> {
     std::fs::read_to_string(path)
         .map_err(|error| format!("cannot read {}: {error}", path.display()))
-}
-
-/// The cluster recovery secret: `PLOYZ_RECOVERY_SECRET` when set (automation and
-/// Cloud SSH forced commands), otherwise prompted (hidden) from an interactive
-/// terminal. Never on argv or in shell history either way.
-fn read_recovery_secret() -> Result<String, String> {
-    if let Some(secret) = std::env::var("PLOYZ_RECOVERY_SECRET")
-        .ok()
-        .filter(|value| !value.is_empty())
-    {
-        return Ok(secret);
-    }
-    if std::io::stdin().is_terminal() {
-        rpassword::prompt_password("Cluster recovery secret: ")
-            .map_err(|error| format!("failed to read recovery secret: {error}"))
-    } else {
-        Err("set PLOYZ_RECOVERY_SECRET, or run interactively to be prompted for it".to_owned())
-    }
 }
 
 #[cfg(test)]

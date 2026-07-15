@@ -9,23 +9,21 @@ use ployz_core::install::NatsMachineMaterialPaths;
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
-use ployz_host_runner::artifacts::{ArtifactKind, ArtifactTarget, DataplaneArtifactTargets};
-use ployz_host_runner::executor::{
-    HostRunnerStepEffects, HostRunnerStepEvent, HostRunnerStepRecorder,
-};
-use ployz_host_runner::lifecycle::machine_join::{
+use ployz_host_runner::execution::{ArtifactKind, ArtifactTarget, DataplaneArtifactTargets};
+use ployz_host_runner::execution::{PloyzdRoleEnvironmentFile, SupervisorUnitTarget};
+use ployz_host_runner::lifecycle::{
     HostRunnerJoinRedeemer, HostRunnerJoinReporter, HostRunnerJoinTokenConsumer,
     RedeemedHostRunnerJoin,
 };
-use ployz_host_runner::nats_identity::{
-    ClusterNatsIdentity, ServerCertificateSans, generate_cluster_nats_identity,
-};
-use ployz_host_runner::steps::{
+use ployz_host_runner::plan::{
     FirstMachineInstallTarget, HostRunnerJoinMaterial, HostRunnerJoinTarget, HostRunnerStep,
     HostRunnerStepEffectError, HostRunnerStepLabel, JoinToken, NonEmptyRoleSet,
     PloyzdRoleEnvironmentTarget, RoleNatsCredentials, first_machine_install_plan,
 };
-use ployz_host_runner::systemd::{PloyzdRoleEnvironmentFile, SupervisorUnitTarget};
+use ployz_host_runner::plan::{HostRunnerStepEffects, HostRunnerStepEvent, HostRunnerStepRecorder};
+use ployz_host_runner::recovery::{
+    ClusterNatsIdentity, ServerCertificateSans, generate_cluster_nats_identity,
+};
 use ployz_nats::connect::NatsClientUrl;
 use ployz_nats::server_config::NatsListener;
 use ployz_sdk_types::MachineJoinReportFailure;
@@ -248,7 +246,7 @@ pub fn edge_role_environment() -> PloyzdRoleEnvironmentTarget {
     .with_ebpf_ctl_path(PathBuf::from("/usr/local/bin/ployz-ebpf-ctl"))
 }
 
-pub fn first_machine_plan() -> ployz_host_runner::steps::HostRunnerStepPlan {
+pub fn first_machine_plan() -> ployz_host_runner::plan::HostRunnerStepPlan {
     first_machine_install_plan(FirstMachineInstallTarget::new(
         machine_id("machine_1"),
         ployzd_artifact(),
@@ -263,7 +261,7 @@ pub fn first_machine_plan() -> ployz_host_runner::steps::HostRunnerStepPlan {
 }
 
 pub fn installs_artifact_kind(
-    plan: &ployz_host_runner::steps::HostRunnerStepPlan,
+    plan: &ployz_host_runner::plan::HostRunnerStepPlan,
     kind: ArtifactKind,
 ) -> bool {
     plan.steps().iter().any(
@@ -271,7 +269,7 @@ pub fn installs_artifact_kind(
     )
 }
 
-pub fn writes_ployzd_role_units(plan: &ployz_host_runner::steps::HostRunnerStepPlan) -> bool {
+pub fn writes_ployzd_role_units(plan: &ployz_host_runner::plan::HostRunnerStepPlan) -> bool {
     plan.steps().iter().any(|step| {
         matches!(
             step,
@@ -281,12 +279,12 @@ pub fn writes_ployzd_role_units(plan: &ployz_host_runner::steps::HostRunnerStepP
     })
 }
 
-pub fn writes_nats_server_unit(plan: &ployz_host_runner::steps::HostRunnerStepPlan) -> bool {
+pub fn writes_nats_server_unit(plan: &ployz_host_runner::plan::HostRunnerStepPlan) -> bool {
     plan_writes_unit(plan, &SupervisorUnitTarget::NatsServer)
 }
 
 pub fn plan_writes_unit(
-    plan: &ployz_host_runner::steps::HostRunnerStepPlan,
+    plan: &ployz_host_runner::plan::HostRunnerStepPlan,
     target: &SupervisorUnitTarget,
 ) -> bool {
     plan.steps().iter().any(
@@ -296,10 +294,10 @@ pub fn plan_writes_unit(
 
 pub fn first_machine_nats_target(
     machine_id: MachineId,
-) -> ployz_host_runner::steps::NatsServerConfigTarget {
-    ployz_host_runner::steps::NatsServerConfigTarget::for_first_machine(
+) -> ployz_host_runner::plan::NatsServerConfigTarget {
+    ployz_host_runner::plan::NatsServerConfigTarget::for_first_machine(
         machine_id,
-        &ployz_host_runner::systemd::NatsServerUnitTarget::default_paths(),
+        &ployz_host_runner::execution::NatsServerUnitTarget::default_paths(),
         &NatsMachineMaterialPaths::in_default_state_dir(),
         NatsListener::Loopback,
     )

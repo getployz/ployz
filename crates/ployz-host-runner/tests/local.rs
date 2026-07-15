@@ -10,37 +10,37 @@ use ployz_core::install::NatsMachineMaterialPaths;
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
-use ployz_host_runner::artifacts::{
+use ployz_host_runner::execution::{
     ArtifactKind, ArtifactSource, ArtifactTarget, DataplaneArtifactTargets,
 };
-use ployz_host_runner::command::{HostRunnerCommandOutput, HostRunnerCommandRunner};
-use ployz_host_runner::executor::{
-    HostRunnerPlanFailure, HostRunnerPlanTerminal, HostRunnerStepEffects, HostRunnerStepEvent,
-    HostRunnerStepRecorder, execute_host_runner_plan,
+use ployz_host_runner::execution::{HostRunnerCommandOutput, HostRunnerCommandRunner};
+use ployz_host_runner::execution::{HostRunnerLocalConfig, HostRunnerLocalEffects};
+use ployz_host_runner::execution::{
+    NatsServerUnitTarget, PloyzdRoleEnvironmentFile, SupervisorUnitTarget,
 };
-use ployz_host_runner::lifecycle::assigned_substrate::{
+use ployz_host_runner::lifecycle::{
     AssignedSubstrateState, SubstrateAssignment, load_assigned_substrate_state,
 };
-use ployz_host_runner::lifecycle::machine_join::{
+use ployz_host_runner::lifecycle::{
     HostRunnerJoinRedeemer, HostRunnerJoinReporter, HostRunnerJoinTokenConsumer,
     RedeemedHostRunnerJoin, execute_host_runner_join,
 };
-use ployz_host_runner::lifecycle::machine_join::{
+use ployz_host_runner::lifecycle::{
     JOIN_MATERIAL_DIR, JOIN_MATERIAL_FILE, JOIN_NATS_CREDENTIALS_FILE, JOIN_RECOVERY_KEY_FILE,
     JOIN_TRUSTED_CA_FILE,
 };
-use ployz_host_runner::local::{HostRunnerLocalConfig, HostRunnerLocalEffects};
-use ployz_host_runner::nats_identity::{
-    ClusterNatsIdentity, ServerCertificateSans, generate_cluster_nats_identity,
-};
-use ployz_host_runner::steps::{
+use ployz_host_runner::plan::{
     ContainerRuntime, FirstMachineInstallTarget, HostPrerequisite, HostRunnerJoinMaterial,
     HostRunnerJoinTarget, HostRunnerStep, HostRunnerStepFailure, HostRunnerStepFailureReason,
     HostRunnerStepLabel, JoinToken, NonEmptyRoleSet, PloyzdRoleEnvironmentTarget,
     RoleNatsCredentials, first_machine_install_plan,
 };
-use ployz_host_runner::systemd::{
-    NatsServerUnitTarget, PloyzdRoleEnvironmentFile, SupervisorUnitTarget,
+use ployz_host_runner::plan::{
+    HostRunnerPlanFailure, HostRunnerPlanTerminal, HostRunnerStepEffects, HostRunnerStepEvent,
+    HostRunnerStepRecorder, execute_host_runner_plan,
+};
+use ployz_host_runner::recovery::{
+    ClusterNatsIdentity, ServerCertificateSans, generate_cluster_nats_identity,
 };
 use ployz_nats::connect::NatsClientUrl;
 use ployz_sdk_types::MachineJoinReportFailure;
@@ -1426,7 +1426,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
         .expect("join material is stored"),
         format!(
             "machine_id=machine_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_ca_sha256={}\ndataplane_endpoint_supernet=10.198.0.0/16\n",
-            ployz_host_runner::steps::ca_pem_sha256(test_ca_pem().as_str())
+            ployz_host_runner::plan::ca_pem_sha256(test_ca_pem().as_str())
         )
     );
     assert_eq!(
@@ -1540,7 +1540,7 @@ fn local_effects_store_redacted_join_material() {
         .expect("join material is stored"),
         format!(
             "machine_id=machine_2\ncluster_name=prod\nnats_credentials=[redacted]\ntrusted_nats_ca_sha256={}\ndataplane_endpoint_supernet=10.198.0.0/16\n",
-            ployz_host_runner::steps::ca_pem_sha256(test_ca_pem().as_str())
+            ployz_host_runner::plan::ca_pem_sha256(test_ca_pem().as_str())
         )
     );
     assert_eq!(
@@ -1902,7 +1902,7 @@ impl HostRunnerStepRecorder for RecordingRecorder {
 
 fn local_config(root: &Path, systemd_dir: &Path) -> HostRunnerLocalConfig {
     HostRunnerLocalConfig {
-        supervisor_dirs: ployz_host_runner::supervisor::SupervisorDirectories::new(
+        supervisor_dirs: ployz_host_runner::execution::SupervisorDirectories::new(
             systemd_dir.to_path_buf(),
             root.join("openrc"),
         ),
@@ -1982,7 +1982,7 @@ fn edge_runtime_role_env(root: &Path) -> PloyzdRoleEnvironmentTarget {
 fn first_machine_plan_with_ployzd(
     root: &Path,
     ployzd: ArtifactTarget,
-) -> ployz_host_runner::steps::HostRunnerStepPlan {
+) -> ployz_host_runner::plan::HostRunnerStepPlan {
     let nats_source = root.join("nats-server-source");
     fs::write(&nats_source, "ployz\n").expect("nats source can be written");
     first_machine_install_plan(

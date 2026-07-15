@@ -3,13 +3,13 @@ mod support;
 use ployz_core::install::{WrappedCaKey, WrappedCoreSeeds};
 
 use ployz_core::roles::InstallRolePolicy;
+use ployz_host_runner::execution::SupervisorUnitTarget;
 use ployz_host_runner::plan::{
     ContainerRuntime, FirstMachineInstallTarget, HostRunnerPlanFailure, HostRunnerPlanTerminal,
     HostRunnerRecordFailure, HostRunnerStep, HostRunnerStepEvent, HostRunnerStepFailure,
     HostRunnerStepFailureReason, HostRunnerStepLabel, execute_host_runner_plan,
     first_machine_install_plan, render_step_event,
 };
-use ployz_host_runner::systemd::SupervisorUnitTarget;
 use ployz_test_support::host_runner::{nats_server_artifact, ployzd_artifact};
 use ployz_test_support::ids::{failure_message, machine_id};
 use support::bootstrap::*;

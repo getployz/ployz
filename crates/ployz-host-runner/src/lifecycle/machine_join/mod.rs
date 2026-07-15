@@ -1,7 +1,7 @@
 //! Machine Join Redemption, local application, and later Report evidence.
 
 pub(crate) mod client;
-pub mod execution;
+pub(crate) mod execution;
 mod material;
 
 pub use execution::*;

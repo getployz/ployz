@@ -1,8 +1,8 @@
 use ployz_core::roles::DaemonProcessRole;
-use ployz_host_runner::execution::service::{
+use ployz_host_runner::execution::{
     NatsServerUnitTarget, PloyzdRoleEnvironmentFile, SupervisorUnitSpec, SupervisorUnitTarget,
 };
-use ployz_host_runner::execution::supervisor::{SupervisorBackend, SupervisorChange};
+use ployz_host_runner::execution::{SupervisorBackend, SupervisorChange};
 use ployz_test_support::host_runner::ployzd_artifact;
 use ployz_test_support::ids::machine_id;
 

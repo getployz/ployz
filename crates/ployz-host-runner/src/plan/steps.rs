@@ -27,7 +27,7 @@ use crate::execution::{
 use crate::lifecycle::assigned_substrate::{
     AssignedHostPort, AssignedSubstrateState, SubstrateAssignment,
 };
-use crate::nats_identity::ClusterNatsIdentity;
+use crate::recovery::ClusterNatsIdentity;
 
 pub use super::nats_material::{
     AUTHORIZED_USERS_FILE_NAME, NatsAuthorizedUsersTarget, NatsClientCredentialsTarget,

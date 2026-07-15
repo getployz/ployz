@@ -5,14 +5,12 @@ use ployz_core::install::{
     WrappedCoreSeeds,
 };
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
-use ployz_host_runner::artifacts::ArtifactKind;
-use ployz_host_runner::lifecycle::assigned_substrate::{
-    AssignedSubstrateState, SubstrateAssignment,
-};
-use ployz_host_runner::steps::{
+use ployz_host_runner::execution::ArtifactKind;
+use ployz_host_runner::execution::SupervisorUnitTarget;
+use ployz_host_runner::lifecycle::{AssignedSubstrateState, SubstrateAssignment};
+use ployz_host_runner::plan::{
     CorePromoteTarget, FirstMachineInstallTarget, HostRunnerStep, core_promote_plan,
 };
-use ployz_host_runner::systemd::SupervisorUnitTarget;
 use ployz_test_support::host_runner::{nats_server_artifact, ployzd_artifact};
 use ployz_test_support::ids::machine_id;
 use support::bootstrap::*;

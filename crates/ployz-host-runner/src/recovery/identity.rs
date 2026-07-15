@@ -15,7 +15,7 @@ use ployz_core::nats_config::{
 use ployz_nats::server_config::is_valid_host_syntax;
 use serde::{Deserialize, Serialize};
 
-use crate::recovery_secret::{self, RecoverySecretError};
+use super::secret::{self, RecoverySecretError};
 
 const CA_COMMON_NAME: &str = "ployz-cluster-ca";
 const LOOPBACK_SAN: &str = "127.0.0.1";
@@ -83,9 +83,7 @@ pub fn wrap_core_seeds(
     seeds: &CoreSeeds,
 ) -> Result<WrappedCoreSeeds, RecoverySecretError> {
     let plaintext = serde_json::to_vec(seeds).expect("core seeds serialize");
-    Ok(WrappedCoreSeeds::new(recovery_secret::wrap(
-        secret, &plaintext,
-    )?))
+    Ok(WrappedCoreSeeds::new(secret::wrap(secret, &plaintext)?))
 }
 
 /// Decrypt pre-positioned core seeds at promotion.
@@ -93,8 +91,7 @@ pub fn unwrap_core_seeds(
     secret: &str,
     wrapped: &WrappedCoreSeeds,
 ) -> Result<CoreSeeds, CoreSeedsError> {
-    let plaintext =
-        recovery_secret::unwrap(secret, wrapped.as_bytes()).map_err(CoreSeedsError::Decrypt)?;
+    let plaintext = secret::unwrap(secret, wrapped.as_bytes()).map_err(CoreSeedsError::Decrypt)?;
     serde_json::from_slice(&plaintext).map_err(|_| CoreSeedsError::Malformed)
 }
 

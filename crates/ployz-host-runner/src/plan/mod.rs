@@ -1,9 +1,9 @@
 //! Product-shaped Host Runner plans, ordered execution, and progress evidence.
 
-pub mod execution;
-pub mod nats_material;
-pub mod progress;
-pub mod steps;
+pub(crate) mod execution;
+pub(crate) mod nats_material;
+pub(crate) mod progress;
+pub(crate) mod steps;
 
 pub use execution::{
     HostRunnerPlanExecution, HostRunnerPlanFailure, HostRunnerPlanTerminal,

@@ -5,30 +5,15 @@
 //! The Host Runner owns local artifact installation, supervisor unit planning,
 //! and join material storage. It does not own product truth.
 
-pub mod artifacts;
 pub mod cli;
-pub mod cloud_client;
-pub mod command;
-pub mod core_demote;
-mod core_demote_command;
-mod core_promote;
+mod cloud_client;
 mod env_config;
 pub mod execution;
-pub mod executor;
-pub mod firewall;
-pub mod fsx;
-pub mod host_platform;
 pub mod lifecycle;
-pub mod local;
-pub mod nats_identity;
 pub mod plan;
-pub mod recovery_secret;
-pub mod release_manifest;
-pub mod report;
+pub mod recovery;
+mod release_manifest;
 mod runtime;
-pub mod steps;
-pub mod supervisor;
-pub mod systemd;
 
 use std::process::ExitCode;
 
@@ -67,9 +52,7 @@ pub fn run_host_runner_command(command: HostRunnerCommand) -> ExitCode {
         HostRunnerCommand::FirstMachineInstall(target) => {
             lifecycle::founder_bootstrap::run_first_machine_install_command(*target)
         }
-        HostRunnerCommand::CorePromote(promote) => core_promote::run_core_promote_command(promote),
-        HostRunnerCommand::CoreDemote(demote) => {
-            core_demote_command::run_core_demote_command(demote)
-        }
+        HostRunnerCommand::CorePromote(promote) => recovery::run_core_promote_command(promote),
+        HostRunnerCommand::CoreDemote(demote) => recovery::run_core_demote_command(demote),
     }
 }

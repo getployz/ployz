@@ -19,7 +19,7 @@ use ployz_core::nats_config::{
     NatsInternalAuthority, NatsUserPublicKey, NatsUserSeed,
 };
 use ployz_core::security::NatsPrincipal;
-use ployz_host_runner::nats_identity::{ServerCertificateSans, generate_cluster_nats_identity};
+use ployz_host_runner::recovery::{ServerCertificateSans, generate_cluster_nats_identity};
 use ployz_nats::connect::{
     NatsClientAuth, NatsClientUrl, NatsConnectConfig, NatsTlsTrust, connect_authenticated,
 };
@@ -457,7 +457,7 @@ struct WrittenTlsMaterial {
 /// into the fixture directory.
 fn write_tls_material(
     dir: &Path,
-    identity: &ployz_host_runner::nats_identity::ClusterNatsIdentity,
+    identity: &ployz_host_runner::recovery::ClusterNatsIdentity,
 ) -> Result<WrittenTlsMaterial, FixtureError> {
     let ca_path = dir.join("ca.pem");
     let cert_path = dir.join("server.crt");

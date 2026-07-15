@@ -2,7 +2,7 @@ mod support;
 
 use std::path::PathBuf;
 
-use ployz_host_runner::execution::artifacts::{
+use ployz_host_runner::execution::{
     ArtifactKind, ArtifactTarget, ArtifactTargetError, Sha256Digest,
 };
 use ployz_test_support::host_runner::{

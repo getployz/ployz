@@ -10,12 +10,13 @@ use crate::execution::{
 };
 use crate::execution::{NatsServerUnitTarget, SupervisorUnitFileError};
 use crate::lifecycle::machine_join::{JoinTokenFileError, read_join_token_file};
-use crate::nats_identity::{
+use crate::plan::{FirstMachineInstallTarget, JoinMaterialError, JoinToken};
+use crate::recovery::environment::resolve_founder_recovery_secret;
+use crate::recovery::{
     CoreSeeds, NatsIdentityError, ServerCertificateSans, generate_cluster_nats_identity,
     wrap_core_seeds,
 };
-use crate::plan::{FirstMachineInstallTarget, JoinMaterialError, JoinToken};
-use crate::recovery_secret::{self, RecoverySecretError};
+use crate::recovery::{RecoverySecretError, wrap};
 use crate::release_manifest::{ExactPloyzVersion, ExactPloyzVersionError};
 use clap::{Parser, Subcommand};
 use ployz_core::ids::OperationId;
@@ -483,9 +484,9 @@ pub fn first_machine_install_target_from_spec(
     let certificate_sans =
         ServerCertificateSans::try_new_many(machine_public_ips, hostname.clone())?;
     let nats_identity = generate_cluster_nats_identity(&certificate_sans)?;
-    let recovery_secret = resolve_recovery_secret();
+    let recovery_secret = resolve_founder_recovery_secret();
     let recovery_key_wrapped = WrappedCaKey::new(
-        recovery_secret::wrap(&recovery_secret, nats_identity.ca_key.secret().as_bytes())
+        wrap(&recovery_secret, nats_identity.ca_key.secret().as_bytes())
             .map_err(HostRunnerCliError::RecoverySecret)?,
     );
     let core_seeds_wrapped =
@@ -545,22 +546,6 @@ fn public_ip_env_override() -> Option<std::net::IpAddr> {
         .trim()
         .parse()
         .ok()
-}
-
-/// The operator's cluster recovery secret: `PLOYZ_RECOVERY_SECRET` if set, else
-/// generated and shown once (ADR 0031). It wraps the CA key and is required later
-/// to `core-promote`; it is never itself persisted.
-fn resolve_recovery_secret() -> String {
-    match std::env::var("PLOYZ_RECOVERY_SECRET") {
-        Ok(secret) if !secret.is_empty() => secret,
-        _ => {
-            let generated = recovery_secret::generate_recovery_secret();
-            eprintln!(
-                "cluster recovery secret (save this — required to promote a new core):\n    {generated}"
-            );
-            generated
-        }
-    }
 }
 
 #[derive(Debug)]

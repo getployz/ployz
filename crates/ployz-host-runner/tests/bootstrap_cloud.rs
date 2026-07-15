@@ -6,13 +6,12 @@ use ployz_core::install::{
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::ops::FailureMessage;
 use ployz_core::security::NatsPrincipal;
-use ployz_host_runner::cloud_client::{endpoint_url, validate_same_origin_url};
-use ployz_host_runner::lifecycle::cloud_bootstrap::{
+use ployz_host_runner::lifecycle::{
     CloudAttemptStateError, CloudBootstrapLocalState, cloud_joiner_connect_config,
     inspect_cloud_bootstrap_local_state, load_or_create_cloud_attempt,
     persist_cloud_terminal_callback, write_cloud_joiner_trusted_ca,
 };
-use ployz_host_runner::lifecycle::machine_join::{JOIN_MATERIAL_DIR, JOIN_NATS_CREDENTIALS_FILE};
+use ployz_host_runner::lifecycle::{JOIN_MATERIAL_DIR, JOIN_NATS_CREDENTIALS_FILE};
 use ployz_nats::connect::{NatsClientAuth, NatsTlsTrust};
 use ployz_sdk_types::{
     CloudBootstrapAttemptId, CloudBootstrapCallbackRequest, CloudBootstrapCallbackToken,
@@ -20,36 +19,6 @@ use ployz_sdk_types::{
     CloudBootstrapRedemptionId, CloudJoinerBootstrap, MachineJoinToken,
 };
 use support::bootstrap::{test_ca_pem, unique_temp_path};
-
-#[test]
-fn cloud_client_keeps_callback_authority_on_the_cloud_origin() {
-    assert_eq!(
-        endpoint_url("https://cloud.example.com", "/api/bootstrap/sessions")
-            .expect("endpoint builds"),
-        "https://cloud.example.com/api/bootstrap/sessions"
-    );
-    assert!(
-        validate_same_origin_url(
-            "https://cloud.example.com",
-            "https://cloud.example.com/api/bootstrap/redemptions/pcbr_1/callback"
-        )
-        .is_ok()
-    );
-    assert!(
-        validate_same_origin_url(
-            "https://cloud.example.com",
-            "https://evil.example.com/api/bootstrap/redemptions/pcbr_1/callback"
-        )
-        .is_err()
-    );
-    assert!(
-        validate_same_origin_url(
-            "https://cloud.example.com",
-            "https://cloud.example.com/api/bootstrap/redemptions/pcbr_1/callback?token=secret"
-        )
-        .is_err()
-    );
-}
 
 #[test]
 fn cloud_attempt_persists_one_terminal_callback_payload() {

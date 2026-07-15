@@ -1,16 +1,16 @@
 mod support;
 
 use ployz_core::roles::DaemonProcessRole;
-use ployz_host_runner::artifacts::{ArtifactKind, ArtifactTarget};
-use ployz_host_runner::executor::HostRunnerPlanFailure;
-use ployz_host_runner::lifecycle::machine_join::execute_host_runner_join;
-use ployz_host_runner::steps::{
+use ployz_host_runner::execution::SupervisorUnitTarget;
+use ployz_host_runner::execution::{ArtifactKind, ArtifactTarget};
+use ployz_host_runner::lifecycle::execute_host_runner_join;
+use ployz_host_runner::plan::HostRunnerPlanFailure;
+use ployz_host_runner::plan::{
     ContainerRuntime, HostRunnerJoinTarget, HostRunnerStep, HostRunnerStepFailure,
     HostRunnerStepFailureReason, HostRunnerStepLabel, JoinMaterialError, JoinToken,
     NonEmptyRoleSet, PloyzdRoleEnvironmentStep, RedactedJoinMaterial, RoleSetError,
     host_runner_join_local_install_plan,
 };
-use ployz_host_runner::systemd::SupervisorUnitTarget;
 use ployz_sdk_types::MachineJoinReportFailure;
 use ployz_test_support::host_runner::ployzd_artifact;
 use ployz_test_support::ids::{failure_message, machine_id};

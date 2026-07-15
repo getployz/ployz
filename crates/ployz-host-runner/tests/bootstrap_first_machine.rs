@@ -4,12 +4,12 @@ use ployz_core::dataplane::MachineEndpointSupernet;
 use ployz_core::install::{WrappedCaKey, WrappedCoreSeeds};
 use ployz_core::nats_config::{CredentialGrant, CredentialName, CredentialRole, NatsUserPublicKey};
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
-use ployz_host_runner::artifacts::ArtifactKind;
-use ployz_host_runner::steps::{
+use ployz_host_runner::execution::ArtifactKind;
+use ployz_host_runner::execution::SupervisorUnitTarget;
+use ployz_host_runner::plan::{
     FirstMachineInstallTarget, HostRunnerStep, PloyzdRoleEnvironmentStep,
     first_machine_install_plan,
 };
-use ployz_host_runner::systemd::SupervisorUnitTarget;
 use ployz_test_support::host_runner::{nats_server_artifact, ployzd_artifact};
 use ployz_test_support::ids::machine_id;
 use support::bootstrap::*;

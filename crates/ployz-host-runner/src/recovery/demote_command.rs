@@ -1,7 +1,7 @@
 use std::process::ExitCode;
 
+use super::demote::{CoreDemoteTarget, demote_local_core};
 use crate::cli::HostRunnerCoreDemote;
-use crate::core_demote::{CoreDemoteTarget, demote_local_core};
 use crate::execution::SystemHostRunnerCommandRunner;
 
 pub(crate) fn run_core_demote_command(demote: HostRunnerCoreDemote) -> ExitCode {
