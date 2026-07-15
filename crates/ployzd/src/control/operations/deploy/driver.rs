@@ -8,14 +8,14 @@ use crate::control::operation_evidence::{
     AcceptedDeploySubmission, OperationStatusWrite, RecordDeployTransitionError,
     RecordOperationEventError,
 };
-use crate::operation_api::admission::{AcceptedDeployExecution, OperationControllers};
-use crate::operations::deploy::{
+use crate::control::operations::deploy::{
     CertificateProvisioner, DeployContainer, DeployExecutionError, DeployExecutionInput,
     DeployExecutionOutcome, DeployExecutionPorts, DeployFactLoadError, DeployHealthCheckError,
     DeployHealthChecker, DeployPhasePromotion, MachineContainerRuntime, NamespaceCommitError,
     NamespaceStateCommitter, execute_deploy_operation, load_deploy_execution_facts_from_nats,
 };
-use crate::roles::machine::client::{
+use crate::control::operator_api::admission::{AcceptedDeployExecution, OperationControllers};
+use crate::control::role_client::machine::{
     MachineContainerInspectError, NatsMachineContainerRuntime, NatsMachineFactsReader,
 };
 use crate::roles::machine::protocol::{

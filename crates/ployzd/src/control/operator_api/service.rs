@@ -1,6 +1,6 @@
 //! NATS Service API wiring for daemon commands.
 
-use crate::operation_api::{
+use crate::control::operator_api::{
     OperationApiHandlers, core_replace, core_replace_report, credential_add, credential_list,
     credential_remove, deploy_reserve, deploy_submit, ingress_configure,
     init_first_machine_activate, machine_add, machine_drain, machine_join_redeem,

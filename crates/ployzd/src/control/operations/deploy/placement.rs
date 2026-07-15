@@ -11,7 +11,7 @@ use ployz_core::machine::{
 use ployz_core::ops::{FailureMessage, UnusableMachine};
 use ployz_core::state::{DataplaneUnavailableReason, MachineUsabilityReason, placement_rejection};
 
-use crate::roles::machine::client::MachinePlacementFacts;
+use crate::control::role_client::machine::MachinePlacementFacts;
 
 struct PreliminaryCandidate<'a> {
     machine_id: MachineId,

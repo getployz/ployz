@@ -2,7 +2,7 @@
 //! and return the operation id + watch subject.
 
 use crate::control::authorization::MintRequest;
-use crate::operation_api::admission::{
+use crate::control::operator_api::admission::{
     CoreReplaceSubmitCommand, CredentialGrantSubmitCommand, DeploySubmitCommand,
     IngressConfigureSubmitCommand, IngressConfigureSubmitError, MachineAddBootstrapMaterial,
     MachineAddBootstrapMaterialError, MachineAddSubmitCommand, MachineLifecycleSubmitCommand,
@@ -173,7 +173,7 @@ fn ingress_configure_submit_error(
         IngressConfigureSubmitError::Submit(error) => {
             match super::error_map::unfenced_submit_failure(
                 "ingress configure",
-                crate::operation_api::admission::SubmitCommandError::Submit(error),
+                crate::control::operator_api::admission::SubmitCommandError::Submit(error),
             ) {
                 super::error_map::UnfencedSubmitFailure::Unavailable { message } => {
                     IngressConfigureError::Unavailable {
@@ -194,7 +194,7 @@ fn ingress_configure_submit_error(
 
 fn credential_add_submit_error(
     operation_id: OperationId,
-    error: crate::operation_api::admission::SubmitCommandError,
+    error: crate::control::operator_api::admission::SubmitCommandError,
 ) -> CredentialAddError {
     match super::error_map::submit_failure(error) {
         super::error_map::SubmitFailure::Unavailable { message } => {
@@ -218,7 +218,7 @@ fn credential_add_submit_error(
 
 fn credential_remove_submit_error(
     operation_id: OperationId,
-    error: crate::operation_api::admission::SubmitCommandError,
+    error: crate::control::operator_api::admission::SubmitCommandError,
 ) -> CredentialRemoveError {
     match super::error_map::submit_failure(error) {
         super::error_map::SubmitFailure::Unavailable { message } => {

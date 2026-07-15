@@ -3,12 +3,12 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-use crate::roles::gateway::client::{
-    GatewayStatusGetOk, GatewayStatusGetRequest, GatewayStatusGetResponse,
-};
 use crate::roles::gateway::pingora::PingoraRouteRegistry;
 use crate::roles::gateway::projection::{
     GatewayCertificateFailureAvailability, GatewayProjectionError,
+};
+use crate::roles::gateway::protocol::{
+    GatewayStatusGetOk, GatewayStatusGetRequest, GatewayStatusGetResponse,
 };
 use crate::roles::gateway::route_table::GatewayProjector;
 use crate::roles::gateway::source::{GatewayCertificateStore, GatewayCertificateStoreError};

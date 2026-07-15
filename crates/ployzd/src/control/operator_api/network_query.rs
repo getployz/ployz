@@ -18,13 +18,12 @@ use ployz_sdk_types::{
 use sha2::{Digest, Sha256};
 
 use crate::control::intent::service::NatsIntentReader;
-use crate::roles::dns::protocol::{
-    DnsResolveRpcOk, DnsResolveRpcRequest, DnsStatusRpcOk, DnsStatusRpcRequest,
-};
-use crate::roles::machine::MachineRequestFailure;
-use crate::roles::machine::client::{
+use crate::control::role_client::dns::NatsDnsClient;
+use crate::control::role_client::machine::{
     DEFAULT_MACHINE_RPC_TIMEOUT, MAX_CONCURRENT_MACHINE_READS, unavailable_reason,
 };
+use crate::roles::dns::protocol::{DnsResolveRpcOk, DnsStatusRpcOk};
+use crate::roles::machine::MachineRequestFailure;
 use crate::roles::machine::protocol::{
     MachineDataplaneStatusDomainError, MachineDataplaneStatusRpcOk,
     MachineDataplaneStatusRpcRequest, MachineDataplaneStatusRpcResponse, MachineRpcResponse,
@@ -37,14 +36,17 @@ const NETWORK_STATUS_PAGE_SIZE: usize = 8;
 pub struct NetworkQueryService {
     intent_reader: NatsIntentReader,
     client: async_nats::Client,
+    dns_client: NatsDnsClient,
 }
 
 impl NetworkQueryService {
     #[must_use]
-    pub(crate) const fn new(intent_reader: NatsIntentReader, client: async_nats::Client) -> Self {
+    pub(crate) fn new(intent_reader: NatsIntentReader, client: async_nats::Client) -> Self {
+        let dns_client = NatsDnsClient::new(client.clone());
         Self {
             intent_reader,
             client,
+            dns_client,
         }
     }
 
@@ -66,7 +68,7 @@ impl NetworkQueryService {
             .map(|machine| machine.machine_id)
             .collect::<Vec<_>>();
         let machines = gather_dns_answers(
-            &self.client,
+            &self.dns_client,
             DEFAULT_MACHINE_RPC_TIMEOUT,
             &name,
             machine_ids,
@@ -107,7 +109,8 @@ impl NetworkQueryService {
             None => None,
         };
         let (page, next_cursor) = network_status_page(active_machines, cursor.as_ref());
-        let machines = gather_network_status(&self.client, gather_timeout, mode, page).await;
+        let machines =
+            gather_network_status(&self.client, &self.dns_client, gather_timeout, mode, page).await;
         Ok(NetworkStatusResult {
             snapshot: current,
             machines,
@@ -169,6 +172,7 @@ fn validate_network_status_snapshot(
 
 async fn gather_network_status(
     client: &async_nats::Client,
+    dns_client: &NatsDnsClient,
     gather_timeout: Duration,
     mode: NetworkStatusMode,
     active_machines: Vec<ActiveMachineState>,
@@ -179,19 +183,13 @@ async fn gather_network_status(
             let machine_id = &active.machine_id;
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let dataplane_request = MachineDataplaneStatusRpcRequest { mode };
-            let dns_request = DnsStatusRpcRequest {};
             let dataplane = request_json::<_, MachineDataplaneStatusRpcResponse>(
                 client,
                 machine_service(machine_id, MachineServiceEndpoint::DataplaneStatus),
                 &dataplane_request,
                 remaining,
             );
-            let dns = request_json::<_, DnsStatusRpcOk>(
-                client,
-                machine_service(machine_id, MachineServiceEndpoint::DnsStatus),
-                &dns_request,
-                remaining,
-            );
+            let dns = dns_client.status(machine_id, remaining);
             let (dataplane, dns) = tokio::join!(dataplane, dns);
             let dataplane = dataplane_testimony(machine_id, dataplane);
             let internal_dns = dns_status_testimony(machine_id, dns);
@@ -224,7 +222,7 @@ fn normalize_internal_name(name: &str) -> Option<InternalServiceName> {
 }
 
 async fn gather_dns_answers(
-    client: &async_nats::Client,
+    dns_client: &NatsDnsClient,
     gather_timeout: Duration,
     name: &InternalServiceName,
     machine_ids: Vec<MachineId>,
@@ -233,13 +231,7 @@ async fn gather_dns_answers(
     let answers = stream::iter(machine_ids)
         .map(|machine_id| async move {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            let response = request_json::<_, DnsResolveRpcOk>(
-                client,
-                machine_service(&machine_id, MachineServiceEndpoint::DnsResolve),
-                &DnsResolveRpcRequest { name: name.clone() },
-                remaining,
-            )
-            .await;
+            let response = dns_client.resolve(&machine_id, name, remaining).await;
             dns_resolve_testimony(machine_id, name, response)
         })
         .buffer_unordered(MAX_CONCURRENT_MACHINE_READS);
@@ -444,7 +436,7 @@ mod tests {
     use tokio::net::UdpSocket;
 
     use super::{
-        dataplane_testimony, dns_resolve_error_testimony, dns_resolve_testimony,
+        NatsDnsClient, dataplane_testimony, dns_resolve_error_testimony, dns_resolve_testimony,
         dns_status_testimony, gather_dns_answers, gather_network_status, network_status_intent,
         network_status_page, normalize_internal_name, validate_network_status_snapshot,
     };
@@ -789,9 +781,10 @@ mod tests {
         .await
         .expect("DNS role service");
         let name = normalize_internal_name("web.team-a").expect("internal name");
+        let dns_client = NatsDnsClient::new(nats.controller.clone());
 
         let answers = gather_dns_answers(
-            &nats.controller,
+            &dns_client,
             Duration::from_millis(100),
             &name,
             vec![machine_id("dns_a"), machine_id("dns_b")],
@@ -870,8 +863,10 @@ mod tests {
                 .expect("publish response");
         });
 
+        let dns_client = NatsDnsClient::new(nats.controller.clone());
         let result = gather_network_status(
             &nats.controller,
+            &dns_client,
             Duration::from_millis(200),
             ployz_core::dataplane::NetworkStatusMode::ProbePathMtu,
             vec![

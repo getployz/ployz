@@ -7,7 +7,7 @@ use crate::control::operation_evidence::{
     RedeemMachineJoinTokenError as RedeemMachineJoinTokenRepositoryError,
     ReplayOperationEventsError, SubmitOperationError,
 };
-use crate::operation_api::admission::{MachineAddSubmitCommandError, SubmitCommandError};
+use crate::control::operator_api::admission::{MachineAddSubmitCommandError, SubmitCommandError};
 use ployz_core::ids::OperationId;
 use ployz_core::ops::{
     EventSequence, FailureMessage, ProjectionOperationState, StatusProjectionError,
@@ -419,7 +419,9 @@ mod tests {
         OperationEventLogError, OperationStatusStoreError, ReplayOperationEventsError,
         SubmitOperationError,
     };
-    use crate::operation_api::admission::{MachineAddSubmitCommandError, SubmitCommandError};
+    use crate::control::operator_api::admission::{
+        MachineAddSubmitCommandError, SubmitCommandError,
+    };
     use ployz_core::ids::{NamespaceId, OperationId};
     use ployz_core::ops::EventSequence;
     use ployz_sdk_types::{DeploySubmitError, MachineAddError, OpsWatchError};

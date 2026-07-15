@@ -14,9 +14,9 @@ use crate::certificate::{
 use crate::control::intent::ingress_intent::{PloyzDnsTargetAllocation, PloyzDnsTargetStore};
 use crate::control::intent::machine_roster::MachineRosterStore;
 use crate::control::operation_evidence::{OperationStatusStoreError, RecordCertTransitionError};
+use crate::control::role_client::machine::{NatsMachineFactsReader, read_machine_placement_facts};
 use crate::control::store::CoreStoreError;
 use crate::lease::{BundleDownloadOutcome, LeaseClient, LeaseClientError};
-use crate::roles::machine::client::{NatsMachineFactsReader, read_machine_placement_facts};
 use crate::tasks::TaskRegistry;
 
 pub const CERTIFICATE_RENEWAL_TICK_INTERVAL: Duration = Duration::from_secs(60 * 60);

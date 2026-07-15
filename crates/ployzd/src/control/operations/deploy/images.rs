@@ -7,7 +7,7 @@ use ployz_core::deploy::{
 use ployz_core::image::{ImageEnsureRequest, ImageRepository, ImageRpcDomainError, OciDigest};
 use ployz_core::ops::{DeployEvidence, DeployOperationFailure, FailureMessage};
 
-use crate::roles::machine::client::{MachineImageEnsureError, MachineImageResolveError};
+use crate::control::role_client::machine::{MachineImageEnsureError, MachineImageResolveError};
 use crate::roles::machine::protocol::{MachineContainerResolveImageRpcRequest, MachineImagePull};
 
 use super::deploy_plan;

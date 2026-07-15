@@ -2,7 +2,7 @@ use crate::control::intent::ingress_intent::{
     IngressConfigurationWrite, IngressIntentStore, IngressIntentStoreError,
 };
 use crate::control::operation_evidence::AcceptedIngressConfigureSubmission;
-use crate::operation_api::admission::OperationControllers;
+use crate::control::operator_api::admission::OperationControllers;
 use crate::tasks::TaskRegistry;
 use ployz_core::ops::{FailureMessage, IngressConfigureFailure, IngressConfigureTransition};
 use ployz_core::subjects::INTENT_CHANGED;

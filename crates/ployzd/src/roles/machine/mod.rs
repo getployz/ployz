@@ -2,7 +2,7 @@
 //!
 //! - `protocol`: wire request/response types and the shared RPC envelope.
 //! - `service`: server-side NATS handlers for machine-local commands.
-//! - `client`: request-side NATS adapters used by deploy/control workers.
+//! - `client`: compatibility exports for Control-owned request adapters.
 //! - `execution`: machine-owned container, image, and host dataplane adapters.
 //! - `runner`: the `MachineContainerRunner` port and container-run decision.
 //! - `process`: the machine role process and observation loop.
@@ -11,7 +11,6 @@
 
 pub mod client;
 mod containers;
-pub(crate) mod convergence;
 mod dataplane;
 mod endpoints;
 pub mod execution;
@@ -20,7 +19,6 @@ mod images;
 /// Compatibility facade for the former Machine-owned recovery mirror.
 pub mod intent_mirror;
 mod logs;
-mod ployz_native_mesh;
 pub mod process;
 pub(crate) mod projection;
 pub mod protocol;

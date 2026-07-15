@@ -4,9 +4,9 @@ use crate::control::intent::service::NatsIntentReader;
 use crate::control::operation_evidence::{
     AcceptedServiceRestartSubmission, RecordOperationEventError,
 };
-use crate::operation_api::admission::OperationControllers;
-use crate::operations::deploy::{MachineContainerRuntime, MachineContainerRuntimeError};
-use crate::roles::machine::client::{
+use crate::control::operations::deploy::{MachineContainerRuntime, MachineContainerRuntimeError};
+use crate::control::operator_api::admission::OperationControllers;
+use crate::control::role_client::machine::{
     MachineContainerInspectError, NatsMachineContainerRuntime, NatsMachineFactsReader,
     read_available_machine_facts_by_id,
 };

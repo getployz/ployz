@@ -5,8 +5,8 @@ use crate::control::intent::service::NatsIntentReader;
 use crate::control::operation_evidence::{
     AcceptedVolumeRemoveSubmission, RecordOperationEventError,
 };
-use crate::operation_api::admission::OperationControllers;
-use crate::roles::machine::client::{
+use crate::control::operator_api::admission::OperationControllers;
+use crate::control::role_client::machine::{
     NatsMachineContainerRuntime, NatsMachineFactsReader, read_available_machine_facts_by_id,
 };
 use crate::tasks::TaskRegistry;

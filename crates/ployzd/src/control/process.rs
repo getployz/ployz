@@ -18,6 +18,16 @@ use crate::control::intent::service::{
     NatsIntentReader, RunningIntentService, start_intent_service,
 };
 use crate::control::operation_evidence::OperationRepository;
+use crate::control::operations::credential_grant::CredentialGrantOperation;
+use crate::control::operations::deploy::driver::{DeployOperationDriver, DeployOperationStores};
+use crate::control::operations::ingress_configure::IngressConfigureOperation;
+use crate::control::operations::machine_lifecycle::MachineLifecycleOperation;
+use crate::control::operations::machine_update::MachineUpdateOperation;
+use crate::control::operator_api::admission::OperationControllers;
+use crate::control::operator_api::service::{
+    ApiServiceError, start_operation_api_service_with_handlers,
+};
+use crate::control::operator_api::{OperationApiHandlers, OperationWorkers};
 use crate::control::projection::ingress_endpoint::{
     IngressEndpointStartError, RunningIngressEndpointProjection, start_ingress_endpoint_projection,
 };
@@ -28,24 +38,16 @@ use crate::control::reconciler::certificate::{
     CertificateRenewalHealth, CertificateRenewalHealthState, start_certificate_renewal_task,
 };
 use crate::control::reconciler::managed_dns::start_managed_dns_task;
+use crate::control::role_client::machine::{
+    NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
+};
 use crate::control::store::{CoreStore, CoreStoreError};
 use crate::lease::LeaseClient;
-use crate::operation_api::admission::OperationControllers;
-use crate::operation_api::service::{ApiServiceError, start_operation_api_service_with_handlers};
-use crate::operation_api::{OperationApiHandlers, OperationWorkers};
-use crate::operations::credential_grant::CredentialGrantOperation;
-use crate::operations::deploy::driver::{DeployOperationDriver, DeployOperationStores};
-use crate::operations::ingress_configure::IngressConfigureOperation;
-use crate::operations::machine_lifecycle::MachineLifecycleOperation;
-use crate::operations::machine_update::MachineUpdateOperation;
 use crate::process_support::shutdown_signal;
 use crate::recovery::{IntentMirror, PendingMachineJoinMirror};
 use crate::role_testimony::{
     RoleTestimonyCache, RoleTestimonyCacheError, RunningRoleTestimonyCache,
     start_role_testimony_cache,
-};
-use crate::roles::machine::client::{
-    NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
 };
 use crate::seed::{SeedCoreError, seed_core_from_snapshot};
 use crate::tasks::TaskRegistry;
@@ -291,20 +293,21 @@ async fn start_control_process_with_client_reload_and_issuer(
         config.deploy_step_timeout,
         deploy_tasks.clone(),
     );
-    let service_restart = crate::operations::service_restart::ServiceRestartOperation::new(
+    let service_restart = crate::control::operations::service_restart::ServiceRestartOperation::new(
         client.clone(),
         controllers.clone(),
         config.deploy_step_timeout,
         service_restart_tasks.clone(),
     );
-    let namespace_remove = crate::operations::namespace_remove::NamespaceRemoveOperation::new(
-        client.clone(),
-        namespace_intent.clone(),
-        controllers.clone(),
-        config.deploy_step_timeout,
-        namespace_remove_tasks.clone(),
-    );
-    let volume_remove = crate::operations::volume_remove::VolumeRemoveOperation::new(
+    let namespace_remove =
+        crate::control::operations::namespace_remove::NamespaceRemoveOperation::new(
+            client.clone(),
+            namespace_intent.clone(),
+            controllers.clone(),
+            config.deploy_step_timeout,
+            namespace_remove_tasks.clone(),
+        );
+    let volume_remove = crate::control::operations::volume_remove::VolumeRemoveOperation::new(
         client.clone(),
         namespace_intent.clone(),
         controllers.clone(),
@@ -341,7 +344,7 @@ async fn start_control_process_with_client_reload_and_issuer(
     let logs_tailer = NatsMachineLogsTailer::new(client.clone());
     let facts_reader = NatsMachineFactsReader::new(client.clone());
     let intent_reader = NatsIntentReader::new(client.clone());
-    let network_repair = crate::operations::network_repair::NetworkRepairOperation::new(
+    let network_repair = crate::control::operations::network_repair::NetworkRepairOperation::new(
         controllers.clone(),
         intent_reader
             .clone()

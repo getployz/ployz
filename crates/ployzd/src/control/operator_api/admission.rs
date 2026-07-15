@@ -272,7 +272,7 @@ impl OperationControllers {
             });
         }
         let store = self.repository.core_store().clone();
-        if let Err(error) = crate::operations::deploy::validate_deploy_route_admission(
+        if let Err(error) = crate::control::operations::deploy::validate_deploy_route_admission(
             &command.target,
             &crate::control::intent::ingress_intent::IngressIntentStore::new(store.clone()),
             &crate::control::intent::ingress_intent::PloyzDnsTargetStore::new(store.clone()),

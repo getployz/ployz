@@ -3,7 +3,7 @@ use ployz_core::dataplane::MachineDataplaneStatus;
 use ployz_core::ids::MachineId;
 use ployz_core::ops::FailureMessage;
 
-use super::client::NatsMachineFactsReader;
+use super::machine::NatsMachineFactsReader;
 
 pub(crate) async fn gather_dataplane_statuses<'a>(
     reader: &NatsMachineFactsReader,

@@ -5,7 +5,7 @@ use ployz_core::ids::MachineId;
 use ployz_core::roles::GatewayRole;
 use ployz_core::state::ActiveMachineState;
 
-use crate::roles::machine::client::MachinePlacementFacts;
+use crate::control::role_client::machine::MachinePlacementFacts;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayCertificateTarget {

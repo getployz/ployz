@@ -4,13 +4,14 @@ use crate::control::intent::service::NatsIntentReader;
 use crate::control::operation_evidence::{
     AcceptedNetworkRepairSubmission, OperationStatusStoreError, RecordOperationEventError,
 };
-use crate::operation_api::admission::OperationControllers;
-use crate::roles::dns::protocol::{DnsStatusRpcOk, DnsStatusRpcRequest};
-use crate::roles::machine::client::{
+use crate::control::operator_api::admission::OperationControllers;
+use crate::control::role_client::dns::NatsDnsClient;
+use crate::control::role_client::machine::{
     MAX_CONCURRENT_MACHINE_READS, MachineFactsRefreshError, NatsMachineFactsReader,
     unavailable_reason,
 };
-use crate::roles::machine::convergence::gather_dataplane_statuses;
+use crate::control::role_client::machine_convergence::gather_dataplane_statuses;
+use crate::roles::dns::protocol::DnsStatusRpcOk;
 use crate::roles::machine::{MachineRequestFailure, MachineRuntimeUnavailableReason};
 use crate::tasks::TaskRegistry;
 use futures_util::{StreamExt, stream};
@@ -26,8 +27,7 @@ use ployz_core::ops::{
     NetworkRepairMachineFactsRefreshOutcome, NetworkRepairProgressPhase,
     NetworkRepairRequestFailure, NetworkRepairRunningStage, NetworkRepairTransition,
 };
-use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
-use ployz_nats::service_runtime::{NatsJsonServiceRequestError, request_json};
+use ployz_nats::service_runtime::NatsJsonServiceRequestError;
 use std::time::Duration;
 
 const DNS_REFRESH_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -47,6 +47,7 @@ pub struct NetworkRepairOperation {
     intent_reader: NatsIntentReader,
     facts_reader: NatsMachineFactsReader,
     client: async_nats::Client,
+    dns_client: NatsDnsClient,
     operation_timeout: Duration,
     task_registry: TaskRegistry,
 }
@@ -61,11 +62,13 @@ impl NetworkRepairOperation {
         operation_timeout: Duration,
         task_registry: TaskRegistry,
     ) -> Self {
+        let dns_client = NatsDnsClient::new(client.clone());
         Self {
             controllers,
             intent_reader,
             facts_reader,
             client,
+            dns_client,
             operation_timeout,
             task_registry,
         }
@@ -440,13 +443,7 @@ impl NetworkRepairOperation {
         let timeout = DNS_STATUS_REQUEST_TIMEOUT.min(self.operation_timeout);
         stream::iter(machine_ids.iter().cloned())
             .map(|machine_id| async move {
-                let result = request_json::<_, DnsStatusRpcOk>(
-                    &self.client,
-                    machine_service(&machine_id, MachineServiceEndpoint::DnsStatus),
-                    &DnsStatusRpcRequest {},
-                    timeout,
-                )
-                .await;
+                let result = self.dns_client.status(&machine_id, timeout).await;
                 (machine_id, result)
             })
             .buffer_unordered(MAX_CONCURRENT_MACHINE_READS)
@@ -464,13 +461,10 @@ impl NetworkRepairOperation {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let results = stream::iter(machine_ids.iter().cloned())
                 .map(|machine_id| async move {
-                    let result = request_json::<_, DnsStatusRpcOk>(
-                        &self.client,
-                        machine_service(&machine_id, MachineServiceEndpoint::DnsStatus),
-                        &DnsStatusRpcRequest {},
-                        DNS_STATUS_REQUEST_TIMEOUT.min(remaining),
-                    )
-                    .await;
+                    let result = self
+                        .dns_client
+                        .status(&machine_id, DNS_STATUS_REQUEST_TIMEOUT.min(remaining))
+                        .await;
                     (machine_id, result)
                 })
                 .buffer_unordered(MAX_CONCURRENT_MACHINE_READS)

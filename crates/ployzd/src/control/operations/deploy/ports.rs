@@ -11,7 +11,7 @@ use std::future::Future;
 
 use crate::certificate::GatewayCertificateTarget;
 
-use crate::roles::machine::client::{MachineImageEnsureError, MachineImageResolveError};
+use crate::control::role_client::machine::{MachineImageEnsureError, MachineImageResolveError};
 use crate::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerResolveImageRpcRequest,
     MachineContainerRestartRpcRequest, MachineContainerRunHookRpcOk,
@@ -168,7 +168,7 @@ pub enum NamespaceCommitError {
     },
 }
 
-impl DeployOperationRecorder for crate::operation_api::admission::OperationControllers {
+impl DeployOperationRecorder for crate::control::operator_api::admission::OperationControllers {
     async fn record_deploy_transition(
         &mut self,
         operation_id: &OperationId,

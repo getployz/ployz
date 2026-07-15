@@ -14,9 +14,9 @@ use ployz_core::ops::FailureMessage;
 use ployz_core::state::StagedMachineDataplaneState;
 
 use crate::control::intent::service::NatsIntentReader;
-use crate::operation_api::admission::OperationControllers;
-use crate::roles::machine::client::{MachineFactsReadError, NatsMachineFactsReader};
-use crate::roles::machine::convergence::gather_dataplane_statuses;
+use crate::control::operator_api::admission::OperationControllers;
+use crate::control::role_client::machine::{MachineFactsReadError, NatsMachineFactsReader};
+use crate::control::role_client::machine_convergence::gather_dataplane_statuses;
 
 const DATAPLANE_ADMISSION_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const DATAPLANE_ADMISSION_DEADLINE: Duration = Duration::from_secs(45);

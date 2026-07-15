@@ -6,16 +6,16 @@ mod volume;
 pub use volume::VolumeQueryService;
 
 use crate::control::intent::service::NatsIntentReader;
+use crate::control::operator_api::admission::OperationControllers;
 use crate::control::projection::runtime_state::{
     from_sources as runtime_snapshot_from_sources, load_ingress_sources, service_snapshot,
 };
-use crate::control::store::CoreStore;
-use crate::operation_api::admission::OperationControllers;
-use crate::role_testimony::RoleTestimonyCache;
-use crate::roles::machine::client::{
+use crate::control::role_client::machine::{
     MachineLogsTailError, NatsMachineFactsReader, NatsMachineLogsTailer,
     read_available_machine_facts, read_available_machine_facts_by_id,
 };
+use crate::control::store::CoreStore;
+use crate::role_testimony::RoleTestimonyCache;
 use crate::roles::machine::protocol::MachineLogsTailRpcRequest;
 use ployz_core::ids::{ContainerId, MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::machine_runtime::ManagedContainerKind;

@@ -1,6 +1,8 @@
 //! Request-side adapter for reading a machine's WireGuard admission identity.
 
-use crate::roles::machine::client::{MachineCallError, NatsMachineFactsReader, call_machine};
+use crate::control::role_client::machine::{
+    MachineCallError, NatsMachineFactsReader, call_machine,
+};
 use crate::roles::machine::protocol::{
     MachineDataplanePublicKeyDomainError, MachineDataplanePublicKeyRpcOk,
     MachineDataplanePublicKeyRpcRequest,

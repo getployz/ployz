@@ -6,8 +6,8 @@ use crate::control::intent::ingress_intent::{
 };
 use crate::control::intent::namespace_intent::NamespaceIntentStore;
 use crate::control::intent::service::NatsIntentReader;
-use crate::roles::machine::client::{NatsMachineFactsReader, read_machine_placement_facts};
-use crate::roles::machine::convergence::gather_dataplane_statuses;
+use crate::control::role_client::machine::{NatsMachineFactsReader, read_machine_placement_facts};
+use crate::control::role_client::machine_convergence::gather_dataplane_statuses;
 use ployz_core::dataplane::{DataplaneMember, DataplaneProjection};
 use ployz_core::deploy::{DeployRequest, DeployRouteTarget, validate_deploy_route_bindings};
 use ployz_core::ids::MachineId;

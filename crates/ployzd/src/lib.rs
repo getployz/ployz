@@ -31,24 +31,12 @@ pub mod roles {
         pub mod pingora;
         pub mod process;
         pub mod projection;
+        pub(crate) mod protocol;
         pub mod route_table;
         pub mod source;
     }
     pub mod machine;
     pub mod nats_failover;
-}
-pub mod operations {
-    pub mod credential_grant;
-    pub mod dataplane_projection_admission;
-    pub mod deploy;
-    pub mod ingress_configure;
-    pub mod log;
-    pub mod machine_lifecycle;
-    pub mod machine_update;
-    pub mod namespace_remove;
-    pub mod network_repair;
-    pub mod service_restart;
-    pub mod volume_remove;
 }
 /// Compatibility facade for the Control-owned SQLite store.
 pub mod core_store;
@@ -60,7 +48,10 @@ pub mod ingress_endpoint;
 /// Compatibility facade for Control-owned durable operator intent.
 pub mod intent;
 pub mod lease;
+/// Compatibility facade for the Control-owned operator API.
 pub mod operation_api;
+/// Compatibility facade for Control-owned operation execution.
+pub mod operations;
 pub mod process_support;
 pub mod role_cli;
 pub mod seed;

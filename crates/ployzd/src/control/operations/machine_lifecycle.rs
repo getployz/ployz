@@ -6,7 +6,7 @@
 
 use crate::control::intent::machine_roster::{MachineLifecycleUpdate, MachineRosterStore};
 use crate::control::operation_evidence::AcceptedMachineLifecycleSubmission;
-use crate::operation_api::admission::OperationControllers;
+use crate::control::operator_api::admission::OperationControllers;
 use crate::tasks::TaskRegistry;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::ops::{FailureMessage, MachineLifecycleFailure, MachineLifecycleTransition};

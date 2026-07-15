@@ -9,7 +9,7 @@ use ployz_core::image::OciDigest;
 use ployz_core::ops::OperationIdempotencyKey;
 use ployz_sdk_types::{DeploySubmitError, NetworkRepairError};
 
-use crate::operation_api::admission::DeploySubmitCommand;
+use crate::control::operator_api::admission::DeploySubmitCommand;
 
 use super::{
     validate_internal_dns_name, validate_network_repair_preconditions,
