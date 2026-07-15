@@ -12,8 +12,8 @@ use ployz_host_runner::plan::{
     host_runner_join_local_install_plan,
 };
 use ployz_sdk_types::MachineJoinReportFailure;
-use ployz_test_support::host_runner::ployzd_artifact;
 use ployz_test_support::ids::{failure_message, machine_id};
+use support::artifacts::ployzd_artifact;
 use support::bootstrap::*;
 
 #[test]

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use ployz_host_runner::execution::{
     ArtifactKind, ArtifactTarget, ArtifactTargetError, Sha256Digest,
 };
-use ployz_test_support::host_runner::{
+use support::artifacts::{
     artifact_source as source, artifact_version as version, sha256_digest as digest,
 };
 use support::bootstrap::{HOST_RUNNER_DIGEST, PLOYZD_DIGEST};

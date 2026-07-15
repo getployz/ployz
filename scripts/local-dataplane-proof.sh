@@ -14,7 +14,7 @@ set -euo pipefail
 #
 # The two-machine cluster proof that used to live here (Layer B) is owned by
 # the Docker-in-Docker e2e harness: `scripts/dind-e2e.sh`,
-# `crates/ployz-e2e/tests/dind_cluster.rs`, docs/operations/dind-e2e.md.
+# `testing/ployz-e2e/tests/dind_cluster.rs`, docs/operations/dind-e2e.md.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib.sh

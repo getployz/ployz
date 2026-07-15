@@ -4,6 +4,10 @@ use ployz_core::install::{WrappedCaKey, WrappedCoreSeeds};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+use super::artifacts::{
+    artifact_source as source, artifact_version as version, nats_server_artifact, ployzd_artifact,
+    sha256_digest as digest,
+};
 use ployz_core::ids::MachineId;
 use ployz_core::install::NatsMachineMaterialPaths;
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
@@ -27,10 +31,6 @@ use ployz_host_runner::recovery::{
 use ployz_nats::connect::NatsClientUrl;
 use ployz_nats::server_config::NatsListener;
 use ployz_sdk_types::MachineJoinReportFailure;
-use ployz_test_support::host_runner::{
-    artifact_source as source, artifact_version as version, nats_server_artifact, ployzd_artifact,
-    sha256_digest as digest,
-};
 use ployz_test_support::ids::{failure_message, machine_id, operation_id};
 
 pub struct RecordingEffects {

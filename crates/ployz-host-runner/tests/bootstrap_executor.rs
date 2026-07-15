@@ -10,8 +10,8 @@ use ployz_host_runner::plan::{
     HostRunnerStepFailureReason, HostRunnerStepLabel, execute_host_runner_plan,
     first_machine_install_plan, render_step_event,
 };
-use ployz_test_support::host_runner::{nats_server_artifact, ployzd_artifact};
 use ployz_test_support::ids::{failure_message, machine_id};
+use support::artifacts::{nats_server_artifact, ployzd_artifact};
 use support::bootstrap::*;
 
 #[test]

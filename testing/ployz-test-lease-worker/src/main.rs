@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use ployz_lease_worker::{StubLeaseWorker, serve};
+use ployz_test_lease_worker::{StubLeaseWorker, serve};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
@@ -29,5 +29,5 @@ enum MainError {
     #[error("{0}")]
     Io(std::io::Error),
     #[error("{0}")]
-    Runtime(ployz_lease_worker::LeaseWorkerHttpError),
+    Runtime(ployz_test_lease_worker::LeaseWorkerHttpError),
 }

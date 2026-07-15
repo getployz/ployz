@@ -323,7 +323,7 @@ mod tests {
     };
     use ployz_core::ids::CertId;
     use ployz_core::ops::RouteHostname;
-    use ployz_lease_worker::{LeaseWorkerRequest, LeaseWorkerResponse, StubLeaseWorker};
+    use ployz_test_lease_worker::{LeaseWorkerRequest, LeaseWorkerResponse, StubLeaseWorker};
 
     use super::*;
 

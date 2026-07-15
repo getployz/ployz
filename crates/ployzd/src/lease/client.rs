@@ -220,7 +220,7 @@ impl LeaseClientError {
 mod tests {
     use super::*;
     use ployz_core::cert::ManagedLeaseAcquisitionId;
-    use ployz_lease_worker::{StubLeaseWorker, serve};
+    use ployz_test_lease_worker::{StubLeaseWorker, serve};
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;

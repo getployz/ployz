@@ -5,8 +5,8 @@ use ployz::deploy::compose::{ComposeInput, UnsupportedFieldMode, parse_deploy_fi
 use ployz_test_support::ids::{namespace_id, service_id};
 
 const DATABASE_COMPOSE: &str =
-    include_str!("../../ployz-e2e/tests/fixtures/v1-acceptance-database.yaml");
-const UMAMI_COMPOSE: &str = include_str!("../../ployz-e2e/tests/fixtures/v1-acceptance-umami.yaml");
+    include_str!("../../../testing/ployz-e2e/tests/fixtures/v1-acceptance-database.yaml");
+const UMAMI_COMPOSE: &str = include_str!("../../../testing/ployz-e2e/tests/fixtures/v1-acceptance-umami.yaml");
 
 fn parse(source: &str) -> ployz::deploy::compose::ParsedComposeDeploy {
     let (parsed, warnings) = parse_deploy_file(ComposeInput {

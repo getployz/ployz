@@ -1,3 +1,5 @@
+mod support;
+
 use std::path::PathBuf;
 
 use ployz_core::roles::DaemonProcessRole;
@@ -6,11 +8,11 @@ use ployz_host_runner::execution::{
     NatsServerUnit, NatsServerUnitTarget, PloyzdRoleEnvironmentFile, PloyzdRoleUnit,
     SupervisorUnitFileError, role_unit_name,
 };
-use ployz_test_support::host_runner::{
+use ployz_test_support::ids::machine_id;
+use support::artifacts::{
     artifact_source as source, artifact_version as version, ployzd_artifact,
     sha256_digest as digest,
 };
-use ployz_test_support::ids::machine_id;
 
 #[test]
 fn nats_server_unit_renders_supervised_configured_process() {

@@ -5,7 +5,7 @@ use ployz_core::certificate::{
     LeaseBearerToken, ManagedLeaseAcquireRequest, ManagedLeaseAcquisitionId,
     ManagedLeaseRenewRequest,
 };
-use ployz_lease_worker::{
+use ployz_test_lease_worker::{
     Clock, ClockError, LeaseWorkerRequest, LeaseWorkerResponse, STUB_LEASE_TTL_SECONDS,
     StubLeaseWorker,
 };

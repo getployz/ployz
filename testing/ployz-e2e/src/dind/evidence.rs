@@ -86,6 +86,6 @@ fn target_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {
         return PathBuf::from(dir);
     }
-    // crates/ployz-e2e -> workspace root -> target
+    // testing/ployz-e2e -> workspace root -> target
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target")
 }

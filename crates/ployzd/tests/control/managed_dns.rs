@@ -9,7 +9,7 @@ use ployz_core::intent::recovery::ControlPlaneEpoch;
 use ployz_core::operation::{
     ManagedDnsReconcileOperationState, ManagedDnsReconcileSubject, OperationStatus,
 };
-use ployz_lease_worker::{StubLeaseWorker, serve};
+use ployz_test_lease_worker::{StubLeaseWorker, serve};
 use ployzd::control::intent::ingress_intent::{
     IngressIntentStore, ManagedDnsCheckpoint, PloyzDnsTargetAllocation, PloyzDnsTargetStore,
 };

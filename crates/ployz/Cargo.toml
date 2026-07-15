@@ -37,7 +37,7 @@ tokio = { workspace = true, features = ["macros", "rt", "time"] }
 wait-timeout.workspace = true
 
 [dev-dependencies]
-ployz-test-support = { path = "../ployz-test-support" }
+ployz-test-support.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 
 [[bin]]

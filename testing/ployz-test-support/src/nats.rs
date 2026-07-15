@@ -19,7 +19,6 @@ use ployz_core::nats_config::{
     NatsInternalAuthority, NatsUserPublicKey, NatsUserSeed,
 };
 use ployz_core::security::NatsPrincipal;
-use ployz_host_runner::recovery::{ServerCertificateSans, generate_cluster_nats_identity};
 use ployz_nats::connect::{
     NatsClientAuth, NatsClientUrl, NatsConnectConfig, NatsTlsTrust, connect_authenticated,
 };
@@ -73,11 +72,7 @@ impl SecuredTestNats {
     ) -> Result<Self, FixtureError> {
         let dir = tempfile::TempDir::new()?;
 
-        // The cluster CA, server certificate, and base NKey users come from
-        // the production Host Runner identity minting — no parallel test-only
-        // TLS recipe.
-        let sans = ServerCertificateSans::try_new(None, Some("localhost".to_owned()))?;
-        let identity = generate_cluster_nats_identity(&sans)?;
+        let identity = generate_test_cluster_identity()?;
         let tls = write_tls_material(dir.path(), &identity)?;
 
         let controller = identity.controller;
@@ -453,18 +448,50 @@ struct WrittenTlsMaterial {
     key_path: PathBuf,
 }
 
-/// Writes the Host Runner-minted cluster CA, server certificate, and server key
-/// into the fixture directory.
+struct TestClusterIdentity {
+    ca_pem: String,
+    server_cert_pem: String,
+    server_key_pem: String,
+    controller: MintedNatsUser,
+    operator: MintedNatsUser,
+    join: MintedNatsUser,
+}
+
+fn generate_test_cluster_identity() -> Result<TestClusterIdentity, FixtureError> {
+    let ca_key = rcgen::KeyPair::generate()?;
+    let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new())?;
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    ca_params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, "ployz-cluster-ca");
+    let ca_certificate = ca_params.clone().self_signed(&ca_key)?;
+    let issuer = rcgen::Issuer::new(ca_params, ca_key);
+
+    let server_key = rcgen::KeyPair::generate()?;
+    let server_params =
+        rcgen::CertificateParams::new(vec!["127.0.0.1".to_owned(), "localhost".to_owned()])?;
+    let server_certificate = server_params.signed_by(&server_key, &issuer)?;
+
+    Ok(TestClusterIdentity {
+        ca_pem: ca_certificate.pem(),
+        server_cert_pem: server_certificate.pem(),
+        server_key_pem: server_key.serialize_pem(),
+        controller: MintedNatsUser::generate()?,
+        operator: MintedNatsUser::generate()?,
+        join: MintedNatsUser::generate()?,
+    })
+}
+
 fn write_tls_material(
     dir: &Path,
-    identity: &ployz_host_runner::recovery::ClusterNatsIdentity,
+    identity: &TestClusterIdentity,
 ) -> Result<WrittenTlsMaterial, FixtureError> {
     let ca_path = dir.join("ca.pem");
     let cert_path = dir.join("server.crt");
     let key_path = dir.join("server.key");
-    fs::write(&ca_path, identity.ca.as_str())?;
-    fs::write(&cert_path, identity.server_cert.cert_pem.as_str())?;
-    fs::write(&key_path, identity.server_cert.key_pem.secret())?;
+    fs::write(&ca_path, &identity.ca_pem)?;
+    fs::write(&cert_path, &identity.server_cert_pem)?;
+    fs::write(&key_path, &identity.server_key_pem)?;
     Ok(WrittenTlsMaterial {
         ca_path,
         cert_path,

@@ -11,8 +11,8 @@ use ployz_host_runner::lifecycle::{AssignedSubstrateState, SubstrateAssignment};
 use ployz_host_runner::plan::{
     CorePromoteTarget, FirstMachineInstallTarget, HostRunnerStep, core_promote_plan,
 };
-use ployz_test_support::host_runner::{nats_server_artifact, ployzd_artifact};
 use ployz_test_support::ids::machine_id;
+use support::artifacts::{nats_server_artifact, ployzd_artifact};
 use support::bootstrap::*;
 
 const MIRRORED_MACHINE_PUBLIC: &str = "UBCXCMGAZQZN55X5TTTWMB5CZNZIKJHEDZJOJ3TV63NKPJ6FRXSR2ZO4";

@@ -1,3 +1,5 @@
+mod support;
+
 use ployz_core::install::{HostPortAssurance, WrappedCaKey, WrappedCoreSeeds};
 use std::collections::VecDeque;
 use std::fs;
@@ -44,9 +46,9 @@ use ployz_host_runner::recovery::{
 };
 use ployz_nats::connect::NatsClientUrl;
 use ployz_sdk_types::MachineJoinReportFailure;
-use ployz_test_support::host_runner::{artifact_version as version, sha256_digest as digest};
 use ployz_test_support::ids::{failure_message, machine_id, operation_id};
 use std::sync::OnceLock;
+use support::artifacts::{artifact_version as version, sha256_digest as digest};
 
 #[test]
 fn externally_assured_host_ports_skip_firewall_and_store_assignment() {

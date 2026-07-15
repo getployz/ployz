@@ -28,7 +28,7 @@ openssl = "0.10"
 ployz-core.workspace = true
 ployz-nats.workspace = true
 ployz-sdk-types.workspace = true
-ployz = { path = "../ployz" }
+ployz = { path = "../../crates/ployz" }
 serde_json.workspace = true
 tar = "0.4"
 tempfile = "3"

@@ -159,10 +159,10 @@ async fn start_stub_lease_worker(docker: &Docker, cluster: &DindCluster) {
         .expect("write lease worker drop-in");
 
         let command = format!(
-            "systemctl is-active --quiet ployz-stub-lease-worker || \
-             systemd-run --unit=ployz-stub-lease-worker --property=Restart=always \
+            "systemctl is-active --quiet ployz-test-lease-worker || \
+             systemd-run --unit=ployz-test-lease-worker --property=Restart=always \
              --setenv=PLOYZ_LEASE_WORKER_ADDR=127.0.0.1:8089 \
-             {ARTIFACTS_MOUNT_PATH}/ployz-lease-worker"
+             {ARTIFACTS_MOUNT_PATH}/ployz-test-lease-worker"
         );
         let started = exec_in_container(docker, &machine.container_id, &["sh", "-c", &command])
             .await
