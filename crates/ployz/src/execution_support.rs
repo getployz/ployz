@@ -62,28 +62,6 @@ pub(crate) fn with_cluster_context_from_disk(
     Ok(config.with_cluster_context(context))
 }
 
-pub(crate) async fn watch_accepted_operation(
-    api: &OperationApiClient,
-    operation_id: OperationId,
-    config: &PloyzctlRuntimeConfig,
-) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
-    let (events, outcome) = watch_operation_until_terminal(
-        api,
-        operation_replay_request(operation_id),
-        config.ops_watch_timeout(),
-        config.ops_watch_poll_interval(),
-    )
-    .await?;
-    Ok(PloyzctlExecutionOutput::stdout(
-        crate::commands::ops::WatchOutput {
-            events,
-            output: crate::commands::ops::OpsWatchOutput::Text,
-        }
-        .render(),
-    )
-    .with_operation_outcome(outcome))
-}
-
 /// Connects, issues one operation API request, and renders the success value
 /// to stdout; API failures arrive as one rendered execution error.
 pub(crate) async fn render_api_call<T, E>(
@@ -123,25 +101,6 @@ pub(crate) async fn watch_operation_until_terminal(
     poll_interval: Duration,
 ) -> Result<(Vec<ReplayedOperationEvent>, Option<OperationOutcome>), PloyzctlExecutionError> {
     watch_operation_until_terminal_with(api, request, timeout, poll_interval, |_| Ok(())).await
-}
-
-pub(crate) async fn replay_operation_events(
-    api: &OperationApiClient,
-    mut request: OperationEventReplayRequest,
-) -> Result<Vec<ReplayedOperationEvent>, PloyzctlExecutionError> {
-    let mut events = Vec::new();
-    loop {
-        let page = api.ops_watch(&request).await.map_err(api_error)?;
-        events.extend(page.events);
-        match page.cursor {
-            OperationEventReplayCursor::More {
-                next_start_sequence,
-            } => request.start_sequence = next_start_sequence,
-            OperationEventReplayCursor::CaughtUp | OperationEventReplayCursor::Terminal => {
-                return Ok(events);
-            }
-        }
-    }
 }
 
 pub(crate) async fn watch_operation_until_terminal_with(
@@ -205,17 +164,6 @@ async fn operation_terminal_outcome(
         .await
         .map_err(api_error)?;
     Ok(snapshot.status.terminal_outcome())
-}
-
-pub(crate) fn operation_replay_request(operation_id: OperationId) -> OperationEventReplayRequest {
-    OperationEventReplayRequest {
-        operation_id,
-        start_sequence: EventSequence::first(),
-        limit: ployz_core::ops::OperationEventReplayLimit::try_new(
-            ployz_core::ops::MAX_OPERATION_EVENT_REPLAY_LIMIT,
-        )
-        .expect("max replay limit is valid"),
-    }
 }
 
 fn next_event_sequence(sequence: EventSequence) -> Option<EventSequence> {

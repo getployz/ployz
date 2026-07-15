@@ -1,23 +1,22 @@
-use crate::commands::network::{
-    NetworkRepairCommand, NetworkResolveCommand, NetworkResolveOutput, NetworkStatusCommand,
-    NetworkStatusOutput,
+use crate::network::command::{
+    NetworkRepairCommand, NetworkRepairOutput, NetworkResolveCommand, NetworkResolveOutput,
+    NetworkStatusCommand, NetworkStatusOutput,
 };
-use crate::machine::command::AcceptedOperationOutput;
 
 use std::time::Duration;
 
-use super::PloyzctlRuntimeConfig;
 use crate::execution_support::{
     PloyzctlExecutionError, PloyzctlExecutionOutput, api_error, operation_api_client,
-    watch_accepted_operation,
 };
+use crate::operation::runtime::watch_accepted;
+use crate::runtime::PloyzctlRuntimeConfig;
 
 /// Client request budget covering the daemon's 30s per-RPC machine gather for a
 /// network query. `--probe` adds per-peer path-MTU probing, so it needs more.
 const NETWORK_QUERY_TIMEOUT: Duration = Duration::from_secs(45);
 const NETWORK_PROBE_TIMEOUT: Duration = Duration::from_secs(75);
 
-pub(super) async fn status(
+pub(crate) async fn status(
     command: NetworkStatusCommand,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
@@ -54,7 +53,7 @@ pub(super) async fn status(
     ))
 }
 
-pub(super) async fn resolve(
+pub(crate) async fn resolve(
     command: NetworkResolveCommand,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
@@ -70,7 +69,7 @@ pub(super) async fn resolve(
     ))
 }
 
-pub(super) async fn repair(
+pub(crate) async fn repair(
     command: NetworkRepairCommand,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
@@ -82,8 +81,8 @@ pub(super) async fn repair(
         .map_err(api_error)?;
     if detach {
         return Ok(PloyzctlExecutionOutput::stdout(
-            AcceptedOperationOutput::from_accepted(accepted).render(),
+            NetworkRepairOutput::from_accepted(accepted).render(),
         ));
     }
-    watch_accepted_operation(&api, accepted.operation_id, config).await
+    watch_accepted(&api, accepted.operation_id, config).await
 }

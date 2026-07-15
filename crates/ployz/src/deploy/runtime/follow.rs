@@ -14,9 +14,10 @@ use crate::deploy::render::{
 use super::history as deploy_history;
 use crate::execution_support::{
     CommandExit, PloyzctlExecutionError, PloyzctlExecutionOutput, api_error, nats_connect_config,
-    operation_api_client_with_connect, operation_replay_request,
-    watch_operation_until_terminal_with, with_cluster_context_from_disk,
+    operation_api_client_with_connect, watch_operation_until_terminal_with,
+    with_cluster_context_from_disk,
 };
+use crate::operation::runtime::replay_request;
 use crate::runtime::PloyzctlRuntimeConfig;
 
 pub(crate) async fn execute_deploy(
@@ -130,7 +131,7 @@ pub(super) async fn watch_deploy_operation(
 
     let (events, outcome) = watch_operation_until_terminal_with(
         api,
-        operation_replay_request(operation_id),
+        replay_request(operation_id),
         config.ops_watch_timeout(),
         config.ops_watch_poll_interval(),
         |events| {

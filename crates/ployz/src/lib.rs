@@ -15,6 +15,8 @@ pub mod host_runner_install;
 pub mod image_push;
 pub mod local_release;
 pub mod machine;
+pub mod network;
+pub mod operation;
 pub mod remote_machine_runtime;
 pub mod runtime;
 mod shell;

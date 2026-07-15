@@ -7,7 +7,7 @@ use crate::api_client::{NatsServiceRequestFailure, OperationApiClientError};
 use crate::execution_support::{
     CommandExit, PloyzctlExecutionError, PloyzctlExecutionOutput, api_error, nats_connect_config,
     operation_api_client, operation_api_client_with_connect, render_api_call,
-    watch_accepted_operation, with_cluster_context_from_disk,
+    with_cluster_context_from_disk,
 };
 use crate::machine::command::{
     AcceptedOperationOutput, MachineAddCommand, MachineAddOutput, MachineInspectCommand,
@@ -18,6 +18,7 @@ use crate::machine::founder::join_template::MachineJoinTemplateCommand;
 use crate::machine::founder::{
     FirstMachineActivateCommand, FirstMachineInitCommand, FirstMachineInitMode,
 };
+use crate::operation::runtime::watch_accepted;
 use crate::runtime::PloyzctlRuntimeConfig;
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::ops::MachineAddOperationStateName;
@@ -177,7 +178,7 @@ pub(crate) async fn update(
             AcceptedOperationOutput::from_accepted(accepted).render(),
         ));
     }
-    watch_accepted_operation(&api, accepted.operation_id, config).await
+    watch_accepted(&api, accepted.operation_id, config).await
 }
 
 pub(crate) async fn lifecycle(
@@ -198,7 +199,7 @@ pub(crate) async fn lifecycle(
             AcceptedOperationOutput::from_accepted(accepted).render(),
         ));
     }
-    watch_accepted_operation(&api, accepted.operation_id, config).await
+    watch_accepted(&api, accepted.operation_id, config).await
 }
 
 pub(crate) async fn list(
