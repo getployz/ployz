@@ -29,11 +29,11 @@ use ployz_core::image::{ImageEnsureOk, ImageEnsureRequest, ImageRpcDomainError};
 use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::ops::{MachineSubstrateVersions, MachineUpdateFailure};
 use ployz_core::state::MachineLifecycle;
-use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_protocol::{NatsServiceError, NatsServiceErrorCode};
 use ployz_nats::service_runtime::{
     NatsJsonServiceRequestError, NatsServiceRequestFailure, request_json,
 };
+use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;

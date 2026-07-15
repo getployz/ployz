@@ -4,16 +4,16 @@ use std::time::Duration;
 
 use ployz_core::ids::MachineId;
 use ployz_core::state::GatewayStatusObservation;
-use ployz_core::subjects::MachineServiceEndpoint;
+use ployz_nats::subjects::MachineServiceEndpoint;
 
 use crate::control::role_client::machine::{
     DEFAULT_MACHINE_RPC_TIMEOUT, MachineCallError, call_machine,
 };
-use crate::roles::machine::MachineRuntimeUnavailableReason;
 pub use crate::roles::gateway::protocol::{
     GatewayStatusGetDomainError, GatewayStatusGetOk, GatewayStatusGetRequest,
     GatewayStatusGetResponse,
 };
+use crate::roles::machine::MachineRuntimeUnavailableReason;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GatewayStatusReadError {

@@ -14,7 +14,7 @@ use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineF
 use ployz_core::operation::{
     DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, OperationStatus,
 };
-use ployz_core::subjects::{INTENT_CHANGED, MachineServiceEndpoint, machine_service};
+use ployz_nats::subjects::{INTENT_CHANGED, MachineServiceEndpoint, machine_service};
 use ployz_test_support::ids::idempotency_key;
 use ployzd::certificate::{CertificateManager, CertificateManagerConfig};
 use ployzd::config::DEFAULT_MACHINE_BOOTSTRAP_URL;

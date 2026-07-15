@@ -17,7 +17,7 @@ use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::internal_dns::InternalServiceName;
 use ployz_core::ops::{CredentialGrantAction, EventSequence};
 use ployz_core::state::MachineLifecycle;
-use ployz_core::subjects::{OperationProgressScope, operation_progress_watch};
+use ployz_nats::subjects::{OperationProgressScope, operation_progress_watch};
 use ployz_sdk_types::{
     AcceptedOperation, CoreReplaceError, CoreReplaceRequest, CredentialAddError,
     CredentialAddRequest, CredentialRemoveError, CredentialRemoveRequest, DeployReserveError,

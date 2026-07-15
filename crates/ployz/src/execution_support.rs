@@ -336,7 +336,7 @@ mod tests {
     #[test]
     fn api_error_renders_domain_errors_as_clean_evidence() {
         let error = api_error(OperationApiClientError::Domain {
-            endpoint: ployz_core::subjects::OperationApiEndpoint::DeploySubmit,
+            endpoint: ployz_nats::subjects::OperationApiEndpoint::DeploySubmit,
             error: ployz_sdk_types::DeploySubmitError::Unavailable {
                 operation_id: ployz_core::ids::OperationId::try_new("op_123")
                     .expect("valid operation id"),

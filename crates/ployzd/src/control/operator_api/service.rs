@@ -8,11 +8,11 @@ use crate::control::operator_api::{
     ops_list, ops_status, ops_watch, service_restart, volume_remove,
 };
 use crate::service_catalog::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
-use ployz_core::subjects::OperationApiEndpoint;
 use ployz_nats::service_runtime::{
     EndpointExecutionPolicy, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
     RunningNatsService, decode_json_request, start_nats_service,
 };
+use ployz_nats::subjects::OperationApiEndpoint;
 use ployz_sdk_types::{
     OperationApiResponse,
     operation_api::{
@@ -337,8 +337,9 @@ where
     H: Fn(Arc<OperationApiHandlers>, C::Request) -> F + Send + Sync + 'static,
     F: Future<Output = Result<C::Success, C::Error>> + Send + 'static,
 {
-    let policy = operation_endpoint_policy(C::ENDPOINT);
-    let spec = api_endpoint_spec(C::ENDPOINT);
+    let endpoint = OperationApiEndpoint::from(C::ENDPOINT);
+    let policy = operation_endpoint_policy(endpoint);
+    let spec = api_endpoint_spec(endpoint);
     let handler = Arc::new(handler);
     runtime
         .bind_endpoint_with_policy(&spec, policy, move |request| {

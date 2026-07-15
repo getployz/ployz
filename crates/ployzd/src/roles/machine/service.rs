@@ -29,11 +29,11 @@ use ployz_core::dataplane::{
 };
 use ployz_core::ids::MachineId;
 use ployz_core::state::MachineEndpointObservation;
-use ployz_core::subjects::MachineServiceEndpoint;
 use ployz_nats::service_runtime::{
     EndpointExecutionPolicy, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
     NatsServiceShutdownError, RunningNatsService, start_nats_service,
 };
+use ployz_nats::subjects::MachineServiceEndpoint;
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::time::Duration;

@@ -1,13 +1,13 @@
 //! NATS service handlers exposed by the daemon.
 
 use ployz_core::ids::MachineId;
-use ployz_core::subjects::{
-    INGRESS_ENDPOINT_GET, INTENT_GET, MachineServiceEndpoint, OperationApiEndpoint,
-    OperationApiEndpointExecution, RUNTIME_SNAPSHOT_SEED, machine_service,
-};
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceDiscoveryQuery,
     ServiceMetadata, ServiceMetadataEntry, ServicePing, ServiceVersion, discover_services,
+};
+use ployz_nats::subjects::{
+    INGRESS_ENDPOINT_GET, INTENT_GET, MachineServiceEndpoint, OperationApiEndpoint,
+    OperationApiEndpointExecution, RUNTIME_SNAPSHOT_SEED, machine_service,
 };
 
 pub const API_SERVICE_NAME: &str = "plz-api";

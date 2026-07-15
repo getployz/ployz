@@ -22,9 +22,9 @@ use ployz_core::operation::{
     DeployRunningStage, DeployServiceResult, EventSequence, OperationEvent,
     OperationEventReplayCursor, OperationEventReplayRequest, OperationStatus,
 };
-use ployz_core::subjects::{MachineServiceEndpoint, machine_facts, machine_service};
 use ployz_nats::operation_api_client::OperationApiClientError;
 use ployz_nats::service_runtime::request_json;
+use ployz_nats::subjects::{MachineServiceEndpoint, machine_facts, machine_service};
 use ployz_sdk_types::{
     DeployReserveRequest, DeploySubmitError, DeploySubmitRequest, OpsStatusRequest,
     ServiceInspectRequest,

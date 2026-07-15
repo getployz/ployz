@@ -10,7 +10,7 @@ use ployz_core::ops::{
     CertOperationFailure, CertificateProvisionFailure, CertificateProvisionWarning, FailureMessage,
     RouteHostname,
 };
-use ployz_core::subjects::INTENT_CHANGED;
+use ployz_nats::subjects::INTENT_CHANGED;
 
 use super::GatewayCertificateTarget;
 use super::gateway::GatewayCertificateClient;

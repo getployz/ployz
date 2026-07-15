@@ -11,8 +11,8 @@ use ployz_core::ids::{MachineId, RouteBindingId};
 use ployz_core::ingress::CertificateOwner;
 use ployz_core::machine::rpc::MachineRpcResponse;
 use ployz_core::operation::{CertOperationState, OperationStatus, RouteHostname};
-use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_lease_worker::{LeaseWorkerRequest, LeaseWorkerResponse, StubLeaseWorker};
+use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
 use ployzd::certificate::{
     AcmeIssueContext, AcmeIssuer, AcmeIssuerError, CertificateManager, CertificateManagerConfig,
     GatewayCertificateTarget, IssuedCertificate,

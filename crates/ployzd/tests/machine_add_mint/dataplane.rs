@@ -6,8 +6,8 @@ use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineF
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::network::WireGuardPublicKey;
 use ployz_core::security::NatsPrincipal;
-use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::connect::connect_authenticated;
+use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_sdk_types::{InitFirstMachineActivateRequest, MachineJoinToken};
 use ployzd::roles::machine::protocol::{
     MachineDataplanePublicKeyRpcOk, MachineDataplanePublicKeyRpcResponse, MachineFactsGetRpcOk,

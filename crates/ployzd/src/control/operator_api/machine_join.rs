@@ -10,7 +10,7 @@ use ployz_core::machine::{
     active_machine_from_completed_add,
 };
 use ployz_core::ops::{MachineAddOperationState, OperationStatus};
-use ployz_core::subjects::INTENT_CHANGED;
+use ployz_nats::subjects::INTENT_CHANGED;
 use ployz_sdk_types::{
     MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinRedeemed,
     MachineJoinReportError, MachineJoinReportFailure, MachineJoinReportOutcome,

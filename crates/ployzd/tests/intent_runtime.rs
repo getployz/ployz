@@ -8,7 +8,7 @@ use ployz_core::intent::{
 use ployz_core::machine::MachineLifecycle;
 use ployz_core::machine::roles::InstallRolePolicy;
 use ployz_core::machine::{IssuedJoinToken, JoinTokenExpiresAt, RawJoinToken};
-use ployz_core::subjects::{INTENT_CHANGED, PENDING_MACHINE_JOINS_CHANGED};
+use ployz_nats::subjects::{INTENT_CHANGED, PENDING_MACHINE_JOINS_CHANGED};
 use ployz_test_support::fixtures::{machine_join_bundle, serving_target_entry};
 use ployz_test_support::ids::{
     idempotency_key, machine_id, machine_name, operation_id, service_id,

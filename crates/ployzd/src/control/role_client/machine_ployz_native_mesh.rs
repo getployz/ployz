@@ -11,7 +11,7 @@ use ployz_core::dataplane::{
     PloyzNativeMeshComponent, WireGuardEbpfPrepareError, WireGuardPublicKey,
 };
 use ployz_core::ids::MachineId;
-use ployz_core::subjects::MachineServiceEndpoint;
+use ployz_nats::subjects::MachineServiceEndpoint;
 
 impl NatsMachineFactsReader {
     pub(crate) async fn read_projection_public_key(

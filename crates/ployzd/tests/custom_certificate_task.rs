@@ -21,7 +21,7 @@ use ployz_core::operation::{
     CertOperationFailure, CertOperationState, CertificateProvisionFailure, FailureMessage,
     OperationStatus, RouteHostname,
 };
-use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
+use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_test_support::ids::{cert_id, operation_id, route_hostname};
 use ployzd::certificate::{
     AcmeIssueContext, AcmeIssuer, AcmeIssuerError, CertificateManager, CertificateManagerConfig,

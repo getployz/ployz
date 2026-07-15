@@ -12,7 +12,6 @@ use ployz_core::state::MachineLifecycle;
 use ployz_core::state::{
     ActiveMachineState, GatewayServingStatus, GatewayStatusObservation, MachineEndpointObservation,
 };
-use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::connect::connect_authenticated;
 use ployz_nats::service_runtime::{
     NatsServiceError, NatsServiceErrorCode, NatsServiceResponse, start_nats_service,
@@ -20,6 +19,7 @@ use ployz_nats::service_runtime::{
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
 };
+use ployz_nats::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_sdk_types::{
     AcceptedOperation, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse,
     MachineAddAccepted, MachineAddRequest, MachineAddResponse, MachineBootstrapUrl,
@@ -75,7 +75,7 @@ async fn secured_api_fixture() -> SecuredApiFixture {
 async fn operation_api_client_decodes_successful_envelope() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(DeploySubmitApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(DeploySubmitApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -116,7 +116,7 @@ async fn operation_api_client_decodes_successful_envelope() {
 async fn operation_api_client_routes_machine_add_success() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(MachineAddApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(MachineAddApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -161,7 +161,7 @@ async fn operation_api_client_routes_machine_add_success() {
 async fn operation_api_client_routes_machine_join_redeem_success() {
     let nats = secured_api_fixture().await;
     let client = nats.join_client.clone();
-    let spec = test_api_service(MachineJoinRedeemApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(MachineJoinRedeemApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -207,7 +207,7 @@ async fn operation_api_client_routes_machine_join_redeem_success() {
 async fn operation_api_client_routes_machine_list_success() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(MachineListApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(MachineListApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -238,7 +238,7 @@ async fn operation_api_client_routes_machine_list_success() {
 async fn operation_api_client_routes_machine_inspect_success() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(MachineInspectApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(MachineInspectApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -273,7 +273,7 @@ async fn operation_api_client_routes_machine_inspect_success() {
 async fn operation_api_client_routes_service_list_success() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(ServiceListApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(ServiceListApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -304,7 +304,7 @@ async fn operation_api_client_routes_service_list_success() {
 async fn operation_api_client_routes_volume_list_success() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(VolumeListApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(VolumeListApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -349,7 +349,7 @@ async fn operation_api_client_routes_volume_list_success() {
 async fn operation_api_client_routes_service_inspect_success() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(ServiceInspectApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(ServiceInspectApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -388,7 +388,7 @@ async fn operation_api_client_routes_service_inspect_success() {
 async fn operation_api_client_returns_service_error_headers_as_transport_failure() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(DeploySubmitApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(DeploySubmitApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -427,7 +427,7 @@ async fn operation_api_client_returns_service_error_headers_as_transport_failure
 async fn operation_api_client_returns_domain_error_envelope_as_domain_failure() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(DeploySubmitApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(DeploySubmitApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -468,7 +468,7 @@ async fn operation_api_client_returns_domain_error_envelope_as_domain_failure() 
 async fn operation_api_client_reports_decode_failure_for_invalid_payload() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(DeploySubmitApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(DeploySubmitApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -500,7 +500,7 @@ async fn operation_api_client_reports_decode_failure_for_invalid_payload() {
 async fn operation_api_client_routes_ops_status_domain_errors() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(OpsStatusApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(OpsStatusApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await
@@ -541,7 +541,7 @@ async fn operation_api_client_routes_ops_status_domain_errors() {
 async fn operation_api_client_routes_ops_watch_decode_failures() {
     let nats = secured_api_fixture().await;
     let client = nats.user_client.clone();
-    let spec = test_api_service(OpsWatchApi::ENDPOINT);
+    let spec = test_api_service(OperationApiEndpoint::from(OpsWatchApi::ENDPOINT));
     let endpoint = spec.endpoints.first().expect("test endpoint is present");
     let mut runtime = start_nats_service(nats.service_client.clone(), &spec)
         .await

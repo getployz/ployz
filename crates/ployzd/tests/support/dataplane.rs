@@ -7,7 +7,7 @@ use ployz_core::network::{
     WireGuardMtuProbe, WireGuardPeerEndpointSubnet, WireGuardPeerStatus, WireGuardRttStatus,
     WireGuardStatus,
 };
-use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
+use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
 use ployzd::control::intent::service::NatsIntentReader;
 use ployzd::roles::machine::protocol::{
     MachineDataplaneStatusRpcOk, MachineDataplaneStatusRpcResponse,

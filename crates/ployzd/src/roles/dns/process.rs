@@ -22,11 +22,11 @@ use crate::roles::dns::InternalResolverHealth;
 use crate::roles::dns::internal::{InternalDnsIntentCache, spawn_internal_resolver};
 use crate::roles::dns::service::start_dns_role_service;
 use futures_util::StreamExt;
-use ployz_core::subjects::INTENT_CHANGED;
 use ployz_nats::connect::{NatsConnectError, connect_authenticated_pool};
 use ployz_nats::service_runtime::{
     NatsClient, NatsServiceRuntimeError, NatsServiceShutdownError, RunningNatsService,
 };
+use ployz_nats::subjects::INTENT_CHANGED;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

@@ -26,8 +26,8 @@ use crate::roles::machine::runner::{
 };
 use ployz_core::ids::{ContainerId, MachineId};
 use ployz_core::machine_runtime::{MachineContainerFactDelta, ManagedContainerObservation};
-use ployz_core::subjects::machine_container_facts;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decode_json_request};
+use ployz_nats::subjects::machine_container_facts;
 use std::time::Duration;
 
 #[derive(Clone)]

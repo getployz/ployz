@@ -16,11 +16,11 @@ use ployz_core::ops::{
 use ployz_core::reachability::is_public;
 use ployz_core::roles::GatewayRole;
 use ployz_core::state::{ControlPlaneEpoch, GatewayServingStatus, IntentSnapshot};
-use ployz_core::subjects::{INGRESS_ENDPOINT_CHANGED, INTENT_CHANGED};
 use ployz_nats::service_runtime::{
     NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError, NatsServiceShutdownError,
     RunningNatsService, decode_json_request, start_nats_service,
 };
+use ployz_nats::subjects::{INGRESS_ENDPOINT_CHANGED, INTENT_CHANGED};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;

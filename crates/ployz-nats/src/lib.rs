@@ -15,3 +15,4 @@ pub mod service_protocol;
 pub mod service_runtime;
 pub mod services;
 pub mod subjects;
+pub mod typescript;

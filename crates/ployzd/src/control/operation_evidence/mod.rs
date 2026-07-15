@@ -16,7 +16,7 @@ use ployz_core::ops::{
     OperationEventReplayPage, OperationProjection, OperationStatus, StatusProjectionError,
     project_operation_event, validate_fresh_deploy_evidence,
 };
-use ployz_core::subjects::operation_progress_subject;
+use ployz_nats::subjects::{OperationProgressScope, operation_progress_subject};
 use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 
 mod action;
@@ -617,11 +617,8 @@ async fn publish_progress(
     let Ok(payload) = serde_json::to_vec(&event) else {
         return;
     };
-    let subject = operation_progress_subject(
-        &status.progress_scope(),
-        event.operation_id(),
-        &event.subject_suffix(),
-    );
+    let scope = OperationProgressScope::from(status.progress_scope());
+    let subject = operation_progress_subject(&scope, event.operation_id(), &event.subject_suffix());
     let _ = client.publish(subject, payload.into()).await;
 }
 

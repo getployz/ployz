@@ -418,9 +418,9 @@ impl TestNats {
         loop {
             let response = request_json::<_, MachineDataplaneStatusRpcResponse>(
                 &self.connected.controller,
-                ployz_core::subjects::machine_service(
+                ployz_nats::subjects::machine_service(
                     machine_id,
-                    ployz_core::subjects::MachineServiceEndpoint::DataplaneStatus,
+                    ployz_nats::subjects::MachineServiceEndpoint::DataplaneStatus,
                 ),
                 &MachineDataplaneStatusRpcRequest {
                     mode: ployz_core::network::NetworkStatusMode::Snapshot,

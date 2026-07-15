@@ -11,11 +11,11 @@ use crate::roles::dns::protocol::{
 use crate::service_catalog::{dns_role_service_base, machine_endpoint_spec};
 use ployz_core::ids::MachineId;
 use ployz_core::internal_dns::{InternalDnsResolverStatus, InternalDnsStatus};
-use ployz_core::subjects::MachineServiceEndpoint;
 use ployz_nats::service_runtime::{
     NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError, RunningNatsService,
     decode_json_request, start_nats_service,
 };
+use ployz_nats::subjects::MachineServiceEndpoint;
 
 pub(crate) async fn start_dns_role_service(
     client: async_nats::Client,

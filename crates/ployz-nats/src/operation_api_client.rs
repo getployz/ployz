@@ -4,8 +4,8 @@ use crate::service_protocol::{NatsServiceError, NatsServiceErrorHeaderDecodeErro
 use crate::service_runtime::{
     NatsJsonServiceRequestError, NatsServiceRequestFailure, request_json,
 };
+use crate::subjects::OperationApiEndpoint;
 use ployz_core::ops::{OperationEventReplayPage, OperationStatusSnapshot};
-use ployz_core::subjects::OperationApiEndpoint;
 use ployz_sdk_types::{
     AcceptedOperation, CoreReplaceError, CoreReplaceReportError, CoreReplaceReportRequest,
     CoreReplaceReported, CoreReplaceRequest, CredentialAddError, CredentialAddRequest,
@@ -296,48 +296,37 @@ impl OperationApiClient {
         C::Request: Serialize,
         OperationApiResponse<C::Success, C::Error>: DeserializeOwned,
     {
+        let endpoint = OperationApiEndpoint::from(C::ENDPOINT);
         let response = request_json::<_, OperationApiResponse<C::Success, C::Error>>(
             &self.client,
-            C::ENDPOINT.subject().to_owned(),
+            endpoint.subject().to_owned(),
             request,
             self.request_timeout,
         )
         .await
         .map_err(|error| match error {
             NatsJsonServiceRequestError::EncodeRequest { message } => {
-                OperationApiClientError::EncodeRequest {
-                    endpoint: C::ENDPOINT,
-                    message,
-                }
+                OperationApiClientError::EncodeRequest { endpoint, message }
             }
-            NatsJsonServiceRequestError::Request { failure } => OperationApiClientError::Request {
-                endpoint: C::ENDPOINT,
-                failure,
-            },
-            NatsJsonServiceRequestError::Service { failure } => OperationApiClientError::Service {
-                endpoint: C::ENDPOINT,
-                failure,
-            },
+            NatsJsonServiceRequestError::Request { failure } => {
+                OperationApiClientError::Request { endpoint, failure }
+            }
+            NatsJsonServiceRequestError::Service { failure } => {
+                OperationApiClientError::Service { endpoint, failure }
+            }
             NatsJsonServiceRequestError::ServiceProtocol { error } => {
-                OperationApiClientError::ServiceProtocol {
-                    endpoint: C::ENDPOINT,
-                    error,
-                }
+                OperationApiClientError::ServiceProtocol { endpoint, error }
             }
             NatsJsonServiceRequestError::DecodeResponse { message } => {
-                OperationApiClientError::DecodeResponse {
-                    endpoint: C::ENDPOINT,
-                    message,
-                }
+                OperationApiClientError::DecodeResponse { endpoint, message }
             }
         })?;
 
         match response {
             OperationApiResponse::Ok { value } => Ok(value),
-            OperationApiResponse::DomainError { error } => Err(OperationApiClientError::Domain {
-                endpoint: C::ENDPOINT,
-                error,
-            }),
+            OperationApiResponse::DomainError { error } => {
+                Err(OperationApiClientError::Domain { endpoint, error })
+            }
         }
     }
 }

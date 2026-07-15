@@ -1,10 +1,10 @@
-use ployz_core::subjects::{
+use ployz_nats::services::{EndpointExecution, ServiceDiscoveryQuery};
+use ployz_nats::subjects::{
     INGRESS_ENDPOINT_GET, INTENT_GET, JOIN_MACHINE_REPORT, OPERATOR_DEPLOY_RESERVE,
     OPERATOR_DEPLOY_SUBMIT, OPERATOR_MACHINE_ADD, OPERATOR_MACHINE_INSPECT, OPERATOR_MACHINE_LIST,
     OPERATOR_OPS_STATUS, OPERATOR_OPS_WATCH, OPERATOR_SERVICE_INSPECT, OPERATOR_SERVICE_LIST,
     OperationProgressScope, RUNTIME_SNAPSHOT_SEED,
 };
-use ployz_nats::services::{EndpointExecution, ServiceDiscoveryQuery};
 use ployz_sdk_types::OpsStatusError;
 use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
 use ployzd::operation_api::{ops_status_missing, owned_operation};

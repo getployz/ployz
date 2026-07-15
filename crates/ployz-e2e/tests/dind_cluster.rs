@@ -50,7 +50,6 @@ use ployz_core::operation::{
 };
 use ployz_core::operation::{MachineAddOperationState, ManagedDnsReconcileOperationState};
 use ployz_core::security::NatsPrincipal;
-use ployz_core::subjects::{MachineServiceEndpoint, OPERATOR_RUNTIME_SNAPSHOT, machine_service};
 use ployz_e2e::bollard::body_full;
 use ployz_e2e::bollard::query_parameters::BuildImageOptionsBuilder;
 use ployz_e2e::dind::{
@@ -59,6 +58,7 @@ use ployz_e2e::dind::{
 use ployz_nats::connect::{NatsClientUrl, connect_with_timeout};
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_nats::permissions::inbox_subscribe_scope;
+use ployz_nats::subjects::{MachineServiceEndpoint, OPERATOR_RUNTIME_SNAPSHOT, machine_service};
 use ployz_sdk_types::{
     DeployReserveRequest, DeploySubmitRequest, MachineJoinRedeemError, MachineJoinRedeemRequest,
     MachineListRequest, MachineSnapshot, MachineTestimony, NamespaceRemoveRequest, OpsListRequest,

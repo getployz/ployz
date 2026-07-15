@@ -5,7 +5,7 @@ use crate::control::operation_evidence::AcceptedIngressConfigureSubmission;
 use crate::control::sequencer::OperationControllers;
 use crate::tasks::TaskRegistry;
 use ployz_core::ops::{FailureMessage, IngressConfigureFailure, IngressConfigureTransition};
-use ployz_core::subjects::INTENT_CHANGED;
+use ployz_nats::subjects::INTENT_CHANGED;
 
 #[derive(Debug, Clone)]
 pub struct IngressConfigureOperation {

@@ -2,8 +2,8 @@
 
 use ployz_core::ids::MachineId;
 use ployz_core::internal_dns::{InternalDnsResolverStatus, InternalDnsStatus};
-use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_runtime::request_json;
+use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_test_support::ids::machine_id;
 use ployzd::roles::dns::process::start_dns_process_with_client;
 use serde::Deserialize;

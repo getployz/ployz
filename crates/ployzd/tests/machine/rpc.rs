@@ -1,8 +1,8 @@
 use ployz_core::deploy::{ImageReference, VolumeName};
 use ployz_core::ids::{ContainerId, MachineId};
 use ployz_core::machine::runtime::ManagedContainerIdentity;
-use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, start_nats_service};
+use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_test_support::containers;
 use ployz_test_support::ids::{
     container_id, failure_message, machine_id, namespace_id, operation_id, step_id,

@@ -25,11 +25,11 @@ use ployz_core::cert::{
 use ployz_core::ids::MachineId;
 use ployz_core::ops::FailureMessage;
 use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation};
-use ployz_core::subjects::MachineServiceEndpoint;
 use ployz_nats::service_runtime::{
     NatsClient, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
     RunningNatsService, decode_json_request, start_nats_service,
 };
+use ployz_nats::subjects::MachineServiceEndpoint;
 
 pub async fn start_gateway_certificate_service(
     client: NatsClient,

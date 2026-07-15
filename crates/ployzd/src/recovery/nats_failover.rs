@@ -12,9 +12,9 @@ use super::{IntentMirror, IntentMirrorStoreOutcome};
 use crate::control::intent::service::NatsIntentReader;
 use futures_util::StreamExt;
 use ployz_core::state::{ControlPlaneEpoch, IntentSnapshot};
-use ployz_core::subjects::INTENT_CHANGED;
 use ployz_nats::connect::NatsClientUrl;
 use ployz_nats::service_runtime::NatsClient;
+use ployz_nats::subjects::INTENT_CHANGED;
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
@@ -301,7 +301,7 @@ fn push_unique(pool: &mut Vec<String>, urls: impl IntoIterator<Item = String>) {
 mod tests {
     use super::*;
     use ployz_core::state::{ActiveMachineState, ControlPlaneEpoch, MachineLifecycle};
-    use ployz_core::subjects::INTENT_GET;
+    use ployz_nats::subjects::INTENT_GET;
     use ployz_test_support::ids::{machine_id, operation_id};
 
     fn active_machine_with(id: &str, endpoints: &[&str]) -> ActiveMachineState {

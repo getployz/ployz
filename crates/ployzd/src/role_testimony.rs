@@ -14,7 +14,7 @@ use ployz_core::machine_runtime::{
     ManagedContainerObservation,
 };
 use ployz_core::state::{GatewayStatusObservation, MachineEndpointObservation};
-use ployz_core::subjects::{gateway_status_scope, machine_facts_scope};
+use ployz_nats::subjects::{gateway_status_scope, machine_facts_scope};
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 use tokio::sync::watch;

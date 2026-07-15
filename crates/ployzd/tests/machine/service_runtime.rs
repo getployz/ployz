@@ -11,10 +11,10 @@ use ployz_core::network::{
     WireGuardInterfaceMtu, WireGuardPublicKey, WireGuardReady, WireGuardReadyEvidence,
     WireGuardStatus,
 };
-use ployz_core::subjects::{
+use ployz_nats::service_runtime::request_json;
+use ployz_nats::subjects::{
     MachineServiceEndpoint, machine_container_facts, machine_facts, machine_service,
 };
-use ployz_nats::service_runtime::request_json;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{container_id, failure_message, machine_id, operation_id};
 use ployzd::operations::deploy::{

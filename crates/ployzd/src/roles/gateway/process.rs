@@ -33,11 +33,11 @@ use pingora::server::{RunArgs, Server, ShutdownSignal, ShutdownSignalWatch};
 use ployz_core::ids::MachineId;
 use ployz_core::ops::RoutePort;
 use ployz_core::state::{GatewayServingStatus, GatewayStatusObservation};
-use ployz_core::subjects::{INTENT_CHANGED, gateway_status, machine_facts_scope};
 use ployz_nats::connect::{NatsConnectError, connect_authenticated_pool};
 use ployz_nats::service_runtime::{
     NatsClient, NatsServiceRuntimeError, NatsServiceShutdownError, RunningNatsService,
 };
+use ployz_nats::subjects::{INTENT_CHANGED, gateway_status, machine_facts_scope};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

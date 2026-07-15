@@ -32,9 +32,9 @@ use ployz_core::dataplane::MachineEndpointSubnet;
 use ployz_core::ids::MachineId;
 use ployz_core::image::IMAGE_MESH_REGISTRY_PORT;
 use ployz_core::state::PendingMachineJoinRecoverySnapshot;
-use ployz_core::subjects::PENDING_MACHINE_JOINS_CHANGED;
 use ployz_nats::connect::{NatsClientUrl, NatsConnectError, connect_authenticated_pool};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
+use ployz_nats::subjects::PENDING_MACHINE_JOINS_CHANGED;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -506,7 +506,7 @@ mod tests {
     use ployz_core::machine_runtime::{
         ContainerRuntimeState, MachineFactsSnapshot, ManagedContainerIdentity,
     };
-    use ployz_core::subjects::machine_facts;
+    use ployz_nats::subjects::machine_facts;
     use std::sync::{Arc, Mutex};
     use tokio::sync::Notify;
 

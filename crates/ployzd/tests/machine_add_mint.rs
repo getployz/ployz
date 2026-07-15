@@ -16,9 +16,9 @@ use ployz_core::nats_config::{
 };
 use ployz_core::operation::MachineAddOperationState;
 use ployz_core::operation::OperationStatus;
-use ployz_core::subjects::{OPERATION_PROGRESS_SCOPE, OperationApiEndpoint};
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
 use ployz_nats::permissions::render_authorized_users;
+use ployz_nats::subjects::{OPERATION_PROGRESS_SCOPE, OperationApiEndpoint};
 use ployz_sdk_types::{
     MachineAddAccepted, MachineAddError, MachineAddRequest, MachineJoinRedeemError,
     MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinReportOutcome,

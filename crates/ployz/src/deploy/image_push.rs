@@ -18,10 +18,10 @@ use ployz_core::image::{
 };
 use ployz_core::machine_rpc::{MachineRpcResponder, MachineRpcResponse};
 use ployz_core::state::MachineLifecycle;
-use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::operation_api_client::OperationApiClient;
 use ployz_nats::service_protocol::decode_nats_service_error;
 use ployz_nats::service_runtime::request_json;
+use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_sdk_types::MachineListRequest;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};

@@ -23,6 +23,64 @@ use ployz_nats::subjects::{
 use ployz_test_support::ids::{machine_id, namespace_id, operation_id};
 
 #[test]
+fn package_typescript_contract_uses_nats_owned_endpoint_metadata() {
+    assert_eq!(
+        include_str!("../../../packages/ployz-sdk/src/generated.ts"),
+        ployz_nats::typescript::generated_typescript()
+    );
+}
+
+#[test]
+fn sdk_contract_registry_maps_to_every_nats_operation_endpoint() {
+    let mut endpoints = Vec::new();
+    macro_rules! push_endpoints {
+        ($($contract:ty),+ $(,)?) => {
+            $(endpoints.push(OperationApiEndpoint::from(
+                <$contract as ployz_sdk_types::operation_api::OperationApiContract>::ENDPOINT,
+            ));)+
+        };
+    }
+    ployz_sdk_types::operation_api_contracts!(push_endpoints);
+
+    assert_eq!(
+        endpoints,
+        [
+            OperationApiEndpoint::DeployReserve,
+            OperationApiEndpoint::DeploySubmit,
+            OperationApiEndpoint::InitFirstMachineActivate,
+            OperationApiEndpoint::MachineAdd,
+            OperationApiEndpoint::MachineUpdate,
+            OperationApiEndpoint::MachineDrain,
+            OperationApiEndpoint::MachineResume,
+            OperationApiEndpoint::ServiceRestart,
+            OperationApiEndpoint::NamespaceRemove,
+            OperationApiEndpoint::VolumeRemove,
+            OperationApiEndpoint::CoreReplace,
+            OperationApiEndpoint::CoreReplaceReport,
+            OperationApiEndpoint::CredentialAdd,
+            OperationApiEndpoint::CredentialList,
+            OperationApiEndpoint::CredentialRemove,
+            OperationApiEndpoint::IngressConfigure,
+            OperationApiEndpoint::MachineList,
+            OperationApiEndpoint::MachineInspect,
+            OperationApiEndpoint::NetworkStatus,
+            OperationApiEndpoint::NetworkResolve,
+            OperationApiEndpoint::NetworkRepair,
+            OperationApiEndpoint::MachineJoinRedeem,
+            OperationApiEndpoint::MachineJoinReport,
+            OperationApiEndpoint::ServiceList,
+            OperationApiEndpoint::VolumeList,
+            OperationApiEndpoint::ServiceInspect,
+            OperationApiEndpoint::RuntimeSnapshot,
+            OperationApiEndpoint::LogsTail,
+            OperationApiEndpoint::OpsList,
+            OperationApiEndpoint::OpsStatus,
+            OperationApiEndpoint::OpsWatch,
+        ]
+    );
+}
+
+#[test]
 fn server_configuration_renders_external_and_loopback_listeners() {
     let external = external_server_config();
     assert_eq!(external.client_host(), "core.example.test");

@@ -7,8 +7,8 @@ use ployz_core::dataplane::{INTERNAL_DNS_SUFFIX, NetworkStatusMode};
 use ployz_core::ids::MachineId;
 use ployz_core::internal_dns::InternalServiceName;
 use ployz_core::state::ActiveMachineState;
-use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_runtime::{NatsJsonServiceRequestError, request_json};
+use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_sdk_types::{
     NetworkDataplaneTestimony, NetworkInternalDnsTestimony, NetworkResolveError,
     NetworkResolveMachineTestimony, NetworkResolveRequest, NetworkResolveResult,
@@ -422,9 +422,9 @@ mod tests {
     use ployz_core::machine_runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
     use ployz_core::ops::FailureMessage;
     use ployz_core::state::{ActiveMachineState, MachineLifecycle};
-    use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
     use ployz_nats::service_protocol::NatsServiceErrorHeaderDecodeError;
     use ployz_nats::service_runtime::{NatsJsonServiceRequestError, NatsServiceRequestFailure};
+    use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
     use ployz_sdk_types::{
         NetworkDataplaneTestimony, NetworkInternalDnsTestimony, NetworkResolveMachineTestimony,
         NetworkStatusError,

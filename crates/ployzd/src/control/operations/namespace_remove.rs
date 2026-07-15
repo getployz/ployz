@@ -19,7 +19,7 @@ use ployz_core::ops::{
     OperatorHint,
 };
 use ployz_core::state::{RouteBindingState, ServingTargetEntry};
-use ployz_core::subjects::INTENT_CHANGED;
+use ployz_nats::subjects::INTENT_CHANGED;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]

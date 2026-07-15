@@ -10,11 +10,11 @@ use ployz_core::ops::{
     OperationEvent, OperationEventReplayPage, OperationEventReplayRequest, OperationStatus,
     OperationStatusSnapshot, ReplayedOperationEvent,
 };
-use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
 };
+use ployz_nats::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_sdk_types::{
     OperationApiResponse, OpsListRequest, OpsListResponse, OpsListResult, OpsStatusRequest,
     OpsStatusResponse, OpsWatchResponse,
@@ -29,9 +29,12 @@ async fn binary_ops_watch_replays_terminal_event_after_a_caught_up_page() {
     let client = server.controller.clone();
     let env = CliNatsEnv::new(&server.server);
     let service_client = client.clone();
-    let spec = test_api_service(&[OpsWatchApi::ENDPOINT, OpsStatusApi::ENDPOINT]);
-    let watch_endpoint = endpoint(&spec, OpsWatchApi::ENDPOINT);
-    let status_endpoint = endpoint(&spec, OpsStatusApi::ENDPOINT);
+    let spec = test_api_service(&[
+        OperationApiEndpoint::from(OpsWatchApi::ENDPOINT),
+        OperationApiEndpoint::from(OpsStatusApi::ENDPOINT),
+    ]);
+    let watch_endpoint = endpoint(&spec, OperationApiEndpoint::from(OpsWatchApi::ENDPOINT));
+    let status_endpoint = endpoint(&spec, OperationApiEndpoint::from(OpsStatusApi::ENDPOINT));
     let watch_calls = Arc::new(AtomicUsize::new(0));
     let mut runtime = start_nats_service(client, &spec)
         .await
@@ -135,8 +138,8 @@ async fn binary_ops_list_prints_continuation_hint_to_stderr() {
     let server = TestNats::start().await;
     let client = server.controller.clone();
     let env = CliNatsEnv::new(&server.server);
-    let spec = test_api_service(&[OpsListApi::ENDPOINT]);
-    let list_endpoint = endpoint(&spec, OpsListApi::ENDPOINT);
+    let spec = test_api_service(&[OperationApiEndpoint::from(OpsListApi::ENDPOINT)]);
+    let list_endpoint = endpoint(&spec, OperationApiEndpoint::from(OpsListApi::ENDPOINT));
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
         .expect("service starts");

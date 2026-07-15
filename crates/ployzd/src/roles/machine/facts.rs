@@ -16,8 +16,8 @@ use ployz_core::machine_runtime::{
     MachineFactsSnapshot, MachineFactsSnapshotError, ManagedContainerObservation,
 };
 use ployz_core::state::MachineEndpointObservation;
-use ployz_core::subjects::machine_facts;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decode_json_request};
+use ployz_nats::subjects::machine_facts;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

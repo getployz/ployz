@@ -151,7 +151,7 @@ impl NetworkRepairOperation {
         let projection = intent.dataplane_projection;
         let invalidation = match tokio::time::timeout(self.operation_timeout, async {
             self.client
-                .publish(ployz_core::subjects::INTENT_CHANGED, Vec::new().into())
+                .publish(ployz_nats::subjects::INTENT_CHANGED, Vec::new().into())
                 .await
                 .map_err(|error| error.to_string())?;
             self.client.flush().await.map_err(|error| error.to_string())

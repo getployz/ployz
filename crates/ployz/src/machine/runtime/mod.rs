@@ -258,7 +258,7 @@ mod tests {
     fn first_machine_activation_retries_consumed_token_replay() {
         let error = PloyzctlExecutionError::FirstMachineActivateApi {
             source: OperationApiClientError::Domain {
-                endpoint: ployz_core::subjects::OperationApiEndpoint::InitFirstMachineActivate,
+                endpoint: ployz_nats::subjects::OperationApiEndpoint::InitFirstMachineActivate,
                 error: InitFirstMachineActivateError::JoinRedeem {
                     failure: MachineJoinRedeemError::UnknownJoinToken,
                 },
@@ -272,7 +272,7 @@ mod tests {
     fn first_machine_activation_retries_completed_operation_replay() {
         let error = PloyzctlExecutionError::FirstMachineActivateApi {
             source: OperationApiClientError::Domain {
-                endpoint: ployz_core::subjects::OperationApiEndpoint::InitFirstMachineActivate,
+                endpoint: ployz_nats::subjects::OperationApiEndpoint::InitFirstMachineActivate,
                 error: InitFirstMachineActivateError::JoinRedeem {
                     failure: MachineJoinRedeemError::OperationNotPending {
                         operation_id: OperationId::try_new("op_init_core_1")

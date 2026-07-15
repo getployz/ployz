@@ -10,8 +10,8 @@ use ployz_core::cert::{
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine_rpc::MachineRpcResponse;
 use ployz_core::ops::FailureMessage;
-use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_runtime::request_json;
+use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
 
 const GATEWAY_RPC_TIMEOUT: Duration = Duration::from_secs(2);
 

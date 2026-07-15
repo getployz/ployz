@@ -13,12 +13,12 @@ use ployz_core::machine::runtime::{
     MachineContainerObservationSnapshot, MachineFactsSnapshot, ManagedContainerObservation,
 };
 use ployz_core::operation::RouteTarget;
-use ployz_core::subjects::{
-    INTENT_GET, MachineServiceEndpoint, gateway_status, machine_facts, machine_service,
-};
 use ployz_nats::service_runtime::{
     NatsJsonServiceRequestError, NatsServiceRequestFailure, NatsServiceResponse,
     RunningNatsService, request_json, start_nats_service,
+};
+use ployz_nats::subjects::{
+    INTENT_GET, MachineServiceEndpoint, gateway_status, machine_facts, machine_service,
 };
 use ployz_test_support::containers;
 use ployz_test_support::fixtures::serving_target_entry;

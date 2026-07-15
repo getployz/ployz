@@ -16,7 +16,7 @@ use ployz_core::ops::{
     FailureMessage, VolumeRemoveFailure, VolumeRemoveRunningStage, VolumeRemoveTransition,
 };
 use ployz_core::state::{IntentSnapshot, VolumePinState};
-use ployz_core::subjects::INTENT_CHANGED;
+use ployz_nats::subjects::INTENT_CHANGED;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]

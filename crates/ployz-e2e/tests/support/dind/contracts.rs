@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 use ployz_core::intent::IntentSnapshot;
-use ployz_core::subjects::INTENT_GET;
 use ployz_nats::service_runtime::{NatsJsonServiceRequestError, request_json};
+use ployz_nats::subjects::INTENT_GET;
 
 pub const MANAGED_LABEL: &str = "plz.managed";
 pub const NAMESPACE_ID_LABEL: &str = "plz.namespace_id";

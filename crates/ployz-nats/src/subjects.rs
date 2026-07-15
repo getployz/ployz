@@ -211,11 +211,65 @@ impl OperationApiEndpoint {
     }
 }
 
+impl From<ployz_core::subjects::OperationApiEndpoint> for OperationApiEndpoint {
+    fn from(endpoint: ployz_core::subjects::OperationApiEndpoint) -> Self {
+        use ployz_core::subjects::OperationApiEndpoint as Core;
+
+        match endpoint {
+            Core::DeployReserve => Self::DeployReserve,
+            Core::DeploySubmit => Self::DeploySubmit,
+            Core::InitFirstMachineActivate => Self::InitFirstMachineActivate,
+            Core::MachineAdd => Self::MachineAdd,
+            Core::MachineUpdate => Self::MachineUpdate,
+            Core::MachineDrain => Self::MachineDrain,
+            Core::MachineResume => Self::MachineResume,
+            Core::MachineList => Self::MachineList,
+            Core::MachineInspect => Self::MachineInspect,
+            Core::NetworkStatus => Self::NetworkStatus,
+            Core::NetworkResolve => Self::NetworkResolve,
+            Core::NetworkRepair => Self::NetworkRepair,
+            Core::MachineJoinRedeem => Self::MachineJoinRedeem,
+            Core::MachineJoinReport => Self::MachineJoinReport,
+            Core::ServiceList => Self::ServiceList,
+            Core::ServiceInspect => Self::ServiceInspect,
+            Core::ServiceRestart => Self::ServiceRestart,
+            Core::NamespaceRemove => Self::NamespaceRemove,
+            Core::VolumeList => Self::VolumeList,
+            Core::VolumeRemove => Self::VolumeRemove,
+            Core::RuntimeSnapshot => Self::RuntimeSnapshot,
+            Core::LogsTail => Self::LogsTail,
+            Core::OpsList => Self::OpsList,
+            Core::OpsStatus => Self::OpsStatus,
+            Core::OpsWatch => Self::OpsWatch,
+            Core::CoreReplace => Self::CoreReplace,
+            Core::CoreReplaceReport => Self::CoreReplaceReport,
+            Core::CredentialAdd => Self::CredentialAdd,
+            Core::CredentialList => Self::CredentialList,
+            Core::CredentialRemove => Self::CredentialRemove,
+            Core::IngressConfigure => Self::IngressConfigure,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperationProgressScope {
     Namespace { namespace_id: NamespaceId },
     Machine { machine_id: MachineId },
     Cluster,
+}
+
+impl From<ployz_core::subjects::OperationProgressScope> for OperationProgressScope {
+    fn from(scope: ployz_core::subjects::OperationProgressScope) -> Self {
+        match scope {
+            ployz_core::subjects::OperationProgressScope::Namespace { namespace_id } => {
+                Self::Namespace { namespace_id }
+            }
+            ployz_core::subjects::OperationProgressScope::Machine { machine_id } => {
+                Self::Machine { machine_id }
+            }
+            ployz_core::subjects::OperationProgressScope::Cluster => Self::Cluster,
+        }
+    }
 }
 
 #[must_use]

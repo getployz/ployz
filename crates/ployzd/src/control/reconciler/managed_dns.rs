@@ -15,8 +15,8 @@ use ployz_core::ops::{
     ManagedDnsReconcileSubject, ManagedDnsReconcileTransition, ManagedDnsWithdrawAuthorization,
     OperationStatus,
 };
-use ployz_core::subjects::{INGRESS_ENDPOINT_CHANGED, INGRESS_ENDPOINT_GET};
 use ployz_nats::service_runtime::{NatsJsonServiceRequestError, request_json};
+use ployz_nats::subjects::{INGRESS_ENDPOINT_CHANGED, INGRESS_ENDPOINT_GET};
 use serde::Serialize;
 
 use crate::control::intent::ingress_intent::{

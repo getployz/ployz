@@ -15,9 +15,9 @@ use ployz_core::install::{AbsoluteInstallPath, InstallSha256Digest};
 use ployz_core::machine::rpc::MachineRpcResponse;
 use ployz_core::machine::{GatewayServingStatus, GatewayStatusObservation};
 use ployz_core::operation::RouteTarget;
-use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_nats::service_runtime::{NatsServiceResponse, request_json, start_nats_service};
 use ployz_nats::services::EndpointExecution;
+use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_test_support::ids::{cert_id, machine_id, operation_id, route_hostname};
 use ployzd::operations::deploy::MachineRuntimeUnavailableReason;
 use ployzd::roles::gateway::client::{

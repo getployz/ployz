@@ -31,11 +31,11 @@ use ployz_core::ops::{
     OperationStatusSnapshot,
 };
 use ployz_core::roles::{GatewayRole, InstallRolePolicy};
-use ployz_core::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_nats::service_runtime::{NatsServiceResponse, start_nats_service};
 use ployz_nats::services::{
     EndpointExecution, NatsServiceEndpointSpec, NatsServiceSpec, ServiceMetadata, ServiceVersion,
 };
+use ployz_nats::subjects::{OperationApiEndpoint, OperationApiEndpointExecution};
 use ployz_sdk_types::{
     AcceptedOperation, CoreReplaceReportRequest, CoreReplaceReportResponse, CoreReplaceReported,
     CoreReplaceRequest, CoreReplaceResponse, InitFirstMachineActivateError,
@@ -500,43 +500,51 @@ async fn core_replace_remote_runs_host_runner_command() {
     let server = TestNats::start().await;
     let client = server.controller.clone();
     let spec = test_api_service(&[
-        CoreReplaceApi::ENDPOINT,
-        CoreReplaceReportApi::ENDPOINT,
-        OpsWatchApi::ENDPOINT,
-        OpsStatusApi::ENDPOINT,
+        OperationApiEndpoint::from(CoreReplaceApi::ENDPOINT),
+        OperationApiEndpoint::from(CoreReplaceReportApi::ENDPOINT),
+        OperationApiEndpoint::from(OpsWatchApi::ENDPOINT),
+        OperationApiEndpoint::from(OpsStatusApi::ENDPOINT),
     ]);
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
         .expect("service starts");
     let expected_successor_url = server.server.client_url().clone();
     runtime
-        .bind_endpoint(&endpoint(&spec, CoreReplaceApi::ENDPOINT), move |request| {
-            let expected_successor_url = expected_successor_url.clone();
-            async move {
-                let request: CoreReplaceRequest =
-                    serde_json::from_slice(&request.payload).expect("core replace decodes");
-                assert_eq!(request.machine_id, machine_id("machine_2"));
-                assert!(
-                    request
-                        .operation_id
-                        .as_str()
-                        .starts_with("op_core_replace_machine_2_")
-                );
-                assert_eq!(
-                    request.successor_nats_url.as_str(),
-                    expected_successor_url.as_str()
-                );
-                let response: CoreReplaceResponse = OperationApiResponse::Ok {
-                    value: accepted_operation(&request.operation_id, &request.machine_id),
-                };
-                NatsServiceResponse::ok(serde_json::to_vec(&response).expect("response serializes"))
-            }
-        })
+        .bind_endpoint(
+            &endpoint(&spec, OperationApiEndpoint::from(CoreReplaceApi::ENDPOINT)),
+            move |request| {
+                let expected_successor_url = expected_successor_url.clone();
+                async move {
+                    let request: CoreReplaceRequest =
+                        serde_json::from_slice(&request.payload).expect("core replace decodes");
+                    assert_eq!(request.machine_id, machine_id("machine_2"));
+                    assert!(
+                        request
+                            .operation_id
+                            .as_str()
+                            .starts_with("op_core_replace_machine_2_")
+                    );
+                    assert_eq!(
+                        request.successor_nats_url.as_str(),
+                        expected_successor_url.as_str()
+                    );
+                    let response: CoreReplaceResponse = OperationApiResponse::Ok {
+                        value: accepted_operation(&request.operation_id, &request.machine_id),
+                    };
+                    NatsServiceResponse::ok(
+                        serde_json::to_vec(&response).expect("response serializes"),
+                    )
+                }
+            },
+        )
         .await
         .expect("core replace endpoint binds");
     runtime
         .bind_endpoint(
-            &endpoint(&spec, CoreReplaceReportApi::ENDPOINT),
+            &endpoint(
+                &spec,
+                OperationApiEndpoint::from(CoreReplaceReportApi::ENDPOINT),
+            ),
             |request| async move {
                 let request: CoreReplaceReportRequest =
                     serde_json::from_slice(&request.payload).expect("core replace report decodes");
@@ -556,7 +564,7 @@ async fn core_replace_remote_runs_host_runner_command() {
         .expect("core replace report endpoint binds");
     runtime
         .bind_endpoint(
-            &endpoint(&spec, OpsWatchApi::ENDPOINT),
+            &endpoint(&spec, OperationApiEndpoint::from(OpsWatchApi::ENDPOINT)),
             |_request| async move {
                 let response: OpsWatchResponse = OperationApiResponse::Ok {
                     value: OperationEventReplayPage::terminal(Vec::new()),
@@ -568,7 +576,7 @@ async fn core_replace_remote_runs_host_runner_command() {
         .expect("ops watch endpoint binds");
     runtime
         .bind_endpoint(
-            &endpoint(&spec, OpsStatusApi::ENDPOINT),
+            &endpoint(&spec, OperationApiEndpoint::from(OpsStatusApi::ENDPOINT)),
             |request| async move {
                 let request: OpsStatusRequest =
                     serde_json::from_slice(&request.payload).expect("status request decodes");
@@ -656,8 +664,13 @@ async fn core_replace_remote_runs_host_runner_command() {
 async fn machine_init_installs_activates_and_writes_local_context() {
     let server = TestNats::start().await;
     let client = server.controller.clone();
-    let spec = test_api_service(&[InitFirstMachineActivateApi::ENDPOINT]);
-    let activate_endpoint = endpoint(&spec, InitFirstMachineActivateApi::ENDPOINT);
+    let spec = test_api_service(&[OperationApiEndpoint::from(
+        InitFirstMachineActivateApi::ENDPOINT,
+    )]);
+    let activate_endpoint = endpoint(
+        &spec,
+        OperationApiEndpoint::from(InitFirstMachineActivateApi::ENDPOINT),
+    );
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
         .expect("service starts");
@@ -768,8 +781,13 @@ async fn machine_init_installs_activates_and_writes_local_context() {
 async fn machine_init_stages_and_installs_a_local_release() {
     let server = TestNats::start().await;
     let client = server.controller.clone();
-    let spec = test_api_service(&[InitFirstMachineActivateApi::ENDPOINT]);
-    let activate_endpoint = endpoint(&spec, InitFirstMachineActivateApi::ENDPOINT);
+    let spec = test_api_service(&[OperationApiEndpoint::from(
+        InitFirstMachineActivateApi::ENDPOINT,
+    )]);
+    let activate_endpoint = endpoint(
+        &spec,
+        OperationApiEndpoint::from(InitFirstMachineActivateApi::ENDPOINT),
+    );
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
         .expect("service starts");
@@ -874,8 +892,13 @@ async fn machine_init_installer_failure_names_phase_and_output() {
 async fn machine_init_activation_failure_does_not_record_machine_ssh() {
     let server = TestNats::start().await;
     let client = server.controller.clone();
-    let spec = test_api_service(&[InitFirstMachineActivateApi::ENDPOINT]);
-    let activate_endpoint = endpoint(&spec, InitFirstMachineActivateApi::ENDPOINT);
+    let spec = test_api_service(&[OperationApiEndpoint::from(
+        InitFirstMachineActivateApi::ENDPOINT,
+    )]);
+    let activate_endpoint = endpoint(
+        &spec,
+        OperationApiEndpoint::from(InitFirstMachineActivateApi::ENDPOINT),
+    );
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
         .expect("service starts");
@@ -958,9 +981,9 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
     let server = TestNats::start().await;
     let client = server.controller.clone();
     let spec = test_api_service(&[
-        MachineAddApi::ENDPOINT,
-        OpsWatchApi::ENDPOINT,
-        OpsStatusApi::ENDPOINT,
+        OperationApiEndpoint::from(MachineAddApi::ENDPOINT),
+        OperationApiEndpoint::from(OpsWatchApi::ENDPOINT),
+        OperationApiEndpoint::from(OpsStatusApi::ENDPOINT),
     ]);
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
@@ -968,7 +991,7 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
 
     runtime
         .bind_endpoint(
-            &endpoint(&spec, MachineAddApi::ENDPOINT),
+            &endpoint(&spec, OperationApiEndpoint::from(MachineAddApi::ENDPOINT)),
             |request| async move {
                 let request: MachineAddRequest =
                     serde_json::from_slice(&request.payload).expect("machine add request decodes");
@@ -1012,7 +1035,7 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
         .expect("machine add endpoint binds");
     runtime
         .bind_endpoint(
-            &endpoint(&spec, OpsWatchApi::ENDPOINT),
+            &endpoint(&spec, OperationApiEndpoint::from(OpsWatchApi::ENDPOINT)),
             |_request| async move {
                 let response: OpsWatchResponse = OperationApiResponse::Ok {
                     value: OperationEventReplayPage::terminal(Vec::new()),
@@ -1024,7 +1047,7 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
         .expect("ops watch endpoint binds");
     runtime
         .bind_endpoint(
-            &endpoint(&spec, OpsStatusApi::ENDPOINT),
+            &endpoint(&spec, OperationApiEndpoint::from(OpsStatusApi::ENDPOINT)),
             |request| async move {
                 let request: OpsStatusRequest =
                     serde_json::from_slice(&request.payload).expect("status request decodes");
@@ -1120,13 +1143,13 @@ async fn machine_add_remote_submits_installs_and_watches_to_completion() {
 async fn machine_add_remote_local_release_mismatch_reports_accepted_operation() {
     let server = TestNats::start().await;
     let client = server.controller.clone();
-    let spec = test_api_service(&[MachineAddApi::ENDPOINT]);
+    let spec = test_api_service(&[OperationApiEndpoint::from(MachineAddApi::ENDPOINT)]);
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
         .expect("service starts");
     runtime
         .bind_endpoint(
-            &endpoint(&spec, MachineAddApi::ENDPOINT),
+            &endpoint(&spec, OperationApiEndpoint::from(MachineAddApi::ENDPOINT)),
             |request| async move {
                 let request: MachineAddRequest =
                     serde_json::from_slice(&request.payload).expect("machine add request decodes");
@@ -1212,13 +1235,13 @@ async fn machine_add_remote_local_release_mismatch_reports_accepted_operation() 
 async fn machine_add_remote_installer_failure_carries_operation_and_phase() {
     let server = TestNats::start().await;
     let client = server.controller.clone();
-    let spec = test_api_service(&[MachineAddApi::ENDPOINT]);
+    let spec = test_api_service(&[OperationApiEndpoint::from(MachineAddApi::ENDPOINT)]);
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
         .expect("service starts");
     runtime
         .bind_endpoint(
-            &endpoint(&spec, MachineAddApi::ENDPOINT),
+            &endpoint(&spec, OperationApiEndpoint::from(MachineAddApi::ENDPOINT)),
             |request| async move {
                 let request: MachineAddRequest =
                     serde_json::from_slice(&request.payload).expect("machine add request decodes");
@@ -1303,9 +1326,9 @@ async fn machine_add_remote_terminal_failure_does_not_record_machine_ssh() {
     let server = TestNats::start().await;
     let client = server.controller.clone();
     let spec = test_api_service(&[
-        MachineAddApi::ENDPOINT,
-        OpsWatchApi::ENDPOINT,
-        OpsStatusApi::ENDPOINT,
+        OperationApiEndpoint::from(MachineAddApi::ENDPOINT),
+        OperationApiEndpoint::from(OpsWatchApi::ENDPOINT),
+        OperationApiEndpoint::from(OpsStatusApi::ENDPOINT),
     ]);
     let mut runtime = start_nats_service(client.clone(), &spec)
         .await
@@ -1313,7 +1336,7 @@ async fn machine_add_remote_terminal_failure_does_not_record_machine_ssh() {
 
     runtime
         .bind_endpoint(
-            &endpoint(&spec, MachineAddApi::ENDPOINT),
+            &endpoint(&spec, OperationApiEndpoint::from(MachineAddApi::ENDPOINT)),
             |request| async move {
                 let request: MachineAddRequest =
                     serde_json::from_slice(&request.payload).expect("machine add request decodes");
@@ -1336,7 +1359,7 @@ async fn machine_add_remote_terminal_failure_does_not_record_machine_ssh() {
         .expect("machine add endpoint binds");
     runtime
         .bind_endpoint(
-            &endpoint(&spec, OpsWatchApi::ENDPOINT),
+            &endpoint(&spec, OperationApiEndpoint::from(OpsWatchApi::ENDPOINT)),
             |_request| async move {
                 let response: OpsWatchResponse = OperationApiResponse::Ok {
                     value: OperationEventReplayPage::terminal(Vec::new()),
@@ -1348,7 +1371,7 @@ async fn machine_add_remote_terminal_failure_does_not_record_machine_ssh() {
         .expect("ops watch endpoint binds");
     runtime
         .bind_endpoint(
-            &endpoint(&spec, OpsStatusApi::ENDPOINT),
+            &endpoint(&spec, OperationApiEndpoint::from(OpsStatusApi::ENDPOINT)),
             |request| async move {
                 let request: OpsStatusRequest =
                     serde_json::from_slice(&request.payload).expect("status request decodes");

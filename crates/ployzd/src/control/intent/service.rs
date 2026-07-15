@@ -9,13 +9,13 @@ use crate::service_catalog::{intent_get_endpoint_spec, intent_service};
 use ployz_core::dataplane::{DataplaneProjection, DataplaneProjectionMember};
 use ployz_core::ids::MachineId;
 use ployz_core::state::{IntentSnapshot, PendingMachineJoinRecoverySnapshot};
-use ployz_core::subjects::{INTENT_CHANGED, INTENT_GET, PENDING_MACHINE_JOINS_CHANGED};
 use ployz_nats::service_protocol::NatsServiceError;
 use ployz_nats::service_runtime::{
     NatsJsonServiceRequestError, NatsServiceRequest, NatsServiceResponse, NatsServiceRuntimeError,
     NatsServiceShutdownError, RunningNatsService, decode_json_request, request_json,
     start_nats_service,
 };
+use ployz_nats::subjects::{INTENT_CHANGED, INTENT_GET, PENDING_MACHINE_JOINS_CHANGED};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::task::JoinHandle;

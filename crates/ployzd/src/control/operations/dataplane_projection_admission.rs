@@ -144,7 +144,7 @@ impl DataplaneProjectionAdmissionOperation {
     async fn publish_invalidation(&self) -> Result<(), String> {
         tokio::time::timeout(DATAPLANE_ADMISSION_REQUEST_TIMEOUT, async {
             self.intent_change_client
-                .publish(ployz_core::subjects::INTENT_CHANGED, Vec::new().into())
+                .publish(ployz_nats::subjects::INTENT_CHANGED, Vec::new().into())
                 .await
                 .map_err(|error| error.to_string())?;
             self.intent_change_client

@@ -10,12 +10,12 @@ use crate::role_testimony::RoleTestimonyCache;
 use crate::service_catalog::{runtime_projection_service, runtime_snapshot_seed_endpoint_spec};
 use futures_util::StreamExt;
 use ployz_core::state::IntentSnapshot;
-use ployz_core::subjects::{INGRESS_ENDPOINT_CHANGED, INTENT_CHANGED, RUNTIME_SNAPSHOT_STREAM};
 use ployz_nats::service_protocol::NatsServiceError;
 use ployz_nats::service_runtime::{
     NatsServiceHealth, NatsServiceResponse, NatsServiceShutdownError, RunningNatsService,
     decode_json_request, start_nats_service,
 };
+use ployz_nats::subjects::{INGRESS_ENDPOINT_CHANGED, INTENT_CHANGED, RUNTIME_SNAPSHOT_STREAM};
 use ployz_sdk_types::RuntimeSnapshot;
 use serde::Deserialize;
 use std::sync::{Arc, Mutex};

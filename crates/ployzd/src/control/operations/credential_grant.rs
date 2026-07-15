@@ -8,7 +8,7 @@ use crate::tasks::TaskRegistry;
 use ployz_core::ops::{
     CredentialGrantAction, CredentialGrantFailure, CredentialGrantTransition, FailureMessage,
 };
-use ployz_core::subjects::INTENT_CHANGED;
+use ployz_nats::subjects::INTENT_CHANGED;
 
 #[derive(Debug, Clone)]
 pub struct CredentialGrantOperation {

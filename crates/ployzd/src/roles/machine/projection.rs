@@ -11,8 +11,8 @@ use ployz_core::dataplane::{
 };
 use ployz_core::ids::MachineId;
 use ployz_core::ops::FailureMessage;
-use ployz_core::subjects::INTENT_CHANGED;
 use ployz_nats::service_runtime::NatsClient;
+use ployz_nats::subjects::INTENT_CHANGED;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 

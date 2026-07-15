@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 use ployz_core::network::MachineEndpointSubnet;
 use ployz_core::security::NatsPrincipal;
 #[cfg(unix)]
-use ployz_core::subjects::{MachineServiceEndpoint, machine_service};
-#[cfg(unix)]
 use ployz_nats::connect::NatsClientAuth;
 use ployz_nats::connect::NatsClientUrl;
+#[cfg(unix)]
+use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_test_support::ids::machine_id;
 use ployzd::config::{
     DEFAULT_GATEWAY_CERTIFICATE_STATE_DIR, DaemonProcessConfig, DaemonProcessConfigError,

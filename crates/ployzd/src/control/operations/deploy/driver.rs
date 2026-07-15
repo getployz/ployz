@@ -29,7 +29,7 @@ use ployz_core::ops::{
     CertificateProvisionFailure, DeployOperationFailure, DeployTransition, FailureMessage,
     OperatorHint, RouteHostname, StatusProjectionError,
 };
-use ployz_core::subjects::INTENT_CHANGED;
+use ployz_nats::subjects::INTENT_CHANGED;
 use std::time::Duration;
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
