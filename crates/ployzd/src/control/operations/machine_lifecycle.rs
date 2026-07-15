@@ -7,7 +7,7 @@
 use crate::control::intent::machine_roster::{MachineLifecycleUpdate, MachineRosterStore};
 use crate::control::operation_evidence::AcceptedMachineLifecycleSubmission;
 use crate::control::sequencer::OperationControllers;
-use crate::tasks::TaskRegistry;
+use crate::tasks::TaskSpawner;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::operation::{FailureMessage, MachineLifecycleFailure, MachineLifecycleTransition};
 use ployz_nats::subjects::INTENT_CHANGED;
@@ -17,7 +17,7 @@ pub struct MachineLifecycleOperation {
     intent_change_client: async_nats::Client,
     controllers: OperationControllers,
     machine_roster: MachineRosterStore,
-    task_registry: TaskRegistry,
+    task_registry: TaskSpawner,
 }
 
 impl MachineLifecycleOperation {
@@ -26,7 +26,7 @@ impl MachineLifecycleOperation {
         intent_change_client: async_nats::Client,
         controllers: OperationControllers,
         machine_roster: MachineRosterStore,
-        task_registry: TaskRegistry,
+        task_registry: TaskSpawner,
     ) -> Self {
         Self {
             intent_change_client,

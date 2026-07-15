@@ -11,7 +11,7 @@ use crate::control::role_client::machine::{
 };
 use crate::control::sequencer::OperationControllers;
 use crate::roles::machine::protocol::MachineContainerRemoveRpcRequest;
-use crate::tasks::TaskRegistry;
+use crate::tasks::TaskSpawner;
 use ployz_core::ids::{ContainerId, MachineId, NamespaceId, OperationId};
 use ployz_core::intent::RouteBindingState;
 use ployz_core::intent::ServingTargetEntry;
@@ -30,7 +30,7 @@ pub struct NamespaceRemoveOperation {
     namespace_intent: NamespaceIntentStore,
     controllers: OperationControllers,
     step_timeout: Duration,
-    task_registry: TaskRegistry,
+    task_registry: TaskSpawner,
 }
 
 impl NamespaceRemoveOperation {
@@ -40,7 +40,7 @@ impl NamespaceRemoveOperation {
         namespace_intent: NamespaceIntentStore,
         controllers: OperationControllers,
         step_timeout: Duration,
-        task_registry: TaskRegistry,
+        task_registry: TaskSpawner,
     ) -> Self {
         Self {
             client,

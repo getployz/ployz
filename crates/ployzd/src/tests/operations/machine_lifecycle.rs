@@ -27,12 +27,13 @@ async fn drain_records_lifecycle_evidence_and_resume_reverts() {
             .expect("open core store"),
     );
     seed_active_machine(&machine_roster, "machine_a").await;
+    let tasks = TaskRegistry::default();
 
     let runtime = MachineLifecycleOperation::new(
         nats.controller.clone(),
         controllers.clone(),
         machine_roster.clone(),
-        TaskRegistry::default(),
+        tasks.spawner(),
     );
 
     let accepted = controllers
@@ -86,12 +87,13 @@ async fn drain_of_unknown_machine_fails_without_writing_evidence() {
             .await
             .expect("open core store"),
     );
+    let tasks = TaskRegistry::default();
 
     let runtime = MachineLifecycleOperation::new(
         nats.controller.clone(),
         controllers.clone(),
         machine_roster.clone(),
-        TaskRegistry::default(),
+        tasks.spawner(),
     );
 
     let accepted = controllers

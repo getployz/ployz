@@ -1,8 +1,11 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    DeployRunningStage, NamespaceRemoveRunningStage, NetworkRepairRunningStage, OperationKind,
-    OperationStatus, ServiceRestartRunningStage, VolumeRemoveRunningStage,
+    CredentialGrantOperationState, DeployOperationState, DeployRunningStage,
+    IngressConfigureOperationState, MachineLifecycleOperationState, MachineUpdateOperationState,
+    NamespaceRemoveOperationState, NamespaceRemoveRunningStage, NetworkRepairOperationState,
+    NetworkRepairRunningStage, OperationKind, OperationStatus, ServiceRestartOperationState,
+    ServiceRestartRunningStage, VolumeRemoveOperationState, VolumeRemoveRunningStage,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -201,16 +204,52 @@ impl OperationStatus {
     #[must_use]
     pub const fn terminal_interruption_evidence(&self) -> Option<&OperationInterruptionEvidence> {
         match self {
-            Self::Deploy { state, .. } => state.terminal_interruption_evidence(),
-            Self::CredentialGrant { state, .. } => state.terminal_interruption_evidence(),
-            Self::IngressConfigure { state, .. } => state.terminal_interruption_evidence(),
-            Self::MachineUpdate { state, .. } => state.terminal_interruption_evidence(),
-            Self::MachineLifecycle { state, .. } => state.terminal_interruption_evidence(),
-            Self::NetworkRepair { state, .. } => state.terminal_interruption_evidence(),
-            Self::ServiceRestart { state, .. } => state.terminal_interruption_evidence(),
-            Self::NamespaceRemove { state, .. } => state.terminal_interruption_evidence(),
-            Self::VolumeRemove { state, .. } => state.terminal_interruption_evidence(),
-            Self::Cert { .. }
+            Self::Deploy {
+                state: DeployOperationState::Interrupted { evidence },
+                ..
+            }
+            | Self::CredentialGrant {
+                state: CredentialGrantOperationState::Interrupted { evidence },
+                ..
+            }
+            | Self::IngressConfigure {
+                state: IngressConfigureOperationState::Interrupted { evidence },
+                ..
+            }
+            | Self::MachineUpdate {
+                state: MachineUpdateOperationState::Interrupted { evidence },
+                ..
+            }
+            | Self::MachineLifecycle {
+                state: MachineLifecycleOperationState::Interrupted { evidence },
+                ..
+            }
+            | Self::NetworkRepair {
+                state: NetworkRepairOperationState::Interrupted { evidence },
+                ..
+            }
+            | Self::ServiceRestart {
+                state: ServiceRestartOperationState::Interrupted { evidence },
+                ..
+            }
+            | Self::NamespaceRemove {
+                state: NamespaceRemoveOperationState::Interrupted { evidence },
+                ..
+            }
+            | Self::VolumeRemove {
+                state: VolumeRemoveOperationState::Interrupted { evidence },
+                ..
+            } => Some(evidence),
+            Self::Deploy { .. }
+            | Self::CredentialGrant { .. }
+            | Self::IngressConfigure { .. }
+            | Self::MachineUpdate { .. }
+            | Self::MachineLifecycle { .. }
+            | Self::NetworkRepair { .. }
+            | Self::ServiceRestart { .. }
+            | Self::NamespaceRemove { .. }
+            | Self::VolumeRemove { .. }
+            | Self::Cert { .. }
             | Self::MachineAdd { .. }
             | Self::CoreReplace { .. }
             | Self::ManagedDnsReconcile { .. } => None,

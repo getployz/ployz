@@ -71,15 +71,6 @@ impl MachineUpdateOperationState {
     pub(super) const fn interrupted(evidence: OperationInterruptionEvidence) -> Self {
         Self::Interrupted { evidence }
     }
-
-    pub(super) const fn terminal_interruption_evidence(
-        &self,
-    ) -> Option<&OperationInterruptionEvidence> {
-        let Self::Interrupted { evidence } = self else {
-            return None;
-        };
-        Some(evidence)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

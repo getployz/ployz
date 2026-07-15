@@ -6,7 +6,7 @@ use crate::control::operation_evidence::{
 use crate::control::role_client::machine::NatsMachineSubstrateUpdater;
 use crate::control::sequencer::OperationControllers;
 use crate::roles::machine::protocol::MachineSubstrateUpdateRpcRequest;
-use crate::tasks::TaskRegistry;
+use crate::tasks::TaskSpawner;
 use ployz_core::ids::MachineId;
 use ployz_core::install::InstallArtifactVersion;
 use ployz_core::operation::MachineSubstrateVersions;
@@ -20,7 +20,7 @@ const UPDATE_REPORT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 pub struct MachineUpdateOperation {
     controllers: OperationControllers,
     updater: NatsMachineSubstrateUpdater,
-    task_registry: TaskRegistry,
+    task_registry: TaskSpawner,
 }
 
 impl MachineUpdateOperation {
@@ -28,7 +28,7 @@ impl MachineUpdateOperation {
     pub const fn new(
         controllers: OperationControllers,
         updater: NatsMachineSubstrateUpdater,
-        task_registry: TaskRegistry,
+        task_registry: TaskSpawner,
     ) -> Self {
         Self {
             controllers,

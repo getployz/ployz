@@ -21,7 +21,7 @@ use crate::control::sequencer::{AcceptedDeployExecution, OperationControllers};
 use crate::roles::machine::protocol::{
     MachineContainerInspectRpcOk, MachineContainerInspectRpcRequest,
 };
-use crate::tasks::TaskRegistry;
+use crate::tasks::TaskSpawner;
 use ployz_core::certificate::ActiveCertState;
 use ployz_core::deploy::VolumeDeclaredDeployRequest;
 use ployz_core::ingress::CertificateOwner;
@@ -339,7 +339,7 @@ pub struct DeployOperationDriver {
     stores: DeployOperationStores,
     certificate_manager: CertificateManager,
     step_timeout: Duration,
-    task_registry: TaskRegistry,
+    task_registry: TaskSpawner,
 }
 
 impl DeployOperationDriver {
@@ -348,7 +348,7 @@ impl DeployOperationDriver {
         stores: DeployOperationStores,
         certificate_manager: CertificateManager,
         step_timeout: Duration,
-        task_registry: TaskRegistry,
+        task_registry: TaskSpawner,
     ) -> Self {
         Self {
             stores,

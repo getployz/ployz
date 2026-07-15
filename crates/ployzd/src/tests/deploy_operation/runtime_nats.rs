@@ -290,6 +290,7 @@ async fn duplicate_driver_execution_does_not_release_the_original_namespace_lock
         )
         .await
         .expect("deploy already started");
+    let tasks = TaskRegistry::default();
     let driver = DeployOperationDriver::new(
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
@@ -306,7 +307,7 @@ async fn duplicate_driver_execution_does_not_release_the_original_namespace_lock
             CertificateManagerConfig::for_core_db(Path::new("ployz-core.db")),
         ),
         Duration::from_secs(5),
-        TaskRegistry::default(),
+        tasks.spawner(),
     );
 
     let result = driver.run(accepted).await;

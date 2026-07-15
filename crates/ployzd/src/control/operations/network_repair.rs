@@ -13,7 +13,7 @@ use crate::control::role_client::machine_convergence::gather_dataplane_statuses;
 use crate::control::sequencer::OperationControllers;
 use crate::roles::dns::protocol::DnsStatusRpcOk;
 use crate::roles::machine::{MachineRequestFailure, MachineRuntimeUnavailableReason};
-use crate::tasks::TaskRegistry;
+use crate::tasks::TaskSpawner;
 use futures_util::{StreamExt, stream};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::runtime::MachineFactsRefreshConfirmation;
@@ -49,7 +49,7 @@ pub struct NetworkRepairOperation {
     client: async_nats::Client,
     dns_client: NatsDnsClient,
     operation_timeout: Duration,
-    task_registry: TaskRegistry,
+    task_registry: TaskSpawner,
 }
 
 impl NetworkRepairOperation {
@@ -60,7 +60,7 @@ impl NetworkRepairOperation {
         facts_reader: NatsMachineFactsReader,
         client: async_nats::Client,
         operation_timeout: Duration,
-        task_registry: TaskRegistry,
+        task_registry: TaskSpawner,
     ) -> Self {
         let dns_client = NatsDnsClient::new(client.clone());
         Self {

@@ -13,7 +13,7 @@ use crate::control::sequencer::OperationControllers;
 use crate::roles::machine::protocol::{
     MachineContainerInspectRpcRequest, MachineContainerRestartRpcRequest,
 };
-use crate::tasks::TaskRegistry;
+use crate::tasks::TaskSpawner;
 use ployz_core::ids::{ContainerId, MachineId, OperationId};
 use ployz_core::intent::IntentSnapshot;
 use ployz_core::machine::runtime::{
@@ -32,7 +32,7 @@ pub struct ServiceRestartOperation {
     client: async_nats::Client,
     controllers: OperationControllers,
     step_timeout: Duration,
-    task_registry: TaskRegistry,
+    task_registry: TaskSpawner,
 }
 
 impl ServiceRestartOperation {
@@ -41,7 +41,7 @@ impl ServiceRestartOperation {
         client: async_nats::Client,
         controllers: OperationControllers,
         step_timeout: Duration,
-        task_registry: TaskRegistry,
+        task_registry: TaskSpawner,
     ) -> Self {
         Self {
             client,

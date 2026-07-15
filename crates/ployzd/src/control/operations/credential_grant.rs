@@ -4,7 +4,7 @@ use crate::control::authorization::{
 };
 use crate::control::operation_evidence::AcceptedCredentialGrantSubmission;
 use crate::control::sequencer::OperationControllers;
-use crate::tasks::TaskRegistry;
+use crate::tasks::TaskSpawner;
 use ployz_core::operation::{
     CredentialGrantAction, CredentialGrantFailure, CredentialGrantTransition, FailureMessage,
 };
@@ -15,7 +15,7 @@ pub struct CredentialGrantOperation {
     controllers: OperationControllers,
     authorization: NatsAuthorizationHandle,
     client: async_nats::Client,
-    task_registry: TaskRegistry,
+    task_registry: TaskSpawner,
 }
 
 impl CredentialGrantOperation {
@@ -24,7 +24,7 @@ impl CredentialGrantOperation {
         controllers: OperationControllers,
         authorization: NatsAuthorizationHandle,
         client: async_nats::Client,
-        task_registry: TaskRegistry,
+        task_registry: TaskSpawner,
     ) -> Self {
         Self {
             controllers,

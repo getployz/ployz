@@ -154,15 +154,6 @@ impl DeployOperationState {
     pub(super) const fn interrupted(evidence: super::OperationInterruptionEvidence) -> Self {
         Self::Interrupted { evidence }
     }
-
-    pub(super) const fn terminal_interruption_evidence(
-        &self,
-    ) -> Option<&super::OperationInterruptionEvidence> {
-        let Self::Interrupted { evidence } = self else {
-            return None;
-        };
-        Some(evidence)
-    }
 }
 
 /// One machine's placement rejection, carried on NoUsableMachines evidence.

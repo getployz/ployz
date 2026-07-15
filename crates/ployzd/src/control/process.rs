@@ -248,6 +248,7 @@ async fn start_control_process_with_client_reload_and_issuer(
         .map_err(ControlProcessError::StartFactsCache)?;
     let facts = testimony_cache.cache();
     let control_tasks = TaskRegistry::default();
+    let task_spawner = control_tasks.spawner();
     let namespace_intent = NamespaceIntentStore::new(core_store.clone());
     let ployz_dns_target = PloyzDnsTargetStore::new(core_store.clone());
     let lease_client = LeaseClient::new(config.lease_worker_url.clone());
@@ -265,7 +266,7 @@ async fn start_control_process_with_client_reload_and_issuer(
             config.certificate_manager.clone(),
         ),
     }
-    .with_task_registry(control_tasks.clone());
+    .with_task_spawner(task_spawner.clone());
     let machine_roster = MachineRosterStore::new(core_store.clone());
     control_tasks
         .spawn(|| reconcile_reachability_loop(facts.clone(), machine_roster.clone()))
@@ -280,13 +281,13 @@ async fn start_control_process_with_client_reload_and_issuer(
         },
         certificate_manager.clone(),
         config.deploy_step_timeout,
-        control_tasks.clone(),
+        task_spawner.clone(),
     );
     let service_restart = crate::control::operations::service_restart::ServiceRestartOperation::new(
         client.clone(),
         controllers.clone(),
         config.deploy_step_timeout,
-        control_tasks.clone(),
+        task_spawner.clone(),
     );
     let namespace_remove =
         crate::control::operations::namespace_remove::NamespaceRemoveOperation::new(
@@ -294,33 +295,33 @@ async fn start_control_process_with_client_reload_and_issuer(
             namespace_intent.clone(),
             controllers.clone(),
             config.deploy_step_timeout,
-            control_tasks.clone(),
+            task_spawner.clone(),
         );
     let volume_remove = crate::control::operations::volume_remove::VolumeRemoveOperation::new(
         client.clone(),
         namespace_intent.clone(),
         controllers.clone(),
         config.deploy_step_timeout,
-        control_tasks.clone(),
+        task_spawner.clone(),
     );
     let machine_mint = MachineCredentialMint::new(
         controllers.clone(),
         authorization.handle(),
         MintVerifyEndpoint::from_connect(&config.nats_connect),
         config.nats_authorization.machine_seed_file.clone(),
-        control_tasks.clone(),
+        task_spawner.clone(),
     );
     let credential_grant = CredentialGrantOperation::new(
         controllers.clone(),
         authorization.handle(),
         client.clone(),
-        control_tasks.clone(),
+        task_spawner.clone(),
     );
     let ingress_configure = IngressConfigureOperation::new(
         controllers.clone(),
         IngressIntentStore::new(core_store.clone()),
         client.clone(),
-        control_tasks.clone(),
+        task_spawner.clone(),
     );
     // Startup reconciliation (one bounded pass, owned by control start): a
     // control crash between machine-add acceptance and material-ready
@@ -342,7 +343,7 @@ async fn start_control_process_with_client_reload_and_issuer(
             .with_request_timeout(config.deploy_step_timeout),
         client.clone(),
         config.deploy_step_timeout,
-        control_tasks.clone(),
+        task_spawner.clone(),
     );
     let core_machine_id = config
         .deploy_machines
@@ -403,12 +404,12 @@ async fn start_control_process_with_client_reload_and_issuer(
     let runtime_projection_health = runtime_projection.health_reader();
     let machine_updater = NatsMachineSubstrateUpdater::new(client.clone());
     let machine_update =
-        MachineUpdateOperation::new(controllers.clone(), machine_updater, control_tasks.clone());
+        MachineUpdateOperation::new(controllers.clone(), machine_updater, task_spawner.clone());
     let machine_lifecycle = MachineLifecycleOperation::new(
         client.clone(),
         controllers.clone(),
         machine_roster.clone(),
-        control_tasks.clone(),
+        task_spawner,
     );
     let operation_api = start_operation_api_service_with_handlers(
         client.clone(),

@@ -9,7 +9,7 @@ use crate::control::role_client::machine::{
     NatsMachineContainerRuntime, NatsMachineFactsReader, read_available_machine_facts_by_id,
 };
 use crate::control::sequencer::OperationControllers;
-use crate::tasks::TaskRegistry;
+use crate::tasks::TaskSpawner;
 use ployz_core::deploy::VolumeName;
 use ployz_core::ids::{NamespaceId, OperationId};
 use ployz_core::intent::IntentSnapshot;
@@ -27,7 +27,7 @@ pub struct VolumeRemoveOperation {
     namespace_intent: NamespaceIntentStore,
     controllers: OperationControllers,
     step_timeout: Duration,
-    task_registry: TaskRegistry,
+    task_registry: TaskSpawner,
 }
 
 impl VolumeRemoveOperation {
@@ -37,7 +37,7 @@ impl VolumeRemoveOperation {
         namespace_intent: NamespaceIntentStore,
         controllers: OperationControllers,
         step_timeout: Duration,
-        task_registry: TaskRegistry,
+        task_registry: TaskSpawner,
     ) -> Self {
         Self {
             client,
