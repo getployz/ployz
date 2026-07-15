@@ -2,6 +2,8 @@
 
 ## Read First
 
+- Read the [contributor code map](docs/architecture/code-map.md) before changing
+  repository structure, runtime ownership, state ownership, or test placement.
 - Read `VISION.md` before product or architecture work.
 - Read `CONTEXT.md` before product, architecture, or domain-model work. Use
   its preferred terms in code, docs, tests, CLI copy, and operation/state names.
@@ -75,16 +77,21 @@ NATS.
 
 ## Module Ownership
 
-Expected crate shape:
+The contributor code map is the canonical path-level ownership guide. At the
+crate level:
 
-- `ployz-core`: ids, subjects, state models, operation models, deploy planning,
-  security role models.
+- `ployz-core`: canonical domain models and policy under Operation, Intent,
+  Machine, Network, Certificate, Deploy, and Install modules.
 - `ployz-nats`: NATS connection, bootstrap, services, subject construction,
   permissions, and plain-subject transport helpers.
-- `ployzd`: process wiring, service handlers, controllers, machine agent, Docker,
-  gateway, DNS, certs.
-- `ployz`: CLI client.
+- `ployzd`: separate Control, Machine, Gateway, and DNS role-process wiring and
+  implementation behind one shipped daemon artifact.
+- `ployz`: feature-owned CLI command, execution, and presentation modules.
+- `ployz-host-runner`: privileged machine-local lifecycle planning and effects.
 - `ployz-sdk-types`: public schema/type export surface.
+- `ebpf/{common,control,program}`: shared contract, userspace controller, and
+  separately built eBPF program.
+- `testing/`: test-only support, external fakes, and black-box cluster E2E.
 
 Keep dependencies flowing inward. Business logic must not import process wiring.
 Transport adapters must not import product orchestration convenience types.
