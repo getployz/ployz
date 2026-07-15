@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cert::ManagedLeaseName;
+use crate::certificate::ManagedLeaseName;
 use crate::ids::OperationId;
 use crate::ingress::IngressEndpointProjectionIdentity;
 

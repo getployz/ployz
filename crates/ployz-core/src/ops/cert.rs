@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cert::ActiveCertState;
+use crate::certificate::ActiveCertState;
 use crate::ids::{CertId, MachineId, OperationId};
 
 use super::events::OperationSubjectRef;

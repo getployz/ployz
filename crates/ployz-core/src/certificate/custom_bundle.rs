@@ -200,7 +200,7 @@ fn custom_bundle_material_bytes(certificate_chain_pem: &str, private_key_pem: &s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cert::{CertBundleRef, CertValidAt, CertValidityWindow};
+    use crate::certificate::{CertBundleRef, CertValidAt, CertValidityWindow};
     use crate::ids::CertId;
     use crate::install::AbsoluteInstallPath;
     use crate::ops::RouteHostname;

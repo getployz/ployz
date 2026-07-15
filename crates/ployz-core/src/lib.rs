@@ -8,6 +8,7 @@
 //! presentation.
 
 pub mod cert;
+pub mod certificate;
 pub mod dataplane;
 pub mod deploy;
 pub mod ids;

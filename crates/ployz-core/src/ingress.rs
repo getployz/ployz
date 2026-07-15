@@ -5,7 +5,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use serde::{Deserialize, Serialize};
 
-use crate::cert::ActiveCertState;
+use crate::certificate::ActiveCertState;
 use crate::ids::RouteBindingId;
 use crate::ops::{RouteHostname, RouteHostnameError};
 use crate::reachability::is_public;

@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU16;
 
-use crate::cert::CertificateProvisionFailure;
+use crate::certificate::CertificateProvisionFailure;
 use crate::deploy::VolumeName;
 use crate::deploy::{DeployCleanupContainer, DeployPlan, ImageReference};
 use crate::ids::{

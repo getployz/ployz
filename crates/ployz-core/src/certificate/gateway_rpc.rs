@@ -138,7 +138,7 @@ pub enum GatewayCertificateRpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cert::{
+    use crate::certificate::{
         AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue, ActiveCertState,
         CertBundleRef, CertValidAt, CertValidityWindow, custom_bundle_digest,
     };

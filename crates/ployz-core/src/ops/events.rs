@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cert::AcmeHttp01Challenge;
+use crate::certificate::AcmeHttp01Challenge;
 use crate::deploy::{
     DeployCleanupContainer, DeployPlan, DeployRequest, DeployReservationId, VolumeName,
 };
