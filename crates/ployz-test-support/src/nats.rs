@@ -1,6 +1,6 @@
 //! Secured NATS test fixture: a real `nats-server` with TLS and NKey-user
-//! authorization, rendered through the product config types in
-//! `ployz_core::nats_config` — no parallel test-only config language.
+//! authorization, rendered through the concrete production NATS interfaces —
+//! no parallel test-only config language.
 //!
 //! [`SecuredTestNats`] mints a throwaway cluster CA, a server certificate,
 //! and one NKey credential per principal, then exposes per-principal
@@ -16,8 +16,7 @@ use std::time::Duration;
 use ployz_core::ids::MachineId;
 use ployz_core::nats_config::{
     CredentialGrant, CredentialName, CredentialRole, MintedNatsUser, NatsAuthorizationGrant,
-    NatsInternalAuthority, NatsListener, NatsServerConfig, NatsServerTlsFiles, NatsUserPublicKey,
-    NatsUserSeed, render_authorized_users,
+    NatsInternalAuthority, NatsUserPublicKey, NatsUserSeed,
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_host_runner::nats_identity::{ServerCertificateSans, generate_cluster_nats_identity};
@@ -25,6 +24,8 @@ use ployz_nats::connect::{
     NatsClientAuth, NatsClientUrl, NatsConnectConfig, NatsTlsTrust, connect_authenticated,
 };
 use ployz_nats::operation_api_client::OperationApiClient;
+use ployz_nats::permissions::render_authorized_users;
+use ployz_nats::server_config::{NatsListener, NatsServerConfig, NatsServerTlsFiles};
 
 /// The connect timeout every suite uses against the fixture server.
 pub const TEST_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);

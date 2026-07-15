@@ -24,7 +24,6 @@ pub mod nats_config;
 pub mod network;
 pub mod operation;
 pub mod ops;
-pub mod permissions;
 pub mod reachability;
 pub mod roles;
 pub mod security;

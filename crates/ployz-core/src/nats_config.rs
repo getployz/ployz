@@ -1,120 +1,10 @@
-//! NATS server config policy: TLS + NKey-user authorization rendering.
+//! NATS credential grants, authority intent, and validated key material.
 
 use std::fmt;
-use std::path::{Path, PathBuf};
 
 use crate::ids::MachineId;
-use crate::permissions::{NatsPermissionProfile, ResponsePermission};
 use crate::security::NatsPrincipal;
 use serde::{Deserialize, Serialize};
-
-/// Where the NATS listener binds.
-///
-/// The listener becomes externally reachable only together with TLS +
-/// authorization: both are required fields of [`NatsServerConfig`], so a
-/// plaintext external listener is unrepresentable.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NatsListener {
-    Loopback,
-    External { advertise_host: NatsAdvertisedHost },
-}
-
-/// TLS certificate/key file paths rendered into the server config.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NatsServerTlsFiles {
-    pub cert_file: PathBuf,
-    pub key_file: PathBuf,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NatsServerConfig {
-    listener: NatsListener,
-    port: u16,
-    server_name: MachineId,
-    tls: NatsServerTlsFiles,
-    authorized_users_include: PathBuf,
-}
-
-impl NatsServerConfig {
-    pub fn single_machine(
-        machine_id: MachineId,
-        listener: NatsListener,
-        tls: NatsServerTlsFiles,
-        authorized_users_include: PathBuf,
-    ) -> Result<Self, NatsServerConfigError> {
-        let config = Self {
-            listener,
-            port: 4222,
-            server_name: machine_id,
-            tls,
-            authorized_users_include,
-        };
-        config.validate()?;
-        Ok(config)
-    }
-
-    /// The host clients on this machine should dial.
-    #[must_use]
-    pub fn client_host(&self) -> &str {
-        match &self.listener {
-            NatsListener::Loopback => "127.0.0.1",
-            NatsListener::External { advertise_host } => advertise_host.as_str(),
-        }
-    }
-
-    #[must_use]
-    pub const fn port(&self) -> u16 {
-        self.port
-    }
-
-    #[must_use]
-    pub fn render(&self) -> String {
-        let cert_file = quote_nats_string(
-            self.tls
-                .cert_file
-                .to_str()
-                .expect("validated nats tls cert path is UTF-8"),
-        );
-        let key_file = quote_nats_string(
-            self.tls
-                .key_file
-                .to_str()
-                .expect("validated nats tls key path is UTF-8"),
-        );
-        let include_path = quote_nats_string(
-            self.authorized_users_include
-                .to_str()
-                .expect("validated authorized-users include path is UTF-8"),
-        );
-        let host = match &self.listener {
-            NatsListener::Loopback => "127.0.0.1",
-            NatsListener::External { .. } => "0.0.0.0",
-        };
-
-        let mut rendered = format!(
-            "server_name: {}\nhost: {}\nport: {}\n",
-            self.server_name.as_str(),
-            host,
-            self.port,
-        );
-        if let NatsListener::External { advertise_host } = &self.listener {
-            let client_advertise =
-                quote_nats_string(&format!("{}:{}", advertise_host.as_str(), self.port));
-            rendered.push_str(&format!("client_advertise: {client_advertise}\n",));
-        }
-        rendered.push_str(&format!(
-            "tls {{\n  cert_file: {cert_file}\n  key_file: {key_file}\n}}\njetstream: disabled\ninclude {include_path}\n"
-        ));
-        rendered
-    }
-
-    fn validate(&self) -> Result<(), NatsServerConfigError> {
-        validate_config_path("tls.cert_file", &self.tls.cert_file)?;
-        validate_config_path("tls.key_file", &self.tls.key_file)?;
-        validate_include_path(&self.authorized_users_include)?;
-        Ok(())
-    }
-}
 
 /// Human-facing name attached to a client credential grant.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -263,72 +153,6 @@ struct PendingAuthorization {
     principal: NatsPrincipal,
     credential_name: Option<CredentialName>,
     credential_role: Option<CredentialRole>,
-}
-
-/// Renders the `authorization { users [...] }` include file from the
-/// principals' permission profiles.
-#[must_use]
-pub fn render_authorized_users(users: &[NatsAuthorizationGrant]) -> String {
-    let mut rendered = String::from("authorization {\n  users [\n");
-    for user in users {
-        let principal = user.principal();
-        let credential = match user {
-            NatsAuthorizationGrant::Credential(grant) => Some(grant),
-            NatsAuthorizationGrant::Internal { .. } => None,
-        };
-        let profile = NatsPermissionProfile::render(principal);
-        rendered.push_str("    {\n");
-        rendered.push_str(&format!(
-            "      {PRINCIPAL_MARKER_PREFIX}{}\n",
-            profile.principal.authority_key()
-        ));
-        if let Some(CredentialGrant { name, role, .. }) = credential {
-            rendered.push_str(&format!(
-                "      {CREDENTIAL_NAME_MARKER_PREFIX}{}\n",
-                name.as_str()
-            ));
-            let role = match role {
-                CredentialRole::Operator => "operator",
-            };
-            rendered.push_str(&format!("      {CREDENTIAL_ROLE_MARKER_PREFIX}{role}\n"));
-        }
-        rendered.push_str(&format!("      nkey: {}\n", user.public_key().as_str()));
-        rendered.push_str("      permissions {\n");
-        rendered.push_str("        publish {\n");
-        rendered.push_str(&render_subject_list(
-            "allow",
-            profile.publish.allowed_subjects(),
-        ));
-        if !profile.publish.denied_subjects().is_empty() {
-            rendered.push_str(&render_subject_list(
-                "deny",
-                profile.publish.denied_subjects(),
-            ));
-        }
-        rendered.push_str("        }\n");
-        rendered.push_str("        subscribe {\n");
-        rendered.push_str(&render_subject_list(
-            "allow",
-            profile.subscribe.allowed_subjects(),
-        ));
-        if !profile.subscribe.denied_subjects().is_empty() {
-            rendered.push_str(&render_subject_list(
-                "deny",
-                profile.subscribe.denied_subjects(),
-            ));
-        }
-        rendered.push_str("        }\n");
-        match profile.allow_responses {
-            ResponsePermission::Allowed => {
-                rendered.push_str("        allow_responses: true\n");
-            }
-            ResponsePermission::Denied => {}
-        }
-        rendered.push_str("      }\n");
-        rendered.push_str("    }\n");
-    }
-    rendered.push_str("  ]\n}\n");
-    rendered
 }
 
 /// Parses the principal/public-key pairs back out of a rendered
@@ -495,63 +319,6 @@ pub enum AuthorizedUsersParseError {
     InternalPrincipalHasCredentialMetadata { line_number: usize },
     #[error("authorized-users line {line_number}: {value:?} is not an NKey user public key")]
     InvalidPublicKey { line_number: usize, value: String },
-}
-
-fn render_subject_list(label: &str, subjects: &[String]) -> String {
-    let quoted: Vec<String> = subjects
-        .iter()
-        .map(|subject| quote_nats_string(subject))
-        .collect();
-    format!("          {label}: [{}]\n", quoted.join(", "))
-}
-
-/// The host an externally reachable listener advertises to clients.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NatsAdvertisedHost(String);
-
-impl NatsAdvertisedHost {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, NatsServerConfigError> {
-        let value = value.into();
-        if !is_valid_host_syntax(&value) {
-            return Err(NatsServerConfigError::InvalidAdvertisedHost { value });
-        }
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-/// Syntactic host validation: hostname, IPv4, or bracketed IPv6.
-#[must_use]
-pub fn is_valid_host_syntax(value: &str) -> bool {
-    if let Some(bracketed) = value.strip_prefix('[') {
-        let Some(address) = bracketed.strip_suffix(']') else {
-            return false;
-        };
-        return address.parse::<std::net::Ipv6Addr>().is_ok();
-    }
-    if value.parse::<std::net::Ipv4Addr>().is_ok() {
-        return true;
-    }
-    is_hostname_syntax(value)
-}
-
-fn is_hostname_syntax(value: &str) -> bool {
-    if value.is_empty() || value.len() > 253 {
-        return false;
-    }
-    value.split('.').all(|label| {
-        !label.is_empty()
-            && label.len() <= 63
-            && !label.starts_with('-')
-            && !label.ends_with('-')
-            && label
-                .chars()
-                .all(|character| character.is_ascii_alphanumeric() || character == '-')
-    })
 }
 
 /// An NKey user public key (`U`-prefixed base32). Non-secret material.
@@ -741,10 +508,6 @@ impl NatsServerCertificatePem {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NatsServerConfigError {
-    #[error("NATS config path {field} {} is not a valid path", value.display())]
-    InvalidPath { field: &'static str, value: PathBuf },
-    #[error("NATS advertised host {value:?} must be a hostname, IPv4, or bracketed IPv6 address")]
-    InvalidAdvertisedHost { value: String },
     #[error("NATS user public key {value:?} must be a 56-character U-prefixed base32 NKey")]
     InvalidUserPublicKey { value: String },
     #[error("NATS user seed must be a 58-character SU-prefixed base32 NKey seed")]
@@ -755,55 +518,4 @@ pub enum NatsServerConfigError {
     InvalidCaCertificatePem,
     #[error("NATS server certificate must be a PEM CERTIFICATE block")]
     InvalidServerCertificatePem,
-}
-
-fn validate_config_path(field: &'static str, value: &Path) -> Result<(), NatsServerConfigError> {
-    let rendered = value.to_string_lossy();
-    if rendered.is_empty()
-        || !value.is_absolute()
-        || value.to_str().is_none()
-        || rendered
-            .chars()
-            .any(|character| matches!(character, '\n' | '\r' | '\0'))
-    {
-        return Err(NatsServerConfigError::InvalidPath {
-            field,
-            value: value.to_path_buf(),
-        });
-    }
-
-    Ok(())
-}
-
-/// The authorized-users include may be relative: NATS resolves it against
-/// the directory of the including config file.
-fn validate_include_path(value: &Path) -> Result<(), NatsServerConfigError> {
-    let rendered = value.to_string_lossy();
-    if rendered.is_empty()
-        || value.to_str().is_none()
-        || rendered
-            .chars()
-            .any(|character| matches!(character, '\n' | '\r' | '\0'))
-    {
-        return Err(NatsServerConfigError::InvalidPath {
-            field: "authorized_users_include",
-            value: value.to_path_buf(),
-        });
-    }
-
-    Ok(())
-}
-
-fn quote_nats_string(value: &str) -> String {
-    let mut quoted = String::with_capacity(value.len() + 2);
-    quoted.push('"');
-    for character in value.chars() {
-        match character {
-            '"' => quoted.push_str("\\\""),
-            '\\' => quoted.push_str("\\\\"),
-            _ => quoted.push(character),
-        }
-    }
-    quoted.push('"');
-    quoted
 }

@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 
 use ployz_core::ids::MachineId;
 use ployz_core::install::NatsMachineMaterialPaths;
-use ployz_core::nats_config::{NatsCaCertificatePem, NatsListener, NatsUserSeed};
+use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 use ployz_core::ops::FailureMessage;
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_host_runner::artifacts::{ArtifactKind, ArtifactTarget, DataplaneArtifactTargets};
@@ -27,6 +27,7 @@ use ployz_host_runner::steps::{
 };
 use ployz_host_runner::systemd::{PloyzdRoleEnvironmentFile, SupervisorUnitTarget};
 use ployz_nats::connect::NatsClientUrl;
+use ployz_nats::server_config::NatsListener;
 use ployz_sdk_types::MachineJoinReportFailure;
 use ployz_test_support::host_runner::{
     artifact_source as source, artifact_version as version, nats_server_artifact, ployzd_artifact,

@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub use ployz_core::nats_config::{NatsServerConfig, NatsServerConfigError};
 use ployz_nats::connect::{NatsClientEndpoint, NatsClientUrl};
+pub use ployz_nats::server_config::{NatsServerConfig, NatsServerConfigError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NatsServerLaunch {

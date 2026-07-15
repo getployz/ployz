@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use ployz_core::nats_config::{NatsListener, NatsServerTlsFiles};
 use ployz_nats::connect::{NatsClientEndpoint, NatsClientUrl};
+use ployz_nats::server_config::{NatsListener, NatsServerTlsFiles};
 use ployz_test_support::ids::machine_id;
 use ployzd::adapters::nats_server::{
     NatsServerConfig, NatsServerLaunch, PreparedNatsServerService,

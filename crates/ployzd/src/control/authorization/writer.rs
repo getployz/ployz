@@ -8,9 +8,9 @@ use crate::control::intent::nats_authorizations::{
 };
 use ployz_core::nats_config::{
     CredentialGrant, CredentialRole, NatsAuthorizationGrant, NatsUserPublicKey,
-    render_authorized_users,
 };
 use ployz_nats::connect::{NatsConnectConfig, connect_authenticated};
+use ployz_nats::permissions::render_authorized_users;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 

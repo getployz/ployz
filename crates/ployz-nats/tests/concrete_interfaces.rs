@@ -12,7 +12,7 @@ use ployz_core::security::NatsPrincipal;
 use ployz_nats::endpoints::{MachineServiceEndpoint, OperationApiEndpoint};
 use ployz_nats::permissions::{NatsPermissionProfile, inbox_prefix, render_authorized_users};
 use ployz_nats::server_config::{
-    NatsAdvertisedHost, NatsListener, NatsServerConfig, NatsServerTlsFiles,
+    NatsAdvertisedHost, NatsListener, NatsServerConfig, NatsServerConfigError, NatsServerTlsFiles,
 };
 use ployz_nats::subjects::{
     INTENT_CHANGED, OPERATION_PROGRESS_SCOPE, OperationProgressScope, deploy_running_stage,
@@ -23,36 +23,54 @@ use ployz_nats::subjects::{
 use ployz_test_support::ids::{machine_id, namespace_id, operation_id};
 
 #[test]
-fn server_configuration_matches_the_core_compatibility_surface() {
-    let nats_config = external_server_config();
-    let core_config = core_external_server_config();
+fn server_configuration_renders_external_and_loopback_listeners() {
+    let external = external_server_config();
+    assert_eq!(external.client_host(), "core.example.test");
+    assert!(external.render().contains("host: 0.0.0.0\n"));
+    assert!(
+        external
+            .render()
+            .contains("client_advertise: \"core.example.test:4222\"\n")
+    );
 
-    assert_eq!(nats_config.client_host(), core_config.client_host());
-    assert_eq!(nats_config.port(), core_config.port());
-    assert_eq!(nats_config.render(), core_config.render());
-
-    let nats_loopback = NatsServerConfig::single_machine(
+    let loopback = NatsServerConfig::single_machine(
         machine_id("core_1"),
         NatsListener::Loopback,
         tls_files(),
         PathBuf::from("authorized-users.conf"),
     )
     .expect("valid loopback NATS server config");
-    let core_loopback = ployz_core::nats_config::NatsServerConfig::single_machine(
-        machine_id("core_1"),
-        ployz_core::nats_config::NatsListener::Loopback,
-        ployz_core::nats_config::NatsServerTlsFiles {
-            cert_file: PathBuf::from("/var/lib/ployz/nats/server.crt"),
-            key_file: PathBuf::from("/var/lib/ployz/nats/server.key"),
-        },
-        PathBuf::from("authorized-users.conf"),
-    )
-    .expect("valid Core compatibility loopback config");
-    assert_eq!(nats_loopback.render(), core_loopback.render());
+    assert_eq!(loopback.client_host(), "127.0.0.1");
+    assert!(loopback.render().contains("host: 127.0.0.1\n"));
+    assert!(loopback.render().contains("jetstream: disabled\n"));
 }
 
 #[test]
-fn authorization_and_permission_rendering_match_the_core_compatibility_surface() {
+fn server_configuration_validates_advertised_hosts_and_tls_paths() {
+    assert!(NatsAdvertisedHost::try_new("core.example.test").is_ok());
+    assert!(NatsAdvertisedHost::try_new("203.0.113.10").is_ok());
+    assert!(NatsAdvertisedHost::try_new("[2001:db8::1]").is_ok());
+    assert!(NatsAdvertisedHost::try_new("under_score").is_err());
+
+    assert_eq!(
+        NatsServerConfig::single_machine(
+            machine_id("core_1"),
+            NatsListener::Loopback,
+            NatsServerTlsFiles {
+                cert_file: PathBuf::from("relative/server.crt"),
+                key_file: PathBuf::from("/var/lib/ployz/nats/server.key"),
+            },
+            PathBuf::from("authorized-users.conf"),
+        ),
+        Err(NatsServerConfigError::InvalidPath {
+            field: "tls.cert_file",
+            value: PathBuf::from("relative/server.crt"),
+        })
+    );
+}
+
+#[test]
+fn authorization_and_permission_rendering_are_owned_here() {
     let grants = [
         NatsAuthorizationGrant::Internal {
             authority: NatsInternalAuthority::Controller,
@@ -64,10 +82,9 @@ fn authorization_and_permission_rendering_match_the_core_compatibility_surface()
             role: CredentialRole::Operator,
         }),
     ];
-    assert_eq!(
-        render_authorized_users(&grants),
-        ployz_core::nats_config::render_authorized_users(&grants)
-    );
+    let rendered = render_authorized_users(&grants);
+    assert!(rendered.contains("# ployz-principal: controller"));
+    assert!(rendered.contains("# ployz-credential-role: operator"));
 
     let principals = [
         NatsPrincipal::Machine {
@@ -80,37 +97,11 @@ fn authorization_and_permission_rendering_match_the_core_compatibility_surface()
     ];
     for principal in principals {
         let nats = NatsPermissionProfile::render(principal.clone());
-        let core = ployz_core::permissions::NatsPermissionProfile::render(principal.clone());
-        assert_eq!(nats.principal, core.principal);
-        assert_eq!(
-            nats.publish.allowed_subjects(),
-            core.publish.allowed_subjects()
-        );
-        assert_eq!(
-            nats.publish.denied_subjects(),
-            core.publish.denied_subjects()
-        );
-        assert_eq!(
-            nats.subscribe.allowed_subjects(),
-            core.subscribe.allowed_subjects()
-        );
-        assert_eq!(
-            nats.subscribe.denied_subjects(),
-            core.subscribe.denied_subjects()
-        );
-        assert_eq!(
-            matches!(
-                nats.allow_responses,
-                ployz_nats::permissions::ResponsePermission::Allowed
-            ),
-            matches!(
-                core.allow_responses,
-                ployz_core::permissions::ResponsePermission::Allowed
-            )
-        );
-        assert_eq!(
-            inbox_prefix(&principal),
-            ployz_core::permissions::inbox_prefix(&principal)
+        assert_eq!(nats.principal, principal);
+        assert!(
+            nats.subscribe
+                .allowed_subjects()
+                .contains(&format!("{}.>", inbox_prefix(&principal)))
         );
     }
 }
@@ -342,24 +333,6 @@ fn external_server_config() -> NatsServerConfig {
         PathBuf::from("authorized-users.conf"),
     )
     .expect("valid NATS server config")
-}
-
-fn core_external_server_config() -> ployz_core::nats_config::NatsServerConfig {
-    ployz_core::nats_config::NatsServerConfig::single_machine(
-        machine_id("core_1"),
-        ployz_core::nats_config::NatsListener::External {
-            advertise_host: ployz_core::nats_config::NatsAdvertisedHost::try_new(
-                "core.example.test",
-            )
-            .expect("valid advertised host"),
-        },
-        ployz_core::nats_config::NatsServerTlsFiles {
-            cert_file: PathBuf::from("/var/lib/ployz/nats/server.crt"),
-            key_file: PathBuf::from("/var/lib/ployz/nats/server.key"),
-        },
-        PathBuf::from("authorized-users.conf"),
-    )
-    .expect("valid Core compatibility NATS server config")
 }
 
 fn tls_files() -> NatsServerTlsFiles {

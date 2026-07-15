@@ -12,12 +12,13 @@ use ployz_core::machine::roles::InstallRolePolicy;
 use ployz_core::machine::{JoinTokenRedeemedAt, MachineAddFailure, RawJoinToken};
 use ployz_core::nats_config::{
     CredentialGrant, CredentialName, CredentialRole, NatsAuthorizationGrant, NatsInternalAuthority,
-    NatsUserPublicKey, parse_authorized_users, render_authorized_users,
+    NatsUserPublicKey, parse_authorized_users,
 };
 use ployz_core::operation::MachineAddOperationState;
 use ployz_core::operation::OperationStatus;
 use ployz_core::subjects::{OPERATION_PROGRESS_SCOPE, OperationApiEndpoint};
 use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientError};
+use ployz_nats::permissions::render_authorized_users;
 use ployz_sdk_types::{
     MachineAddAccepted, MachineAddError, MachineAddRequest, MachineJoinRedeemError,
     MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinReportOutcome,

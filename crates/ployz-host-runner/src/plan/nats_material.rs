@@ -8,12 +8,15 @@ use std::path::{Path, PathBuf};
 use ployz_core::ids::MachineId;
 use ployz_core::install::{NatsMachineMaterialPaths, WrappedCaKey, WrappedCoreSeeds};
 use ployz_core::nats_config::{
-    CredentialGrant, CredentialName, NatsAdvertisedHost, NatsAuthorizationGrant,
-    NatsCaCertificatePem, NatsInternalAuthority, NatsListener, NatsServerCertificatePem,
-    NatsServerConfig, NatsServerTlsFiles, NatsUserSeed, render_authorized_users,
+    CredentialGrant, CredentialName, CredentialRole, NatsAuthorizationGrant, NatsCaCertificatePem,
+    NatsInternalAuthority, NatsServerCertificatePem, NatsUserSeed,
 };
 use ployz_core::roles::DaemonProcessRole;
 use ployz_nats::connect::NatsClientUrl;
+use ployz_nats::permissions::render_authorized_users;
+use ployz_nats::server_config::{
+    NatsAdvertisedHost, NatsListener, NatsServerConfig, NatsServerTlsFiles,
+};
 
 use crate::execution::NatsServerUnitTarget;
 use crate::lifecycle::machine_join::{JOIN_NATS_CREDENTIALS_FILE, JOIN_TRUSTED_CA_FILE};
@@ -268,7 +271,7 @@ fn core_principal_users(
         NatsAuthorizationGrant::Credential(CredentialGrant {
             public_key: identity.operator.public.clone(),
             name: founder_credential_name.clone(),
-            role: ployz_core::nats_config::CredentialRole::Operator,
+            role: CredentialRole::Operator,
         }),
         NatsAuthorizationGrant::Internal {
             authority: NatsInternalAuthority::Join,

@@ -10,7 +10,6 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use ployz_core::ids::MachineId;
 use ployz_core::nats_config::MintedNatsUser;
-use ployz_core::permissions::{inbox_prefix, inbox_subscribe_scope};
 use ployz_core::security::NatsPrincipal;
 use ployz_core::subjects::{
     INTENT_CHANGED, INTENT_GET, MachineServiceEndpoint, OPERATOR_INIT_FIRST_MACHINE_ACTIVATE,
@@ -21,6 +20,7 @@ use ployz_core::subjects::{
 use ployz_nats::connect::{
     NatsConnectConfig, authenticated_connect_options, connect_authenticated,
 };
+use ployz_nats::permissions::{inbox_prefix, inbox_subscribe_scope};
 use ployz_test_support::nats::SecuredTestNats;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
