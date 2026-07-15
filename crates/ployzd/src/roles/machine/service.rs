@@ -487,6 +487,7 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         | MachineServiceEndpoint::ImageBlobPush
         | MachineServiceEndpoint::ImageManifestPush
         | MachineServiceEndpoint::ImageEnsure
+        | MachineServiceEndpoint::ImageRemove
         | MachineServiceEndpoint::CertificateArtifactStatus
         | MachineServiceEndpoint::CertificateArtifactPush
         | MachineServiceEndpoint::CertificateArtifactRemove
