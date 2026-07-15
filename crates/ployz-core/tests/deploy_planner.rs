@@ -7,11 +7,10 @@ use ployz_core::deploy::{
     ExistingReplicaCreationGate, ExistingReplicaPolicy, ExistingServiceReplica,
     HealthcheckShellCommand, ImageReference, ImageSource, ObservedCleanupCandidate, PlatformImage,
     PreStartHook, PreStartHookStep, PushedImageReceipt, ReplicaCount, ReplicaSlot,
-    ServiceDependency, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod,
-    VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName,
-    auto_hostname_route_binding_commits, namespace_revision_id_for,
-    namespace_route_binding_removals, namespace_serving_target_removals, plan_namespace_deploy,
-    prepare_deploy, validate_deploy_route_bindings,
+    ServiceDependency, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeMaxSizeBytes,
+    VolumeName, VolumeSpec, ZfsPoolName, auto_hostname_route_binding_commits,
+    namespace_revision_id_for, namespace_route_binding_removals, namespace_serving_target_removals,
+    plan_namespace_deploy, prepare_deploy, validate_deploy_route_bindings,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::image::{OciDigest, OciPlatform};

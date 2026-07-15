@@ -15,11 +15,10 @@ pub use ployz_core::deploy::{
     EnvValueError, HealthcheckDurationNanos, HealthcheckRetries, HealthcheckShellCommand,
     ImageReference, ImageReferenceError, ImageSource, LinuxCapability, MemoryBytes, NanoCpus,
     PidsLimit, PlatformImage, PreStartHook, PreStartHookStep, PushedImageReceipt,
-    PushedImageReceiptError, RegistryCredential, RegistryCredentialError,
-    RegistryCredentialSecret, RegistryCredentialUsername, ReplicaCount, ReplicaCountError,
-    ReplicaSlot, ServiceDependency, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod,
-    VolumeMaxSizeBytes, VolumeMaxSizeError, VolumeName, VolumeNameError, VolumeSpec, ZfsPoolName,
-    ZfsPoolNameError,
+    PushedImageReceiptError, RegistryCredential, RegistryCredentialError, RegistryCredentialSecret,
+    RegistryCredentialUsername, ReplicaCount, ReplicaCountError, ReplicaSlot, ServiceDependency,
+    ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeMaxSizeBytes,
+    VolumeMaxSizeError, VolumeName, VolumeNameError, VolumeSpec, ZfsPoolName, ZfsPoolNameError,
 };
 pub use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
