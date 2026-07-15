@@ -1,8 +1,8 @@
-use crate::commands::machine::AcceptedOperationOutput;
 use crate::commands::network::{
     NetworkRepairCommand, NetworkResolveCommand, NetworkResolveOutput, NetworkStatusCommand,
     NetworkStatusOutput,
 };
+use crate::machine::command::AcceptedOperationOutput;
 
 use std::time::Duration;
 

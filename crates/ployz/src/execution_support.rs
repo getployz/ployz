@@ -5,26 +5,25 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::api_client::{NatsServiceRequestFailure, OperationApiClient, OperationApiClientError};
-use crate::commands::init::{FirstMachineActivateCommand, FirstMachineActivationOutput};
+use crate::api_client::{OperationApiClient, OperationApiClientError};
 #[cfg(test)]
-use crate::config::ClusterContext;
-use crate::config::{ClusterContextError, load_cluster_context};
-use crate::host_runner_install::LocalHostRunnerInstallError;
-use crate::remote_machine_runtime::RemoteMachineExecutionError;
+use crate::machine::operator_context::ClusterContext;
+use crate::machine::operator_context::{ClusterContextError, load_cluster_context};
+use crate::machine::runtime::host_runner::LocalHostRunnerInstallError;
+use crate::machine::runtime::remote::RemoteMachineExecutionError;
 use crate::runtime::PloyzctlRuntimeConfig;
 use ployz_core::ids::OperationId;
 use ployz_core::nats_config::NatsUserSeed;
 use ployz_core::ops::{
-    EventSequence, MachineAddOperationStateName, OperationEventReplayCursor,
-    OperationEventReplayRequest, OperationOutcome, ReplayedOperationEvent,
+    EventSequence, OperationEventReplayCursor, OperationEventReplayRequest, OperationOutcome,
+    ReplayedOperationEvent,
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{
     NatsClientAuth, NatsClientUrl, NatsClientUrlError, NatsConnectConfig, NatsConnectError,
     NatsTlsTrust, connect_authenticated,
 };
-use ployz_sdk_types::{InitFirstMachineActivateError, MachineJoinRedeemError, OpsStatusRequest};
+use ployz_sdk_types::{InitFirstMachineActivateError, OpsStatusRequest};
 use tokio::time::sleep as async_sleep;
 
 mod client_ids;
@@ -54,7 +53,7 @@ pub(crate) fn with_cluster_context_from_disk(
     let Some(path) = config
         .cluster_context_path
         .clone()
-        .or_else(crate::config::default_cluster_context_path)
+        .or_else(crate::machine::operator_context::default_cluster_context_path)
     else {
         return Ok(config);
     };
@@ -231,56 +230,6 @@ pub(crate) fn current_unix_seconds() -> u64 {
         .as_secs()
 }
 
-pub(crate) async fn activate_first_machine(
-    command: &FirstMachineActivateCommand,
-    config: &PloyzctlRuntimeConfig,
-) -> Result<FirstMachineActivationOutput, PloyzctlExecutionError> {
-    let deadline = Instant::now() + config.first_machine_activate_retry_budget();
-    loop {
-        match activate_first_machine_once(command, config).await {
-            Ok(activation) => return Ok(activation),
-            Err(error)
-                if error.is_first_machine_activation_retryable() && Instant::now() < deadline =>
-            {
-                async_sleep(config.ops_watch_poll_interval()).await;
-            }
-            Err(error) => return Err(error),
-        }
-    }
-}
-
-async fn activate_first_machine_once(
-    command: &FirstMachineActivateCommand,
-    config: &PloyzctlRuntimeConfig,
-) -> Result<FirstMachineActivationOutput, PloyzctlExecutionError> {
-    let api = operation_api_client(config).await?;
-    let activated = api
-        .init_first_machine_activate(&command.clone().into_request())
-        .await
-        .map_err(|source| PloyzctlExecutionError::FirstMachineActivateApi { source })?;
-
-    Ok(FirstMachineActivationOutput {
-        operation_id: activated.operation_id,
-        machine_id: activated.machine_id,
-    })
-}
-
-/// Reads the cluster-static Join seed for the `machine add` install line.
-pub(crate) fn read_join_seed(
-    config: &PloyzctlRuntimeConfig,
-) -> Result<NatsUserSeed, PloyzctlExecutionError> {
-    let Some(path) = config.join_seed_file.clone() else {
-        return Err(PloyzctlExecutionError::MissingJoinSeedFile);
-    };
-    let raw =
-        fs::read_to_string(&path).map_err(|error| PloyzctlExecutionError::ReadJoinSeedFile {
-            path: path.clone(),
-            message: error.to_string(),
-        })?;
-    NatsUserSeed::try_new(raw.trim())
-        .map_err(|_| PloyzctlExecutionError::InvalidJoinSeedFile { path })
-}
-
 pub(crate) async fn operation_api_client(
     config: &PloyzctlRuntimeConfig,
 ) -> Result<OperationApiClient, PloyzctlExecutionError> {
@@ -432,41 +381,6 @@ pub enum PloyzctlExecutionError {
     DeployHistory { message: String },
 }
 
-impl PloyzctlExecutionError {
-    /// Activation races the substrate the bootstrap just started: the NATS
-    /// listener may not accept connections yet, and the mint's authorization
-    /// reload can drop the first replies. Both classes retry within the
-    /// bounded activation budget; every other failure is final.
-    fn is_first_machine_activation_retryable(&self) -> bool {
-        if let Self::NatsConnect(
-            NatsConnectError::Connect { .. } | NatsConnectError::Timeout { .. },
-        ) = self
-        {
-            return true;
-        }
-        let Self::FirstMachineActivateApi { source } = self else {
-            return false;
-        };
-        matches!(
-            source,
-            OperationApiClientError::Request {
-                failure: NatsServiceRequestFailure::NoResponders
-                    | NatsServiceRequestFailure::TimedOut,
-                ..
-            } | OperationApiClientError::Domain {
-                error: InitFirstMachineActivateError::JoinRedeem {
-                    failure: MachineJoinRedeemError::UnknownJoinToken
-                        | MachineJoinRedeemError::OperationNotPending {
-                            current: MachineAddOperationStateName::Completed,
-                            ..
-                        },
-                },
-                ..
-            }
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -559,65 +473,5 @@ mod tests {
         let config = PloyzctlRuntimeConfig::default().with_cluster_context(None);
 
         assert_eq!(config, PloyzctlRuntimeConfig::default());
-    }
-
-    #[test]
-    fn machine_add_join_seed_requires_context_or_explicit_seed_path() {
-        assert_eq!(
-            read_join_seed(&PloyzctlRuntimeConfig::default()),
-            Err(PloyzctlExecutionError::MissingJoinSeedFile)
-        );
-    }
-
-    /// Regression: the activate-first-machine retry budget was the NATS
-    /// connect timeout, which a single timed-out request (its reply dropped
-    /// by the mint's authorization reload) consumed entirely — the
-    /// documented retry never ran. The budget is the operation-wait budget
-    /// and must leave room for a retry after a full request timeout.
-    #[test]
-    fn first_machine_activation_can_retry_after_a_dropped_reply() {
-        let config = PloyzctlRuntimeConfig::default();
-        assert_eq!(
-            config.first_machine_activate_retry_budget(),
-            config.ops_watch_timeout()
-        );
-        assert!(
-            config.first_machine_activate_retry_budget()
-                > ployz_nats::operation_api_client::DEFAULT_OPERATION_API_REQUEST_TIMEOUT
-                    + config.ops_watch_poll_interval(),
-            "budget must allow at least one retry after a timed-out request"
-        );
-    }
-
-    #[test]
-    fn first_machine_activation_retries_consumed_token_replay() {
-        let error = PloyzctlExecutionError::FirstMachineActivateApi {
-            source: OperationApiClientError::Domain {
-                endpoint: ployz_core::subjects::OperationApiEndpoint::InitFirstMachineActivate,
-                error: InitFirstMachineActivateError::JoinRedeem {
-                    failure: MachineJoinRedeemError::UnknownJoinToken,
-                },
-            },
-        };
-
-        assert!(error.is_first_machine_activation_retryable());
-    }
-
-    #[test]
-    fn first_machine_activation_retries_completed_operation_replay() {
-        let error = PloyzctlExecutionError::FirstMachineActivateApi {
-            source: OperationApiClientError::Domain {
-                endpoint: ployz_core::subjects::OperationApiEndpoint::InitFirstMachineActivate,
-                error: InitFirstMachineActivateError::JoinRedeem {
-                    failure: MachineJoinRedeemError::OperationNotPending {
-                        operation_id: OperationId::try_new("op_init_core_1")
-                            .expect("valid operation id"),
-                        current: MachineAddOperationStateName::Completed,
-                    },
-                },
-            },
-        };
-
-        assert!(error.is_first_machine_activation_retryable());
     }
 }

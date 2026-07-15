@@ -4,20 +4,14 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crate::commands::PloyzctlCommand;
-use crate::commands::init::FirstMachineInitMode;
-use crate::config::ClusterContext;
 use crate::confirmation::{confirm_namespace_remove, confirm_volume_remove};
 use crate::execution_support::{
-    activate_first_machine, api_error, current_unix_seconds, nats_connect_config,
-    operation_api_client, operation_api_client_with_connect, operation_replay_request,
-    read_join_seed, render_api_call, replay_operation_events, watch_accepted_operation,
-    watch_operation_until_terminal, with_cluster_context_from_disk,
+    api_error, current_unix_seconds, operation_api_client, operation_replay_request,
+    render_api_call, replay_operation_events, watch_accepted_operation,
+    watch_operation_until_terminal,
 };
-use crate::host_runner_install::run_host_runner_first_machine_install;
-use crate::remote_machine_runtime::{
-    execute_core_promote_remote, execute_core_replace_remote, execute_machine_add_remote,
-    execute_machine_init,
-};
+use crate::machine::operator_context::ClusterContext;
+use crate::machine::runtime::remote::{execute_core_promote_remote, execute_core_replace_remote};
 use ployz_sdk_types::OpsStatusRequest;
 use tokio::time::sleep as async_sleep;
 
@@ -198,36 +192,14 @@ pub async fn execute_command(
         PloyzctlCommand::DeployRollback(command) => {
             crate::deploy::runtime::rollback::execute(command, config).await
         }
-        PloyzctlCommand::InternalInit(command) => match &command.mode {
-            FirstMachineInitMode::RunHostRunnerInstall {
-                host_runner_install,
-                host_runner_binary,
-            } => {
-                let output = run_host_runner_first_machine_install(
-                    host_runner_binary,
-                    host_runner_install,
-                    config.host_runner_install_timeout(),
-                )
-                .map_err(|source| {
-                    PloyzctlExecutionError::HostRunnerFirstMachineInstall { source }
-                })?;
-                Ok(PloyzctlExecutionOutput {
-                    stdout: output.stdout,
-                    stderr: output.stderr,
-                    exit: CommandExit::Success,
-                })
-            }
-            FirstMachineInitMode::Summary { .. }
-            | FirstMachineInitMode::EmitHostRunnerInstall(_) => {
-                Ok(PloyzctlExecutionOutput::stdout(command.render()))
-            }
-        },
+        PloyzctlCommand::InternalInit(command) => {
+            crate::machine::runtime::founder_init(*command, config)
+        }
         PloyzctlCommand::InitFirstMachineActivate(command) => {
-            let activation = activate_first_machine(&command, config).await?;
-            Ok(PloyzctlExecutionOutput::stdout(activation.render()))
+            crate::machine::runtime::activate_founder(command, config).await
         }
         PloyzctlCommand::InitJoinTemplate(command) => {
-            Ok(PloyzctlExecutionOutput::stdout(command.render_json()))
+            Ok(crate::machine::runtime::render_join_template(command))
         }
         PloyzctlCommand::IngressConfigure(command) => {
             let api = operation_api_client(config).await?;
@@ -237,76 +209,24 @@ pub async fn execute_command(
                 .map_err(api_error)?;
             watch_accepted_operation(&api, accepted.operation_id, config).await
         }
-        PloyzctlCommand::MachineInit(command) => execute_machine_init(command, config).await,
+        PloyzctlCommand::MachineInit(command) => {
+            crate::machine::runtime::remote::execute_machine_init(command, config).await
+        }
         PloyzctlCommand::MachineAddRemote(command) => {
-            execute_machine_add_remote(command, config).await
+            crate::machine::runtime::remote::execute_machine_add_remote(command, config).await
         }
-        PloyzctlCommand::MachineAdd(command) => {
-            let config = with_cluster_context_from_disk(config.clone())?;
-            let nats_connect = nats_connect_config(&config)?;
-            // The install line embeds the cluster-static Join seed
-            // (deliberately low-privilege) — read it before submitting so
-            // a missing seed fails fast without creating an operation.
-            let join_seed = read_join_seed(&config)?;
-            let api = operation_api_client_with_connect(&config, nats_connect).await?;
-            let accepted = api
-                .machine_add(&command.into_request())
-                .await
-                .map_err(api_error)?;
-
-            Ok(PloyzctlExecutionOutput::stdout(
-                crate::commands::machine::MachineAddOutput::from_accepted(accepted, join_seed)
-                    .render(),
-            ))
-        }
+        PloyzctlCommand::MachineAdd(command) => crate::machine::runtime::add(command, config).await,
         PloyzctlCommand::MachineUpdate(command) => {
-            let detach = command.detach;
-            let api = operation_api_client(config).await?;
-            let accepted = api
-                .machine_update(&command.into_request())
-                .await
-                .map_err(api_error)?;
-            if detach {
-                return Ok(PloyzctlExecutionOutput::stdout(
-                    crate::commands::machine::AcceptedOperationOutput::from_accepted(accepted)
-                        .render(),
-                ));
-            }
-            watch_accepted_operation(&api, accepted.operation_id, config).await
+            crate::machine::runtime::update(command, config).await
         }
         PloyzctlCommand::MachineLifecycle(command) => {
-            let detach = command.detach;
-            let target = command.target;
-            let api = operation_api_client(config).await?;
-            let request = command.into_request();
-            let accepted = match target {
-                ployz_core::state::MachineLifecycle::Draining => api.machine_drain(&request).await,
-                ployz_core::state::MachineLifecycle::Active => api.machine_resume(&request).await,
-            }
-            .map_err(api_error)?;
-            if detach {
-                return Ok(PloyzctlExecutionOutput::stdout(
-                    crate::commands::machine::AcceptedOperationOutput::from_accepted(accepted)
-                        .render(),
-                ));
-            }
-            watch_accepted_operation(&api, accepted.operation_id, config).await
+            crate::machine::runtime::lifecycle(command, config).await
         }
         PloyzctlCommand::MachineList(command) => {
-            render_api_call(
-                config,
-                async |api| api.machine_list(&command.into_request()).await,
-                |result| crate::commands::machine::MachineListOutput::from_result(result).render(),
-            )
-            .await
+            crate::machine::runtime::list(command, config).await
         }
         PloyzctlCommand::MachineInspect(command) => {
-            render_api_call(
-                config,
-                async |api| api.machine_inspect(&command.into_request()).await,
-                |machine| crate::commands::machine::MachineInspectOutput::new(machine).render(),
-            )
-            .await
+            crate::machine::runtime::inspect(command, config).await
         }
         PloyzctlCommand::NetworkStatus(command) => network::status(command, config).await,
         PloyzctlCommand::NetworkResolve(command) => network::resolve(command, config).await,
@@ -344,7 +264,7 @@ pub async fn execute_command(
                 .map_err(api_error)?;
             if detach {
                 return Ok(PloyzctlExecutionOutput::stdout(
-                    crate::commands::machine::AcceptedOperationOutput::from_accepted(accepted)
+                    crate::machine::command::AcceptedOperationOutput::from_accepted(accepted)
                         .render(),
                 ));
             }
@@ -362,7 +282,7 @@ pub async fn execute_command(
                 .map_err(api_error)?;
             if detach {
                 return Ok(PloyzctlExecutionOutput::stdout(
-                    crate::commands::machine::AcceptedOperationOutput::from_accepted(accepted)
+                    crate::machine::command::AcceptedOperationOutput::from_accepted(accepted)
                         .render(),
                 ));
             }
@@ -380,7 +300,7 @@ pub async fn execute_command(
                 .map_err(api_error)?;
             if detach {
                 return Ok(PloyzctlExecutionOutput::stdout(
-                    crate::commands::machine::AcceptedOperationOutput::from_accepted(accepted)
+                    crate::machine::command::AcceptedOperationOutput::from_accepted(accepted)
                         .render(),
                 ));
             }
