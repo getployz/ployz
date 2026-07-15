@@ -24,10 +24,10 @@ pub(super) fn dataplane_membership(
 ) -> Vec<DataplaneMember> {
     let mut members = command.dataplane_members.clone();
     for service in command.services() {
-        let ImageSource::PushedToSeed { platforms, .. } = &service.service.image_source else {
+        let ImageSource::PushedToSeed(receipt) = &service.service.image_source else {
             continue;
         };
-        for platform_image in platforms.values() {
+        for (_, platform_image) in receipt.platforms() {
             if members
                 .iter()
                 .all(|member| member.machine_id != platform_image.seed)
@@ -193,7 +193,7 @@ where
         else {
             continue;
         };
-        let ImageSource::PushedToSeed { platforms, .. } = &service.service.image_source else {
+        let ImageSource::PushedToSeed(receipt) = &service.service.image_source else {
             continue;
         };
         let mut target_platforms = BTreeMap::new();
@@ -215,7 +215,7 @@ where
                 .or_insert_with(|| machine_id.clone());
         }
         for (target_platform, machine_id) in target_platforms {
-            let Some(platform_image) = platforms.get(&target_platform) else {
+            let Some(platform_image) = receipt.platform(&target_platform) else {
                 return Err(DeployExecutionError::Image {
                     failure: Box::new(DeployOperationFailure::PlatformImageUnavailable {
                         service_id: service.service.service_id.clone(),
@@ -348,10 +348,7 @@ pub(super) fn machine_image_pull(
             reference: service.service.image.clone(),
             credential: service.registry_credential().cloned(),
         }),
-        ImageSource::PushedToSeed {
-            index_digest: _,
-            platforms,
-        } => {
+        ImageSource::PushedToSeed(receipt) => {
             let Some(target_platform) = target_platform else {
                 return Err(DeployExecutionError::InternalInvariant {
                     message: format!(
@@ -360,7 +357,7 @@ pub(super) fn machine_image_pull(
                     ),
                 });
             };
-            let Some(platform_image) = platforms.get(target_platform) else {
+            let Some(platform_image) = receipt.platform(target_platform) else {
                 return Err(DeployExecutionError::Image {
                     failure: Box::new(DeployOperationFailure::PlatformImageUnavailable {
                         service_id: service.service.service_id.clone(),
@@ -398,7 +395,8 @@ fn deploy_failure_message(message: impl Into<String>) -> FailureMessage {
 mod tests {
     use super::*;
     use ployz_core::deploy::{
-        ContainerRuntimeSpec, DeployServiceSpec, ImageReference, PlatformImage, ReplicaCount,
+        ContainerRuntimeSpec, DeployServiceSpec, ImageReference, PlatformImage, PushedImageReceipt,
+        ReplicaCount,
     };
     use ployz_core::ids::{MachineId, NamespaceId, ServiceId};
     use ployz_core::image::{OciDigest, OciPlatform};
@@ -439,19 +437,17 @@ mod tests {
                 service_id: ServiceId::try_new("api").expect("service id"),
                 image: ImageReference::try_new(format!("local/api@{}", digest('a')))
                     .expect("image reference"),
-                image_source: ImageSource::PushedToSeed {
-                    index_digest: digest('a'),
-                    platforms: [(
+                image_source: ImageSource::PushedToSeed(
+                    PushedImageReceipt::try_new([(
                         platform("amd64"),
                         PlatformImage {
                             seed: machine_id("machine_seed"),
                             manifest_digest: digest('b'),
                             image_id: digest('c'),
                         },
-                    )]
-                    .into_iter()
-                    .collect(),
-                },
+                    )])
+                    .expect("pushed receipt"),
+                ),
                 replicas: ReplicaCount::try_new(1).expect("replica count"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 pre_start: None,

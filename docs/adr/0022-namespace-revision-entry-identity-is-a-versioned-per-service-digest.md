@@ -4,4 +4,6 @@ Deploy planning decides service container reuse by comparing a namespace revisio
 
 The identity deliberately excludes replica count, route targets, and routed endpoint ports (ADR 0023 makes endpoint ports route state, not container state). Registry images are resolved before the final plan, so the image frame carries the digest-pinned reference. Mutable tags never enter the final namespace revision entry identity or committed namespace manifest.
 
+For pushed images, `index_digest` is a Ployz receipt-index identity rather than the digest of a served OCI image-index blob. Its versioned canonical encoding sorts entries by OCI platform and frames each platform's OS, architecture, manifest digest, and image id. Seed machine location is excluded, so relocating identical content does not replace service containers. Core computes and validates this identity whenever a receipt is constructed or decoded; producers cannot supply an independent digest for different platform content.
+
 We chose an opaque digest over Uncloud-style field-by-field spec comparison (`EvalContainerSpecChange`) because Ployz needs the identity to travel through immutable Docker labels and machine observations and be compared by components that never see the full deploy input; field-by-field comparison stays possible later, but only for outcomes that do not need to round-trip through labels.

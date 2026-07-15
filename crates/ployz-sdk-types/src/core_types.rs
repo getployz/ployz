@@ -14,10 +14,11 @@ pub use ployz_core::deploy::{
     DeployServiceSpec, EnvName, EnvNameError, EnvValue, EnvValueError, HealthcheckDurationNanos,
     HealthcheckRetries, HealthcheckShellCommand, ImageReference, ImageReferenceError, ImageSource,
     LinuxCapability, MemoryBytes, NanoCpus, PidsLimit, PlatformImage, PreStartHook,
-    PreStartHookStep, RegistryCredential, RegistryCredentialError, RegistryCredentialSecret,
-    RegistryCredentialUsername, ReplicaCount, ReplicaCountError, ReplicaSlot, ServiceDependency,
-    ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeMaxSizeBytes,
-    VolumeMaxSizeError, VolumeName, VolumeNameError, VolumeSpec, ZfsPoolName, ZfsPoolNameError,
+    PreStartHookStep, PushedImageReceipt, RegistryCredential, RegistryCredentialError,
+    RegistryCredentialSecret, RegistryCredentialUsername, ReplicaCount, ReplicaCountError,
+    ReplicaSlot, ServiceDependency, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod,
+    VolumeMaxSizeBytes, VolumeMaxSizeError, VolumeName, VolumeNameError, VolumeSpec, ZfsPoolName,
+    ZfsPoolNameError,
 };
 pub use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
@@ -50,7 +51,9 @@ pub use ployz_core::machine::runtime::{
 pub use ployz_core::machine::{
     DataplaneAdmissionPeer, DataplaneProjectionAdmissionEvidence,
     DataplaneProjectionAdmissionFailure, IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint,
-    JoinTokenRedeemedAt, MachineAddFailure, MachineCredentialProvisioningStep, MachineName,
+    JoinTokenRedeemedAt, MachineAddFailure, MachineAddInterruptionEvidence,
+    MachineAddInterruptionNextAction, MachineAddInterruptionStage,
+    MachineAddInterruptionUncertainWork, MachineCredentialProvisioningStep, MachineName,
     MachineReadinessCheck, MachineReadinessEvidence, WireGuardReadinessFailure,
 };
 pub use ployz_core::machine::{

@@ -3,7 +3,7 @@ use ployz_core::certificate::{ActiveCertState, CertBundleRef, CertValidAt, CertV
 use ployz_core::deploy::{
     ContainerRuntimeSpec, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute,
     DeployRouteTarget, DeployServicePlan, DeployServiceSpec, ImageReference, ImageSource,
-    PlatformImage, ReplicaCount, ReplicaSlot,
+    PlatformImage, PushedImageReceipt, ReplicaCount, ReplicaSlot,
 };
 use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
@@ -99,19 +99,17 @@ fn direct_image_target() -> DeployRequest {
     let [service] = target.services.as_mut_slice() else {
         panic!("single-service target must contain one service");
     };
-    service.image_source = ImageSource::PushedToSeed {
-        index_digest: OciDigest::sha256(b"index"),
-        platforms: [(
+    service.image_source = ImageSource::PushedToSeed(
+        PushedImageReceipt::try_new([(
             platform(),
             PlatformImage {
                 seed: machine_id("hetzner-1"),
                 manifest_digest: OciDigest::sha256(b"manifest"),
                 image_id: OciDigest::sha256(b"image-config"),
             },
-        )]
-        .into_iter()
-        .collect(),
-    };
+        )])
+        .expect("pushed receipt"),
+    );
     target
 }
 

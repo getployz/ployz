@@ -217,12 +217,11 @@ where
             .await
             .map_err(|source| run.fail(source))?;
     }
-    if command.services().iter().any(|service| {
-        matches!(
-            service.service.image_source,
-            ImageSource::PushedToSeed { .. }
-        )
-    }) {
+    if command
+        .services()
+        .iter()
+        .any(|service| matches!(service.service.image_source, ImageSource::PushedToSeed(_)))
+    {
         record_running_stage(
             command,
             &mut *ports.recorder,

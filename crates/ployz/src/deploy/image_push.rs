@@ -6,7 +6,7 @@ use bollard::errors::Error as DockerError;
 use flate2::{Compression, GzBuilder, read::GzDecoder};
 use futures_util::{StreamExt, TryStreamExt, stream};
 use ployz_core::deploy::DeployServiceSpec;
-use ployz_core::deploy::{ImageReference, ImageSource, PlatformImage};
+use ployz_core::deploy::{ImageReference, ImageSource, PlatformImage, PushedImageReceipt};
 use ployz_core::ids::MachineId;
 use ployz_core::image::{
     IMAGE_BLOB_CHUNK_MAX_BYTES, IMAGE_BLOB_PUSH_ACTION_CHUNK, IMAGE_BLOB_PUSH_ACTION_HEADER,
@@ -14,8 +14,7 @@ use ployz_core::image::{
     ImageBlobCheckResponse, ImageBlobPushOk, ImageBlobPushOutcome, ImageBlobPushRequest,
     ImageBlobPushResponse, ImageManifestPushOk, ImageManifestPushRequest,
     ImageManifestPushResponse, ImageRpcDomainError, ImageUploadId, OCI_IMAGE_CONFIG_MEDIA_TYPE,
-    OCI_IMAGE_INDEX_MEDIA_TYPE, OCI_IMAGE_LAYER_GZIP_MEDIA_TYPE, OCI_IMAGE_MANIFEST_MEDIA_TYPE,
-    OciDigest, OciPlatform,
+    OCI_IMAGE_LAYER_GZIP_MEDIA_TYPE, OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciDigest, OciPlatform,
 };
 use ployz_core::machine::MachineLifecycle;
 use ployz_core::machine::rpc::{MachineRpcResponder, MachineRpcResponse};
@@ -48,19 +47,17 @@ pub struct ImagePushReceipt {
 impl ImagePushReceipt {
     #[must_use]
     pub fn image_source(&self) -> ImageSource {
-        ImageSource::PushedToSeed {
-            index_digest: self.index_digest.clone(),
-            platforms: [(
-                self.platform.clone(),
-                PlatformImage {
-                    seed: self.seed.clone(),
-                    manifest_digest: self.manifest_digest.clone(),
-                    image_id: self.config_digest.clone(),
-                },
-            )]
-            .into_iter()
-            .collect(),
-        }
+        let receipt = PushedImageReceipt::try_new([(
+            self.platform.clone(),
+            PlatformImage {
+                seed: self.seed.clone(),
+                manifest_digest: self.manifest_digest.clone(),
+                image_id: self.config_digest.clone(),
+            },
+        )])
+        .expect("an image push receipt contains one platform");
+        debug_assert_eq!(receipt.index_digest(), &self.index_digest);
+        ImageSource::PushedToSeed(receipt)
     }
 
     #[must_use]
@@ -140,23 +137,6 @@ struct OciDescriptor<'a> {
     digest: &'a OciDigest,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct OciIndex<'a> {
-    schema_version: u8,
-    media_type: &'static str,
-    manifests: [OciIndexDescriptor<'a>; 1],
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct OciIndexDescriptor<'a> {
-    media_type: &'static str,
-    size: u64,
-    digest: &'a OciDigest,
-    platform: &'a OciPlatform,
-}
-
 pub fn connect_operator_docker() -> Result<Docker, ImagePushError> {
     Docker::connect_with_defaults().map_err(|error| ImagePushError::DockerConnect {
         message: error.to_string(),
@@ -226,7 +206,6 @@ pub async fn push_local_image(
             }
         }
     }
-    let manifest_size = prepared.manifest_bytes.len();
     let pushed = manifest_push(
         client,
         seed,
@@ -252,12 +231,19 @@ pub async fn push_local_image(
             message: "seed reported a different image platform".to_owned(),
         });
     }
-    let index_digest =
-        single_platform_index_digest(&pushed.manifest_digest, manifest_size, &pushed.platform)?;
+    let receipt = PushedImageReceipt::try_new([(
+        pushed.platform.clone(),
+        PlatformImage {
+            seed: seed.clone(),
+            manifest_digest: pushed.manifest_digest.clone(),
+            image_id: pushed.image_id.clone(),
+        },
+    )])
+    .expect("a successful image push contains one platform");
     Ok(ImagePushReceipt {
         seed: seed.clone(),
         platform: pushed.platform,
-        index_digest,
+        index_digest: receipt.index_digest().clone(),
         manifest_digest: pushed.manifest_digest,
         config_digest: pushed.image_id,
         uploaded: transfer_receipt(uploaded)?,
@@ -300,29 +286,6 @@ pub async fn prepare_deploy_images(
         receipts.push(receipt);
     }
     Ok(receipts)
-}
-
-fn single_platform_index_digest(
-    manifest_digest: &OciDigest,
-    manifest_size: usize,
-    platform: &OciPlatform,
-) -> Result<OciDigest, ImagePushError> {
-    let size = u64::try_from(manifest_size).map_err(|_| ImagePushError::ImageTooLarge)?;
-    let index = OciIndex {
-        schema_version: 2,
-        media_type: OCI_IMAGE_INDEX_MEDIA_TYPE,
-        manifests: [OciIndexDescriptor {
-            media_type: OCI_IMAGE_MANIFEST_MEDIA_TYPE,
-            size,
-            digest: manifest_digest,
-            platform,
-        }],
-    };
-    serde_json::to_vec(&index)
-        .map(|bytes| OciDigest::sha256(&bytes))
-        .map_err(|error| ImagePushError::UnexpectedResponse {
-            message: format!("could not encode single-platform image index: {error}"),
-        })
 }
 
 async fn select_seed(api: &OperationApiClient) -> Result<MachineId, ImagePushError> {
@@ -736,9 +699,9 @@ pub enum ImagePushError {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        PreparedBlobKind, deterministic_gzip, prepare_docker_save, single_platform_index_digest,
-    };
+    use super::{PreparedBlobKind, deterministic_gzip, prepare_docker_save};
+    use ployz_core::deploy::{PlatformImage, PushedImageReceipt};
+    use ployz_core::ids::MachineId;
     use ployz_core::image::{OciDigest, OciPlatform};
     use std::io::Cursor;
 
@@ -753,7 +716,7 @@ mod tests {
     }
 
     #[test]
-    fn single_platform_index_has_a_stable_digest() {
+    fn single_platform_receipt_index_has_a_stable_digest() {
         let manifest =
             OciDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("manifest digest");
         let platform = OciPlatform {
@@ -762,10 +725,18 @@ mod tests {
         };
 
         assert_eq!(
-            single_platform_index_digest(&manifest, 123, &platform)
-                .expect("index digest")
-                .as_str(),
-            "sha256:a24965d07d9790c150a369318bf923bafa75a02042a1c3884be9e12d4bd3cf20"
+            PushedImageReceipt::try_new([(
+                platform,
+                PlatformImage {
+                    seed: MachineId::try_new("machine_seed").expect("machine id"),
+                    manifest_digest: manifest.clone(),
+                    image_id: manifest,
+                },
+            )])
+            .expect("receipt")
+            .index_digest()
+            .as_str(),
+            "sha256:d5a3f65cf1cb1fc648fc9a13993161ff70a76ad60198da84fba7c17c3a8f6a1f"
         );
     }
 

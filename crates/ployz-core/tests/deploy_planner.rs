@@ -6,9 +6,9 @@ use ployz_core::deploy::{
     DeployRouteTarget, DeployServicePlan, DeployServiceSpec, EnvName, EnvValue,
     ExistingReplicaCreationGate, ExistingReplicaPolicy, ExistingServiceReplica,
     HealthcheckShellCommand, ImageReference, ImageSource, PlatformImage, PreStartHook,
-    PreStartHookStep, ReplicaCount, ReplicaSlot, ServiceDependency, ServiceEnvironment,
-    ServiceVolumeMount, StopGracePeriod, VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName,
-    auto_hostname_route_binding_commits, namespace_revision_id_for,
+    PreStartHookStep, PushedImageReceipt, ReplicaCount, ReplicaSlot, ServiceDependency,
+    ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeMaxSizeBytes, VolumeName,
+    VolumeSpec, ZfsPoolName, auto_hostname_route_binding_commits, namespace_revision_id_for,
     namespace_route_binding_removals, namespace_serving_target_removals, plan_namespace_deploy,
     prepare_deploy, validate_deploy_route_bindings,
 };
@@ -115,17 +115,14 @@ fn mutable_tag_repeats_as_same_namespace_revision_entry_identity() {
 #[test]
 fn pushed_image_identity_uses_index_digest_across_platform_receipts() {
     let mut left = service_spec("svc_api", "api:latest", 1, None);
-    left.image_source = pushed_image_source('a', [('f', "amd64", "machine_a")]);
+    left.image_source =
+        pushed_image_source([('b', "amd64", "machine_a"), ('c', "arm64", "machine_c")]);
     let mut same_content = left.clone();
-    same_content.image_source = pushed_image_source(
-        'a',
-        [('b', "amd64", "machine_b"), ('c', "arm64", "machine_c")],
-    );
+    same_content.image_source =
+        pushed_image_source([('b', "amd64", "machine_b"), ('c', "arm64", "machine_d")]);
     let mut changed_content = same_content.clone();
-    changed_content.image_source = pushed_image_source(
-        'd',
-        [('b', "amd64", "machine_b"), ('c', "arm64", "machine_c")],
-    );
+    changed_content.image_source =
+        pushed_image_source([('d', "amd64", "machine_b"), ('c', "arm64", "machine_d")]);
 
     assert_eq!(
         left.namespace_revision_entry_id(&namespace_id("default")),
@@ -137,29 +134,23 @@ fn pushed_image_identity_uses_index_digest_across_platform_receipts() {
     );
 }
 
-fn pushed_image_source<const N: usize>(
-    index: char,
-    platforms: [(char, &str, &str); N],
-) -> ImageSource {
-    ImageSource::PushedToSeed {
-        index_digest: oci_digest(index),
-        platforms: platforms
-            .into_iter()
-            .map(|(digest, architecture, seed)| {
-                (
-                    OciPlatform {
-                        os: "linux".to_owned(),
-                        architecture: architecture.to_owned(),
-                    },
-                    PlatformImage {
-                        seed: machine_id(seed),
-                        manifest_digest: oci_digest(digest),
-                        image_id: oci_digest(digest),
-                    },
-                )
-            })
-            .collect(),
-    }
+fn pushed_image_source<const N: usize>(platforms: [(char, &str, &str); N]) -> ImageSource {
+    let receipt =
+        PushedImageReceipt::try_new(platforms.into_iter().map(|(digest, architecture, seed)| {
+            (
+                OciPlatform {
+                    os: "linux".to_owned(),
+                    architecture: architecture.to_owned(),
+                },
+                PlatformImage {
+                    seed: machine_id(seed),
+                    manifest_digest: oci_digest(digest),
+                    image_id: oci_digest(digest),
+                },
+            )
+        }))
+        .expect("pushed image receipt");
+    ImageSource::PushedToSeed(receipt)
 }
 
 fn oci_digest(hex: char) -> OciDigest {

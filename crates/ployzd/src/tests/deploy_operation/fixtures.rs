@@ -1234,13 +1234,8 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
         services: vec![DeployServiceSpec {
             service_id: service_id("svc_api"),
             image: image("local/api:rev_2"),
-            image_source: ployz_core::deploy::ImageSource::PushedToSeed {
-                index_digest: ployz_core::image::OciDigest::try_new(format!(
-                    "sha256:{}",
-                    "c".repeat(64)
-                ))
-                .expect("valid index digest"),
-                platforms: [
+            image_source: ployz_core::deploy::ImageSource::PushedToSeed(
+                ployz_core::deploy::PushedImageReceipt::try_new([
                     (
                         ployz_core::image::OciPlatform {
                             os: "linux".to_owned(),
@@ -1279,10 +1274,9 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
                             .expect("valid image id"),
                         },
                     ),
-                ]
-                .into_iter()
-                .collect(),
-            },
+                ])
+                .expect("pushed receipt"),
+            ),
             replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             pre_start: None,

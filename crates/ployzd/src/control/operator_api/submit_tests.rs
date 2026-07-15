@@ -61,7 +61,6 @@ fn deploy_admission_rejects_ids_that_cannot_form_internal_dns_labels() {
 
 #[test]
 fn pushed_image_digest_must_match_the_index_digest() {
-    let index_digest = OciDigest::sha256(b"index");
     let image = ImageReference::try_new("local/api:latest")
         .expect("valid image")
         .with_digest(&OciDigest::sha256(b"different"))
@@ -78,9 +77,8 @@ fn pushed_image_digest_must_match_the_index_digest() {
             services: vec![DeployServiceSpec {
                 service_id: ServiceId::try_new("api").expect("valid service id"),
                 image,
-                image_source: ImageSource::PushedToSeed {
-                    index_digest,
-                    platforms: [(
+                image_source: ImageSource::PushedToSeed(
+                    ployz_core::deploy::PushedImageReceipt::try_new([(
                         ployz_core::image::OciPlatform {
                             os: "linux".to_owned(),
                             architecture: "amd64".to_owned(),
@@ -90,10 +88,9 @@ fn pushed_image_digest_must_match_the_index_digest() {
                             manifest_digest: OciDigest::sha256(b"manifest"),
                             image_id: OciDigest::sha256(b"image"),
                         },
-                    )]
-                    .into_iter()
-                    .collect(),
-                },
+                    )])
+                    .expect("pushed receipt"),
+                ),
                 replicas: ReplicaCount::try_new(1).expect("valid replica count"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 pre_start: None,

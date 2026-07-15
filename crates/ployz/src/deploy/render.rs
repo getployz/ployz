@@ -532,7 +532,7 @@ impl DeployTree {
             .filter(|service| service.image.as_str() == image)
             .all(|service| match &service.image_source {
                 ImageSource::Registry => true,
-                ImageSource::PushedToSeed { .. } => {
+                ImageSource::PushedToSeed(_) => {
                     deploy.verified_image_services.contains(&service.service_id)
                 }
             })

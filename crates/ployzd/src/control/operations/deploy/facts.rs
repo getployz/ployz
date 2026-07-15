@@ -289,7 +289,7 @@ fn operation_dataplane_members(
         !service.routes.is_empty()
             || matches!(
                 &service.image_source,
-                ployz_core::deploy::ImageSource::PushedToSeed { .. }
+                ployz_core::deploy::ImageSource::PushedToSeed(_)
             )
     });
     if !needs_membership {

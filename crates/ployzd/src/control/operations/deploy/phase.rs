@@ -263,10 +263,7 @@ where
     if phase.services.iter().any(|planned| {
         command.services().iter().any(|service| {
             service.service.service_id == planned.service_id
-                && matches!(
-                    service.service.image_source,
-                    ImageSource::PushedToSeed { .. }
-                )
+                && matches!(service.service.image_source, ImageSource::PushedToSeed(_))
         })
     }) {
         ensure_images(command, &phase.services, recorder, machine_runtime)
