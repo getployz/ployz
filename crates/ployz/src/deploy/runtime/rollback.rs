@@ -315,7 +315,7 @@ mod tests {
             Some(&VolumeSpec::Plain)
         );
         prepared
-            .validate_volume_declarations()
+            .service_requests()
             .expect("prepared rollback request is admissible");
     }
 

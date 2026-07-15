@@ -21,6 +21,7 @@ pub mod request;
 pub mod revision;
 pub mod routes;
 pub mod runtime;
+pub mod volume;
 
 pub use images::*;
 pub use planning::*;
@@ -35,3 +36,4 @@ pub use revision::{
 };
 pub use routes::*;
 pub use runtime::*;
+pub use volume::*;

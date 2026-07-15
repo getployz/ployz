@@ -482,7 +482,7 @@ fn deploy_request_requires_a_declaration_for_every_mounted_volume() {
     let request = request_with_volume_mount(std::collections::BTreeMap::new());
 
     let error = request
-        .validate_volume_declarations()
+        .service_requests()
         .expect_err("undeclared mount is invalid");
 
     assert_eq!(error.service_id, service_id("svc_api"));
@@ -503,18 +503,22 @@ fn deploy_request_synthesizes_plain_declarations_for_legacy_inputs() {
 
 #[test]
 fn normalized_service_requests_retain_mounted_volume_declarations() {
-    let request = request_with_volume_mount(BTreeMap::from([(
-        volume_name("data"),
-        VolumeSpec::Provisioned {
-            max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("non-zero size"),
-        },
-    )]));
+    let provisioned = VolumeSpec::Provisioned {
+        max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("non-zero size"),
+    };
+    let request = request_with_volume_mount(BTreeMap::from([
+        (volume_name("data"), provisioned.clone()),
+        (volume_name("unused"), VolumeSpec::Plain),
+    ]));
 
-    let services = request.service_requests();
+    let services = request.service_requests().expect("request normalizes");
     let [service] = services.as_slice() else {
         panic!("request has one service");
     };
-    assert_eq!(service.volumes, request.volumes);
+    assert_eq!(
+        service.volumes,
+        BTreeMap::from([(volume_name("data"), provisioned)])
+    );
 }
 
 #[test]

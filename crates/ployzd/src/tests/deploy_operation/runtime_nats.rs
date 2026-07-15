@@ -62,6 +62,7 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
     let resolved_request = resolved_deploy_request(1);
     let resolved_entry_id = resolved_request
         .service_requests()
+        .expect("request normalizes")
         .into_iter()
         .next()
         .expect("resolved fixture has one service")

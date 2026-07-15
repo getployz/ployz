@@ -114,7 +114,9 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
     facts: DeployExecutionFacts,
     registry_credentials: &BTreeMap<ServiceId, RegistryCredential>,
 ) -> DeployExecutionCommand {
-    let service_requests = request.service_requests();
+    let service_requests = request
+        .service_requests()
+        .expect("deploy request was normalized before admission");
     let mut mint_requests = service_requests.iter().collect::<Vec<_>>();
     mint_requests.sort_by(|left, right| left.service_id.cmp(&right.service_id));
     let mut declared_auto_bindings = Vec::new();

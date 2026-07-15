@@ -89,20 +89,6 @@ pub struct DeployRequest {
 }
 
 impl DeployRequest {
-    pub fn validate_volume_declarations(&self) -> Result<(), DeployVolumeDeclarationError> {
-        for service in &self.services {
-            for mount in &service.runtime.volume_mounts {
-                if !self.volumes.contains_key(&mount.volume_name) {
-                    return Err(DeployVolumeDeclarationError {
-                        service_id: service.service_id.clone(),
-                        volume_name: mount.volume_name.clone(),
-                    });
-                }
-            }
-        }
-        Ok(())
-    }
-
     pub fn synthesize_plain_volume_declarations(&mut self) {
         for service in &self.services {
             for mount in &service.runtime.volume_mounts {
@@ -136,34 +122,42 @@ impl DeployRequest {
         })
     }
 
-    #[must_use]
-    pub fn service_requests(&self) -> Vec<DeployServiceRequest> {
+    pub fn service_requests(
+        &self,
+    ) -> Result<Vec<DeployServiceRequest>, DeployVolumeDeclarationError> {
         let namespace_revision_id = self.namespace_revision_id();
         self.services
             .iter()
-            .map(|service| DeployServiceRequest {
-                namespace_id: self.namespace_id.clone(),
-                service_id: service.service_id.clone(),
-                namespace_revision_id: namespace_revision_id.clone(),
-                namespace_revision_entry_id: service
-                    .namespace_revision_entry_id(&self.namespace_id),
-                image: service.image.clone(),
-                image_source: service.image_source.clone(),
-                replicas: service.replicas,
-                runtime: service.runtime.clone(),
-                volumes: service
+            .map(|service| {
+                let volumes = service
                     .runtime
                     .volume_mounts
                     .iter()
-                    .filter_map(|mount| {
-                        self.volumes
-                            .get(&mount.volume_name)
-                            .map(|spec| (mount.volume_name.clone(), spec.clone()))
+                    .map(|mount| {
+                        let Some(spec) = self.volumes.get(&mount.volume_name) else {
+                            return Err(DeployVolumeDeclarationError {
+                                service_id: service.service_id.clone(),
+                                volume_name: mount.volume_name.clone(),
+                            });
+                        };
+                        Ok((mount.volume_name.clone(), spec.clone()))
                     })
-                    .collect(),
-                pre_start: service.pre_start.clone(),
-                depends_on: service.depends_on.clone(),
-                routes: service.routes.clone(),
+                    .collect::<Result<BTreeMap<_, _>, _>>()?;
+                Ok(DeployServiceRequest {
+                    namespace_id: self.namespace_id.clone(),
+                    service_id: service.service_id.clone(),
+                    namespace_revision_id: namespace_revision_id.clone(),
+                    namespace_revision_entry_id: service
+                        .namespace_revision_entry_id(&self.namespace_id),
+                    image: service.image.clone(),
+                    image_source: service.image_source.clone(),
+                    replicas: service.replicas,
+                    runtime: service.runtime.clone(),
+                    volumes,
+                    pre_start: service.pre_start.clone(),
+                    depends_on: service.depends_on.clone(),
+                    routes: service.routes.clone(),
+                })
             })
             .collect()
     }

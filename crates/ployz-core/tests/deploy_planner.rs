@@ -559,20 +559,6 @@ fn provisioned_volume_with_a_dataset_backed_pin_can_be_placed() {
 }
 
 #[test]
-fn normalized_service_input_without_a_volume_declaration_fails_planning() {
-    let mut input = planning_input(1, [machine_id("machine_a")]);
-    input.request.runtime.volume_mounts = vec![volume_mount("data", "/data")];
-
-    assert_eq!(
-        plan_single_service(input),
-        Err(DeployPlanError::MissingVolumeDeclaration {
-            service_id: service_id("svc_api"),
-            volume_name: VolumeName::try_new("data").expect("volume name"),
-        })
-    );
-}
-
-#[test]
 fn volume_backed_service_uses_existing_pin() {
     let mut input = planning_input(2, [machine_id("machine_a"), machine_id("machine_b")]);
     input.request.runtime.volume_mounts = vec![volume_mount("postgres_data", "/var/lib/postgres")];

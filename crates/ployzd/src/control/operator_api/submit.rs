@@ -261,7 +261,7 @@ pub async fn deploy_submit(
     command: DeploySubmitCommand,
 ) -> Result<AcceptedOperation, DeploySubmitError> {
     let operation_id = command.operation_id.clone();
-    validate_deploy_volume_declarations(&command)?;
+    let normalized_services = normalize_deploy_services(&command)?;
     for service in &command.target.services {
         validate_internal_dns_name(&command.target.namespace_id, &service.service_id).map_err(
             |message| DeploySubmitError::InvalidTarget {
@@ -274,6 +274,7 @@ pub async fn deploy_submit(
     validate_pushed_image_seeds(handlers, &command).await?;
     validate_deploy_route_admission(
         &command.target,
+        &normalized_services,
         &handlers.ingress_intent,
         &PloyzDnsTargetStore::new(handlers.core_store.clone()),
         &NamespaceIntentStore::new(handlers.core_store.clone()),
@@ -303,12 +304,12 @@ pub async fn deploy_submit(
     Ok(operation)
 }
 
-fn validate_deploy_volume_declarations(
+fn normalize_deploy_services(
     command: &DeploySubmitCommand,
-) -> Result<(), DeploySubmitError> {
+) -> Result<Vec<ployz_core::deploy::DeployServiceRequest>, DeploySubmitError> {
     command
         .target
-        .validate_volume_declarations()
+        .service_requests()
         .map_err(|error| DeploySubmitError::InvalidTarget {
             operation_id: command.operation_id.clone(),
             message: ployz_core::operation::FailureMessage::try_new(error.to_string())

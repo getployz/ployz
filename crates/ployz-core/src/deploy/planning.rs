@@ -181,10 +181,6 @@ pub enum DeployPlanError {
         service_id: ServiceId,
         machines: Vec<MachineId>,
     },
-    MissingVolumeDeclaration {
-        service_id: ServiceId,
-        volume_name: VolumeName,
-    },
     ProvisionedVolumeRequiresProvisioning {
         service_id: ServiceId,
         volume_name: VolumeName,
@@ -353,11 +349,26 @@ pub fn validate_deploy_route_bindings(
     request: &DeployRequest,
     automatic_hostname_suffix: Option<&RouteHostname>,
     existing: &[RouteBindingState],
+    new_route_binding_id: impl FnMut(&RouteTarget) -> RouteBindingId,
+) -> Result<Vec<RouteBindingState>, DeployRouteBindingValidationError> {
+    let services = request.service_requests()?;
+    validate_normalized_deploy_route_bindings(
+        &services,
+        automatic_hostname_suffix,
+        existing,
+        new_route_binding_id,
+    )
+}
+
+pub fn validate_normalized_deploy_route_bindings(
+    services: &[DeployServiceRequest],
+    automatic_hostname_suffix: Option<&RouteHostname>,
+    existing: &[RouteBindingState],
     mut new_route_binding_id: impl FnMut(&RouteTarget) -> RouteBindingId,
 ) -> Result<Vec<RouteBindingState>, DeployRouteBindingValidationError> {
     let mut occupied = existing.to_vec();
     let mut commits = Vec::new();
-    let mut services = request.service_requests();
+    let mut services = services.iter().collect::<Vec<_>>();
     services.sort_by(|left, right| left.service_id.cmp(&right.service_id));
     let duplicate_service_id = services.windows(2).find_map(|pair| {
         let [first, second] = pair else {
@@ -370,7 +381,7 @@ pub fn validate_deploy_route_bindings(
     }
     for service in services {
         let automatic = auto_hostname_route_binding_commits(
-            &service,
+            service,
             automatic_hostname_suffix,
             &occupied,
             &mut new_route_binding_id,
@@ -378,7 +389,7 @@ pub fn validate_deploy_route_bindings(
         occupied.extend(automatic.iter().cloned());
         commits.extend(automatic);
 
-        let declared = route_binding_commits(&service, &occupied, &mut new_route_binding_id)?;
+        let declared = route_binding_commits(service, &occupied, &mut new_route_binding_id)?;
         occupied.extend(declared.iter().cloned());
         commits.extend(declared);
     }
@@ -387,6 +398,8 @@ pub fn validate_deploy_route_bindings(
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DeployRouteBindingValidationError {
+    #[error(transparent)]
+    VolumeDeclaration(#[from] DeployVolumeDeclarationError),
     #[error("service {} is declared more than once", .service_id.as_str())]
     DuplicateServiceId { service_id: ServiceId },
     #[error(transparent)]
@@ -734,38 +747,25 @@ fn volume_placement(
         });
     }
 
-    for mount in &request.runtime.volume_mounts {
-        let Some(spec) = request.volumes.get(&mount.volume_name) else {
-            return Err(DeployPlanError::MissingVolumeDeclaration {
-                service_id: request.service_id.clone(),
-                volume_name: mount.volume_name.clone(),
-            });
-        };
-        let already_pinned = volume_pins.iter().any(|pin| {
-            pin.namespace_id == request.namespace_id && pin.volume_name == mount.volume_name
-        });
-        if !already_pinned && matches!(spec, VolumeSpec::Provisioned { .. }) {
-            return Err(DeployPlanError::ProvisionedVolumeRequiresProvisioning {
-                service_id: request.service_id.clone(),
-                volume_name: mount.volume_name.clone(),
-            });
+    let mut pinned_machines = Vec::new();
+    let mut new_plain_volumes = Vec::new();
+    for (volume_name, spec) in &request.volumes {
+        match volume_pins
+            .iter()
+            .find(|pin| pin.namespace_id == request.namespace_id && pin.volume_name == *volume_name)
+        {
+            Some(pin) => pinned_machines.push(pin.machine_id.clone()),
+            None if matches!(spec, VolumeSpec::Plain) => {
+                new_plain_volumes.push(volume_name.clone());
+            }
+            None => {
+                return Err(DeployPlanError::ProvisionedVolumeRequiresProvisioning {
+                    service_id: request.service_id.clone(),
+                    volume_name: volume_name.clone(),
+                });
+            }
         }
     }
-
-    let matching_pins = request
-        .runtime
-        .volume_mounts
-        .iter()
-        .filter_map(|mount| {
-            volume_pins.iter().find(|pin| {
-                pin.namespace_id == request.namespace_id && pin.volume_name == mount.volume_name
-            })
-        })
-        .collect::<Vec<_>>();
-    let mut pinned_machines = matching_pins
-        .iter()
-        .map(|pin| pin.machine_id.clone())
-        .collect::<Vec<_>>();
     pinned_machines.sort();
     pinned_machines.dedup();
     match pinned_machines.as_slice() {
@@ -775,7 +775,7 @@ fn volume_placement(
             }
             Ok(VolumePlacement {
                 machine_id: Some(machine_id.clone()),
-                commits: missing_volume_pin_commits(request, machine_id, volume_pins)?,
+                commits: plain_volume_pin_commits(request, machine_id, &new_plain_volumes),
             })
         }
         [] => {
@@ -784,7 +784,7 @@ fn volume_placement(
             };
             Ok(VolumePlacement {
                 machine_id: Some(machine_id.clone()),
-                commits: missing_volume_pin_commits(request, machine_id, volume_pins)?,
+                commits: plain_volume_pin_commits(request, machine_id, &new_plain_volumes),
             })
         }
         _ => Err(DeployPlanError::ConflictingVolumePins {
@@ -794,48 +794,18 @@ fn volume_placement(
     }
 }
 
-fn missing_volume_pin_commits(
+fn plain_volume_pin_commits(
     request: &DeployServiceRequest,
     machine_id: &MachineId,
-    volume_pins: &[VolumePinState],
-) -> Result<Vec<VolumePinState>, DeployPlanError> {
-    let mut volume_names = request
-        .runtime
-        .volume_mounts
-        .iter()
-        .map(|mount| mount.volume_name.clone())
-        .collect::<Vec<_>>();
-    volume_names.sort();
-    volume_names.dedup();
-
+    volume_names: &[VolumeName],
+) -> Vec<VolumePinState> {
     volume_names
-        .into_iter()
-        .filter(|mount| {
-            !volume_pins
-                .iter()
-                .any(|pin| pin.namespace_id == request.namespace_id && pin.volume_name == *mount)
-        })
-        .map(|volume_name| {
-            let Some(spec) = request.volumes.get(&volume_name) else {
-                return Err(DeployPlanError::MissingVolumeDeclaration {
-                    service_id: request.service_id.clone(),
-                    volume_name,
-                });
-            };
-            match spec {
-                VolumeSpec::Plain => Ok(VolumePinState {
-                    namespace_id: request.namespace_id.clone(),
-                    volume_name,
-                    machine_id: machine_id.clone(),
-                    kind: crate::intent::VolumeKind::Plain,
-                }),
-                VolumeSpec::Provisioned { .. } => {
-                    Err(DeployPlanError::ProvisionedVolumeRequiresProvisioning {
-                        service_id: request.service_id.clone(),
-                        volume_name,
-                    })
-                }
-            }
+        .iter()
+        .map(|volume_name| VolumePinState {
+            namespace_id: request.namespace_id.clone(),
+            volume_name: volume_name.clone(),
+            machine_id: machine_id.clone(),
+            kind: crate::intent::VolumeKind::Plain,
         })
         .collect()
 }

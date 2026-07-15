@@ -8,7 +8,7 @@ use crate::control::intent::namespace_intent::NamespaceIntentStore;
 use crate::control::intent::service::NatsIntentReader;
 use crate::control::role_client::machine::{NatsMachineFactsReader, read_machine_placement_facts};
 use crate::control::role_client::machine_convergence::gather_dataplane_statuses;
-use ployz_core::deploy::{DeployRequest, DeployRouteTarget, validate_deploy_route_bindings};
+use ployz_core::deploy::{DeployRequest, DeployRouteTarget};
 use ployz_core::ids::MachineId;
 use ployz_core::ingress::{AutomaticHostnameConfiguration, IngressConfiguration};
 use ployz_core::intent::ActiveMachineState;
@@ -125,6 +125,7 @@ fn resolve_automatic_hostname_mode(
 
 pub async fn validate_deploy_route_admission(
     request: &DeployRequest,
+    normalized_services: &[ployz_core::deploy::DeployServiceRequest],
     ingress: &IngressIntentStore,
     target_store: &PloyzDnsTargetStore,
     namespace: &NamespaceIntentStore,
@@ -166,7 +167,11 @@ pub async fn validate_deploy_route_admission(
             message: error.to_string(),
         })?
         .route_bindings;
-    validate_route_bindings(request, automatic_hostname_mode.suffix(), &existing)
+    validate_route_bindings(
+        normalized_services,
+        automatic_hostname_mode.suffix(),
+        &existing,
+    )
 }
 
 async fn read_intent(
@@ -239,8 +244,14 @@ async fn deploy_execution_facts(
         .collect();
     let namespace_cleanup_candidates =
         namespace_cleanup_candidates(&request.namespace_id, &observed_machines);
+    let normalized_services =
+        request
+            .service_requests()
+            .map_err(|error| DeployFactLoadError::InvalidRouteBindings {
+                message: error.to_string(),
+            })?;
     validate_route_bindings(
-        request,
+        &normalized_services,
         automatic_hostname_mode.suffix(),
         &namespace_route_bindings,
     )?;
@@ -262,12 +273,12 @@ async fn deploy_execution_facts(
 }
 
 fn validate_route_bindings(
-    request: &DeployRequest,
+    normalized_services: &[ployz_core::deploy::DeployServiceRequest],
     automatic_hostname_suffix: Option<&RouteHostname>,
     existing: &[ployz_core::intent::RouteBindingState],
 ) -> Result<(), DeployFactLoadError> {
-    validate_deploy_route_bindings(
-        request,
+    ployz_core::deploy::validate_normalized_deploy_route_bindings(
+        normalized_services,
         automatic_hostname_suffix,
         existing,
         mint_route_binding_id,

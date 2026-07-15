@@ -12,8 +12,8 @@ use ployz_sdk_types::{DeploySubmitError, NetworkRepairError};
 use crate::control::sequencer::DeploySubmitCommand;
 
 use super::{
-    validate_deploy_volume_declarations, validate_internal_dns_name,
-    validate_network_repair_preconditions, validate_registry_credentials,
+    normalize_deploy_services, validate_internal_dns_name, validate_network_repair_preconditions,
+    validate_registry_credentials,
 };
 
 fn operation_id() -> OperationId {
@@ -130,7 +130,7 @@ fn deploy_admission_rejects_a_mounted_volume_without_a_declaration() {
     };
 
     assert!(matches!(
-        validate_deploy_volume_declarations(&command),
+        normalize_deploy_services(&command),
         Err(DeploySubmitError::InvalidTarget { message, .. })
             if message.as_str().contains("service api mounts volume data without a declaration")
     ));

@@ -538,17 +538,6 @@ impl DeployExecutionError {
                     message: failure_message("volume-backed service has conflicting volume pins"),
                 }
             }
-            Self::Plan(DeployPlanError::MissingVolumeDeclaration {
-                service_id,
-                volume_name,
-            }) => DeployOperationFailure::PlanningFailed {
-                service_id: service_id.clone(),
-                namespace_revision_id: failure_namespace_revision_id(command),
-                message: failure_message(format!(
-                    "volume {} has no declaration in normalized deploy input",
-                    volume_name.as_str()
-                )),
-            },
             Self::Plan(DeployPlanError::ProvisionedVolumeRequiresProvisioning {
                 service_id,
                 volume_name,

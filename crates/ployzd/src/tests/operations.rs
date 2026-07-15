@@ -249,6 +249,7 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
     resolved_service.image = resolved_image.clone();
     let resolved_service_target = resolved_target
         .service_requests()
+        .expect("request normalizes")
         .into_iter()
         .next()
         .expect("resolved deploy target has one service");
