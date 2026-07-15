@@ -1676,10 +1676,6 @@ mod tests {
         ployz_core::ids::NamespaceId::try_new(value).expect("valid namespace id")
     }
 
-    fn volume_name(value: &str) -> VolumeName {
-        VolumeName::try_new(value).expect("valid volume name")
-    }
-
     fn service_id(value: &str) -> ServiceId {
         ServiceId::try_new(value).expect("valid service id")
     }
