@@ -1,0 +1,688 @@
+use crate::control::operations::deploy::{
+    MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
+};
+use crate::roles::machine::client::{NatsMachineContainerRuntime, NatsMachineSubstrateUpdater};
+use crate::roles::machine::protocol::{
+    MachineContainerRemoveDomainError, MachineContainerRemoveRpcRequest,
+    MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunDomainError,
+    MachineContainerRunRpcOk, MachineContainerRunRpcRequest, MachineContainerRunRpcResponse,
+    MachineImagePull, MachineRunContainerOutcome, MachineSubstrateReportRpcOk,
+    MachineSubstrateReportRpcResponse, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
+    MachineVolumeRemoveRpcResponse,
+};
+use crate::service_catalog::machine_role_service;
+use ployz_core::deploy::{ImageReference, VolumeName};
+use ployz_core::ids::{ContainerId, MachineId};
+use ployz_core::machine::runtime::ManagedContainerIdentity;
+use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, start_nats_service};
+use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
+use ployz_test_support::containers;
+use ployz_test_support::ids::{
+    container_id, failure_message, machine_id, namespace_id, operation_id, step_id,
+};
+use std::sync::{Arc, Mutex};
+
+#[tokio::test]
+async fn nats_machine_runtime_calls_container_run_service() {
+    let nats = test_nats().await;
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let _service = start_container_run_service(nats.machine_a.clone(), &machine_id("machine_a"), {
+        let received = Arc::clone(&received);
+        move |request| {
+            received
+                .lock()
+                .expect("received request lock is not poisoned")
+                .push(request);
+            MachineRunContainerResult::Ok {
+                outcome: MachineRunContainerOutcome::Created {
+                    container_id: container_id("ctr_123"),
+                },
+            }
+        }
+    })
+    .await;
+    let mut runtime = NatsMachineContainerRuntime::new(nats.client);
+
+    let outcome = runtime
+        .run_container(&machine_id("machine_a"), run_request())
+        .await
+        .expect("machine container run succeeds");
+
+    assert_eq!(
+        outcome,
+        MachineRunContainerOutcome::Created {
+            container_id: container_id("ctr_123")
+        }
+    );
+    assert_eq!(
+        received
+            .lock()
+            .expect("received request lock is not poisoned")
+            .as_slice(),
+        [MachineContainerRunRpcRequest {
+            pull: MachineImagePull::Registry {
+                credential: None,
+                reference: image("registry.example/api:rev_2"),
+            },
+            runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+            container: managed_identity()
+        }]
+    );
+}
+
+#[tokio::test]
+async fn nats_machine_runtime_maps_missing_responder_to_request_failure() {
+    let nats = test_nats().await;
+    let mut runtime = NatsMachineContainerRuntime::new(nats.client);
+
+    let error = runtime
+        .run_container(&machine_id("machine_missing"), run_request())
+        .await
+        .expect_err("missing machine responder fails");
+
+    assert_eq!(
+        error,
+        MachineContainerRuntimeError::Unavailable {
+            machine_id: machine_id("machine_missing"),
+            reason: MachineRuntimeUnavailableReason::NoResponders,
+        }
+    );
+}
+
+#[tokio::test]
+async fn nats_machine_runtime_maps_service_error_headers() {
+    let nats = test_nats().await;
+    let _service = start_container_run_raw_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        |_request| {
+            NatsServiceResponse::transport_error(
+                ployz_nats::service_runtime::NatsServiceError::bad_request("bad container request"),
+            )
+        },
+    )
+    .await;
+    let mut runtime = NatsMachineContainerRuntime::new(nats.client);
+
+    let error = runtime
+        .run_container(&machine_id("machine_a"), run_request())
+        .await
+        .expect_err("service error header fails");
+
+    assert_eq!(
+        error,
+        MachineContainerRuntimeError::Unavailable {
+            machine_id: machine_id("machine_a"),
+            reason: MachineRuntimeUnavailableReason::ServiceBadRequest {
+                message: "bad container request".to_owned(),
+            },
+        }
+    );
+}
+
+#[tokio::test]
+async fn nats_machine_runtime_reports_invalid_response_payload() {
+    let nats = test_nats().await;
+    let _service = start_container_run_raw_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        |_request| NatsServiceResponse::ok("not json"),
+    )
+    .await;
+    let mut runtime = NatsMachineContainerRuntime::new(nats.client);
+
+    let error = runtime
+        .run_container(&machine_id("machine_a"), run_request())
+        .await
+        .expect_err("invalid response payload fails");
+
+    assert!(matches!(
+        error,
+        MachineContainerRuntimeError::Unavailable {
+            machine_id: actual_machine_id,
+            reason: MachineRuntimeUnavailableReason::DecodeResponse { .. },
+            ..
+        } if actual_machine_id == machine_id("machine_a")
+    ));
+}
+
+#[tokio::test]
+async fn nats_machine_runtime_preserves_domain_runtime_error() {
+    let nats = test_nats().await;
+    let ambiguity = MachineContainerRunDomainError::OperationStepAmbiguous {
+        operation_id: operation_id("op_123"),
+        step_id: step_id("run_1"),
+        container_ids: vec![container_id("ctr_a"), container_id("ctr_b")],
+    };
+    let _service = start_container_run_service(nats.machine_a.clone(), &machine_id("machine_a"), {
+        let ambiguity = ambiguity.clone();
+        move |_request| MachineRunContainerResult::DomainError {
+            error: ambiguity.clone(),
+        }
+    })
+    .await;
+    let mut runtime = NatsMachineContainerRuntime::new(nats.client);
+
+    let error = runtime
+        .run_container(&machine_id("machine_a"), run_request())
+        .await
+        .expect_err("domain runtime error fails");
+
+    assert_eq!(
+        error,
+        MachineContainerRuntimeError::OperationStepAmbiguous {
+            machine_id: machine_id("machine_a"),
+            operation_id: operation_id("op_123"),
+            step_id: step_id("run_1"),
+            container_ids: vec![container_id("ctr_a"), container_id("ctr_b")],
+        }
+    );
+}
+
+#[tokio::test]
+async fn nats_machine_runtime_rejects_response_for_different_machine() {
+    let nats = test_nats().await;
+    let _service = start_container_run_raw_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        |_request| {
+            NatsServiceResponse::ok(encode_run_response(MachineContainerRunRpcResponse::Ok(
+                MachineContainerRunRpcOk {
+                    machine_id: machine_id("machine_b"),
+                    outcome: MachineRunContainerOutcome::Created {
+                        container_id: container_id("ctr_wrong"),
+                    },
+                },
+            )))
+        },
+    )
+    .await;
+    let mut runtime = NatsMachineContainerRuntime::new(nats.client);
+
+    let error = runtime
+        .run_container(&machine_id("machine_a"), run_request())
+        .await
+        .expect_err("wrong-machine domain error fails");
+
+    assert_eq!(
+        error,
+        MachineContainerRuntimeError::Unavailable {
+            machine_id: machine_id("machine_a"),
+            reason: MachineRuntimeUnavailableReason::WrongResponder {
+                actual_machine_id: machine_id("machine_b"),
+            },
+        }
+    );
+}
+
+#[tokio::test]
+async fn nats_machine_runtime_reports_substrate_versions() {
+    let nats = test_nats().await;
+    let _service =
+        start_substrate_report_service(nats.machine_a.clone(), &machine_id("machine_a")).await;
+    let runtime = NatsMachineSubstrateUpdater::new(nats.client);
+
+    let reported = runtime
+        .report_substrate_versions(&machine_id("machine_a"), &operation_id("op_update_1"))
+        .await
+        .expect("substrate report succeeds");
+
+    assert_eq!(
+        reported.ployzd.as_ref().map(|version| version.as_str()),
+        Some("0.2.0")
+    );
+    assert_eq!(reported.host_runner, None);
+}
+
+#[tokio::test]
+async fn nats_machine_runtime_calls_container_remove_service() {
+    let nats = test_nats().await;
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let _service =
+        start_container_remove_service(nats.machine_a.clone(), &machine_id("machine_a"), {
+            let received = Arc::clone(&received);
+            move |request| {
+                received
+                    .lock()
+                    .expect("received remove request lock is not poisoned")
+                    .push(request);
+                MachineRemoveContainerResult::Ok {
+                    container_id: container_id("ctr_old"),
+                }
+            }
+        })
+        .await;
+    let mut runtime = NatsMachineContainerRuntime::new(nats.client);
+
+    runtime
+        .remove_container(&machine_id("machine_a"), remove_request("ctr_old"))
+        .await
+        .expect("machine container remove succeeds");
+
+    assert_eq!(
+        received
+            .lock()
+            .expect("received remove request lock is not poisoned")
+            .as_slice(),
+        [MachineContainerRemoveRpcRequest {
+            operation_id: operation_id("op_123"),
+            container_id: container_id("ctr_old"),
+            expected_identity: managed_identity(),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn nats_machine_runtime_calls_volume_remove_service() {
+    let nats = test_nats().await;
+    let machine_id = machine_id("machine_a");
+    let spec = machine_role_service(&machine_id);
+    let endpoint = spec
+        .endpoints
+        .iter()
+        .find(|endpoint| {
+            endpoint.subject == machine_service(&machine_id, MachineServiceEndpoint::VolumeRemove)
+        })
+        .expect("volume.remove endpoint exists")
+        .clone();
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let mut service = start_nats_service(nats.machine_a.clone(), &spec)
+        .await
+        .expect("start machine service");
+    service
+        .bind_endpoint(&endpoint, {
+            let received = Arc::clone(&received);
+            let machine_id = machine_id.clone();
+            move |request| {
+                let request: MachineVolumeRemoveRpcRequest =
+                    serde_json::from_slice(&request.payload)
+                        .expect("volume remove request decodes");
+                received
+                    .lock()
+                    .expect("received volume request lock is not poisoned")
+                    .push(request);
+                let response = MachineVolumeRemoveRpcResponse::Ok(MachineVolumeRemoveRpcOk {
+                    machine_id: machine_id.clone(),
+                });
+                async move {
+                    NatsServiceResponse::ok(
+                        serde_json::to_vec(&response).expect("response serializes"),
+                    )
+                }
+            }
+        })
+        .await
+        .expect("bind volume.remove endpoint");
+    nats.machine_a
+        .flush()
+        .await
+        .expect("flush service subscription");
+    let runtime = NatsMachineContainerRuntime::new(nats.client);
+    let expected_request = MachineVolumeRemoveRpcRequest {
+        operation_id: operation_id("op_123"),
+        docker_volume_name: "ployz-n4-prod-v4-data".to_owned(),
+    };
+
+    runtime
+        .remove_volume(
+            &machine_id,
+            operation_id("op_123"),
+            &namespace_id("prod"),
+            &VolumeName::try_new("data").expect("valid volume name"),
+        )
+        .await
+        .expect("machine volume remove succeeds");
+
+    assert_eq!(
+        received
+            .lock()
+            .expect("received volume request lock is not poisoned")
+            .as_slice(),
+        [expected_request]
+    );
+}
+
+#[tokio::test]
+async fn nats_machine_runtime_preserves_remove_domain_error() {
+    let nats = test_nats().await;
+    let failure = MachineContainerRemoveDomainError::RemoveFailed {
+        container_id: container_id("ctr_old"),
+        message: failure_message("container remove failed: busy"),
+        inspect_hint: inspect_hint("ctr_old"),
+    };
+    let _service =
+        start_container_remove_service(nats.machine_a.clone(), &machine_id("machine_a"), {
+            let failure = failure.clone();
+            move |_request| MachineRemoveContainerResult::DomainError {
+                error: failure.clone(),
+            }
+        })
+        .await;
+    let mut runtime = NatsMachineContainerRuntime::new(nats.client);
+
+    let error = runtime
+        .remove_container(&machine_id("machine_a"), remove_request("ctr_old"))
+        .await
+        .expect_err("remove domain error is preserved");
+
+    assert_eq!(
+        error,
+        MachineContainerRuntimeError::RemoveContainerFailed {
+            machine_id: machine_id("machine_a"),
+            container_id: container_id("ctr_old"),
+            message: failure_message("container remove failed: busy"),
+            inspect_hint: inspect_hint("ctr_old"),
+        }
+    );
+}
+
+async fn start_container_run_service(
+    client: async_nats::Client,
+    machine_id: &MachineId,
+    handler: impl Fn(MachineContainerRunRpcRequest) -> MachineRunContainerResult + Send + Sync + 'static,
+) -> ployz_nats::service_runtime::RunningNatsService {
+    let machine_id = machine_id.clone();
+    start_container_run_raw_service(client, machine_id.clone(), move |request| {
+        let response = decode_run_request(request)
+            .map(&handler)
+            .map(|result| result.into_nats_response(machine_id.clone()));
+        match response {
+            Ok(response) => response,
+            Err(message) => NatsServiceResponse::transport_error(
+                ployz_nats::service_runtime::NatsServiceError::bad_request(message),
+            ),
+        }
+    })
+    .await
+}
+
+async fn start_container_run_raw_service(
+    client: async_nats::Client,
+    machine_id: MachineId,
+    handler: impl Fn(NatsServiceRequest) -> NatsServiceResponse + Send + Sync + 'static,
+) -> ployz_nats::service_runtime::RunningNatsService {
+    let spec = machine_role_service(&machine_id);
+    let endpoint = spec
+        .endpoints
+        .iter()
+        .find(|endpoint| {
+            endpoint.subject == machine_service(&machine_id, MachineServiceEndpoint::ContainerRun)
+        })
+        .expect("container.run endpoint exists")
+        .clone();
+    let mut service = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("start machine service");
+    service
+        .bind_endpoint(&endpoint, move |request| {
+            let response = handler(request);
+            async move { response }
+        })
+        .await
+        .expect("bind container.run endpoint");
+    // Round-trip so the server has registered the subscription before a
+    // request arrives from another (authenticated) connection.
+    client.flush().await.expect("flush service subscription");
+    service
+}
+
+async fn start_container_remove_service(
+    client: async_nats::Client,
+    machine_id: &MachineId,
+    handler: impl Fn(MachineContainerRemoveRpcRequest) -> MachineRemoveContainerResult
+    + Send
+    + Sync
+    + 'static,
+) -> ployz_nats::service_runtime::RunningNatsService {
+    let machine_id = machine_id.clone();
+    start_container_remove_raw_service(client, machine_id.clone(), move |request| {
+        let response = decode_remove_request(request)
+            .map(&handler)
+            .map(|result| result.into_nats_response(machine_id.clone()));
+        match response {
+            Ok(response) => response,
+            Err(message) => NatsServiceResponse::transport_error(
+                ployz_nats::service_runtime::NatsServiceError::bad_request(message),
+            ),
+        }
+    })
+    .await
+}
+
+async fn start_container_remove_raw_service(
+    client: async_nats::Client,
+    machine_id: MachineId,
+    handler: impl Fn(NatsServiceRequest) -> NatsServiceResponse + Send + Sync + 'static,
+) -> ployz_nats::service_runtime::RunningNatsService {
+    let spec = machine_role_service(&machine_id);
+    let endpoint = spec
+        .endpoints
+        .iter()
+        .find(|endpoint| {
+            endpoint.subject
+                == machine_service(&machine_id, MachineServiceEndpoint::ContainerRemove)
+        })
+        .expect("container.remove endpoint exists")
+        .clone();
+    let mut service = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("start machine service");
+    service
+        .bind_endpoint(&endpoint, move |request| {
+            let response = handler(request);
+            async move { response }
+        })
+        .await
+        .expect("bind container.remove endpoint");
+    client.flush().await.expect("flush service subscription");
+    service
+}
+
+async fn start_substrate_report_service(
+    client: async_nats::Client,
+    machine_id: &MachineId,
+) -> ployz_nats::service_runtime::RunningNatsService {
+    let machine_id = machine_id.clone();
+    let spec = machine_role_service(&machine_id);
+    let endpoint = spec
+        .endpoints
+        .iter()
+        .find(|endpoint| {
+            endpoint.subject
+                == machine_service(&machine_id, MachineServiceEndpoint::SubstrateReport)
+        })
+        .expect("substrate.report endpoint exists")
+        .clone();
+    let mut service = start_nats_service(client.clone(), &spec)
+        .await
+        .expect("start machine service");
+    service
+        .bind_endpoint(&endpoint, move |_request| {
+            let machine_id = machine_id.clone();
+            async move {
+                NatsServiceResponse::ok(
+                    serde_json::to_vec(&MachineSubstrateReportRpcResponse::Ok(
+                        MachineSubstrateReportRpcOk {
+                            machine_id,
+                            reported: ployz_core::operation::MachineSubstrateVersions {
+                                ployzd: Some(
+                                    ployz_core::install::InstallArtifactVersion::try_new("0.2.0")
+                                        .expect("test version is valid"),
+                                ),
+                                host_runner: None,
+                            },
+                        },
+                    ))
+                    .expect("substrate report response encodes"),
+                )
+            }
+        })
+        .await
+        .expect("bind substrate.report endpoint");
+    client.flush().await.expect("flush service subscription");
+    service
+}
+
+fn decode_run_request(
+    request: NatsServiceRequest,
+) -> Result<MachineContainerRunRpcRequest, String> {
+    serde_json::from_slice(&request.payload).map_err(|error| error.to_string())
+}
+
+fn encode_run_response(response: MachineContainerRunRpcResponse) -> Vec<u8> {
+    serde_json::to_vec(&response).expect("machine run response encodes")
+}
+
+fn decode_remove_request(
+    request: NatsServiceRequest,
+) -> Result<MachineContainerRemoveRpcRequest, String> {
+    serde_json::from_slice(&request.payload).map_err(|error| error.to_string())
+}
+
+fn encode_remove_response(response: MachineContainerRemoveRpcResponse) -> Vec<u8> {
+    serde_json::to_vec(&response).expect("machine remove response encodes")
+}
+
+enum MachineRunContainerResult {
+    Ok {
+        outcome: MachineRunContainerOutcome,
+    },
+    DomainError {
+        error: MachineContainerRunDomainError,
+    },
+}
+
+impl MachineRunContainerResult {
+    fn into_nats_response(self, machine_id: MachineId) -> NatsServiceResponse {
+        match self {
+            Self::Ok { outcome } => NatsServiceResponse::ok(encode_run_response(
+                MachineContainerRunRpcResponse::Ok(MachineContainerRunRpcOk {
+                    machine_id,
+                    outcome,
+                }),
+            )),
+            Self::DomainError { error } => NatsServiceResponse::domain_error(encode_run_response(
+                MachineContainerRunRpcResponse::DomainError { machine_id, error },
+            )),
+        }
+    }
+}
+
+enum MachineRemoveContainerResult {
+    Ok {
+        container_id: ContainerId,
+    },
+    DomainError {
+        error: MachineContainerRemoveDomainError,
+    },
+}
+
+impl MachineRemoveContainerResult {
+    fn into_nats_response(self, machine_id: MachineId) -> NatsServiceResponse {
+        match self {
+            Self::Ok { container_id } => NatsServiceResponse::ok(encode_remove_response(
+                MachineContainerRemoveRpcResponse::Ok(MachineContainerRpcOk {
+                    machine_id,
+                    container_id,
+                }),
+            )),
+            Self::DomainError { error } => {
+                NatsServiceResponse::domain_error(encode_remove_response(
+                    MachineContainerRemoveRpcResponse::DomainError { machine_id, error },
+                ))
+            }
+        }
+    }
+}
+
+fn remove_request(container_id: &str) -> MachineContainerRemoveRpcRequest {
+    MachineContainerRemoveRpcRequest {
+        operation_id: operation_id("op_123"),
+        container_id: self::container_id(container_id),
+        expected_identity: managed_identity(),
+    }
+}
+
+fn inspect_hint(container_id: &str) -> ployz_core::operation::OperatorHint {
+    ployz_core::operation::OperatorHint::try_new(format!("ployz container inspect {container_id}"))
+        .expect("valid inspect hint")
+}
+
+struct TestNats {
+    _nats: ployz_test_support::nats::TestNats,
+    /// Controller principal: the requesting deploy-worker side.
+    client: async_nats::Client,
+    /// Machine principals: the machine-service stub side.
+    machine_a: async_nats::Client,
+}
+
+async fn test_nats() -> TestNats {
+    let nats = ployz_test_support::nats::TestNats::start_with_machines(&[
+        machine_id("machine_a"),
+        machine_id("machine_b"),
+    ])
+    .await;
+    let client = nats.controller.clone();
+    let machine_a = nats.machine_client(&machine_id("machine_a")).await;
+
+    TestNats {
+        _nats: nats,
+        client,
+        machine_a,
+    }
+}
+
+fn run_request() -> MachineContainerRunRpcRequest {
+    MachineContainerRunRpcRequest {
+        pull: MachineImagePull::Registry {
+            credential: None,
+            reference: image("registry.example/api:rev_2"),
+        },
+        runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+        container: managed_identity(),
+    }
+}
+
+fn managed_identity() -> ManagedContainerIdentity {
+    containers::identity("svc_api")
+        .entry("entry_2")
+        .operation("op_123")
+        .step("run_1")
+        .build()
+}
+
+fn image(value: &str) -> ImageReference {
+    ImageReference::try_new(value).expect("valid image")
+}
+
+#[test]
+fn container_run_request_wire_shape_survived_run_spec_dissolution() {
+    // The run RPC keeps the managed container identity flat and carries an
+    // explicit image pull instruction.
+    let request = run_request();
+    let json = serde_json::to_value(&request).expect("run request serializes");
+
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "pull": {
+                "source": "registry",
+                "reference": "registry.example/api:rev_2",
+            },
+            "runtime": {
+                "command": null,
+                "entrypoint": null,
+                "environment": {},
+                "stop_grace_period": 10,
+            },
+            "container": {
+                "namespace_id": "default",
+                "service_id": "svc_api",
+                "namespace_revision_entry_id": "entry_2",
+                "operation_id": "op_123",
+                "step_id": "run_1",
+                "kind": "service",
+            },
+        })
+    );
+}

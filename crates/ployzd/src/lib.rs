@@ -6,18 +6,18 @@
 //! controllers, machine-local services, and integration adapters. Product policy stays
 //! in `ployz-core`; NATS mechanics stay in `ployz-nats`.
 
-pub mod adapters {
+mod adapters {
     pub(crate) mod atomic_file;
     pub mod credentials;
     pub mod nats_authorization;
     pub mod nats_server;
 }
-pub mod certificate;
+mod certificate;
 pub mod config;
-pub mod control;
-pub mod recovery;
-pub mod role_testimony;
-pub mod roles {
+mod control;
+mod recovery;
+mod role_testimony;
+mod roles {
     pub mod control;
     pub mod dns {
         mod internal;
@@ -38,22 +38,13 @@ pub mod roles {
     pub mod machine;
     pub mod nats_failover;
 }
-/// Compatibility facade for the Control-owned SQLite store.
-pub mod core_store;
 pub mod dispatch;
-/// Compatibility facade for the daemon-local role testimony cache.
-pub mod fact_cache;
-/// Compatibility facade for the Control-owned Ingress Endpoint Projection.
-pub mod ingress_endpoint;
-/// Compatibility facade for Control-owned durable operator intent.
-pub mod intent;
-pub mod lease;
-/// Compatibility facade for the Control-owned operator API.
-pub mod operation_api;
-/// Compatibility facade for Control-owned operation execution.
-pub mod operations;
-pub mod process_support;
+mod lease;
+mod process_support;
 pub mod role_cli;
-pub mod seed;
-pub mod service_catalog;
-pub mod tasks;
+mod seed;
+mod service_catalog;
+mod tasks;
+
+#[cfg(test)]
+mod tests;

@@ -22,46 +22,50 @@ use std::time::Duration;
 use crate::adapters::nats_server::NatsServerLaunch;
 use crate::certificate::{CertificateManagerConfig, DEFAULT_ACME_DIRECTORY_URL};
 use crate::control::sequencer::MachineAddBootstrapConfig;
-use crate::lease::{LeaseWorkerUrl, LeaseWorkerUrlError};
+use crate::lease::LeaseWorkerUrl;
+pub use crate::lease::LeaseWorkerUrlError;
 use crate::role_cli::DaemonProcessRole;
-pub use ployz_core::cert::DEFAULT_LEASE_WORKER_URL;
-pub use ployz_core::install::DEFAULT_MACHINE_BOOTSTRAP_URL;
+pub(crate) use ployz_core::cert::DEFAULT_LEASE_WORKER_URL;
+pub(crate) use ployz_core::install::DEFAULT_MACHINE_BOOTSTRAP_URL;
 
-pub const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
-pub const PLOYZ_NATS_CA_FILE_ENV: &str = "PLOYZ_NATS_CA_FILE";
-pub const PLOYZ_NATS_NKEY_SEED_FILE_ENV: &str = "PLOYZ_NATS_NKEY_SEED_FILE";
-pub const PLOYZ_NATS_AUTHORIZED_USERS_FILE_ENV: &str = "PLOYZ_NATS_AUTHORIZED_USERS_FILE";
-pub const PLOYZ_CORE_DB_ENV: &str = "PLOYZ_CORE_DB";
-pub const PLOYZ_LEASE_WORKER_URL_ENV: &str = "PLOYZ_LEASE_WORKER_URL";
-pub const PLOYZ_ACME_DIRECTORY_URL_ENV: &str = "PLOYZ_ACME_DIRECTORY_URL";
-pub const DEFAULT_CORE_DB: &str = "/var/lib/ployz/ployz-core.db";
-pub const DEFAULT_GATEWAY_CERTIFICATE_STATE_DIR: &str = "/var/lib/ployz/certificates";
+pub(crate) const PLOYZ_NATS_URL_ENV: &str = "PLOYZ_NATS_URL";
+pub(crate) const PLOYZ_NATS_CA_FILE_ENV: &str = "PLOYZ_NATS_CA_FILE";
+pub(crate) const PLOYZ_NATS_NKEY_SEED_FILE_ENV: &str = "PLOYZ_NATS_NKEY_SEED_FILE";
+pub(crate) const PLOYZ_NATS_AUTHORIZED_USERS_FILE_ENV: &str = "PLOYZ_NATS_AUTHORIZED_USERS_FILE";
+pub(crate) const PLOYZ_CORE_DB_ENV: &str = "PLOYZ_CORE_DB";
+pub(crate) const PLOYZ_LEASE_WORKER_URL_ENV: &str = "PLOYZ_LEASE_WORKER_URL";
+pub(crate) const PLOYZ_ACME_DIRECTORY_URL_ENV: &str = "PLOYZ_ACME_DIRECTORY_URL";
+pub(crate) const DEFAULT_CORE_DB: &str = "/var/lib/ployz/ployz-core.db";
+pub(crate) const DEFAULT_GATEWAY_CERTIFICATE_STATE_DIR: &str = "/var/lib/ployz/certificates";
 /// Set by `core-promote` on the new core's control unit: the machine's local
 /// intent mirror to seed a fresh core store from on first startup (ADR 0031).
-pub const PLOYZ_SEED_FROM_MIRROR_ENV: &str = "PLOYZ_SEED_FROM_MIRROR";
-pub const PLOYZ_NATS_MACHINE_SEED_FILE_ENV: &str = "PLOYZ_NATS_MACHINE_SEED_FILE";
-pub const PLOYZ_JOIN_NKEY_SEED_FILE_ENV: &str = "PLOYZ_JOIN_NKEY_SEED_FILE";
-pub const DEFAULT_NATS_AUTHORIZED_USERS_FILE: &str = "/etc/nats/authorized-users.conf";
-pub const PLOYZ_MACHINE_ID_ENV: &str = "PLOYZ_MACHINE_ID";
-pub const PLOYZ_GATEWAY_LISTEN_ADDR_ENV: &str = "PLOYZ_GATEWAY_LISTEN_ADDR";
-pub const PLOYZ_DEPLOY_MACHINES_ENV: &str = "PLOYZ_DEPLOY_MACHINES";
-pub const PLOYZ_MACHINE_BOOTSTRAP_URL_ENV: &str = "PLOYZ_MACHINE_BOOTSTRAP_URL";
-pub const PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV: &str = "PLOYZ_MACHINE_JOIN_TEMPLATE_FILE";
-pub const PLOYZ_EBPF_BYTECODE_ENV: &str = "PLOYZ_EBPF_BYTECODE";
-pub const DEFAULT_EBPF_BYTECODE_PATH: &str = "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc";
-pub const PLOYZ_EBPF_CTL_ENV: &str = "PLOYZ_EBPF_CTL";
-pub const DEFAULT_EBPF_CTL_PATH: &str = "/usr/local/bin/ployz-ebpf-ctl";
-pub const PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV: &str = "PLOYZ_DATAPLANE_BRIDGE_IFNAME";
-pub const DEFAULT_DATAPLANE_BRIDGE_IFNAME: &str = "br-ployz";
-pub const PLOYZ_DATAPLANE_WG_IFNAME_ENV: &str = "PLOYZ_DATAPLANE_WG_IFNAME";
-pub const DEFAULT_DATAPLANE_WG_IFNAME: &str = "ployz-wg0";
-pub const PLOYZ_DATAPLANE_WG_MTU_ENV: &str = "PLOYZ_DATAPLANE_WG_MTU";
-pub const PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV: &str = "PLOYZ_DATAPLANE_ENDPOINT_SUBNET";
-pub const PLOYZ_DATAPLANE_ENDPOINT_SUPERNET_ENV: &str = "PLOYZ_DATAPLANE_ENDPOINT_SUPERNET";
-pub const DEFAULT_DEPLOY_STEP_TIMEOUT: Duration = Duration::from_secs(180);
+pub(crate) const PLOYZ_SEED_FROM_MIRROR_ENV: &str = "PLOYZ_SEED_FROM_MIRROR";
+pub(crate) const PLOYZ_NATS_MACHINE_SEED_FILE_ENV: &str = "PLOYZ_NATS_MACHINE_SEED_FILE";
+pub(crate) const PLOYZ_JOIN_NKEY_SEED_FILE_ENV: &str = "PLOYZ_JOIN_NKEY_SEED_FILE";
+pub(crate) const DEFAULT_NATS_AUTHORIZED_USERS_FILE: &str = "/etc/nats/authorized-users.conf";
+pub(crate) const PLOYZ_MACHINE_ID_ENV: &str = "PLOYZ_MACHINE_ID";
+pub(crate) const PLOYZ_GATEWAY_LISTEN_ADDR_ENV: &str = "PLOYZ_GATEWAY_LISTEN_ADDR";
+pub(crate) const PLOYZ_DEPLOY_MACHINES_ENV: &str = "PLOYZ_DEPLOY_MACHINES";
+pub(crate) const PLOYZ_MACHINE_BOOTSTRAP_URL_ENV: &str = "PLOYZ_MACHINE_BOOTSTRAP_URL";
+pub(crate) const PLOYZ_MACHINE_JOIN_TEMPLATE_FILE_ENV: &str = "PLOYZ_MACHINE_JOIN_TEMPLATE_FILE";
+pub(crate) const PLOYZ_EBPF_BYTECODE_ENV: &str = "PLOYZ_EBPF_BYTECODE";
+pub(crate) const DEFAULT_EBPF_BYTECODE_PATH: &str = "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc";
+pub(crate) const PLOYZ_EBPF_CTL_ENV: &str = "PLOYZ_EBPF_CTL";
+pub(crate) const DEFAULT_EBPF_CTL_PATH: &str = "/usr/local/bin/ployz-ebpf-ctl";
+pub(crate) const PLOYZ_DATAPLANE_BRIDGE_IFNAME_ENV: &str = "PLOYZ_DATAPLANE_BRIDGE_IFNAME";
+pub(crate) const DEFAULT_DATAPLANE_BRIDGE_IFNAME: &str = "br-ployz";
+pub(crate) const PLOYZ_DATAPLANE_WG_IFNAME_ENV: &str = "PLOYZ_DATAPLANE_WG_IFNAME";
+pub(crate) const DEFAULT_DATAPLANE_WG_IFNAME: &str = "ployz-wg0";
+pub(crate) const PLOYZ_DATAPLANE_WG_MTU_ENV: &str = "PLOYZ_DATAPLANE_WG_MTU";
+pub(crate) const PLOYZ_DATAPLANE_ENDPOINT_SUBNET_ENV: &str = "PLOYZ_DATAPLANE_ENDPOINT_SUBNET";
+pub(crate) const PLOYZ_DATAPLANE_ENDPOINT_SUPERNET_ENV: &str = "PLOYZ_DATAPLANE_ENDPOINT_SUPERNET";
+pub(crate) const DEFAULT_DEPLOY_STEP_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DaemonProcessConfig {
+pub struct DaemonProcessConfig(DaemonProcessConfigInner);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DaemonProcessConfigInner {
     Control(Box<ControlProcessConfig>),
     Machine(MachineProcessConfig),
     Gateway(GatewayProcessConfig),
@@ -71,12 +75,18 @@ pub enum DaemonProcessConfig {
 impl DaemonProcessConfig {
     #[must_use]
     pub fn role(&self) -> DaemonProcessRole {
-        match self {
-            Self::Control(_) => DaemonProcessRole::Control,
-            Self::Machine(config) => DaemonProcessRole::Machine(config.machine_id.clone()),
-            Self::Gateway(_) => DaemonProcessRole::Gateway,
-            Self::Dns(_) => DaemonProcessRole::Dns,
+        match &self.0 {
+            DaemonProcessConfigInner::Control(_) => DaemonProcessRole::Control,
+            DaemonProcessConfigInner::Machine(config) => {
+                DaemonProcessRole::Machine(config.machine_id.clone())
+            }
+            DaemonProcessConfigInner::Gateway(_) => DaemonProcessRole::Gateway,
+            DaemonProcessConfigInner::Dns(_) => DaemonProcessRole::Dns,
         }
+    }
+
+    pub(crate) const fn inner(&self) -> &DaemonProcessConfigInner {
+        &self.0
     }
 }
 
@@ -114,7 +124,9 @@ pub fn load_daemon_process_config(
             control = control.with_machine_bootstrap(load_machine_bootstrap(&env)?);
             control =
                 control.with_dataplane_endpoint_supernet(load_dataplane_endpoint_supernet(&env)?);
-            Ok(DaemonProcessConfig::Control(Box::new(control)))
+            Ok(DaemonProcessConfig(DaemonProcessConfigInner::Control(
+                Box::new(control),
+            )))
         }
         DaemonProcessRole::Machine(machine_id) => {
             let connect = load_nats_connect_config(&role, &env)?;
@@ -128,20 +140,20 @@ pub fn load_daemon_process_config(
                 load_dataplane_wg_mtu(&env)?,
                 load_dataplane_endpoint_subnet(&env, machine_id),
             );
-            Ok(DaemonProcessConfig::Machine(MachineProcessConfig::new(
-                machine_id.clone(),
-                connect,
-                artifacts,
-                ployz_native_mesh,
+            Ok(DaemonProcessConfig(DaemonProcessConfigInner::Machine(
+                MachineProcessConfig::new(
+                    machine_id.clone(),
+                    connect,
+                    artifacts,
+                    ployz_native_mesh,
+                ),
             )))
         }
         DaemonProcessRole::Gateway => {
             let machine_id = load_process_machine_id(&role, &env)?;
             let connect = load_nats_connect_config(&role, &env)?;
-            Ok(DaemonProcessConfig::Gateway(GatewayProcessConfig::new(
-                machine_id,
-                connect,
-                load_gateway_listen_addr(&env)?,
+            Ok(DaemonProcessConfig(DaemonProcessConfigInner::Gateway(
+                GatewayProcessConfig::new(machine_id, connect, load_gateway_listen_addr(&env)?),
             )))
         }
         DaemonProcessRole::Dns => {
@@ -155,10 +167,8 @@ pub fn load_daemon_process_config(
                         source,
                     }
                 })?;
-            Ok(DaemonProcessConfig::Dns(DnsProcessConfig::new(
-                machine_id,
-                connect,
-                endpoint_subnet,
+            Ok(DaemonProcessConfig(DaemonProcessConfigInner::Dns(
+                DnsProcessConfig::new(machine_id, connect, endpoint_subnet),
             )))
         }
     }
@@ -175,7 +185,7 @@ fn env_value(env: &impl Fn(&str) -> Option<String>, key: &str) -> Option<String>
 /// `AwaitingSeedFile` startup state and re-read the path until ployzd
 /// control mints and writes the machine credential.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RoleNatsConnect {
+pub(crate) struct RoleNatsConnect {
     pub url: NatsClientUrl,
     pub ca_file: PathBuf,
     pub seed_file: PathBuf,
@@ -227,7 +237,7 @@ pub enum SeedFileReadError {
 /// `PLOYZ_NATS_NKEY_SEED_FILE` for the given role. Each missing or invalid
 /// input is a distinct typed error; the seed file's *contents* are read
 /// later (eagerly for control, awaited for machine/gateway/DNS).
-pub fn load_nats_connect_config(
+pub(crate) fn load_nats_connect_config(
     role: &DaemonProcessRole,
     env: &impl Fn(&str) -> Option<String>,
 ) -> Result<RoleNatsConnect, DaemonProcessConfigError> {
@@ -303,7 +313,7 @@ fn load_certificate_manager_config(
     config
 }
 
-pub fn load_lease_worker_url(
+pub(crate) fn load_lease_worker_url(
     env: &impl Fn(&str) -> Option<String>,
 ) -> Result<LeaseWorkerUrl, DaemonProcessConfigError> {
     let Some(value) = env_value(env, PLOYZ_LEASE_WORKER_URL_ENV) else {
@@ -321,7 +331,7 @@ fn load_seed_from_mirror(env: &impl Fn(&str) -> Option<String>) -> Option<PathBu
 /// reloads, and the first machine's locally written `machine.seed`. Durable
 /// control state lives in the core database, not here.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ControlNatsAuthorizationConfig {
+pub(crate) struct ControlNatsAuthorizationConfig {
     pub authorized_users_file: PathBuf,
     pub machine_seed_file: PathBuf,
 }
@@ -706,7 +716,7 @@ impl fmt::Display for DaemonProcessConfigError {
 impl std::error::Error for DaemonProcessConfigError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ControlProcessConfig {
+pub(crate) struct ControlProcessConfig {
     pub nats: NatsServerLaunch,
     pub nats_connect: NatsConnectConfig,
     pub nats_authorization: ControlNatsAuthorizationConfig,
@@ -825,7 +835,7 @@ impl ControlProcessConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MachineProcessConfig {
+pub(crate) struct MachineProcessConfig {
     pub machine_id: MachineId,
     pub nats: RoleNatsConnect,
     pub artifacts: MachineProcessArtifacts,
@@ -833,7 +843,7 @@ pub struct MachineProcessConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MachineProcessArtifacts {
+pub(crate) struct MachineProcessArtifacts {
     pub ebpf_bytecode_path: std::path::PathBuf,
     pub ebpf_ctl_path: std::path::PathBuf,
 }
@@ -849,7 +859,7 @@ impl MachineProcessArtifacts {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MachinePloyzNativeMeshConfig {
+pub(crate) struct MachinePloyzNativeMeshConfig {
     pub bridge_ifname: String,
     pub wg_ifname: String,
     pub wg_mtu: Option<u32>,
@@ -891,7 +901,7 @@ impl MachineProcessConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GatewayProcessConfig {
+pub(crate) struct GatewayProcessConfig {
     pub machine_id: MachineId,
     pub nats: RoleNatsConnect,
     pub listen_addr: SocketAddr,
@@ -917,7 +927,7 @@ impl GatewayProcessConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DnsProcessConfig {
+pub(crate) struct DnsProcessConfig {
     pub machine_id: MachineId,
     pub nats: RoleNatsConnect,
     pub endpoint_subnet: MachineEndpointSubnet,
