@@ -73,12 +73,14 @@ where
         request,
         facts,
         registry_credentials,
+        reusable_interrupted_operation_ids,
     } = input;
     let provisional_command = preparation::prepare_deploy_execution_command_with_credentials(
         operation_id.clone(),
         request.clone(),
         facts.clone(),
         &registry_credentials,
+        &reusable_interrupted_operation_ids,
     );
     if let Err(source) = record_stage(
         &provisional_command,
@@ -115,6 +117,7 @@ where
         request,
         facts,
         &registry_credentials,
+        &reusable_interrupted_operation_ids,
     );
     let mut ports = ports;
     match execute_deploy_after_planning(&command, &mut ports).await {

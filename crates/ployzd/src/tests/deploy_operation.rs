@@ -15,10 +15,9 @@ use ployz_core::intent::{ServingTargetEntry, VolumePinState};
 use ployz_core::machine::runtime::ManagedContainerKind;
 use ployz_core::operation::{
     CertInterruptionStage, CertificateInterruptionNextAction, CertificateProvisionFailure,
-    DeployCompletionOutcome, DeployEvidence, DeployOperationFailure, DeployOperationState,
-    DeployPhaseOutcome, DeployRunningStage, DeployServiceResult, DeployTransition, EventSequence,
-    FailureMessage, OperationEvent, OperationInterruptionCause, OperationProjection,
-    OperationStatus, PreStartHookFailure, RouteHostname, RouteTarget, project_operation_event,
+    DeployCompletionOutcome, DeployEvidence, DeployOperationFailure, DeployPhaseOutcome,
+    DeployRunningStage, DeployServiceResult, DeployTransition, FailureMessage,
+    OperationInterruptionCause, PreStartHookFailure, RouteHostname, RouteTarget,
 };
 use ployz_test_support::ids::{failure_message, namespace_id};
 use std::time::Duration;
@@ -612,109 +611,6 @@ async fn deploy_worker_commits_volume_pin_and_mounts_volume() {
     };
     assert_eq!(mount.volume_name, volume_name("postgres_data"));
     assert_eq!(mount.target.as_str(), "/var/lib/postgresql/data");
-}
-
-#[tokio::test]
-async fn interrupted_deploy_retry_converges_from_observed_running_container() {
-    let interrupted = OperationStatus::Deploy {
-        id: operation_id("op_interrupted"),
-        namespace_id: namespace_id("default"),
-        service_id: service_id("svc_api"),
-        origin: None,
-        state: DeployOperationState::Running {
-            stage: DeployRunningStage::StartingContainers,
-        },
-        last_event_sequence: EventSequence::try_new(4).expect("event sequence"),
-    };
-    let evidence = interrupted
-        .interruption_evidence(OperationInterruptionCause::PriorCoreProcessLoss)
-        .expect("running deploy has interruption evidence");
-    let projected = project_operation_event(
-        &interrupted,
-        OperationEvent::OperationInterrupted {
-            operation_id: interrupted.id().clone(),
-            evidence,
-        },
-        EventSequence::try_new(5).expect("event sequence"),
-    )
-    .expect("process loss terminalizes the first attempt");
-    assert!(matches!(
-        projected,
-        OperationProjection::StatusChanged { status }
-            if matches!(
-                *status,
-                OperationStatus::Deploy {
-                    state: DeployOperationState::Interrupted { .. },
-                    ..
-                }
-            )
-    ));
-
-    let mut recorder = RecordingOperations::default();
-    let mut runtime = RecordingRuntime::with_containers(["ctr_new"]);
-    let mut health = RecordingHealth::healthy();
-    let mut namespace_state = RecordingNamespaceState::stored();
-    let command = deploy_command_with_existing_container(2, "machine_b", "ctr_existing");
-
-    let outcome = execute_deploy(
-        command,
-        DeployExecutionPorts {
-            recorder: &mut recorder,
-            machine_runtime: &mut runtime,
-            health_checker: &mut health,
-            certificate_provisioner: &mut RecordingCertificates::successful(),
-            namespace_state: &mut namespace_state,
-        },
-    )
-    .await
-    .expect("deploy succeeds with an existing target container");
-
-    assert_eq!(
-        outcome
-            .containers
-            .iter()
-            .map(|container| container.container_id.clone())
-            .collect::<Vec<_>>(),
-        vec![container_id("ctr_existing"), container_id("ctr_new")]
-    );
-    assert_eq!(runtime.requests.len(), 1);
-    let [(request_machine_id, _)] = runtime.requests.as_slice() else {
-        panic!("expected one runtime request");
-    };
-    assert_eq!(*request_machine_id, machine_id("machine_a"));
-    assert_eq!(
-        namespace_state
-            .serving_requests
-            .first()
-            .map(|entry| entry.desired_replicas),
-        Some(ReplicaCount::try_new(2).expect("replica count"))
-    );
-    assert_eq!(
-        health.checked,
-        vec![vec![DeployContainerForAssert::new("machine_a", "ctr_new")]]
-    );
-    assert_eq!(
-        recorder.records,
-        vec![
-            RecordedOperation::Transition(DeployTransition::Planning),
-            RecordedOperation::PlanCreated { replica_count: 2 },
-            RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::StartingContainers,
-            }),
-            RecordedOperation::ContainerStarted {
-                machine_id: machine_id("machine_a"),
-                container_id: container_id("ctr_new"),
-            },
-            RecordedOperation::Transition(DeployTransition::Running {
-                stage: DeployRunningStage::WaitingForHealth,
-            }),
-            RecordedOperation::HealthCheckStarted,
-            RecordedOperation::Transition(DeployTransition::Running {
-                stage: active_service_running(),
-            }),
-            RecordedOperation::Transition(DeployTransition::completed()),
-        ]
-    );
 }
 
 #[tokio::test]

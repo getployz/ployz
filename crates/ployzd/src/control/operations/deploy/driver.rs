@@ -5,8 +5,8 @@ use crate::control::intent::ingress_intent::{IngressProjectionStore, PloyzDnsTar
 use crate::control::intent::namespace_intent::NamespaceIntentStore;
 use crate::control::intent::service::NatsIntentReader;
 use crate::control::operation_evidence::{
-    AcceptedDeploySubmission, OperationStatusWrite, RecordDeployTransitionError,
-    RecordOperationEventError,
+    AcceptedDeploySubmission, OperationStatusStoreError, OperationStatusWrite,
+    RecordDeployTransitionError, RecordOperationEventError,
 };
 use crate::control::operations::deploy::{
     CertificateProvisioner, DeployContainer, DeployExecutionError, DeployExecutionInput,
@@ -27,8 +27,8 @@ use ployz_core::deploy::VolumeDeclaredDeployRequest;
 use ployz_core::ingress::CertificateOwner;
 use ployz_core::machine::runtime::{ContainerHealth, ContainerRuntimeState};
 use ployz_core::operation::{
-    CertificateProvisionFailure, DeployOperationFailure, DeployTransition, FailureMessage,
-    OperatorHint, RouteHostname, StatusProjectionError,
+    CertificateProvisionFailure, DeployOperationFailure, DeployOperationState, DeployTransition,
+    FailureMessage, OperationStatus, OperatorHint, RouteHostname, StatusProjectionError,
 };
 use ployz_nats::subjects::INTENT_CHANGED;
 use std::time::Duration;
@@ -127,6 +127,33 @@ where
             });
         }
     };
+    let reusable_interrupted_operation_ids = match reusable_interrupted_deploy_operation_ids(
+        stores.controllers.repository(),
+        &request.namespace_id,
+        &facts.observed_machines,
+    )
+    .await
+    {
+        Ok(operation_ids) => operation_ids,
+        Err(source) => {
+            let failure_record_error = record_operation_failure(
+                &stores.controllers,
+                &accepted,
+                DeployOperationFailure::PlanningFailed {
+                    service_id: request.status_service_id(),
+                    namespace_revision_id: request.namespace_revision_id(),
+                    message: FailureMessage::try_new(source.to_string())
+                        .expect("rendered recovery evidence failure is non-empty"),
+                },
+            )
+            .await
+            .err();
+            return Err(DeployOperationRunError::RecoveryEvidence {
+                source,
+                failure_record_error,
+            });
+        }
+    };
     let DeployOperationStores {
         intent_change_client,
         namespace_intent,
@@ -139,6 +166,7 @@ where
         normalized_request,
         facts,
         registry_credentials,
+        reusable_interrupted_operation_ids,
     );
     let mut recorder = controllers;
     let mut namespace_state = NamespaceIntentCommitter::new(intent_change_client, namespace_intent);
@@ -325,6 +353,13 @@ pub enum DeployOperationRunError {
     AlreadyStarted,
     #[error("deploy start could not be recorded: {0:?}")]
     ClaimStart(RecordDeployTransitionError),
+    #[error(
+        "interrupted deploy evidence could not be read: {source:?}; failure record: {failure_record_error:?}"
+    )]
+    RecoveryEvidence {
+        source: OperationStatusStoreError,
+        failure_record_error: Option<RecordDeployTransitionError>,
+    },
     #[error("deploy facts could not be loaded: {source}; failure record: {failure_record_error:?}")]
     LoadFacts {
         source: DeployFactLoadError,
@@ -332,6 +367,46 @@ pub enum DeployOperationRunError {
     },
     #[error("deploy execution failed: {0}")]
     Execute(DeployExecutionError),
+}
+
+async fn reusable_interrupted_deploy_operation_ids(
+    repository: &crate::control::operation_evidence::OperationRepository,
+    namespace_id: &ployz_core::ids::NamespaceId,
+    observed_machines: &[ployz_core::machine::runtime::MachineContainerObservationSnapshot],
+) -> Result<Vec<ployz_core::ids::OperationId>, OperationStatusStoreError> {
+    let candidate_ids = observed_machines
+        .iter()
+        .flat_map(ployz_core::machine::runtime::MachineContainerObservationSnapshot::containers)
+        .filter(|container| container.identity.namespace_id == *namespace_id)
+        .map(|container| container.identity.operation_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut reusable = Vec::new();
+    for operation_id in candidate_ids {
+        let status = repository.get(&operation_id).await?;
+        match status {
+            Some(OperationStatus::Deploy {
+                id,
+                namespace_id: status_namespace_id,
+                state: DeployOperationState::Interrupted { .. },
+                ..
+            }) if status_namespace_id == *namespace_id => reusable.push(id),
+            Some(OperationStatus::Deploy { .. })
+            | Some(OperationStatus::Cert { .. })
+            | Some(OperationStatus::MachineAdd { .. })
+            | Some(OperationStatus::MachineUpdate { .. })
+            | Some(OperationStatus::MachineLifecycle { .. })
+            | Some(OperationStatus::CoreReplace { .. })
+            | Some(OperationStatus::CredentialGrant { .. })
+            | Some(OperationStatus::NetworkRepair { .. })
+            | Some(OperationStatus::ServiceRestart { .. })
+            | Some(OperationStatus::ManagedDnsReconcile { .. })
+            | Some(OperationStatus::IngressConfigure { .. })
+            | Some(OperationStatus::NamespaceRemove { .. })
+            | Some(OperationStatus::VolumeRemove { .. })
+            | None => {}
+        }
+    }
+    Ok(reusable)
 }
 
 #[derive(Debug, Clone)]

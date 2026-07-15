@@ -66,6 +66,8 @@ pub struct DeployExecutionInput {
     pub(super) request: VolumeDeclaredDeployRequest,
     pub(super) facts: DeployExecutionFacts,
     pub(super) registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
+    /// Provenance allowed to recover matching unpromoted containers.
+    pub(super) reusable_interrupted_operation_ids: Vec<OperationId>,
 }
 
 impl DeployExecutionInput {
@@ -75,12 +77,14 @@ impl DeployExecutionInput {
         request: VolumeDeclaredDeployRequest,
         facts: DeployExecutionFacts,
         registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
+        reusable_interrupted_operation_ids: Vec<OperationId>,
     ) -> Self {
         Self {
             operation_id,
             request,
             facts,
             registry_credentials,
+            reusable_interrupted_operation_ids,
         }
     }
 
@@ -106,6 +110,7 @@ pub fn prepare_deploy_execution_command(
         request,
         facts,
         &BTreeMap::new(),
+        &[],
     )
 }
 
@@ -115,6 +120,7 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
     request: VolumeDeclaredDeployRequest,
     facts: DeployExecutionFacts,
     registry_credentials: &BTreeMap<ServiceId, RegistryCredential>,
+    reusable_interrupted_operation_ids: &[OperationId],
 ) -> DeployExecutionCommand {
     let mut mint_requests = request.services().iter().collect::<Vec<_>>();
     mint_requests.sort_by(|left, right| left.service_id.cmp(&right.service_id));
@@ -198,7 +204,16 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
                         .namespace_revision_entry_id(request.namespace_id())
         });
         if !is_promoted {
-            prepared.existing_replicas.clear();
+            prepared.existing_replicas.retain(|replica| {
+                facts.observed_machines.iter().any(|machine| {
+                    machine.containers().iter().any(|container| {
+                        container.machine_id == replica.machine_id
+                            && container.container_id == replica.container_id
+                            && reusable_interrupted_operation_ids
+                                .contains(&container.identity.operation_id)
+                    })
+                })
+            });
         }
         let mut route_commits = prepared.route_commits;
         route_commits.extend(

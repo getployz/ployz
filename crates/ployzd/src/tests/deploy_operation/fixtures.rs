@@ -202,6 +202,7 @@ pub(super) struct RecordingRuntime {
     containers: Vec<ContainerId>,
     hook_outcomes: Vec<(ContainerId, i64)>,
     fail_after_first: bool,
+    hang_after_first: Option<Arc<tokio::sync::Notify>>,
     reuse_existing: bool,
     start_existing: bool,
     fail_start: bool,
@@ -545,6 +546,7 @@ impl RecordingRuntime {
             containers: containers.into_iter().map(container_id).rev().collect(),
             hook_outcomes: Vec::new(),
             fail_after_first: false,
+            hang_after_first: None,
             reuse_existing: false,
             start_existing: false,
             fail_start: false,
@@ -563,6 +565,7 @@ impl RecordingRuntime {
             containers: containers.into_iter().map(container_id).rev().collect(),
             hook_outcomes: Vec::new(),
             fail_after_first: false,
+            hang_after_first: None,
             reuse_existing: true,
             start_existing: false,
             fail_start: false,
@@ -581,6 +584,7 @@ impl RecordingRuntime {
             containers: containers.into_iter().map(container_id).rev().collect(),
             hook_outcomes: Vec::new(),
             fail_after_first: false,
+            hang_after_first: None,
             reuse_existing: false,
             start_existing: true,
             fail_start: false,
@@ -599,6 +603,29 @@ impl RecordingRuntime {
             containers: vec![container_id("ctr_1")],
             hook_outcomes: Vec::new(),
             fail_after_first: true,
+            hang_after_first: None,
+            reuse_existing: false,
+            start_existing: false,
+            fail_start: false,
+            fail_remove: false,
+            fail_stop: false,
+        }
+    }
+
+    pub(super) fn hanging_after_first_container(
+        container_id: &str,
+        hang_reached: Arc<tokio::sync::Notify>,
+    ) -> Self {
+        Self {
+            resolutions: Vec::new(),
+            requests: Vec::new(),
+            hook_requests: Vec::new(),
+            stops: Vec::new(),
+            removals: Vec::new(),
+            containers: vec![self::container_id(container_id)],
+            hook_outcomes: Vec::new(),
+            fail_after_first: false,
+            hang_after_first: Some(hang_reached),
             reuse_existing: false,
             start_existing: false,
             fail_start: false,
@@ -617,6 +644,7 @@ impl RecordingRuntime {
             containers: vec![self::container_id(container_id)],
             hook_outcomes: Vec::new(),
             fail_after_first: false,
+            hang_after_first: None,
             reuse_existing: false,
             start_existing: false,
             fail_start: true,
@@ -675,6 +703,12 @@ impl MachineContainerRuntime for RecordingRuntime {
         machine_id: &MachineId,
         request: MachineContainerRunRpcRequest,
     ) -> Result<MachineRunContainerOutcome, MachineContainerRuntimeError> {
+        if let Some(hang_reached) = &self.hang_after_first
+            && !self.requests.is_empty()
+        {
+            hang_reached.notify_one();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
         self.requests.push((machine_id.clone(), request));
         if self.fail_after_first && self.requests.len() > 1 {
             return Err(MachineContainerRuntimeError::Unavailable {
@@ -1366,6 +1400,7 @@ fn deploy_execution_input(
             .expect("fixture deploy request normalizes"),
         facts,
         std::collections::BTreeMap::new(),
+        Vec::new(),
     )
 }
 
