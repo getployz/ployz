@@ -60,13 +60,15 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
         .await
         .expect("subscribe intent changes");
     let resolved_request = resolved_deploy_request(1);
-    let resolved_entry_id = resolved_request
-        .service_requests()
-        .expect("request normalizes")
-        .into_iter()
-        .next()
-        .expect("resolved fixture has one service")
-        .namespace_revision_entry_id;
+    let resolved_entry_id =
+        ployz_core::deploy::NormalizedDeployRequest::try_new(resolved_request.clone())
+            .expect("request normalizes")
+            .services()
+            .iter()
+            .next()
+            .expect("resolved fixture has one service")
+            .namespace_revision_entry_id
+            .clone();
 
     let outcome = run_deploy_operation(
         accepted,
@@ -195,7 +197,7 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
             operation_id: operation_id("op_next"),
             idempotency_key: idempotency_key("idem_deploy_next"),
             reservation_id: reserve_deploy(&controllers).await,
-            target: deploy_request(1),
+            target: normalized_deploy_request(1),
         })
         .await
         .expect("next deploy can acquire the namespace");
@@ -316,7 +318,7 @@ async fn duplicate_driver_execution_does_not_release_the_original_namespace_lock
             operation_id: operation_id("op_second"),
             idempotency_key: idempotency_key("idem_second"),
             reservation_id: reserve_deploy(&controllers).await,
-            target: deploy_request(1),
+            target: normalized_deploy_request(1),
         })
         .await
         .expect_err("original deploy still owns the namespace lock");
@@ -500,7 +502,7 @@ async fn deploy_submit_rejects_busy_namespace_without_creating_second_operation(
             operation_id: operation_id("op_first"),
             idempotency_key: idempotency_key("idem_first"),
             reservation_id: reserve_deploy(&controllers).await,
-            target: deploy_request(1),
+            target: normalized_deploy_request(1),
         })
         .await
         .expect("first deploy operation accepted");
@@ -511,7 +513,7 @@ async fn deploy_submit_rejects_busy_namespace_without_creating_second_operation(
             operation_id: operation_id("op_second"),
             idempotency_key: idempotency_key("idem_second"),
             reservation_id: reserve_deploy(&controllers).await,
-            target: deploy_request(1),
+            target: normalized_deploy_request(1),
         })
         .await
         .expect_err("second deploy is rejected while namespace is locked");
@@ -546,7 +548,7 @@ async fn older_reservation_is_stale_while_newer_deploy_holds_namespace_lock() {
             operation_id: operation_id("op_newer"),
             idempotency_key: idempotency_key("idem_newer"),
             reservation_id: newer,
-            target: deploy_request(1),
+            target: normalized_deploy_request(1),
         })
         .await
         .expect("newer deploy operation accepted");
@@ -557,7 +559,7 @@ async fn older_reservation_is_stale_while_newer_deploy_holds_namespace_lock() {
             operation_id: operation_id("op_older"),
             idempotency_key: idempotency_key("idem_older"),
             reservation_id: older,
-            target: deploy_request(1),
+            target: normalized_deploy_request(1),
         })
         .await
         .expect_err("older reservation is stale after newer admission");
@@ -584,7 +586,7 @@ async fn deploy_submit_retry_with_same_idempotency_key_adopts_original_operation
             operation_id: operation_id("op_first"),
             idempotency_key: idempotency_key("idem_deploy"),
             reservation_id: reserve_deploy(&controllers).await,
-            target: deploy_request(1),
+            target: normalized_deploy_request(1),
         })
         .await
         .expect("first deploy operation accepted");
@@ -595,7 +597,7 @@ async fn deploy_submit_retry_with_same_idempotency_key_adopts_original_operation
             operation_id: operation_id("op_retry_candidate"),
             idempotency_key: idempotency_key("idem_deploy"),
             reservation_id: reserve_deploy(&controllers).await,
-            target: deploy_request(1),
+            target: normalized_deploy_request(1),
         })
         .await
         .expect("retry deploy operation accepted");
@@ -800,8 +802,14 @@ async fn deploy_submit_command(
         operation_id: operation_id("op_123"),
         idempotency_key: idempotency_key("idem_deploy_123"),
         reservation_id: reserve_deploy(controllers).await,
-        target,
+        target: ployz_core::deploy::NormalizedDeployRequest::try_new(target)
+            .expect("deploy request normalizes"),
     }
+}
+
+fn normalized_deploy_request(replicas: u16) -> ployz_core::deploy::NormalizedDeployRequest {
+    ployz_core::deploy::NormalizedDeployRequest::try_new(deploy_request(replicas))
+        .expect("deploy request normalizes")
 }
 
 async fn reserve_deploy(

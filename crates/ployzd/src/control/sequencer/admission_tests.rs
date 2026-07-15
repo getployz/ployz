@@ -2,8 +2,8 @@ use super::*;
 use crate::control::intent::ingress_intent::IngressIntentStore;
 use crate::control::store::CoreStore;
 use ployz_core::deploy::{
-    ContainerRuntimeSpec, DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageReference,
-    ImageSource, ReplicaCount,
+    ContainerRuntimeSpec, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec,
+    ImageReference, ImageSource, ReplicaCount,
 };
 use ployz_core::ingress::{
     AutomaticHostnameConfiguration, AutomaticHostnameLabel, IngressConfiguration,
@@ -58,7 +58,8 @@ async fn duplicate_deploy_submission_keeps_ingress_fence_owned_by_original() {
         operation_id: operation_id("op_original"),
         idempotency_key: idempotency_key("idem_original"),
         reservation_id,
-        target: automatic_deploy_request(),
+        target: NormalizedDeployRequest::try_new(automatic_deploy_request())
+            .expect("deploy request normalizes"),
         registry_credentials: BTreeMap::new(),
     };
 
@@ -80,7 +81,8 @@ async fn duplicate_deploy_submission_keeps_ingress_fence_owned_by_original() {
             operation_id: operation_id("op_conflicting"),
             idempotency_key: idempotency_key("idem_conflicting"),
             reservation_id: conflicting_reservation,
-            target: automatic_deploy_request(),
+            target: NormalizedDeployRequest::try_new(automatic_deploy_request())
+                .expect("deploy request normalizes"),
             registry_credentials: BTreeMap::new(),
         })
         .await

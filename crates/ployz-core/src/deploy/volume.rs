@@ -128,6 +128,9 @@ impl DatasetName {
         }) {
             return Err(DatasetNameError::InvalidCharacter { value });
         }
+        if !is_canonical_provisioned_dataset_name(&value) {
+            return Err(DatasetNameError::NonCanonical { value });
+        }
         Ok(Self(value))
     }
 
@@ -172,8 +175,72 @@ pub enum DatasetNameError {
     EmptyComponent,
     #[error("dataset name contains an invalid character: {value}")]
     InvalidCharacter { value: String },
+    #[error("dataset name is outside the canonical Ployz provisioned-volume namespace: {value}")]
+    NonCanonical { value: String },
     #[error("dataset name is {bytes} bytes; maximum is {maximum}")]
     NameBudgetExceeded { bytes: usize, maximum: usize },
+}
+
+fn is_canonical_provisioned_dataset_name(value: &str) -> bool {
+    let mut components = value.split('/');
+    let (Some(pool), Some("ployz"), Some("volumes"), Some(leaf), None) = (
+        components.next(),
+        components.next(),
+        components.next(),
+        components.next(),
+        components.next(),
+    ) else {
+        return false;
+    };
+    if ZfsPoolName::try_new(pool).is_err() {
+        return false;
+    }
+    let Some(framed) = leaf.strip_prefix("ployz-n") else {
+        return false;
+    };
+    let Some((namespace_length, framed)) = take_decimal_prefix(framed) else {
+        return false;
+    };
+    let Some(framed) = framed.strip_prefix('-') else {
+        return false;
+    };
+    let Some(namespace) = framed.get(..namespace_length) else {
+        return false;
+    };
+    let Some(framed) = framed.get(namespace_length..) else {
+        return false;
+    };
+    let Some(framed) = framed.strip_prefix("-v") else {
+        return false;
+    };
+    let Some((volume_length, framed)) = take_decimal_prefix(framed) else {
+        return false;
+    };
+    let Some(volume) = framed.strip_prefix('-') else {
+        return false;
+    };
+    if volume.len() != volume_length {
+        return false;
+    }
+    let Ok(namespace_id) = NamespaceId::try_new(namespace) else {
+        return false;
+    };
+    let Ok(volume_name) = VolumeName::try_new(volume) else {
+        return false;
+    };
+    volume_name.stable_storage_name(&namespace_id) == leaf
+}
+
+fn take_decimal_prefix(value: &str) -> Option<(usize, &str)> {
+    let digits = value.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 {
+        return None;
+    }
+    value
+        .get(..digits)?
+        .parse::<usize>()
+        .ok()
+        .map(|length| (length, &value[digits..]))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

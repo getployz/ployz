@@ -1146,6 +1146,8 @@ fn deploy_route_validation_rejects_duplicate_service_ids() {
         volumes: std::collections::BTreeMap::new(),
         services: vec![first, second],
     };
+    let request = ployz_core::deploy::NormalizedDeployRequest::try_new(request)
+        .expect("deploy request normalizes");
 
     let error = validate_deploy_route_bindings(
         &request,
@@ -1193,6 +1195,8 @@ fn deploy_route_validation_reuses_identical_automatic_binding() {
         volumes: std::collections::BTreeMap::new(),
         services: vec![service],
     };
+    let request = ployz_core::deploy::NormalizedDeployRequest::try_new(request)
+        .expect("deploy request normalizes");
     let mut existing = route_binding_state("api.apps.example.com", "svc_api");
     existing.id = route_binding_id("route_existing");
     existing.origin = RouteBindingOrigin::Automatic;

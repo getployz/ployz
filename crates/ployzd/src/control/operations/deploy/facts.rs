@@ -8,7 +8,7 @@ use crate::control::intent::namespace_intent::NamespaceIntentStore;
 use crate::control::intent::service::NatsIntentReader;
 use crate::control::role_client::machine::{NatsMachineFactsReader, read_machine_placement_facts};
 use crate::control::role_client::machine_convergence::gather_dataplane_statuses;
-use ployz_core::deploy::{DeployRequest, DeployRouteTarget};
+use ployz_core::deploy::{DeployRequest, DeployRouteTarget, NormalizedDeployRequest};
 use ployz_core::ids::MachineId;
 use ployz_core::ingress::{AutomaticHostnameConfiguration, IngressConfiguration};
 use ployz_core::intent::ActiveMachineState;
@@ -24,7 +24,7 @@ use super::preparation::{mint_route_binding_id, namespace_cleanup_candidates};
 use super::{AutomaticHostnameMode, DeployExecutionFacts};
 
 pub async fn load_deploy_execution_facts_from_nats(
-    request: &DeployRequest,
+    request: &NormalizedDeployRequest,
     intent_reader: &NatsIntentReader,
     facts_reader: &NatsMachineFactsReader,
     target_store: &PloyzDnsTargetStore,
@@ -32,7 +32,7 @@ pub async fn load_deploy_execution_facts_from_nats(
     step_timeout: Duration,
 ) -> Result<DeployExecutionFacts, DeployFactLoadError> {
     let intent = read_intent(intent_reader).await?;
-    let allocation = if auto_hostname_service(request).is_some()
+    let allocation = if auto_hostname_service(request.request()).is_some()
         && matches!(
             &intent.automatic_hostname_configuration,
             AutomaticHostnameConfiguration::Ployz
@@ -47,7 +47,7 @@ pub async fn load_deploy_execution_facts_from_nats(
         None
     };
     let automatic_hostname_mode = resolve_automatic_hostname_mode(
-        request,
+        request.request(),
         Some(&intent.automatic_hostname_configuration),
         allocation.as_ref(),
     )?;
@@ -124,8 +124,7 @@ fn resolve_automatic_hostname_mode(
 }
 
 pub async fn validate_deploy_route_admission(
-    request: &DeployRequest,
-    normalized_services: &[ployz_core::deploy::DeployServiceRequest],
+    request: &NormalizedDeployRequest,
     ingress: &IngressIntentStore,
     target_store: &PloyzDnsTargetStore,
     namespace: &NamespaceIntentStore,
@@ -137,7 +136,7 @@ pub async fn validate_deploy_route_admission(
             .map_err(|error| DeployFactLoadError::IngressState {
                 message: error.to_string(),
             })?;
-    let allocation = if auto_hostname_service(request).is_some()
+    let allocation = if auto_hostname_service(request.request()).is_some()
         && configuration.as_ref().is_some_and(|configuration| {
             matches!(
                 configuration.automatic_hostnames(),
@@ -154,7 +153,7 @@ pub async fn validate_deploy_route_admission(
         None
     };
     let automatic_hostname_mode = resolve_automatic_hostname_mode(
-        request,
+        request.request(),
         configuration
             .as_ref()
             .map(IngressConfiguration::automatic_hostnames),
@@ -167,11 +166,7 @@ pub async fn validate_deploy_route_admission(
             message: error.to_string(),
         })?
         .route_bindings;
-    validate_route_bindings(
-        normalized_services,
-        automatic_hostname_mode.suffix(),
-        &existing,
-    )
+    validate_route_bindings(request, automatic_hostname_mode.suffix(), &existing)
 }
 
 async fn read_intent(
@@ -186,7 +181,7 @@ async fn read_intent(
 }
 
 async fn deploy_execution_facts(
-    request: &DeployRequest,
+    request: &NormalizedDeployRequest,
     facts_reader: &NatsMachineFactsReader,
     intent: IntentSnapshot,
     projection: DataplaneProjection,
@@ -244,14 +239,8 @@ async fn deploy_execution_facts(
         .collect();
     let namespace_cleanup_candidates =
         namespace_cleanup_candidates(&request.namespace_id, &observed_machines);
-    let normalized_services =
-        request
-            .service_requests()
-            .map_err(|error| DeployFactLoadError::InvalidRouteBindings {
-                message: error.to_string(),
-            })?;
     validate_route_bindings(
-        &normalized_services,
+        request,
         automatic_hostname_mode.suffix(),
         &namespace_route_bindings,
     )?;
@@ -273,12 +262,12 @@ async fn deploy_execution_facts(
 }
 
 fn validate_route_bindings(
-    normalized_services: &[ployz_core::deploy::DeployServiceRequest],
+    request: &NormalizedDeployRequest,
     automatic_hostname_suffix: Option<&RouteHostname>,
     existing: &[ployz_core::intent::RouteBindingState],
 ) -> Result<(), DeployFactLoadError> {
-    ployz_core::deploy::validate_normalized_deploy_route_bindings(
-        normalized_services,
+    ployz_core::deploy::validate_deploy_route_bindings(
+        request,
         automatic_hostname_suffix,
         existing,
         mint_route_binding_id,

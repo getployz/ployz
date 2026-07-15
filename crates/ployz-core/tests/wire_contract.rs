@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use ployz_core::deploy::{
     ContainerMountPath, ContainerRuntimeSpec, DatasetName, DatasetNameError, DependencyCondition,
     DeployOrigin, DeployOriginError, DeployRequest, DeployServiceSpec, ImageReference, ImageSource,
-    ReplicaCount, ServiceDependency, ServiceVolumeMount, VolumeMaxSizeBytes, VolumeName,
-    VolumeSpec, ZfsPoolName, ZfsPoolNameError,
+    NormalizedDeployRequest, ReplicaCount, ServiceDependency, ServiceVolumeMount,
+    VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName, ZfsPoolNameError,
 };
 use ployz_core::intent::{VolumeKind, VolumePinState};
 use ployz_core::machine::MachineUsabilityReason;
@@ -481,9 +481,7 @@ fn deploy_origin_round_trips_on_request_and_status() {
 fn deploy_request_requires_a_declaration_for_every_mounted_volume() {
     let request = request_with_volume_mount(std::collections::BTreeMap::new());
 
-    let error = request
-        .service_requests()
-        .expect_err("undeclared mount is invalid");
+    let error = NormalizedDeployRequest::try_new(request).expect_err("undeclared mount is invalid");
 
     assert_eq!(error.service_id, service_id("svc_api"));
     assert_eq!(error.volume_name, volume_name("data"));
@@ -511,8 +509,9 @@ fn normalized_service_requests_retain_mounted_volume_declarations() {
         (volume_name("unused"), VolumeSpec::Plain),
     ]));
 
-    let services = request.service_requests().expect("request normalizes");
-    let [service] = services.as_slice() else {
+    let request = NormalizedDeployRequest::try_new(request).expect("request normalizes");
+    let services = request.services();
+    let [service] = services else {
         panic!("request has one service");
     };
     assert_eq!(
@@ -584,6 +583,23 @@ fn dataset_name_rejects_a_full_name_over_the_zfs_budget() {
         error,
         DatasetNameError::NameBudgetExceeded { maximum: 255, .. }
     ));
+}
+
+#[test]
+fn dataset_name_rejects_foreign_and_malformed_names() {
+    assert!(matches!(
+        DatasetName::try_new("foreign/arbitrary"),
+        Err(DatasetNameError::NonCanonical { .. })
+    ));
+    assert!(matches!(
+        DatasetName::try_new("tank/ployz/volumes/ployz-n07-default-v4-data"),
+        Err(DatasetNameError::NonCanonical { .. })
+    ));
+    assert!(matches!(
+        DatasetName::try_new("tank/ployz/volumes/ployz-n8-default-v4-data"),
+        Err(DatasetNameError::NonCanonical { .. })
+    ));
+    assert!(serde_json::from_str::<DatasetName>(r#""foreign/arbitrary""#).is_err());
 }
 
 #[test]

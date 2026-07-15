@@ -1,7 +1,7 @@
 //! Convert current cluster facts into a deploy execution command.
 
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployPreparationInput, DeployRequest, RegistryCredential,
+    DeployCleanupContainer, DeployPreparationInput, NormalizedDeployRequest, RegistryCredential,
     auto_hostname_route_binding_commits, namespace_route_binding_removals,
     namespace_serving_target_removals, prepare_deploy,
 };
@@ -63,7 +63,7 @@ pub struct DeployExecutionFacts {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployExecutionInput {
     pub(super) operation_id: OperationId,
-    pub(super) request: DeployRequest,
+    pub(super) request: NormalizedDeployRequest,
     pub(super) facts: DeployExecutionFacts,
     pub(super) registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
 }
@@ -72,7 +72,7 @@ impl DeployExecutionInput {
     #[must_use]
     pub fn new(
         operation_id: OperationId,
-        request: DeployRequest,
+        request: NormalizedDeployRequest,
         facts: DeployExecutionFacts,
         registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
     ) -> Self {
@@ -96,9 +96,11 @@ impl DeployExecutionInput {
 #[cfg(test)]
 pub fn prepare_deploy_execution_command(
     operation_id: OperationId,
-    request: DeployRequest,
+    request: ployz_core::deploy::DeployRequest,
     facts: DeployExecutionFacts,
 ) -> DeployExecutionCommand {
+    let request =
+        NormalizedDeployRequest::try_new(request).expect("test deploy request normalizes");
     prepare_deploy_execution_command_with_credentials(
         operation_id,
         request,
@@ -110,13 +112,11 @@ pub fn prepare_deploy_execution_command(
 #[must_use]
 pub(super) fn prepare_deploy_execution_command_with_credentials(
     operation_id: OperationId,
-    request: DeployRequest,
+    request: NormalizedDeployRequest,
     facts: DeployExecutionFacts,
     registry_credentials: &BTreeMap<ServiceId, RegistryCredential>,
 ) -> DeployExecutionCommand {
-    let service_requests = request
-        .service_requests()
-        .expect("deploy request was normalized before admission");
+    let (request, service_requests) = request.into_parts();
     let mut mint_requests = service_requests.iter().collect::<Vec<_>>();
     mint_requests.sort_by(|left, right| left.service_id.cmp(&right.service_id));
     let mut declared_auto_bindings = Vec::new();

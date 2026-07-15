@@ -122,7 +122,7 @@ impl DeployRequest {
         })
     }
 
-    pub fn service_requests(
+    fn normalized_services(
         &self,
     ) -> Result<Vec<DeployServiceRequest>, DeployVolumeDeclarationError> {
         let namespace_revision_id = self.namespace_revision_id();
@@ -160,6 +160,47 @@ impl DeployRequest {
                 })
             })
             .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NormalizedDeployRequest {
+    request: DeployRequest,
+    services: Vec<DeployServiceRequest>,
+}
+
+impl NormalizedDeployRequest {
+    pub fn try_new(request: DeployRequest) -> Result<Self, DeployVolumeDeclarationError> {
+        let services = request.normalized_services()?;
+        Ok(Self { request, services })
+    }
+
+    #[must_use]
+    pub fn request(&self) -> &DeployRequest {
+        &self.request
+    }
+
+    #[must_use]
+    pub fn services(&self) -> &[DeployServiceRequest] {
+        &self.services
+    }
+
+    #[must_use]
+    pub fn into_parts(self) -> (DeployRequest, Vec<DeployServiceRequest>) {
+        (self.request, self.services)
+    }
+
+    #[must_use]
+    pub fn into_request(self) -> DeployRequest {
+        self.request
+    }
+}
+
+impl std::ops::Deref for NormalizedDeployRequest {
+    type Target = DeployRequest;
+
+    fn deref(&self) -> &Self::Target {
+        &self.request
     }
 }
 

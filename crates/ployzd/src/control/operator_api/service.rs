@@ -102,7 +102,7 @@ async fn bind_operation_endpoint(
             bind_operation_contract::<DeploySubmitApi, _, _>(
                 runtime,
                 handlers,
-                |handlers, request| async move { deploy_submit(&handlers, request.into()).await },
+                |handlers, request| async move { deploy_submit(&handlers, request).await },
             )
             .await
         }

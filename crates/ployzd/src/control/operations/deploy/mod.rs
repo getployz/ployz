@@ -70,7 +70,7 @@ where
 {
     let DeployExecutionInput {
         operation_id,
-        mut request,
+        request,
         facts,
         registry_credentials,
     } = input;
@@ -94,9 +94,10 @@ where
         )
         .await;
     }
+    let mut resolved_request = request.into_request();
     if let Err(source) = resolve_registry_images(
         &provisional_command,
-        &mut request,
+        &mut resolved_request,
         &mut *ports.recorder,
         &mut *ports.machine_runtime,
     )
@@ -109,6 +110,20 @@ where
         )
         .await;
     }
+    let request = match ployz_core::deploy::NormalizedDeployRequest::try_new(resolved_request) {
+        Ok(request) => request,
+        Err(error) => {
+            let source = DeployExecutionError::InvalidImagePull {
+                message: format!("resolved deploy request is invalid: {error}"),
+            };
+            return fail_deploy(
+                provisional_command.clone(),
+                &mut *ports.recorder,
+                DeployExecutionFailure::new(&provisional_command, source, &[]),
+            )
+            .await;
+        }
+    };
     let command = preparation::prepare_deploy_execution_command_with_credentials(
         operation_id,
         request,

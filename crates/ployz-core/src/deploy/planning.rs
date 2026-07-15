@@ -346,29 +346,14 @@ fn route_binding_commits(
 /// share one hostname namespace. The returned bindings include identical
 /// existing bindings, making this the same policy used by execution planning.
 pub fn validate_deploy_route_bindings(
-    request: &DeployRequest,
-    automatic_hostname_suffix: Option<&RouteHostname>,
-    existing: &[RouteBindingState],
-    new_route_binding_id: impl FnMut(&RouteTarget) -> RouteBindingId,
-) -> Result<Vec<RouteBindingState>, DeployRouteBindingValidationError> {
-    let services = request.service_requests()?;
-    validate_normalized_deploy_route_bindings(
-        &services,
-        automatic_hostname_suffix,
-        existing,
-        new_route_binding_id,
-    )
-}
-
-pub fn validate_normalized_deploy_route_bindings(
-    services: &[DeployServiceRequest],
+    request: &NormalizedDeployRequest,
     automatic_hostname_suffix: Option<&RouteHostname>,
     existing: &[RouteBindingState],
     mut new_route_binding_id: impl FnMut(&RouteTarget) -> RouteBindingId,
 ) -> Result<Vec<RouteBindingState>, DeployRouteBindingValidationError> {
     let mut occupied = existing.to_vec();
     let mut commits = Vec::new();
-    let mut services = services.iter().collect::<Vec<_>>();
+    let mut services = request.services().iter().collect::<Vec<_>>();
     services.sort_by(|left, right| left.service_id.cmp(&right.service_id));
     let duplicate_service_id = services.windows(2).find_map(|pair| {
         let [first, second] = pair else {

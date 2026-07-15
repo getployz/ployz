@@ -2,17 +2,18 @@ use std::collections::BTreeMap;
 
 use ployz_core::deploy::{
     ContainerMountPath, ContainerRuntimeSpec, DeployRequest, DeployReservationId,
-    DeployServiceSpec, ImageReference, ImageSource, ReplicaCount, ServiceVolumeMount, VolumeName,
+    DeployServiceSpec, ImageReference, ImageSource, NormalizedDeployRequest, ReplicaCount,
+    ServiceVolumeMount, VolumeName,
 };
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::image::OciDigest;
 use ployz_core::operation::OperationIdempotencyKey;
-use ployz_sdk_types::{DeploySubmitError, NetworkRepairError};
+use ployz_sdk_types::{DeploySubmitError, DeploySubmitRequest, NetworkRepairError};
 
 use crate::control::sequencer::DeploySubmitCommand;
 
 use super::{
-    normalize_deploy_services, validate_internal_dns_name, validate_network_repair_preconditions,
+    normalize_deploy_submit, validate_internal_dns_name, validate_network_repair_preconditions,
     validate_registry_credentials,
 };
 
@@ -70,7 +71,7 @@ fn pushed_image_digest_must_match_the_manifest_digest() {
         idempotency_key: OperationIdempotencyKey::try_new("idem_test")
             .expect("valid idempotency key"),
         reservation_id: DeployReservationId::first(),
-        target: DeployRequest {
+        target: NormalizedDeployRequest::try_new(DeployRequest {
             namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
             origin: None,
             volumes: std::collections::BTreeMap::new(),
@@ -88,7 +89,8 @@ fn pushed_image_digest_must_match_the_manifest_digest() {
                 depends_on: Vec::new(),
                 routes: Vec::new(),
             }],
-        },
+        })
+        .expect("deploy request normalizes"),
         registry_credentials: BTreeMap::new(),
     };
 
@@ -106,8 +108,7 @@ fn deploy_admission_rejects_a_mounted_volume_without_a_declaration() {
         volume_name: VolumeName::try_new("data").expect("volume name"),
         target: ContainerMountPath::try_new("/data").expect("mount path"),
     }];
-    let command = DeploySubmitCommand {
-        operation_id: OperationId::try_new("op_missing_volume_declaration").expect("operation id"),
+    let request = DeploySubmitRequest {
         idempotency_key: OperationIdempotencyKey::try_new("idem_missing_volume_declaration")
             .expect("idempotency key"),
         reservation_id: DeployReservationId::first(),
@@ -130,7 +131,7 @@ fn deploy_admission_rejects_a_mounted_volume_without_a_declaration() {
     };
 
     assert!(matches!(
-        normalize_deploy_services(&command),
+        normalize_deploy_submit(request),
         Err(DeploySubmitError::InvalidTarget { message, .. })
             if message.as_str().contains("service api mounts volume data without a declaration")
     ));

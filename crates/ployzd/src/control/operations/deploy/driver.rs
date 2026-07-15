@@ -23,6 +23,7 @@ use crate::roles::machine::protocol::{
 };
 use crate::tasks::TaskRegistry;
 use ployz_core::certificate::ActiveCertState;
+use ployz_core::deploy::NormalizedDeployRequest;
 use ployz_core::ingress::CertificateOwner;
 use ployz_core::machine::runtime::{ContainerHealth, ContainerRuntimeState};
 use ployz_core::operation::{
@@ -85,9 +86,28 @@ where
         certificate_provisioner,
     } = ports;
     let request = accepted.target.clone();
+    let normalized_request = match NormalizedDeployRequest::try_new(request) {
+        Ok(request) => request,
+        Err(error) => {
+            let source = DeployFactLoadError::InvalidRouteBindings {
+                message: error.to_string(),
+            };
+            let failure_record_error = record_operation_failure(
+                &stores.controllers,
+                &accepted,
+                fact_load_failure(&accepted.target, &source),
+            )
+            .await
+            .err();
+            return Err(DeployOperationRunError::LoadFacts {
+                source,
+                failure_record_error,
+            });
+        }
+    };
 
     let facts = match load_deploy_execution_facts_from_nats(
-        &request,
+        &normalized_request,
         intent_reader,
         facts_reader,
         &stores.ployz_dns_target,
@@ -101,7 +121,7 @@ where
             let failure_record_error = record_operation_failure(
                 &stores.controllers,
                 &accepted,
-                fact_load_failure(&request, &source),
+                fact_load_failure(normalized_request.request(), &source),
             )
             .await
             .err();
@@ -120,7 +140,7 @@ where
     } = stores;
     let input = DeployExecutionInput::new(
         accepted.operation_id.clone(),
-        request,
+        normalized_request,
         facts,
         registry_credentials,
     );

@@ -28,8 +28,8 @@ pub use planning::*;
 pub use request::{
     DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS, DependencyCondition, DeployOrigin, DeployOriginError,
     DeployRequest, DeployReservationExpiresAt, DeployReservationId, DeployReservationNumberError,
-    DeployServiceRequest, DeployServiceSpec, DeployVolumeDeclarationError, PreStartHook,
-    ReplicaCount, ReplicaCountError, ServiceDependency,
+    DeployServiceRequest, DeployServiceSpec, DeployVolumeDeclarationError, NormalizedDeployRequest,
+    PreStartHook, ReplicaCount, ReplicaCountError, ServiceDependency,
 };
 pub use revision::{
     canonical_capabilities, namespace_revision_entry_id_for, namespace_revision_id_for,

@@ -314,8 +314,7 @@ mod tests {
                 .get(&VolumeName::try_new("data").expect("volume name")),
             Some(&VolumeSpec::Plain)
         );
-        prepared
-            .service_requests()
+        ployz_core::deploy::NormalizedDeployRequest::try_new(prepared)
             .expect("prepared rollback request is admissible");
     }
 

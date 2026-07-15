@@ -15,8 +15,8 @@ use crate::control::operation_evidence::{
     SubmitOperationError, VolumeRemoveOperationSubmission,
 };
 use ployz_core::deploy::{
-    DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS, DeployRequest, DeployReservationExpiresAt,
-    DeployReservationId, RegistryCredential, VolumeName,
+    DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS, DeployReservationExpiresAt, DeployReservationId,
+    NormalizedDeployRequest, RegistryCredential, VolumeName,
 };
 use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
 use ployz_core::install::{
@@ -48,7 +48,7 @@ pub struct DeploySubmitCommand {
     pub operation_id: OperationId,
     pub idempotency_key: IdempotencyKey,
     pub reservation_id: DeployReservationId,
-    pub target: DeployRequest,
+    pub target: NormalizedDeployRequest,
     pub registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
 }
 
@@ -296,7 +296,7 @@ impl OperationControllers {
         let operation_id = command.operation_id;
         let idempotency_key = command.idempotency_key;
         let reservation_id = command.reservation_id;
-        let target = command.target;
+        let target = command.target.into_request();
         let registry_credentials = command.registry_credentials;
         let claimed = self
             .repository

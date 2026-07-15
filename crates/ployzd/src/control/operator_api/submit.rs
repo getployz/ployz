@@ -48,22 +48,30 @@ pub fn owned_operation(
     }
 }
 
-impl From<DeploySubmitRequest> for DeploySubmitCommand {
-    fn from(value: DeploySubmitRequest) -> Self {
-        let DeploySubmitRequest {
-            idempotency_key,
-            reservation_id,
-            target,
-            registry_credentials,
-        } = value;
-        Self {
-            operation_id: mint_deploy_operation_id(),
-            idempotency_key,
-            reservation_id,
-            target,
-            registry_credentials,
+fn normalize_deploy_submit(
+    value: DeploySubmitRequest,
+) -> Result<DeploySubmitCommand, DeploySubmitError> {
+    let operation_id = mint_deploy_operation_id();
+    let DeploySubmitRequest {
+        idempotency_key,
+        reservation_id,
+        target,
+        registry_credentials,
+    } = value;
+    let target = ployz_core::deploy::NormalizedDeployRequest::try_new(target).map_err(|error| {
+        DeploySubmitError::InvalidTarget {
+            operation_id: operation_id.clone(),
+            message: ployz_core::operation::FailureMessage::try_new(error.to_string())
+                .expect("volume declaration validation error is non-empty"),
         }
-    }
+    })?;
+    Ok(DeploySubmitCommand {
+        operation_id,
+        idempotency_key,
+        reservation_id,
+        target,
+        registry_credentials,
+    })
 }
 
 pub async fn deploy_reserve(
@@ -258,10 +266,10 @@ impl From<MachineUpdateRequest> for MachineUpdateSubmitCommand {
 
 pub async fn deploy_submit(
     handlers: &OperationApiHandlers,
-    command: DeploySubmitCommand,
+    request: DeploySubmitRequest,
 ) -> Result<AcceptedOperation, DeploySubmitError> {
+    let command = normalize_deploy_submit(request)?;
     let operation_id = command.operation_id.clone();
-    let normalized_services = normalize_deploy_services(&command)?;
     for service in &command.target.services {
         validate_internal_dns_name(&command.target.namespace_id, &service.service_id).map_err(
             |message| DeploySubmitError::InvalidTarget {
@@ -274,7 +282,6 @@ pub async fn deploy_submit(
     validate_pushed_image_seeds(handlers, &command).await?;
     validate_deploy_route_admission(
         &command.target,
-        &normalized_services,
         &handlers.ingress_intent,
         &PloyzDnsTargetStore::new(handlers.core_store.clone()),
         &NamespaceIntentStore::new(handlers.core_store.clone()),
@@ -302,19 +309,6 @@ pub async fn deploy_submit(
     handlers.deploy_driver.start(accepted_execution);
 
     Ok(operation)
-}
-
-fn normalize_deploy_services(
-    command: &DeploySubmitCommand,
-) -> Result<Vec<ployz_core::deploy::DeployServiceRequest>, DeploySubmitError> {
-    command
-        .target
-        .service_requests()
-        .map_err(|error| DeploySubmitError::InvalidTarget {
-            operation_id: command.operation_id.clone(),
-            message: ployz_core::operation::FailureMessage::try_new(error.to_string())
-                .expect("volume declaration validation error is non-empty"),
-        })
 }
 
 fn validate_internal_dns_name(
