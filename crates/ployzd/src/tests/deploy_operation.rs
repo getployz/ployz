@@ -851,7 +851,8 @@ async fn deploy_worker_reclaims_only_the_image_of_successfully_removed_supersede
     };
     assert!(recorder.records.iter().any(|record| matches!(
         record,
-        RecordedOperation::CleanupFinished { images, .. } if images == &[expected.clone()]
+        RecordedOperation::CleanupFinished { images, .. }
+            if images.as_slice() == std::slice::from_ref(&expected)
     )));
 }
 
@@ -887,9 +888,11 @@ async fn cleanup_dedupes_shared_image_removal_and_preserves_service_and_identity
     .await;
 
     assert_eq!(cleanup.len(), 3);
-    assert_eq!(runtime.image_removals.len(), 1);
-    assert_eq!(runtime.image_removals[0].0, machine_id("machine_b"));
-    assert_eq!(runtime.image_removals[0].1.image_identity, image_identity);
+    let [removal] = runtime.image_removals.as_slice() else {
+        panic!("one shared image removal must be executed");
+    };
+    assert_eq!(removal.0, machine_id("machine_b"));
+    assert_eq!(removal.1.image_identity, image_identity);
     assert!(
         evidence.contains(&ployz_core::operation::DeployImageCleanup::RetainedInUse {
             machine_id: machine_id("machine_b"),

@@ -42,6 +42,11 @@ pub struct ImagePushReceipt {
 
 impl ImagePushReceipt {
     #[must_use]
+    pub const fn receipt(&self) -> &PushedImageReceipt {
+        &self.receipt
+    }
+
+    #[must_use]
     pub fn image_source(&self) -> ImageSource {
         ImageSource::PushedToSeed(self.receipt.clone())
     }

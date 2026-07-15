@@ -1113,7 +1113,10 @@ async fn assert_direct_push_multi_machine_deploy(core: &CoreContext) {
         let [receipt] = receipts.as_slice() else {
             panic!("one local image must produce one push receipt: {receipts:?}");
         };
-        assert_eq!(receipt.seed, machine_id("core_1"));
+        let Some((_, pushed_image)) = receipt.receipt().platforms().next() else {
+            panic!("validated pushed receipt must contain one platform");
+        };
+        assert_eq!(pushed_image.seed, machine_id("core_1"));
 
         let accepted = core
             .api
@@ -1152,7 +1155,7 @@ async fn assert_direct_push_multi_machine_deploy(core: &CoreContext) {
                 seed,
                 manifest_digest,
                 ..
-            } if seed == &receipt.seed && manifest_digest == &receipt.manifest_digest
+            } if seed == &pushed_image.seed && manifest_digest == &pushed_image.manifest_digest
         )));
 
         let mut running = 0_usize;
@@ -1196,9 +1199,9 @@ async fn assert_direct_push_multi_machine_deploy(core: &CoreContext) {
         assert!(
             running_machines
                 .iter()
-                .any(|machine| machine != receipt.seed.as_str()),
+                .any(|machine| machine != pushed_image.seed.as_str()),
             "at least one pushed-image replica must run away from seed {}: {running_machines:?}",
-            receipt.seed.as_str()
+            pushed_image.seed.as_str()
         );
     })
     .await;
