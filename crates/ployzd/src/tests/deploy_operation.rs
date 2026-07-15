@@ -414,7 +414,7 @@ async fn digest_pinned_registry_image_skips_resolution() {
 }
 
 #[tokio::test]
-async fn route_less_pushed_deploy_uses_one_membership_for_prepare_and_seed_pull() {
+async fn mixed_platform_pushed_deploy_selects_each_platform_image_and_keeps_one_service_identity() {
     let mut recorder = RecordingOperations::default();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1", "ctr_2"]);
     let mut health = RecordingHealth::healthy();
@@ -433,12 +433,41 @@ async fn route_less_pushed_deploy_uses_one_membership_for_prepare_and_seed_pull(
     .await
     .expect("route-less pushed deploy succeeds");
 
-    assert!(runtime.requests.iter().all(|(_, request)| matches!(
-        &request.pull,
-        crate::roles::machine::protocol::MachineImagePull::MeshSeed { seed_host, .. }
-            if *seed_host
-                == "10.198.99.254".parse::<std::net::Ipv4Addr>().expect("valid seed host")
-    )));
+    let [amd64_request, arm64_request] = runtime.requests.as_slice() else {
+        panic!("mixed-platform fixture must run two containers");
+    };
+    assert_eq!(amd64_request.0, machine_id("machine_a"));
+    assert!(matches!(
+        &amd64_request.1.pull,
+        crate::roles::machine::protocol::MachineImagePull::MeshSeed {
+            seed_host,
+            manifest_digest,
+            ..
+        } if *seed_host == "10.198.99.254".parse::<std::net::Ipv4Addr>().expect("valid seed host")
+            && manifest_digest == &ployz_core::image::OciDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("manifest digest")
+    ));
+    assert_eq!(arm64_request.0, machine_id("machine_b"));
+    assert!(matches!(
+        &arm64_request.1.pull,
+        crate::roles::machine::protocol::MachineImagePull::MeshSeed {
+            seed_host,
+            manifest_digest,
+            ..
+        } if *seed_host == "10.198.98.254".parse::<std::net::Ipv4Addr>().expect("valid seed host")
+            && manifest_digest == &ployz_core::image::OciDigest::try_new(format!("sha256:{}", "d".repeat(64))).expect("manifest digest")
+    ));
+    assert_eq!(
+        amd64_request.1.container.namespace_revision_entry_id,
+        arm64_request.1.container.namespace_revision_entry_id
+    );
+    assert_eq!(
+        recorder
+            .records
+            .iter()
+            .filter(|record| **record == RecordedOperation::ImageAvailabilityVerified)
+            .count(),
+        2
+    );
 }
 
 #[tokio::test]

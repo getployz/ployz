@@ -60,8 +60,8 @@ fn deploy_admission_rejects_ids_that_cannot_form_internal_dns_labels() {
 }
 
 #[test]
-fn pushed_image_digest_must_match_the_manifest_digest() {
-    let manifest_digest = OciDigest::sha256(b"manifest");
+fn pushed_image_digest_must_match_the_index_digest() {
+    let index_digest = OciDigest::sha256(b"index");
     let image = ImageReference::try_new("local/api:latest")
         .expect("valid image")
         .with_digest(&OciDigest::sha256(b"different"))
@@ -79,9 +79,20 @@ fn pushed_image_digest_must_match_the_manifest_digest() {
                 service_id: ServiceId::try_new("api").expect("valid service id"),
                 image,
                 image_source: ImageSource::PushedToSeed {
-                    seed: MachineId::try_new("machine_a").expect("valid machine id"),
-                    manifest_digest,
-                    image_id: OciDigest::sha256(b"image"),
+                    index_digest,
+                    platforms: [(
+                        ployz_core::image::OciPlatform {
+                            os: "linux".to_owned(),
+                            architecture: "amd64".to_owned(),
+                        },
+                        ployz_core::deploy::PlatformImage {
+                            seed: MachineId::try_new("machine_a").expect("valid machine id"),
+                            manifest_digest: OciDigest::sha256(b"manifest"),
+                            image_id: OciDigest::sha256(b"image"),
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
                 },
                 replicas: ReplicaCount::try_new(1).expect("valid replica count"),
                 runtime: ContainerRuntimeSpec::image_defaults(),
@@ -97,7 +108,7 @@ fn pushed_image_digest_must_match_the_manifest_digest() {
     assert!(matches!(
         validate_registry_credentials(&command),
         Err(DeploySubmitError::InvalidTarget { message, .. })
-            if message.as_str().contains("must match its pushed manifest digest")
+            if message.as_str().contains("must match its pushed index digest")
     ));
 }
 

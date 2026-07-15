@@ -3,13 +3,13 @@ use ployz_core::certificate::{ActiveCertState, CertBundleRef, CertValidAt, CertV
 use ployz_core::deploy::{
     ContainerRuntimeSpec, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute,
     DeployRouteTarget, DeployServicePlan, DeployServiceSpec, ImageReference, ImageSource,
-    ReplicaCount, ReplicaSlot,
+    PlatformImage, ReplicaCount, ReplicaSlot,
 };
 use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
     OperationId, ServiceId,
 };
-use ployz_core::image::OciDigest;
+use ployz_core::image::{OciDigest, OciPlatform};
 use ployz_core::ingress::AutomaticHostnameLabel;
 use ployz_core::operation::{
     ArtifactUnavailableReason, CertificateProvisionFailure, DeployCompletionOutcome,
@@ -100,9 +100,17 @@ fn direct_image_target() -> DeployRequest {
         panic!("single-service target must contain one service");
     };
     service.image_source = ImageSource::PushedToSeed {
-        seed: machine_id("hetzner-1"),
-        manifest_digest: OciDigest::sha256(b"manifest"),
-        image_id: OciDigest::sha256(b"image-config"),
+        index_digest: OciDigest::sha256(b"index"),
+        platforms: [(
+            platform(),
+            PlatformImage {
+                seed: machine_id("hetzner-1"),
+                manifest_digest: OciDigest::sha256(b"manifest"),
+                image_id: OciDigest::sha256(b"image-config"),
+            },
+        )]
+        .into_iter()
+        .collect(),
     };
     target
 }
@@ -409,6 +417,7 @@ fn pushed_image_stays_pending_until_availability_is_verified() {
             operation_id,
             service_id: service_id("web"),
             seed: machine_id("hetzner-1"),
+            platform: platform(),
             manifest_digest: OciDigest::sha256(b"manifest"),
         },
     )]);
@@ -418,6 +427,13 @@ fn pushed_image_stays_pending_until_availability_is_verified() {
         render_plain_lines(&tree)
             .contains("deploy op_317: images — ghcr.io/acme/web:1 available from hetzner-1\n")
     );
+}
+
+fn platform() -> OciPlatform {
+    OciPlatform {
+        os: "linux".to_owned(),
+        architecture: "amd64".to_owned(),
+    }
 }
 
 #[test]

@@ -3,9 +3,18 @@
 use super::*;
 
 pub use crate::image::{
-    OciDigest, RegistryCredential, RegistryCredentialError, RegistryCredentialSecret,
+    OciDigest, OciPlatform, RegistryCredential, RegistryCredentialError, RegistryCredentialSecret,
     RegistryCredentialUsername,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct PlatformImage {
+    pub seed: MachineId,
+    pub manifest_digest: OciDigest,
+    pub image_id: OciDigest,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -13,9 +22,10 @@ pub use crate::image::{
 pub enum ImageSource {
     Registry,
     PushedToSeed {
-        seed: MachineId,
-        manifest_digest: OciDigest,
-        image_id: OciDigest,
+        index_digest: OciDigest,
+        #[serde(with = "platform_images_serde")]
+        #[cfg_attr(feature = "typescript", ts(type = "[OciPlatform, PlatformImage][]"))]
+        platforms: BTreeMap<OciPlatform, PlatformImage>,
     },
 }
 
@@ -23,6 +33,49 @@ impl ImageSource {
     #[must_use]
     pub const fn is_registry(&self) -> bool {
         matches!(self, Self::Registry)
+    }
+}
+
+mod platform_images_serde {
+    use serde::de::Error as _;
+    use serde::ser::SerializeSeq as _;
+
+    use super::*;
+
+    pub fn serialize<S>(
+        platforms: &BTreeMap<OciPlatform, PlatformImage>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut sequence = serializer.serialize_seq(Some(platforms.len()))?;
+        for entry in platforms {
+            sequence.serialize_element(&entry)?;
+        }
+        sequence.end()
+    }
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<BTreeMap<OciPlatform, PlatformImage>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let entries = Vec::<(OciPlatform, PlatformImage)>::deserialize(deserializer)?;
+        if entries.is_empty() {
+            return Err(D::Error::custom(
+                "pushed image receipt must contain at least one platform",
+            ));
+        }
+        let entry_count = entries.len();
+        let platforms = entries.into_iter().collect::<BTreeMap<_, _>>();
+        if platforms.len() != entry_count {
+            return Err(D::Error::custom(
+                "pushed image receipt contains a duplicate platform",
+            ));
+        }
+        Ok(platforms)
     }
 }
 
@@ -255,6 +308,66 @@ fn valid_repository_component(component: &str) -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pushed_receipt_round_trips_as_ordered_platform_pairs() {
+        let source = pushed_source();
+
+        let encoded = serde_json::to_value(&source).expect("receipt serializes");
+        assert!(encoded["platforms"].is_array());
+        assert_eq!(
+            serde_json::from_value::<ImageSource>(encoded).expect("receipt deserializes"),
+            source
+        );
+    }
+
+    #[test]
+    fn pushed_receipt_rejects_empty_and_duplicate_platforms() {
+        let source = pushed_source();
+        let mut encoded = serde_json::to_value(source).expect("receipt serializes");
+        encoded["platforms"] = serde_json::json!([]);
+        assert!(serde_json::from_value::<ImageSource>(encoded.clone()).is_err());
+
+        let duplicate = serde_json::json!([
+            [platform("amd64"), platform_image('b')],
+            [platform("amd64"), platform_image('c')]
+        ]);
+        encoded["platforms"] = duplicate;
+        assert!(serde_json::from_value::<ImageSource>(encoded).is_err());
+    }
+
+    fn pushed_source() -> ImageSource {
+        ImageSource::PushedToSeed {
+            index_digest: digest('a'),
+            platforms: [(platform("amd64"), platform_image('b'))]
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    fn platform(architecture: &str) -> OciPlatform {
+        OciPlatform {
+            os: "linux".to_owned(),
+            architecture: architecture.to_owned(),
+        }
+    }
+
+    fn platform_image(value: char) -> PlatformImage {
+        PlatformImage {
+            seed: MachineId::try_new(format!("machine_{value}")).expect("machine id"),
+            manifest_digest: digest(value),
+            image_id: digest(value),
+        }
+    }
+
+    fn digest(value: char) -> OciDigest {
+        OciDigest::try_new(format!("sha256:{}", value.to_string().repeat(64))).expect("OCI digest")
+    }
 }
 
 fn valid_image_tag(tag: &str) -> bool {

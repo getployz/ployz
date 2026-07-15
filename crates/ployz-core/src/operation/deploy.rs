@@ -312,6 +312,11 @@ pub enum DeployOperationFailure {
         seed: MachineId,
         message: FailureMessage,
     },
+    PlatformImageUnavailable {
+        service_id: ServiceId,
+        machine_id: MachineId,
+        target_platform: crate::image::OciPlatform,
+    },
     UnsupportedTargetPlatform {
         service_id: ServiceId,
         machine_id: MachineId,
@@ -426,6 +431,7 @@ impl DeployOperationFailure {
             | Self::ImageMissingOnSeed { .. }
             | Self::ImageDigestMismatch { .. }
             | Self::SeedUnavailable { .. }
+            | Self::PlatformImageUnavailable { .. }
             | Self::UnsupportedTargetPlatform { .. } => DeployFailureClass::ImageResolvePullFailed,
             Self::RuntimeUnavailable { .. } => DeployFailureClass::RuntimeUnavailable,
             Self::ContainerStartFailed { .. } => DeployFailureClass::ContainerStartFailed,
@@ -488,6 +494,7 @@ impl DeployOperationFailure {
             | Self::ImageMissingOnSeed { .. }
             | Self::ImageDigestMismatch { .. }
             | Self::SeedUnavailable { .. }
+            | Self::PlatformImageUnavailable { .. }
             | Self::UnsupportedTargetPlatform { .. } => &[],
         }
     }
@@ -664,6 +671,7 @@ pub enum DeployEvidence {
     ImageAvailabilityVerified {
         service_id: ServiceId,
         seed: MachineId,
+        platform: crate::image::OciPlatform,
         manifest_digest: OciDigest,
     },
     ContainerStarted {
@@ -711,11 +719,13 @@ impl DeployEvidence {
             Self::ImageAvailabilityVerified {
                 service_id,
                 seed,
+                platform,
                 manifest_digest,
             } => OperationEvent::DeployImageAvailabilityVerified {
                 operation_id: operation_id.clone(),
                 service_id: service_id.clone(),
                 seed: seed.clone(),
+                platform: platform.clone(),
                 manifest_digest: manifest_digest.clone(),
             },
             Self::ContainerStarted {

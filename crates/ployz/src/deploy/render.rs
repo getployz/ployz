@@ -181,6 +181,7 @@ impl DeployTree {
                 operation_id,
                 service_id,
                 seed,
+                platform: _,
                 manifest_digest: _,
             } => {
                 let image = self.requested_image(service_id).map(str::to_owned);
@@ -814,6 +815,7 @@ fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine
                         DeployOperationFailure::ImageMissingOnSeed { .. }
                         | DeployOperationFailure::ImageDigestMismatch { .. }
                         | DeployOperationFailure::SeedUnavailable { .. }
+                        | DeployOperationFailure::PlatformImageUnavailable { .. }
                         | DeployOperationFailure::UnsupportedTargetPlatform { .. } => {
                             failure_cause(target, failure)
                         }

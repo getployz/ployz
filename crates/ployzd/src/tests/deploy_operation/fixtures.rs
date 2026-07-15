@@ -705,17 +705,14 @@ impl MachineContainerRuntime for RecordingRuntime {
     async fn ensure_image(
         &mut self,
         machine_id: &MachineId,
-        _request: ployz_core::image::ImageEnsureRequest,
+        request: ployz_core::image::ImageEnsureRequest,
     ) -> Result<
         ployz_core::image::ImageEnsureOk,
         crate::control::role_client::machine::MachineImageEnsureError,
     > {
         Ok(ployz_core::image::ImageEnsureOk {
             machine_id: machine_id.clone(),
-            platform: ployz_core::image::OciPlatform {
-                os: "linux".to_owned(),
-                architecture: "amd64".to_owned(),
-            },
+            platform: request.platform,
         })
     }
 
@@ -1238,17 +1235,53 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
             service_id: service_id("svc_api"),
             image: image("local/api:rev_2"),
             image_source: ployz_core::deploy::ImageSource::PushedToSeed {
-                seed: machine_id("machine_seed"),
-                manifest_digest: ployz_core::image::OciDigest::try_new(format!(
+                index_digest: ployz_core::image::OciDigest::try_new(format!(
                     "sha256:{}",
-                    "a".repeat(64)
+                    "c".repeat(64)
                 ))
-                .expect("valid manifest digest"),
-                image_id: ployz_core::image::OciDigest::try_new(format!(
-                    "sha256:{}",
-                    "b".repeat(64)
-                ))
-                .expect("valid image id"),
+                .expect("valid index digest"),
+                platforms: [
+                    (
+                        ployz_core::image::OciPlatform {
+                            os: "linux".to_owned(),
+                            architecture: "amd64".to_owned(),
+                        },
+                        ployz_core::deploy::PlatformImage {
+                            seed: machine_id("machine_seed"),
+                            manifest_digest: ployz_core::image::OciDigest::try_new(format!(
+                                "sha256:{}",
+                                "a".repeat(64)
+                            ))
+                            .expect("valid manifest digest"),
+                            image_id: ployz_core::image::OciDigest::try_new(format!(
+                                "sha256:{}",
+                                "b".repeat(64)
+                            ))
+                            .expect("valid image id"),
+                        },
+                    ),
+                    (
+                        ployz_core::image::OciPlatform {
+                            os: "linux".to_owned(),
+                            architecture: "arm64".to_owned(),
+                        },
+                        ployz_core::deploy::PlatformImage {
+                            seed: machine_id("machine_arm_seed"),
+                            manifest_digest: ployz_core::image::OciDigest::try_new(format!(
+                                "sha256:{}",
+                                "d".repeat(64)
+                            ))
+                            .expect("valid manifest digest"),
+                            image_id: ployz_core::image::OciDigest::try_new(format!(
+                                "sha256:{}",
+                                "e".repeat(64)
+                            ))
+                            .expect("valid image id"),
+                        },
+                    ),
+                ]
+                .into_iter()
+                .collect(),
             },
             replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
@@ -1257,17 +1290,21 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
             routes: Vec::new(),
         }],
     };
-    let platform = ployz_core::image::OciPlatform {
+    let amd64 = ployz_core::image::OciPlatform {
         os: "linux".to_owned(),
         architecture: "amd64".to_owned(),
+    };
+    let arm64 = ployz_core::image::OciPlatform {
+        os: "linux".to_owned(),
+        architecture: "arm64".to_owned(),
     };
     deploy_execution_input(
         operation_id("op_123"),
         request,
         DeployExecutionFacts {
             machine_platforms: [
-                (machine_id("machine_a"), platform.clone()),
-                (machine_id("machine_b"), platform),
+                (machine_id("machine_a"), amd64),
+                (machine_id("machine_b"), arm64),
             ]
             .into_iter()
             .collect(),
@@ -1276,13 +1313,22 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
             namespace_serving_entries: Vec::new(),
             namespace_volume_pins: Vec::new(),
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
-            dataplane_members: vec![ployz_core::network::DataplaneMember {
-                machine_id: machine_id("machine_seed"),
-                endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new(
-                    "10.198.99.0/24",
-                )
-                .expect("valid seed subnet"),
-            }],
+            dataplane_members: vec![
+                ployz_core::network::DataplaneMember {
+                    machine_id: machine_id("machine_seed"),
+                    endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new(
+                        "10.198.99.0/24",
+                    )
+                    .expect("valid seed subnet"),
+                },
+                ployz_core::network::DataplaneMember {
+                    machine_id: machine_id("machine_arm_seed"),
+                    endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new(
+                        "10.198.98.0/24",
+                    )
+                    .expect("valid seed subnet"),
+                },
+            ],
             observed_machines: Vec::new(),
             namespace_cleanup_candidates: Vec::new(),
             automatic_hostname_mode: AutomaticHostnameMode::Disabled,

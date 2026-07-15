@@ -263,7 +263,7 @@ pub struct PreStartHook {
 
 impl DeployServiceSpec {
     pub(super) const NAMESPACE_REVISION_ENTRY_ENCODING_VERSION: &'static str =
-        "ployz.namespace_revision_entry.v8";
+        "ployz.namespace_revision_entry.v9";
     pub(super) const NAMESPACE_REVISION_ENCODING_VERSION: &'static str =
         "ployz.namespace_revision.v6";
 

@@ -6,7 +6,7 @@ use bollard::errors::Error as DockerError;
 use flate2::{Compression, GzBuilder, read::GzDecoder};
 use futures_util::{StreamExt, TryStreamExt, stream};
 use ployz_core::deploy::DeployServiceSpec;
-use ployz_core::deploy::{ImageReference, ImageSource};
+use ployz_core::deploy::{ImageReference, ImageSource, PlatformImage};
 use ployz_core::ids::MachineId;
 use ployz_core::image::{
     IMAGE_BLOB_CHUNK_MAX_BYTES, IMAGE_BLOB_PUSH_ACTION_CHUNK, IMAGE_BLOB_PUSH_ACTION_HEADER,
@@ -14,7 +14,8 @@ use ployz_core::image::{
     ImageBlobCheckResponse, ImageBlobPushOk, ImageBlobPushOutcome, ImageBlobPushRequest,
     ImageBlobPushResponse, ImageManifestPushOk, ImageManifestPushRequest,
     ImageManifestPushResponse, ImageRpcDomainError, ImageUploadId, OCI_IMAGE_CONFIG_MEDIA_TYPE,
-    OCI_IMAGE_LAYER_GZIP_MEDIA_TYPE, OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciDigest, OciPlatform,
+    OCI_IMAGE_INDEX_MEDIA_TYPE, OCI_IMAGE_LAYER_GZIP_MEDIA_TYPE, OCI_IMAGE_MANIFEST_MEDIA_TYPE,
+    OciDigest, OciPlatform,
 };
 use ployz_core::machine::MachineLifecycle;
 use ployz_core::machine::rpc::{MachineRpcResponder, MachineRpcResponse};
@@ -36,6 +37,8 @@ const LAYER_GZIP_LEVEL: u32 = 6;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImagePushReceipt {
     pub seed: MachineId,
+    pub platform: OciPlatform,
+    pub index_digest: OciDigest,
     pub manifest_digest: OciDigest,
     pub config_digest: OciDigest,
     pub uploaded: BlobTransferReceipt,
@@ -46,9 +49,17 @@ impl ImagePushReceipt {
     #[must_use]
     pub fn image_source(&self) -> ImageSource {
         ImageSource::PushedToSeed {
-            seed: self.seed.clone(),
-            manifest_digest: self.manifest_digest.clone(),
-            image_id: self.config_digest.clone(),
+            index_digest: self.index_digest.clone(),
+            platforms: [(
+                self.platform.clone(),
+                PlatformImage {
+                    seed: self.seed.clone(),
+                    manifest_digest: self.manifest_digest.clone(),
+                    image_id: self.config_digest.clone(),
+                },
+            )]
+            .into_iter()
+            .collect(),
         }
     }
 
@@ -129,6 +140,23 @@ struct OciDescriptor<'a> {
     digest: &'a OciDigest,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OciIndex<'a> {
+    schema_version: u8,
+    media_type: &'static str,
+    manifests: [OciIndexDescriptor<'a>; 1],
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OciIndexDescriptor<'a> {
+    media_type: &'static str,
+    size: u64,
+    digest: &'a OciDigest,
+    platform: &'a OciPlatform,
+}
+
 pub fn connect_operator_docker() -> Result<Docker, ImagePushError> {
     Docker::connect_with_defaults().map_err(|error| ImagePushError::DockerConnect {
         message: error.to_string(),
@@ -198,6 +226,7 @@ pub async fn push_local_image(
             }
         }
     }
+    let manifest_size = prepared.manifest_bytes.len();
     let pushed = manifest_push(
         client,
         seed,
@@ -223,8 +252,12 @@ pub async fn push_local_image(
             message: "seed reported a different image platform".to_owned(),
         });
     }
+    let index_digest =
+        single_platform_index_digest(&pushed.manifest_digest, manifest_size, &pushed.platform)?;
     Ok(ImagePushReceipt {
         seed: seed.clone(),
+        platform: pushed.platform,
+        index_digest,
         manifest_digest: pushed.manifest_digest,
         config_digest: pushed.image_id,
         uploaded: transfer_receipt(uploaded)?,
@@ -259,7 +292,7 @@ pub async fn prepare_deploy_images(
             push_local_image(&api.nats_client(), &docker, seed, service.image.clone()).await?;
         service.image = service
             .image
-            .with_digest(&receipt.manifest_digest)
+            .with_digest(&receipt.index_digest)
             .map_err(|error| ImagePushError::UnexpectedResponse {
                 message: error.to_string(),
             })?;
@@ -267,6 +300,29 @@ pub async fn prepare_deploy_images(
         receipts.push(receipt);
     }
     Ok(receipts)
+}
+
+fn single_platform_index_digest(
+    manifest_digest: &OciDigest,
+    manifest_size: usize,
+    platform: &OciPlatform,
+) -> Result<OciDigest, ImagePushError> {
+    let size = u64::try_from(manifest_size).map_err(|_| ImagePushError::ImageTooLarge)?;
+    let index = OciIndex {
+        schema_version: 2,
+        media_type: OCI_IMAGE_INDEX_MEDIA_TYPE,
+        manifests: [OciIndexDescriptor {
+            media_type: OCI_IMAGE_MANIFEST_MEDIA_TYPE,
+            size,
+            digest: manifest_digest,
+            platform,
+        }],
+    };
+    serde_json::to_vec(&index)
+        .map(|bytes| OciDigest::sha256(&bytes))
+        .map_err(|error| ImagePushError::UnexpectedResponse {
+            message: format!("could not encode single-platform image index: {error}"),
+        })
 }
 
 async fn select_seed(api: &OperationApiClient) -> Result<MachineId, ImagePushError> {
@@ -680,8 +736,10 @@ pub enum ImagePushError {
 
 #[cfg(test)]
 mod tests {
-    use super::{PreparedBlobKind, deterministic_gzip, prepare_docker_save};
-    use ployz_core::image::OciDigest;
+    use super::{
+        PreparedBlobKind, deterministic_gzip, prepare_docker_save, single_platform_index_digest,
+    };
+    use ployz_core::image::{OciDigest, OciPlatform};
     use std::io::Cursor;
 
     #[test]
@@ -691,6 +749,23 @@ mod tests {
         assert_eq!(
             OciDigest::sha256(&compressed).as_str(),
             "sha256:63402c3de330966758f6d9c95461b607e966b827cfd73783a5c538eb5e2c235c"
+        );
+    }
+
+    #[test]
+    fn single_platform_index_has_a_stable_digest() {
+        let manifest =
+            OciDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("manifest digest");
+        let platform = OciPlatform {
+            os: "linux".to_owned(),
+            architecture: "amd64".to_owned(),
+        };
+
+        assert_eq!(
+            single_platform_index_digest(&manifest, 123, &platform)
+                .expect("index digest")
+                .as_str(),
+            "sha256:a24965d07d9790c150a369318bf923bafa75a02042a1c3884be9e12d4bd3cf20"
         );
     }
 

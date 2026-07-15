@@ -351,10 +351,7 @@ fn validate_registry_credentials(command: &DeploySubmitCommand) -> Result<(), De
     }
 
     for service in command.target.services() {
-        let ImageSource::PushedToSeed {
-            manifest_digest, ..
-        } = &service.image_source
-        else {
+        let ImageSource::PushedToSeed { index_digest, .. } = &service.image_source else {
             continue;
         };
         let Some(pinned_digest) = service.image.pinned_digest() else {
@@ -364,11 +361,11 @@ fn validate_registry_credentials(command: &DeploySubmitCommand) -> Result<(), De
                 "must be digest-pinned",
             ));
         };
-        if &pinned_digest != manifest_digest {
+        if &pinned_digest != index_digest {
             return Err(invalid_pushed_image(
                 command,
                 service,
-                "digest must match its pushed manifest digest",
+                "digest must match its pushed index digest",
             ));
         }
     }
@@ -410,14 +407,15 @@ async fn validate_pushed_image_seeds(
     command: &DeploySubmitCommand,
 ) -> Result<(), DeploySubmitError> {
     let services = command.target.services();
-    let seeds = services.iter().filter_map(|service| {
-        let ImageSource::PushedToSeed { seed, .. } = &service.image_source else {
-            return None;
+    let mut seeds = std::collections::BTreeSet::new();
+    for service in services {
+        let ImageSource::PushedToSeed { platforms, .. } = &service.image_source else {
+            continue;
         };
-        Some(seed)
-    });
+        seeds.extend(platforms.values().map(|image| image.seed.clone()));
+    }
 
-    for seed in seeds {
+    for seed in &seeds {
         let active = handlers
             .machine_roster
             .active_machine(seed)

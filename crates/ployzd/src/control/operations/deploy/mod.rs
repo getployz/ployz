@@ -435,7 +435,13 @@ where
         kind: ManagedContainerKind::Predeploy,
     };
     let request = MachineContainerRunHookRpcRequest {
-        pull: machine_image_pull(command.request.namespace_id(), service, dataplane_members)?,
+        pull: machine_image_pull(
+            command.request.namespace_id(),
+            service,
+            &step.machine_id,
+            command.machine_platform(&step.machine_id),
+            dataplane_members,
+        )?,
         runtime,
         container: identity.clone(),
         timeout_millis: hook_execution_timeout(command).as_millis() as u64,
@@ -876,7 +882,13 @@ where
     let step_id = deploy_step_id(slot).map_err(DeployExecutionError::StepId)?;
     let requires_docker_healthcheck = requires_docker_healthcheck(service);
     let request = MachineContainerRunRpcRequest {
-        pull: machine_image_pull(command.request.namespace_id(), service, dataplane_members)?,
+        pull: machine_image_pull(
+            command.request.namespace_id(),
+            service,
+            machine_id,
+            command.machine_platform(machine_id),
+            dataplane_members,
+        )?,
         runtime: service.service.runtime.clone(),
         container: ManagedContainerIdentity {
             namespace_id: command.request.namespace_id().clone(),

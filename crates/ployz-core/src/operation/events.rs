@@ -117,6 +117,7 @@ pub enum OperationEvent {
         operation_id: OperationId,
         service_id: ServiceId,
         seed: MachineId,
+        platform: crate::image::OciPlatform,
         manifest_digest: OciDigest,
     },
     DeployContainerStarted {
@@ -570,11 +571,13 @@ impl OperationEvent {
             Self::DeployImageAvailabilityVerified {
                 service_id,
                 seed,
+                platform,
                 manifest_digest,
                 ..
             } => Some(DeployEvidence::ImageAvailabilityVerified {
                 service_id: service_id.clone(),
                 seed: seed.clone(),
+                platform: platform.clone(),
                 manifest_digest: manifest_digest.clone(),
             }),
             Self::DeployContainerStarted {
@@ -811,12 +814,14 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 service_id,
                 seed,
+                platform,
                 manifest_digest,
             } => Self::Deploy {
                 operation_id,
                 event: DeployEvent::Evidence(DeployEvidence::ImageAvailabilityVerified {
                     service_id,
                     seed,
+                    platform,
                     manifest_digest,
                 }),
             },

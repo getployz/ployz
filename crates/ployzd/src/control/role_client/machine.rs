@@ -328,8 +328,12 @@ impl NatsMachineFactsReader {
 pub(crate) struct MachinePlacementFacts {
     pub machine_id: MachineId,
     pub lifecycle: MachineLifecycle,
-    pub containers: Option<MachineContainerObservationSnapshot>,
-    pub platform: Option<ployz_core::image::OciPlatform>,
+    pub answer: Option<MachinePlacementFactsAnswer>,
+}
+
+pub(crate) struct MachinePlacementFactsAnswer {
+    pub containers: MachineContainerObservationSnapshot,
+    pub platform: ployz_core::image::OciPlatform,
     pub endpoints: Option<ployz_core::machine::MachineEndpointObservation>,
 }
 
@@ -339,13 +343,19 @@ pub(crate) async fn read_machine_placement_facts(
 ) -> Vec<MachinePlacementFacts> {
     let mut reads = stream::iter(machine_lifecycles)
         .map(|(machine_id, lifecycle)| async move {
-            let facts = facts_reader.machine_facts(&machine_id).await.ok();
+            let answer = facts_reader
+                .machine_facts(&machine_id)
+                .await
+                .ok()
+                .map(|facts| MachinePlacementFactsAnswer {
+                    containers: facts.containers().clone(),
+                    platform: facts.platform().clone(),
+                    endpoints: facts.endpoints().cloned(),
+                });
             MachinePlacementFacts {
                 machine_id,
                 lifecycle,
-                containers: facts.as_ref().map(|facts| facts.containers().clone()),
-                platform: facts.as_ref().map(|facts| facts.platform().clone()),
-                endpoints: facts.and_then(|facts| facts.endpoints().cloned()),
+                answer,
             }
         })
         .buffer_unordered(MAX_CONCURRENT_MACHINE_READS);

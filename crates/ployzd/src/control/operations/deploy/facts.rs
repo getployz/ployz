@@ -214,7 +214,12 @@ async fn deploy_execution_facts(
     .await;
     let observed_machines = placement_facts
         .iter()
-        .filter_map(|facts| facts.containers.clone())
+        .filter_map(|facts| {
+            facts
+                .answer
+                .as_ref()
+                .map(|answer| answer.containers.clone())
+        })
         .collect::<Vec<_>>();
     let (eligible_machines, unusable_machines) =
         classify_machine_usability(&placement_facts, &projection, &dataplane_statuses);
@@ -222,9 +227,9 @@ async fn deploy_execution_facts(
         .iter()
         .filter_map(|facts| {
             facts
-                .platform
-                .clone()
-                .map(|platform| (facts.machine_id.clone(), platform))
+                .answer
+                .as_ref()
+                .map(|answer| (facts.machine_id.clone(), answer.platform.clone()))
         })
         .collect();
     let dataplane_members = operation_dataplane_members(request, &active_machines);

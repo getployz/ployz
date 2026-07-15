@@ -495,6 +495,9 @@ pub(crate) async fn handle_image_ensure(
         Ok(inspected) => inspected,
         Err(error) => return image_error(machine_id, error),
     };
+    if let Err(error) = ensure_platform(&request.platform, &inspected.platform) {
+        return image_error(machine_id, error);
+    }
     let reference = MachineImagePull::MeshSeed {
         seed_host: state.seed_host,
         repository: request.repository,
@@ -529,6 +532,19 @@ pub(crate) async fn handle_image_ensure(
 struct InspectedImage {
     manifest: OciManifest,
     platform: OciPlatform,
+}
+
+fn ensure_platform(
+    expected: &OciPlatform,
+    actual: &OciPlatform,
+) -> Result<(), ImageRpcDomainError> {
+    if expected == actual {
+        return Ok(());
+    }
+    Err(ImageRpcDomainError::PlatformMismatch {
+        expected: expected.clone(),
+        actual: actual.clone(),
+    })
 }
 
 async fn inspect_content(
@@ -730,7 +746,8 @@ fn image_error(machine_id: MachineId, error: ImageRpcDomainError) -> NatsService
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_manifest, validate_chunk_bounds};
+    use super::{ensure_platform, parse_manifest, validate_chunk_bounds};
+    use ployz_core::image::{ImageRpcDomainError, OciPlatform};
 
     #[test]
     fn manifest_parser_rejects_manifest_lists() {
@@ -744,5 +761,30 @@ mod tests {
         assert!(validate_chunk_bounds(10, 8, 2).is_ok());
         assert!(validate_chunk_bounds(10, 8, 3).is_err());
         assert!(validate_chunk_bounds(10, u64::MAX, 1).is_err());
+    }
+
+    #[test]
+    fn image_ensure_accepts_the_requested_platform() {
+        let platform = platform("amd64");
+
+        assert_eq!(ensure_platform(&platform, &platform), Ok(()));
+    }
+
+    #[test]
+    fn image_ensure_reports_a_typed_platform_mismatch() {
+        let expected = platform("arm64");
+        let actual = platform("amd64");
+
+        assert_eq!(
+            ensure_platform(&expected, &actual),
+            Err(ImageRpcDomainError::PlatformMismatch { expected, actual })
+        );
+    }
+
+    fn platform(architecture: &str) -> OciPlatform {
+        OciPlatform {
+            os: "linux".to_owned(),
+            architecture: architecture.to_owned(),
+        }
     }
 }

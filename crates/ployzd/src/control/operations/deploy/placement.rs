@@ -69,7 +69,7 @@ fn preliminary_candidate<'a>(
     if let Some(reason) = placement_rejection(facts.lifecycle) {
         return Err(reason);
     }
-    if facts.containers.is_none() {
+    if facts.answer.is_none() {
         return Err(MachineUsabilityReason::FactsUnavailable);
     }
     let Some(member) = projection
@@ -293,24 +293,30 @@ mod tests {
 
     fn answering_facts(machine_id: MachineId) -> MachinePlacementFacts {
         MachinePlacementFacts {
-            containers: Some(
-                MachineContainerObservationSnapshot::try_new(machine_id.clone(), [])
+            answer: Some(
+                crate::control::role_client::machine::MachinePlacementFactsAnswer {
+                    containers: MachineContainerObservationSnapshot::try_new(
+                        machine_id.clone(),
+                        [],
+                    )
                     .expect("empty observation snapshot"),
+                    platform: ployz_core::image::OciPlatform {
+                        os: "linux".to_owned(),
+                        architecture: "amd64".to_owned(),
+                    },
+                    endpoints: None,
+                },
             ),
             machine_id,
             lifecycle: MachineLifecycle::Active,
-            platform: None,
-            endpoints: None,
         }
     }
 
     fn silent_facts(machine_id: MachineId) -> MachinePlacementFacts {
         MachinePlacementFacts {
-            containers: None,
+            answer: None,
             machine_id,
             lifecycle: MachineLifecycle::Active,
-            platform: None,
-            endpoints: None,
         }
     }
 

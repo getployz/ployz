@@ -1,9 +1,11 @@
 //! Pushed-image availability and mesh redistribution for deploy execution.
 
+use std::collections::BTreeMap;
+
 use ployz_core::deploy::{
     DeployPlan, DeployPlanStep, DeployServicePlan, ImageSource, VolumeDeclaredDeployRequest,
 };
-use ployz_core::image::{ImageEnsureRequest, ImageRepository, ImageRpcDomainError, OciDigest};
+use ployz_core::image::{ImageEnsureRequest, ImageRepository, ImageRpcDomainError};
 use ployz_core::network::DataplaneMember;
 use ployz_core::operation::{DeployEvidence, DeployOperationFailure, FailureMessage};
 
@@ -21,14 +23,19 @@ pub(super) fn dataplane_membership(
     plan: &DeployPlan,
 ) -> Vec<DataplaneMember> {
     let mut members = command.dataplane_members.clone();
-    for seed in command.services().iter().filter_map(|service| {
-        let ImageSource::PushedToSeed { seed, .. } = &service.service.image_source else {
-            return None;
+    for service in command.services() {
+        let ImageSource::PushedToSeed { platforms, .. } = &service.service.image_source else {
+            continue;
         };
-        Some(seed)
-    }) {
-        if members.iter().all(|member| member.machine_id != *seed) {
-            members.push(DataplaneMember::default_for_machine(seed.clone()));
+        for platform_image in platforms.values() {
+            if members
+                .iter()
+                .all(|member| member.machine_id != platform_image.seed)
+            {
+                members.push(DataplaneMember::default_for_machine(
+                    platform_image.seed.clone(),
+                ));
+            }
         }
     }
     let mut machine_ids = plan.target_machines();
@@ -186,35 +193,10 @@ where
         else {
             continue;
         };
-        let ImageSource::PushedToSeed {
-            seed,
-            manifest_digest,
-            image_id,
-        } = &service.service.image_source
-        else {
+        let ImageSource::PushedToSeed { platforms, .. } = &service.service.image_source else {
             continue;
         };
-        let request = ImageEnsureRequest {
-            repository: ImageRepository::for_service(
-                command.request.namespace_id(),
-                &service.service.service_id,
-            ),
-            manifest_digest: manifest_digest.clone(),
-            image_id: image_id.clone(),
-        };
-        let ensured = tokio::time::timeout(
-            command.step_timeout(),
-            machine_runtime.ensure_image(seed, request),
-        )
-        .await
-        .map_err(|_| DeployExecutionError::Image {
-            failure: Box::new(DeployOperationFailure::SeedUnavailable {
-                service_id: service.service.service_id.clone(),
-                seed: seed.clone(),
-                message: deploy_failure_message("image seed ensure timed out"),
-            }),
-        })?
-        .map_err(|error| ensure_image_failure(service, seed, manifest_digest, error))?;
+        let mut target_platforms = BTreeMap::new();
         for step in &service_plan.steps {
             let machine_id = match step {
                 DeployPlanStep::UseExistingContainer { machine_id, .. }
@@ -228,37 +210,85 @@ where
                     ),
                 });
             };
-            if ensured.platform != *target_platform {
+            target_platforms
+                .entry(target_platform.clone())
+                .or_insert_with(|| machine_id.clone());
+        }
+        for (target_platform, machine_id) in target_platforms {
+            let Some(platform_image) = platforms.get(&target_platform) else {
+                return Err(DeployExecutionError::Image {
+                    failure: Box::new(DeployOperationFailure::PlatformImageUnavailable {
+                        service_id: service.service.service_id.clone(),
+                        machine_id,
+                        target_platform,
+                    }),
+                });
+            };
+            let request = ImageEnsureRequest {
+                repository: ImageRepository::for_service(
+                    command.request.namespace_id(),
+                    &service.service.service_id,
+                ),
+                manifest_digest: platform_image.manifest_digest.clone(),
+                image_id: platform_image.image_id.clone(),
+                platform: target_platform.clone(),
+            };
+            let ensured = tokio::time::timeout(
+                command.step_timeout(),
+                machine_runtime.ensure_image(&platform_image.seed, request),
+            )
+            .await
+            .map_err(|_| DeployExecutionError::Image {
+                failure: Box::new(DeployOperationFailure::SeedUnavailable {
+                    service_id: service.service.service_id.clone(),
+                    seed: platform_image.seed.clone(),
+                    message: deploy_failure_message("image seed ensure timed out"),
+                }),
+            })?
+            .map_err(|error| {
+                ensure_image_failure(
+                    service,
+                    &machine_id,
+                    &target_platform,
+                    platform_image,
+                    error,
+                )
+            })?;
+            if ensured.platform != target_platform {
                 return Err(DeployExecutionError::Image {
                     failure: Box::new(DeployOperationFailure::UnsupportedTargetPlatform {
                         service_id: service.service.service_id.clone(),
-                        machine_id: machine_id.clone(),
-                        image_platform: ensured.platform.clone(),
-                        target_platform: target_platform.clone(),
+                        machine_id,
+                        image_platform: ensured.platform,
+                        target_platform,
                     }),
                 });
             }
+            record_evidence(
+                command,
+                recorder,
+                DeployEvidence::ImageAvailabilityVerified {
+                    service_id: service.service.service_id.clone(),
+                    seed: platform_image.seed.clone(),
+                    platform: target_platform,
+                    manifest_digest: platform_image.manifest_digest.clone(),
+                },
+            )
+            .await?;
         }
-        record_evidence(
-            command,
-            recorder,
-            DeployEvidence::ImageAvailabilityVerified {
-                service_id: service.service.service_id.clone(),
-                seed: seed.clone(),
-                manifest_digest: manifest_digest.clone(),
-            },
-        )
-        .await?;
     }
     Ok(())
 }
 
 fn ensure_image_failure(
     service: &DeployServiceExecutionCommand,
-    seed: &ployz_core::ids::MachineId,
-    manifest_digest: &OciDigest,
+    machine_id: &ployz_core::ids::MachineId,
+    target_platform: &ployz_core::image::OciPlatform,
+    platform_image: &ployz_core::deploy::PlatformImage,
     error: MachineImageEnsureError,
 ) -> DeployExecutionError {
+    let seed = &platform_image.seed;
+    let manifest_digest = &platform_image.manifest_digest;
     let failure = match error {
         MachineImageEnsureError::Domain {
             error: ImageRpcDomainError::ImageMissing { .. },
@@ -278,6 +308,15 @@ fn ensure_image_failure(
             seed: seed.clone(),
             expected,
             actual,
+        },
+        MachineImageEnsureError::Domain {
+            error: ImageRpcDomainError::PlatformMismatch { actual, .. },
+            ..
+        } => DeployOperationFailure::UnsupportedTargetPlatform {
+            service_id: service.service.service_id.clone(),
+            machine_id: machine_id.clone(),
+            image_platform: actual,
+            target_platform: target_platform.clone(),
         },
         MachineImageEnsureError::Unavailable { reason, .. } => {
             DeployOperationFailure::SeedUnavailable {
@@ -300,6 +339,8 @@ fn ensure_image_failure(
 pub(super) fn machine_image_pull(
     namespace_id: &ployz_core::ids::NamespaceId,
     service: &DeployServiceExecutionCommand,
+    machine_id: &ployz_core::ids::MachineId,
+    target_platform: Option<&ployz_core::image::OciPlatform>,
     dataplane_members: &[DataplaneMember],
 ) -> Result<MachineImagePull, DeployExecutionError> {
     match &service.service.image_source {
@@ -308,23 +349,42 @@ pub(super) fn machine_image_pull(
             credential: service.registry_credential().cloned(),
         }),
         ImageSource::PushedToSeed {
-            seed,
-            manifest_digest,
-            image_id: _,
+            index_digest: _,
+            platforms,
         } => {
+            let Some(target_platform) = target_platform else {
+                return Err(DeployExecutionError::InternalInvariant {
+                    message: format!(
+                        "pushed-image target {} has no answered machine facts",
+                        machine_id.as_str()
+                    ),
+                });
+            };
+            let Some(platform_image) = platforms.get(target_platform) else {
+                return Err(DeployExecutionError::Image {
+                    failure: Box::new(DeployOperationFailure::PlatformImageUnavailable {
+                        service_id: service.service.service_id.clone(),
+                        machine_id: machine_id.clone(),
+                        target_platform: target_platform.clone(),
+                    }),
+                });
+            };
             let Some(seed_host) = dataplane_members
                 .iter()
-                .find(|member| member.machine_id == *seed)
+                .find(|member| member.machine_id == platform_image.seed)
                 .map(|member| member.endpoint_subnet.host_address())
             else {
                 return Err(DeployExecutionError::InvalidImagePull {
-                    message: format!("image seed {} has no dataplane membership", seed.as_str()),
+                    message: format!(
+                        "image seed {} has no dataplane membership",
+                        platform_image.seed.as_str()
+                    ),
                 });
             };
             Ok(MachineImagePull::MeshSeed {
                 seed_host,
                 repository: ImageRepository::for_service(namespace_id, &service.service.service_id),
-                manifest_digest: manifest_digest.clone(),
+                manifest_digest: platform_image.manifest_digest.clone(),
             })
         }
     }
@@ -332,4 +392,89 @@ pub(super) fn machine_image_pull(
 
 fn deploy_failure_message(message: impl Into<String>) -> FailureMessage {
     FailureMessage::try_new(message.into()).expect("generated deploy failure message is non-empty")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ployz_core::deploy::{
+        ContainerRuntimeSpec, DeployServiceSpec, ImageReference, PlatformImage, ReplicaCount,
+    };
+    use ployz_core::ids::{MachineId, NamespaceId, ServiceId};
+    use ployz_core::image::{OciDigest, OciPlatform};
+
+    #[test]
+    fn pushed_receipt_without_target_platform_is_a_typed_failure() {
+        let service = pushed_service();
+        let target_machine = machine_id("machine_arm");
+        let arm64 = platform("arm64");
+
+        let error = machine_image_pull(
+            &NamespaceId::try_new("default").expect("namespace id"),
+            &service,
+            &target_machine,
+            Some(&arm64),
+            &[],
+        )
+        .expect_err("missing platform must fail");
+
+        assert!(matches!(
+            error,
+            DeployExecutionError::Image { failure }
+                if *failure == DeployOperationFailure::PlatformImageUnavailable {
+                    service_id: ServiceId::try_new("api").expect("service id"),
+                    machine_id: target_machine,
+                    target_platform: arm64,
+                }
+        ));
+    }
+
+    fn pushed_service() -> DeployServiceExecutionCommand {
+        let digest = |value: char| {
+            OciDigest::try_new(format!("sha256:{}", value.to_string().repeat(64)))
+                .expect("OCI digest")
+        };
+        DeployServiceExecutionCommand {
+            service: DeployServiceSpec {
+                service_id: ServiceId::try_new("api").expect("service id"),
+                image: ImageReference::try_new(format!("local/api@{}", digest('a')))
+                    .expect("image reference"),
+                image_source: ImageSource::PushedToSeed {
+                    index_digest: digest('a'),
+                    platforms: [(
+                        platform("amd64"),
+                        PlatformImage {
+                            seed: machine_id("machine_seed"),
+                            manifest_digest: digest('b'),
+                            image_id: digest('c'),
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                },
+                replicas: ReplicaCount::try_new(1).expect("replica count"),
+                runtime: ContainerRuntimeSpec::image_defaults(),
+                pre_start: None,
+                depends_on: Vec::new(),
+                routes: Vec::new(),
+            },
+            registry_credential: None,
+            route_commits: Vec::new(),
+            volume_pins: Vec::new(),
+            eligible_machines: Vec::new(),
+            existing_replicas: Vec::new(),
+            cleanup_candidates: Vec::new(),
+        }
+    }
+
+    fn machine_id(value: &str) -> MachineId {
+        MachineId::try_new(value).expect("machine id")
+    }
+
+    fn platform(architecture: &str) -> OciPlatform {
+        OciPlatform {
+            os: "linux".to_owned(),
+            architecture: architecture.to_owned(),
+        }
+    }
 }

@@ -13,6 +13,7 @@ pub const IMAGE_BLOB_PUSH_UPLOAD_ID_HEADER: &str = "ployz-image-upload-id";
 pub const IMAGE_BLOB_PUSH_OFFSET_HEADER: &str = "ployz-image-offset";
 pub const IMAGE_BLOB_PUSH_ACTION_CHUNK: &str = "chunk";
 pub const OCI_IMAGE_MANIFEST_MEDIA_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+pub const OCI_IMAGE_INDEX_MEDIA_TYPE: &str = "application/vnd.oci.image.index.v1+json";
 pub const OCI_IMAGE_CONFIG_MEDIA_TYPE: &str = "application/vnd.oci.image.config.v1+json";
 pub const OCI_IMAGE_LAYER_GZIP_MEDIA_TYPE: &str = "application/vnd.oci.image.layer.v1.tar+gzip";
 
@@ -426,6 +427,7 @@ pub struct ImageEnsureRequest {
     pub repository: ImageRepository,
     pub manifest_digest: OciDigest,
     pub image_id: OciDigest,
+    pub platform: OciPlatform,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -482,6 +484,10 @@ pub enum ImageRpcDomainError {
     ConfigMismatch {
         expected: OciDigest,
         actual: OciDigest,
+    },
+    PlatformMismatch {
+        expected: OciPlatform,
+        actual: OciPlatform,
     },
     StorageFailed {
         message: FailureMessage,
