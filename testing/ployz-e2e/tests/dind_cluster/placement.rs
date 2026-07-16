@@ -4,9 +4,9 @@ use std::time::{Duration, Instant};
 use super::{
     CONNECT_TIMEOUT, CoreContext, DEPLOY_TERMINAL_BUDGET, DindMachine, NAMESPACE_ID_LABEL,
     WORKLOAD_IMAGE, add_and_join_edge, assert_unit_active, connect_core_client, finish,
-    init_core_cluster, managed_workload_containers, read_intent, reserved_deploy_request,
-    terminal_operation_events, wait_for_machine_observations, wait_for_terminal_deploy_status,
-    with_evidence,
+    init_core_cluster, locally_ready, managed_workload_containers, read_intent,
+    reserved_deploy_request, terminal_operation_events, wait_for_machine_observations,
+    wait_for_ready_dataplane, wait_for_terminal_deploy_status, with_evidence,
 };
 use ployz_core::deploy::{
     ContainerRuntimeSpec, DeployPlan, DeployPlanStep, DeployRequest, DeployServiceSpec,
@@ -14,9 +14,8 @@ use ployz_core::deploy::{
 };
 use ployz_core::intent::ActiveMachineState;
 use ployz_core::network::{
-    DataplaneProjection, DataplaneProjectionMember, DataplaneProjectionTestimony,
-    EbpfAttachmentStatus, EndpointBridgeStatus, MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS,
-    WireGuardDetectedMtu, WireGuardHandshakeStatus, WireGuardInterfaceMtu, WireGuardRttStatus,
+    DataplaneProjection, DataplaneProjectionMember, MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS,
+    WireGuardHandshakeStatus, WireGuardRttStatus,
 };
 use ployz_core::operation::{
     DeployCompletionOutcome, DeployOperationState, OperationEvent, OperationStatus,
@@ -226,68 +225,6 @@ async fn network_status(core: &CoreContext) -> Vec<NetworkStatusMachine> {
         .await
         .expect("network status succeeds")
         .machines
-}
-
-async fn wait_for_ready_dataplane(core: &CoreContext, projection: &DataplaneProjection) {
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        let machines = network_status(core).await;
-        if machines.len() == 3
-            && machines
-                .iter()
-                .all(|machine| locally_ready(machine, projection) && peer_handshakes_fresh(machine))
-        {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "three-machine dataplane did not become ready: {machines:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-}
-
-fn locally_ready(machine: &NetworkStatusMachine, projection: &DataplaneProjection) -> bool {
-    let Some(member) = projection
-        .declared_members()
-        .iter()
-        .find(|member| member.machine_id == machine.active.machine_id)
-    else {
-        return false;
-    };
-    let NetworkDataplaneTestimony::Answered { value } = &machine.dataplane else {
-        return false;
-    };
-    matches!(
-        &value.projection.endpoint_bridge,
-        EndpointBridgeStatus::Ready { subnet } if subnet == &member.endpoint_subnet
-    ) && matches!(
-        &value.projection.testimony,
-        DataplaneProjectionTestimony::Applied { revisions }
-            if revisions.declared_revision == *projection.declared_revision()
-                && revisions.target_revision == *projection.target_revision()
-    ) && matches!(value.ebpf_attachment, EbpfAttachmentStatus::Attached)
-        && matches!(
-            value.wireguard.detected_mtu,
-            WireGuardDetectedMtu::Detected { .. }
-        )
-        && matches!(
-            value.wireguard.interface_mtu,
-            WireGuardInterfaceMtu::Detected { .. }
-        )
-}
-
-fn peer_handshakes_fresh(machine: &NetworkStatusMachine) -> bool {
-    let NetworkDataplaneTestimony::Answered { value } = &machine.dataplane else {
-        return false;
-    };
-    value.wireguard.peers.iter().all(|peer| {
-        matches!(
-            peer.handshake,
-            WireGuardHandshakeStatus::Ago { seconds }
-                if seconds <= MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS
-        )
-    })
 }
 
 async fn wait_for_silent_edge_and_unavailable_rtt(

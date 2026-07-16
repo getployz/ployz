@@ -40,8 +40,9 @@ use ployz_core::machine::{
     DataplaneProjectionAdmissionFailure, MachineAddFailure, MachineCredentialProvisioningStep,
 };
 use ployz_core::network::{
-    DEFAULT_WIREGUARD_LISTEN_PORT, MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS,
-    WireGuardHandshakeStatus,
+    DEFAULT_WIREGUARD_LISTEN_PORT, DataplaneProjection, DataplaneProjectionTestimony,
+    EbpfAttachmentStatus, EndpointBridgeStatus, MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS,
+    WireGuardDetectedMtu, WireGuardHandshakeStatus, WireGuardInterfaceMtu,
 };
 use ployz_core::operation::{
     ArtifactUnavailableReason, DeployCompletionOutcome, DeployOperationFailure,
@@ -61,7 +62,8 @@ use ployz_nats::permissions::inbox_subscribe_scope;
 use ployz_nats::subjects::{MachineServiceEndpoint, OPERATOR_RUNTIME_SNAPSHOT, machine_service};
 use ployz_sdk_types::{
     DeployReserveRequest, DeploySubmitRequest, MachineJoinRedeemError, MachineJoinRedeemRequest,
-    MachineListRequest, MachineSnapshot, MachineTestimony, NamespaceRemoveRequest, OpsListRequest,
+    MachineListRequest, MachineSnapshot, MachineTestimony, NamespaceRemoveRequest,
+    NetworkDataplaneTestimony, NetworkStatusMachine, NetworkStatusRequest, OpsListRequest,
     ServiceInspectRequest, VolumeListRequest, VolumeRemoveRequest, VolumeStatus,
 };
 use ployz_test_support::ids::{
@@ -101,6 +103,95 @@ const WORKLOAD_ENDPOINT_PORT: u16 = 80;
 /// Budget for the routed two-machine deploy to reach a terminal state
 /// (includes the image pull check and WireGuard/eBPF preparation).
 const DEPLOY_TERMINAL_BUDGET: Duration = Duration::from_secs(300);
+
+async fn wait_for_ready_dataplane(core: &CoreContext, projection: &DataplaneProjection) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let machines = core
+            .api
+            .network_status(&NetworkStatusRequest::First {
+                mode: ployz_sdk_types::NetworkStatusMode::Snapshot,
+            })
+            .await
+            .expect("network status succeeds")
+            .machines;
+        if machines.len() == projection.declared_members().len()
+            && projection.declared_members().iter().all(|member| {
+                machines
+                    .iter()
+                    .filter(|machine| machine.active.machine_id == member.machine_id)
+                    .count()
+                    == 1
+            })
+            && machines.iter().all(|machine| {
+                locally_ready(machine, projection) && peer_handshakes_fresh(machine, projection)
+            })
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "declared dataplane did not become ready: {machines:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+fn locally_ready(machine: &NetworkStatusMachine, projection: &DataplaneProjection) -> bool {
+    let Some(member) = projection
+        .declared_members()
+        .iter()
+        .find(|member| member.machine_id == machine.active.machine_id)
+    else {
+        return false;
+    };
+    let NetworkDataplaneTestimony::Answered { value } = &machine.dataplane else {
+        return false;
+    };
+    matches!(
+        &value.projection.endpoint_bridge,
+        EndpointBridgeStatus::Ready { subnet } if subnet == &member.endpoint_subnet
+    ) && matches!(
+        &value.projection.testimony,
+        DataplaneProjectionTestimony::Applied { revisions }
+            if revisions.declared_revision == *projection.declared_revision()
+                && revisions.target_revision == *projection.target_revision()
+    ) && matches!(value.ebpf_attachment, EbpfAttachmentStatus::Attached)
+        && matches!(
+            value.wireguard.detected_mtu,
+            WireGuardDetectedMtu::Detected { .. }
+        )
+        && matches!(
+            value.wireguard.interface_mtu,
+            WireGuardInterfaceMtu::Detected { .. }
+        )
+}
+
+fn peer_handshakes_fresh(machine: &NetworkStatusMachine, projection: &DataplaneProjection) -> bool {
+    let NetworkDataplaneTestimony::Answered { value } = &machine.dataplane else {
+        return false;
+    };
+    let expected_peer_count = projection
+        .declared_members()
+        .iter()
+        .filter(|member| member.machine_id != machine.active.machine_id)
+        .count();
+    value.wireguard.peers.len() == expected_peer_count
+        && projection
+            .declared_members()
+            .iter()
+            .filter(|member| member.machine_id != machine.active.machine_id)
+            .all(|member| {
+                value.wireguard.peers.iter().any(|peer| {
+                    peer.public_key == member.wireguard_public_key
+                        && matches!(
+                            peer.handshake,
+                            WireGuardHandshakeStatus::Ago { seconds }
+                                if seconds <= MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS
+                        )
+                })
+            })
+}
 
 #[tokio::test]
 async fn group_core_deploy_semantics() {
