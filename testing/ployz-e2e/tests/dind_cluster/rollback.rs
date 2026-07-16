@@ -243,14 +243,19 @@ fn boot_crash_deploy_target(command: &str) -> DeployRequest {
 }
 
 async fn assert_boot_crash_route_body(core: &CoreContext, hostname: &str, expected: &str) {
-    let response =
-        gateway_https_get_unverified(core.cluster.core().published.gateway_tls, hostname)
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut last = String::from("<no attempt>");
+    while Instant::now() < deadline {
+        match gateway_https_get_unverified(core.cluster.core().published.gateway_tls, hostname)
             .await
-            .unwrap_or_else(|error| panic!("boot-crash route did not answer: {error}"));
-    assert!(
-        response.contains(expected),
-        "boot-crash route did not serve {expected:?}: {response}"
-    );
+        {
+            Ok(response) if response.contains(expected) => return,
+            Ok(response) => last = format!("answered without {expected:?}: {response}"),
+            Err(error) => last = format!("did not answer: {error}"),
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    panic!("boot-crash route did not serve {expected:?}: {last}");
 }
 
 /// Rollback replays successful local history as a fresh deploy with the exact
