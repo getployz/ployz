@@ -54,6 +54,9 @@ The proof classifications are:
   App, DNS, TLS, and the custom domain used for the run.
 - Access to the private `getployz/ployz-beta-fixture` repository and its
   reviewed successful, compile-failure (F1), and boot-crash (F2) commits.
+- Permission to create and delete one unique ephemeral fixture branch such as
+  `acceptance/<run-id>`. Never mutate or force-push `main` or the standing
+  `scenario/*` refs.
 - The fixture's Dockerfile service, Railpack service with no Dockerfile, and
   volume-backed database.
 - Hosted Cloud configured to opt the acceptance machines into ZFS preparation.
@@ -68,11 +71,17 @@ Record these fields before starting:
 - Core/CLI commit SHA and release/channel
 - Dashboard commit SHA and deployment identifier
 - fixture repository and successful, F1, and F2 commit SHAs
+- ephemeral watched branch name
 - core and edge provider identifiers, OS versions, native architectures, and
   public IPs
 - managed hostname, custom hostname, and lease apex
 - start and finish timestamps in UTC
 - evidence root
+
+For each push, record the ephemeral branch name, its prior and new exact SHAs,
+the guarded push command and output, the resulting webhook, and the resulting
+build operation identifier. Move the branch with `--force-with-lease` or an
+equivalent expected-old-SHA guard so a concurrent change cannot be clobbered.
 
 For every journey step, preserve the evidence fields verbatim:
 
@@ -152,9 +161,13 @@ App-token authentication.
    machines. Record the firewall and architecture evidence.
 4. Connect the private fixture repository through the GitHub App. Record the
    installation-token minting and authenticated private clone without exposing
-   the credential.
-5. Push the successful fixture commit. Do not invoke the CLI. Record the
-   webhook, build start, and operation evidence in the Dashboard.
+   the credential. Create a unique ephemeral `acceptance/<run-id>` branch at
+   the exact reviewed S commit, and configure the Dashboard environment to
+   watch that branch. Never repoint the environment to a different branch.
+5. Perform the initial guarded Git push that creates only the ephemeral branch
+   at S. Do not invoke the CLI. Record the branch name, expected absent ref,
+   new exact S SHA, push command and output, webhook, build start, and build
+   operation identifier in the Dashboard.
 6. Prove that the Dockerfile and Railpack adapters each build native `amd64`
    and `arm64` artifacts. Record the platform-independent index evidence and
    replicas placed on both machines.
@@ -170,24 +183,34 @@ App-token authentication.
 
 ### F1 — compile failure
 
-1. Push the reviewed F1 commit that has the known compile error.
+1. With the ephemeral branch still at the exact reviewed S SHA, use
+   `--force-with-lease` or equivalent expected-old-SHA semantics to push only
+   that branch to the exact reviewed F1 commit containing the known compile
+   error. Record the S-to-F1 SHAs and all push, webhook, and build-operation
+   evidence.
 2. Record the real compile error in the Dashboard build log and prove the live
    environment remains unchanged and serving.
-3. Fix by pushing the successful commit. Record that the new build and deploy
-   become green.
+3. Fix by guarded push of only the ephemeral branch from the exact reviewed F1
+   SHA back to the exact reviewed S SHA. Record the F1-to-S SHAs, push output,
+   webhook, and new build operation; prove that build and deploy become green.
 4. Preserve commands, output, timings, Dashboard screenshots, and evidence
    locations for F1 before continuing.
 
 ### F2 — boot crash
 
-1. Push the reviewed F2 commit that builds successfully and crashes on boot.
+1. With the ephemeral branch back at the exact reviewed S SHA, use a guarded
+   push to move only that branch to the exact reviewed F2 commit that builds
+   successfully and crashes on boot. Record the S-to-F2 SHAs and all push,
+   webhook, and build-operation evidence.
 2. Record the Dashboard-visible operation and failure context. Link the
    exact-candidate DinD evidence proving claims 23–25; the human observation
    does not replace that `dind` proof.
 3. Retry deliberately and record its new operation identifier alongside the
    unchanged identifier and retained evidence of the prior failure.
-4. Prove the previous version remains serving, then restore the successful
-   fixture commit before continuing.
+4. Prove the previous version remains serving, then guarded-push only the
+   ephemeral branch from the exact reviewed F2 SHA back to the exact reviewed
+   S SHA. Record the F2-to-S SHAs, push output, webhook, and build operation;
+   wait for the successful version before continuing.
 5. Preserve commands, output, timings, Dashboard screenshots, and evidence
    locations for F2.
 
@@ -200,7 +223,9 @@ App-token authentication.
    observation does not replace that `dind` proof.
 4. Restore the core, record recovery, and capture the finish timestamp.
 5. Preserve commands, output, timings, Dashboard screenshots, and evidence
-   locations for F3.
+   locations for F3. Delete the ephemeral branch after preserving its final S
+   SHA and the guarded deletion command and output. Do not delete or change
+   `main` or any standing `scenario/*` ref.
 
 ## Completed-record template
 
@@ -217,6 +242,7 @@ not post it with any unchecked claim.
 - Dashboard commit SHA and deployment: `<sha; deployment>`
 - Fixture repository and commits: `getployz/ployz-beta-fixture`; S `<sha>`;
   F1 `<sha>`; F2 `<sha>`
+- Ephemeral watched branch: `acceptance/<run-id>`
 - Core host: `<provider id; Rocky 9 version; amd64; public IP>`
 - Edge host: `<provider id; Ubuntu 24.04 version; arm64; public IP>`
 - Managed hostname: `<hostname>`
@@ -235,6 +261,20 @@ not post it with any unchecked claim.
 
 Ordered single-sitting execution: S `<time>` → F1 `<time>` → F2 `<time>`
 → F3 `<time>`.
+
+### Guarded fixture-branch transitions
+
+| Transition | Branch | Expected prior SHA | New SHA | Push output | Webhook | Build operation |
+| --- | --- | --- | --- | --- | --- | --- |
+| create S | `acceptance/<run-id>` | `<absent>` | `<S SHA>` | `<evidence>` | `<evidence>` | `<operation id>` |
+| S → F1 | `acceptance/<run-id>` | `<S SHA>` | `<F1 SHA>` | `<evidence>` | `<evidence>` | `<operation id>` |
+| F1 → S | `acceptance/<run-id>` | `<F1 SHA>` | `<S SHA>` | `<evidence>` | `<evidence>` | `<operation id>` |
+| S → F2 | `acceptance/<run-id>` | `<S SHA>` | `<F2 SHA>` | `<evidence>` | `<evidence>` | `<operation id>` |
+| F2 → S | `acceptance/<run-id>` | `<F2 SHA>` | `<S SHA>` | `<evidence>` | `<evidence>` | `<operation id>` |
+| delete | `acceptance/<run-id>` | `<S SHA>` | `<absent>` | `<evidence>` | `n/a` | `n/a` |
+
+All transitions used `--force-with-lease` or equivalent expected-old-SHA
+guards, and neither `main` nor a standing `scenario/*` ref changed: **yes**.
 
 ### Automated evidence on this candidate
 
