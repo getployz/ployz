@@ -435,7 +435,7 @@ export type CoreReplaceOperationState = { "state": "accepted" } | { "state": "co
 
 export type CoreReplaceFailure = { "kind": "demote_failed", message: FailureMessage, };
 
-export type MachineUsabilityReason = { "kind": "platform_mismatch", required: OciPlatform, reported: OciPlatform, } | { "kind": "draining" } | { "kind": "facts_unavailable" } | { "kind": "storage_testimony_not_reported" } | { "kind": "storage_unprepared" } | { "kind": "storage_unavailable", reason: StorageUnavailableReason, } | { "kind": "storage_pool_mismatch", expected: ZfsPoolName, reported: ZfsPoolName, } | { "kind": "dataplane_unavailable", reason: DataplaneUnavailableReason, };
+export type MachineUsabilityReason = { "kind": "platform_mismatch", required: OciPlatform, reported: OciPlatform, } | { "kind": "draining" } | { "kind": "facts_unavailable" } | { "kind": "build_unavailable" } | { "kind": "storage_testimony_not_reported" } | { "kind": "storage_unprepared" } | { "kind": "storage_unavailable", reason: StorageUnavailableReason, } | { "kind": "storage_pool_mismatch", expected: ZfsPoolName, reported: ZfsPoolName, } | { "kind": "dataplane_unavailable", reason: DataplaneUnavailableReason, };
 
 export type DataplaneUnavailableReason = { "kind": "not_declared" } | { "kind": "testimony_missing" } | { "kind": "admission", failure: DataplaneProjectionAdmissionFailure, };
 
