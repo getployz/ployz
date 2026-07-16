@@ -7,7 +7,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 const STORAGE_HOST_COMMAND_TIMEOUT: Duration = Duration::from_secs(4);
-const DATASET_ENSURE_HOST_COMMAND_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+pub(super) const DATASET_ENSURE_HOST_COMMAND_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 
 pub(crate) fn docker_volume_name(namespace_id: &NamespaceId, volume_name: &VolumeName) -> String {
     volume_name.stable_storage_name(namespace_id)

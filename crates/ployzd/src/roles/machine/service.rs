@@ -20,6 +20,7 @@ use super::substrate::{
     handle_storage_prepare, handle_storage_prepare_report, handle_substrate_report,
     handle_substrate_update,
 };
+use super::volume::DATASET_ENSURE_HOST_COMMAND_TIMEOUT;
 use crate::roles::machine::execution::host_dataplane::dataplane_status_budget;
 use crate::roles::machine::projection::MachineProjectionState;
 #[cfg(test)]
@@ -55,6 +56,8 @@ pub use super::facts::MachineFactsReadError;
 const DATAPLANE_STATUS_ENDPOINT_TIMEOUT: Duration =
     dataplane_status_budget(ployz_core::network::NetworkStatusMode::ProbePathMtu)
         .saturating_add(Duration::from_secs(10));
+const VOLUME_ENSURE_ENDPOINT_TIMEOUT: Duration =
+    DATASET_ENSURE_HOST_COMMAND_TIMEOUT.saturating_add(Duration::from_secs(30));
 
 #[cfg(test)]
 pub struct RunningMachineRoleRuntime {
@@ -473,6 +476,9 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         MachineServiceEndpoint::StoragePrepare => {
             policy.request_timeout = ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT;
         }
+        MachineServiceEndpoint::VolumeEnsure => {
+            policy.request_timeout = VOLUME_ENSURE_ENDPOINT_TIMEOUT;
+        }
         MachineServiceEndpoint::Inspect
         | MachineServiceEndpoint::FactsGet
         | MachineServiceEndpoint::FactsRefresh
@@ -485,7 +491,6 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         | MachineServiceEndpoint::ContainerRestart
         | MachineServiceEndpoint::ContainerStop
         | MachineServiceEndpoint::ContainerRemove
-        | MachineServiceEndpoint::VolumeEnsure
         | MachineServiceEndpoint::VolumeRemove
         | MachineServiceEndpoint::DataplanePublicKey
         | MachineServiceEndpoint::SubstrateUpdate
@@ -566,5 +571,13 @@ mod tests {
             policy.request_timeout,
             ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT
         );
+    }
+
+    #[test]
+    fn volume_ensure_endpoint_sits_between_child_and_operation_budgets() {
+        let policy = machine_endpoint_policy(MachineServiceEndpoint::VolumeEnsure);
+
+        assert!(policy.request_timeout > super::super::volume::DATASET_ENSURE_HOST_COMMAND_TIMEOUT);
+        assert!(policy.request_timeout < crate::config::DEFAULT_DEPLOY_STEP_TIMEOUT);
     }
 }
