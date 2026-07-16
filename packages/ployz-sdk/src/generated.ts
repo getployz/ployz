@@ -656,9 +656,18 @@ export type MachineTestimony = { "status": "answered", endpoints: MachineEndpoin
  */
 last_observed_at_unix_seconds: number, } | { "status": "no_answer" };
 
-export type StorageCapability = { "state": "unprepared" } | { "state": "ready", pool: ZfsPoolName, } | { "state": "unavailable", reason: StorageUnavailableReason, };
+export type DatasetQuotaFact = { dataset: DatasetName, quota_bytes: number, };
 
-export type StorageUnavailableReason = { "reason": "zfs_module_missing" } | { "reason": "pool_not_imported", pool: ZfsPoolName, } | { "reason": "pool_faulted", pool: ZfsPoolName, };
+export type PoolCapacityFacts = { total_bytes: number,
+/**
+ * Physical bytes consumed beneath the Ployz provisioned dataset root.
+ * Unrelated pool or backing-filesystem allocations are excluded.
+ */
+provisioned_used_bytes: number, free_bytes: number, child_quotas: Array<DatasetQuotaFact>, };
+
+export type StorageCapability = { "state": "unprepared" } | { "state": "ready", pool: ZfsPoolName, capacity: PoolCapacityFacts, } | { "state": "unavailable", reason: StorageUnavailableReason, };
+
+export type StorageUnavailableReason = { "reason": "zfs_module_missing" } | { "reason": "pool_not_imported", pool: ZfsPoolName, } | { "reason": "pool_faulted", pool: ZfsPoolName, } | { "reason": "capacity_facts_unavailable" };
 
 export type StrandedVolumeAlarm = { namespace_id: NamespaceId, volume_name: VolumeName, machine_id: MachineId, reason: StrandedVolumeReason, };
 

@@ -14,7 +14,7 @@ mod types;
 
 use ployz_core::deploy::{
     ContainerRestartPolicy, DeployCleanupContainer, DeployPlan, DeployPlanStep,
-    DeployPlanningInput, ImageSource, ReplicaSlot, plan_namespace_deploy,
+    DeployPlanningContext, DeployPlanningInput, ImageSource, ReplicaSlot, plan_namespace_deploy,
 };
 use ployz_core::ids::{OperationId, StepId, SubjectTokenError};
 use ployz_core::machine::runtime::ManagedContainerKind;
@@ -401,6 +401,9 @@ pub(super) fn deploy_plan(
             })
             .collect(),
         command.namespace_cleanup_candidates().to_vec(),
+        DeployPlanningContext {
+            storage_testimony: &command.storage_testimony,
+        },
     )
     .map_err(DeployExecutionError::from)
 }

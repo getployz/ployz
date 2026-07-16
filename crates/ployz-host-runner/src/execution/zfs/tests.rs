@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes, VolumeName, ZfsPoolName};
 use ployz_core::ids::{NamespaceId, OperationId};
+use ployz_core::machine::{DatasetQuotaFact, PoolCapacityFacts};
 use ployz_core::operation::FailureMessage;
 
 use super::state::persist_prepared_storage_state;
@@ -201,16 +202,63 @@ fn storage_capability_reports_pool_absence_fault_and_readiness() {
         }
     );
 
-    let mut ready = RecordingRunner::new([stdout("tank\n"), stdout("ONLINE\n")]);
+    let mut ready = RecordingRunner::new([
+        stdout("tank\n"),
+        stdout("ONLINE\n"),
+        stdout("16384 8192\n"),
+        stdout("0\n"),
+        stdout("tank/ployz/volumes\tnone\n"),
+    ]);
     assert_eq!(
         observe_storage_capability(&mut ready, state.path(), &module).unwrap(),
-        ployz_core::machine::StorageCapability::Ready { pool }
+        ployz_core::machine::StorageCapability::Ready {
+            pool,
+            capacity: PoolCapacityFacts {
+                total_bytes: 16_384,
+                provisioned_used_bytes: 0,
+                free_bytes: 8192,
+                child_quotas: Vec::new(),
+            },
+        }
     );
     assert!(
         ready
             .invocations
             .iter()
             .all(|invocation| invocation.timeout == COMMAND_TIMEOUT)
+    );
+}
+
+#[test]
+fn storage_capability_does_not_report_ready_without_capacity() {
+    let state = tempfile::tempdir().unwrap();
+    persist(state.path(), PreparedStorageOrigin::Adopted);
+    let module = state.path().join("zfs");
+    std::fs::create_dir(&module).unwrap();
+    let mut runner = RecordingRunner::new([
+        stdout("tank\n"),
+        stdout("ONLINE\n"),
+        failed("capacity unavailable"),
+    ]);
+
+    assert_eq!(
+        observe_storage_capability(&mut runner, state.path(), &module).unwrap(),
+        ployz_core::machine::StorageCapability::Unavailable {
+            reason: ployz_core::machine::StorageUnavailableReason::CapacityFactsUnavailable,
+        }
+    );
+
+    let mut parse_failure = RecordingRunner::new([
+        stdout("tank\n"),
+        stdout("ONLINE\n"),
+        stdout("8192\n"),
+        stdout("NAME QUOTA\ntank/ployz/volumes/not-a-child nope\n"),
+    ]);
+    assert_eq!(
+        observe_storage_capability(&mut parse_failure, state.path(), &module).unwrap(),
+        ployz_core::machine::StorageCapability::Unavailable {
+            reason: ployz_core::machine::StorageUnavailableReason::CapacityFactsUnavailable,
+        }
     );
 }
 
@@ -553,15 +601,18 @@ fn owned_origin_survives_restart_and_selects_filesystem_capacity() {
         success(),
         stdout(VOLUME_MOUNTPOINT),
         stdout(&format!("  {PLOYZ_OWNED_ZFS_BACKING_FILE}\n")),
-        stdout("Available\n4096\n"),
+        stdout("Size Avail\n8192 4096\n"),
+        stdout("1024\n"),
         stdout("ployz/ployz/volumes\tnone\n"),
     ]);
     let facts = gather_pool_capacity(&mut runner, state.path()).unwrap();
-    assert_eq!(facts.available_bytes, 4096);
+    assert_eq!(facts.total_bytes, 8192);
+    assert_eq!(facts.provisioned_used_bytes, 1024);
+    assert_eq!(facts.free_bytes, 4096);
     assert_eq!(invocation(&runner, 3).program, "df");
     assert_eq!(
         invocation(&runner, 3).args,
-        vec!["-B1", "--output=avail", PLOYZ_OWNED_ZFS_BACKING_FILE]
+        vec!["-B1", "--output=size,avail", PLOYZ_OWNED_ZFS_BACKING_FILE]
     );
 }
 
@@ -618,15 +669,18 @@ fn adopted_origin_survives_restart_and_selects_zpool_capacity() {
     let mut runner = RecordingRunner::new([
         success(),
         stdout(VOLUME_MOUNTPOINT),
-        stdout("8192\n"),
+        stdout("16384 8192\n"),
+        stdout("2048\n"),
         stdout("tank/ployz/volumes\tnone\n"),
     ]);
     let facts = gather_pool_capacity(&mut runner, state.path()).unwrap();
-    assert_eq!(facts.available_bytes, 8192);
+    assert_eq!(facts.total_bytes, 16_384);
+    assert_eq!(facts.provisioned_used_bytes, 2048);
+    assert_eq!(facts.free_bytes, 8192);
     assert_eq!(invocation(&runner, 2).program, "zpool");
     assert_eq!(
         invocation(&runner, 2).args,
-        vec!["list", "-H", "-p", "-o", "free", "tank"]
+        vec!["list", "-H", "-p", "-o", "size,free", "tank"]
     );
 }
 
@@ -654,7 +708,8 @@ fn pool_capacity_parses_and_orders_direct_child_quotas() {
     let mut runner = RecordingRunner::new([
         success(),
         stdout(VOLUME_MOUNTPOINT),
-        stdout("8192\n"),
+        stdout("16384 8192\n"),
+        stdout("3072\n"),
         stdout(&rows),
     ]);
 
@@ -672,6 +727,7 @@ fn pool_capacity_parses_and_orders_direct_child_quotas() {
     ];
     expected.sort_by(|left, right| left.dataset.cmp(&right.dataset));
     assert_eq!(facts.child_quotas, expected);
+    assert_eq!(facts.provisioned_used_bytes, 3072);
 }
 
 #[test]
@@ -681,7 +737,8 @@ fn pool_capacity_rejects_invalid_child_quota_rows() {
     let mut runner = RecordingRunner::new([
         success(),
         stdout(VOLUME_MOUNTPOINT),
-        stdout("8192\n"),
+        stdout("16384 8192\n"),
+        stdout("0\n"),
         stdout("tank/ployz/volumes\tnone\ninvalid-row\n"),
     ]);
 
@@ -714,7 +771,8 @@ fn dataset_create_uses_quota_without_creating_mountpoint() {
     let mut runner = RecordingRunner::new([
         success(),
         stdout(VOLUME_MOUNTPOINT),
-        stdout("4096\n"),
+        stdout("4096 4096\n"),
+        stdout("0\n"),
         stdout("tank/ployz/volumes\tnone\n"),
         success(),
     ]);
@@ -725,9 +783,9 @@ fn dataset_create_uses_quota_without_creating_mountpoint() {
         VolumeMaxSizeBytes::try_new(1024).unwrap(),
     )
     .unwrap();
-    assert_eq!(invocation(&runner, 4).program, "zfs");
+    assert_eq!(invocation(&runner, 5).program, "zfs");
     assert_eq!(
-        invocation(&runner, 4).args.first().map(String::as_str),
+        invocation(&runner, 5).args.first().map(String::as_str),
         Some("create")
     );
     assert!(runner.invocations.iter().all(|call| {
@@ -769,7 +827,8 @@ fn dataset_quota_growth_is_admitted_against_total_capacity_and_equal_is_a_no_op(
         success(),
         stdout(VOLUME_MOUNTPOINT),
         stdout("1024\n"),
-        stdout("4096\n"),
+        stdout("5120 4096\n"),
+        stdout("1024\n"),
         stdout(&rows),
         success(),
     ]);
@@ -781,7 +840,7 @@ fn dataset_quota_growth_is_admitted_against_total_capacity_and_equal_is_a_no_op(
     )
     .unwrap();
     assert_eq!(
-        invocation(&runner, 5).args,
+        invocation(&runner, 6).args,
         vec!["set", "quota=2048", dataset.as_str()]
     );
 
@@ -803,7 +862,8 @@ fn dataset_quota_admission_rejects_total_above_available_capacity() {
     let mut runner = RecordingRunner::new([
         success(),
         stdout(VOLUME_MOUNTPOINT),
-        stdout("100\n"),
+        stdout("200 100\n"),
+        stdout("0\n"),
         stdout("tank/ployz/volumes\tnone\n"),
     ]);
     let error = create_dataset(
@@ -820,7 +880,7 @@ fn dataset_quota_admission_rejects_total_above_available_capacity() {
             requested_total: 101,
         }
     );
-    assert_eq!(runner.invocations.len(), 4);
+    assert_eq!(runner.invocations.len(), 5);
 }
 
 #[test]

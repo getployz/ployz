@@ -43,8 +43,8 @@ async fn decode_storage_host_command<T: DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use super::{decode_storage_host_command, docker_volume_name};
-    use ployz_core::deploy::VolumeName;
-    use ployz_core::machine::StorageCapability;
+    use ployz_core::deploy::{VolumeName, ZfsPoolName};
+    use ployz_core::machine::{PoolCapacityFacts, StorageCapability};
     use ployz_test_support::ids::namespace_id;
     use std::time::Duration;
 
@@ -76,6 +76,42 @@ mod tests {
         failure.args(["-c", "exit 1"]);
         assert_eq!(
             decode_storage_host_command::<StorageCapability>(failure, Duration::from_secs(1)).await,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn storage_host_protocol_preserves_ready_capacity_testimony() {
+        let mut answer = tokio::process::Command::new("sh");
+        answer.args([
+            "-c",
+            "printf '%s' '{\"state\":\"ready\",\"pool\":\"tank\",\"capacity\":{\"total_bytes\":16384,\"provisioned_used_bytes\":0,\"free_bytes\":8192,\"child_quotas\":[]}}'",
+        ]);
+
+        assert_eq!(
+            decode_storage_host_command(answer, Duration::from_secs(1)).await,
+            Some(StorageCapability::Ready {
+                pool: ZfsPoolName::try_new("tank").expect("valid pool"),
+                capacity: PoolCapacityFacts {
+                    total_bytes: 16_384,
+                    provisioned_used_bytes: 0,
+                    free_bytes: 8192,
+                    child_quotas: Vec::new(),
+                },
+            })
+        );
+
+        let mut missing_capacity = tokio::process::Command::new("sh");
+        missing_capacity.args([
+            "-c",
+            "printf '%s' '{\"state\":\"ready\",\"pool\":\"tank\"}'",
+        ]);
+        assert_eq!(
+            decode_storage_host_command::<StorageCapability>(
+                missing_capacity,
+                Duration::from_secs(1)
+            )
+            .await,
             None
         );
     }
