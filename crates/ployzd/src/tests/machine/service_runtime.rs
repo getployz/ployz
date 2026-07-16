@@ -16,7 +16,7 @@ use crate::roles::machine::protocol::{
     MachineRunContainerOutcome, MachineSubstrateReportRpcRequest,
     MachineSubstrateReportRpcResponse, MachineVolumeEnsureRpcOk, MachineVolumeEnsureRpcRequest,
     MachineVolumeEnsureRpcResponse, MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk,
-    MachineVolumeRemoveRpcRequest, MachineVolumeRemoveRpcResponse, ProvisionedVolumePinState,
+    MachineVolumeRemoveRpcRequest, MachineVolumeRemoveRpcResponse,
 };
 use crate::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
@@ -31,7 +31,7 @@ use ployz_core::deploy::{
     DatasetName, ImageReference, VolumeMaxSizeBytes, VolumeName, ZfsPoolName,
 };
 use ployz_core::ids::ContainerId;
-use ployz_core::intent::VolumePinState;
+use ployz_core::intent::{ProvisionedVolumePinState, VolumePinState};
 use ployz_core::machine::VolumeEnsureFailure;
 use ployz_core::machine::runtime::{
     ContainerRuntimeState, MachineContainerFactDelta, MachineFactsSnapshot,
