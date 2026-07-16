@@ -131,10 +131,24 @@ fn preliminary_candidate<'a>(
     if facts.answer.is_none() {
         return Err(MachineUsabilityReason::FactsUnavailable);
     }
+    let (member, status) =
+        declared_local_dataplane_candidate(&facts.machine_id, projection, dataplane_statuses)?;
+    Ok(PreliminaryCandidate {
+        machine_id: facts.machine_id.clone(),
+        member,
+        status,
+    })
+}
+
+pub(crate) fn declared_local_dataplane_candidate<'a>(
+    machine_id: &MachineId,
+    projection: &'a DataplaneProjection,
+    dataplane_statuses: &'a [(MachineId, Result<MachineDataplaneStatus, FailureMessage>)],
+) -> Result<(&'a DataplaneProjectionMember, &'a MachineDataplaneStatus), MachineUsabilityReason> {
     let Some(member) = projection
         .declared_members()
         .iter()
-        .find(|member| member.machine_id == facts.machine_id)
+        .find(|member| &member.machine_id == machine_id)
     else {
         return Err(dataplane_unavailable(
             DataplaneUnavailableReason::NotDeclared,
@@ -142,7 +156,7 @@ fn preliminary_candidate<'a>(
     };
     let Some((_, testimony)) = dataplane_statuses
         .iter()
-        .find(|(machine_id, _)| machine_id == &facts.machine_id)
+        .find(|(candidate_id, _)| candidate_id == machine_id)
     else {
         return Err(dataplane_unavailable(
             DataplaneUnavailableReason::TestimonyMissing,
@@ -156,11 +170,7 @@ fn preliminary_candidate<'a>(
     if let Some(failure) = validate_declared_local_machine(projection, member, status) {
         return Err(dataplane_admission_failure(failure));
     }
-    Ok(PreliminaryCandidate {
-        machine_id: facts.machine_id.clone(),
-        member,
-        status,
-    })
+    Ok((member, status))
 }
 
 fn dataplane_admission_failure(

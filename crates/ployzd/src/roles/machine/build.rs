@@ -2,8 +2,8 @@ use super::execution::build::{BuildExecutionError, BuildExecutionResult, DockerB
 use super::images::AvailableImageService;
 use super::protocol::{
     MachineBuildCancelOutcome, MachineBuildCancelRpcOk, MachineBuildCancelRpcRequest,
-    MachineBuildCancelRpcResponse, MachineBuildStartDomainError, MachineBuildStartRpcOk,
-    MachineBuildStartRpcRequest, MachineBuildStartRpcResponse,
+    MachineBuildCancelRpcResponse, MachineBuildCleanupOutcome, MachineBuildStartDomainError,
+    MachineBuildStartRpcOk, MachineBuildStartRpcRequest, MachineBuildStartRpcResponse,
 };
 use super::response::{failure_message, machine_domain_error, machine_success};
 use ployz_core::build::{
@@ -122,6 +122,7 @@ impl MachineBuildRuntime {
             () = tokio::time::sleep_until(deadline) => {
                 return Err(MachineBuildStartDomainError::TimedOut {
                     message: failure_message("build timed out waiting for the machine build slot"),
+                    cleanup: MachineBuildCleanupOutcome::Confirmed,
                     final_log_sequence: 0,
                     omitted_log_bytes: 0,
                 });
@@ -153,40 +154,46 @@ impl MachineBuildRuntime {
                             .err()
                             .map(BuildExecutionError::log_summary)
                             .unwrap_or((0, 0));
-                        let cleanup = tokio::time::timeout(
-                            BUILD_FORCE_CLEANUP_TIMEOUT,
-                            cleanup_executor
-                                .force_cleanup(&cleanup_operation_id, &cleanup_platform),
+                        let cleanup = force_cleanup_outcome(
+                            &cleanup_executor,
+                            &cleanup_operation_id,
+                            &cleanup_platform,
                         )
                         .await;
                         let message = match cleanup {
-                            Ok(Ok(())) => "build exceeded its operation deadline",
-                            Ok(Err(_)) | Err(_) => {
+                            MachineBuildCleanupOutcome::Confirmed => {
+                                "build exceeded its operation deadline"
+                            }
+                            MachineBuildCleanupOutcome::Unconfirmed => {
                                 "build exceeded its deadline and cleanup did not finish"
                             }
                         };
                         return Err(MachineBuildStartDomainError::TimedOut {
                             message: failure_message(message),
+                            cleanup,
                             final_log_sequence,
                             omitted_log_bytes,
                         });
                     }
                     Err(_) => {
                         task.abort();
-                        let cleanup = tokio::time::timeout(
-                            BUILD_FORCE_CLEANUP_TIMEOUT,
-                            cleanup_executor
-                                .force_cleanup(&cleanup_operation_id, &cleanup_platform),
+                        let cleanup = force_cleanup_outcome(
+                            &cleanup_executor,
+                            &cleanup_operation_id,
+                            &cleanup_platform,
                         )
                         .await;
                         let message = match cleanup {
-                            Ok(Ok(())) => "build cleanup required task termination",
-                            Ok(Err(_)) | Err(_) => {
+                            MachineBuildCleanupOutcome::Confirmed => {
+                                "build cleanup required task termination"
+                            }
+                            MachineBuildCleanupOutcome::Unconfirmed => {
                                 "build cleanup did not finish before its deadline"
                             }
                         };
                         return Err(MachineBuildStartDomainError::TimedOut {
                             message: failure_message(message),
+                            cleanup,
                             final_log_sequence: 0,
                             omitted_log_bytes: 0,
                         });
@@ -281,11 +288,28 @@ fn requested_build_timeout(
     if timeout.is_zero() || timeout > BUILD_MAX_EXECUTION_TIMEOUT {
         return Err(MachineBuildStartDomainError::TimedOut {
             message: failure_message("build timeout must be between 1ms and 30m"),
+            cleanup: MachineBuildCleanupOutcome::Confirmed,
             final_log_sequence: 0,
             omitted_log_bytes: 0,
         });
     }
     Ok(timeout)
+}
+
+async fn force_cleanup_outcome(
+    executor: &DockerBuildExecutor,
+    operation_id: &OperationId,
+    platform: &OciPlatform,
+) -> MachineBuildCleanupOutcome {
+    match tokio::time::timeout(
+        BUILD_FORCE_CLEANUP_TIMEOUT,
+        executor.force_cleanup(operation_id, platform),
+    )
+    .await
+    {
+        Ok(Ok(())) => MachineBuildCleanupOutcome::Confirmed,
+        Ok(Err(_)) | Err(_) => MachineBuildCleanupOutcome::Unconfirmed,
+    }
 }
 
 fn join_build(
