@@ -177,7 +177,7 @@ requires them to remain identical after every reboot and during failure.
 
 The PostgreSQL fixture declares `x-ployz.max-size: 2G`, which is exactly
 2,147,483,648 bytes. The live dataset must report `quota=2147483648` and
-`refquota=none`; record both at baseline and require both values to remain
+`refquota=0` in parseable output; record both at baseline and require both values to remain
 unchanged after the normal reboot and each recovery reboot. The fixture pins
 the Provisioned Volume to the Rocky core and uses a unique row value derived
 from the run id. Record the deploy operation and the exact dataset shown by

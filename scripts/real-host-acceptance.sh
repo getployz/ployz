@@ -854,8 +854,8 @@ PY
   [ "$dataset_quota" = "$ZFS_REQUESTED_MAX_SIZE_BYTES" ] || {
     log "dataset quota is ${dataset_quota}, expected ${ZFS_REQUESTED_MAX_SIZE_BYTES}"; return 1;
   }
-  [ "$dataset_refquota" = none ] || {
-    log "dataset refquota is ${dataset_refquota}, expected none"; return 1;
+  [ "$dataset_refquota" = 0 ] || {
+    log "dataset refquota is ${dataset_refquota}, expected 0"; return 1;
   }
   [ "$bind_device" = "$dataset_mountpoint" ] || { log "Docker volume is not bound to the dataset mountpoint"; return 1; }
   DOCKER_LABELS="$docker_labels" EXPECTED_NAMESPACE="$zfs_namespace" EXPECTED_SERVICE="$zfs_service" python3 - <<'PY'
@@ -924,7 +924,7 @@ zfs_verify_reboot_recovery() {
   recovered_dataset_refquota=$(core "zfs get -H -p -o value refquota '${dataset}'")
   if [ "$recovered_dataset_quota" != "$ZFS_REQUESTED_MAX_SIZE_BYTES" ] \
     || [ "$recovered_dataset_quota" != "$dataset_quota" ] \
-    || [ "$recovered_dataset_refquota" != none ] \
+    || [ "$recovered_dataset_refquota" != 0 ] \
     || [ "$recovered_dataset_refquota" != "$dataset_refquota" ]; then
     log "dataset quota/refquota changed or no longer matches the requested 2 GiB limit"
     return 1
@@ -1187,7 +1187,7 @@ run_zfs_real_host_certification() {
 Harness source: sealed-harness.sh (${harness_sha})
 01 timeout 2m ployz machine storage-prepare ${core_machine_id} --detach; timeout 20m ployz ops watch OPERATION --json
 02 ployz volume create ${zfs_namespace} ${zfs_volume} --machine ${core_machine_id} --max-size 2G; ployz deploy -f ${remote_compose}
-03 zpool/zfs GUID, mountpoint, exact quota=2147483648 and refquota=none; docker inspect container/volume; PostgreSQL row query
+03 zpool/zfs GUID, mountpoint, exact quota=2147483648 and refquota=0; docker inspect container/volume; PostgreSQL row query
 04 systemctl reboot; systemd zfs.target-before-docker timestamps; same pool/dataset/quota/refquota/container/volume/bind/row
 05 modinfo/lsinitrd guard; root-only copy+metadata+checksum; move module; depmod; modinfo absence
 06 systemctl reboot; absent pool/dataset/bind device; stopped same container; Control/API and typed stranded-pin testimony

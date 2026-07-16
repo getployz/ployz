@@ -65,7 +65,7 @@ and public-release paths were used.
 | Fixed mixed-architecture pair | Rocky 9 amd64 core and Ubuntu 24.04 arm64 edge match native kernels and release assets | `<evidence>` | `<time>` | `<location>` | [ ] |
 | Explicit destructive consent | All four exact environment guards accepted; evidence root was absolute and empty | `<evidence>` | `<time>` | `<location>` | [ ] |
 | Storage preparation | Public operation id reaches terminal success; storage is Ready; `/var/lib/ployz/prepared-storage.json`, owned backing file, pool, dataset root, capacity, and mountpoint agree | `<operation/commands>` | `<time>` | `<location>` | [ ] |
-| Real Provisioned Volume | PostgreSQL pin names Rocky; `volume list`, Docker mount and recovery labels, and `zfs list` identify the same `/var/lib/ployz/volumes/...` dataset with exact `quota=2147483648` and `refquota=none` | `<commands>` | `<time>` | `<location>` | [ ] |
+| Real Provisioned Volume | PostgreSQL pin names Rocky; `volume list`, Docker mount and recovery labels, and `zfs list` identify the same `/var/lib/ployz/volumes/...` dataset with exact parseable `quota=2147483648` and `refquota=0` | `<commands>` | `<time>` | `<location>` | [ ] |
 | Pre-reboot row | Unique row is written and read; row marker, dataset, container, pool health, and testimony captured | `<commands>` | `<time>` | `<location>` | [ ] |
 | Pool import ordering | Normal reboot returns without manual import; ZFS precedes Docker workload start | `<systemd/zpool evidence>` | `<time>` | `<location>` | [ ] |
 | Reboot persistence | Same dataset, exact 2 GiB quota/refquota values, and row return; no plain-directory or empty-database substitution | `<commands>` | `<time>` | `<location>` | [ ] |
@@ -77,7 +77,7 @@ and public-release paths were used.
 | Control-plane independence | Control services remain active and bounded non-storage commands answer during storage failure | `<commands/output>` | `<time>` | `<location>` | [ ] |
 | Non-destructive failure | Backing-file resolved path and identity, descriptor hash/content, complete Docker label map, operation evidence, dataset identity, and row marker are preserved | `<commands/output>` | `<time>` | `<location>` | [ ] |
 | Recovery | Fail-closed transaction restores the module with recorded hash/owner/mode; live-root or validated mounted-root recovery uses recorded-kernel `depmod` and exact-path `modinfo`; reboot succeeds | `<commands/output>` | `<time>` | `<location>` | [ ] |
-| Data recovery | Module, pool, same dataset with exact `quota=2147483648` and `refquota=none`, Ready testimony, cleared alarm, container, and original row all return | `<commands/output>` | `<time>` | `<location>` | [ ] |
+| Data recovery | Module, pool, same dataset with exact parseable `quota=2147483648` and `refquota=0`, Ready testimony, cleared alarm, container, and original row all return | `<commands/output>` | `<time>` | `<location>` | [ ] |
 | Runbook and evidence | Transcript, commands, outputs, timings, diagnosis, recovery, and teardown inventory are complete | `<inventory>` | `<time>` | `<location>` | [ ] |
 
 Record the local `scripts/real-host-acceptance.sh --self-test` transcript with
