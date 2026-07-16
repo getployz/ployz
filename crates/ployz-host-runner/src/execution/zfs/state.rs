@@ -57,7 +57,14 @@ pub fn observe_storage_capability(
             },
         });
     }
-    let capacity = gather_pool_capacity_for_state(runner, &state)?;
+    let capacity = match gather_pool_capacity_for_state(runner, &state) {
+        Ok(capacity) => capacity,
+        Err(_) => {
+            return Ok(StorageCapability::Unavailable {
+                reason: StorageUnavailableReason::CapacityFactsUnavailable,
+            });
+        }
+    };
     Ok(StorageCapability::Ready {
         pool: state.pool().clone(),
         capacity,

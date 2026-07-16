@@ -121,6 +121,46 @@ pub enum VolumeAdmissionFailure {
 pub fn admit_mounted_volumes(
     input: VolumeAdmissionInput<'_>,
 ) -> Result<Vec<VolumeAdmissionDecision>, VolumeAdmissionFailure> {
+    let testimony = input.storage_testimony;
+    classify_mounted_volumes(input)?.complete(testimony)
+}
+
+#[derive(Debug)]
+pub(super) struct ClassifiedVolumeAdmission {
+    namespace_id: NamespaceId,
+    selected_machine_id: MachineId,
+    decisions: Vec<VolumeAdmissionDecision>,
+    pending_provisioned: Vec<PendingProvisionedAdmission>,
+}
+
+impl ClassifiedVolumeAdmission {
+    pub(super) fn complete(
+        mut self,
+        storage_testimony: StorageTestimony<'_>,
+    ) -> Result<Vec<VolumeAdmissionDecision>, VolumeAdmissionFailure> {
+        if !self.pending_provisioned.is_empty() {
+            let (pool, capacity) = ready_capacity(&self.selected_machine_id, storage_testimony)?;
+            let capacity_decisions = admit_provisioned_capacity(
+                &self.namespace_id,
+                &self.selected_machine_id,
+                pool,
+                capacity,
+                self.pending_provisioned,
+            )?;
+            self.decisions.extend(capacity_decisions);
+        }
+        self.decisions.sort_by(|left, right| {
+            left.desired_pin()
+                .volume_name()
+                .cmp(right.desired_pin().volume_name())
+        });
+        Ok(self.decisions)
+    }
+}
+
+pub(super) fn classify_mounted_volumes(
+    input: VolumeAdmissionInput<'_>,
+) -> Result<ClassifiedVolumeAdmission, VolumeAdmissionFailure> {
     let mounted_volume_names = input
         .mounted_volume_names
         .iter()
@@ -151,107 +191,91 @@ pub fn admit_mounted_volumes(
             }
         };
 
-        if let Some(pin) = pin
-            && pin.machine_id() != input.selected_machine_id
-        {
-            return Err(VolumeAdmissionFailure::PinnedToDifferentMachine {
-                volume_name,
-                pinned_machine_id: pin.machine_id().clone(),
-                selected_machine_id: input.selected_machine_id.clone(),
-            });
-        }
-
-        match (declaration, pin.map(VolumePinState::kind)) {
-            (VolumeSpec::Plain, Some(VolumeKind::Plain)) => {
-                decisions.push(VolumeAdmissionDecision::Existing {
-                    pin: pin.expect("matched pin exists").clone(),
-                });
-            }
-            (VolumeSpec::Plain, Some(pin_kind @ VolumeKind::Provisioned { .. }))
-            | (VolumeSpec::Provisioned { .. }, Some(pin_kind @ VolumeKind::Plain)) => {
-                return Err(VolumeAdmissionFailure::KindConversion {
+        if let Some(pin) = pin {
+            if pin.machine_id() != input.selected_machine_id {
+                return Err(VolumeAdmissionFailure::PinnedToDifferentMachine {
                     volume_name,
-                    declaration: declaration.clone(),
-                    pin_kind: pin_kind.clone(),
+                    pinned_machine_id: pin.machine_id().clone(),
+                    selected_machine_id: input.selected_machine_id.clone(),
                 });
             }
-            (
-                VolumeSpec::Provisioned {
-                    max_size_bytes: declared,
-                },
-                Some(VolumeKind::Provisioned {
-                    max_size_bytes: pinned,
-                    ..
-                }),
-            ) if declared.get() < pinned.get() => {
-                return Err(VolumeAdmissionFailure::QuotaShrink {
-                    volume_name,
-                    declared_max_size_bytes: *declared,
-                    pinned_max_size_bytes: *pinned,
-                });
-            }
-            (
-                VolumeSpec::Provisioned {
-                    max_size_bytes: declared,
-                },
-                Some(VolumeKind::Provisioned {
-                    max_size_bytes: pinned,
-                    ..
-                }),
-            ) if declared == pinned => {
-                decisions.push(VolumeAdmissionDecision::Existing {
-                    pin: pin.expect("matched pin exists").clone(),
-                });
-            }
-            (VolumeSpec::Provisioned { max_size_bytes }, Some(VolumeKind::Provisioned { .. })) => {
-                pending_provisioned.push(PendingProvisionedAdmission::Growth {
-                    volume_name,
-                    requested: *max_size_bytes,
-                    current: pin.expect("matched pin exists").clone(),
-                });
-            }
-            (VolumeSpec::Plain, None) => {
-                decisions.push(VolumeAdmissionDecision::NeedsCreation {
-                    pin: VolumePinState::plain(
-                        input.namespace_id.clone(),
+            match (declaration, pin.kind()) {
+                (VolumeSpec::Plain, VolumeKind::Plain) => {
+                    decisions.push(VolumeAdmissionDecision::Existing { pin: pin.clone() });
+                }
+                (VolumeSpec::Plain, pin_kind @ VolumeKind::Provisioned { .. })
+                | (VolumeSpec::Provisioned { .. }, pin_kind @ VolumeKind::Plain) => {
+                    return Err(VolumeAdmissionFailure::KindConversion {
                         volume_name,
-                        input.selected_machine_id.clone(),
-                    ),
-                });
+                        declaration: declaration.clone(),
+                        pin_kind: pin_kind.clone(),
+                    });
+                }
+                (
+                    VolumeSpec::Provisioned {
+                        max_size_bytes: declared,
+                    },
+                    VolumeKind::Provisioned {
+                        max_size_bytes: pinned,
+                        ..
+                    },
+                ) if declared.get() < pinned.get() => {
+                    return Err(VolumeAdmissionFailure::QuotaShrink {
+                        volume_name,
+                        declared_max_size_bytes: *declared,
+                        pinned_max_size_bytes: *pinned,
+                    });
+                }
+                (
+                    VolumeSpec::Provisioned {
+                        max_size_bytes: declared,
+                    },
+                    VolumeKind::Provisioned {
+                        max_size_bytes: pinned,
+                        ..
+                    },
+                ) if declared == pinned => {
+                    decisions.push(VolumeAdmissionDecision::Existing { pin: pin.clone() });
+                }
+                (
+                    VolumeSpec::Provisioned { max_size_bytes },
+                    VolumeKind::Provisioned { dataset, .. },
+                ) => {
+                    pending_provisioned.push(PendingProvisionedAdmission::Growth {
+                        volume_name,
+                        requested: *max_size_bytes,
+                        current: pin.clone(),
+                        dataset: dataset.clone(),
+                    });
+                }
             }
-            (VolumeSpec::Provisioned { max_size_bytes }, None) => {
-                pending_provisioned.push(PendingProvisionedAdmission::Creation {
-                    volume_name,
-                    requested: *max_size_bytes,
-                });
+        } else {
+            match declaration {
+                VolumeSpec::Plain => {
+                    decisions.push(VolumeAdmissionDecision::NeedsCreation {
+                        pin: VolumePinState::plain(
+                            input.namespace_id.clone(),
+                            volume_name,
+                            input.selected_machine_id.clone(),
+                        ),
+                    });
+                }
+                VolumeSpec::Provisioned { max_size_bytes } => {
+                    pending_provisioned.push(PendingProvisionedAdmission::Creation {
+                        volume_name,
+                        requested: *max_size_bytes,
+                    });
+                }
             }
         }
     }
 
-    if pending_provisioned.is_empty() {
-        decisions.sort_by(|left, right| {
-            left.desired_pin()
-                .volume_name()
-                .cmp(right.desired_pin().volume_name())
-        });
-        return Ok(decisions);
-    }
-
-    let (pool, capacity) = ready_capacity(input.selected_machine_id, input.storage_testimony)?;
-    admit_provisioned_capacity(
-        input.namespace_id,
-        input.selected_machine_id,
-        pool,
-        capacity,
+    Ok(ClassifiedVolumeAdmission {
+        namespace_id: input.namespace_id.clone(),
+        selected_machine_id: input.selected_machine_id.clone(),
+        decisions,
         pending_provisioned,
-        &mut decisions,
-    )?;
-    decisions.sort_by(|left, right| {
-        left.desired_pin()
-            .volume_name()
-            .cmp(right.desired_pin().volume_name())
-    });
-    Ok(decisions)
+    })
 }
 
 #[derive(Debug)]
@@ -264,6 +288,7 @@ enum PendingProvisionedAdmission {
         volume_name: VolumeName,
         requested: VolumeMaxSizeBytes,
         current: VolumePinState,
+        dataset: DatasetName,
     },
 }
 
@@ -303,8 +328,8 @@ fn admit_provisioned_capacity(
     pool: &ZfsPoolName,
     capacity: &PoolCapacityFacts,
     pending: Vec<PendingProvisionedAdmission>,
-    decisions: &mut Vec<VolumeAdmissionDecision>,
-) -> Result<(), VolumeAdmissionFailure> {
+) -> Result<Vec<VolumeAdmissionDecision>, VolumeAdmissionFailure> {
+    let mut decisions = Vec::with_capacity(pending.len());
     let mut quotas = BTreeMap::new();
     let mut requested_total = 0_u64;
     for fact in &capacity.child_quotas {
@@ -355,10 +380,8 @@ fn admit_provisioned_capacity(
                 volume_name,
                 requested,
                 current,
+                dataset,
             } => {
-                let VolumeKind::Provisioned { dataset, .. } = current.kind() else {
-                    unreachable!("only provisioned pins enter quota growth admission");
-                };
                 let pinned_pool = dataset.pool();
                 if &pinned_pool != pool {
                     return Err(VolumeAdmissionFailure::PoolMismatch {
@@ -367,10 +390,8 @@ fn admit_provisioned_capacity(
                         reported_pool: pool.clone(),
                     });
                 }
-                let Some(observed_quota) = quotas.get(dataset) else {
-                    return Err(VolumeAdmissionFailure::DatasetQuotaNotReported {
-                        dataset: dataset.clone(),
-                    });
+                let Some(observed_quota) = quotas.get(&dataset) else {
+                    return Err(VolumeAdmissionFailure::DatasetQuotaNotReported { dataset });
                 };
                 requested_total = requested_total
                     .checked_sub(*observed_quota)
@@ -381,7 +402,7 @@ fn admit_provisioned_capacity(
                     volume_name,
                     machine_id.clone(),
                     VolumeKind::Provisioned {
-                        dataset: dataset.clone(),
+                        dataset,
                         max_size_bytes: requested,
                     },
                 )
@@ -399,7 +420,7 @@ fn admit_provisioned_capacity(
             requested_total_bytes: requested_total,
         });
     }
-    Ok(())
+    Ok(decisions)
 }
 
 #[cfg(test)]

@@ -1,5 +1,8 @@
 //! Pure deploy preparation and placement planning.
 
+use super::volume_planning::{
+    canonical_volume_pins, preflight_namespace_volume_admission, volume_placement,
+};
 use super::*;
 use crate::ids::OperationId;
 
@@ -10,9 +13,12 @@ pub struct DeployPlanningInput {
     pub existing_replicas: Vec<ExistingServiceReplica>,
     pub cleanup_candidates: Vec<ObservedCleanupCandidate>,
     pub volume_pins: Vec<VolumePinState>,
-    /// Fresh point-of-use testimony used only while admitting mounted volumes.
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DeployPlanningContext<'a> {
     pub storage_testimony:
-        std::collections::BTreeMap<MachineId, Option<crate::machine::StorageCapability>>,
+        &'a std::collections::BTreeMap<MachineId, Option<crate::machine::StorageCapability>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -571,22 +577,19 @@ pub fn plan_namespace_deploy(
     request: &VolumeDeclaredDeployRequest,
     services: Vec<DeployPlanningInput>,
     cleanup_containers: Vec<DeployCleanupContainer>,
+    context: DeployPlanningContext<'_>,
 ) -> Result<DeployPlan, DeployPlanError> {
     let phases = dependency_ordered_phases(request, services)?;
     let mut phase_plans = Vec::new();
     let mut volume_pin_commits = Vec::new();
     let mut cleanup_actions = Vec::new();
-    let mut working_volume_pins = phases
-        .iter()
-        .flatten()
-        .flat_map(|input| &input.volume_pins)
-        .cloned()
-        .collect::<Vec<_>>();
+    let mut working_volume_pins = canonical_volume_pins(&phases);
+    preflight_namespace_volume_admission(request, &phases, &working_volume_pins, context)?;
     for phase in phases {
         let mut services = Vec::new();
         for mut input in phase {
             input.volume_pins = working_volume_pins.clone();
-            let plan = plan_deploy_service(request, input)?;
+            let plan = plan_deploy_service(request, input, context)?;
             working_volume_pins.extend(plan.volume_pin_commits.clone());
             volume_pin_commits.extend(plan.volume_pin_commits);
             cleanup_actions.extend(plan.cleanup_actions);
@@ -734,6 +737,7 @@ pub struct DeploySingleServicePlan {
 fn plan_deploy_service(
     request: &VolumeDeclaredDeployRequest,
     input: DeployPlanningInput,
+    context: DeployPlanningContext<'_>,
 ) -> Result<DeploySingleServicePlan, DeployPlanError> {
     let service = deploy_service(request, &input.service_id)?;
     let volume_placement = volume_placement(
@@ -741,7 +745,7 @@ fn plan_deploy_service(
         service,
         &input.eligible_machines,
         &input.volume_pins,
-        &input.storage_testimony,
+        context.storage_testimony,
     )?;
     let target_replicas = usize::from(service.replicas.get());
     let mut existing_replicas = input.existing_replicas;
@@ -841,117 +845,4 @@ fn deploy_service<'a>(
         .ok_or_else(|| DeployPlanError::UnknownService {
             service_id: service_id.clone(),
         })
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct VolumePlacement {
-    machine_id: Option<MachineId>,
-    commits: Vec<VolumePinState>,
-}
-
-fn volume_placement(
-    request: &VolumeDeclaredDeployRequest,
-    service: &DeployServiceSpec,
-    eligible_machines: &[MachineId],
-    volume_pins: &[VolumePinState],
-    storage_testimony: &std::collections::BTreeMap<
-        MachineId,
-        Option<crate::machine::StorageCapability>,
-    >,
-) -> Result<VolumePlacement, DeployPlanError> {
-    if service.runtime.volume_mounts.is_empty() {
-        return Ok(VolumePlacement {
-            machine_id: None,
-            commits: Vec::new(),
-        });
-    }
-
-    let mut mounted_volume_names = service
-        .runtime
-        .volume_mounts
-        .iter()
-        .map(|mount| mount.volume_name.clone())
-        .collect::<Vec<_>>();
-    mounted_volume_names.sort();
-    mounted_volume_names.dedup();
-
-    let mut pinned_machines = Vec::new();
-    for volume_name in &mounted_volume_names {
-        let matching_pins = volume_pins
-            .iter()
-            .filter(|pin| {
-                pin.namespace_id() == request.namespace_id() && pin.volume_name() == volume_name
-            })
-            .collect::<Vec<_>>();
-        if matching_pins.len() > 1 {
-            return Err(DeployPlanError::VolumeAdmission {
-                service_id: service.service_id.clone(),
-                failure: VolumeAdmissionFailure::AmbiguousPins {
-                    volume_name: volume_name.clone(),
-                    pin_count: matching_pins.len(),
-                },
-            });
-        }
-        if let [pin] = matching_pins.as_slice() {
-            pinned_machines.push(pin.machine_id().clone());
-        }
-    }
-    pinned_machines.sort();
-    pinned_machines.dedup();
-    let selected_machine_id = match pinned_machines.as_slice() {
-        [] => eligible_machines
-            .first()
-            .ok_or(DeployPlanError::NoEligibleMachines)?,
-        [machine_id] => machine_id,
-        [_, _, ..] => {
-            return Err(DeployPlanError::ConflictingVolumePins {
-                service_id: service.service_id.clone(),
-                machines: pinned_machines,
-            });
-        }
-    };
-    let testimony = storage_testimony
-        .get(selected_machine_id)
-        .map_or(crate::machine::StorageTestimony::NoAnswer, |storage| {
-            crate::machine::StorageTestimony::Answered(storage.as_ref())
-        });
-    let decisions = admit_mounted_volumes(VolumeAdmissionInput {
-        namespace_id: request.namespace_id(),
-        mounted_volume_names: &mounted_volume_names,
-        declarations: &request.request().volumes,
-        volume_pins,
-        selected_machine_id,
-        storage_testimony: testimony,
-    })
-    .map_err(|failure| DeployPlanError::VolumeAdmission {
-        service_id: service.service_id.clone(),
-        failure,
-    })?;
-    if !eligible_machines.contains(selected_machine_id) {
-        return Err(DeployPlanError::NoEligibleMachines);
-    }
-    let mut commits = Vec::new();
-    for decision in decisions {
-        match decision {
-            VolumeAdmissionDecision::Existing { .. } => {}
-            VolumeAdmissionDecision::NeedsCreation { pin }
-                if matches!(pin.kind(), crate::intent::VolumeKind::Plain) =>
-            {
-                commits.push(pin);
-            }
-            VolumeAdmissionDecision::NeedsCreation { pin }
-            | VolumeAdmissionDecision::NeedsQuotaGrowth {
-                replacement: pin, ..
-            } => {
-                return Err(DeployPlanError::ProvisionedVolumeRequiresProvisioning {
-                    service_id: service.service_id.clone(),
-                    volume_name: pin.volume_name().clone(),
-                });
-            }
-        }
-    }
-    Ok(VolumePlacement {
-        machine_id: Some(selected_machine_id.clone()),
-        commits,
-    })
 }

@@ -1128,6 +1128,9 @@ pub(crate) fn render_storage_unavailable_reason(reason: &StorageUnavailableReaso
         StorageUnavailableReason::PoolFaulted { pool } => {
             format!("pool-faulted pool={}", pool.as_str())
         }
+        StorageUnavailableReason::CapacityFactsUnavailable => {
+            "capacity-facts-unavailable".to_owned()
+        }
     }
 }
 

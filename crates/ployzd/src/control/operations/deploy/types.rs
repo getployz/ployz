@@ -30,6 +30,8 @@ pub struct DeployExecutionCommand {
     pub(super) route_binding_removals: Vec<RouteBindingState>,
     pub(super) serving_target_removals: Vec<ServingTargetEntry>,
     pub(super) namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
+    pub(super) storage_testimony:
+        BTreeMap<MachineId, Option<ployz_core::machine::StorageCapability>>,
     pub(super) machine_platforms: BTreeMap<MachineId, OciPlatform>,
     pub(super) dataplane_members: Vec<DataplaneMember>,
     pub(super) exact_certificate_routes: Vec<RouteBindingState>,
@@ -46,8 +48,6 @@ pub struct DeployServiceExecutionCommand {
     pub(super) registry_credential: Option<RegistryCredential>,
     pub(super) route_commits: Vec<RouteBindingState>,
     pub(super) volume_pins: Vec<VolumePinState>,
-    pub(super) storage_testimony:
-        BTreeMap<MachineId, Option<ployz_core::machine::StorageCapability>>,
     pub(super) eligible_machines: Vec<MachineId>,
     pub(super) existing_replicas: Vec<ExistingServiceReplica>,
     pub(super) cleanup_candidates: Vec<ObservedCleanupCandidate>,

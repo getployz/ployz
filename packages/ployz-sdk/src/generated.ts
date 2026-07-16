@@ -616,7 +616,7 @@ export type PoolCapacityFacts = { available_bytes: number, child_quotas: Array<D
 
 export type StorageCapability = { "state": "unprepared" } | { "state": "ready", pool: ZfsPoolName, capacity: PoolCapacityFacts, } | { "state": "unavailable", reason: StorageUnavailableReason, };
 
-export type StorageUnavailableReason = { "reason": "zfs_module_missing" } | { "reason": "pool_not_imported", pool: ZfsPoolName, } | { "reason": "pool_faulted", pool: ZfsPoolName, };
+export type StorageUnavailableReason = { "reason": "zfs_module_missing" } | { "reason": "pool_not_imported", pool: ZfsPoolName, } | { "reason": "pool_faulted", pool: ZfsPoolName, } | { "reason": "capacity_facts_unavailable" };
 
 export type StrandedVolumeAlarm = { namespace_id: NamespaceId, volume_name: VolumeName, machine_id: MachineId, reason: StrandedVolumeReason, };
 

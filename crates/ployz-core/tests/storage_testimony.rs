@@ -59,6 +59,7 @@ fn unavailable_storage_alarms_preserve_exact_fault_provenance() {
         StorageUnavailableReason::ZfsModuleMissing,
         StorageUnavailableReason::PoolNotImported { pool: pool("tank") },
         StorageUnavailableReason::PoolFaulted { pool: pool("tank") },
+        StorageUnavailableReason::CapacityFactsUnavailable,
     ];
 
     for (index, reason) in reasons.into_iter().enumerate() {
@@ -174,6 +175,10 @@ fn stranded_volume_alarms_intersect_pins_with_the_known_machine_set() {
 fn ready(pool_name: &str) -> StorageCapability {
     StorageCapability::Ready {
         pool: pool(pool_name),
+        capacity: ployz_core::machine::PoolCapacityFacts {
+            available_bytes: 1024,
+            child_quotas: Vec::new(),
+        },
     }
 }
 

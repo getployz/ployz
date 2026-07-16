@@ -45,6 +45,7 @@ pub enum StorageUnavailableReason {
     ZfsModuleMissing,
     PoolNotImported { pool: ZfsPoolName },
     PoolFaulted { pool: ZfsPoolName },
+    CapacityFactsUnavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

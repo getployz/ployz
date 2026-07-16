@@ -24,6 +24,7 @@ pub mod routes;
 pub mod runtime;
 pub mod volume;
 pub mod volume_admission;
+mod volume_planning;
 
 pub use images::*;
 pub use planning::*;

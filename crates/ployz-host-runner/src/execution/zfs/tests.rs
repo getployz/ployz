@@ -238,10 +238,25 @@ fn storage_capability_does_not_report_ready_without_capacity() {
         failed("capacity unavailable"),
     ]);
 
-    assert!(matches!(
-        observe_storage_capability(&mut runner, state.path(), &module),
-        Err(ZfsEffectError::Dataset { .. })
-    ));
+    assert_eq!(
+        observe_storage_capability(&mut runner, state.path(), &module).unwrap(),
+        ployz_core::machine::StorageCapability::Unavailable {
+            reason: ployz_core::machine::StorageUnavailableReason::CapacityFactsUnavailable,
+        }
+    );
+
+    let mut parse_failure = RecordingRunner::new([
+        stdout("tank\n"),
+        stdout("ONLINE\n"),
+        stdout("8192\n"),
+        stdout("NAME QUOTA\ntank/ployz/volumes/not-a-child nope\n"),
+    ]);
+    assert_eq!(
+        observe_storage_capability(&mut parse_failure, state.path(), &module).unwrap(),
+        ployz_core::machine::StorageCapability::Unavailable {
+            reason: ployz_core::machine::StorageUnavailableReason::CapacityFactsUnavailable,
+        }
+    );
 }
 
 #[test]

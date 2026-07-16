@@ -605,6 +605,7 @@ mod tests {
             route_binding_removals: Vec::new(),
             serving_target_removals: Vec::new(),
             namespace_cleanup_candidates: Vec::new(),
+            storage_testimony: BTreeMap::new(),
             machine_platforms: [(target_machine.clone(), target_platform.clone())]
                 .into_iter()
                 .collect(),
@@ -684,7 +685,6 @@ mod tests {
             registry_credential: None,
             route_commits: Vec::new(),
             volume_pins: Vec::new(),
-            storage_testimony: std::collections::BTreeMap::new(),
             eligible_machines: Vec::new(),
             existing_replicas: Vec::new(),
             cleanup_candidates: Vec::new(),
