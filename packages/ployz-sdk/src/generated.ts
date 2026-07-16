@@ -387,7 +387,7 @@ export type CoreReplaceOperationState = { "state": "accepted" } | { "state": "co
 
 export type CoreReplaceFailure = { "kind": "demote_failed", message: FailureMessage, };
 
-export type MachineUsabilityReason = { "kind": "draining" } | { "kind": "facts_unavailable" } | { "kind": "dataplane_unavailable", reason: DataplaneUnavailableReason, };
+export type MachineUsabilityReason = { "kind": "draining" } | { "kind": "facts_unavailable" } | { "kind": "storage_testimony_not_reported" } | { "kind": "storage_unprepared" } | { "kind": "storage_unavailable", reason: StorageUnavailableReason, } | { "kind": "storage_pool_mismatch", expected: ZfsPoolName, reported: ZfsPoolName, } | { "kind": "dataplane_unavailable", reason: DataplaneUnavailableReason, };
 
 export type DataplaneUnavailableReason = { "kind": "not_declared" } | { "kind": "testimony_missing" } | { "kind": "admission", failure: DataplaneProjectionAdmissionFailure, };
 
@@ -600,15 +600,23 @@ export type GatewayStatusObservation = { machine_id: MachineId, listen_addr: str
 
 export type MachineDiskSpace = { available_bytes: number, total_bytes: number, };
 
-export type MachineSnapshot = { active: ActiveMachineState, testimony: MachineTestimony, };
+export type MachineSnapshot = { active: ActiveMachineState, testimony: MachineTestimony, storage_alarms?: Array<StrandedVolumeAlarm>, };
 
-export type MachineTestimony = { "status": "answered", endpoints: MachineEndpointObservation | null, gateway: GatewayStatusObservation | null, observed_container_count: number, disk_space: MachineDiskSpace,
+export type MachineTestimony = { "status": "answered", endpoints: MachineEndpointObservation | null, gateway: GatewayStatusObservation | null, observed_container_count: number, disk_space: MachineDiskSpace, storage?: StorageCapability | null,
 /**
  * When this machine last self-reported, as display evidence for the
  * operator. Never an input to behavior: liveness surfaces at the point
  * of use (ADR 0027).
  */
 last_observed_at_unix_seconds: number, } | { "status": "no_answer" };
+
+export type StorageCapability = { "state": "unprepared" } | { "state": "ready", pool: ZfsPoolName, } | { "state": "unavailable", reason: StorageUnavailableReason, };
+
+export type StorageUnavailableReason = { "reason": "zfs_module_missing" } | { "reason": "pool_not_imported", pool: ZfsPoolName, } | { "reason": "pool_faulted", pool: ZfsPoolName, };
+
+export type StrandedVolumeAlarm = { namespace_id: NamespaceId, volume_name: VolumeName, machine_id: MachineId, reason: StrandedVolumeReason, };
+
+export type StrandedVolumeReason = { "kind": "machine_silent" } | { "kind": "storage_testimony_not_reported" } | { "kind": "storage_unprepared" } | { "kind": "storage_unavailable", reason: StorageUnavailableReason, } | { "kind": "pool_mismatch", expected: ZfsPoolName, reported: ZfsPoolName, };
 
 export type InitFirstMachineActivateRequest = { machine_id: MachineId, roles: InstallRolePolicy, automatic_hostname_configuration: AutomaticHostnameConfiguration, ployz_dns_target: PloyzDnsTargetIntent, };
 
