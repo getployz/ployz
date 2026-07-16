@@ -52,6 +52,7 @@ pub(super) fn build_namespace_volume_plan(
     let durable_pins = canonical_volume_pins(phases);
     let mut assignments = durable_pins
         .iter()
+        .filter(|pin| pin.namespace_id() == request.namespace_id())
         .map(|pin| (pin.volume_name().clone(), pin.machine_id().clone()))
         .collect::<BTreeMap<_, _>>();
     let mut services = Vec::new();

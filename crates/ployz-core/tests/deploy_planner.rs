@@ -1027,6 +1027,25 @@ fn multi_service_redeploy_canonicalizes_identical_pin_fan_out() {
 }
 
 #[test]
+fn other_namespace_pin_does_not_assign_an_unpinned_current_namespace_volume() {
+    let mut input = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
+    declare_plain_volume_mounts(&mut input, vec![volume_mount("data", "/data")]);
+    input.volume_pins = vec![VolumePinState::plain(
+        namespace_id("other_namespace"),
+        VolumeName::try_new("data").expect("volume name"),
+        machine_id("machine_b"),
+    )];
+
+    let plan = plan_single_service(&input).expect("other namespace pin is irrelevant");
+
+    assert_eq!(plan.target_machines(), vec![machine_id("machine_a")]);
+    assert_eq!(
+        plan.volume_pin_commits,
+        vec![volume_pin("data", "machine_a")]
+    );
+}
+
+#[test]
 fn multi_service_provisioned_births_share_one_machine_capacity_snapshot() {
     let mut api = planning_input(1, [machine_id("machine_a")]);
     declare_volume_mounts(
