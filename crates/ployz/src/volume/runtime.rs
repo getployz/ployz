@@ -110,6 +110,18 @@ pub(crate) async fn remove(
     crate::operation::runtime::watch_accepted(&api, accepted.operation_id, config).await
 }
 
+pub(crate) async fn create(
+    command: VolumeCreateCommand,
+    config: &PloyzctlRuntimeConfig,
+) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
+    let api = operation_api_client(config).await?;
+    let accepted = api
+        .volume_create(&command.into_request())
+        .await
+        .map_err(api_error)?;
+    crate::operation::runtime::watch_accepted(&api, accepted.operation_id, config).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::{VolumeExecutionError, remove_confirmation};
@@ -146,16 +158,4 @@ mod tests {
             }
         );
     }
-}
-
-pub(crate) async fn create(
-    command: VolumeCreateCommand,
-    config: &PloyzctlRuntimeConfig,
-) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
-    let api = operation_api_client(config).await?;
-    let accepted = api
-        .volume_create(&command.into_request())
-        .await
-        .map_err(api_error)?;
-    crate::operation::runtime::watch_accepted(&api, accepted.operation_id, config).await
 }
