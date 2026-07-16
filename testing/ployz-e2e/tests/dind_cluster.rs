@@ -16,6 +16,8 @@
 
 #[path = "dind_cluster/acceptance.rs"]
 mod acceptance;
+#[path = "dind_cluster/build.rs"]
+mod build;
 #[path = "dind_cluster/network.rs"]
 mod network;
 #[path = "dind_cluster/placement.rs"]
@@ -249,6 +251,11 @@ async fn group_core_deploy_semantics() {
     timed(
         "repush_new_layers",
         assert_repush_transfers_only_new_layers(&core),
+    )
+    .await;
+    timed(
+        "authenticated_source_builds",
+        build::assert_authenticated_build_journeys(&core),
     )
     .await;
 
