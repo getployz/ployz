@@ -11,8 +11,12 @@ use crate::roles::machine::protocol::{
 use atomic_write_file::AtomicWriteFile;
 #[cfg(unix)]
 use atomic_write_file::unix::OpenOptionsExt as AtomicOpenOptionsExt;
+use ployz_core::deploy::ZfsPoolName;
 use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::install::InstallArtifactVersion;
+use ployz_core::install::{
+    InstallArtifactVersion, MACHINE_SUBSTRATE_UPDATE_LEAK_BACKSTOP,
+    MACHINE_SUBSTRATE_UPDATE_TERMINATION_GRACE,
+};
 use ployz_core::operation::{FailureMessage, MachineSubstrateVersions};
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decode_json_request};
 use serde::Deserialize;
@@ -33,6 +37,56 @@ use ployz_core::storage::{
 const SUBSTRATE_VERSION_FILE: &str = "/var/lib/ployz/substrate-version.json";
 const STORAGE_OPERATION_DIRECTORY: &str = "/var/lib/ployz/storage-operations";
 const MACHINE_SUBSTRATE_LOCK_FILE: &str = "/var/lib/ployz/machine-substrate.lock";
+
+enum PrivilegedHostEffect<'a> {
+    StoragePrepare {
+        operation_id: &'a OperationId,
+        pool: Option<&'a ZfsPoolName>,
+    },
+    SubstrateUpdate {
+        operation_id: &'a OperationId,
+        version: &'a InstallArtifactVersion,
+    },
+}
+
+impl PrivilegedHostEffect<'_> {
+    fn into_command(self) -> tokio::process::Command {
+        let mut command = tokio::process::Command::new("flock");
+        command
+            .arg("--no-fork")
+            .arg("--nonblock")
+            .arg(MACHINE_SUBSTRATE_LOCK_FILE)
+            .arg("ployz")
+            .arg("host");
+        match self {
+            Self::StoragePrepare { operation_id, pool } => {
+                command
+                    .arg("storage-prepare")
+                    .arg("--operation-id")
+                    .arg(operation_id.as_str());
+                if let Some(pool) = pool {
+                    command.arg("--pool").arg(pool.as_str());
+                }
+            }
+            Self::SubstrateUpdate {
+                operation_id,
+                version,
+            } => {
+                command
+                    .arg("substrate-update")
+                    .arg("--operation-id")
+                    .arg(operation_id.as_str())
+                    .arg("--version")
+                    .arg(version.as_str());
+            }
+        }
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        command
+    }
+}
 
 fn privileged_substrate_lock() -> Arc<tokio::sync::Mutex<()>> {
     static LOCK: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
@@ -64,23 +118,12 @@ pub(crate) async fn handle_storage_prepare(
         Path::new(STORAGE_OPERATION_DIRECTORY),
         MACHINE_STORAGE_PREPARE_BUDGET,
         || {
-            let mut command = tokio::process::Command::new("flock");
-            command
-                .arg("--nonblock")
-                .arg(MACHINE_SUBSTRATE_LOCK_FILE)
-                .arg("ployz")
-                .arg("host")
-                .arg("storage-prepare")
-                .arg("--operation-id")
-                .arg(request.operation_id.as_str());
-            if let Some(pool) = request.pool {
-                command.arg("--pool").arg(pool.as_str());
+            let mut command = PrivilegedHostEffect::StoragePrepare {
+                operation_id: &request.operation_id,
+                pool: request.pool.as_ref(),
             }
-            command
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .kill_on_drop(true);
+            .into_command();
+            command.kill_on_drop(true);
             command.spawn()
         },
     )
@@ -326,22 +369,13 @@ pub(crate) async fn handle_substrate_update(
             },
         });
     };
-    let child = tokio::process::Command::new("flock")
-        .arg("--nonblock")
-        .arg(MACHINE_SUBSTRATE_LOCK_FILE)
-        .arg("ployz")
-        .arg("host")
-        .arg("substrate-update")
-        .arg("--operation-id")
-        .arg(request.operation_id.as_str())
-        .arg("--version")
-        .arg(request.target_version.as_str())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn();
-    let mut child = match child {
+    let child = PrivilegedHostEffect::SubstrateUpdate {
+        operation_id: &request.operation_id,
+        version: &request.target_version,
+    }
+    .into_command()
+    .spawn();
+    let child = match child {
         Ok(child) => child,
         Err(error) => {
             return machine_domain_error(MachineSubstrateUpdateRpcResponse::DomainError {
@@ -356,12 +390,33 @@ pub(crate) async fn handle_substrate_update(
         }
     };
     tokio::spawn(async move {
-        let _machine_substrate_guard = machine_substrate_guard;
-        let _ = child.wait().await;
+        supervise_substrate_update(
+            machine_substrate_guard,
+            child,
+            MACHINE_SUBSTRATE_UPDATE_LEAK_BACKSTOP,
+            MACHINE_SUBSTRATE_UPDATE_TERMINATION_GRACE,
+        )
+        .await;
     });
     machine_success(MachineSubstrateUpdateRpcResponse::Ok(
         MachineSubstrateUpdateRpcOk { machine_id },
     ))
+}
+
+async fn supervise_substrate_update(
+    _machine_substrate_guard: tokio::sync::OwnedMutexGuard<()>,
+    mut child: tokio::process::Child,
+    leak_backstop: Duration,
+    termination_grace: Duration,
+) {
+    if let Ok(Ok(_)) = tokio::time::timeout(leak_backstop, child.wait()).await {
+        return;
+    }
+    let _ = tokio::time::timeout(termination_grace, async {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+    })
+    .await;
 }
 
 pub(crate) async fn handle_substrate_report(
@@ -429,10 +484,78 @@ fn read_substrate_update_evidence(
 #[cfg(test)]
 mod storage_tests {
     use std::cell::Cell;
+    use std::ffi::OsStr;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
+
+    fn command_argv(command: &tokio::process::Command) -> Vec<String> {
+        let command = command.as_std();
+        std::iter::once(command.get_program())
+            .chain(command.get_args())
+            .map(OsStr::to_string_lossy)
+            .map(|argument| argument.into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn storage_prepare_command_execs_the_privileged_effect_under_the_host_lock() {
+        let operation_id = OperationId::try_new("op_storage_prepare").expect("operation id");
+        let pool = ZfsPoolName::try_new("tank").expect("pool name");
+
+        let command = PrivilegedHostEffect::StoragePrepare {
+            operation_id: &operation_id,
+            pool: Some(&pool),
+        }
+        .into_command();
+
+        assert_eq!(
+            command_argv(&command),
+            [
+                "flock",
+                "--no-fork",
+                "--nonblock",
+                MACHINE_SUBSTRATE_LOCK_FILE,
+                "ployz",
+                "host",
+                "storage-prepare",
+                "--operation-id",
+                "op_storage_prepare",
+                "--pool",
+                "tank",
+            ]
+        );
+    }
+
+    #[test]
+    fn substrate_update_command_execs_the_privileged_effect_under_the_host_lock() {
+        let operation_id = OperationId::try_new("op_substrate_update").expect("operation id");
+        let version = InstallArtifactVersion::try_new("v1.2.3").expect("artifact version");
+
+        let command = PrivilegedHostEffect::SubstrateUpdate {
+            operation_id: &operation_id,
+            version: &version,
+        }
+        .into_command();
+
+        assert_eq!(
+            command_argv(&command),
+            [
+                "flock",
+                "--no-fork",
+                "--nonblock",
+                MACHINE_SUBSTRATE_LOCK_FILE,
+                "ployz",
+                "host",
+                "substrate-update",
+                "--operation-id",
+                "op_substrate_update",
+                "--version",
+                "v1.2.3",
+            ]
+        );
+    }
 
     #[test]
     fn missing_operation_evidence_is_pending() {
@@ -523,5 +646,118 @@ mod storage_tests {
         )
         .await;
         assert_eq!(replay, Err(StorageEffectFailure::OperationTimedOut));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn storage_timeout_releases_the_host_file_lock() {
+        let directory = tempfile::tempdir().expect("temporary evidence directory");
+        let lock_directory = tempfile::tempdir().expect("temporary lock directory");
+        let lock_file = lock_directory.path().join("machine-substrate.lock");
+        let operation_id = OperationId::try_new("op_storage_flock_timeout").expect("operation id");
+
+        let result = supervise_storage_prepare(
+            &operation_id,
+            directory.path(),
+            Duration::from_millis(10),
+            || {
+                tokio::process::Command::new("flock")
+                    .arg("--no-fork")
+                    .arg("--nonblock")
+                    .arg(&lock_file)
+                    .arg("sleep")
+                    .arg("30")
+                    .kill_on_drop(true)
+                    .spawn()
+            },
+        )
+        .await;
+        assert_eq!(result, Err(StorageEffectFailure::OperationTimedOut));
+
+        let status = tokio::process::Command::new("flock")
+            .arg("--nonblock")
+            .arg(&lock_file)
+            .arg("true")
+            .status()
+            .await
+            .expect("reacquire host file lock");
+        assert!(status.success(), "host file lock remained held: {status}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn substrate_timeout_reaps_child_and_releases_the_process_guard() {
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        let guard = lock.clone().try_lock_owned().expect("process guard");
+        let mut command = tokio::process::Command::new("sleep");
+        command.arg("30");
+        let child = command.spawn().expect("sleep child");
+        let pid = child.id().expect("child process id");
+
+        supervise_substrate_update(
+            guard,
+            child,
+            Duration::from_millis(10),
+            Duration::from_secs(1),
+        )
+        .await;
+
+        assert!(!Path::new(&format!("/proc/{pid}")).exists());
+        assert!(lock.try_lock().is_ok(), "process guard remained held");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn direct_child_survives_runtime_teardown_without_kill_on_drop() {
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let (pid, supervisor) = runtime.block_on(async {
+            let guard = lock.clone().try_lock_owned().expect("process guard");
+            let mut command = tokio::process::Command::new("sleep");
+            command.arg("30");
+            let child = command.spawn().expect("sleep child");
+            let pid = child.id().expect("child process id");
+            let supervisor = tokio::spawn(supervise_substrate_update(
+                guard,
+                child,
+                Duration::from_secs(30),
+                Duration::from_secs(1),
+            ));
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            (pid, supervisor)
+        });
+        drop(runtime);
+        drop(supervisor);
+
+        assert!(Path::new(&format!("/proc/{pid}")).exists());
+        assert!(lock.try_lock().is_ok(), "process guard remained held");
+
+        let kill = std::process::Command::new("kill")
+            .arg("-KILL")
+            .arg(pid.to_string())
+            .status()
+            .expect("kill surviving child");
+        assert!(kill.success(), "failed to kill surviving child: {kill}");
+        let cleanup_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("cleanup runtime");
+        let process_path = format!("/proc/{pid}");
+        for _ in 0..50 {
+            cleanup_runtime.block_on(async {
+                tokio::process::Command::new("true")
+                    .status()
+                    .await
+                    .expect("drive process reaping");
+            });
+            if !Path::new(&process_path).exists() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("surviving child {pid} was not reaped after explicit termination");
     }
 }

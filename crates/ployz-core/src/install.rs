@@ -1,5 +1,10 @@
 //! Installation contracts grouped by product responsibility.
 
+use std::time::Duration;
+
+pub const MACHINE_SUBSTRATE_UPDATE_LEAK_BACKSTOP: Duration = Duration::from_secs(30 * 60);
+pub const MACHINE_SUBSTRATE_UPDATE_TERMINATION_GRACE: Duration = Duration::from_secs(30);
+
 pub mod artifacts;
 pub mod join;
 pub mod nats;
