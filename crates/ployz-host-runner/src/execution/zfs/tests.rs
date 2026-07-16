@@ -7,6 +7,7 @@ use ployz_core::ids::{NamespaceId, OperationId};
 use ployz_core::machine::{DatasetQuotaFact, PoolCapacityFacts};
 use ployz_core::operation::FailureMessage;
 
+use super::dataset::{DatasetEnsureLock, dataset_ensure_lock_path};
 use super::state::persist_prepared_storage_state;
 use super::*;
 use crate::execution::{HostPlatformProfile, HostRunnerCommandOutput, HostRunnerCommandRunner};
@@ -765,7 +766,7 @@ fn missing_and_mismatched_descriptors_fail_typed() {
 }
 
 #[test]
-fn dataset_create_uses_quota_without_creating_mountpoint() {
+fn dataset_ensure_creates_with_quota_without_creating_mountpoint() {
     let state = tempfile::tempdir().unwrap();
     persist(state.path(), PreparedStorageOrigin::Adopted);
     let mut runner = RecordingRunner::new([
@@ -776,7 +777,7 @@ fn dataset_create_uses_quota_without_creating_mountpoint() {
         stdout("tank/ployz/volumes\tnone\n"),
         success(),
     ]);
-    create_dataset(
+    ensure_dataset(
         &mut runner,
         state.path(),
         &dataset("tank"),
@@ -798,8 +799,18 @@ fn dataset_create_uses_quota_without_creating_mountpoint() {
 fn dataset_quota_is_grow_only() {
     let state = tempfile::tempdir().unwrap();
     persist(state.path(), PreparedStorageOrigin::Adopted);
-    let mut runner = RecordingRunner::new([success(), stdout(VOLUME_MOUNTPOINT), stdout("2048\n")]);
-    let error = grow_dataset_quota(
+    let rows = format!(
+        "tank/ployz/volumes\tnone\n{}\t2048\n",
+        dataset("tank").as_str()
+    );
+    let mut runner = RecordingRunner::new([
+        success(),
+        stdout(VOLUME_MOUNTPOINT),
+        stdout("4096 4096\n"),
+        stdout("0\n"),
+        stdout(&rows),
+    ]);
+    let error = ensure_dataset(
         &mut runner,
         state.path(),
         &dataset("tank"),
@@ -814,7 +825,7 @@ fn dataset_quota_is_grow_only() {
             ..
         }
     ));
-    assert_eq!(runner.invocations.len(), 3);
+    assert_eq!(runner.invocations.len(), 5);
 }
 
 #[test]
@@ -826,13 +837,12 @@ fn dataset_quota_growth_is_admitted_against_total_capacity_and_equal_is_a_no_op(
     let mut runner = RecordingRunner::new([
         success(),
         stdout(VOLUME_MOUNTPOINT),
-        stdout("1024\n"),
         stdout("5120 4096\n"),
         stdout("1024\n"),
         stdout(&rows),
         success(),
     ]);
-    grow_dataset_quota(
+    ensure_dataset(
         &mut runner,
         state.path(),
         &dataset,
@@ -840,19 +850,26 @@ fn dataset_quota_growth_is_admitted_against_total_capacity_and_equal_is_a_no_op(
     )
     .unwrap();
     assert_eq!(
-        invocation(&runner, 6).args,
+        invocation(&runner, 5).args,
         vec!["set", "quota=2048", dataset.as_str()]
     );
 
-    let mut runner = RecordingRunner::new([success(), stdout(VOLUME_MOUNTPOINT), stdout("2048\n")]);
-    grow_dataset_quota(
+    let equal_rows = format!("tank/ployz/volumes\tnone\n{}\t2048\n", dataset.as_str());
+    let mut runner = RecordingRunner::new([
+        success(),
+        stdout(VOLUME_MOUNTPOINT),
+        stdout("5120 4096\n"),
+        stdout("1024\n"),
+        stdout(&equal_rows),
+    ]);
+    ensure_dataset(
         &mut runner,
         state.path(),
         &dataset,
         VolumeMaxSizeBytes::try_new(2048).unwrap(),
     )
     .unwrap();
-    assert_eq!(runner.invocations.len(), 3);
+    assert_eq!(runner.invocations.len(), 5);
 }
 
 #[test]
@@ -866,7 +883,7 @@ fn dataset_quota_admission_rejects_total_above_available_capacity() {
         stdout("0\n"),
         stdout("tank/ployz/volumes\tnone\n"),
     ]);
-    let error = create_dataset(
+    let error = ensure_dataset(
         &mut runner,
         state.path(),
         &dataset("tank"),
@@ -876,11 +893,43 @@ fn dataset_quota_admission_rejects_total_above_available_capacity() {
     assert_eq!(
         error,
         ZfsEffectError::QuotaCapacityExceeded {
-            available: 100,
-            requested_total: 101,
+            total_bytes: 200,
+            provisioned_used_bytes: 0,
+            free_bytes: 100,
+            required_headroom_bytes: 101,
+            requested_total_bytes: 101,
         }
     );
     assert_eq!(runner.invocations.len(), 5);
+}
+
+#[test]
+fn dataset_ensure_lock_serializes_one_prepared_pool() {
+    use std::fs::OpenOptions;
+    use std::sync::mpsc;
+
+    let state = tempfile::tempdir().unwrap();
+    let path = dataset_ensure_lock_path(state.path(), "tank");
+    let holder = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .unwrap();
+    holder.lock().unwrap();
+    let state_path = state.path().to_owned();
+    let (sender, receiver) = mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        let lock = DatasetEnsureLock::acquire(&state_path, "tank").unwrap();
+        sender.send(()).unwrap();
+        drop(lock);
+    });
+
+    assert!(receiver.recv_timeout(Duration::from_millis(75)).is_err());
+    holder.unlock().unwrap();
+    receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+    waiter.join().unwrap();
 }
 
 #[test]

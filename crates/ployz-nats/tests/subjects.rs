@@ -47,6 +47,10 @@ fn operation_event_subjects_are_pinned() {
         "plz.v1.progress.namespace.default.operation.op_123.deploy.running.serving_target_commit"
     );
     assert_eq!(
+        deploy_running(&op_id, DeployRunningStage::EnsuringVolumes).nats_subject(&deploy_scope),
+        "plz.v1.progress.namespace.default.operation.op_123.deploy.running.ensuring_volumes"
+    );
+    assert_eq!(
         container_started(&op_id).nats_subject(&deploy_scope),
         "plz.v1.progress.namespace.default.operation.op_123.deploy.container.started.machine_7.ctr_1"
     );
@@ -165,6 +169,10 @@ fn machine_subjects_use_known_endpoint_and_event_tokens() {
     assert_eq!(
         machine_service(&machine_id, MachineServiceEndpoint::VolumeRemove),
         "plz.v1.rpc.machine.command.machine_7.volume.remove"
+    );
+    assert_eq!(
+        machine_service(&machine_id, MachineServiceEndpoint::VolumeEnsure),
+        "plz.v1.rpc.machine.command.machine_7.volume.ensure"
     );
     assert_eq!(
         machine_service(&machine_id, MachineServiceEndpoint::DataplanePublicKey),

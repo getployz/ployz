@@ -486,6 +486,13 @@ impl crate::roles::machine::runner::MachineImageRemovalRunner for StaticRunner {
 }
 
 impl MachineContainerRunner for StaticRunner {
+    async fn ensure_volume(
+        &self,
+        _volume: &ployz_core::intent::VolumePinState,
+    ) -> Result<(), ployz_core::machine::VolumeEnsureFailure> {
+        Ok(())
+    }
+
     async fn existing_managed_containers(
         &self,
     ) -> Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError> {

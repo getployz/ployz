@@ -181,6 +181,21 @@ pub fn operation_event_subject_suffix(event: &OperationEvent) -> String {
         }
         OperationEvent::VolumeRemoveCompleted { .. } => "volume.remove.completed".to_owned(),
         OperationEvent::VolumeRemoveFailed { .. } => "volume.remove.failed".to_owned(),
+        OperationEvent::VolumeCreateSubmitted { .. } => "volume.create.submitted".to_owned(),
+        OperationEvent::VolumeCreatePlanningStarted { .. } => {
+            "volume.create.planning.started".to_owned()
+        }
+        OperationEvent::VolumeCreateRunning { stage, .. } => {
+            let stage = match stage {
+                ployz_core::operation::VolumeCreateRunningStage::CommittingPin => "committing_pin",
+                ployz_core::operation::VolumeCreateRunningStage::EnsuringVolume => {
+                    "ensuring_volume"
+                }
+            };
+            format!("volume.create.running.{stage}")
+        }
+        OperationEvent::VolumeCreateCompleted { .. } => "volume.create.completed".to_owned(),
+        OperationEvent::VolumeCreateFailed { .. } => "volume.create.failed".to_owned(),
         OperationEvent::OperationInterrupted { .. } => "operation.interrupted".to_owned(),
         OperationEvent::Cancelled { .. } => "cancelled".to_owned(),
     }

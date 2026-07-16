@@ -366,6 +366,7 @@ pub fn gateway_status_scope() -> String {
 pub const fn deploy_running_stage(stage: &DeployRunningStage) -> &'static str {
     match stage {
         DeployRunningStage::EnsuringImages => "ensuring_images",
+        DeployRunningStage::EnsuringVolumes => "ensuring_volumes",
         DeployRunningStage::StartingContainers => "starting_containers",
         DeployRunningStage::WaitingForHealth => "waiting_for_health",
         DeployRunningStage::EnsuringCertificates => "ensuring_certificates",
@@ -422,6 +423,7 @@ pub enum MachineServiceEndpoint {
     ContainerRestart,
     ContainerStop,
     ContainerRemove,
+    VolumeEnsure,
     VolumeRemove,
     DataplanePublicKey,
     DataplaneStatus,
@@ -466,6 +468,7 @@ impl MachineServiceEndpoint {
             Self::ContainerRestart => "container.restart",
             Self::ContainerStop => "container.stop",
             Self::ContainerRemove => "container.remove",
+            Self::VolumeEnsure => "volume.ensure",
             Self::VolumeRemove => "volume.remove",
             Self::DataplanePublicKey => "dataplane.public_key",
             Self::DataplaneStatus => "dataplane.status",
@@ -513,6 +516,7 @@ impl MachineServiceEndpoint {
             | Self::ContainerRestart
             | Self::ContainerStop
             | Self::ContainerRemove
+            | Self::VolumeEnsure
             | Self::VolumeRemove
             | Self::SubstrateUpdate
             | Self::StoragePrepare
