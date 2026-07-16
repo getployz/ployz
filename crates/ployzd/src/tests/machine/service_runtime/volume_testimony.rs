@@ -100,13 +100,19 @@ async fn testimony_deadline_preserves_completed_reads_and_drains_more_than_one_w
         panic!("testimony should be a domain success");
     };
     assert_eq!(ok.results.len(), pins.len());
-    assert_eq!(ok.results[0].pin, pins[0]);
+    let [first_result, remaining_results @ ..] = ok.results.as_slice() else {
+        panic!("testimony must include every requested pin");
+    };
+    let [first_pin, ..] = pins.as_slice() else {
+        panic!("test requires at least one requested pin");
+    };
+    assert_eq!(&first_result.pin, first_pin);
     assert!(matches!(
-        ok.results[0].testimony,
+        &first_result.testimony,
         MachineVolumeTestimony::Available { .. }
     ));
     assert!(
-        ok.results[1..]
+        remaining_results
             .iter()
             .all(|result| result.testimony == MachineVolumeTestimony::Unavailable)
     );

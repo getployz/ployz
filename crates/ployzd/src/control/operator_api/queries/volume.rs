@@ -299,8 +299,11 @@ mod tests {
 
         let answers = gather.await.expect("gather task completes");
         assert_eq!(answers.len(), request_count);
-        assert_eq!(answers[0].0.as_str(), "machine-00");
-        assert_eq!(answers[request_count - 1].0.as_str(), "machine-16");
+        let [first, .., last] = answers.as_slice() else {
+            panic!("gather must retain the complete request set");
+        };
+        assert_eq!(first.0.as_str(), "machine-00");
+        assert_eq!(last.0.as_str(), "machine-16");
     }
 
     #[test]
@@ -374,7 +377,10 @@ mod tests {
 
         let projected = volume_snapshots(&intent, answers).expect("valid projection");
         assert_eq!(projected.len(), 1);
-        assert_eq!(projected[0].testimony, VolumeTestimony::Unavailable);
+        let [projected] = projected.as_slice() else {
+            panic!("only the requested volume may be projected");
+        };
+        assert_eq!(projected.testimony, VolumeTestimony::Unavailable);
     }
 
     #[test]
@@ -418,12 +424,15 @@ mod tests {
 
         let projected =
             volume_snapshots(&intent, Vec::<MachineAnswer>::new()).expect("valid projection");
-        assert_eq!(projected[0].volume_name.as_str(), "alpha");
-        assert_eq!(projected[1].volume_name, zeta);
-        assert!(matches!(projected[0].kind, VolumeKind::Provisioned { .. }));
-        assert_eq!(projected[0].status, VolumeStatus::InUse);
+        let [alpha, projected_zeta] = projected.as_slice() else {
+            panic!("intent volumes must project exactly once");
+        };
+        assert_eq!(alpha.volume_name.as_str(), "alpha");
+        assert_eq!(projected_zeta.volume_name, zeta);
+        assert!(matches!(&alpha.kind, VolumeKind::Provisioned { .. }));
+        assert_eq!(alpha.status, VolumeStatus::InUse);
         assert_eq!(
-            projected[0]
+            alpha
                 .referencing_services
                 .iter()
                 .map(|id| id.as_str())
