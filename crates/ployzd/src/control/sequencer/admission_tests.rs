@@ -87,6 +87,27 @@ async fn build_submit_records_redacted_accepted_evidence_before_execution() {
 }
 
 #[tokio::test]
+async fn build_submit_rejects_same_operation_id_with_different_request() {
+    let (_nats, controllers, _intent) = test_controllers().await;
+    let original = build_submit_command("build_conflict");
+    controllers
+        .submit_build(original)
+        .await
+        .expect("original submits");
+    let mut conflicting = build_submit_command("build_conflict");
+    conflicting.platforms =
+        BuildPlatforms::try_new([OciPlatform::try_new("linux", "arm64").expect("valid platform")])
+            .expect("non-empty platforms");
+
+    assert!(matches!(
+        controllers.submit_build(conflicting).await,
+        Err(SubmitCommandError::Submit(
+            SubmitOperationError::DuplicateSequenceMismatch { .. }
+        ))
+    ));
+}
+
+#[tokio::test]
 async fn update_and_storage_prepare_conflict_in_both_directions() {
     let (_nats, controllers, _intent) = test_controllers().await;
     controllers

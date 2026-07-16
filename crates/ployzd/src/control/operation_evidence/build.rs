@@ -16,9 +16,15 @@ impl OperationRepository {
             adapter: submission.adapter,
             platforms: submission.platforms,
         };
+        let requested_payload = payload.clone();
         let submitted = self
             .submit_operation::<BuildOperationSubmission>(submission.operation_id, payload)
             .await?;
+        if submitted.payload != requested_payload {
+            return Err(SubmitOperationError::DuplicateSequenceMismatch {
+                sequence: submitted.start_sequence,
+            });
+        }
         Ok(AcceptedBuildSubmission {
             operation_id: submitted.operation_id,
             start_sequence: submitted.start_sequence,

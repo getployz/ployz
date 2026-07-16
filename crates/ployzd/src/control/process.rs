@@ -18,6 +18,7 @@ use crate::control::intent::service::{
     NatsIntentReader, RunningIntentService, start_intent_service,
 };
 use crate::control::operation_evidence::{OperationRepository, OperationStatusStoreError};
+use crate::control::operations::build::BuildOperationDriver;
 use crate::control::operations::credential_grant::CredentialGrantOperation;
 use crate::control::operations::deploy::driver::{DeployOperationDriver, DeployOperationStores};
 use crate::control::operations::ingress_configure::IngressConfigureOperation;
@@ -65,6 +66,7 @@ use std::time::Duration;
 const CONTROL_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const INTENT_PUBLISH_INTERVAL: Duration = Duration::from_secs(30);
 const REACHABILITY_RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
+const BUILD_OPERATION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 pub struct RunningControlProcess {
     intent: RunningIntentService,
@@ -471,6 +473,14 @@ async fn start_control_process_with_client_reload_and_issuer(
         client.clone(),
         controllers.clone(),
         machine_roster.clone(),
+        task_spawner.clone(),
+    );
+    let build_driver = BuildOperationDriver::new(
+        client.clone(),
+        facts_reader.clone(),
+        machine_roster.clone(),
+        controllers.clone(),
+        BUILD_OPERATION_TIMEOUT,
         task_spawner,
     );
     let operation_api = start_operation_api_service_with_handlers(
@@ -478,6 +488,7 @@ async fn start_control_process_with_client_reload_and_issuer(
         OperationApiHandlers::execute_operations(
             controllers,
             OperationWorkers {
+                build: build_driver,
                 credential_grant,
                 ingress_configure,
                 deploy: deploy_driver,

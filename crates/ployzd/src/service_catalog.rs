@@ -34,6 +34,8 @@ pub const RUNTIME_PROJECTION_SERVICE_ID: &str = "plz-runtime-projection.core";
 pub const RUNTIME_PROJECTION_SERVICE_DESCRIPTION: &str = "Ployz passive runtime projection";
 pub const SERVICE_VERSION: ServiceVersion = ServiceVersion::new(0, 1, 0);
 pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: &[OperationApiEndpoint] = &[
+    OperationApiEndpoint::BuildSubmit,
+    OperationApiEndpoint::BuildCancel,
     OperationApiEndpoint::CredentialAdd,
     OperationApiEndpoint::CredentialList,
     OperationApiEndpoint::CredentialRemove,

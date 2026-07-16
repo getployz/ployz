@@ -27,7 +27,7 @@ impl BuildPlacement {
 pub(crate) fn place_build_platforms(
     platforms: &BuildPlatforms,
     facts: &[MachinePlacementFacts],
-) -> Result<BuildPlacement, BuildOperationFailure> {
+) -> Result<BuildPlacement, Box<BuildOperationFailure>> {
     let mut by_platform = BTreeMap::new();
     for platform in platforms.iter() {
         let mut unusable = Vec::new();
@@ -59,10 +59,10 @@ pub(crate) fn place_build_platforms(
         eligible.sort();
         unusable.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
         let Some(machine_id) = eligible.into_iter().next() else {
-            return Err(BuildOperationFailure::NoEligibleMachine {
+            return Err(Box::new(BuildOperationFailure::NoEligibleMachine {
                 platform: platform.clone(),
                 unusable,
-            });
+            }));
         };
         by_platform.insert(platform.clone(), machine_id);
     }
@@ -113,7 +113,7 @@ mod tests {
                 .expect_err("arm64 has no fresh matching testimony");
 
         assert!(matches!(
-            failure,
+            *failure,
             BuildOperationFailure::NoEligibleMachine { platform, unusable }
                 if platform == arm64
                     && unusable.iter().any(|machine| {
@@ -124,11 +124,17 @@ mod tests {
     }
 
     fn answering(machine: &str, platform: OciPlatform) -> MachinePlacementFacts {
+        let machine_id = MachineId::try_new(machine).expect("machine id");
         MachinePlacementFacts {
-            machine_id: MachineId::try_new(machine).expect("machine id"),
+            machine_id: machine_id.clone(),
             lifecycle: MachineLifecycle::Active,
             answer: Some(MachinePlacementFactsAnswer {
-                containers: Default::default(),
+                containers:
+                    ployz_core::machine::runtime::MachineContainerObservationSnapshot::try_new(
+                        machine_id,
+                        [],
+                    )
+                    .expect("empty snapshot"),
                 platform,
                 endpoints: None,
                 storage: None,
