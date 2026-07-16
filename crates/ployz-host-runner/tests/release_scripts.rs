@@ -51,6 +51,32 @@ fn dind_builder_modes_label_machine_image_and_cache_workload_tars() {
 
 #[cfg(unix)]
 #[test]
+fn dind_builder_exports_railpack_through_the_root_builder() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = FakeDocker::new("ployz-dind-railpack-export");
+    let release = fixture.0.join("target/release");
+    fs::remove_file(release.join("railpack")).expect("cached Railpack can be removed");
+    fs::remove_file(release.join("railpack.source")).expect("Railpack stamp can be removed");
+    fs::set_permissions(&release, fs::Permissions::from_mode(0o555))
+        .expect("release directory can model root ownership");
+
+    let output = fixture.run_builder(&["artifacts-only"]);
+    fs::set_permissions(&release, fs::Permissions::from_mode(0o755))
+        .expect("release directory permissions can be restored");
+    assert_success(&output);
+    let log = fixture.log();
+    assert!(log.contains(&format!(
+        "--volume {}:/target",
+        fixture.0.join("target").display()
+    )));
+    assert!(log.contains(":/railpack-input:ro"));
+    assert!(log.contains("install -m 0755 /railpack-input/railpack"));
+    assert!(log.contains("install -m 0644 /railpack-input/railpack.source"));
+}
+
+#[cfg(unix)]
+#[test]
 fn filtered_dind_reuses_matching_substrate_and_unfiltered_is_full() {
     let fixture = FakeDocker::new("ployz-dind-filtered");
     seed_workload_tars(&fixture);
@@ -693,6 +719,7 @@ esac
         .expect("fake docker can be written");
         fs::set_permissions(&docker, fs::Permissions::from_mode(0o755))
             .expect("fake docker can be executable");
+        write_fake_railpack_download_tools(&root);
         let railpack = root.join("target/release/railpack");
         fs::write(&railpack, "fake railpack\n").expect("fake Railpack can be written");
         fs::set_permissions(&railpack, fs::Permissions::from_mode(0o755))
@@ -759,6 +786,53 @@ esac
     }
     fn clear_log(&self) {
         fs::write(self.0.join("commands.log"), "").expect("log can be cleared");
+    }
+}
+
+#[cfg(unix)]
+fn write_fake_railpack_download_tools(root: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    for (name, script) in [
+        (
+            "curl",
+            r#"#!/bin/sh
+set -eu
+output=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = --output ]; then output=$2; shift 2; else shift; fi
+done
+: > "${output}"
+"#,
+        ),
+        (
+            "sha256sum",
+            r#"#!/bin/sh
+case "$1" in
+  */ployz-dind-railpack.*/*)
+    printf '%s  %s\n' f75416cf4c452db2841d864f54dbfd8e4d77f2d4a02b23b87561e7760fa278fd "$1"
+    ;;
+  *) exec /usr/bin/sha256sum "$@" ;;
+esac
+"#,
+        ),
+        (
+            "tar",
+            r#"#!/bin/sh
+set -eu
+destination=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -C ]; then destination=$2; shift 2; else shift; fi
+done
+printf '%s\n' '#!/bin/sh' 'exit 0' > "${destination}/railpack"
+chmod 0755 "${destination}/railpack"
+"#,
+        ),
+    ] {
+        let path = root.join("bin").join(name);
+        fs::write(&path, script).expect("fake Railpack download tool can be written");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
+            .expect("fake Railpack download tool can be executable");
     }
 }
 
