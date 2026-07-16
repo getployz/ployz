@@ -43,6 +43,7 @@ use ployz_core::network::{
     DEFAULT_WIREGUARD_LISTEN_PORT, DataplaneProjection, DataplaneProjectionTestimony,
     EbpfAttachmentStatus, EndpointBridgeStatus, MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS,
     WireGuardDetectedMtu, WireGuardHandshakeStatus, WireGuardInterfaceMtu,
+    WireGuardPeerEndpointSubnet,
 };
 use ployz_core::operation::{
     ArtifactUnavailableReason, DeployCompletionOutcome, DeployOperationFailure,
@@ -184,6 +185,10 @@ fn peer_handshakes_fresh(machine: &NetworkStatusMachine, projection: &DataplaneP
             .all(|member| {
                 value.wireguard.peers.iter().any(|peer| {
                     peer.public_key == member.wireguard_public_key
+                        && peer.endpoint_subnet
+                            == WireGuardPeerEndpointSubnet::Valid {
+                                subnet: member.endpoint_subnet.clone(),
+                            }
                         && matches!(
                             peer.handshake,
                             WireGuardHandshakeStatus::Ago { seconds }

@@ -9,11 +9,10 @@ use crate::roles::machine::protocol::MachineSubstrateUpdateRpcRequest;
 use crate::tasks::TaskSpawner;
 use ployz_core::ids::MachineId;
 use ployz_core::install::InstallArtifactVersion;
-use ployz_core::operation::MachineSubstrateVersions;
 use ployz_core::operation::{FailureMessage, MachineUpdateFailure, MachineUpdateTransition};
+use ployz_core::operation::{MACHINE_UPDATE_REPORT_TIMEOUT, MachineSubstrateVersions};
 use std::time::{Duration, Instant};
 
-const UPDATE_REPORT_TIMEOUT: Duration = Duration::from_secs(120);
 const UPDATE_REPORT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone)]
@@ -169,7 +168,7 @@ impl MachineUpdateOperation {
         machine_id: &MachineId,
         target_version: &InstallArtifactVersion,
     ) -> Result<MachineSubstrateVersions, MachineUpdateFailure> {
-        let deadline = Instant::now() + UPDATE_REPORT_TIMEOUT;
+        let deadline = Instant::now() + MACHINE_UPDATE_REPORT_TIMEOUT;
         let mut last_reported = MachineSubstrateVersions::default();
         loop {
             match self

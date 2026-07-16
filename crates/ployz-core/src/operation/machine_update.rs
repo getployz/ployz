@@ -3,6 +3,7 @@
 //! live together here.
 
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 use crate::ids::{MachineId, OperationId};
 use crate::install::InstallArtifactVersion;
@@ -17,6 +18,13 @@ use super::{
     EventSequence, OperationInterruptionCause, OperationInterruptionEvidence,
     OperationInterruptionStage, OperationKind, OperationStatus,
 };
+
+pub const MACHINE_SUBSTRATE_UPDATE_LEAK_BACKSTOP: Duration = Duration::from_secs(30 * 60);
+pub const MACHINE_SUBSTRATE_UPDATE_TERMINATION_GRACE: Duration = Duration::from_secs(30);
+pub const MACHINE_UPDATE_REPORT_TIMEOUT: Duration = Duration::from_secs(
+    MACHINE_SUBSTRATE_UPDATE_LEAK_BACKSTOP.as_secs()
+        + MACHINE_SUBSTRATE_UPDATE_TERMINATION_GRACE.as_secs(),
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]

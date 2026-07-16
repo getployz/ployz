@@ -81,8 +81,9 @@ pub use machine_storage_prepare::{
     MachineStoragePrepareTransition,
 };
 pub use machine_update::{
-    MachineSubstrateVersions, MachineUpdateFailure, MachineUpdateOperationState,
-    MachineUpdateTransition,
+    MACHINE_SUBSTRATE_UPDATE_LEAK_BACKSTOP, MACHINE_SUBSTRATE_UPDATE_TERMINATION_GRACE,
+    MACHINE_UPDATE_REPORT_TIMEOUT, MachineSubstrateVersions, MachineUpdateFailure,
+    MachineUpdateOperationState, MachineUpdateTransition,
 };
 pub use managed_dns_reconcile::{
     ManagedDnsReconcileFailure, ManagedDnsReconcileFailureClass, ManagedDnsReconcileOperationState,

@@ -13,11 +13,11 @@ use atomic_write_file::AtomicWriteFile;
 use atomic_write_file::unix::OpenOptionsExt as AtomicOpenOptionsExt;
 use ployz_core::deploy::ZfsPoolName;
 use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::install::{
-    InstallArtifactVersion, MACHINE_SUBSTRATE_UPDATE_LEAK_BACKSTOP,
-    MACHINE_SUBSTRATE_UPDATE_TERMINATION_GRACE,
+use ployz_core::install::InstallArtifactVersion;
+use ployz_core::operation::{
+    FailureMessage, MACHINE_SUBSTRATE_UPDATE_LEAK_BACKSTOP,
+    MACHINE_SUBSTRATE_UPDATE_TERMINATION_GRACE, MachineSubstrateVersions,
 };
-use ployz_core::operation::{FailureMessage, MachineSubstrateVersions};
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decode_json_request};
 use serde::Deserialize;
 use std::io::ErrorKind;
@@ -88,6 +88,18 @@ impl PrivilegedHostEffect<'_> {
     }
 }
 
+fn spawn_bounded_privileged_host_effect(
+    mut command: tokio::process::Command,
+) -> std::io::Result<tokio::process::Child> {
+    command.kill_on_drop(true).spawn()
+}
+
+fn spawn_detached_privileged_host_effect(
+    mut command: tokio::process::Command,
+) -> std::io::Result<tokio::process::Child> {
+    command.spawn()
+}
+
 fn privileged_substrate_lock() -> Arc<tokio::sync::Mutex<()>> {
     static LOCK: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
     LOCK.get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
@@ -118,13 +130,12 @@ pub(crate) async fn handle_storage_prepare(
         Path::new(STORAGE_OPERATION_DIRECTORY),
         MACHINE_STORAGE_PREPARE_BUDGET,
         || {
-            let mut command = PrivilegedHostEffect::StoragePrepare {
+            let command = PrivilegedHostEffect::StoragePrepare {
                 operation_id: &request.operation_id,
                 pool: request.pool.as_ref(),
             }
             .into_command();
-            command.kill_on_drop(true);
-            command.spawn()
+            spawn_bounded_privileged_host_effect(command)
         },
     )
     .await;
@@ -373,8 +384,8 @@ pub(crate) async fn handle_substrate_update(
         operation_id: &request.operation_id,
         version: &request.target_version,
     }
-    .into_command()
-    .spawn();
+    .into_command();
+    let child = spawn_detached_privileged_host_effect(child);
     let child = match child {
         Ok(child) => child,
         Err(error) => {
@@ -661,14 +672,14 @@ mod storage_tests {
             directory.path(),
             Duration::from_millis(10),
             || {
-                tokio::process::Command::new("flock")
+                let mut command = tokio::process::Command::new("flock");
+                command
                     .arg("--no-fork")
                     .arg("--nonblock")
                     .arg(&lock_file)
                     .arg("sleep")
-                    .arg("30")
-                    .kill_on_drop(true)
-                    .spawn()
+                    .arg("30");
+                spawn_bounded_privileged_host_effect(command)
             },
         )
         .await;
@@ -707,8 +718,9 @@ mod storage_tests {
     }
 
     #[cfg(target_os = "linux")]
-    #[test]
-    fn direct_child_survives_runtime_teardown_without_kill_on_drop() {
+    fn supervised_child_after_runtime_teardown(
+        spawn: fn(tokio::process::Command) -> std::io::Result<tokio::process::Child>,
+    ) -> u32 {
         let lock = Arc::new(tokio::sync::Mutex::new(()));
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -718,7 +730,7 @@ mod storage_tests {
             let guard = lock.clone().try_lock_owned().expect("process guard");
             let mut command = tokio::process::Command::new("sleep");
             command.arg("30");
-            let child = command.spawn().expect("sleep child");
+            let child = spawn(command).expect("sleep child");
             let pid = child.id().expect("child process id");
             let supervisor = tokio::spawn(supervise_substrate_update(
                 guard,
@@ -731,10 +743,18 @@ mod storage_tests {
         });
         drop(runtime);
         drop(supervisor);
-
-        assert!(Path::new(&format!("/proc/{pid}")).exists());
         assert!(lock.try_lock().is_ok(), "process guard remained held");
+        pid
+    }
 
+    #[cfg(target_os = "linux")]
+    fn linux_process_state(pid: u32) -> Option<char> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        stat.rsplit_once(") ")?.1.chars().next()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn terminate_linux_process(pid: u32) {
         let kill = std::process::Command::new("kill")
             .arg("-KILL")
             .arg(pid.to_string())
@@ -745,7 +765,6 @@ mod storage_tests {
             .enable_all()
             .build()
             .expect("cleanup runtime");
-        let process_path = format!("/proc/{pid}");
         for _ in 0..50 {
             cleanup_runtime.block_on(async {
                 tokio::process::Command::new("true")
@@ -753,11 +772,34 @@ mod storage_tests {
                     .await
                     .expect("drive process reaping");
             });
-            if !Path::new(&process_path).exists() {
+            if linux_process_state(pid).is_none() {
                 return;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
         panic!("surviving child {pid} was not reaped after explicit termination");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn privileged_effect_spawn_policy_distinguishes_detached_from_bounded_teardown() {
+        let detached_pid =
+            supervised_child_after_runtime_teardown(spawn_detached_privileged_host_effect);
+        assert!(
+            matches!(linux_process_state(detached_pid), Some(state) if state != 'Z'),
+            "detached child did not survive runtime teardown"
+        );
+        terminate_linux_process(detached_pid);
+
+        let bounded_pid =
+            supervised_child_after_runtime_teardown(spawn_bounded_privileged_host_effect);
+        for _ in 0..50 {
+            if !matches!(linux_process_state(bounded_pid), Some(state) if state != 'Z') {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        terminate_linux_process(bounded_pid);
+        panic!("bounded child remained alive after runtime teardown");
     }
 }
