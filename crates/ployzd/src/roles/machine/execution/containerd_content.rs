@@ -1,14 +1,14 @@
 //! Docker-owned containerd content access for pushed OCI image blobs.
 
 use containerd_client::services::v1::{
-    CreateRequest, DeleteRequest, InfoRequest, ReadContentRequest, WriteAction,
-    WriteContentRequest, WriteContentResponse,
+    AddResourceRequest, CreateRequest, DeleteRequest, InfoRequest, ReadContentRequest, Resource,
+    WriteAction, WriteContentRequest, WriteContentResponse,
 };
 use containerd_client::tonic::metadata::{Ascii, MetadataValue};
 use containerd_client::tonic::transport::Channel;
 use containerd_client::tonic::{Code, Request, Status};
 use futures_util::{Stream, StreamExt, stream};
-use ployz_core::image::OciDigest;
+use ployz_core::image::{ImageContentLeaseExpiresAt, OciDigest};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -131,15 +131,17 @@ impl ContainerdContentStore {
     }
 
     pub async fn acquire_lease(&self) -> Result<ContentLease, ContainerdContentError> {
-        let expires_at = (OffsetDateTime::now_utc() + INGEST_LEASE_LIFETIME)
-            .format(&Rfc3339)
-            .map_err(|error| ContainerdContentError::Protocol {
-                message: format!("format lease expiration: {error}"),
-            })?;
+        let expires_at = OffsetDateTime::now_utc() + INGEST_LEASE_LIFETIME;
+        let expires_at_label =
+            expires_at
+                .format(&Rfc3339)
+                .map_err(|error| ContainerdContentError::Protocol {
+                    message: format!("format lease expiration: {error}"),
+                })?;
         let id = format!("ployz-image-{}", nuid::next().to_ascii_lowercase());
         let request = scoped_request(CreateRequest {
             id,
-            labels: HashMap::from([("containerd.io/gc.expire".to_owned(), expires_at)]),
+            labels: HashMap::from([("containerd.io/gc.expire".to_owned(), expires_at_label)]),
         })?;
         let response = containerd_client::Client::from(self.channel.clone())
             .leases()
@@ -157,7 +159,39 @@ impl ContainerdContentStore {
                 message: "lease create response returned an empty id".to_owned(),
             });
         }
-        Ok(ContentLease { id: lease.id })
+        let expires_at = u64::try_from(expires_at.unix_timestamp()).map_err(|_| {
+            ContainerdContentError::Protocol {
+                message: "lease expiration is before the Unix epoch".to_owned(),
+            }
+        })?;
+        Ok(ContentLease {
+            id: lease.id,
+            expires_at: ImageContentLeaseExpiresAt::try_new(expires_at).map_err(|error| {
+                ContainerdContentError::Protocol {
+                    message: format!("invalid lease expiration: {error}"),
+                }
+            })?,
+        })
+    }
+
+    pub async fn retain_content(
+        &self,
+        lease: &ContentLease,
+        digest: &OciDigest,
+    ) -> Result<(), ContainerdContentError> {
+        let request = scoped_request(AddResourceRequest {
+            id: lease.id.clone(),
+            resource: Some(Resource {
+                id: digest.as_str().to_owned(),
+                r#type: "content".to_owned(),
+            }),
+        })?;
+        containerd_client::Client::from(self.channel.clone())
+            .leases()
+            .add_resource(request)
+            .await
+            .map_err(|status| rpc_error("retain content under lease", status))?;
+        Ok(())
     }
 
     pub async fn release_lease(&self, lease: ContentLease) -> Result<(), ContainerdContentError> {
@@ -223,7 +257,7 @@ impl ContainerdContentStore {
             )
             .await;
         match result {
-            Ok(_) => Ok(()),
+            Ok(_) => self.retain_content(&ingest.lease, &ingest.digest).await,
             Err(ContainerdContentError::Rpc {
                 code: Code::AlreadyExists,
                 ..
@@ -242,7 +276,7 @@ impl ContainerdContentStore {
                         actual: info.size,
                     });
                 }
-                Ok(())
+                self.retain_content(&ingest.lease, &ingest.digest).await
             }
             Err(error) => Err(error),
         }
@@ -317,6 +351,14 @@ pub struct ContentBlobInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContentLease {
     id: String,
+    expires_at: ImageContentLeaseExpiresAt,
+}
+
+impl ContentLease {
+    #[must_use]
+    pub const fn expires_at(&self) -> ImageContentLeaseExpiresAt {
+        self.expires_at
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

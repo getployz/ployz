@@ -951,6 +951,7 @@ fn add_retained_artifacts(failure: &mut DeployOperationFailure, artifacts: Vec<R
         | DeployOperationFailure::ImageDigestMismatch { .. }
         | DeployOperationFailure::SeedUnavailable { .. }
         | DeployOperationFailure::PlatformImageUnavailable { .. }
+        | DeployOperationFailure::PlatformImageExpired { .. }
         | DeployOperationFailure::UnsupportedTargetPlatform { .. } => return,
     };
 

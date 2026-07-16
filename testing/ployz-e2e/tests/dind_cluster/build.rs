@@ -634,6 +634,10 @@ fn mixed_architecture_receipt_identity_is_stable_across_seed_relocation() {
         seed: machine_id(seed),
         manifest_digest: digest(manifest),
         image_id: digest(config),
+        availability_expires_at: ployz_core::deploy::ImageAvailabilityExpiresAt::try_new(
+            4_102_444_800,
+        )
+        .expect("expiry"),
     };
     let original = PushedImageReceipt::try_new([
         (amd64.clone(), image("amd64-seed", 'a', 'b')),

@@ -161,6 +161,10 @@ mod tests {
                 seed: MachineId::try_new("machine-a").expect("machine"),
                 manifest_digest: digest.clone(),
                 image_id: digest.clone(),
+                availability_expires_at: ployz_core::deploy::ImageAvailabilityExpiresAt::try_new(
+                    4_102_444_800,
+                )
+                .expect("expiry"),
             },
             verified_commit: VerifiedGitCommit::from_source(&source),
             toolchain: BuildToolchainEvidence {

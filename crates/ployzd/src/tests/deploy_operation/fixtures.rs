@@ -1292,6 +1292,11 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
                                 "b".repeat(64)
                             ))
                             .expect("valid image id"),
+                            availability_expires_at:
+                                ployz_core::deploy::ImageAvailabilityExpiresAt::try_new(
+                                    4_102_444_800,
+                                )
+                                .expect("expiry"),
                         },
                     ),
                     (
@@ -1309,6 +1314,11 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
                                 "e".repeat(64)
                             ))
                             .expect("valid image id"),
+                            availability_expires_at:
+                                ployz_core::deploy::ImageAvailabilityExpiresAt::try_new(
+                                    4_102_444_800,
+                                )
+                                .expect("expiry"),
                         },
                     ),
                 ])

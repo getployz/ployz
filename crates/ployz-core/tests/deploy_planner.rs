@@ -134,14 +134,20 @@ fn retention_policy_changes_neither_service_entry_nor_namespace_revision_identit
 #[test]
 fn pushed_image_identity_uses_index_digest_across_platform_receipts() {
     let mut left = service_spec("svc_api", "api:latest", 1, None);
-    left.image_source =
-        pushed_image_source([('b', "amd64", "machine_a"), ('c', "arm64", "machine_c")]);
+    left.image_source = pushed_image_source(
+        [('b', "amd64", "machine_a"), ('c', "arm64", "machine_c")],
+        4_102_444_800,
+    );
     let mut same_content = left.clone();
-    same_content.image_source =
-        pushed_image_source([('b', "amd64", "machine_b"), ('c', "arm64", "machine_d")]);
+    same_content.image_source = pushed_image_source(
+        [('b', "amd64", "machine_b"), ('c', "arm64", "machine_d")],
+        4_000_000_000,
+    );
     let mut changed_content = same_content.clone();
-    changed_content.image_source =
-        pushed_image_source([('d', "amd64", "machine_b"), ('c', "arm64", "machine_d")]);
+    changed_content.image_source = pushed_image_source(
+        [('d', "amd64", "machine_b"), ('c', "arm64", "machine_d")],
+        4_000_000_000,
+    );
 
     assert_eq!(
         left.namespace_revision_entry_id(&namespace_id("default")),
@@ -153,7 +159,10 @@ fn pushed_image_identity_uses_index_digest_across_platform_receipts() {
     );
 }
 
-fn pushed_image_source<const N: usize>(platforms: [(char, &str, &str); N]) -> ImageSource {
+fn pushed_image_source<const N: usize>(
+    platforms: [(char, &str, &str); N],
+    availability_expires_at: u64,
+) -> ImageSource {
     let receipt =
         PushedImageReceipt::try_new(platforms.into_iter().map(|(digest, architecture, seed)| {
             (
@@ -162,6 +171,11 @@ fn pushed_image_source<const N: usize>(platforms: [(char, &str, &str); N]) -> Im
                     seed: machine_id(seed),
                     manifest_digest: oci_digest(digest),
                     image_id: oci_digest(digest),
+                    availability_expires_at:
+                        ployz_core::deploy::ImageAvailabilityExpiresAt::try_new(
+                            availability_expires_at,
+                        )
+                        .expect("expiry"),
                 },
             )
         }))

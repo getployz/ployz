@@ -55,7 +55,8 @@ impl<'a> DeployFailureView<'a> {
             }
             DeployOperationFailure::ImageMissingOnSeed { seed, .. }
             | DeployOperationFailure::ImageDigestMismatch { seed, .. }
-            | DeployOperationFailure::SeedUnavailable { seed, .. } => {
+            | DeployOperationFailure::SeedUnavailable { seed, .. }
+            | DeployOperationFailure::PlatformImageExpired { seed, .. } => {
                 push_unique(&mut machines, seed);
             }
             DeployOperationFailure::ArtifactUnavailable {
@@ -211,6 +212,7 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::ImageDigestMismatch { .. }
             | DeployOperationFailure::SeedUnavailable { .. }
             | DeployOperationFailure::PlatformImageUnavailable { .. }
+            | DeployOperationFailure::PlatformImageExpired { .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { .. } => {
                 FailureSafety::NothingChanged
             }
@@ -235,6 +237,7 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::ImageDigestMismatch { service_id, .. }
             | DeployOperationFailure::SeedUnavailable { service_id, .. }
             | DeployOperationFailure::PlatformImageUnavailable { service_id, .. }
+            | DeployOperationFailure::PlatformImageExpired { service_id, .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { service_id, .. } => {
                 Some(service_id)
             }
@@ -262,6 +265,7 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::ImageDigestMismatch { .. }
             | DeployOperationFailure::SeedUnavailable { .. }
             | DeployOperationFailure::PlatformImageUnavailable { .. }
+            | DeployOperationFailure::PlatformImageExpired { .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
@@ -303,6 +307,7 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::ImageDigestMismatch { .. }
             | DeployOperationFailure::SeedUnavailable { .. }
             | DeployOperationFailure::PlatformImageUnavailable { .. }
+            | DeployOperationFailure::PlatformImageExpired { .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
@@ -322,6 +327,7 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::ImageDigestMismatch { service_id, .. }
             | DeployOperationFailure::SeedUnavailable { service_id, .. }
             | DeployOperationFailure::PlatformImageUnavailable { service_id, .. }
+            | DeployOperationFailure::PlatformImageExpired { service_id, .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { service_id, .. } => {
                 Some(service_id)
             }
@@ -495,6 +501,19 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
             target_platform.os(),
             target_platform.architecture(),
             machine_id.as_str()
+        ),
+        DeployOperationFailure::PlatformImageExpired {
+            service_id,
+            seed,
+            target_platform,
+            expired_at,
+        } => format!(
+            "image {} for {}/{} expired on seed {} at Unix second {}",
+            requested_image(target, service_id).unwrap_or("requested image"),
+            target_platform.os(),
+            target_platform.architecture(),
+            seed.as_str(),
+            expired_at.unix_seconds()
         ),
         DeployOperationFailure::UnsupportedTargetPlatform {
             service_id,

@@ -1,6 +1,7 @@
 //! Pushed-image availability and mesh redistribution for deploy execution.
 
 use std::collections::BTreeMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use ployz_core::deploy::{
     DeployCleanupAction, DeployPlan, DeployPlanStep, DeployServicePlan, ImageSource,
@@ -401,6 +402,16 @@ where
                     }),
                 });
             };
+            if let Some(failure) = expired_platform_failure(
+                &service.service.service_id,
+                &target_platform,
+                platform_image,
+                current_unix_seconds()?,
+            ) {
+                return Err(DeployExecutionError::Image {
+                    failure: Box::new(failure),
+                });
+            }
             let request = ImageEnsureRequest {
                 repository: ImageRepository::for_service(
                     command.request.namespace_id(),
@@ -445,6 +456,32 @@ where
         }
     }
     Ok(())
+}
+
+fn current_unix_seconds() -> Result<u64, DeployExecutionError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|error| DeployExecutionError::InternalInvariant {
+            message: format!("system time is before the Unix epoch: {error}"),
+        })
+}
+
+fn expired_platform_failure(
+    service_id: &ployz_core::ids::ServiceId,
+    target_platform: &ployz_core::image::OciPlatform,
+    platform_image: &ployz_core::deploy::PlatformImage,
+    now_unix_seconds: u64,
+) -> Option<DeployOperationFailure> {
+    platform_image
+        .availability_expires_at
+        .is_expired_at(now_unix_seconds)
+        .then(|| DeployOperationFailure::PlatformImageExpired {
+            service_id: service_id.clone(),
+            seed: platform_image.seed.clone(),
+            target_platform: target_platform.clone(),
+            expired_at: platform_image.availability_expires_at,
+        })
 }
 
 fn ensure_image_failure(
@@ -587,6 +624,57 @@ mod tests {
     }
 
     #[test]
+    fn expired_platform_is_rejected_before_image_ensure() {
+        let service = pushed_service();
+        let ImageSource::PushedToSeed(receipt) = &service.service.image_source else {
+            panic!("pushed service");
+        };
+        let target_platform = platform("amd64");
+        let platform_image = receipt.platform(&target_platform).expect("platform image");
+
+        let failure = expired_platform_failure(
+            &service.service.service_id,
+            &target_platform,
+            platform_image,
+            platform_image.availability_expires_at.unix_seconds(),
+        )
+        .expect("expired receipt fails before RPC");
+
+        assert_eq!(
+            failure,
+            DeployOperationFailure::PlatformImageExpired {
+                service_id: service.service.service_id.clone(),
+                seed: platform_image.seed.clone(),
+                target_platform,
+                expired_at: platform_image.availability_expires_at,
+            }
+        );
+    }
+
+    #[test]
+    fn unexpired_platform_remains_eligible_for_image_ensure() {
+        let service = pushed_service();
+        let ImageSource::PushedToSeed(receipt) = &service.service.image_source else {
+            panic!("pushed service");
+        };
+        let target_platform = platform("amd64");
+        let platform_image = receipt.platform(&target_platform).expect("platform image");
+
+        assert!(
+            expired_platform_failure(
+                &service.service.service_id,
+                &target_platform,
+                platform_image,
+                platform_image
+                    .availability_expires_at
+                    .unix_seconds()
+                    .saturating_sub(1),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
     fn pushed_platforms_are_validated_across_all_phases_before_execution() {
         let service = pushed_service();
         let target_machine = machine_id("machine_arm");
@@ -671,6 +759,11 @@ mod tests {
                             seed: machine_id("machine_seed"),
                             manifest_digest: digest('b'),
                             image_id: digest('c'),
+                            availability_expires_at:
+                                ployz_core::deploy::ImageAvailabilityExpiresAt::try_new(
+                                    4_102_444_800,
+                                )
+                                .expect("expiry"),
                         },
                     )])
                     .expect("pushed receipt"),

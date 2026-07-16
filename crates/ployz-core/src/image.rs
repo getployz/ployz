@@ -5,6 +5,7 @@ use std::fmt;
 use crate::ids::{MachineId, NamespaceId, ServiceId};
 use crate::machine::rpc::{MachineRpcResponder, MachineRpcResponse};
 use crate::operation::FailureMessage;
+use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 pub const IMAGE_MESH_REGISTRY_PORT: u16 = 5000;
 pub const IMAGE_BLOB_CHUNK_MAX_BYTES: usize = 512 * 1024;
@@ -473,9 +474,35 @@ pub enum ImageBlobPushRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ImageBlobPushOutcome {
-    Begun { upload_id: ImageUploadId },
-    ChunkAccepted { upload_id: ImageUploadId },
-    Committed { digest: OciDigest, size: u64 },
+    Begun {
+        upload_id: ImageUploadId,
+    },
+    Retained {
+        digest: OciDigest,
+        size: u64,
+        lease_expires_at: ImageContentLeaseExpiresAt,
+    },
+    ChunkAccepted {
+        upload_id: ImageUploadId,
+    },
+    Committed {
+        digest: OciDigest,
+        size: u64,
+        lease_expires_at: ImageContentLeaseExpiresAt,
+    },
+}
+
+positive_u64_wire_newtype! {
+    /// The machine-reported containerd lease expiration for pushed image content.
+    pub struct ImageContentLeaseExpiresAt;
+    ts_brand: "Brand<string, \"ImageContentLeaseExpiresAt\">";
+    accessor: unix_seconds;
+    error: ImageContentLeaseTimestampError;
+}
+
+positive_u64_wire_error! {
+    pub enum ImageContentLeaseTimestampError;
+    noun: "image content lease timestamp";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -507,6 +534,7 @@ pub struct ImageManifestPushOk {
     pub manifest_digest: OciDigest,
     pub image_id: OciDigest,
     pub platform: OciPlatform,
+    pub lease_expires_at: ImageContentLeaseExpiresAt,
 }
 
 impl MachineRpcResponder for ImageManifestPushOk {

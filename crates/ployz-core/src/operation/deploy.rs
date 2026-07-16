@@ -317,6 +317,12 @@ pub enum DeployOperationFailure {
         machine_id: MachineId,
         target_platform: crate::image::OciPlatform,
     },
+    PlatformImageExpired {
+        service_id: ServiceId,
+        seed: MachineId,
+        target_platform: crate::image::OciPlatform,
+        expired_at: crate::deploy::ImageAvailabilityExpiresAt,
+    },
     UnsupportedTargetPlatform {
         service_id: ServiceId,
         machine_id: MachineId,
@@ -432,6 +438,7 @@ impl DeployOperationFailure {
             | Self::ImageDigestMismatch { .. }
             | Self::SeedUnavailable { .. }
             | Self::PlatformImageUnavailable { .. }
+            | Self::PlatformImageExpired { .. }
             | Self::UnsupportedTargetPlatform { .. } => DeployFailureClass::ImageResolvePullFailed,
             Self::RuntimeUnavailable { .. } => DeployFailureClass::RuntimeUnavailable,
             Self::ContainerStartFailed { .. } => DeployFailureClass::ContainerStartFailed,
@@ -495,6 +502,7 @@ impl DeployOperationFailure {
             | Self::ImageDigestMismatch { .. }
             | Self::SeedUnavailable { .. }
             | Self::PlatformImageUnavailable { .. }
+            | Self::PlatformImageExpired { .. }
             | Self::UnsupportedTargetPlatform { .. } => &[],
         }
     }

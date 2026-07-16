@@ -609,6 +609,10 @@ mod tests {
                 manifest_digest: OciDigest::try_new(format!("sha256:{}", "1".repeat(64)))
                     .expect("digest"),
                 image_id: OciDigest::try_new(format!("sha256:{}", "2".repeat(64))).expect("digest"),
+                availability_expires_at: crate::deploy::ImageAvailabilityExpiresAt::try_new(
+                    4_102_444_800,
+                )
+                .expect("expiry"),
             },
         )])
         .expect("receipt")

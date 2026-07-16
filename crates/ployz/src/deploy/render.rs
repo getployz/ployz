@@ -868,6 +868,7 @@ fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine
                         | DeployOperationFailure::ImageDigestMismatch { .. }
                         | DeployOperationFailure::SeedUnavailable { .. }
                         | DeployOperationFailure::PlatformImageUnavailable { .. }
+                        | DeployOperationFailure::PlatformImageExpired { .. }
                         | DeployOperationFailure::UnsupportedTargetPlatform { .. } => {
                             failure_cause(target, failure)
                         }

@@ -3,9 +3,11 @@
 use super::*;
 
 pub use crate::image::{
-    OciDigest, OciPlatform, RegistryCredential, RegistryCredentialError, RegistryCredentialSecret,
-    RegistryCredentialUsername,
+    ImageContentLeaseExpiresAt, OciDigest, OciPlatform, RegistryCredential,
+    RegistryCredentialError, RegistryCredentialSecret, RegistryCredentialUsername,
 };
+
+const IMAGE_AVAILABILITY_SAFETY_MARGIN_SECONDS: u64 = 5 * 60;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -14,6 +16,37 @@ pub struct PlatformImage {
     pub seed: MachineId,
     pub manifest_digest: OciDigest,
     pub image_id: OciDigest,
+    pub availability_expires_at: ImageAvailabilityExpiresAt,
+}
+
+positive_u64_wire_newtype! {
+    /// The last Unix second before which a pushed platform is advertised as available.
+    pub struct ImageAvailabilityExpiresAt;
+    ts_brand: "Brand<string, \"ImageAvailabilityExpiresAt\">";
+    accessor: unix_seconds;
+    error: ImageAvailabilityTimestampError;
+}
+
+positive_u64_wire_error! {
+    pub enum ImageAvailabilityTimestampError;
+    noun: "image availability timestamp";
+}
+
+impl ImageAvailabilityExpiresAt {
+    pub fn from_content_lease_expiry(
+        lease_expires_at: ImageContentLeaseExpiresAt,
+    ) -> Result<Self, ImageAvailabilityTimestampError> {
+        Self::try_new(
+            lease_expires_at
+                .unix_seconds()
+                .saturating_sub(IMAGE_AVAILABILITY_SAFETY_MARGIN_SECONDS),
+        )
+    }
+
+    #[must_use]
+    pub const fn is_expired_at(self, now_unix_seconds: u64) -> bool {
+        self.unix_seconds() <= now_unix_seconds
+    }
 }
 
 /// A validated pushed-image receipt whose identity describes replacement-relevant
@@ -528,7 +561,30 @@ mod tests {
     }
 
     #[test]
-    fn pushed_receipt_index_is_sorted_and_excludes_seed_location() {
+    fn pushed_receipt_requires_a_valid_platform_availability_deadline() {
+        let mut encoded = serde_json::to_value(pushed_source()).expect("receipt serializes");
+        let Some(expires_at) = encoded.pointer_mut("/platforms/0/1/availability_expires_at") else {
+            panic!("receipt wire includes availability expiry");
+        };
+        *expires_at = serde_json::json!("0");
+
+        assert!(serde_json::from_value::<ImageSource>(encoded).is_err());
+    }
+
+    #[test]
+    fn advertised_availability_precedes_the_machine_content_lease() {
+        let lease = ImageContentLeaseExpiresAt::try_new(4_000).expect("lease expiry");
+
+        let advertised = ImageAvailabilityExpiresAt::from_content_lease_expiry(lease)
+            .expect("advertised expiry");
+
+        assert_eq!(advertised.unix_seconds(), 3_700);
+        assert!(!advertised.is_expired_at(3_699));
+        assert!(advertised.is_expired_at(3_700));
+    }
+
+    #[test]
+    fn pushed_receipt_index_is_sorted_and_excludes_seed_and_availability() {
         let amd64 = platform("amd64");
         let arm64 = platform("arm64");
         let left = PushedImageReceipt::try_new([
@@ -538,6 +594,8 @@ mod tests {
         .expect("receipt");
         let mut relocated_arm = platform_image('b');
         relocated_arm.seed = MachineId::try_new("machine_relocated").expect("machine id");
+        relocated_arm.availability_expires_at =
+            ImageAvailabilityExpiresAt::try_new(9_999).expect("expiry");
         let right =
             PushedImageReceipt::try_new([(amd64, platform_image('c')), (arm64, relocated_arm)])
                 .expect("receipt");
@@ -565,6 +623,7 @@ mod tests {
             seed: MachineId::try_new(format!("machine_{value}")).expect("machine id"),
             manifest_digest: digest(value),
             image_id: digest(value),
+            availability_expires_at: ImageAvailabilityExpiresAt::try_new(4_000).expect("expiry"),
         }
     }
 
