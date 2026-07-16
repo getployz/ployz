@@ -2944,7 +2944,11 @@ async fn wait_for_matching_snapshot(
         Duration::from_secs(120),
         &format!("state never matched the pre-restart truth (expected {before:?})"),
         |snapshot| {
-            let MachineSnapshot { active, testimony } = snapshot;
+            let MachineSnapshot {
+                active,
+                testimony,
+                storage_alarms: _,
+            } = snapshot;
             *active == before.active && matching_answered_testimony(testimony, &before.testimony)
         },
     )
