@@ -489,12 +489,13 @@ box.** "Can you host Ployz on an agent VM?" has a *profile-specific* answer.
 
 Consequences that the individual acts don't state on their own:
 
-- **Docker is the real blocker on Codex, and it's fatal to hosting.** The Ployz
-  core needs Docker as execution reality. On the Claude VM Docker works, so the
-  core boots; **on the Codex VM profile Docker won't run, so a Ployz core can't
-  be hosted at all** — the networking questions are moot until that's solved.
-  Don't read the combined log as "Docker is universally blocked"; it is
-  profile-specific (fine on Claude, blocked on Codex).
+- **The Codex container wall was Docker-specific, not a capability wall — see the
+  podman update below.** The Ployz core needs a container runtime as execution
+  reality. On the Claude VM Docker itself runs; on the Codex VM `dockerd` can't,
+  but **`podman` can** (Act X update). So container *execution* is available on
+  both profiles — what differs is that Ployz drives the `docker` CLI + daemon
+  specifically. Don't read the combined log as "Docker is universally blocked" or
+  "Codex can't run containers"; both are more specific than that.
 - **Our "iroh / Tailscale confirmed working" (Claude) was over-stated; Codex
   caught it.** On Claude, `iroh-doctor report` and `tailscale netcheck` succeeded
   partly because the VM *has* a direct-443 route. On Codex (no direct route)
@@ -510,15 +511,32 @@ Consequences that the individual acts don't state on their own:
   `rustls-native-certs` / `SSL_CERT_FILE`, or `proxy_from_env` + trust). "Works"
   today means "works with verification disabled."
 
+**Act X update — podman runs on the Codex VM (container wall resolved).** The
+open item below is now closed. A follow-up Codex pass did the full image path
+that `dockerd` could not:
+
+```text
+✅ apt-get install -y podman            ✅ podman info --debug
+✅ podman --version                     ✅ podman pull docker.io/library/nats:2.14.2
+✅ podman create docker.io/library/nats:2.14.2
+✅ podman cp <cid>:/nats-server /tmp/podman-nats/nats-server
+✅ /tmp/podman-nats/nats-server --version
+```
+
+So **container execution is not the Codex wall** — Docker's daemon/id-map
+assumptions were. `podman` (daemonless, `crun`, its own rootless storage) pulls,
+extracts layers, creates, and runs where `dockerd` panicked. The remaining gap is
+**coupling, not capability**: Ployz's host-runner speaks the `docker` CLI +
+daemon directly (`docker info` DriverStatus, `/etc/docker/daemon.json`,
+`systemctl restart docker`), so hosting on Codex would need Ployz pointed at
+podman's Docker-compatible socket (`podman.socket` + `podman-docker`) — untested,
+and podman's compat surface may not report the containerd-snapshotter /
+insecure-registry fields Ployz checks. Same shape as WireGuard→Tailscale: the
+substrate is swappable and works; Ployz's specific-tool coupling is the open
+question.
+
 Open items neither pass closed:
 
-- **Rootless container runtime on Codex is under-explored.** Single-uid user
-  namespaces work there (`unshare -Ur`), but only Docker was tried. `podman` /
-  `containerd`+`runc` / `nerdctl` (single-uid, root-only image, `fuse-overlayfs`)
-  is untested — it may still hit the blocked `newuidmap` subordinate-id-map, but
-  it is the one path that could run a container where `dockerd`'s assumptions
-  panic. **Testing this requires a Codex VM; it can't be done from the Claude
-  box, where Docker already works.**
 - **The `iroh-doctor` "ignores the proxy" finding is version-bound.** Codex was
   pinned to `iroh-doctor 0.91.0` by an old Rust toolchain; a newer build on the
   Claude VM does appear to use the proxy. This may already be fixed upstream.
