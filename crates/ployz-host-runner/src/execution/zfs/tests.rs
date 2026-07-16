@@ -104,6 +104,11 @@ fn stdout(value: &str) -> HostRunnerCommandOutput {
     }
 }
 
+fn mounted_dataset_shape(dataset: &DatasetName) -> HostRunnerCommandOutput {
+    let leaf = dataset.as_str().rsplit('/').next().expect("dataset leaf");
+    stdout(&format!("{PROVISIONED_VOLUME_MOUNTPOINT}/{leaf}\nyes\n"))
+}
+
 fn failed(message: &str) -> HostRunnerCommandOutput {
     HostRunnerCommandOutput {
         success: false,
@@ -809,6 +814,7 @@ fn dataset_quota_is_grow_only() {
         stdout("4096 4096\n"),
         stdout("0\n"),
         stdout(&rows),
+        mounted_dataset_shape(&dataset("tank")),
     ]);
     let error = ensure_dataset(
         &mut runner,
@@ -825,7 +831,7 @@ fn dataset_quota_is_grow_only() {
             ..
         }
     ));
-    assert_eq!(runner.invocations.len(), 5);
+    assert_eq!(runner.invocations.len(), 6);
 }
 
 #[test]
@@ -840,6 +846,7 @@ fn dataset_quota_growth_is_admitted_against_total_capacity_and_equal_is_a_no_op(
         stdout("5120 4096\n"),
         stdout("1024\n"),
         stdout(&rows),
+        mounted_dataset_shape(&dataset),
         success(),
     ]);
     ensure_dataset(
@@ -850,8 +857,19 @@ fn dataset_quota_growth_is_admitted_against_total_capacity_and_equal_is_a_no_op(
     )
     .unwrap();
     assert_eq!(
-        invocation(&runner, 5).args,
+        invocation(&runner, 6).args,
         vec!["set", "quota=2048", dataset.as_str()]
+    );
+    assert_eq!(
+        invocation(&runner, 5).args,
+        vec![
+            "get",
+            "-H",
+            "-o",
+            "value",
+            "mountpoint,mounted",
+            dataset.as_str(),
+        ]
     );
 
     let equal_rows = format!("tank/ployz/volumes\tnone\n{}\t2048\n", dataset.as_str());
@@ -861,6 +879,7 @@ fn dataset_quota_growth_is_admitted_against_total_capacity_and_equal_is_a_no_op(
         stdout("5120 4096\n"),
         stdout("1024\n"),
         stdout(&equal_rows),
+        mounted_dataset_shape(&dataset),
     ]);
     ensure_dataset(
         &mut runner,
@@ -869,7 +888,68 @@ fn dataset_quota_growth_is_admitted_against_total_capacity_and_equal_is_a_no_op(
         VolumeMaxSizeBytes::try_new(2048).unwrap(),
     )
     .unwrap();
-    assert_eq!(runner.invocations.len(), 5);
+    assert_eq!(runner.invocations.len(), 6);
+}
+
+#[test]
+fn equal_dataset_quota_rejects_a_noncanonical_mountpoint() {
+    let state = tempfile::tempdir().unwrap();
+    persist(state.path(), PreparedStorageOrigin::Adopted);
+    let dataset = dataset("tank");
+    let rows = format!("tank/ployz/volumes\tnone\n{}\t2048\n", dataset.as_str());
+    let mut runner = RecordingRunner::new([
+        success(),
+        stdout(VOLUME_MOUNTPOINT),
+        stdout("5120 4096\n"),
+        stdout("1024\n"),
+        stdout(&rows),
+        stdout("/wrong/path\nyes\n"),
+    ]);
+
+    let error = ensure_dataset(
+        &mut runner,
+        state.path(),
+        &dataset,
+        VolumeMaxSizeBytes::try_new(2048).unwrap(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        ZfsEffectError::PreparedStateMismatch { .. }
+    ));
+    assert_eq!(runner.invocations.len(), 6);
+}
+
+#[test]
+fn dataset_quota_growth_rejects_an_unmounted_canonical_child() {
+    let state = tempfile::tempdir().unwrap();
+    persist(state.path(), PreparedStorageOrigin::Adopted);
+    let dataset = dataset("tank");
+    let rows = format!("tank/ployz/volumes\tnone\n{}\t1024\n", dataset.as_str());
+    let leaf = dataset.as_str().rsplit('/').next().unwrap();
+    let mut runner = RecordingRunner::new([
+        success(),
+        stdout(VOLUME_MOUNTPOINT),
+        stdout("5120 4096\n"),
+        stdout("1024\n"),
+        stdout(&rows),
+        stdout(&format!("{PROVISIONED_VOLUME_MOUNTPOINT}/{leaf}\nno\n")),
+    ]);
+
+    let error = ensure_dataset(
+        &mut runner,
+        state.path(),
+        &dataset,
+        VolumeMaxSizeBytes::try_new(2048).unwrap(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        ZfsEffectError::PreparedStateMismatch { .. }
+    ));
+    assert_eq!(runner.invocations.len(), 6);
 }
 
 #[test]

@@ -148,6 +148,40 @@ mod capacity_tests {
             failure
         );
     }
+
+    #[test]
+    fn volume_shape_mismatch_retains_optional_dataset_on_the_wire() {
+        let dataset = DatasetName::for_volume(
+            &ZfsPoolName::try_new("tank").expect("pool"),
+            &NamespaceId::try_new("default").expect("namespace"),
+            &VolumeName::try_new("data").expect("volume"),
+        )
+        .expect("dataset");
+        let failure = VolumeEnsureFailure::DockerShapeMismatch {
+            volume_name: VolumeName::try_new("data").expect("volume"),
+            retained_dataset: Some(dataset.clone()),
+            message: "wrong driver options".to_owned(),
+        };
+
+        let encoded = serde_json::to_value(&failure).expect("serialize failure");
+        assert_eq!(encoded["retained_dataset"], dataset.as_str());
+        assert_eq!(
+            serde_json::from_value::<VolumeEnsureFailure>(encoded).expect("deserialize failure"),
+            failure
+        );
+
+        let plain = VolumeEnsureFailure::DockerShapeMismatch {
+            volume_name: VolumeName::try_new("cache").expect("volume"),
+            retained_dataset: None,
+            message: "wrong driver".to_owned(),
+        };
+        let encoded = serde_json::to_value(&plain).expect("serialize failure");
+        assert!(encoded.get("retained_dataset").is_none());
+        assert_eq!(
+            serde_json::from_value::<VolumeEnsureFailure>(encoded).expect("deserialize failure"),
+            plain
+        );
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -181,6 +215,8 @@ pub enum VolumeEnsureFailure {
     },
     DockerShapeMismatch {
         volume_name: VolumeName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retained_dataset: Option<DatasetName>,
         message: String,
     },
     DockerEnsureFailed {

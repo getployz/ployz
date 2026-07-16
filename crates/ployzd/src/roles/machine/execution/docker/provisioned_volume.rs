@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use bollard::Docker;
 use bollard::errors::Error as BollardError;
 use bollard::models::{Volume, VolumeCreateRequest};
-use ployz_core::deploy::VolumeName;
 use ployz_core::intent::{VolumeKind, VolumePinState};
 use ployz_core::machine::VolumeEnsureFailure;
 use ployz_core::storage::PROVISIONED_VOLUME_MOUNTPOINT;
@@ -25,23 +24,13 @@ pub(super) async fn ensure_docker_volume(
     let expected_driver = "local";
     let expected_options = request.driver_opts.as_ref().cloned().unwrap_or_default();
     match docker.inspect_volume(&storage_name).await {
-        Ok(existing) => validate_volume_shape(
-            volume.volume_name(),
-            existing,
-            expected_driver,
-            &expected_options,
-        ),
+        Ok(existing) => validate_volume_shape(volume, existing, expected_driver, &expected_options),
         Err(error) if is_docker_object_missing(&error) => {
             let created = docker
                 .create_volume(request)
                 .await
                 .map_err(|error| docker_ensure_failed(volume, error))?;
-            validate_volume_shape(
-                volume.volume_name(),
-                created,
-                expected_driver,
-                &expected_options,
-            )
+            validate_volume_shape(volume, created, expected_driver, &expected_options)
         }
         Err(error) => Err(docker_ensure_failed(volume, error)),
     }
@@ -76,7 +65,7 @@ fn plain_volume_request(volume: &VolumePinState) -> VolumeCreateRequest {
 }
 
 fn validate_volume_shape(
-    volume_name: &VolumeName,
+    volume: &VolumePinState,
     observed: Volume,
     expected_driver: &str,
     expected_options: &HashMap<String, String>,
@@ -84,8 +73,13 @@ fn validate_volume_shape(
     if observed.driver == expected_driver && observed.options == *expected_options {
         return Ok(());
     }
+    let retained_dataset = match volume.kind() {
+        VolumeKind::Plain => None,
+        VolumeKind::Provisioned { dataset, .. } => Some(dataset.clone()),
+    };
     Err(VolumeEnsureFailure::DockerShapeMismatch {
-        volume_name: volume_name.clone(),
+        volume_name: volume.volume_name().clone(),
+        retained_dataset,
         message: format!(
             "expected driver {expected_driver:?} with options {expected_options:?}, observed driver {:?} with options {:?}",
             observed.driver, observed.options
@@ -108,7 +102,7 @@ fn docker_ensure_failed(volume: &VolumePinState, error: BollardError) -> VolumeE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes, ZfsPoolName};
+    use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes, VolumeName, ZfsPoolName};
     use ployz_core::ids::{MachineId, NamespaceId};
 
     fn provisioned_pin() -> VolumePinState {
@@ -142,10 +136,41 @@ mod tests {
             options: HashMap::new(),
             ..Default::default()
         };
+        let VolumeKind::Provisioned { dataset, .. } = pin.kind() else {
+            panic!("provisioned pin")
+        };
 
         assert!(matches!(
-            validate_volume_shape(pin.volume_name(), wrong, "local", &expected_options),
-            Err(VolumeEnsureFailure::DockerShapeMismatch { .. })
+            validate_volume_shape(&pin, wrong, "local", &expected_options),
+            Err(VolumeEnsureFailure::DockerShapeMismatch {
+                retained_dataset: Some(retained),
+                ..
+            }) if retained == *dataset
+        ));
+    }
+
+    #[test]
+    fn plain_shape_mismatch_has_no_retained_dataset() {
+        let pin = VolumePinState::try_new(
+            NamespaceId::try_new("default").expect("namespace"),
+            VolumeName::try_new("cache").expect("volume"),
+            MachineId::try_new("machine-1").expect("machine"),
+            VolumeKind::Plain,
+        )
+        .expect("pin");
+        let request = plain_volume_request(&pin);
+        let wrong = Volume {
+            name: request.name.expect("name"),
+            driver: "wrong".to_owned(),
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            validate_volume_shape(&pin, wrong, "local", &HashMap::new()),
+            Err(VolumeEnsureFailure::DockerShapeMismatch {
+                retained_dataset: None,
+                ..
+            })
         ));
     }
 

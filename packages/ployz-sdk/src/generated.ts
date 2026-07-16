@@ -364,7 +364,7 @@ export type VolumeAdmissionFailure = { "kind": "missing_declaration", volume_nam
 
 export type DatasetNameError = { "kind": "empty" } | { "kind": "empty_component" } | { "kind": "invalid_character", value: string, } | { "kind": "non_canonical", value: string, } | { "kind": "name_budget_exceeded", bytes: number, maximum: number, };
 
-export type VolumeEnsureFailure = { "kind": "machine_mismatch", expected_machine_id: MachineId, responder_machine_id: MachineId, } | { "kind": "dataset", dataset: DatasetName, failure: StorageEffectFailure, } | { "kind": "docker_shape_mismatch", volume_name: VolumeName, message: string, } | { "kind": "docker_ensure_failed", volume_name: VolumeName, retained_dataset?: DatasetName | null, message: string, };
+export type VolumeEnsureFailure = { "kind": "machine_mismatch", expected_machine_id: MachineId, responder_machine_id: MachineId, } | { "kind": "dataset", dataset: DatasetName, failure: StorageEffectFailure, } | { "kind": "docker_shape_mismatch", volume_name: VolumeName, retained_dataset?: DatasetName | null, message: string, } | { "kind": "docker_ensure_failed", volume_name: VolumeName, retained_dataset?: DatasetName | null, message: string, };
 
 export type VolumeRemoveOperationState = { "state": "accepted" } | { "state": "running", stage: VolumeRemoveRunningStage, } | { "state": "completed" } | { "state": "failed", failure: VolumeRemoveFailure, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
 

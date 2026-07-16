@@ -46,6 +46,9 @@ pub fn ensure_dataset(
         .iter()
         .find(|fact| fact.dataset == *dataset)
         .map(|fact| fact.quota_bytes);
+    if current.is_some() {
+        verify_existing_dataset_shape(runner, dataset)?;
+    }
     if let Some(current) = current
         && quota.get() < current
     {
@@ -83,6 +86,65 @@ pub fn ensure_dataset(
                 EffectClass::Dataset,
             )?;
         }
+    }
+    Ok(())
+}
+
+fn verify_existing_dataset_shape(
+    runner: &mut impl HostRunnerCommandRunner,
+    dataset: &DatasetName,
+) -> Result<(), ZfsEffectError> {
+    let observed = checked(
+        runner,
+        "zfs",
+        &[
+            "get",
+            "-H",
+            "-o",
+            "value",
+            "mountpoint,mounted",
+            dataset.as_str(),
+        ],
+        COMMAND_TIMEOUT,
+        EffectClass::Mismatch,
+    )?;
+    let mut values = observed.stdout.lines();
+    let mountpoint = values.next();
+    let mounted = values.next();
+    let (Some(mountpoint), Some(mounted)) = (mountpoint, mounted) else {
+        return Err(ZfsEffectError::PreparedStateMismatch {
+            message: format!(
+                "dataset {} returned invalid mountpoint/mounted testimony {:?}",
+                dataset.as_str(),
+                observed.stdout.trim()
+            ),
+        });
+    };
+    if values.next().is_some() {
+        return Err(ZfsEffectError::PreparedStateMismatch {
+            message: format!(
+                "dataset {} returned invalid mountpoint/mounted testimony {:?}",
+                dataset.as_str(),
+                observed.stdout.trim()
+            ),
+        });
+    }
+    let Some((_, leaf)) = dataset.as_str().rsplit_once('/') else {
+        return Err(ZfsEffectError::PreparedStateMismatch {
+            message: format!("dataset {} has no canonical child leaf", dataset.as_str()),
+        });
+    };
+    let expected_mountpoint = format!("{PROVISIONED_VOLUME_MOUNTPOINT}/{leaf}");
+    if mountpoint != expected_mountpoint || mounted != "yes" {
+        return Err(ZfsEffectError::PreparedStateMismatch {
+            message: format!(
+                "dataset {} has mountpoint {:?} and mounted {:?}, expected {:?} and mounted yes",
+                dataset.as_str(),
+                mountpoint,
+                mounted,
+                expected_mountpoint
+            ),
+        });
     }
     Ok(())
 }
