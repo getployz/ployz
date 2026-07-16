@@ -200,7 +200,8 @@ struct PassiveRuntimeProjection {
     facts: RoleTestimonyCache,
     // Alarm liveness comes from the latest point-of-use gather. The cache
     // remains last-known display evidence and never answers whether a machine
-    // is currently silent.
+    // is currently silent. None means no gather has completed for the current
+    // intent generation; Some(empty) means a completed gather had no responders.
     fresh_storage_testimony: Option<Vec<ployz_core::machine::MachineStorageTestimony>>,
     snapshots: watch::Sender<Option<RuntimeSnapshot>>,
 }
@@ -237,10 +238,7 @@ impl PassiveRuntimeProjection {
         intent: IntentSnapshot,
         ingress: RuntimeIngressSources,
     ) {
-        self.intent = Some(intent);
-        self.ingress = Some(ingress);
-        self.fresh_storage_testimony = None;
-        self.refresh();
+        self.replace_sources(intent, ingress, None);
     }
 
     fn refresh_with_storage_testimony(
