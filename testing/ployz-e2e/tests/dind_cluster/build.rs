@@ -47,6 +47,7 @@ pub(super) async fn assert_authenticated_build_journeys(core: &CoreContext) {
             DOCKERFILE_LOG_MARKER,
         )
         .await;
+        restart_seed_machine_role(core).await;
         deploy_receipt(core, "dockerfile", dockerfile).await;
 
         let railpack = submit_build(
@@ -73,6 +74,18 @@ pub(super) async fn assert_authenticated_build_journeys(core: &CoreContext) {
         assert_secret_and_ephemeral_state_are_absent(core).await;
     })
     .await;
+}
+
+async fn restart_seed_machine_role(core: &CoreContext) {
+    let seed = core.cluster.core();
+    let unit = "ployzd-machine-core_1";
+    let restarted = core.exec_on(seed, &["systemctl", "restart", unit]).await;
+    assert!(
+        restarted.success(),
+        "restart seed machine role failed: {restarted:?}"
+    );
+    assert_unit_active(core, seed, unit).await;
+    wait_for_machine_observations(core, &machine_id("core_1")).await;
 }
 
 async fn submit_build(
