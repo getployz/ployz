@@ -10,17 +10,6 @@ use ployz_core::operation::{BuildOperationFailure, FailureMessage, UnusableMachi
 use crate::control::operations::local_execution_admission::classify_local_execution_admission;
 use crate::control::role_client::machine::MachinePlacementFacts;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BuildPlacement {
-    by_platform: BTreeMap<OciPlatform, MachineId>,
-}
-
-impl BuildPlacement {
-    pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = (&OciPlatform, &MachineId)> {
-        self.by_platform.iter()
-    }
-}
-
 /// Resolves every requested platform before any machine work starts.
 ///
 /// Facts are a fresh gather over the intent-known set. Input and output are
@@ -31,7 +20,7 @@ pub(crate) fn place_build_platforms(
     facts: &[MachinePlacementFacts],
     projection: &DataplaneProjection,
     dataplane_statuses: &[(MachineId, Result<MachineDataplaneStatus, FailureMessage>)],
-) -> Result<BuildPlacement, Box<BuildOperationFailure>> {
+) -> Result<BTreeMap<OciPlatform, MachineId>, Box<BuildOperationFailure>> {
     let (admitted, shared_unusable) =
         classify_local_execution_admission(facts, projection, dataplane_statuses);
     let mut by_platform = BTreeMap::new();
@@ -60,7 +49,7 @@ pub(crate) fn place_build_platforms(
         };
         by_platform.insert(platform.clone(), machine_id);
     }
-    Ok(BuildPlacement { by_platform })
+    Ok(by_platform)
 }
 
 #[cfg(test)]

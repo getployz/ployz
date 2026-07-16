@@ -1,5 +1,3 @@
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 use std::time::Duration;
 
 use ployz_core::build::build_control_request_timeout;
@@ -8,9 +6,9 @@ use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::operation::{
     BuildCleanupEvidence, BuildEvidence, BuildOperationFailure, BuildPlatformFailure,
     BuildTimeoutFailure, BuildTransition, CancellationReason, EventSequence, FailureMessage,
+    OperationStatus,
 };
 use ployz_nats::subjects::{MachineServiceEndpoint, machine_build_log};
-use tokio::sync::Mutex;
 
 use crate::control::intent::service::NatsIntentReader;
 use crate::control::role_client::machine::{
@@ -22,17 +20,15 @@ use crate::roles::machine::MachineRuntimeUnavailableReason;
 use crate::roles::machine::protocol::{
     BuildLogSummary, MachineBuildCancelDomainError, MachineBuildCancelOutcome,
     MachineBuildCancelRpcOk, MachineBuildCancelRpcRequest, MachineBuildCleanupOutcome,
-    MachineBuildLogFrame, MachineBuildStartDomainError, MachineBuildStartRpcOk,
-    MachineBuildStartRpcRequest,
+    MachineBuildStartDomainError, MachineBuildStartRpcOk, MachineBuildStartRpcRequest,
 };
 use crate::tasks::TaskSpawner;
 
-use super::log_stream::{
-    LogBeforeDeadline, MachineCallOrLog, next_log_before_deadline, next_machine_call_or_log,
-};
+use super::active_registry::{ActiveBuildRegistry, CancellationRequest, RejectedAdmissionOutcome};
+use super::log_stream::{MachineCallOrLog, next_machine_call_or_log};
 use super::place_build_platforms;
+use super::platform_session::PlatformLogSession;
 
-const BUILD_LOG_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const BUILD_CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
@@ -43,19 +39,7 @@ pub(crate) struct BuildOperationDriver {
     controllers: OperationControllers,
     timeout: Duration,
     tasks: TaskSpawner,
-    active: Arc<Mutex<BTreeMap<OperationId, ActiveBuild>>>,
-}
-
-#[derive(Clone)]
-enum ActiveBuild {
-    Running {
-        started: BTreeSet<MachineId>,
-        cancellation_reason: Option<CancellationReason>,
-        watch_start_sequence: EventSequence,
-    },
-    Finalizing {
-        started: BTreeSet<MachineId>,
-    },
+    active: ActiveBuildRegistry,
 }
 
 pub(crate) enum BuildCancelDisposition {
@@ -80,7 +64,7 @@ impl BuildOperationDriver {
             controllers,
             timeout,
             tasks,
-            active: Arc::default(),
+            active: ActiveBuildRegistry::default(),
         }
     }
 
@@ -88,14 +72,12 @@ impl BuildOperationDriver {
         if !accepted.submission.should_start_execution {
             return;
         }
-        self.active.lock().await.insert(
-            accepted.submission.operation_id.clone(),
-            ActiveBuild::Running {
-                started: BTreeSet::new(),
-                cancellation_reason: None,
-                watch_start_sequence: accepted.submission.start_sequence,
-            },
-        );
+        self.active
+            .start(
+                accepted.submission.operation_id.clone(),
+                accepted.submission.start_sequence,
+            )
+            .await;
         let driver = self.clone();
         let operation_id = accepted.submission.operation_id.clone();
         let admission = self.tasks.spawn(move || async move {
@@ -104,7 +86,7 @@ impl BuildOperationDriver {
         let Err(error) = admission else {
             return;
         };
-        match claim_rejected_admission(&self.active, &operation_id).await {
+        match self.active.claim_rejected_admission(&operation_id).await {
             RejectedAdmissionOutcome::Cancelled(reason) => {
                 if let Err(record_error) = self
                     .controllers
@@ -133,7 +115,7 @@ impl BuildOperationDriver {
                 .await;
             }
         }
-        self.active.lock().await.remove(&operation_id);
+        self.active.remove(&operation_id).await;
     }
 
     pub(crate) async fn cancel(
@@ -142,43 +124,49 @@ impl BuildOperationDriver {
         reason: CancellationReason,
     ) -> Result<BuildCancelDisposition, String> {
         let (machines, watch_start_sequence) =
-            {
-                let mut active = self.active.lock().await;
-                match active.get_mut(operation_id) {
-                    Some(ActiveBuild::Running {
-                        started,
-                        cancellation_reason,
-                        watch_start_sequence,
-                    }) => {
-                        if cancellation_reason.is_none() {
-                            *cancellation_reason = Some(reason);
+            match self.active.request_cancellation(operation_id, reason).await {
+                CancellationRequest::Accepted {
+                    machines,
+                    watch_start_sequence,
+                } => (machines, watch_start_sequence),
+                CancellationRequest::Finalizing => {
+                    return Ok(BuildCancelDisposition::AlreadyTerminal);
+                }
+                CancellationRequest::Missing => {
+                    let status = self
+                        .controllers
+                        .repository()
+                        .get(operation_id)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    return Ok(match status {
+                        Some(OperationStatus::Build { state, .. }) if state.is_terminal() => {
+                            BuildCancelDisposition::AlreadyTerminal
                         }
-                        (started.clone(), *watch_start_sequence)
-                    }
-                    Some(ActiveBuild::Finalizing { .. }) => {
-                        return Ok(BuildCancelDisposition::AlreadyTerminal);
-                    }
-                    None => {
-                        drop(active);
-                        let status = self
-                            .controllers
-                            .repository()
-                            .get(operation_id)
-                            .await
-                            .map_err(|error| error.to_string())?;
-                        return Ok(match status {
-                            Some(ployz_core::operation::OperationStatus::Build {
-                                state, ..
-                            }) if state.is_terminal() => BuildCancelDisposition::AlreadyTerminal,
-                            Some(ployz_core::operation::OperationStatus::Build { .. }) => {
-                                return Err(format!(
-                                    "build {} is nonterminal but has no active execution",
-                                    operation_id.as_str()
-                                ));
-                            }
-                            _ => BuildCancelDisposition::NoSuchOperation,
-                        });
-                    }
+                        Some(OperationStatus::Build { .. }) => {
+                            return Err(format!(
+                                "build {} is nonterminal but has no active execution",
+                                operation_id.as_str()
+                            ));
+                        }
+                        None
+                        | Some(OperationStatus::Deploy { .. })
+                        | Some(OperationStatus::Cert { .. })
+                        | Some(OperationStatus::MachineAdd { .. })
+                        | Some(OperationStatus::MachineUpdate { .. })
+                        | Some(OperationStatus::MachineStoragePrepare { .. })
+                        | Some(OperationStatus::MachineLifecycle { .. })
+                        | Some(OperationStatus::CoreReplace { .. })
+                        | Some(OperationStatus::CredentialGrant { .. })
+                        | Some(OperationStatus::NetworkRepair { .. })
+                        | Some(OperationStatus::ServiceRestart { .. })
+                        | Some(OperationStatus::ManagedDnsReconcile { .. })
+                        | Some(OperationStatus::IngressConfigure { .. })
+                        | Some(OperationStatus::NamespaceRemove { .. })
+                        | Some(OperationStatus::VolumeRemove { .. }) => {
+                            BuildCancelDisposition::NoSuchOperation
+                        }
+                    });
                 }
             };
         futures_util::future::join_all(machines.iter().map(|machine_id| async move {
@@ -222,10 +210,10 @@ impl BuildOperationDriver {
         let id = accepted.submission.operation_id.clone();
         let result = self.run_inner(&accepted).await;
         if let Err(failure) = result {
-            let transition = match claim_finalization(&self.active, &id).await {
+            let transition = match self.active.claim_finalization(&id).await {
                 Some(reason) => BuildTransition::Cancelled {
                     reason,
-                    cleanup: cleanup_for(&id, &self.active, Vec::new()).await,
+                    cleanup: self.active.cleanup_evidence(&id, Vec::new()).await,
                 },
                 None => BuildTransition::Failed { failure },
             };
@@ -235,7 +223,7 @@ impl BuildOperationDriver {
                 .record_build_transition(&id, transition)
                 .await;
         }
-        self.active.lock().await.remove(&id);
+        self.active.remove(&id).await;
     }
 
     async fn run_inner(
@@ -325,22 +313,23 @@ impl BuildOperationDriver {
                 }) => timed_out.push((machine_id, message, cleanup)),
             }
         }
-        let cancellation_reason = claim_finalization(&self.active, id).await;
+        let cancellation_reason = self.active.claim_finalization(id).await;
         if !cancelled.is_empty() || cancellation_reason.is_some() {
             let reason = cancellation_reason.unwrap_or_else(|| {
                 CancellationReason::try_new("machine cancelled build").expect("reason")
             });
-            let cleanup = cleanup_for(
-                id,
-                &self.active,
-                cancelled
-                    .into_iter()
-                    .filter_map(|(machine_id, cleanup)| {
-                        (cleanup == MachineBuildCleanupOutcome::Confirmed).then_some(machine_id)
-                    })
-                    .collect(),
-            )
-            .await;
+            let cleanup = self
+                .active
+                .cleanup_evidence(
+                    id,
+                    cancelled
+                        .into_iter()
+                        .filter_map(|(machine_id, cleanup)| {
+                            (cleanup == MachineBuildCleanupOutcome::Confirmed).then_some(machine_id)
+                        })
+                        .collect(),
+                )
+                .await;
             self.controllers
                 .repository()
                 .record_build_transition(id, BuildTransition::Cancelled { reason, cleanup })
@@ -363,7 +352,11 @@ impl BuildOperationDriver {
                 .map_err(record_failure)?;
             return Ok(());
         }
-        let receipt = assemble_receipt(images, first_failure).map_err(|failure| *failure)?;
+        if let Some(failure) = first_failure {
+            return Err(failure);
+        }
+        let receipt = PushedImageReceipt::try_new(images)
+            .map_err(|error| receipt_failure(error.to_string()))?;
         self.controllers
             .repository()
             .record_build_transition(id, BuildTransition::Completed { receipt })
@@ -379,11 +372,11 @@ impl BuildOperationDriver {
         machine_id: MachineId,
     ) -> Result<PlatformOutcome, BuildOperationFailure> {
         let id = &accepted.submission.operation_id;
-        if !claim_machine_start(&self.active, id, &machine_id).await {
+        if !self.active.claim_machine_start(id, &machine_id).await {
             return Ok(PlatformOutcome::CancelledBeforeStart);
         }
         let subject = machine_build_log(&machine_id, id);
-        let mut logs = self.client.subscribe(subject).await.map_err(|error| {
+        let logs = self.client.subscribe(subject).await.map_err(|error| {
             platform_failure(
                 platform.clone(),
                 machine_id.clone(),
@@ -392,9 +385,22 @@ impl BuildOperationDriver {
                 },
             )
         })?;
+        let mut log_session = PlatformLogSession::new(
+            self.controllers.repository(),
+            id,
+            &machine_id,
+            &platform,
+            logs,
+        );
         let request = build_start_request(accepted, platform.clone(), self.timeout);
-        if !machine_start_is_authorized(&self.active, id, &machine_id).await {
-            release_machine_start_claim(&self.active, id, &machine_id).await;
+        if !self
+            .active
+            .machine_start_is_authorized(id, &machine_id)
+            .await
+        {
+            self.active
+                .release_machine_start_claim(id, &machine_id)
+                .await;
             return Ok(PlatformOutcome::CancelledBeforeStart);
         }
         let call_machine_id = machine_id.clone();
@@ -406,38 +412,14 @@ impl BuildOperationDriver {
             &request,
         );
         tokio::pin!(machine_call);
-        let mut next = 1;
-        let mut logs_open = true;
         let result = loop {
-            match next_machine_call_or_log(machine_call.as_mut(), &mut logs, logs_open).await {
+            let logs_open = log_session.logs_open();
+            match next_machine_call_or_log(machine_call.as_mut(), log_session.logs_mut(), logs_open)
+                .await
+            {
                 MachineCallOrLog::Call(result) => break result,
-                MachineCallOrLog::LogsClosed => logs_open = false,
-                MachineCallOrLog::Log(message) => {
-                    let Some(message) = message else {
-                        logs_open = false;
-                        continue;
-                    };
-                    let Ok(frame) =
-                        serde_json::from_slice::<MachineBuildLogFrame>(&message.payload)
-                    else {
-                        continue;
-                    };
-                    if valid_next_log_frame(id, &machine_id, &platform, next, &frame) {
-                        self.controllers
-                            .repository()
-                            .record_build_evidence(
-                                id,
-                                BuildEvidence::PlatformLog {
-                                    platform: platform.clone(),
-                                    machine_id: machine_id.clone(),
-                                    chunk: frame.chunk,
-                                },
-                            )
-                            .await
-                            .map_err(record_failure)?;
-                        next += 1;
-                    }
-                }
+                MachineCallOrLog::LogsClosed => log_session.record_message(None).await?,
+                MachineCallOrLog::Log(message) => log_session.record_message(message).await?,
             }
         };
         let summary = match result {
@@ -495,70 +477,7 @@ impl BuildOperationDriver {
                 return Ok(PlatformOutcome::Failed(operation_failure));
             }
         };
-        let BuildLogSummary {
-            final_log_sequence,
-            omitted_log_bytes,
-        } = summary.log_summary();
-        let drain_deadline = tokio::time::sleep(BUILD_LOG_DRAIN_TIMEOUT);
-        tokio::pin!(drain_deadline);
-        while next <= final_log_sequence {
-            let message =
-                match next_log_before_deadline(drain_deadline.as_mut(), &mut logs, logs_open).await
-                {
-                    LogBeforeDeadline::Deadline | LogBeforeDeadline::LogsClosed => break,
-                    LogBeforeDeadline::Log(message) => message,
-                };
-            let Some(message) = message else {
-                break;
-            };
-            let Ok(frame) = serde_json::from_slice::<MachineBuildLogFrame>(&message.payload) else {
-                continue;
-            };
-            if valid_next_log_frame(id, &machine_id, &platform, next, &frame) {
-                self.controllers
-                    .repository()
-                    .record_build_evidence(
-                        id,
-                        BuildEvidence::PlatformLog {
-                            platform: platform.clone(),
-                            machine_id: machine_id.clone(),
-                            chunk: frame.chunk,
-                        },
-                    )
-                    .await
-                    .map_err(record_failure)?;
-                next += 1;
-            }
-        }
-        if next <= final_log_sequence {
-            self.controllers
-                .repository()
-                .record_build_evidence(
-                    id,
-                    BuildEvidence::PlatformLogGap {
-                        platform: platform.clone(),
-                        machine_id: machine_id.clone(),
-                        expected_sequence: next,
-                        final_sequence: final_log_sequence,
-                    },
-                )
-                .await
-                .map_err(record_failure)?;
-        }
-        if omitted_log_bytes > 0 {
-            self.controllers
-                .repository()
-                .record_build_evidence(
-                    id,
-                    BuildEvidence::PlatformLogTruncated {
-                        platform: platform.clone(),
-                        machine_id: machine_id.clone(),
-                        omitted_bytes: omitted_log_bytes,
-                    },
-                )
-                .await
-                .map_err(record_failure)?;
-        }
+        log_session.drain(summary.log_summary()).await?;
         let BuildSummary::Completed(ok) = summary else {
             return Ok(match summary {
                 BuildSummary::Failed { failure, .. } => {
@@ -638,142 +557,12 @@ impl BuildOperationDriver {
     }
 }
 
-fn assemble_receipt(
-    images: Vec<(
-        ployz_core::image::OciPlatform,
-        ployz_core::deploy::PlatformImage,
-    )>,
-    first_failure: Option<BuildOperationFailure>,
-) -> Result<PushedImageReceipt, Box<BuildOperationFailure>> {
-    if let Some(failure) = first_failure {
-        return Err(Box::new(failure));
-    }
-    PushedImageReceipt::try_new(images)
-        .map_err(|error| Box::new(receipt_failure(error.to_string())))
-}
-
-async fn claim_machine_start(
-    active: &Mutex<BTreeMap<OperationId, ActiveBuild>>,
-    operation_id: &OperationId,
-    machine_id: &MachineId,
-) -> bool {
-    let mut active = active.lock().await;
-    let Some(build) = active.get_mut(operation_id) else {
-        return false;
-    };
-    match build {
-        ActiveBuild::Running {
-            started,
-            cancellation_reason: None,
-            watch_start_sequence: _,
-        } => {
-            started.insert(machine_id.clone());
-            true
-        }
-        ActiveBuild::Running {
-            cancellation_reason: Some(_),
-            ..
-        }
-        | ActiveBuild::Finalizing { .. } => false,
-    }
-}
-
-async fn machine_start_is_authorized(
-    active: &Mutex<BTreeMap<OperationId, ActiveBuild>>,
-    operation_id: &OperationId,
-    machine_id: &MachineId,
-) -> bool {
-    let active = active.lock().await;
-    matches!(
-        active.get(operation_id),
-        Some(ActiveBuild::Running {
-            started,
-            cancellation_reason: None,
-            watch_start_sequence: _,
-        }) if started.contains(machine_id)
-    )
-}
-
-async fn release_machine_start_claim(
-    active: &Mutex<BTreeMap<OperationId, ActiveBuild>>,
-    operation_id: &OperationId,
-    machine_id: &MachineId,
-) {
-    let mut active = active.lock().await;
-    if let Some(ActiveBuild::Running { started, .. }) = active.get_mut(operation_id) {
-        started.remove(machine_id);
-    }
-}
-
 fn cancel_retry_delay(
     now: tokio::time::Instant,
     deadline: tokio::time::Instant,
 ) -> Option<Duration> {
     let remaining = deadline.checked_duration_since(now)?;
     (!remaining.is_zero()).then(|| remaining.min(Duration::from_millis(25)))
-}
-
-async fn claim_finalization(
-    active: &Mutex<BTreeMap<OperationId, ActiveBuild>>,
-    operation_id: &OperationId,
-) -> Option<CancellationReason> {
-    let mut active = active.lock().await;
-    let build = active.get_mut(operation_id)?;
-    match build {
-        ActiveBuild::Running {
-            started,
-            cancellation_reason: Some(reason),
-            watch_start_sequence: _,
-        } => {
-            let reason = reason.clone();
-            let started = started.clone();
-            *build = ActiveBuild::Finalizing { started };
-            Some(reason)
-        }
-        ActiveBuild::Running {
-            started,
-            cancellation_reason: None,
-            watch_start_sequence: _,
-        } => {
-            let started = started.clone();
-            *build = ActiveBuild::Finalizing { started };
-            None
-        }
-        ActiveBuild::Finalizing { .. } => None,
-    }
-}
-
-enum RejectedAdmissionOutcome {
-    Cancelled(CancellationReason),
-    Interrupted,
-}
-
-async fn claim_rejected_admission(
-    active: &Mutex<BTreeMap<OperationId, ActiveBuild>>,
-    operation_id: &OperationId,
-) -> RejectedAdmissionOutcome {
-    let mut active = active.lock().await;
-    let Some(build) = active.get_mut(operation_id) else {
-        return RejectedAdmissionOutcome::Interrupted;
-    };
-    match build {
-        ActiveBuild::Running {
-            cancellation_reason: Some(reason),
-            ..
-        } => {
-            let reason = reason.clone();
-            *build = ActiveBuild::Finalizing {
-                started: BTreeSet::new(),
-            };
-            RejectedAdmissionOutcome::Cancelled(reason)
-        }
-        ActiveBuild::Running { .. } | ActiveBuild::Finalizing { .. } => {
-            *build = ActiveBuild::Finalizing {
-                started: BTreeSet::new(),
-            };
-            RejectedAdmissionOutcome::Interrupted
-        }
-    }
 }
 
 fn build_start_request(
@@ -792,19 +581,6 @@ fn build_start_request(
 
 fn execution_timeout_millis(timeout: Duration) -> u64 {
     timeout.as_millis().try_into().unwrap_or(u64::MAX)
-}
-
-fn valid_next_log_frame(
-    operation_id: &OperationId,
-    machine_id: &MachineId,
-    platform: &ployz_core::image::OciPlatform,
-    next: u64,
-    frame: &MachineBuildLogFrame,
-) -> bool {
-    frame.operation_id == *operation_id
-        && frame.machine_id == *machine_id
-        && frame.platform == *platform
-        && frame.sequence == next
 }
 
 enum BuildSummary {
@@ -878,37 +654,6 @@ fn timeout_cleanup(
     }
 }
 
-async fn cleanup_for(
-    operation_id: &OperationId,
-    active: &Mutex<BTreeMap<OperationId, ActiveBuild>>,
-    confirmed: Vec<MachineId>,
-) -> BuildCleanupEvidence {
-    let started = active
-        .lock()
-        .await
-        .get(operation_id)
-        .map(|build| match build {
-            ActiveBuild::Running { started, .. } | ActiveBuild::Finalizing { started } => {
-                started.clone()
-            }
-        })
-        .unwrap_or_default();
-    if started.is_empty() {
-        return BuildCleanupEvidence::NotRequired;
-    }
-    let confirmed: BTreeSet<_> = confirmed.into_iter().collect();
-    let unconfirmed = started.difference(&confirmed).cloned().collect::<Vec<_>>();
-    if unconfirmed.is_empty() {
-        BuildCleanupEvidence::Completed {
-            machine_ids: confirmed.into_iter().collect(),
-        }
-    } else {
-        BuildCleanupEvidence::Unconfirmed {
-            machine_ids: unconfirmed,
-        }
-    }
-}
-
 fn platform_failure(
     platform: ployz_core::image::OciPlatform,
     machine_id: MachineId,
@@ -941,21 +686,87 @@ fn machine_failure(
     error: MachineCallError<MachineBuildStartDomainError>,
 ) -> BuildOperationFailure {
     let failure = match error {
-        MachineCallError::Unavailable(reason) => BuildPlatformFailure::MachineUnavailable {
-            message: reason.failure_message(),
-        },
+        MachineCallError::Unavailable(reason) => machine_unavailable_failure(reason),
+        MachineCallError::Domain(MachineBuildStartDomainError::AlreadyRunning) => {
+            BuildPlatformFailure::MachineUnavailable {
+                message: failure_message("machine reports this build is already running"),
+            }
+        }
         MachineCallError::Domain(MachineBuildStartDomainError::PlatformFailed {
-            failure, ..
+            failure,
+            log_summary: _,
         }) => failure,
-        MachineCallError::Domain(other) => BuildPlatformFailure::AdapterFailed {
-            message: FailureMessage::try_new(format!("{other:?}")).expect("error"),
+        MachineCallError::Domain(MachineBuildStartDomainError::Cancelled {
+            cleanup: _,
+            log_summary: _,
+        }) => BuildPlatformFailure::MachineUnavailable {
+            message: failure_message("machine cancelled the build unexpectedly"),
         },
+        MachineCallError::Domain(MachineBuildStartDomainError::TimedOut {
+            message,
+            cleanup: _,
+            log_summary: _,
+        }) => BuildPlatformFailure::MachineUnavailable { message },
     };
     BuildOperationFailure::PlatformFailed {
         platform,
         machine_id,
         failure,
     }
+}
+
+fn machine_unavailable_failure(reason: MachineRuntimeUnavailableReason) -> BuildPlatformFailure {
+    let message = match reason {
+        MachineRuntimeUnavailableReason::EncodeRequest { message } => failure_message(format!(
+            "machine runtime request could not be encoded: {message}"
+        )),
+        MachineRuntimeUnavailableReason::RequestTimedOut => {
+            failure_message("machine runtime request timed out")
+        }
+        MachineRuntimeUnavailableReason::NoResponders => {
+            failure_message("machine runtime has no responders")
+        }
+        MachineRuntimeUnavailableReason::InvalidSubject => {
+            failure_message("machine runtime subject was invalid")
+        }
+        MachineRuntimeUnavailableReason::MaxPayloadExceeded => {
+            failure_message("machine runtime request exceeded NATS max payload")
+        }
+        MachineRuntimeUnavailableReason::RequestFailed { message } => {
+            failure_message(format!("machine runtime request failed: {message}"))
+        }
+        MachineRuntimeUnavailableReason::ServiceBadRequest { message } => {
+            failure_message(format!("machine runtime rejected the request: {message}"))
+        }
+        MachineRuntimeUnavailableReason::ServiceConflict { message } => {
+            failure_message(format!("machine runtime reported a conflict: {message}"))
+        }
+        MachineRuntimeUnavailableReason::ServiceResponseTooLarge => {
+            failure_message("machine runtime response_too_large")
+        }
+        MachineRuntimeUnavailableReason::ServiceUnavailable { message } => {
+            failure_message(format!("machine runtime service unavailable: {message}"))
+        }
+        MachineRuntimeUnavailableReason::ServiceTimedOut { message } => {
+            failure_message(format!("machine runtime service timed out: {message}"))
+        }
+        MachineRuntimeUnavailableReason::ServiceInternal { message } => failure_message(format!(
+            "machine runtime service failed internally: {message}"
+        )),
+        MachineRuntimeUnavailableReason::MalformedServiceError { message } => failure_message(
+            format!("machine runtime returned malformed service error headers: {message}"),
+        ),
+        MachineRuntimeUnavailableReason::DecodeResponse { message } => failure_message(format!(
+            "machine runtime response could not be decoded: {message}"
+        )),
+        MachineRuntimeUnavailableReason::WrongResponder { actual_machine_id } => {
+            failure_message(format!(
+                "machine runtime replied for a different machine: {}",
+                actual_machine_id.as_str()
+            ))
+        }
+    };
+    BuildPlatformFailure::MachineUnavailable { message }
 }
 
 #[cfg(test)]
