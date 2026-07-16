@@ -47,8 +47,9 @@ use ployz_sdk_types::{
     RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceDependency,
     ServiceId, ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
     ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
-    SubjectTokenError, VolumeCreateError, VolumeCreateRequest, VolumeListError, VolumeListRequest,
-    VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
+    SubjectTokenError, VolumeCreateError, VolumeCreateRequest, VolumeKind, VolumeListError,
+    VolumeListRequest, VolumeListResult, VolumeName, VolumeRemoveError, VolumeRemoveRequest,
+    VolumeSnapshot, VolumeStatus, VolumeTestimony, VolumeUsageFacts,
     operation_api::{
         CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi, CredentialListApi,
         CredentialRemoveApi, DeployReserveApi, DeploySubmitApi, IngressConfigureApi,
@@ -126,6 +127,62 @@ fn sdk_exports_core_wire_types() {
         serde_json::to_string(&dependency).expect("dependency serializes"),
         r#"{"service_id":"svc_database","condition":"healthy"}"#
     );
+}
+
+#[test]
+fn sdk_exports_volume_testimony_wire_types() {
+    let usage = VolumeUsageFacts {
+        used_bytes: 4_096,
+        last_write_unix_seconds: 1_700_000_000,
+    };
+    assert_eq!(
+        serde_json::to_string(&usage).expect("volume usage serializes"),
+        r#"{"used_bytes":4096,"last_write_unix_seconds":1700000000}"#
+    );
+
+    let snapshot = VolumeSnapshot {
+        namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
+        volume_name: VolumeName::try_new("data").expect("valid volume name"),
+        machine_id: ployz_sdk_types::MachineId::try_new("machine_1").expect("valid machine id"),
+        kind: VolumeKind::Plain,
+        referencing_services: vec![
+            ServiceId::try_new("api").expect("valid service id"),
+            ServiceId::try_new("worker").expect("valid service id"),
+        ],
+        testimony: VolumeTestimony::Available {
+            used_bytes: usage.used_bytes,
+            last_write_unix_seconds: usage.last_write_unix_seconds,
+        },
+        status: VolumeStatus::InUse,
+    };
+    let encoded = serde_json::to_string(&snapshot).expect("volume snapshot serializes");
+    assert_eq!(
+        encoded,
+        r#"{"namespace_id":"default","volume_name":"data","machine_id":"machine_1","kind":{"kind":"plain"},"referencing_services":["api","worker"],"testimony":{"status":"available","used_bytes":4096,"last_write_unix_seconds":1700000000},"status":"in_use"}"#
+    );
+    assert_eq!(
+        serde_json::from_str::<VolumeSnapshot>(&encoded).expect("volume snapshot deserializes"),
+        snapshot
+    );
+    assert!(
+        serde_json::from_str::<VolumeTestimony>(
+            r#"{"status":"available","used_bytes":4096,"last_write_unix_seconds":1700000000,"message":"private path"}"#
+        )
+        .is_err()
+    );
+    assert_eq!(
+        serde_json::to_string(&VolumeTestimony::Unavailable)
+            .expect("unavailable testimony serializes"),
+        r#"{"status":"unavailable"}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&VolumeTestimony::NoAnswer).expect("no-answer testimony serializes"),
+        r#"{"status":"no_answer"}"#
+    );
+
+    assert_wire_type::<VolumeUsageFacts>();
+    assert_wire_type::<VolumeTestimony>();
+    assert_wire_type::<VolumeSnapshot>();
 }
 
 #[test]

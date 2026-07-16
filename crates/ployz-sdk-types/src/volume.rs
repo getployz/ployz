@@ -55,7 +55,22 @@ pub struct VolumeSnapshot {
     pub namespace_id: NamespaceId,
     pub volume_name: VolumeName,
     pub machine_id: MachineId,
+    pub kind: VolumeKind,
+    /// Service ids are sorted and deduplicated by the projection owner.
+    pub referencing_services: Vec<ServiceId>,
+    pub testimony: VolumeTestimony,
     pub status: VolumeStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum VolumeTestimony {
+    Available {
+        used_bytes: u64,
+        last_write_unix_seconds: u64,
+    },
+    Unavailable,
+    NoAnswer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

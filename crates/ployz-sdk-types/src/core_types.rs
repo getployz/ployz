@@ -62,7 +62,7 @@ pub use ployz_core::machine::{
     GatewayProcessHealth, GatewayServingStatus, GatewayStatusObservation,
     GatewayStatusPublishFailure, GatewayWatchFailure, MachineEndpointObservation, MachineLifecycle,
     MachineUsabilityReason, PoolCapacityFacts, StorageCapability, StorageUnavailableReason,
-    StrandedVolumeAlarm, StrandedVolumeReason, VolumeEnsureFailure,
+    StrandedVolumeAlarm, StrandedVolumeReason, VolumeEnsureFailure, VolumeUsageFacts,
 };
 pub use ployz_core::nats_config::{
     CredentialGrant, CredentialName, CredentialNameError, CredentialRole, NatsAuthorizationGrant,
