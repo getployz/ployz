@@ -378,6 +378,7 @@ pub struct HostRunnerCommandOutput {
     pub success: bool,
     pub exit_code: Option<i32>,
     pub stdout: String,
+    pub stdout_truncated: bool,
     pub failure: String,
 }
 
@@ -396,6 +397,7 @@ fn host_runner_command(
         success: output.status.success(),
         exit_code: output.status.code(),
         stdout: output.stdout,
+        stdout_truncated: output.stdout_truncated,
         failure,
     })
 }
@@ -404,6 +406,7 @@ struct CapturedCommandOutput {
     command: String,
     status: ExitStatus,
     stdout: String,
+    stdout_truncated: bool,
     stderr: String,
 }
 
@@ -456,32 +459,47 @@ fn run_os_command_with_display(
         .map(|pipe| thread::spawn(move || read_limited_pipe(pipe)))
         .expect("stderr is piped");
     let status = wait_for_child(&display_command, &mut child, timeout)?;
+    let stdout = stdout
+        .join()
+        .unwrap_or_else(|_error| Err("stdout reader panicked".to_owned()))
+        .map_err(failure_message)?;
+    let stderr = stderr
+        .join()
+        .unwrap_or_else(|_error| Err("stderr reader panicked".to_owned()))
+        .map_err(failure_message)?;
     Ok(CapturedCommandOutput {
         command: display_command,
         status,
-        stdout: stdout
-            .join()
-            .unwrap_or_else(|_error| Err("stdout reader panicked".to_owned()))
-            .map_err(failure_message)?,
-        stderr: stderr
-            .join()
-            .unwrap_or_else(|_error| Err("stderr reader panicked".to_owned()))
-            .map_err(failure_message)?,
+        stdout: stdout.text,
+        stdout_truncated: stdout.truncated,
+        stderr: stderr.text,
     })
 }
 
-fn read_limited_pipe(mut pipe: impl Read) -> Result<String, String> {
-    let mut buffer = Vec::new();
+const COMMAND_OUTPUT_CAPTURE_LIMIT_BYTES: usize = 1024 * 1024;
+
+struct LimitedPipeOutput {
+    text: String,
+    truncated: bool,
+}
+
+fn read_limited_pipe(mut pipe: impl Read) -> Result<LimitedPipeOutput, String> {
+    let mut buffer = Vec::with_capacity(COMMAND_OUTPUT_CAPTURE_LIMIT_BYTES + 1);
     (&mut pipe)
-        .take(4096)
+        .take((COMMAND_OUTPUT_CAPTURE_LIMIT_BYTES + 1) as u64)
         .read_to_end(&mut buffer)
         .map_err(|error| error.to_string())?;
+    let truncated = buffer.len() > COMMAND_OUTPUT_CAPTURE_LIMIT_BYTES;
+    buffer.truncate(COMMAND_OUTPUT_CAPTURE_LIMIT_BYTES);
     // Drain any output past the cap into a sink. Otherwise a child that writes
-    // more than 4 KB keeps writing to a pipe we have already stopped reading,
+    // more than the cap keeps writing to a pipe we have already stopped reading,
     // takes SIGPIPE, and is misreported as a failed command (e.g. `systemctl
-    // list-units` on a host with more than 4 KB of active services).
+    // list-units` on a host with many active services).
     io::copy(&mut pipe, &mut io::sink()).map_err(|error| error.to_string())?;
-    Ok(String::from_utf8_lossy(&buffer).into_owned())
+    Ok(LimitedPipeOutput {
+        text: String::from_utf8_lossy(&buffer).into_owned(),
+        truncated,
+    })
 }
 
 fn render_command(program: &str, args: &[OsString]) -> String {
@@ -765,13 +783,13 @@ mod tests {
 
     #[test]
     fn large_command_output_does_not_sigpipe_the_child() {
-        // A child that writes well past the 4 KB read cap must still succeed:
+        // A child that writes well past the read cap must still succeed:
         // the reader drains the remainder instead of closing the pipe and
         // killing the child with SIGPIPE. Regression for the machine-join
         // firewall preflight, which reads `systemctl list-units` output.
         let output = super::run_os_command_with_display(
             "sh",
-            &[OsString::from("-c"), OsString::from("seq 1 20000")],
+            &[OsString::from("-c"), OsString::from("seq 1 300000")],
             "sh -c seq".to_owned(),
             Duration::from_secs(10),
         )
@@ -783,5 +801,26 @@ mod tests {
             output.failure_summary()
         );
         assert!(!output.stdout.is_empty());
+        assert!(output.stdout_truncated);
+    }
+
+    #[test]
+    fn exact_capture_limit_is_not_truncated() {
+        let input = vec![b'x'; super::COMMAND_OUTPUT_CAPTURE_LIMIT_BYTES];
+
+        let output = super::read_limited_pipe(input.as_slice()).expect("capture succeeds");
+
+        assert_eq!(output.text.len(), super::COMMAND_OUTPUT_CAPTURE_LIMIT_BYTES);
+        assert!(!output.truncated);
+    }
+
+    #[test]
+    fn output_past_capture_limit_is_truncated() {
+        let input = vec![b'x'; super::COMMAND_OUTPUT_CAPTURE_LIMIT_BYTES + 1];
+
+        let output = super::read_limited_pipe(input.as_slice()).expect("capture succeeds");
+
+        assert_eq!(output.text.len(), super::COMMAND_OUTPUT_CAPTURE_LIMIT_BYTES);
+        assert!(output.truncated);
     }
 }

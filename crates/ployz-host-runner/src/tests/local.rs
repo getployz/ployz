@@ -115,6 +115,7 @@ fn succeeded_command(stdout: &str) -> HostRunnerCommandOutput {
         success: true,
         exit_code: Some(0),
         stdout: stdout.to_owned(),
+        stdout_truncated: false,
         failure: String::new(),
     }
 }
@@ -124,6 +125,7 @@ fn failed_command() -> HostRunnerCommandOutput {
         success: false,
         exit_code: Some(3),
         stdout: String::new(),
+        stdout_truncated: false,
         failure: "simulated command failure".to_owned(),
     }
 }
@@ -133,6 +135,7 @@ fn absent_command() -> HostRunnerCommandOutput {
         success: false,
         exit_code: Some(1),
         stdout: String::new(),
+        stdout_truncated: false,
         failure: "not found".to_owned(),
     }
 }
@@ -1801,6 +1804,7 @@ impl HostRunnerCommandRunner for RecordingRunner {
                     success: false,
                     exit_code: Some(1),
                     stdout: String::new(),
+                    stdout_truncated: false,
                     failure: "simulated systemctl failure".to_owned(),
                 });
             }
@@ -1809,6 +1813,7 @@ impl HostRunnerCommandRunner for RecordingRunner {
                     success: false,
                     exit_code: Some(3),
                     stdout: String::new(),
+                    stdout_truncated: false,
                     failure: "inactive".to_owned(),
                 });
             }
@@ -1839,6 +1844,7 @@ impl HostRunnerCommandRunner for RecordingRunner {
                     success: false,
                     exit_code: Some(1),
                     stdout: String::new(),
+                    stdout_truncated: false,
                     failure: "simulated dataplane host prepare failure".to_owned(),
                 });
             }
@@ -1892,6 +1898,7 @@ impl HostRunnerCommandRunner for RecordingRunner {
                 success: false,
                 exit_code: Some(1),
                 stdout: String::new(),
+                stdout_truncated: false,
                 failure: "simulated docker install failure".to_owned(),
             });
         }

@@ -92,6 +92,7 @@ fn success() -> HostRunnerCommandOutput {
         success: true,
         exit_code: Some(0),
         stdout: String::new(),
+        stdout_truncated: false,
         failure: String::new(),
     }
 }
@@ -101,7 +102,15 @@ fn stdout(value: &str) -> HostRunnerCommandOutput {
         success: true,
         exit_code: Some(0),
         stdout: value.to_owned(),
+        stdout_truncated: false,
         failure: String::new(),
+    }
+}
+
+fn truncated_stdout(value: &str) -> HostRunnerCommandOutput {
+    HostRunnerCommandOutput {
+        stdout_truncated: true,
+        ..stdout(value)
     }
 }
 
@@ -115,6 +124,7 @@ fn failed(message: &str) -> HostRunnerCommandOutput {
         success: false,
         exit_code: Some(1),
         stdout: String::new(),
+        stdout_truncated: false,
         failure: message.to_owned(),
     }
 }
@@ -1160,7 +1170,6 @@ fn destroy_rejects_wrong_root_before_listing_or_destroy() {
 fn destroy_retains_failed_malformed_foreign_and_ambiguous_listing_testimony() {
     let requested = dataset("tank");
     let foreign = dataset("other");
-    let capture_limited = "x".repeat(4 * 1024);
     let cases = [
         (
             failed("listing failed"),
@@ -1201,10 +1210,27 @@ fn destroy_retains_failed_malformed_foreign_and_ambiguous_listing_testimony() {
             },
         ),
         (
-            stdout(&capture_limited),
+            stdout(&format!(
+                "tank/ployz/volumes\n{}\ntank/ployz/volumes\n",
+                requested.as_str()
+            )),
+            "duplicate-root",
+            ZfsEffectError::GatherParse {
+                message: "direct-child dataset listing returned 2 rows for root tank/ployz/volumes, expected exactly one".to_owned(),
+            },
+        ),
+        (
+            stdout(requested.as_str()),
+            "missing-root",
+            ZfsEffectError::GatherParse {
+                message: "direct-child dataset listing returned 0 rows for root tank/ployz/volumes, expected exactly one".to_owned(),
+            },
+        ),
+        (
+            truncated_stdout("tank/ployz/volumes\n"),
             "capture-limited",
             ZfsEffectError::GatherParse {
-                message: "direct-child dataset listing reached the command output capture limit"
+                message: "direct-child dataset listing exceeded the command output capture limit"
                     .to_owned(),
             },
         ),
@@ -1222,4 +1248,27 @@ fn destroy_retains_failed_malformed_foreign_and_ambiguous_listing_testimony() {
         );
         assert_eq!(runner.invocations.len(), 3, "{label} listing");
     }
+}
+
+#[test]
+fn destroy_validates_but_does_not_deduplicate_unrelated_siblings() {
+    let state = tempfile::tempdir().unwrap();
+    persist(state.path(), PreparedStorageOrigin::Adopted);
+    let requested = dataset("tank");
+    let sibling = DatasetName::for_volume(
+        &ZfsPoolName::try_new("tank").unwrap(),
+        &NamespaceId::try_new("default").unwrap(),
+        &VolumeName::try_new("logs").unwrap(),
+    )
+    .unwrap();
+    let listing = format!(
+        "tank/ployz/volumes\n{}\n{}\n",
+        sibling.as_str(),
+        sibling.as_str()
+    );
+    let mut runner = RecordingRunner::new([success(), stdout(VOLUME_MOUNTPOINT), stdout(&listing)]);
+
+    destroy_dataset(&mut runner, state.path(), &requested).unwrap();
+
+    assert_eq!(runner.invocations.len(), 3);
 }

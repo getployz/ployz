@@ -15,8 +15,8 @@ use crate::roles::machine::protocol::{
     MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineLogsTailRpcResponse,
     MachineRunContainerOutcome, MachineSubstrateReportRpcRequest,
     MachineSubstrateReportRpcResponse, MachineVolumeEnsureRpcOk, MachineVolumeEnsureRpcRequest,
-    MachineVolumeEnsureRpcResponse, MachineVolumeRemoveDomainError, MachineVolumeRemoveEffect,
-    MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest, MachineVolumeRemoveRpcResponse,
+    MachineVolumeEnsureRpcResponse, MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk,
+    MachineVolumeRemoveRpcRequest, MachineVolumeRemoveRpcResponse, ProvisionedVolumePinState,
 };
 use crate::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
@@ -735,14 +735,13 @@ async fn machine_role_service_removes_volume() {
             &machine_id("machine_a"),
             MachineServiceEndpoint::VolumeRemove,
         ),
-        &MachineVolumeRemoveRpcRequest {
+        &MachineVolumeRemoveRpcRequest::DockerReference {
             operation_id: operation_id("op_123"),
             volume: VolumePinState::plain(
                 namespace_id("prod"),
                 VolumeName::try_new("data").expect("valid volume name"),
                 machine_id("machine_a"),
             ),
-            effect: MachineVolumeRemoveEffect::DockerReference,
         },
         Duration::from_secs(1),
     )
@@ -759,6 +758,85 @@ async fn machine_role_service_removes_volume() {
         state.volume_removes(),
         vec!["ployz-n4-prod-v4-data".to_owned()]
     );
+    assert_eq!(
+        state.volume_remove_effects(),
+        [RecordedVolumeRemoveEffect::DockerReference(
+            "ployz-n4-prod-v4-data".to_owned(),
+        )]
+    );
+}
+
+#[tokio::test]
+async fn machine_role_service_does_not_destroy_dataset_when_docker_remove_fails() {
+    let nats = test_nats().await;
+    let state = RecordingRunnerState::default();
+    let runner = RecordingRunner::new(state.clone()).with_volume_remove_failure("volume is in use");
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        runner,
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a
+        .flush()
+        .await
+        .expect("flush machine service subscription");
+    let namespace_id = namespace_id("prod");
+    let volume_name = VolumeName::try_new("data").expect("valid volume name");
+    let dataset = DatasetName::for_volume(
+        &ZfsPoolName::try_new("stored-pool").expect("valid pool"),
+        &namespace_id,
+        &volume_name,
+    )
+    .expect("valid stored dataset");
+    let volume = VolumePinState::try_new(
+        namespace_id,
+        volume_name,
+        machine_id("machine_a"),
+        ployz_core::intent::VolumeKind::Provisioned {
+            dataset,
+            max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("valid quota"),
+        },
+    )
+    .expect("valid provisioned pin");
+
+    let response = request_json::<_, MachineVolumeRemoveRpcResponse>(
+        &nats.client,
+        machine_service(
+            &machine_id("machine_a"),
+            MachineServiceEndpoint::VolumeRemove,
+        ),
+        &MachineVolumeRemoveRpcRequest::ProvisionedDataset {
+            operation_id: operation_id("op_123"),
+            volume: ProvisionedVolumePinState::try_new(volume).expect("provisioned pin"),
+        },
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("machine service responds");
+
+    assert_eq!(
+        response,
+        MachineVolumeRemoveRpcResponse::DomainError {
+            machine_id: machine_id("machine_a"),
+            error: MachineVolumeRemoveDomainError::DockerRemoveFailed {
+                message: ployz_core::operation::FailureMessage::try_new(
+                    "volume remove failed before dataset destroy: volume is in use",
+                )
+                .expect("valid failure message"),
+            },
+        }
+    );
+    assert_eq!(
+        state.volume_remove_effects(),
+        [RecordedVolumeRemoveEffect::DockerReference(
+            "ployz-n4-prod-v4-data".to_owned(),
+        )]
+    );
+    assert!(state.dataset_destroys().is_empty());
 }
 
 #[tokio::test]
@@ -803,10 +881,9 @@ async fn machine_role_service_destroys_the_exact_stored_dataset() {
             &machine_id("machine_a"),
             MachineServiceEndpoint::VolumeRemove,
         ),
-        &MachineVolumeRemoveRpcRequest {
+        &MachineVolumeRemoveRpcRequest::ProvisionedDataset {
             operation_id: operation_id("op_123"),
-            volume,
-            effect: MachineVolumeRemoveEffect::ProvisionedDataset,
+            volume: ProvisionedVolumePinState::try_new(volume).expect("provisioned pin"),
         },
         Duration::from_secs(1),
     )
@@ -819,12 +896,22 @@ async fn machine_role_service_destroys_the_exact_stored_dataset() {
             machine_id: machine_id("machine_a"),
         })
     );
-    assert_eq!(state.dataset_destroys(), vec![dataset]);
-    assert!(state.volume_removes().is_empty());
+    assert_eq!(state.dataset_destroys(), vec![dataset.clone()]);
+    assert_eq!(
+        state.volume_removes(),
+        vec!["ployz-n4-prod-v4-data".to_owned()]
+    );
+    assert_eq!(
+        state.volume_remove_effects(),
+        [
+            RecordedVolumeRemoveEffect::DockerReference("ployz-n4-prod-v4-data".to_owned(),),
+            RecordedVolumeRemoveEffect::ProvisionedDataset(dataset),
+        ]
+    );
 }
 
 #[tokio::test]
-async fn machine_role_service_rejects_wrong_machine_and_plain_dataset_destroy() {
+async fn machine_role_service_rejects_wrong_machine() {
     let nats = test_nats().await;
     let state = RecordingRunnerState::default();
     let _service = start_machine_role_service(
@@ -848,14 +935,13 @@ async fn machine_role_service_rejects_wrong_machine_and_plain_dataset_destroy() 
     let wrong_machine = request_json::<_, MachineVolumeRemoveRpcResponse>(
         &nats.client,
         subject.clone(),
-        &MachineVolumeRemoveRpcRequest {
+        &MachineVolumeRemoveRpcRequest::DockerReference {
             operation_id: operation_id("op_wrong_machine"),
             volume: VolumePinState::plain(
                 namespace_id("prod"),
                 VolumeName::try_new("data").expect("valid volume name"),
                 machine_id("machine_b"),
             ),
-            effect: MachineVolumeRemoveEffect::DockerReference,
         },
         Duration::from_secs(1),
     )
@@ -872,29 +958,7 @@ async fn machine_role_service_rejects_wrong_machine_and_plain_dataset_destroy() 
         }
     );
 
-    let plain_dataset = request_json::<_, MachineVolumeRemoveRpcResponse>(
-        &nats.client,
-        subject,
-        &MachineVolumeRemoveRpcRequest {
-            operation_id: operation_id("op_plain_dataset"),
-            volume: VolumePinState::plain(
-                namespace_id("prod"),
-                VolumeName::try_new("data").expect("valid volume name"),
-                machine_id("machine_a"),
-            ),
-            effect: MachineVolumeRemoveEffect::ProvisionedDataset,
-        },
-        Duration::from_secs(1),
-    )
-    .await
-    .expect("machine service responds");
-    assert_eq!(
-        plain_dataset,
-        MachineVolumeRemoveRpcResponse::DomainError {
-            machine_id: machine_id("machine_a"),
-            error: MachineVolumeRemoveDomainError::ProvisionedDatasetRequired,
-        }
-    );
+    drop(subject);
     assert!(state.volume_removes().is_empty());
     assert!(state.dataset_destroys().is_empty());
 }
@@ -1412,6 +1476,12 @@ struct RecordingRunnerState {
     inner: Arc<Mutex<RecordingRunnerInner>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RecordedVolumeRemoveEffect {
+    DockerReference(String),
+    ProvisionedDataset(ployz_core::deploy::DatasetName),
+}
+
 async fn next_container_fact_delta(
     subscriber: &mut async_nats::Subscriber,
 ) -> MachineContainerFactDelta {
@@ -1471,6 +1541,14 @@ impl RecordingRunnerState {
             .clone()
     }
 
+    fn volume_remove_effects(&self) -> Vec<RecordedVolumeRemoveEffect> {
+        self.inner
+            .lock()
+            .expect("recording runner lock is not poisoned")
+            .volume_remove_effects
+            .clone()
+    }
+
     fn volume_ensures(&self) -> Vec<VolumePinState> {
         self.inner
             .lock()
@@ -1498,6 +1576,7 @@ struct RecordingRunnerInner {
     removes: Vec<ContainerId>,
     volume_removes: Vec<String>,
     dataset_destroys: Vec<ployz_core::deploy::DatasetName>,
+    volume_remove_effects: Vec<RecordedVolumeRemoveEffect>,
     volume_ensures: Vec<VolumePinState>,
 }
 
@@ -1511,6 +1590,7 @@ struct RecordingRunner {
     restart_failure: Option<(ContainerId, String)>,
     stop_failure: Option<(ContainerId, String)>,
     remove_failure: Option<(ContainerId, String)>,
+    volume_remove_failure: Option<String>,
     wait_exit_code: i64,
 }
 
@@ -1525,6 +1605,7 @@ impl RecordingRunner {
             restart_failure: None,
             stop_failure: None,
             remove_failure: None,
+            volume_remove_failure: None,
             wait_exit_code: 0,
         }
     }
@@ -1562,6 +1643,11 @@ impl RecordingRunner {
 
     fn with_remove_failure(mut self, container_id: &str, message: &str) -> Self {
         self.remove_failure = Some((self::container_id(container_id), message.to_owned()));
+        self
+    }
+
+    fn with_volume_remove_failure(mut self, message: &str) -> Self {
+        self.volume_remove_failure = Some(message.to_owned());
         self
     }
 
@@ -1717,12 +1803,23 @@ impl MachineContainerRunner for RecordingRunner {
         &self,
         docker_volume_name: &str,
     ) -> Result<(), MachineContainerRunnerError> {
-        self.state
+        let mut state = self
+            .state
             .inner
             .lock()
-            .expect("recording runner lock is not poisoned")
-            .volume_removes
-            .push(docker_volume_name.to_owned());
+            .expect("recording runner lock is not poisoned");
+        state.volume_removes.push(docker_volume_name.to_owned());
+        state
+            .volume_remove_effects
+            .push(RecordedVolumeRemoveEffect::DockerReference(
+                docker_volume_name.to_owned(),
+            ));
+        if let Some(message) = &self.volume_remove_failure {
+            return Err(MachineContainerRunnerError::RemoveVolume {
+                docker_volume_name: docker_volume_name.to_owned(),
+                message: message.clone(),
+            });
+        }
         Ok(())
     }
 
@@ -1730,12 +1827,17 @@ impl MachineContainerRunner for RecordingRunner {
         &self,
         dataset: &ployz_core::deploy::DatasetName,
     ) -> Result<(), ployz_core::storage::StorageEffectFailure> {
-        self.state
+        let mut state = self
+            .state
             .inner
             .lock()
-            .expect("recording runner lock is not poisoned")
-            .dataset_destroys
-            .push(dataset.clone());
+            .expect("recording runner lock is not poisoned");
+        state.dataset_destroys.push(dataset.clone());
+        state
+            .volume_remove_effects
+            .push(RecordedVolumeRemoveEffect::ProvisionedDataset(
+                dataset.clone(),
+            ));
         Ok(())
     }
 

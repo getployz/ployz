@@ -30,7 +30,6 @@ pub struct DatasetFacts {
 
 const DATASET_ENSURE_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 const DATASET_ENSURE_LOCK_RETRY: Duration = Duration::from_millis(25);
-const COMMAND_OUTPUT_CAPTURE_LIMIT_BYTES: usize = 4 * 1024;
 
 pub fn ensure_dataset(
     runner: &mut impl HostRunnerCommandRunner,
@@ -279,14 +278,14 @@ fn direct_child_listing_contains(
         command_timeout,
         EffectClass::Destructive,
     )?;
-    if output.stdout.len() >= COMMAND_OUTPUT_CAPTURE_LIMIT_BYTES {
+    if output.stdout_truncated {
         return Err(ZfsEffectError::GatherParse {
-            message: "direct-child dataset listing reached the command output capture limit"
+            message: "direct-child dataset listing exceeded the command output capture limit"
                 .to_owned(),
         });
     }
-    let mut saw_root = false;
-    let mut children = Vec::new();
+    let mut root_rows = 0;
+    let mut requested_rows = 0;
     for row in output.stdout.lines() {
         if row != row.trim() || row.is_empty() {
             return Err(ZfsEffectError::GatherParse {
@@ -294,31 +293,33 @@ fn direct_child_listing_contains(
             });
         }
         if row == root {
-            if saw_root {
-                return Err(ZfsEffectError::GatherParse {
-                    message: format!("duplicate dataset root row {row:?}"),
-                });
-            }
-            saw_root = true;
+            root_rows += 1;
             continue;
         }
         let child = DatasetName::try_new(row).map_err(|error| ZfsEffectError::GatherParse {
             message: format!("invalid direct-child dataset row {row:?}: {error}"),
         })?;
         verify_child(state, &child)?;
-        if children.contains(&child) {
-            return Err(ZfsEffectError::GatherParse {
-                message: format!("duplicate direct-child dataset row {row:?}"),
-            });
+        if child == *requested {
+            requested_rows += 1;
         }
-        children.push(child);
     }
-    if !saw_root {
+    if root_rows != 1 {
         return Err(ZfsEffectError::GatherParse {
-            message: format!("direct-child dataset listing omitted root {root}"),
+            message: format!(
+                "direct-child dataset listing returned {root_rows} rows for root {root}, expected exactly one"
+            ),
         });
     }
-    Ok(children.contains(requested))
+    if requested_rows > 1 {
+        return Err(ZfsEffectError::GatherParse {
+            message: format!(
+                "duplicate direct-child dataset row {:?}",
+                requested.as_str()
+            ),
+        });
+    }
+    Ok(requested_rows == 1)
 }
 
 pub fn gather_pool_capacity(
