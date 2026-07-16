@@ -195,8 +195,6 @@ pub(super) fn lower_build_adapter(
                     plan_path.to_string_lossy().into_owned(),
                     "--info-out".to_owned(),
                     info_path.to_string_lossy().into_owned(),
-                    "--env".to_owned(),
-                    format!("PLOYZ_GIT_COMMIT={commit}"),
                 ],
             })
         }
@@ -310,10 +308,14 @@ mod tests {
         let prepare = plan.prepare.expect("prepare");
         assert_eq!(prepare.program, Path::new(RAILPACK_PATH));
         assert!(prepare.arguments.contains(&"--plan-out".to_owned()));
+        assert!(!prepare.arguments.contains(&"--env".to_owned()));
         assert!(plan.buildctl_arguments.iter().any(|argument| {
             argument
                 == "source=ghcr.io/railwayapp/railpack-frontend@sha256:17b4f33fca2b79aba474a400650bb338a32130b5ca40d8bc755cde93f594a95c"
         }));
+        assert!(plan.buildctl_arguments.contains(
+            &"build-arg:PLOYZ_GIT_COMMIT=0123456789abcdef0123456789abcdef01234567".to_owned()
+        ));
         assert!(
             plan.buildctl_arguments
                 .iter()
