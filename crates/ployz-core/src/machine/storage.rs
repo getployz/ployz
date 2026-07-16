@@ -48,8 +48,8 @@ pub struct PoolCapacityFacts {
 #[serde(deny_unknown_fields)]
 pub struct VolumeUsageFacts {
     pub used_bytes: u64,
-    /// Modification time of the volume's mount directory, not a recursive
-    /// latest-write scan of its contents.
+    /// Latest modification time among the volume root and all entries on the
+    /// same filesystem, in whole Unix seconds.
     pub last_write_unix_seconds: u64,
 }
 

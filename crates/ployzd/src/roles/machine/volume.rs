@@ -12,6 +12,8 @@ use std::time::Duration;
 
 const STORAGE_HOST_COMMAND_TIMEOUT: Duration = Duration::from_secs(4);
 const MAX_CONCURRENT_VOLUME_READS: usize = 16;
+const VOLUME_TESTIMONY_COLLECTION_TIMEOUT: Duration = Duration::from_secs(4);
+pub(crate) const VOLUME_TESTIMONY_ENDPOINT_TIMEOUT: Duration = Duration::from_millis(4_500);
 pub(super) const DATASET_ENSURE_HOST_COMMAND_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 pub(super) const DATASET_DESTROY_HOST_COMMAND_TIMEOUT: Duration =
     ployz_core::storage::DATASET_DESTROY_MAX_INNER_BUDGET.saturating_add(Duration::from_secs(20));
@@ -93,7 +95,7 @@ pub(crate) async fn handle_volume_testimony<R>(
     request: NatsServiceRequest,
 ) -> NatsServiceResponse
 where
-    R: crate::roles::machine::runner::MachineContainerRunner,
+    R: crate::roles::machine::runner::MachineVolumeUsageReader,
 {
     use crate::roles::machine::protocol::{
         MachineVolumeTestimony, MachineVolumeTestimonyDomainError, MachineVolumeTestimonyResult,
@@ -119,7 +121,7 @@ where
         });
     }
 
-    let mut reads = stream::iter(pins)
+    let mut reads = stream::iter(pins.iter().cloned())
         .map(|pin| {
             let runner = &runner;
             async move {
@@ -131,11 +133,34 @@ where
             }
         })
         .buffer_unordered(MAX_CONCURRENT_VOLUME_READS);
-    let mut results = Vec::new();
-    while let Some(result) = reads.next().await {
-        results.push(result);
+    let deadline = tokio::time::Instant::now() + VOLUME_TESTIMONY_COLLECTION_TIMEOUT;
+    let mut completed = Vec::new();
+    while let Ok(Some(result)) = tokio::time::timeout_at(deadline, reads.next()).await {
+        completed.push(result);
     }
-    results.sort_by(|left, right| compare_volume_pins(&left.pin, &right.pin));
+    drop(reads);
+    completed.sort_by(|left, right| compare_volume_pins(&left.pin, &right.pin));
+    let mut completed = completed.into_iter().peekable();
+    let results = pins
+        .into_iter()
+        .map(|pin| {
+            while completed
+                .peek()
+                .is_some_and(|result| compare_volume_pins(&result.pin, &pin).is_lt())
+            {
+                completed.next();
+            }
+            if let Some(result) =
+                completed.next_if(|result| compare_volume_pins(&result.pin, &pin).is_eq())
+            {
+                return result;
+            }
+            MachineVolumeTestimonyResult {
+                pin,
+                testimony: MachineVolumeTestimony::Unavailable,
+            }
+        })
+        .collect();
 
     machine_success(MachineVolumeTestimonyRpcResponse::Ok(
         MachineVolumeTestimonyRpcOk {

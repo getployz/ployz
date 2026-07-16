@@ -20,10 +20,6 @@ impl From<NamespaceExecutionError> for PloyzctlExecutionError {
     }
 }
 
-fn removal_evidence_request(force: bool) -> Option<VolumeListRequest> {
-    (!force).then_some(VolumeListRequest {})
-}
-
 fn confirm_remove(
     command: &NamespaceRemoveCommand,
     confirmation: &NamespaceRemoveConfirmation,
@@ -48,8 +44,11 @@ pub(crate) async fn remove(
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
     let detach = command.detach;
     let api = operation_api_client(config).await?;
-    if let Some(request) = removal_evidence_request(command.force) {
-        let result = api.volume_list(&request).await.map_err(api_error)?;
+    if !command.force {
+        let result = api
+            .volume_list(&VolumeListRequest {})
+            .await
+            .map_err(api_error)?;
         let confirmation =
             NamespaceRemoveConfirmation::from_volume_list(command.namespace_id.clone(), result);
         confirm_remove(&command, &confirmation)?;
@@ -64,18 +63,4 @@ pub(crate) async fn remove(
         ));
     }
     crate::operation::runtime::watch_accepted(&api, accepted.operation_id, config).await
-}
-
-#[cfg(test)]
-mod tests {
-    use super::removal_evidence_request;
-
-    #[test]
-    fn force_bypasses_namespace_volume_list_confirmation_gather() {
-        assert_eq!(removal_evidence_request(true), None);
-        assert_eq!(
-            removal_evidence_request(false),
-            Some(ployz_sdk_types::VolumeListRequest {})
-        );
-    }
 }

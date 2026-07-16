@@ -642,13 +642,6 @@ export type PoolCapacityFacts = { total_bytes: number,
  */
 provisioned_used_bytes: number, free_bytes: number, child_quotas: Array<DatasetQuotaFact>, };
 
-export type VolumeUsageFacts = { used_bytes: number,
-/**
- * Modification time of the volume's mount directory, not a recursive
- * latest-write scan of its contents.
- */
-last_write_unix_seconds: number, };
-
 export type StorageCapability = { "state": "unprepared" } | { "state": "ready", pool: ZfsPoolName, capacity: PoolCapacityFacts, } | { "state": "unavailable", reason: StorageUnavailableReason, };
 
 export type StorageUnavailableReason = { "reason": "zfs_module_missing" } | { "reason": "pool_not_imported", pool: ZfsPoolName, } | { "reason": "pool_faulted", pool: ZfsPoolName, } | { "reason": "capacity_facts_unavailable" };

@@ -59,6 +59,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+mod volume_testimony;
+
 #[tokio::test]
 async fn machine_role_service_reports_unknown_substrate_without_evidence() {
     let nats = test_nats().await;
@@ -1476,77 +1478,6 @@ async fn machine_volume_ensure_requires_the_subject_machine_and_runs_once() {
     assert_eq!(state.volume_ensures().len(), 1);
 }
 
-#[tokio::test]
-async fn machine_volume_testimony_is_stable_drained_and_machine_fenced() {
-    let nats = test_nats().await;
-    let state = RecordingRunnerState::default();
-    let available = VolumeUsageFacts {
-        used_bytes: 4096,
-        last_write_unix_seconds: 1_700_000_000,
-    };
-    let _service = start_machine_role_service(
-        nats.machine_a.clone(),
-        machine_id("machine_a"),
-        RecordingRunner::new(state.clone()).with_volume_usage("alpha", available.clone()),
-        ready_wireguard_ebpf(),
-        idle_logs(),
-    )
-    .await
-    .expect("machine runtime service starts");
-    nats.machine_a.flush().await.expect("flush subscription");
-    let alpha = VolumePinState::plain(
-        namespace_id("default"),
-        VolumeName::try_new("alpha").expect("volume"),
-        machine_id("machine_a"),
-    );
-    let zeta = VolumePinState::plain(
-        namespace_id("default"),
-        VolumeName::try_new("zeta").expect("volume"),
-        machine_id("machine_a"),
-    );
-    let reader = NatsMachineVolumeTestimonyReader::new(nats.client.clone())
-        .with_request_timeout(Duration::from_secs(1));
-
-    let testimony = reader
-        .volume_testimony(
-            &machine_id("machine_a"),
-            vec![zeta.clone(), alpha.clone(), alpha.clone()],
-        )
-        .await
-        .expect("volume testimony succeeds");
-
-    assert_eq!(
-        testimony,
-        vec![
-            MachineVolumeTestimonyResult {
-                pin: alpha.clone(),
-                testimony: MachineVolumeTestimony::Available { facts: available },
-            },
-            MachineVolumeTestimonyResult {
-                pin: zeta.clone(),
-                testimony: MachineVolumeTestimony::Unavailable,
-            },
-        ]
-    );
-    assert_eq!(state.volume_reads(), vec![alpha, zeta]);
-
-    let wrong = VolumePinState::plain(
-        namespace_id("default"),
-        VolumeName::try_new("wrong").expect("volume"),
-        machine_id("machine_b"),
-    );
-    assert_eq!(
-        reader
-            .volume_testimony(&machine_id("machine_a"), vec![wrong])
-            .await,
-        Err(MachineVolumeTestimonyReadError::MachineMismatch {
-            expected_machine_id: machine_id("machine_b"),
-            responder_machine_id: machine_id("machine_a"),
-        })
-    );
-    assert_eq!(state.volume_reads().len(), 2);
-}
-
 #[derive(Clone, Default)]
 struct RecordingRunnerState {
     inner: Arc<Mutex<RecordingRunnerInner>>,
@@ -1769,6 +1700,18 @@ impl crate::roles::machine::runner::MachineImageRemovalRunner for RecordingRunne
     }
 }
 
+impl crate::roles::machine::runner::MachineVolumeUsageReader for RecordingRunner {
+    async fn read_volume_usage(&self, volume: &VolumePinState) -> Option<VolumeUsageFacts> {
+        self.state
+            .inner
+            .lock()
+            .expect("recording runner lock is not poisoned")
+            .volume_reads
+            .push(volume.clone());
+        self.volume_usage.get(volume.volume_name()).cloned()
+    }
+}
+
 impl MachineContainerRunner for RecordingRunner {
     async fn ensure_volume(
         &self,
@@ -1781,16 +1724,6 @@ impl MachineContainerRunner for RecordingRunner {
             .volume_ensures
             .push(volume.clone());
         Ok(())
-    }
-
-    async fn read_volume_usage(&self, volume: &VolumePinState) -> Option<VolumeUsageFacts> {
-        self.state
-            .inner
-            .lock()
-            .expect("recording runner lock is not poisoned")
-            .volume_reads
-            .push(volume.clone());
-        self.volume_usage.get(volume.volume_name()).cloned()
     }
 
     async fn existing_managed_containers(

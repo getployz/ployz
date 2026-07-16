@@ -211,19 +211,48 @@ pub fn gather_dataset_facts(
             message: format!("dataset {} has no leaf", dataset.as_str()),
         })?;
     let path = format!("{PROVISIONED_VOLUME_MOUNTPOINT}/{leaf}");
-    let directory_modified = checked(
+    let recursive_modified = checked(
         runner,
-        "stat",
-        &["-c", "%Y", &path],
+        "find",
+        &[&path, "-xdev", "-printf", "%T@\n"],
         COMMAND_TIMEOUT,
         EffectClass::Dataset,
     )?;
+    if recursive_modified.stdout_truncated {
+        return Err(ZfsEffectError::GatherParse {
+            message: "dataset recursive modification timestamp output exceeded the capture limit"
+                .to_owned(),
+        });
+    }
     Ok(VolumeUsageFacts {
         used_bytes: parse_u64("dataset used bytes", used.stdout.trim())?,
-        last_write_unix_seconds: parse_u64(
-            "dataset mount-directory modification timestamp",
-            directory_modified.stdout.trim(),
-        )?,
+        last_write_unix_seconds: parse_latest_write(&recursive_modified.stdout)?,
+    })
+}
+
+fn parse_latest_write(output: &str) -> Result<u64, ZfsEffectError> {
+    let mut latest = None;
+    for value in output.lines() {
+        let value = value.trim();
+        let seconds = value.split_once('.').map_or(value, |(seconds, _)| seconds);
+        if seconds.is_empty()
+            || !seconds.bytes().all(|byte| byte.is_ascii_digit())
+            || value.strip_prefix(seconds).is_some_and(|fraction| {
+                !fraction.is_empty()
+                    && (!fraction.starts_with('.')
+                        || fraction.len() == 1
+                        || !fraction[1..].bytes().all(|byte| byte.is_ascii_digit()))
+            })
+        {
+            return Err(ZfsEffectError::GatherParse {
+                message: format!("dataset recursive modification timestamp {value:?} is invalid"),
+            });
+        }
+        let seconds = parse_u64("dataset recursive modification timestamp", seconds)?;
+        latest = Some(latest.map_or(seconds, |current: u64| current.max(seconds)));
+    }
+    latest.ok_or_else(|| ZfsEffectError::GatherParse {
+        message: "dataset recursive modification timestamp output is empty".to_owned(),
     })
 }
 

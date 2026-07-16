@@ -125,13 +125,6 @@ pub trait MachineContainerRunner {
         volume: &VolumePinState,
     ) -> impl Future<Output = Result<(), VolumeEnsureFailure>> + Send;
 
-    fn read_volume_usage(
-        &self,
-        _volume: &VolumePinState,
-    ) -> impl Future<Output = Option<VolumeUsageFacts>> + Send {
-        async { None }
-    }
-
     fn existing_managed_containers(
         &self,
     ) -> impl Future<Output = Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError>> + Send;
@@ -195,6 +188,15 @@ pub trait MachineContainerRunner {
         &self,
         dataset: &DatasetName,
     ) -> impl Future<Output = Result<(), ployz_core::storage::StorageEffectFailure>> + Send;
+}
+
+/// Fresh, machine-owned volume testimony. Implementations must return `None`
+/// whenever either usage or latest-write evidence cannot be gathered fully.
+pub trait MachineVolumeUsageReader {
+    fn read_volume_usage(
+        &self,
+        volume: &VolumePinState,
+    ) -> impl Future<Output = Option<VolumeUsageFacts>> + Send;
 }
 
 pub trait MachineImageRemovalRunner {

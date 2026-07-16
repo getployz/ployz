@@ -193,14 +193,12 @@ impl VolumeListOutput {
             let referencing_services = if volume.referencing_services.is_empty() {
                 "-".to_owned()
             } else {
-                let mut services = volume
+                volume
                     .referencing_services
                     .iter()
                     .map(|service| service.as_str())
-                    .collect::<Vec<_>>();
-                services.sort_unstable();
-                services.dedup();
-                services.join(",")
+                    .collect::<Vec<_>>()
+                    .join(",")
             };
             let (used_bytes, last_write, testimony) = render_list_testimony(volume);
             format!(
@@ -346,7 +344,7 @@ mod tests {
                     "data",
                     "machine-a",
                     provisioned("prod", "data"),
-                    &["worker", "api", "api"],
+                    &["api", "worker"],
                     VolumeTestimony::Available {
                         used_bytes: 4_096,
                         last_write_unix_seconds: 1_700_000_000,

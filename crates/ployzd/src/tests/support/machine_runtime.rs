@@ -98,6 +98,15 @@ impl crate::roles::machine::runner::MachineImageRemovalRunner for ObservingConta
     }
 }
 
+impl crate::roles::machine::runner::MachineVolumeUsageReader for ObservingContainerRunner {
+    async fn read_volume_usage(
+        &self,
+        _volume: &ployz_core::intent::VolumePinState,
+    ) -> Option<ployz_core::machine::VolumeUsageFacts> {
+        None
+    }
+}
+
 impl MachineContainerRunner for ObservingContainerRunner {
     async fn ensure_volume(
         &self,

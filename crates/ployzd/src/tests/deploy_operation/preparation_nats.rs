@@ -616,6 +616,15 @@ impl MachineContainerRunner for StaticRunner {
     }
 }
 
+impl crate::roles::machine::runner::MachineVolumeUsageReader for StaticRunner {
+    async fn read_volume_usage(
+        &self,
+        _volume: &ployz_core::intent::VolumePinState,
+    ) -> Option<ployz_core::machine::VolumeUsageFacts> {
+        None
+    }
+}
+
 fn existing_state(state: &ContainerRuntimeState) -> ExistingManagedContainerState {
     match state {
         ContainerRuntimeState::Running {

@@ -1,18 +1,16 @@
 use crate::control::intent::service::NatsIntentReader;
 use crate::control::role_client::machine::{
-    MachineVolumeTestimonyReadError, NatsMachineVolumeTestimonyReader,
+    MAX_CONCURRENT_MACHINE_READS, MachineVolumeTestimonyReadError, NatsMachineVolumeTestimonyReader,
 };
 use crate::roles::machine::protocol::{MachineVolumeTestimony, MachineVolumeTestimonyResult};
-use futures_util::future::join_all;
+use futures_util::{StreamExt, stream};
 use ployz_core::ids::MachineId;
 use ployz_core::intent::{IntentSnapshot, VolumePinState};
 use ployz_sdk_types::{
     VolumeListError, VolumeListResult, VolumeSnapshot, VolumeStatus, VolumeTestimony,
 };
 use std::collections::BTreeMap;
-use std::time::Duration;
-
-const VOLUME_GATHER_TIMEOUT: Duration = Duration::from_secs(6);
+use std::future::Future;
 
 #[derive(Clone)]
 pub struct VolumeQueryService {
@@ -64,16 +62,28 @@ async fn gather_volume_testimony(
             .push(pin.clone());
     }
 
-    let requests = pins_by_machine
-        .into_iter()
-        .map(|(machine_id, pins)| async move {
-            let answer = reader.volume_testimony(&machine_id, pins).await;
-            (machine_id, answer)
-        });
+    collect_bounded_machine_answers(pins_by_machine, |machine_id, pins| async move {
+        let answer = reader.volume_testimony(&machine_id, pins).await;
+        (machine_id, answer)
+    })
+    .await
+}
 
-    tokio::time::timeout(VOLUME_GATHER_TIMEOUT, join_all(requests))
-        .await
-        .unwrap_or_default()
+async fn collect_bounded_machine_answers<F, Fut>(
+    requests: impl IntoIterator<Item = (MachineId, Vec<VolumePinState>)>,
+    mut read: F,
+) -> Vec<MachineAnswer>
+where
+    F: FnMut(MachineId, Vec<VolumePinState>) -> Fut,
+    Fut: Future<Output = MachineAnswer>,
+{
+    let reads = stream::iter(requests)
+        .map(move |(machine_id, pins)| read(machine_id, pins))
+        .buffer_unordered(MAX_CONCURRENT_MACHINE_READS);
+
+    let mut answers = reads.collect::<Vec<_>>().await;
+    answers.sort_by(|(left, _), (right, _)| left.cmp(right));
+    answers
 }
 
 fn volume_snapshots(
@@ -94,6 +104,22 @@ fn volume_snapshots(
                             machine_id.as_str()
                         ),
                     });
+                }
+                for requested_pin in intent
+                    .volume_pins
+                    .iter()
+                    .filter(|pin| pin.machine_id() == &machine_id)
+                {
+                    if !results.iter().any(|result| result.pin == *requested_pin) {
+                        return Err(VolumeListError::Unavailable {
+                            message: format!(
+                                "machine {} returned incomplete volume testimony: missing {}/{}",
+                                machine_id.as_str(),
+                                requested_pin.namespace_id().as_str(),
+                                requested_pin.volume_name().as_str()
+                            ),
+                        });
+                    }
                 }
                 answers_by_machine.insert(machine_id, results);
             }
@@ -147,7 +173,10 @@ fn volume_snapshots(
 
 #[cfg(test)]
 mod tests {
-    use super::{MachineAnswer, volume_snapshots};
+    use super::{
+        MAX_CONCURRENT_MACHINE_READS, MachineAnswer, collect_bounded_machine_answers,
+        volume_snapshots,
+    };
     use crate::control::role_client::machine::MachineVolumeTestimonyReadError;
     use crate::roles::machine::MachineRuntimeUnavailableReason;
     use crate::roles::machine::protocol::{MachineVolumeTestimony, MachineVolumeTestimonyResult};
@@ -158,6 +187,19 @@ mod tests {
     use ployz_sdk_types::{VolumeStatus, VolumeTestimony};
     use ployz_test_support::fixtures::serving_target_entry_in;
     use ployz_test_support::ids::{machine_id, namespace_id};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Semaphore;
+
+    async fn wait_for_count(counter: &AtomicUsize, expected: usize) {
+        for _ in 0..1_000 {
+            if counter.load(Ordering::SeqCst) == expected {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), expected);
+    }
 
     fn intent_with(pins: Vec<VolumePinState>) -> IntentSnapshot {
         IntentSnapshot {
@@ -193,6 +235,72 @@ mod tests {
         testimony: MachineVolumeTestimony,
     ) -> MachineVolumeTestimonyResult {
         MachineVolumeTestimonyResult { pin, testimony }
+    }
+
+    #[tokio::test]
+    async fn machine_gather_is_bounded_incremental_and_retains_every_answer() {
+        assert_eq!(MAX_CONCURRENT_MACHINE_READS, 16);
+        let request_count = MAX_CONCURRENT_MACHINE_READS + 1;
+        let requests = (0..request_count)
+            .map(|index| (machine_id(&format!("machine-{index:02}")), Vec::new()))
+            .collect::<Vec<_>>();
+        let started = Arc::new(AtomicUsize::new(0));
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let max_in_flight = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(Semaphore::new(0));
+
+        let gather = tokio::spawn({
+            let started = Arc::clone(&started);
+            let in_flight = Arc::clone(&in_flight);
+            let max_in_flight = Arc::clone(&max_in_flight);
+            let release = Arc::clone(&release);
+            async move {
+                collect_bounded_machine_answers(requests, move |machine_id, pins| {
+                    let started = Arc::clone(&started);
+                    let in_flight = Arc::clone(&in_flight);
+                    let max_in_flight = Arc::clone(&max_in_flight);
+                    let release = Arc::clone(&release);
+                    async move {
+                        assert!(pins.is_empty());
+                        started.fetch_add(1, Ordering::SeqCst);
+                        let current = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                        max_in_flight.fetch_max(current, Ordering::SeqCst);
+                        release
+                            .acquire()
+                            .await
+                            .expect("release remains open")
+                            .forget();
+                        in_flight.fetch_sub(1, Ordering::SeqCst);
+                        (
+                            machine_id.clone(),
+                            Err(MachineVolumeTestimonyReadError::Unavailable {
+                                machine_id,
+                                reason: MachineRuntimeUnavailableReason::RequestTimedOut,
+                            }),
+                        )
+                    }
+                })
+                .await
+            }
+        });
+
+        wait_for_count(&started, MAX_CONCURRENT_MACHINE_READS).await;
+        assert_eq!(
+            max_in_flight.load(Ordering::SeqCst),
+            MAX_CONCURRENT_MACHINE_READS
+        );
+        release.add_permits(1);
+        wait_for_count(&started, request_count).await;
+        assert_eq!(
+            max_in_flight.load(Ordering::SeqCst),
+            MAX_CONCURRENT_MACHINE_READS
+        );
+        release.add_permits(MAX_CONCURRENT_MACHINE_READS);
+
+        let answers = gather.await.expect("gather task completes");
+        assert_eq!(answers.len(), request_count);
+        assert_eq!(answers[0].0.as_str(), "machine-00");
+        assert_eq!(answers[request_count - 1].0.as_str(), "machine-16");
     }
 
     #[test]
@@ -244,11 +352,10 @@ mod tests {
     }
 
     #[test]
-    fn ignores_foreign_and_missing_results_instead_of_creating_or_borrowing_truth() {
+    fn ignores_foreign_results_instead_of_creating_or_borrowing_truth() {
         let requested = plain("team", "requested", "machine-a");
-        let missing = plain("team", "missing", "machine-a");
         let foreign = plain("other", "foreign", "machine-a");
-        let intent = intent_with(vec![requested.clone(), missing]);
+        let intent = intent_with(vec![requested.clone()]);
         let answers = vec![(
             machine_id("machine-a"),
             Ok(vec![
@@ -266,9 +373,23 @@ mod tests {
         )];
 
         let projected = volume_snapshots(&intent, answers).expect("valid projection");
-        assert_eq!(projected.len(), 2);
-        assert_eq!(projected[0].testimony, VolumeTestimony::NoAnswer);
-        assert_eq!(projected[1].testimony, VolumeTestimony::Unavailable);
+        assert_eq!(projected.len(), 1);
+        assert_eq!(projected[0].testimony, VolumeTestimony::Unavailable);
+    }
+
+    #[test]
+    fn answered_machine_omitting_requested_pin_is_an_invariant_error() {
+        let returned = plain("team", "returned", "machine-a");
+        let omitted = plain("team", "omitted", "machine-a");
+        let intent = intent_with(vec![returned.clone(), omitted]);
+        let answers = vec![(
+            machine_id("machine-a"),
+            Ok(vec![result(returned, MachineVolumeTestimony::Unavailable)]),
+        )];
+
+        let error = volume_snapshots(&intent, answers).expect_err("omission must fail");
+        assert!(error.to_string().contains("incomplete volume testimony"));
+        assert!(error.to_string().contains("team/omitted"));
     }
 
     #[test]

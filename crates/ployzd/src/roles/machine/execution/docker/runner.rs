@@ -10,10 +10,7 @@ use crate::roles::machine::runner::{
     MachineContainerRunner, MachineContainerRunnerError, MachineImageRemovalRunner,
     MachineLogQuery, MachineLogReader, MachineLogReaderError, MachineLogTail, MachineLogTimestamps,
 };
-use crate::roles::machine::volume::{
-    destroy_provisioned_dataset, docker_volume_name, ensure_provisioned_dataset,
-    read_provisioned_volume_usage,
-};
+use crate::roles::machine::volume::{destroy_provisioned_dataset, ensure_provisioned_dataset};
 use bollard::Docker;
 use bollard::auth::DockerCredentials;
 use bollard::errors::Error as BollardError;
@@ -36,10 +33,10 @@ use ployz_core::deploy::{
 use ployz_core::ids::{ContainerId, SubjectTokenError};
 use ployz_core::image::OciDigest;
 use ployz_core::intent::{VolumeKind, VolumePinState};
+use ployz_core::machine::VolumeEnsureFailure;
 use ployz_core::machine::runtime::{
     ContainerHealth, ManagedContainerHealthStatus, ManagedContainerIdentity,
 };
-use ployz_core::machine::{VolumeEnsureFailure, VolumeUsageFacts};
 use ployz_core::network::{
     EndpointBridgeStatus, INTERNAL_DNS_SUFFIX, MachineEndpointSubnet, endpoint_bridge_gateway_ipv4,
 };
@@ -50,18 +47,15 @@ use std::time::Duration;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
+use super::provisioned_volume::ensure_docker_volume;
 #[cfg(test)]
 use super::provisioned_volume::local_bind_volume_request;
-use super::provisioned_volume::{
-    ensure_docker_volume, plain_volume_request, validate_volume_shape,
-};
 
 const DEFAULT_LOG_TAIL_LINES: u16 = 200;
 const MAX_LOG_TAIL_LINES: u16 = 1_000;
 const MAX_LOG_TAIL_BYTES: usize = 64 * 1024;
 const REGISTRY_RESOLVE_RETRY_DELAYS: [Duration; 2] =
     [Duration::from_millis(250), Duration::from_secs(1)];
-const PLAIN_VOLUME_USAGE_TIMEOUT: Duration = Duration::from_secs(4);
 
 #[derive(Debug, Clone)]
 pub struct DockerManagedContainerRunner {
@@ -136,7 +130,7 @@ impl DockerManagedContainerRunner {
         }
     }
 
-    async fn docker(&self) -> Result<&Docker, DockerManagedContainerRunnerConnectError> {
+    pub(super) async fn docker(&self) -> Result<&Docker, DockerManagedContainerRunnerConnectError> {
         match &self.docker {
             #[cfg(test)]
             DockerHandle::Connected(docker) => Ok(docker),
@@ -161,44 +155,6 @@ fn connect_local_defaults() -> Result<Docker, DockerManagedContainerRunnerConnec
             message: source.to_string(),
         }
     })
-}
-
-async fn read_plain_volume_usage(mountpoint: &str) -> Option<VolumeUsageFacts> {
-    let mut command = tokio::process::Command::new("du");
-    command
-        .args(["-s", "-B1", "--", mountpoint])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-    let (usage, metadata) = tokio::join!(
-        tokio::time::timeout(PLAIN_VOLUME_USAGE_TIMEOUT, command.output()),
-        tokio::time::timeout(PLAIN_VOLUME_USAGE_TIMEOUT, tokio::fs::metadata(mountpoint)),
-    );
-    let usage = usage.ok()?.ok()?;
-    if !usage.status.success() {
-        return None;
-    }
-    let used_bytes = parse_du_bytes(&usage.stdout)?;
-    let metadata = metadata.ok()?.ok()?;
-    let last_write_unix_seconds = metadata
-        .modified()
-        .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_secs();
-    Some(VolumeUsageFacts {
-        used_bytes,
-        last_write_unix_seconds,
-    })
-}
-
-fn parse_du_bytes(output: &[u8]) -> Option<u64> {
-    std::str::from_utf8(output)
-        .ok()?
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()
 }
 
 impl MachineImageRemovalRunner for DockerManagedContainerRunner {
@@ -237,30 +193,6 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
                     message: error.to_string(),
                 })?;
         ensure_docker_volume(docker, volume).await
-    }
-
-    async fn read_volume_usage(&self, volume: &VolumePinState) -> Option<VolumeUsageFacts> {
-        match volume.kind() {
-            VolumeKind::Provisioned { dataset, .. } => read_provisioned_volume_usage(dataset).await,
-            VolumeKind::Plain => {
-                let docker = self.docker().await.ok()?;
-                let storage_name = docker_volume_name(volume.namespace_id(), volume.volume_name());
-                let observed = docker.inspect_volume(&storage_name).await.ok()?;
-                let expected = plain_volume_request(volume);
-                validate_volume_shape(
-                    volume,
-                    observed.clone(),
-                    "local",
-                    &expected.driver_opts.unwrap_or_default(),
-                )
-                .ok()?;
-                let mountpoint = observed.mountpoint;
-                if mountpoint.is_empty() {
-                    return None;
-                }
-                read_plain_volume_usage(&mountpoint).await
-            }
-        }
     }
 
     async fn existing_managed_containers(

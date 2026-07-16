@@ -1024,14 +1024,14 @@ fn dataset_ensure_lock_serializes_one_prepared_pool() {
 }
 
 #[test]
-fn dataset_facts_use_zfs_used_bytes_and_mount_directory_metadata_time() {
+fn dataset_facts_use_zfs_used_bytes_and_latest_recursive_entry_time() {
     let state = tempfile::tempdir().unwrap();
     persist(state.path(), PreparedStorageOrigin::Adopted);
     let mut runner = RecordingRunner::new([
         success(),
         stdout(VOLUME_MOUNTPOINT),
         stdout("4096\n"),
-        stdout("1700000000\n"),
+        stdout("1699999999.2500000000\n1700000000.7500000000\n"),
     ]);
 
     let facts = gather_dataset_facts(&mut runner, state.path(), &dataset("tank")).unwrap();
@@ -1043,15 +1043,57 @@ fn dataset_facts_use_zfs_used_bytes_and_mount_directory_metadata_time() {
             last_write_unix_seconds: 1_700_000_000,
         }
     );
-    assert_eq!(invocation(&runner, 3).program, "stat");
+    assert_eq!(invocation(&runner, 3).program, "find");
     let expected_path = format!(
         "/var/lib/ployz/volumes/{}",
         dataset("tank").as_str().rsplit('/').next().unwrap()
     );
     assert_eq!(
         invocation(&runner, 3).args,
-        vec!["-c".to_owned(), "%Y".to_owned(), expected_path]
+        vec![
+            expected_path,
+            "-xdev".to_owned(),
+            "-printf".to_owned(),
+            "%T@\n".to_owned(),
+        ]
     );
+}
+
+#[test]
+fn dataset_facts_reject_malformed_or_empty_recursive_timestamps() {
+    for timestamps in ["not-a-time\n", ""] {
+        let state = tempfile::tempdir().unwrap();
+        persist(state.path(), PreparedStorageOrigin::Adopted);
+        let mut runner = RecordingRunner::new([
+            success(),
+            stdout(VOLUME_MOUNTPOINT),
+            stdout("4096\n"),
+            stdout(timestamps),
+        ]);
+
+        assert!(matches!(
+            gather_dataset_facts(&mut runner, state.path(), &dataset("tank")),
+            Err(ZfsEffectError::GatherParse { .. })
+        ));
+    }
+}
+
+#[test]
+fn dataset_facts_reject_truncated_recursive_timestamps() {
+    let state = tempfile::tempdir().unwrap();
+    persist(state.path(), PreparedStorageOrigin::Adopted);
+    let mut runner = RecordingRunner::new([
+        success(),
+        stdout(VOLUME_MOUNTPOINT),
+        stdout("4096\n"),
+        truncated_stdout("1700000000.1\n"),
+    ]);
+
+    assert!(matches!(
+        gather_dataset_facts(&mut runner, state.path(), &dataset("tank")),
+        Err(ZfsEffectError::GatherParse { message })
+            if message.contains("exceeded the capture limit")
+    ));
 }
 
 #[test]
