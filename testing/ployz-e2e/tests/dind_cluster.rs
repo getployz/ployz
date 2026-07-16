@@ -65,11 +65,11 @@ use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientErr
 use ployz_nats::permissions::inbox_subscribe_scope;
 use ployz_nats::subjects::{MachineServiceEndpoint, OPERATOR_RUNTIME_SNAPSHOT, machine_service};
 use ployz_sdk_types::{
-    DeployReserveRequest, DeploySubmitRequest, MachineJoinRedeemError, MachineJoinRedeemRequest,
-    MachineListRequest, MachineSnapshot, MachineTestimony, NamespaceRemoveRequest,
-    NetworkDataplaneTestimony, NetworkStatusMachine, NetworkStatusRequest, OpsListRequest,
-    ServiceInspectRequest, VolumeCreateRequest, VolumeListRequest, VolumeRemoveRequest,
-    VolumeStatus,
+    AcceptedOperation, DeployReserveRequest, DeploySubmitRequest, MachineJoinRedeemError,
+    MachineJoinRedeemRequest, MachineListRequest, MachineSnapshot, MachineTestimony,
+    NamespaceRemoveRequest, NetworkDataplaneTestimony, NetworkStatusMachine, NetworkStatusRequest,
+    OpsListRequest, ServiceInspectRequest, VolumeCreateRequest, VolumeListRequest,
+    VolumeRemoveRequest, VolumeStatus,
 };
 use ployz_test_support::ids::{
     idempotency_key, machine_id, namespace_id, operation_id, route_port, service_id,
@@ -1714,6 +1714,19 @@ async fn reserved_deploy_request(
     }
 }
 
+async fn submit_volume_deploy_with_fresh_peer_handshakes(
+    core: &CoreContext,
+    idempotency: &str,
+    target: DeployRequest,
+) -> AcceptedOperation {
+    let request = reserved_deploy_request(core, idempotency, target).await;
+    wait_for_fresh_peer_handshakes(core).await;
+    core.api
+        .deploy_submit(&request)
+        .await
+        .expect("named-volume deploy submits")
+}
+
 async fn scenario_cross_machine_deploy(core: &CoreContext, edge: &DindMachine) -> String {
     let cluster = &core.cluster;
     let accepted = core
@@ -2122,21 +2135,15 @@ async fn scenario_named_volume_survives_redeploy(
         "explicit create did not ensure the Docker volume: {inspect_created:?}"
     );
 
-    let first = core
-        .api
-        .deploy_submit(
-            &reserved_deploy_request(
-                core,
-                "idem_dind_volume_first",
-                volume_deploy_target(
-                    workload_image,
-                    "printf first > /data/marker; while true; do sleep 600; done",
-                ),
-            )
-            .await,
-        )
-        .await
-        .expect("first volume deploy submits");
+    let first = submit_volume_deploy_with_fresh_peer_handshakes(
+        core,
+        "idem_dind_volume_first",
+        volume_deploy_target(
+            workload_image,
+            "printf first > /data/marker; while true; do sleep 600; done",
+        ),
+    )
+    .await;
     let first_status =
         wait_for_terminal_deploy_status(core, &first.operation_id, DEPLOY_TERMINAL_BUDGET).await;
     assert!(
@@ -2152,18 +2159,15 @@ async fn scenario_named_volume_survives_redeploy(
         "first volume deploy did not complete: {first_status:?}"
     );
 
-    let second = core
-        .api
-        .deploy_submit(&reserved_deploy_request(
-            core,
-            "idem_dind_volume_second",
-            volume_deploy_target(
-                workload_image,
-                "cat /data/marker > /tmp/restored-marker || true; while true; do sleep 600; done",
-            ),
-        ).await)
-        .await
-        .expect("second volume deploy submits");
+    let second = submit_volume_deploy_with_fresh_peer_handshakes(
+        core,
+        "idem_dind_volume_second",
+        volume_deploy_target(
+            workload_image,
+            "cat /data/marker > /tmp/restored-marker || true; while true; do sleep 600; done",
+        ),
+    )
+    .await;
     let second_status =
         wait_for_terminal_deploy_status(core, &second.operation_id, DEPLOY_TERMINAL_BUDGET).await;
     assert!(
@@ -2216,18 +2220,12 @@ async fn scenario_named_volume_survives_redeploy(
         "redeployed container did not restore volume marker: {restored:?}"
     );
 
-    let drop_mount = core
-        .api
-        .deploy_submit(
-            &reserved_deploy_request(
-                core,
-                "idem_dind_volume_drop_mount",
-                volume_deploy_target_without_mount(workload_image),
-            )
-            .await,
-        )
-        .await
-        .expect("drop-volume deploy submits");
+    let drop_mount = submit_volume_deploy_with_fresh_peer_handshakes(
+        core,
+        "idem_dind_volume_drop_mount",
+        volume_deploy_target_without_mount(workload_image),
+    )
+    .await;
     let drop_mount_status =
         wait_for_terminal_deploy_status(core, &drop_mount.operation_id, DEPLOY_TERMINAL_BUDGET)
             .await;
@@ -2263,21 +2261,15 @@ async fn scenario_named_volume_survives_redeploy(
         "orphaned volume did not preserve data: {preserved:?}"
     );
 
-    let reattach = core
-        .api
-        .deploy_submit(
-            &reserved_deploy_request(
-                core,
-                "idem_dind_volume_reattach",
-                volume_deploy_target(
-                    workload_image,
-                    "cat /data/marker > /tmp/reattached-marker; while true; do sleep 600; done",
-                ),
-            )
-            .await,
-        )
-        .await
-        .expect("volume reattach deploy submits");
+    let reattach = submit_volume_deploy_with_fresh_peer_handshakes(
+        core,
+        "idem_dind_volume_reattach",
+        volume_deploy_target(
+            workload_image,
+            "cat /data/marker > /tmp/reattached-marker; while true; do sleep 600; done",
+        ),
+    )
+    .await;
     let reattach_status =
         wait_for_terminal_deploy_status(core, &reattach.operation_id, DEPLOY_TERMINAL_BUDGET).await;
     assert!(
