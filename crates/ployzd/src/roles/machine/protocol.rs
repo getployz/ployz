@@ -692,6 +692,8 @@ impl From<WireGuardEbpfPrepareError> for MachineDataplanePublicKeyDomainError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::deploy::VolumeName;
+    use ployz_core::ids::NamespaceId;
     use serde_json::json;
 
     fn machine_id(value: &str) -> MachineId {
