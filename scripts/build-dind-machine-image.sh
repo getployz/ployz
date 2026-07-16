@@ -22,6 +22,7 @@ MACHINE_IMAGE="${PLOYZ_DIND_MACHINE_IMAGE:-ployz-dind-machine:local}"
 BUILD_IMAGE="${PLOYZ_DIND_BUILD_IMAGE:-rust:1.91-bookworm}"
 BUILDER_IMAGE="${PLOYZ_DIND_BUILDER_IMAGE:-ployz-dind-builder:rust-1.91-bookworm-v2}"
 NATS_SERVER_VERSION="${PLOYZ_DIND_NATS_SERVER_VERSION:-2.14.2}"
+RAILPACK_VERSION="v0.31.0"
 WORKLOAD_IMAGE="${PLOYZ_DIND_WORKLOAD_IMAGE:-nginx:1.27-alpine}"
 REGISTRY_IMAGE="${PLOYZ_DIND_REGISTRY_IMAGE:-registry:2.8.3}"
 UMAMI_IMAGE="ghcr.io/umami-software/umami:postgresql-latest"
@@ -167,6 +168,51 @@ bytecode="$(PLOYZ_EBPF_TARGET_DIR=/ebpf-target scripts/build-ebpf-bytecode.sh | 
 install -m 0644 "${bytecode}" /target/release/ployz-ebpf-tc'
 }
 
+stage_railpack() {
+  local platform archive_name archive_sha256 stamp stamp_value
+  platform="$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")"
+  case "${platform}" in
+    linux/amd64)
+      archive_name="railpack-v0.31.0-x86_64-unknown-linux-musl.tar.gz"
+      archive_sha256="f75416cf4c452db2841d864f54dbfd8e4d77f2d4a02b23b87561e7760fa278fd"
+      ;;
+    linux/arm64)
+      archive_name="railpack-v0.31.0-arm64-unknown-linux-musl.tar.gz"
+      archive_sha256="de4c197e3a9d0c3de14d1e55fe933611622b399f35f495b4274012609490158a"
+      ;;
+    *)
+      echo "DinD Railpack staging supports linux/amd64 and linux/arm64, got ${platform}" >&2
+      exit 1
+      ;;
+  esac
+
+  mkdir -p "${TARGET_DIR}/release"
+  stamp="${TARGET_DIR}/release/railpack.source"
+  stamp_value="${platform} ${RAILPACK_VERSION} ${archive_sha256}"
+  if [ -x "${TARGET_DIR}/release/railpack" ] \
+    && [ "$(cat "${stamp}" 2>/dev/null || true)" = "${stamp_value}" ]; then
+    return 0
+  fi
+
+  (
+    work_dir="$(mktemp -d "${TMPDIR:-/tmp}/ployz-dind-railpack.XXXXXX")"
+    trap 'rm -rf "${work_dir}"' EXIT
+    archive="${work_dir}/${archive_name}"
+    url="https://github.com/railwayapp/railpack/releases/download/${RAILPACK_VERSION}/${archive_name}"
+    curl --fail --location --silent --show-error "${url}" --output "${archive}"
+    actual_sha256="$(sha256_of "${archive}")"
+    if [ "${actual_sha256}" != "${archive_sha256}" ]; then
+      echo "Railpack release archive has SHA-256 ${actual_sha256}, expected ${archive_sha256}" >&2
+      exit 1
+    fi
+    tar -xzf "${archive}" -C "${work_dir}" railpack
+    install -m 0755 "${work_dir}/railpack" "${TARGET_DIR}/release/railpack.tmp.$$"
+    mv "${TARGET_DIR}/release/railpack.tmp.$$" "${TARGET_DIR}/release/railpack"
+    printf '%s\n' "${stamp_value}" > "${stamp}.tmp.$$"
+    mv "${stamp}.tmp.$$" "${stamp}"
+  )
+}
+
 bake_workload_tarball() {
   local platform name image save_image tar stamp image_id stamp_value temp_tar temp_stamp
   platform="$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")"
@@ -216,6 +262,7 @@ build_machine_image() {
 
 build_linux_artifacts
 build_ebpf_bytecode
+stage_railpack
 
 if [ "${mode}" = "full" ]; then
   bake_workload_tarball
@@ -232,4 +279,5 @@ cat <<EOF
   lease worker:   ${TARGET_DIR}/release/ployz-test-lease-worker
   ployz-ebpf-ctl: ${TARGET_DIR}/release/ployz-ebpf-ctl
   ployz-ebpf-tc:  ${TARGET_DIR}/release/ployz-ebpf-tc
+  railpack:       ${TARGET_DIR}/release/railpack
 EOF
