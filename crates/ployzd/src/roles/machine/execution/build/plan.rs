@@ -1,12 +1,9 @@
 use super::source::CheckedOutGitSource;
-use ployz_core::build::{BuildAdapter, RailpackCacheKey};
+use ployz_core::build::{BuildAdapter, RailpackCacheKey, railpack_pins};
 use ployz_core::image::{OciDigest, OciPlatform};
 use ployz_core::install::{InstallArtifactVersion, InstallSha256Digest};
 use ployz_core::operation::{BuildAdapterToolchainEvidence, BuildToolchainEvidence};
 use std::path::{Path, PathBuf};
-
-const RAILPACK_VERSION: &str = "v0.31.0";
-const RAILPACK_PATH: &str = "/usr/local/lib/ployz/railpack/v0.31.0/railpack";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct BuildToolchain {
@@ -72,34 +69,36 @@ pub(super) fn toolchain_for_platform(
             platform: platform.clone(),
         });
     }
-    let (buildkit, railpack, frontend) = match platform.architecture() {
-        "amd64" => (
-            "sha256:2caaaf9bc673a82d5b0a87824f8375e6b2b36b55001dad611230516c724e9fba",
-            "15d3921fc4f955f60b0d4b635036153c6255928ef0a6af7353e3047a2ceb6121",
-            "sha256:935fd023272942bb7273b0a4f3c0fa2f2f6222d83d04caa7d6de9eb0c2ae99c8",
-        ),
-        "arm64" => (
-            "sha256:4eee950fb9d134cbf4e228ea3906eb4c7403323334af013c443302f7b74f2737",
-            "61723cee03fedaad6879c59729b1dabba329a4912573d77c37427149a070f8f9",
-            "sha256:17b4f33fca2b79aba474a400650bb338a32130b5ca40d8bc755cde93f594a95c",
-        ),
+    let pins = railpack_pins().map_err(invalid_pin)?;
+    let buildkit = match platform.architecture() {
+        "amd64" => "sha256:2caaaf9bc673a82d5b0a87824f8375e6b2b36b55001dad611230516c724e9fba",
+        "arm64" => "sha256:4eee950fb9d134cbf4e228ea3906eb4c7403323334af013c443302f7b74f2737",
         _ => {
             return Err(BuildPlanError::UnsupportedPlatform {
                 platform: platform.clone(),
             });
         }
     };
+    let railpack = pins
+        .for_architecture(platform.architecture())
+        .ok_or_else(|| BuildPlanError::UnsupportedPlatform {
+            platform: platform.clone(),
+        })?;
     let buildkit_manifest_digest = digest(buildkit)?;
-    let frontend_manifest_digest = digest(frontend)?;
+    let frontend_manifest_digest = digest(railpack.frontend_digest())?;
     let adapter = match adapter {
         BuildAdapter::Dockerfile { .. } => BuildAdapterToolchain::Dockerfile,
         BuildAdapter::Railpack { .. } => BuildAdapterToolchain::Railpack {
-            helper_path: PathBuf::from(RAILPACK_PATH),
-            helper_version: InstallArtifactVersion::try_new(RAILPACK_VERSION)
+            helper_path: PathBuf::from(pins.install_path()),
+            helper_version: InstallArtifactVersion::try_new(pins.version())
                 .map_err(|error| invalid_pin(error.to_string()))?,
-            helper_sha256: InstallSha256Digest::try_new(railpack)
+            helper_sha256: InstallSha256Digest::try_new(railpack.binary_sha256())
                 .map_err(|error| invalid_pin(error.to_string()))?,
-            frontend_reference: format!("ghcr.io/railwayapp/railpack-frontend@{frontend}"),
+            frontend_reference: format!(
+                "{}@{}",
+                pins.frontend_reference(),
+                railpack.frontend_digest()
+            ),
             frontend_manifest_digest,
         },
     };
@@ -306,13 +305,20 @@ mod tests {
         let plan = lower_build_adapter(&checkout, &adapter, &platform, temp.path(), &toolchain)
             .expect("plan");
         let prepare = plan.prepare.expect("prepare");
-        assert_eq!(prepare.program, Path::new(RAILPACK_PATH));
+        assert_eq!(
+            prepare.program,
+            Path::new(railpack_pins().expect("pins").install_path())
+        );
         assert!(prepare.arguments.contains(&"--plan-out".to_owned()));
         assert!(!prepare.arguments.contains(&"--env".to_owned()));
-        assert!(plan.buildctl_arguments.iter().any(|argument| {
-            argument
-                == "source=ghcr.io/railwayapp/railpack-frontend@sha256:17b4f33fca2b79aba474a400650bb338a32130b5ca40d8bc755cde93f594a95c"
-        }));
+        let pins = railpack_pins().expect("pins");
+        assert!(plan.buildctl_arguments.contains(&format!(
+            "source={}@{}",
+            pins.frontend_reference(),
+            pins.for_architecture("arm64")
+                .expect("arm64 pins")
+                .frontend_digest()
+        )));
         assert!(plan.buildctl_arguments.contains(
             &"build-arg:PLOYZ_GIT_COMMIT=0123456789abcdef0123456789abcdef01234567".to_owned()
         ));

@@ -1,5 +1,9 @@
 //! Validated source and adapter contracts for bounded image builds.
 
+mod railpack;
+
+pub use railpack::{RailpackPins, RailpackPlatformPins, railpack_pins};
+
 use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Component, Path};

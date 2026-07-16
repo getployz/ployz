@@ -1,5 +1,6 @@
 //! Versioned release manifest parsing for Host Runner-owned installs.
 
+use ployz_core::build::railpack_pins;
 use ployz_core::install::{
     AbsoluteInstallPath, FirstMachineInstallArtifacts, InstallArtifactSource, InstallArtifactSpec,
     InstallArtifactVersion, InstallSha256Digest, NatsServerInstallSpec,
@@ -98,6 +99,7 @@ struct RailpackManifestEntry {
     version: String,
     url: String,
     sha256: String,
+    install_path: String,
 }
 
 impl ReleaseManifest {
@@ -139,7 +141,7 @@ impl ReleaseManifest {
                 &self.railpack.version,
                 &self.railpack.url,
                 &self.railpack.sha256,
-                "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
+                &self.railpack.install_path,
             )?,
             nats_server: self
                 .nats_server
@@ -164,16 +166,19 @@ impl ReleaseManifest {
 }
 
 fn railpack_entry(contents: &str) -> Result<RailpackManifestEntry, String> {
+    let pins = railpack_pins()?;
     let version = manifest_value(contents, "PLOYZ_RAILPACK_VERSION")?;
-    if version != "v0.31.0" {
+    if version != pins.version() {
         return Err(format!(
-            "release manifest has unsupported PLOYZ_RAILPACK_VERSION={version}; expected v0.31.0"
+            "release manifest has unsupported PLOYZ_RAILPACK_VERSION={version}; expected {}",
+            pins.version()
         ));
     }
     Ok(RailpackManifestEntry {
         version,
         url: manifest_value(contents, "PLOYZ_RAILPACK_URL")?,
         sha256: manifest_value(contents, "PLOYZ_RAILPACK_SHA256")?,
+        install_path: pins.install_path().to_owned(),
     })
 }
 

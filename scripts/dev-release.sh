@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib.sh
 source "${ROOT_DIR}/scripts/lib.sh"
+# shellcheck source=config/railpack-pins.env
+source "${ROOT_DIR}/config/railpack-pins.env"
 
 ARTIFACT_DIR="${PLOYZ_DEV_ARTIFACT_DIR:-${PLOYZ_DIND_TARGET_DIR:-/tmp/ployz-dind-machine-target}/release}"
 OUTPUT_ROOT="${PLOYZ_DEV_RELEASE_DIR:-${ROOT_DIR}/dist/dev-releases}"
@@ -32,14 +34,14 @@ case "${platform}" in
   linux/amd64)
     platform_slug="linux-amd64"
     nats_sha256="b3e7b14eb10c895fd90c2dacdb6b65bd3208adcc9524dd7689ba2c1024e6b97a"
-    railpack_archive_name="railpack-v0.31.0-x86_64-unknown-linux-musl.tar.gz"
-    railpack_archive_sha256="f75416cf4c452db2841d864f54dbfd8e4d77f2d4a02b23b87561e7760fa278fd"
+    railpack_archive_name="${RAILPACK_AMD64_ARCHIVE}"
+    railpack_archive_sha256="${RAILPACK_AMD64_ARCHIVE_SHA256}"
     ;;
   linux/arm64)
     platform_slug="linux-arm64"
     nats_sha256="15fd0c3438e7178e5316e63be68373ad581c8d78db26e649113aa303b74e5e58"
-    railpack_archive_name="railpack-v0.31.0-arm64-unknown-linux-musl.tar.gz"
-    railpack_archive_sha256="de4c197e3a9d0c3de14d1e55fe933611622b399f35f495b4274012609490158a"
+    railpack_archive_name="${RAILPACK_ARM64_ARCHIVE}"
+    railpack_archive_sha256="${RAILPACK_ARM64_ARCHIVE_SHA256}"
     ;;
   *)
     echo "local release bundles support linux/amd64 and linux/arm64, got ${platform}" >&2
@@ -48,7 +50,7 @@ case "${platform}" in
 esac
 nats_version="2.14.2"
 nats_url="https://github.com/nats-io/nats-server/releases/download/v${nats_version}/nats-server-v${nats_version}-${platform_slug}.tar.gz"
-railpack_version="v0.31.0"
+railpack_version="${RAILPACK_VERSION}"
 railpack_url="https://github.com/railwayapp/railpack/releases/download/${railpack_version}/${railpack_archive_name}"
 
 if [ "${PLOYZ_DEV_SKIP_BUILD:-0}" != "1" ]; then

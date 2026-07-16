@@ -15,6 +15,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib.sh
 source "${ROOT_DIR}/scripts/lib.sh"
+# shellcheck source=config/railpack-pins.env
+source "${ROOT_DIR}/config/railpack-pins.env"
 
 version="${PLOYZ_RELEASE_VERSION:-v0.0.1-alpha.1}"
 case "${version}" in
@@ -57,21 +59,21 @@ case "${platform_os}" in
     : "${PLOYZ_RAILPACK_ARCHIVE_SHA256:?PLOYZ_RAILPACK_ARCHIVE_SHA256 is required for Linux release manifests}"
     case "${platform_arch}" in
       amd64)
-        railpack_archive_name="railpack-v0.31.0-x86_64-unknown-linux-musl.tar.gz"
-        railpack_archive_sha256="f75416cf4c452db2841d864f54dbfd8e4d77f2d4a02b23b87561e7760fa278fd"
+        railpack_archive_name="${RAILPACK_AMD64_ARCHIVE}"
+        railpack_archive_sha256="${RAILPACK_AMD64_ARCHIVE_SHA256}"
         ;;
       arm64)
-        railpack_archive_name="railpack-v0.31.0-arm64-unknown-linux-musl.tar.gz"
-        railpack_archive_sha256="de4c197e3a9d0c3de14d1e55fe933611622b399f35f495b4274012609490158a"
+        railpack_archive_name="${RAILPACK_ARM64_ARCHIVE}"
+        railpack_archive_sha256="${RAILPACK_ARM64_ARCHIVE_SHA256}"
         ;;
       *)
         echo "unsupported linux release architecture: ${platform_arch} (supported: amd64, arm64)" >&2
         exit 1
         ;;
     esac
-    railpack_archive_url="https://github.com/railwayapp/railpack/releases/download/v0.31.0/${railpack_archive_name}"
-    if [ "${PLOYZ_RAILPACK_VERSION}" != "v0.31.0" ]; then
-      echo "unsupported Railpack release version: ${PLOYZ_RAILPACK_VERSION} (expected v0.31.0)" >&2
+    railpack_archive_url="https://github.com/railwayapp/railpack/releases/download/${RAILPACK_VERSION}/${railpack_archive_name}"
+    if [ "${PLOYZ_RAILPACK_VERSION}" != "${RAILPACK_VERSION}" ]; then
+      echo "unsupported Railpack release version: ${PLOYZ_RAILPACK_VERSION} (expected ${RAILPACK_VERSION})" >&2
       exit 1
     fi
     if [ "${PLOYZ_RAILPACK_ARCHIVE_URL}" != "${railpack_archive_url}" ]; then

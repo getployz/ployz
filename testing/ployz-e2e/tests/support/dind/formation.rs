@@ -9,6 +9,7 @@ use ployz::dispatcher::{PloyzctlRuntimeConfig, execute_command};
 use ployz::machine::bootstrap::BootstrapRelease;
 use ployz::machine::command::{MachineAddRemoteCommand, MachineIdentity, MachineInitCommand};
 use ployz::ssh::SshTarget;
+use ployz_core::build::railpack_pins;
 use ployz_core::install::{MachineBootstrapUrl, MachineJoinClusterName};
 use ployz_core::machine::roles::InstallRolePolicy;
 use ployz_core::nats_config::NatsUserSeed;
@@ -293,6 +294,7 @@ async fn write_release_manifest(docker: &Docker, core: &DindMachine, shas: &Arti
 }
 
 fn release_manifest(shas: &ArtifactShas) -> String {
+    let railpack_version = railpack_pins().expect("checked-in Railpack pins").version();
     let manifest = format!(
         "PLOYZ_VERSION=local\n\
          PLOYZD_URL={ARTIFACTS_MOUNT_PATH}/ployzd\n\
@@ -301,7 +303,7 @@ fn release_manifest(shas: &ArtifactShas) -> String {
          PLOYZ_EBPF_TC_SHA256={}\n\
          PLOYZ_EBPF_CTL_URL={ARTIFACTS_MOUNT_PATH}/ployz-ebpf-ctl\n\
          PLOYZ_EBPF_CTL_SHA256={}\n\
-         PLOYZ_RAILPACK_VERSION={RAILPACK_VERSION}\n\
+         PLOYZ_RAILPACK_VERSION={railpack_version}\n\
          PLOYZ_RAILPACK_URL={ARTIFACTS_MOUNT_PATH}/railpack\n\
          PLOYZ_RAILPACK_SHA256={}\n\
          PLOYZ_NATS_SERVER_VERSION={}\n\
@@ -420,8 +422,6 @@ impl ArtifactShas {
 /// version, for the manifest's local nats-server artifact source.
 const NATS_SERVER_ARCHIVE_PATH: &str = "/opt/ployz/nats-server.tar.gz";
 const NATS_SERVER_VERSION_PATH: &str = "/opt/ployz/nats-server.version";
-const RAILPACK_VERSION: &str = "v0.31.0";
-
 async fn read_file_in_machine(docker: &Docker, machine: &DindMachine, path: &str) -> String {
     let outcome = exec_in_container(docker, &machine.container_id, &["cat", path])
         .await
@@ -572,6 +572,7 @@ pub async fn finish(core: CoreContext) {
 #[cfg(test)]
 mod tests {
     use super::{ARTIFACTS_MOUNT_PATH, ArtifactShas, release_manifest};
+    use ployz_core::build::railpack_pins;
 
     #[test]
     fn release_manifest_includes_pinned_railpack_artifact() {
@@ -585,7 +586,10 @@ mod tests {
         });
 
         for required in [
-            "PLOYZ_RAILPACK_VERSION=v0.31.0",
+            &format!(
+                "PLOYZ_RAILPACK_VERSION={}",
+                railpack_pins().expect("pins").version()
+            ),
             &format!("PLOYZ_RAILPACK_URL={ARTIFACTS_MOUNT_PATH}/railpack"),
             "PLOYZ_RAILPACK_SHA256=railpack-sha",
         ] {

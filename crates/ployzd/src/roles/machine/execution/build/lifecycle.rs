@@ -11,12 +11,14 @@ use ployz_nats::service_runtime::NatsClient;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::{mpsc, watch};
 
 pub(super) const BUILDER_LABEL: &str = "com.getployz.build=true";
 pub(super) const CACHE_VOLUME: &str = "ployz-buildkit-cache-v1";
 const COMMAND_OUTPUT_LIMIT_BYTES: usize = 256 * 1024;
+const RAILPACK_PREPARE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 pub(super) const DOCKER_COMMAND_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const BUILDKIT_READY_ATTEMPTS: usize = 30;
 const BUILDKIT_READY_DELAY: Duration = Duration::from_millis(500);
@@ -26,6 +28,16 @@ pub(super) async fn run_prepare(
     source: &GitSource,
     cancelled: &mut watch::Receiver<bool>,
 ) -> Result<(), BuildExecutionError> {
+    run_prepare_with_timeout(prepare, source, cancelled, RAILPACK_PREPARE_TIMEOUT).await
+}
+
+async fn run_prepare_with_timeout(
+    prepare: &PrepareCommand,
+    source: &GitSource,
+    cancelled: &mut watch::Receiver<bool>,
+    timeout: Duration,
+) -> Result<(), BuildExecutionError> {
+    check_cancelled(cancelled)?;
     let mut command = Command::new(&prepare.program);
     command
         .args(&prepare.arguments)
@@ -38,17 +50,100 @@ pub(super) async fn run_prepare(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    let output = tokio::select! {
-        output = command.output() => output.map_err(|error| infrastructure("run Railpack prepare", error.to_string()))?,
+    let mut child = command
+        .spawn()
+        .map_err(|error| infrastructure("run Railpack prepare", error.to_string()))?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| infrastructure("run Railpack prepare", "stdout was not piped"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| infrastructure("run Railpack prepare", "stderr was not piped"))?;
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+    let mut stdout_buffer = [0_u8; 8 * 1024];
+    let mut stderr_buffer = [0_u8; 8 * 1024];
+    let mut stdout_bytes = Vec::new();
+    let mut stderr_bytes = Vec::new();
+    let mut stdout_open = true;
+    let mut stderr_open = true;
+
+    while stdout_open || stderr_open {
+        tokio::select! {
+            biased;
+            changed = cancelled.changed() => {
+                let _ = changed;
+                terminate(&mut child).await;
+                return Err(BuildExecutionError::cancelled());
+            }
+            () = &mut deadline => {
+                terminate(&mut child).await;
+                return Err(adapter_failure("Railpack prepare timed out"));
+            }
+            read = stdout.read(&mut stdout_buffer), if stdout_open => {
+                let read = match read {
+                    Ok(read) => read,
+                    Err(error) => {
+                        terminate(&mut child).await;
+                        return Err(infrastructure("read Railpack prepare stdout", error.to_string()));
+                    }
+                };
+                if read == 0 {
+                    stdout_open = false;
+                } else if append_bounded(&mut stdout_bytes, read_bytes(&stdout_buffer, read), stderr_bytes.len()) {
+                    terminate(&mut child).await;
+                    return Err(adapter_failure("Railpack prepare output exceeded its bound"));
+                }
+            }
+            read = stderr.read(&mut stderr_buffer), if stderr_open => {
+                let read = match read {
+                    Ok(read) => read,
+                    Err(error) => {
+                        terminate(&mut child).await;
+                        return Err(infrastructure("read Railpack prepare stderr", error.to_string()));
+                    }
+                };
+                if read == 0 {
+                    stderr_open = false;
+                } else if append_bounded(&mut stderr_bytes, read_bytes(&stderr_buffer, read), stdout_bytes.len()) {
+                    terminate(&mut child).await;
+                    return Err(adapter_failure("Railpack prepare output exceeded its bound"));
+                }
+            }
+        }
+    }
+    enum WaitOutcome {
+        Exited(std::io::Result<std::process::ExitStatus>),
+        Cancelled,
+        TimedOut,
+    }
+    let outcome = tokio::select! {
+        status = child.wait() => WaitOutcome::Exited(status),
         changed = cancelled.changed() => {
             let _ = changed;
+            WaitOutcome::Cancelled
+        }
+        () = &mut deadline => WaitOutcome::TimedOut,
+    };
+    let status = match outcome {
+        WaitOutcome::Exited(status) => {
+            status.map_err(|error| infrastructure("run Railpack prepare", error.to_string()))?
+        }
+        WaitOutcome::Cancelled => {
+            terminate(&mut child).await;
             return Err(BuildExecutionError::cancelled());
+        }
+        WaitOutcome::TimedOut => {
+            terminate(&mut child).await;
+            return Err(adapter_failure("Railpack prepare timed out"));
         }
     };
     let combined = format!(
         "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&stdout_bytes),
+        String::from_utf8_lossy(&stderr_bytes)
     );
     if combined.len() > COMMAND_OUTPUT_LIMIT_BYTES {
         return Err(adapter_failure(
@@ -60,12 +155,34 @@ pub(super) async fn run_prepare(
             "Railpack prepare attempted to disclose the Git credential",
         ));
     }
-    if !output.status.success() {
+    if !status.success() {
         return Err(adapter_failure(
             source.credential().redact_secret_in(combined),
         ));
     }
     Ok(())
+}
+
+fn append_bounded(output: &mut Vec<u8>, bytes: &[u8], other_len: usize) -> bool {
+    let remaining = COMMAND_OUTPUT_LIMIT_BYTES.saturating_sub(output.len() + other_len);
+    let keep = bytes.len().min(remaining);
+    let Some(bounded) = bytes.get(..keep) else {
+        unreachable!("bounded length comes from the source slice");
+    };
+    output.extend_from_slice(bounded);
+    bytes.len() > remaining
+}
+
+fn read_bytes(buffer: &[u8], read: usize) -> &[u8] {
+    let Some(bytes) = buffer.get(..read) else {
+        unreachable!("AsyncRead cannot report more bytes than the supplied buffer");
+    };
+    bytes
+}
+
+async fn terminate(child: &mut tokio::process::Child) {
+    let _ = child.start_kill();
+    let _ = child.wait().await;
 }
 
 pub(super) async fn pull_exact_image(
@@ -356,6 +473,26 @@ pub(super) fn builder_name(operation_id: &OperationId, platform: &OciPlatform) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::build::GitSource;
+    use std::path::PathBuf;
+
+    fn source() -> GitSource {
+        GitSource::try_new(
+            "https://example.test/repo.git",
+            "0123456789abcdef0123456789abcdef01234567",
+            "git",
+            "secret",
+            None::<String>,
+        )
+        .expect("source")
+    }
+
+    fn shell_prepare(script: &str) -> PrepareCommand {
+        PrepareCommand {
+            program: PathBuf::from("/bin/sh"),
+            arguments: vec!["-c".to_owned(), script.to_owned()],
+        }
+    }
 
     #[test]
     fn builder_identity_is_deterministic_and_platform_scoped() {
@@ -365,5 +502,71 @@ mod tests {
             builder_name(&operation, &platform),
             "ployz-build-build-01-linux-arm64"
         );
+    }
+
+    #[tokio::test]
+    async fn prepare_output_is_rejected_while_still_bounded() {
+        let prepare = shell_prepare("dd if=/dev/zero bs=1024 count=257 2>/dev/null");
+        let (_cancel_tx, mut cancelled) = watch::channel(false);
+        let error =
+            run_prepare_with_timeout(&prepare, &source(), &mut cancelled, Duration::from_secs(5))
+                .await
+                .expect_err("oversized output fails");
+        assert!(error.to_string().contains("output exceeded its bound"));
+    }
+
+    #[tokio::test]
+    async fn prepare_timeout_terminates_the_child() {
+        let prepare = shell_prepare("sleep 30");
+        let (_cancel_tx, mut cancelled) = watch::channel(false);
+        let error = run_prepare_with_timeout(
+            &prepare,
+            &source(),
+            &mut cancelled,
+            Duration::from_millis(20),
+        )
+        .await
+        .expect_err("timed out prepare fails");
+        assert!(error.to_string().contains("prepare timed out"));
+    }
+
+    #[tokio::test]
+    async fn prepare_timeout_still_applies_after_output_pipes_close() {
+        let prepare = shell_prepare("exec 1>&- 2>&-; sleep 30");
+        let (_cancel_tx, mut cancelled) = watch::channel(false);
+        let error = run_prepare_with_timeout(
+            &prepare,
+            &source(),
+            &mut cancelled,
+            Duration::from_millis(20),
+        )
+        .await
+        .expect_err("timed out prepare fails after closing pipes");
+        assert!(error.to_string().contains("prepare timed out"));
+    }
+
+    #[tokio::test]
+    async fn prepare_cancellation_terminates_the_child() {
+        let prepare = shell_prepare("sleep 30");
+        let (cancel_tx, mut cancelled) = watch::channel(false);
+        let cancellation = async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            cancel_tx.send(true).expect("receiver remains open");
+        };
+        let source = source();
+        let execution =
+            run_prepare_with_timeout(&prepare, &source, &mut cancelled, Duration::from_secs(5));
+        let ((), result) = tokio::join!(cancellation, execution);
+        assert!(matches!(result, Err(BuildExecutionError::Cancelled { .. })));
+    }
+
+    #[tokio::test]
+    async fn prepare_honors_cancellation_that_is_already_true() {
+        let prepare = shell_prepare("exit 0");
+        let (_cancel_tx, mut cancelled) = watch::channel(true);
+        let result =
+            run_prepare_with_timeout(&prepare, &source(), &mut cancelled, Duration::from_secs(5))
+                .await;
+        assert!(matches!(result, Err(BuildExecutionError::Cancelled { .. })));
     }
 }
