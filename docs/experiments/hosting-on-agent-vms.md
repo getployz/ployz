@@ -9,7 +9,9 @@ installable, and can server init be made to "just work"?***
 TL;DR: **Yes — a single-machine Ployz core boots and serves its NATS control
 plane inside the sandbox.** But it is not free. Three sandbox properties fight
 the stock install path, and each needs a deliberate workaround. The reusable
-recipe is [`host-on-agent-vm.sh`](./host-on-agent-vm.sh).
+recipe is [`host-on-agent-vm.sh`](./host-on-agent-vm.sh). Making it reachable
+from the *public* internet is a separate question with its own hard limits —
+see [§6](#6-can-you-expose-it-to-the-public-internet).
 
 ---
 
@@ -154,13 +156,79 @@ control service answering. `ls`/`machine ls` assemble a view that wants ingress
 intent, which `ployz init` normally configures and our low-level `bootstrap
 core` skipped. The control plane itself is fully live.
 
-## 6. Takeaways
+## 6. Can you expose it to the public internet?
+
+The core runs, but a cluster is only interesting if something can reach the
+services it fronts. The sandbox has **no inbound** and no public IP, so the only
+option is an **outbound reverse tunnel**. That runs straight into how these
+boxes do egress — and it is more restrictive than a domain allowlist.
+
+### Egress is a mandatory inspection gateway, not raw sockets
+
+Claude Code on the web exposes a **Network access** selector per environment —
+`None` / `Trusted` (default) / `Full` / `Custom` (your own allowlist). But
+"Full" widens *which domains* are reachable; it does **not** hand you raw
+sockets. Two things stay true at every level:
+
+- **Non-443 ports and UDP are dropped.** Raw TCP to `:7844` times out; UDP to
+  `:7844` is dropped.
+- **All egress goes through an inspecting gateway**, and the two paths to it
+  behave differently:
+
+  | Path | Behavior | Observed |
+  |------|----------|----------|
+  | Direct socket (no proxy) | **TLS-terminated / MITM** | a raw handshake to `1.1.1.1:443` returns `CN=cloudflare.com` **issued by `O=Anthropic, CN=Egress Gateway SDS Issuing CA`** |
+  | Via the `HTTPS_PROXY` CONNECT proxy | **opaque passthrough**, genuine end-to-end TLS | the same host through the proxy presents cloudflare's *real* `O=Google Trust Services` cert, `verify ok` |
+
+So the environment is engineered so an agent's outbound traffic is
+HTTP(S)-through-a-CONNECT-proxy. Reach for a raw socket and you get MITM'd;
+reach through the proxy and you get honest end-to-end TLS — but only to `:443`.
+
+### What that allows and forbids
+
+- **Cloudflare Tunnel: no, at any access level.** `cloudflared` hard-requires
+  port **7844** (UDP QUIC, or TCP HTTP/2 fallback); both are firewalled. Its
+  own pre-checks fail: `Allow outbound QUIC traffic on port 7844 or use HTTP2 /
+  Allow outbound TCP on port 7844`. No knob — on the sandbox or in the ployz
+  gateway — changes that.
+- **ngrok: only on a paid plan.** Direct egress hits the MITM cert and ngrok
+  (which pins its own roots and ignores `SSL_CERT_FILE`) rejects it with
+  `x509: unknown authority`. Going through the proxy works at the transport
+  layer — the proxy passes through to the **real** ngrok edge with a valid cert
+  — but the free plan refuses proxied operation (`ERR_NGROK_9009`,
+  "Running the agent with an http/s proxy is a Pay-as-you-go feature"). A
+  paid/Pay-as-you-go plan lifts exactly that gate, and the passthrough path
+  underneath is confirmed reachable — so it should establish.
+- **A 443 reverse tunnel to your own relay: plausible, free, with a VPS.** A
+  proxy-aware `ssh -R` (`ssh -o ProxyCommand=…CONNECT…`), or `inlets`/`frp`
+  over wss/443 configured to use `HTTPS_PROXY`, rides the same passthrough path.
+  TLS-shaped protocols are guaranteed to pass (ngrok proved it); raw SSH after
+  CONNECT is likely but not certain (the gateway may expect TLS-shaped bytes).
+
+### Wiring a tunnel to the gateway
+
+None of this needs gateway code changes — a tunnel is a **sidecar**: point it at
+the ployz gateway's local host-port (or a service's published port), and set
+ployz DNS/automatic-hostnames to `external` since the tunnel provider owns the
+public hostname. The gateway's on-machine host-port/eBPF routing is unchanged.
+
+### Bottom line
+
+Internally you can stand up a full cluster; **publicly, the box is reachable
+only through a 443 tunnel that traverses the CONNECT proxy** — which paid ngrok
+or a self-hosted 443 relay can do, and Cloudflare Tunnel structurally cannot.
+That is a deliberate isolation property of the agent sandbox, not a ployz limit.
+
+## 7. Takeaways
 
 - **Install: trivial.** The public channel + SHA-256 verification works as-is.
 - **Bootstrap: possible, not turnkey.** Three sandbox realities — a pinned-root
   TLS client, a repo-scoped token, and no init system — each need a deliberate
   workaround. [`host-on-agent-vm.sh`](./host-on-agent-vm.sh) folds them into one
   idempotent script.
+- **Public ingress: only via a 443 proxy-traversing tunnel.** No inbound, no raw
+  sockets, no non-443 ports — a paid ngrok or a self-hosted 443 relay can punch
+  out through the CONNECT proxy; Cloudflare Tunnel (port 7844) cannot.
 - **Hosting: no.** These are ephemeral, inactivity-reclaimed dev sandboxes.
   Perfect for a live demo or a "look, it runs anywhere" screenshot; wrong tool
   for anything that must outlive the session.
