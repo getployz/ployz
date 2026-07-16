@@ -410,6 +410,7 @@ impl NatsMachineVolumeTestimonyReader {
     }
 
     #[must_use]
+    #[cfg(test)]
     pub const fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
         self.request_timeout = request_timeout;
         self
