@@ -323,19 +323,18 @@ async fn nats_machine_runtime_calls_volume_remove_service() {
         .await
         .expect("flush service subscription");
     let runtime = NatsMachineContainerRuntime::new(nats.client);
-    let expected_request = MachineVolumeRemoveRpcRequest {
+    let pin = VolumePinState::plain(
+        namespace_id("prod"),
+        VolumeName::try_new("data").expect("valid volume name"),
+        machine_id.clone(),
+    );
+    let expected_request = MachineVolumeRemoveRpcRequest::DockerReference {
         operation_id: operation_id("op_123"),
-        namespace_id: namespace_id("prod"),
-        volume_name: VolumeName::try_new("data").expect("valid volume name"),
+        volume: pin.clone(),
     };
 
     runtime
-        .remove_volume(
-            &machine_id,
-            operation_id("op_123"),
-            &namespace_id("prod"),
-            &VolumeName::try_new("data").expect("valid volume name"),
-        )
+        .remove_volume_reference(&machine_id, operation_id("op_123"), &pin)
         .await
         .expect("machine volume remove succeeds");
 

@@ -294,6 +294,13 @@ impl MachineContainerRunner for ObservingContainerRunner {
         Ok(())
     }
 
+    async fn destroy_provisioned_dataset(
+        &self,
+        _dataset: &ployz_core::deploy::DatasetName,
+    ) -> Result<(), ployz_core::storage::StorageEffectFailure> {
+        Ok(())
+    }
+
     async fn stop_managed_container(
         &self,
         container_id: &ContainerId,

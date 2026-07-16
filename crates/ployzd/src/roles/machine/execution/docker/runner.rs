@@ -10,7 +10,9 @@ use crate::roles::machine::runner::{
     MachineContainerRunner, MachineContainerRunnerError, MachineImageRemovalRunner,
     MachineLogQuery, MachineLogReader, MachineLogReaderError, MachineLogTail, MachineLogTimestamps,
 };
-use crate::roles::machine::volume::{docker_volume_name, ensure_provisioned_dataset};
+use crate::roles::machine::volume::{
+    destroy_provisioned_dataset, docker_volume_name, ensure_provisioned_dataset,
+};
 use bollard::Docker;
 use bollard::auth::DockerCredentials;
 use bollard::errors::Error as BollardError;
@@ -506,6 +508,13 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
                 message: error.to_string(),
             }),
         }
+    }
+
+    async fn destroy_provisioned_dataset(
+        &self,
+        dataset: &ployz_core::deploy::DatasetName,
+    ) -> Result<(), ployz_core::storage::StorageEffectFailure> {
+        destroy_provisioned_dataset(dataset).await
     }
 
     async fn stop_managed_container(

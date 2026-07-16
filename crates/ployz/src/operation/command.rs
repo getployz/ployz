@@ -582,6 +582,9 @@ const fn volume_remove_state(state: &ployz_sdk_types::VolumeRemoveOperationState
             ployz_sdk_types::VolumeRemoveRunningStage::RemovingVolumeData => {
                 "running:removing-volume-data"
             }
+            ployz_sdk_types::VolumeRemoveRunningStage::RemovingDataset => {
+                "running:removing-dataset"
+            }
         },
         ployz_sdk_types::VolumeRemoveOperationState::Completed => "completed",
         ployz_sdk_types::VolumeRemoveOperationState::Failed { .. } => "failed",

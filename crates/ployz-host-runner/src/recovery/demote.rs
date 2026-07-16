@@ -272,6 +272,7 @@ mod tests {
                     success,
                     exit_code: Some(if success { 0 } else { 3 }),
                     stdout: String::new(),
+                    stdout_truncated: false,
                     failure: if success {
                         String::new()
                     } else {
@@ -295,6 +296,7 @@ mod tests {
                 success,
                 exit_code: Some(if success { 0 } else { 1 }),
                 stdout: String::new(),
+                stdout_truncated: false,
                 failure: if success {
                     String::new()
                 } else if inactive {

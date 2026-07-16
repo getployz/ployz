@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::deploy::VolumeName;
+use crate::deploy::{DatasetName, VolumeName};
 use crate::ids::{MachineId, NamespaceId, OperationId, ServiceId};
 
 use super::events::OperationEvent;
@@ -22,6 +22,7 @@ use super::{
 #[serde(rename_all = "snake_case")]
 pub enum VolumeRemoveRunningStage {
     RemovingVolumeData,
+    RemovingDataset,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +98,11 @@ pub enum VolumeRemoveFailure {
     VolumeRemoveFailed {
         machine_id: MachineId,
         volume: VolumeName,
+        message: FailureMessage,
+    },
+    DatasetDestroyFailed {
+        machine_id: MachineId,
+        dataset: DatasetName,
         message: FailureMessage,
     },
     ControlPlaneCommitFailed {
@@ -224,6 +230,20 @@ fn transition_allowed(
         | (
             VolumeRemoveOperationState::Running {
                 stage: VolumeRemoveRunningStage::RemovingVolumeData,
+            },
+            VolumeRemoveOperationState::Running {
+                stage: VolumeRemoveRunningStage::RemovingDataset,
+            },
+        )
+        | (
+            VolumeRemoveOperationState::Running {
+                stage: VolumeRemoveRunningStage::RemovingVolumeData,
+            },
+            VolumeRemoveOperationState::Completed,
+        )
+        | (
+            VolumeRemoveOperationState::Running {
+                stage: VolumeRemoveRunningStage::RemovingDataset,
             },
             VolumeRemoveOperationState::Completed,
         )

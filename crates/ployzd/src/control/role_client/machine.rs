@@ -24,11 +24,11 @@ use crate::roles::machine::protocol::{
 };
 use futures_util::{StreamExt, stream};
 use ployz_core::deploy::VolumeName;
-use ployz_core::ids::{MachineId, NamespaceId, OperationId};
+use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::image::{
     ImageEnsureOk, ImageEnsureRequest, ImageRemoveOk, ImageRemoveRequest, ImageRpcDomainError,
 };
-use ployz_core::intent::VolumePinState;
+use ployz_core::intent::{ProvisionedVolumePinState, VolumePinState};
 use ployz_core::machine::MachineLifecycle;
 use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::network::{MachineDataplaneStatus, NetworkStatusMode};
@@ -203,10 +203,10 @@ pub enum MachineVolumeRemoveError {
         machine_id: MachineId,
         message: ployz_core::operation::FailureMessage,
     },
-    #[error("machine {} volume remove failed: {}", machine_id.as_str(), message.as_str())]
-    RemoveFailed {
+    #[error("machine {} rejected volume removal", machine_id.as_str())]
+    Domain {
         machine_id: MachineId,
-        message: ployz_core::operation::FailureMessage,
+        error: MachineVolumeRemoveDomainError,
     },
 }
 
@@ -676,18 +676,43 @@ impl NatsMachineContainerRuntime {
         })
     }
 
-    pub async fn remove_volume(
+    pub async fn remove_volume_reference(
         &self,
         machine_id: &MachineId,
         operation_id: OperationId,
-        namespace_id: &NamespaceId,
-        volume_name: &VolumeName,
+        volume: &VolumePinState,
     ) -> Result<(), MachineVolumeRemoveError> {
-        let request = MachineVolumeRemoveRpcRequest {
-            operation_id,
-            namespace_id: namespace_id.clone(),
-            volume_name: volume_name.clone(),
-        };
+        self.remove_volume_effect(
+            machine_id,
+            MachineVolumeRemoveRpcRequest::DockerReference {
+                operation_id,
+                volume: volume.clone(),
+            },
+        )
+        .await
+    }
+
+    pub async fn destroy_provisioned_volume_dataset(
+        &self,
+        machine_id: &MachineId,
+        operation_id: OperationId,
+        volume: ProvisionedVolumePinState,
+    ) -> Result<(), MachineVolumeRemoveError> {
+        self.remove_volume_effect(
+            machine_id,
+            MachineVolumeRemoveRpcRequest::ProvisionedDataset {
+                operation_id,
+                volume,
+            },
+        )
+        .await
+    }
+
+    async fn remove_volume_effect(
+        &self,
+        machine_id: &MachineId,
+        request: MachineVolumeRemoveRpcRequest,
+    ) -> Result<(), MachineVolumeRemoveError> {
         call_machine::<MachineVolumeRemoveRpcOk, MachineVolumeRemoveDomainError>(
             &self.client,
             self.request_timeout,
@@ -702,12 +727,10 @@ impl NatsMachineContainerRuntime {
                 machine_id: machine_id.clone(),
                 message: reason.failure_message(),
             },
-            MachineCallError::Domain(MachineVolumeRemoveDomainError::RemoveFailed { message }) => {
-                MachineVolumeRemoveError::RemoveFailed {
-                    machine_id: machine_id.clone(),
-                    message,
-                }
-            }
+            MachineCallError::Domain(error) => MachineVolumeRemoveError::Domain {
+                machine_id: machine_id.clone(),
+                error,
+            },
         })
     }
 

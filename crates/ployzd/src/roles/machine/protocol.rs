@@ -1,10 +1,10 @@
 //! Machine-local NATS RPC protocol types.
 
-use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredential, VolumeName};
-use ployz_core::ids::{ContainerId, MachineId, NamespaceId, OperationId, StepId};
+use ployz_core::deploy::{ContainerRuntimeSpec, DatasetName, ImageReference, RegistryCredential};
+use ployz_core::ids::{ContainerId, MachineId, OperationId, StepId};
 use ployz_core::image::{IMAGE_MESH_REGISTRY_PORT, ImageRepository, OciDigest};
 use ployz_core::install::InstallArtifactVersion;
-use ployz_core::intent::VolumePinState;
+use ployz_core::intent::{ProvisionedVolumePinState, VolumePinState};
 use ployz_core::machine::VolumeEnsureFailure;
 pub use ployz_core::machine::rpc::{MachineRpcResponder, MachineRpcResponse};
 use ployz_core::machine::runtime::{ManagedContainerIdentity, ManagedContainerObservation};
@@ -294,11 +294,16 @@ pub enum MachineContainerRemoveDomainError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MachineVolumeRemoveRpcRequest {
-    pub operation_id: OperationId,
-    pub namespace_id: NamespaceId,
-    pub volume_name: VolumeName,
+#[serde(tag = "effect", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineVolumeRemoveRpcRequest {
+    DockerReference {
+        operation_id: OperationId,
+        volume: VolumePinState,
+    },
+    ProvisionedDataset {
+        operation_id: OperationId,
+        volume: ProvisionedVolumePinState,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -320,7 +325,17 @@ pub type MachineVolumeRemoveRpcResponse =
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineVolumeRemoveDomainError {
-    RemoveFailed { message: FailureMessage },
+    MachineMismatch {
+        expected_machine_id: MachineId,
+        responder_machine_id: MachineId,
+    },
+    DockerRemoveFailed {
+        message: FailureMessage,
+    },
+    DatasetDestroyFailed {
+        dataset: DatasetName,
+        failure: ployz_core::storage::StorageEffectFailure,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -829,6 +844,29 @@ mod tests {
             serde_json::from_value::<MachineLogsTailRpcResponse>(ok_json)
                 .expect("response deserializes"),
             ok
+        );
+    }
+
+    #[test]
+    fn provisioned_dataset_remove_rejects_a_plain_volume_pin() {
+        let plain_dataset_request = json!({
+            "effect": "provisioned_dataset",
+            "operation_id": "op_123",
+            "volume": {
+                "namespace_id": "prod",
+                "volume_name": "data",
+                "machine_id": "machine_a",
+                "kind": { "kind": "plain" },
+            },
+        });
+
+        let error = serde_json::from_value::<MachineVolumeRemoveRpcRequest>(plain_dataset_request)
+            .expect_err("plain volume cannot decode as a provisioned dataset request");
+
+        assert!(
+            error
+                .to_string()
+                .contains("provisioned volume pin required")
         );
     }
 }

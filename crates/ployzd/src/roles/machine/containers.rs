@@ -495,20 +495,82 @@ where
         Err(response) => return response,
     };
 
-    let docker_volume_name = docker_volume_name(&request.namespace_id, &request.volume_name);
-    match runner.remove_volume(&docker_volume_name).await {
-        Ok(()) => machine_success(MachineVolumeRemoveRpcResponse::Ok(
-            MachineVolumeRemoveRpcOk { machine_id },
-        )),
-        Err(MachineContainerRunnerError::RemoveVolume { message, .. }) => {
-            machine_domain_error(MachineVolumeRemoveRpcResponse::DomainError {
-                machine_id,
-                error: MachineVolumeRemoveDomainError::RemoveFailed {
-                    message: failure_message(format!("volume remove failed: {message}")),
-                },
-            })
+    let volume = match &request {
+        MachineVolumeRemoveRpcRequest::DockerReference { volume, .. } => volume,
+        MachineVolumeRemoveRpcRequest::ProvisionedDataset { volume, .. } => volume.volume(),
+    };
+    if volume.machine_id() != &machine_id {
+        return machine_domain_error(MachineVolumeRemoveRpcResponse::DomainError {
+            error: MachineVolumeRemoveDomainError::MachineMismatch {
+                expected_machine_id: volume.machine_id().clone(),
+                responder_machine_id: machine_id.clone(),
+            },
+            machine_id,
+        });
+    }
+
+    match request {
+        MachineVolumeRemoveRpcRequest::DockerReference { volume, .. } => {
+            let docker_volume_name =
+                docker_volume_name(volume.namespace_id(), volume.volume_name());
+            match runner.remove_volume(&docker_volume_name).await {
+                Ok(()) => machine_success(MachineVolumeRemoveRpcResponse::Ok(
+                    MachineVolumeRemoveRpcOk { machine_id },
+                )),
+                Err(MachineContainerRunnerError::RemoveVolume { message, .. }) => {
+                    machine_domain_error(MachineVolumeRemoveRpcResponse::DomainError {
+                        machine_id,
+                        error: MachineVolumeRemoveDomainError::DockerRemoveFailed {
+                            message: failure_message(format!("volume remove failed: {message}")),
+                        },
+                    })
+                }
+                Err(error) => runner_error(error),
+            }
         }
-        Err(error) => runner_error(error),
+        MachineVolumeRemoveRpcRequest::ProvisionedDataset { volume, .. } => {
+            let pin = volume.volume();
+            let dataset = volume.dataset();
+            let docker_volume_name = docker_volume_name(pin.namespace_id(), pin.volume_name());
+            if let Err(error) = runner.remove_volume(&docker_volume_name).await {
+                return match error {
+                    MachineContainerRunnerError::RemoveVolume { message, .. } => {
+                        machine_domain_error(MachineVolumeRemoveRpcResponse::DomainError {
+                            machine_id,
+                            error: MachineVolumeRemoveDomainError::DockerRemoveFailed {
+                                message: failure_message(format!(
+                                    "volume remove failed before dataset destroy: {message}"
+                                )),
+                            },
+                        })
+                    }
+                    error @ (MachineContainerRunnerError::ListExisting { .. }
+                    | MachineContainerRunnerError::EnsureEndpointNetwork { .. }
+                    | MachineContainerRunnerError::EndpointNetworkSubnetMismatch {
+                        ..
+                    }
+                    | MachineContainerRunnerError::Create { .. }
+                    | MachineContainerRunnerError::ImagePull { .. }
+                    | MachineContainerRunnerError::Start { .. }
+                    | MachineContainerRunnerError::Wait { .. }
+                    | MachineContainerRunnerError::Stop { .. }
+                    | MachineContainerRunnerError::Restart { .. }
+                    | MachineContainerRunnerError::Remove { .. }) => runner_error(error),
+                };
+            }
+            match runner.destroy_provisioned_dataset(dataset).await {
+                Ok(()) => machine_success(MachineVolumeRemoveRpcResponse::Ok(
+                    MachineVolumeRemoveRpcOk { machine_id },
+                )),
+                Err(failure) => machine_domain_error(MachineVolumeRemoveRpcResponse::DomainError {
+                    machine_id,
+                    error: MachineVolumeRemoveDomainError::DatasetDestroyFailed {
+                        dataset: dataset.clone(),
+                        failure,
+                    },
+                }),
+            }
+        }
     }
 }
 
