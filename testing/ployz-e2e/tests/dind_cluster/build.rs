@@ -16,6 +16,7 @@ const GIT_PORT: u16 = 9443;
 const GIT_USERNAME: &str = "builder";
 const GIT_SECRET: &str = "build-secret-370";
 const DOCKERFILE_LOG_MARKER: &str = "ployz-dockerfile-build-marker";
+const AUTHENTICATED_GIT_SERVER: &str = include_str!("fixtures/authenticated_git_server.py");
 
 struct GitFixture {
     url: String,
@@ -342,41 +343,11 @@ async fn assert_secret_and_ephemeral_state_are_absent(core: &CoreContext) {
 
 async fn start_authenticated_git_fixture(core: &CoreContext) -> GitFixture {
     let core_ip = core.core_ip();
-    let server = r#"import base64
-import http.server
-import os
-import ssl
-
-expected = "Basic " + base64.b64encode(
-    (os.environ["GIT_USERNAME"] + ":" + os.environ["GIT_PASSWORD"]).encode()
-).decode()
-
-class Authenticated(http.server.SimpleHTTPRequestHandler):
-    def do_GET(self):
-        if self.headers.get("Authorization") != expected:
-            self.send_response(401)
-            self.send_header("WWW-Authenticate", 'Basic realm="ployz-build"')
-            self.end_headers()
-            return
-        with open("/tmp/ployz-build-git/auth.log", "a", encoding="utf-8") as log:
-            log.write("authorized\n")
-        super().do_GET()
-
-    def log_message(self, format, *args):
-        return
-
-os.chdir("/tmp/ployz-build-git")
-httpd = http.server.ThreadingHTTPServer(("0.0.0.0", 9443), Authenticated)
-context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-context.load_cert_chain("server.crt", "server.key")
-httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
-httpd.serve_forever()
-"#;
     write_file_in_container(
         &core.docker,
         &core.cluster.core().container_id,
         "/tmp/ployz-build-git/server.py",
-        server,
+        AUTHENTICATED_GIT_SERVER,
         "0700",
     )
     .await
@@ -402,7 +373,7 @@ install -m 0644 /tmp/ployz-build-git/server.crt /usr/local/share/ca-certificates
 update-ca-certificates >/dev/null
 systemctl stop ployz-test-build-git.service 2>/dev/null || true
 systemd-run --unit=ployz-test-build-git --setenv=GIT_USERNAME={GIT_USERNAME} --setenv=GIT_PASSWORD={GIT_SECRET} /usr/bin/python3 /tmp/ployz-build-git/server.py >/dev/null
-for _ in $(seq 1 50); do curl -fsS -u {GIT_USERNAME}:{GIT_SECRET} https://{core_ip}:{GIT_PORT}/repo.git/HEAD >/dev/null && exit 0; sleep 0.1; done
+for _ in $(seq 1 50); do curl -fsS -u {GIT_USERNAME}:{GIT_SECRET} 'https://{core_ip}:{GIT_PORT}/repo.git/info/refs?service=git-upload-pack' >/dev/null && exit 0; sleep 0.1; done
 exit 1
 "#
     );
@@ -434,6 +405,225 @@ fn native_platform() -> OciPlatform {
         architecture => panic!("unsupported DinD build architecture {architecture}"),
     };
     OciPlatform::try_new("linux", architecture).expect("native OCI platform")
+}
+
+#[test]
+fn authenticated_git_fixture_supports_shallow_exact_commit_fetch() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = tempfile::TempDir::new().expect("Git fixture tempdir");
+    let source = fixture.path().join("source");
+    std::fs::create_dir(&source).expect("create fixture source");
+    run_test_command(
+        std::process::Command::new("git")
+            .args(["init", "--quiet", "--initial-branch=main"])
+            .arg(&source),
+        "initialize fixture repository",
+    );
+    run_test_command(
+        std::process::Command::new("git")
+            .args(["-C"])
+            .arg(&source)
+            .args(["config", "user.name", "Ployz test"]),
+        "configure fixture author",
+    );
+    run_test_command(
+        std::process::Command::new("git")
+            .args(["-C"])
+            .arg(&source)
+            .args(["config", "user.email", "test@example.invalid"]),
+        "configure fixture email",
+    );
+    std::fs::write(source.join("marker"), "smart authenticated Git\n")
+        .expect("write fixture marker");
+    run_test_command(
+        std::process::Command::new("git")
+            .args(["-C"])
+            .arg(&source)
+            .args(["add", "."]),
+        "stage fixture",
+    );
+    run_test_command(
+        std::process::Command::new("git")
+            .args(["-C"])
+            .arg(&source)
+            .args(["commit", "--quiet", "-m", "fixture"]),
+        "commit fixture",
+    );
+    let commit = test_command_stdout(
+        std::process::Command::new("git")
+            .args(["-C"])
+            .arg(&source)
+            .args(["rev-parse", "HEAD"]),
+        "read fixture commit",
+    );
+    let bare = fixture.path().join("repo.git");
+    run_test_command(
+        std::process::Command::new("git")
+            .args(["clone", "--quiet", "--bare"])
+            .arg(&source)
+            .arg(&bare),
+        "create bare fixture",
+    );
+    let script = fixture.path().join("server.py");
+    std::fs::write(&script, AUTHENTICATED_GIT_SERVER).expect("write fixture server");
+    let certificate = fixture.path().join("server.crt");
+    let key = fixture.path().join("server.key");
+    run_test_command(
+        std::process::Command::new("openssl")
+            .args([
+                "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+            ])
+            .args([
+                "-subj",
+                "/CN=127.0.0.1",
+                "-addext",
+                "subjectAltName=IP:127.0.0.1",
+            ])
+            .arg("-keyout")
+            .arg(&key)
+            .arg("-out")
+            .arg(&certificate),
+        "create fixture certificate",
+    );
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve fixture port");
+    let port = listener.local_addr().expect("fixture address").port();
+    drop(listener);
+    let child = std::process::Command::new("python3")
+        .arg(&script)
+        .env("GIT_ROOT", fixture.path())
+        .env("GIT_PORT", port.to_string())
+        .env("GIT_CERT", &certificate)
+        .env("GIT_KEY", &key)
+        .env("GIT_AUTH_LOG", fixture.path().join("auth.log"))
+        .env("GIT_USERNAME", GIT_USERNAME)
+        .env("GIT_PASSWORD", GIT_SECRET)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .expect("start authenticated Git server");
+    let mut server = ChildGuard(child);
+    let askpass = fixture.path().join("askpass");
+    std::fs::write(
+        &askpass,
+        "#!/bin/sh\ncase \"$1\" in *Username*) printf '%s\\n' \"$PLOYZ_GIT_USERNAME\" ;; *) printf '%s\\n' \"$PLOYZ_GIT_SECRET\" ;; esac\n",
+    )
+    .expect("write fixture askpass");
+    std::fs::set_permissions(&askpass, std::fs::Permissions::from_mode(0o700))
+        .expect("make fixture askpass executable");
+    let url = format!("https://127.0.0.1:{port}/repo.git");
+    let mut ready = false;
+    for _ in 0..50 {
+        let status = authenticated_test_git(&askpass)
+            .args(["-c", "http.sslVerify=false", "ls-remote", &url])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("probe authenticated Git server");
+        if status.success() {
+            ready = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(ready, "authenticated Git server did not become ready");
+
+    let checkout = fixture.path().join("checkout");
+    run_test_command(
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(&checkout),
+        "initialize shallow checkout",
+    );
+    run_test_command(
+        std::process::Command::new("git")
+            .args(["-C"])
+            .arg(&checkout)
+            .args(["remote", "add", "origin", &url]),
+        "configure authenticated origin",
+    );
+    run_test_command(
+        authenticated_test_git(&askpass)
+            .args(["-c", "http.sslVerify=false", "-C"])
+            .arg(&checkout)
+            .args([
+                "fetch",
+                "--quiet",
+                "--depth=1",
+                "--no-tags",
+                "origin",
+                &commit,
+            ]),
+        "fetch exact commit shallowly",
+    );
+    assert_eq!(
+        test_command_stdout(
+            std::process::Command::new("git")
+                .args(["-C"])
+                .arg(&checkout)
+                .args(["rev-parse", "FETCH_HEAD"]),
+            "read fetched commit",
+        ),
+        commit
+    );
+    assert!(
+        std::fs::read_to_string(fixture.path().join("auth.log"))
+            .expect("read fixture authorization log")
+            .contains("authorized"),
+        "smart Git requests did not authenticate"
+    );
+    server.stop();
+}
+
+fn authenticated_test_git(askpass: &std::path::Path) -> std::process::Command {
+    let mut command = std::process::Command::new("git");
+    command
+        .env("GIT_ASKPASS", askpass)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("PLOYZ_GIT_USERNAME", GIT_USERNAME)
+        .env("PLOYZ_GIT_SECRET", GIT_SECRET);
+    command
+}
+
+struct ChildGuard(std::process::Child);
+
+impl ChildGuard {
+    fn stop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+fn run_test_command(command: &mut std::process::Command, label: &str) {
+    let output = command
+        .output()
+        .unwrap_or_else(|error| panic!("{label}: {error}"));
+    assert!(
+        output.status.success(),
+        "{label}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn test_command_stdout(command: &mut std::process::Command, label: &str) -> String {
+    let output = command
+        .output()
+        .unwrap_or_else(|error| panic!("{label}: {error}"));
+    assert!(
+        output.status.success(),
+        "{label}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .unwrap_or_else(|error| panic!("{label} returned non-UTF-8 output: {error}"))
+        .trim()
+        .to_owned()
 }
 
 #[test]
