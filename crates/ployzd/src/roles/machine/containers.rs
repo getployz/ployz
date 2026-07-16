@@ -17,6 +17,7 @@ use crate::roles::machine::protocol::{
     MachineContainerRunHookRpcResponse, MachineContainerRunRpcOk, MachineContainerRunRpcRequest,
     MachineContainerRunRpcResponse, MachineContainerStopDomainError,
     MachineContainerStopRpcRequest, MachineContainerStopRpcResponse, MachineRunContainerOutcome,
+    MachineVolumeEnsureRpcOk, MachineVolumeEnsureRpcRequest, MachineVolumeEnsureRpcResponse,
     MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
     MachineVolumeRemoveRpcResponse,
 };
@@ -26,6 +27,8 @@ use crate::roles::machine::runner::{
 };
 use crate::roles::machine::volume::docker_volume_name;
 use ployz_core::ids::{ContainerId, MachineId};
+use ployz_core::intent::VolumePinState;
+use ployz_core::machine::VolumeEnsureFailure;
 use ployz_core::machine::runtime::{MachineContainerFactDelta, ManagedContainerObservation};
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decode_json_request};
 use ployz_nats::subjects::machine_container_facts;
@@ -509,6 +512,48 @@ where
     }
 }
 
+pub(crate) async fn handle_volume_ensure<R>(
+    machine_id: MachineId,
+    runner: R,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse
+where
+    R: MachineContainerRunner,
+{
+    let request = match decode_json_request::<MachineVolumeEnsureRpcRequest>(&request) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    if let Err(failure) = validate_volume_target(&machine_id, &request.volume) {
+        return machine_domain_error(MachineVolumeEnsureRpcResponse::DomainError {
+            machine_id,
+            error: failure,
+        });
+    }
+    match runner.ensure_volume(&request.volume).await {
+        Ok(()) => machine_success(MachineVolumeEnsureRpcResponse::Ok(
+            MachineVolumeEnsureRpcOk { machine_id },
+        )),
+        Err(failure) => machine_domain_error(MachineVolumeEnsureRpcResponse::DomainError {
+            machine_id,
+            error: failure,
+        }),
+    }
+}
+
+fn validate_volume_target(
+    responder_machine_id: &MachineId,
+    volume: &VolumePinState,
+) -> Result<(), VolumeEnsureFailure> {
+    if volume.machine_id() == responder_machine_id {
+        return Ok(());
+    }
+    Err(VolumeEnsureFailure::MachineMismatch {
+        expected_machine_id: volume.machine_id().clone(),
+        responder_machine_id: responder_machine_id.clone(),
+    })
+}
+
 pub(crate) async fn handle_container_stop<R>(
     machine_id: MachineId,
     state: MachineContainerState<R>,
@@ -694,4 +739,32 @@ where
             resolved_image_identity: container.resolved_image_identity,
             created_at_unix_seconds: container.created_at_unix_seconds,
         })
+}
+
+#[cfg(test)]
+mod volume_ensure_tests {
+    use super::validate_volume_target;
+    use ployz_core::deploy::VolumeName;
+    use ployz_core::ids::{MachineId, NamespaceId};
+    use ployz_core::intent::VolumePinState;
+    use ployz_core::machine::VolumeEnsureFailure;
+
+    #[test]
+    fn volume_ensure_rejects_a_pin_for_another_machine_before_effects() {
+        let expected_machine_id = MachineId::try_new("machine-a").expect("machine");
+        let responder_machine_id = MachineId::try_new("machine-b").expect("machine");
+        let volume = VolumePinState::plain(
+            NamespaceId::try_new("default").expect("namespace"),
+            VolumeName::try_new("data").expect("volume"),
+            expected_machine_id.clone(),
+        );
+
+        assert_eq!(
+            validate_volume_target(&responder_machine_id, &volume),
+            Err(VolumeEnsureFailure::MachineMismatch {
+                expected_machine_id,
+                responder_machine_id,
+            })
+        );
+    }
 }

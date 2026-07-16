@@ -101,6 +101,16 @@ pub(crate) fn generate_client_volume_remove_id(
     )
 }
 
+pub(crate) fn generate_client_volume_create_id(
+    namespace_id: &NamespaceId,
+    volume_name: &VolumeName,
+) -> Result<ClientGeneratedOperationId, ClientGeneratedIdsError> {
+    generate_client_operation_id(
+        "volume_create",
+        &format!("{}_{}", namespace_id.as_str(), volume_name.as_str()),
+    )
+}
+
 pub(crate) fn generate_client_core_replace_id(
     machine_id: &MachineId,
 ) -> Result<ClientGeneratedOperationId, ClientGeneratedIdsError> {

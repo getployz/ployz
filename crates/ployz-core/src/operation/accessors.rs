@@ -18,6 +18,7 @@ impl OperationStatus {
             | Self::ManagedDnsReconcile { id, .. }
             | Self::IngressConfigure { id, .. }
             | Self::NamespaceRemove { id, .. } => id,
+            Self::VolumeCreate { request, .. } => &request.operation_id,
             Self::VolumeRemove { id, .. } => id,
         }
     }
@@ -39,6 +40,7 @@ impl OperationStatus {
             Self::ManagedDnsReconcile { .. } => OperationKind::ManagedDnsReconcile,
             Self::IngressConfigure { .. } => OperationKind::IngressConfigure,
             Self::NamespaceRemove { .. } => OperationKind::NamespaceRemove,
+            Self::VolumeCreate { .. } => OperationKind::VolumeCreate,
             Self::VolumeRemove { .. } => OperationKind::VolumeRemove,
         }
     }
@@ -53,6 +55,9 @@ impl OperationStatus {
             Self::ServiceRestart { namespace_id, .. }
             | Self::NamespaceRemove { namespace_id, .. } => OperationProgressScope::Namespace {
                 namespace_id: namespace_id.clone(),
+            },
+            Self::VolumeCreate { request, .. } => OperationProgressScope::Namespace {
+                namespace_id: request.namespace_id.clone(),
             },
             Self::VolumeRemove { namespace_id, .. } => OperationProgressScope::Namespace {
                 namespace_id: namespace_id.clone(),
@@ -132,6 +137,10 @@ impl OperationStatus {
                 ..
             }
             | Self::VolumeRemove {
+                last_event_sequence,
+                ..
+            }
+            | Self::VolumeCreate {
                 last_event_sequence,
                 ..
             } => *last_event_sequence,

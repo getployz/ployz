@@ -4,6 +4,7 @@ use ployz_core::ids::MachineId;
 use ployz_core::image::{
     ImageEnsureOk, ImageEnsureRequest, ImageRemoveOk, ImageRemoveRequest, OciDigest,
 };
+use ployz_core::intent::VolumePinState;
 
 use crate::control::role_client::machine::{
     MachineCallError, MachineImageEnsureError, MachineImageRemoveError, MachineImageResolveError,
@@ -21,10 +22,18 @@ use crate::roles::machine::protocol::{
 
 use super::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineImageRemovalRuntime,
-    PreStartHookRuntimeError,
+    MachineVolumeEnsureError, PreStartHookRuntimeError,
 };
 
 impl MachineContainerRuntime for NatsMachineContainerRuntime {
+    async fn ensure_volume(
+        &mut self,
+        machine_id: &MachineId,
+        volume: &VolumePinState,
+    ) -> Result<(), MachineVolumeEnsureError> {
+        NatsMachineContainerRuntime::ensure_volume(self, machine_id, volume).await
+    }
+
     async fn resolve_image(
         &mut self,
         machine_id: &MachineId,

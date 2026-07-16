@@ -678,6 +678,15 @@ test("sdk exports the Rust operation API contract registry", () => {
       response: "NamespaceRemoveResponse",
     },
     {
+      name: "volume.create",
+      subject: "plz.v1.rpc.operator.command.volume.create",
+      execution: "accepts_operation",
+      request: "VolumeCreateRequest",
+      success: "AcceptedOperation",
+      error: "VolumeCreateError",
+      response: "VolumeCreateResponse",
+    },
+    {
       name: "volume.remove",
       subject: "plz.v1.rpc.operator.command.volume.remove",
       execution: "accepts_operation",

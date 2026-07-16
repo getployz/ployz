@@ -4,7 +4,7 @@ use super::build::{MachineBuildRuntime, handle_build_cancel, handle_build_start}
 use super::containers::{
     MachineContainerState, handle_container_inspect, handle_container_remove,
     handle_container_resolve_image, handle_container_restart, handle_container_run,
-    handle_container_run_hook, handle_container_stop, handle_volume_remove,
+    handle_container_run_hook, handle_container_stop, handle_volume_ensure, handle_volume_remove,
 };
 use super::dataplane::{
     MachineDataplaneStatusState, handle_dataplane_public_key, handle_dataplane_status,
@@ -22,6 +22,7 @@ use super::substrate::{
     handle_storage_prepare, handle_storage_prepare_report, handle_substrate_report,
     handle_substrate_update,
 };
+use super::volume::DATASET_ENSURE_HOST_COMMAND_TIMEOUT;
 use crate::roles::machine::execution::host_dataplane::dataplane_status_budget;
 use crate::roles::machine::projection::MachineProjectionState;
 #[cfg(test)]
@@ -58,6 +59,8 @@ pub use super::facts::MachineFactsReadError;
 const DATAPLANE_STATUS_ENDPOINT_TIMEOUT: Duration =
     dataplane_status_budget(ployz_core::network::NetworkStatusMode::ProbePathMtu)
         .saturating_add(Duration::from_secs(10));
+const VOLUME_ENSURE_ENDPOINT_TIMEOUT: Duration =
+    DATASET_ENSURE_HOST_COMMAND_TIMEOUT.saturating_add(Duration::from_secs(30));
 
 #[cfg(test)]
 pub struct RunningMachineRoleRuntime {
@@ -352,6 +355,14 @@ where
     bind_machine_endpoint(
         &mut runtime,
         &machine_id,
+        MachineServiceEndpoint::VolumeEnsure,
+        runner.clone(),
+        handle_volume_ensure,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
         MachineServiceEndpoint::VolumeRemove,
         runner.clone(),
         handle_volume_remove,
@@ -498,6 +509,9 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         MachineServiceEndpoint::BuildStart => {
             policy.request_timeout = BUILD_START_ENDPOINT_TIMEOUT;
         }
+        MachineServiceEndpoint::VolumeEnsure => {
+            policy.request_timeout = VOLUME_ENSURE_ENDPOINT_TIMEOUT;
+        }
         MachineServiceEndpoint::Inspect
         | MachineServiceEndpoint::FactsGet
         | MachineServiceEndpoint::FactsRefresh
@@ -600,5 +614,13 @@ mod tests {
 
         assert_eq!(policy.request_timeout, BUILD_START_ENDPOINT_TIMEOUT);
         assert!(policy.request_timeout > ployz_core::build::BUILD_MAX_MACHINE_RESPONSE_LIFETIME);
+    }
+
+    #[test]
+    fn volume_ensure_endpoint_sits_between_child_and_operation_budgets() {
+        let policy = machine_endpoint_policy(MachineServiceEndpoint::VolumeEnsure);
+
+        assert!(policy.request_timeout > super::super::volume::DATASET_ENSURE_HOST_COMMAND_TIMEOUT);
+        assert!(policy.request_timeout < crate::config::DEFAULT_DEPLOY_STEP_TIMEOUT);
     }
 }

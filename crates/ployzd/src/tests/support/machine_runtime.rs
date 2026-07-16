@@ -99,6 +99,13 @@ impl crate::roles::machine::runner::MachineImageRemovalRunner for ObservingConta
 }
 
 impl MachineContainerRunner for ObservingContainerRunner {
+    async fn ensure_volume(
+        &self,
+        _volume: &ployz_core::intent::VolumePinState,
+    ) -> Result<(), ployz_core::machine::VolumeEnsureFailure> {
+        Ok(())
+    }
+
     async fn existing_managed_containers(
         &self,
     ) -> Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError> {

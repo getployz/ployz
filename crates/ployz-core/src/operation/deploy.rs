@@ -29,6 +29,7 @@ use super::{EventSequence, OperationKind, OperationStatus};
 #[serde(rename_all = "snake_case")]
 pub enum DeployRunningStage {
     EnsuringImages,
+    EnsuringVolumes,
     StartingContainers,
     WaitingForHealth,
     EnsuringCertificates,
@@ -249,6 +250,7 @@ pub enum DeployFailureClass {
     MachineNoAnswer,
     Timeout,
     RuntimeUnavailable,
+    VolumeEnsureFailed,
     ControlPlaneCommitFailed,
     RouteCutoverFailed,
 }
@@ -266,6 +268,7 @@ impl DeployFailureClass {
             Self::MachineNoAnswer => "machine-no-answer",
             Self::Timeout => "timeout",
             Self::RuntimeUnavailable => "runtime-unavailable",
+            Self::VolumeEnsureFailed => "volume-ensure-failed",
             Self::ControlPlaneCommitFailed => "control-plane-commit-failed",
             Self::RouteCutoverFailed => "route-cutover-failed",
         }
@@ -333,6 +336,11 @@ pub enum DeployOperationFailure {
         machine_id: MachineId,
         message: FailureMessage,
         retained_artifacts: Vec<RetainedArtifact>,
+    },
+    VolumeEnsureFailed {
+        machine_id: MachineId,
+        volume_name: VolumeName,
+        failure: crate::machine::VolumeEnsureFailure,
     },
     ContainerStartFailed {
         machine_id: MachineId,
@@ -441,6 +449,7 @@ impl DeployOperationFailure {
             | Self::PlatformImageExpired { .. }
             | Self::UnsupportedTargetPlatform { .. } => DeployFailureClass::ImageResolvePullFailed,
             Self::RuntimeUnavailable { .. } => DeployFailureClass::RuntimeUnavailable,
+            Self::VolumeEnsureFailed { .. } => DeployFailureClass::VolumeEnsureFailed,
             Self::ContainerStartFailed { .. } => DeployFailureClass::ContainerStartFailed,
             Self::PreStartHookFailed { .. } => DeployFailureClass::PreStartHookFailed,
             Self::HealthCheckFailed { health_check, .. } => match health_check {
@@ -496,6 +505,7 @@ impl DeployOperationFailure {
             } => retained_artifacts,
             Self::NoUsableMachines { .. }
             | Self::PlanningFailed { .. }
+            | Self::VolumeEnsureFailed { .. }
             | Self::ImageResolutionFailed { .. }
             | Self::ArtifactUnavailable { .. }
             | Self::ImageMissingOnSeed { .. }
@@ -1125,6 +1135,12 @@ fn transition_allowed(current: &DeployOperationState, attempted: &DeployOperatio
         | (
             DeployOperationState::Planning,
             DeployOperationState::Running {
+                stage: DeployRunningStage::EnsuringVolumes,
+            },
+        )
+        | (
+            DeployOperationState::Planning,
+            DeployOperationState::Running {
                 stage: DeployRunningStage::StartingContainers,
             },
         ) => true,
@@ -1146,12 +1162,13 @@ fn transition_allowed(current: &DeployOperationState, attempted: &DeployOperatio
 fn stage_rank(stage: DeployRunningStage) -> u8 {
     match stage {
         DeployRunningStage::EnsuringImages => 0,
-        DeployRunningStage::StartingContainers => 1,
-        DeployRunningStage::WaitingForHealth => 2,
-        DeployRunningStage::EnsuringCertificates => 3,
-        DeployRunningStage::RouteCutover => 4,
-        DeployRunningStage::ServingTargetCommit => 5,
-        DeployRunningStage::RemovingSupersededContainers => 6,
+        DeployRunningStage::EnsuringVolumes => 1,
+        DeployRunningStage::StartingContainers => 2,
+        DeployRunningStage::WaitingForHealth => 3,
+        DeployRunningStage::EnsuringCertificates => 4,
+        DeployRunningStage::RouteCutover => 5,
+        DeployRunningStage::ServingTargetCommit => 6,
+        DeployRunningStage::RemovingSupersededContainers => 7,
     }
 }
 
@@ -1160,6 +1177,12 @@ fn stage_is_next(current: DeployRunningStage, attempted: DeployRunningStage) -> 
         (current, attempted),
         (
             DeployRunningStage::EnsuringImages,
+            DeployRunningStage::EnsuringVolumes
+        ) | (
+            DeployRunningStage::EnsuringImages,
+            DeployRunningStage::StartingContainers
+        ) | (
+            DeployRunningStage::EnsuringVolumes,
             DeployRunningStage::StartingContainers
         ) | (
             DeployRunningStage::StartingContainers,
@@ -1184,4 +1207,33 @@ fn stage_is_next(current: DeployRunningStage, attempted: DeployRunningStage) -> 
             DeployRunningStage::ServingTargetCommit
         )
     )
+}
+
+#[cfg(test)]
+mod volume_stage_tests {
+    use super::*;
+
+    #[test]
+    fn ensuring_volumes_is_between_images_and_containers() {
+        assert!(stage_is_next(
+            DeployRunningStage::EnsuringImages,
+            DeployRunningStage::EnsuringVolumes,
+        ));
+        assert!(stage_is_next(
+            DeployRunningStage::EnsuringVolumes,
+            DeployRunningStage::StartingContainers,
+        ));
+        assert!(!stage_is_next(
+            DeployRunningStage::EnsuringVolumes,
+            DeployRunningStage::WaitingForHealth,
+        ));
+    }
+
+    #[test]
+    fn image_stage_may_skip_volume_stage_for_an_empty_ensure_list() {
+        assert!(stage_is_next(
+            DeployRunningStage::EnsuringImages,
+            DeployRunningStage::StartingContainers,
+        ));
+    }
 }

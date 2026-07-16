@@ -16,6 +16,7 @@ use crate::certificate::GatewayCertificateTarget;
 
 use crate::control::role_client::machine::{
     MachineImageEnsureError, MachineImageRemoveError, MachineImageResolveError,
+    MachineVolumeEnsureError,
 };
 use crate::roles::machine::protocol::{
     MachineContainerRemoveRpcRequest, MachineContainerResolveImageRpcRequest,
@@ -44,6 +45,12 @@ pub trait DeployOperationRecorder {
 }
 
 pub trait MachineContainerRuntime {
+    fn ensure_volume(
+        &mut self,
+        machine_id: &MachineId,
+        volume: &VolumePinState,
+    ) -> impl Future<Output = Result<(), MachineVolumeEnsureError>> + Send;
+
     fn resolve_image(
         &mut self,
         machine_id: &MachineId,

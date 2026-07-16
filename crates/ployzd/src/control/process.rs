@@ -25,6 +25,7 @@ use crate::control::operations::ingress_configure::IngressConfigureOperation;
 use crate::control::operations::machine_lifecycle::MachineLifecycleOperation;
 use crate::control::operations::machine_storage_prepare::MachineStoragePrepareOperation;
 use crate::control::operations::machine_update::MachineUpdateOperation;
+use crate::control::operations::volume_create::VolumeCreateOperation;
 use crate::control::operator_api::service::{
     ApiServiceError, start_operation_api_service_with_handlers,
 };
@@ -360,6 +361,13 @@ async fn start_control_process_with_client_reload_and_issuer(
         config.deploy_step_timeout,
         task_spawner.clone(),
     );
+    let volume_create = VolumeCreateOperation::new(
+        client.clone(),
+        namespace_intent.clone(),
+        controllers.clone(),
+        config.deploy_step_timeout,
+        task_spawner.clone(),
+    );
     let machine_mint = MachineCredentialMint::new(
         controllers.clone(),
         authorization.handle(),
@@ -495,6 +503,7 @@ async fn start_control_process_with_client_reload_and_issuer(
                 service_restart,
                 namespace_remove,
                 network_repair,
+                volume_create,
                 volume_remove,
                 machine_update,
                 machine_storage_prepare,

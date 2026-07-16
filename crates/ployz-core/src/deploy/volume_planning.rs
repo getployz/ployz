@@ -9,7 +9,7 @@ use super::{
     validate_mounted_volume_structure,
 };
 use crate::ids::MachineId;
-use crate::intent::{VolumeKind, VolumePinState};
+use crate::intent::VolumePinState;
 use crate::machine::{StorageCapability, StorageTestimony};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +24,7 @@ pub(super) struct VolumePlacement {
 pub(super) struct VolumePlan {
     placements: BTreeMap<ServiceId, VolumePlacement>,
     commits: Vec<VolumePinState>,
+    ensures: Vec<VolumePinState>,
 }
 
 impl VolumePlan {
@@ -41,6 +42,10 @@ impl VolumePlan {
 
     pub(super) fn commits(&self) -> &[VolumePinState] {
         &self.commits
+    }
+
+    pub(super) fn ensures(&self) -> &[VolumePinState] {
+        &self.ensures
     }
 }
 
@@ -137,7 +142,7 @@ pub(super) fn build_namespace_volume_plan(
         }
     }
     let mut commits = Vec::new();
-    let mut provisioned_barrier = None;
+    let mut ensures = Vec::new();
     for (machine_id, mounted) in mounted_by_machine {
         let mounted = mounted.into_iter().collect::<Vec<_>>();
         let decisions = admit_mounted_volumes(VolumeAdmissionInput {
@@ -153,36 +158,24 @@ pub(super) fn build_namespace_volume_plan(
             failure,
         })?;
         for decision in decisions {
+            ensures.push(decision.desired_pin().clone());
             match decision {
                 VolumeAdmissionDecision::Existing { .. } => {}
                 VolumeAdmissionDecision::NeedsCreation { pin }
-                    if matches!(pin.kind(), VolumeKind::Plain) =>
-                {
-                    commits.push(pin);
-                }
-                VolumeAdmissionDecision::NeedsCreation { pin }
                 | VolumeAdmissionDecision::NeedsQuotaGrowth {
                     replacement: pin, ..
-                } => {
-                    provisioned_barrier.get_or_insert_with(|| {
-                        DeployPlanError::ProvisionedVolumeRequiresProvisioning {
-                            service_id: service_for_volume(
-                                &services,
-                                std::slice::from_ref(pin.volume_name()),
-                                request.status_service_id(),
-                            ),
-                            volume_name: pin.volume_name().clone(),
-                        }
-                    });
-                }
+                } => commits.push(pin),
             }
         }
     }
-    if let Some(error) = provisioned_barrier {
-        return Err(error);
-    }
     commits.sort_by(|left, right| left.volume_name().cmp(right.volume_name()));
     commits.dedup();
+    ensures.sort_by(|left, right| {
+        left.machine_id()
+            .cmp(right.machine_id())
+            .then_with(|| left.volume_name().cmp(right.volume_name()))
+    });
+    ensures.dedup();
     let placements = services
         .into_iter()
         .map(|target| {
@@ -197,6 +190,7 @@ pub(super) fn build_namespace_volume_plan(
     Ok(VolumePlan {
         placements,
         commits,
+        ensures,
     })
 }
 

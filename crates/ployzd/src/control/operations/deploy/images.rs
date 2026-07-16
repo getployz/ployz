@@ -725,6 +725,7 @@ mod tests {
                 },
             ],
             volume_pin_commits: Vec::new(),
+            volume_ensures: Vec::new(),
             cleanup_actions: Vec::new(),
         };
 

@@ -19,8 +19,8 @@ use crate::roles::machine::protocol::{
     MachineStoragePrepareReportRpcRequest, MachineStoragePrepareRpcOk,
     MachineStoragePrepareRpcRequest, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
     MachineSubstrateUpdateDomainError, MachineSubstrateUpdateRpcOk,
-    MachineSubstrateUpdateRpcRequest, MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk,
-    MachineVolumeRemoveRpcRequest,
+    MachineSubstrateUpdateRpcRequest, MachineVolumeEnsureRpcOk, MachineVolumeEnsureRpcRequest,
+    MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
 };
 use futures_util::{StreamExt, stream};
 use ployz_core::deploy::VolumeName;
@@ -28,6 +28,7 @@ use ployz_core::ids::{MachineId, NamespaceId, OperationId};
 use ployz_core::image::{
     ImageEnsureOk, ImageEnsureRequest, ImageRemoveOk, ImageRemoveRequest, ImageRpcDomainError,
 };
+use ployz_core::intent::VolumePinState;
 use ployz_core::machine::MachineLifecycle;
 use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::network::{MachineDataplaneStatus, NetworkStatusMode};
@@ -206,6 +207,20 @@ pub enum MachineVolumeRemoveError {
     RemoveFailed {
         machine_id: MachineId,
         message: ployz_core::operation::FailureMessage,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineVolumeEnsureError {
+    Unavailable {
+        machine_id: MachineId,
+        volume_name: VolumeName,
+        reason: MachineRuntimeUnavailableReason,
+    },
+    Domain {
+        machine_id: MachineId,
+        volume_name: VolumeName,
+        failure: ployz_core::machine::VolumeEnsureFailure,
     },
 }
 
@@ -667,6 +682,36 @@ impl NatsMachineContainerRuntime {
                     message,
                 }
             }
+        })
+    }
+
+    pub async fn ensure_volume(
+        &self,
+        machine_id: &MachineId,
+        volume: &VolumePinState,
+    ) -> Result<(), MachineVolumeEnsureError> {
+        call_machine::<MachineVolumeEnsureRpcOk, ployz_core::machine::VolumeEnsureFailure>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::VolumeEnsure,
+            &MachineVolumeEnsureRpcRequest {
+                volume: volume.clone(),
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => MachineVolumeEnsureError::Unavailable {
+                machine_id: machine_id.clone(),
+                volume_name: volume.volume_name().clone(),
+                reason,
+            },
+            MachineCallError::Domain(failure) => MachineVolumeEnsureError::Domain {
+                machine_id: machine_id.clone(),
+                volume_name: volume.volume_name().clone(),
+                failure,
+            },
         })
     }
 

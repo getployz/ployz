@@ -9,12 +9,14 @@ use crate::roles::machine::protocol::{
     MachineContainerRemoveRpcResponse, MachineContainerRpcOk, MachineContainerRunDomainError,
     MachineContainerRunRpcOk, MachineContainerRunRpcRequest, MachineContainerRunRpcResponse,
     MachineImagePull, MachineRunContainerOutcome, MachineSubstrateReportRpcOk,
-    MachineSubstrateReportRpcResponse, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
+    MachineSubstrateReportRpcResponse, MachineVolumeEnsureRpcOk, MachineVolumeEnsureRpcRequest,
+    MachineVolumeEnsureRpcResponse, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
     MachineVolumeRemoveRpcResponse,
 };
 use crate::service_catalog::machine_role_service;
 use ployz_core::deploy::{ImageReference, VolumeName};
 use ployz_core::ids::{ContainerId, MachineId};
+use ployz_core::intent::VolumePinState;
 use ployz_core::machine::runtime::ManagedContainerIdentity;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, start_nats_service};
 use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
@@ -343,6 +345,72 @@ async fn nats_machine_runtime_calls_volume_remove_service() {
             .expect("received volume request lock is not poisoned")
             .as_slice(),
         [expected_request]
+    );
+}
+
+#[tokio::test]
+async fn nats_machine_runtime_calls_volume_ensure_service() {
+    let nats = test_nats().await;
+    let machine_id = machine_id("machine_a");
+    let spec = machine_role_service(&machine_id);
+    let endpoint = spec
+        .endpoints
+        .iter()
+        .find(|endpoint| {
+            endpoint.subject == machine_service(&machine_id, MachineServiceEndpoint::VolumeEnsure)
+        })
+        .expect("volume.ensure endpoint exists")
+        .clone();
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let mut service = start_nats_service(nats.machine_a.clone(), &spec)
+        .await
+        .expect("start machine service");
+    service
+        .bind_endpoint(&endpoint, {
+            let received = Arc::clone(&received);
+            let machine_id = machine_id.clone();
+            move |request| {
+                let request: MachineVolumeEnsureRpcRequest =
+                    serde_json::from_slice(&request.payload)
+                        .expect("volume ensure request decodes");
+                received
+                    .lock()
+                    .expect("received volume request lock is not poisoned")
+                    .push(request);
+                let response = MachineVolumeEnsureRpcResponse::Ok(MachineVolumeEnsureRpcOk {
+                    machine_id: machine_id.clone(),
+                });
+                async move {
+                    NatsServiceResponse::ok(
+                        serde_json::to_vec(&response).expect("response serializes"),
+                    )
+                }
+            }
+        })
+        .await
+        .expect("bind volume.ensure endpoint");
+    nats.machine_a
+        .flush()
+        .await
+        .expect("flush service subscription");
+    let runtime = NatsMachineContainerRuntime::new(nats.client);
+    let volume = VolumePinState::plain(
+        namespace_id("prod"),
+        VolumeName::try_new("data").expect("valid volume name"),
+        machine_id.clone(),
+    );
+
+    runtime
+        .ensure_volume(&machine_id, &volume)
+        .await
+        .expect("machine volume ensure succeeds");
+
+    assert_eq!(
+        received
+            .lock()
+            .expect("received volume request lock is not poisoned")
+            .as_slice(),
+        [MachineVolumeEnsureRpcRequest { volume }]
     );
 }
 
