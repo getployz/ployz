@@ -20,16 +20,75 @@ use ployz_core::operation::BuildPlatformFailure;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decode_json_request};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use tokio::sync::{Mutex, Semaphore, watch};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::{Mutex, Notify, Semaphore, oneshot, watch};
+use tokio::task::AbortHandle;
 use tokio::time::Instant;
 
 #[derive(Clone)]
 pub(crate) struct MachineBuildRuntime {
     machine_id: MachineId,
     effects: BuildEffects,
-    active: Arc<Mutex<BTreeMap<OperationId, watch::Sender<bool>>>>,
+    lifecycle: Arc<BuildRuntimeLifecycle>,
     machine_slot: Arc<Semaphore>,
     local_platform: OciPlatform,
+}
+
+struct BuildRuntimeLifecycle {
+    state: Mutex<BuildRuntimeState>,
+    changed: Notify,
+}
+
+struct BuildRuntimeState {
+    phase: BuildRuntimePhase,
+    active: BTreeMap<OperationId, ActiveBuild>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BuildRuntimePhase {
+    Accepting,
+    ShuttingDown,
+    Stopped,
+}
+
+struct ActiveBuild {
+    platform: OciPlatform,
+    cancel: watch::Sender<bool>,
+    supervisor: AbortHandle,
+    completion: Arc<BuildSupervisorCompletion>,
+}
+
+struct BuildSupervisorCompletion {
+    finished: AtomicBool,
+    changed: Notify,
+}
+
+impl BuildSupervisorCompletion {
+    fn new() -> Self {
+        Self {
+            finished: AtomicBool::new(false),
+            changed: Notify::new(),
+        }
+    }
+
+    async fn wait(&self) {
+        loop {
+            let changed = self.changed.notified();
+            if self.finished.load(Ordering::Acquire) {
+                return;
+            }
+            changed.await;
+        }
+    }
+}
+
+struct BuildSupervisorCompletionGuard(Arc<BuildSupervisorCompletion>);
+
+impl Drop for BuildSupervisorCompletionGuard {
+    fn drop(&mut self) {
+        self.0.finished.store(true, Ordering::Release);
+        self.0.changed.notify_waiters();
+    }
 }
 
 #[derive(Clone)]
@@ -57,7 +116,13 @@ impl MachineBuildRuntime {
                 executor,
                 image_state,
             })),
-            active: Arc::new(Mutex::new(BTreeMap::new())),
+            lifecycle: Arc::new(BuildRuntimeLifecycle {
+                state: Mutex::new(BuildRuntimeState {
+                    phase: BuildRuntimePhase::Accepting,
+                    active: BTreeMap::new(),
+                }),
+                changed: Notify::new(),
+            }),
             machine_slot: Arc::new(Semaphore::new(1)),
             local_platform: local_platform()?,
         })
@@ -71,10 +136,98 @@ impl MachineBuildRuntime {
         }
     }
 
+    pub(crate) async fn shutdown(&self) {
+        let owns_shutdown = {
+            let mut state = self.lifecycle.state.lock().await;
+            match state.phase {
+                BuildRuntimePhase::Accepting => {
+                    state.phase = BuildRuntimePhase::ShuttingDown;
+                    for build in state.active.values() {
+                        let _ = build.cancel.send(true);
+                    }
+                    true
+                }
+                BuildRuntimePhase::ShuttingDown => false,
+                BuildRuntimePhase::Stopped => return,
+            }
+        };
+        self.lifecycle.changed.notify_waiters();
+        if !owns_shutdown {
+            self.wait_for_stopped().await;
+            return;
+        }
+
+        let drained = tokio::time::timeout(
+            BUILD_TASK_DRAIN_TIMEOUT,
+            self.wait_for_active_builds_to_finish(),
+        )
+        .await
+        .is_ok();
+        let residual = if drained {
+            Vec::new()
+        } else {
+            let state = self.lifecycle.state.lock().await;
+            state
+                .active
+                .iter()
+                .map(|(operation_id, build)| ResidualBuild {
+                    operation_id: operation_id.clone(),
+                    platform: build.platform.clone(),
+                    supervisor: build.supervisor.clone(),
+                    completion: build.completion.clone(),
+                })
+                .collect::<Vec<_>>()
+        };
+        for build in &residual {
+            build.supervisor.abort();
+        }
+        let completion_wait =
+            futures_util::future::join_all(residual.iter().map(|build| build.completion.wait()));
+        let _ = tokio::time::timeout(BUILD_TASK_DRAIN_TIMEOUT, completion_wait).await;
+        {
+            let mut state = self.lifecycle.state.lock().await;
+            state.active.clear();
+        }
+        self.lifecycle.changed.notify_waiters();
+        futures_util::future::join_all(residual.iter().map(|build| {
+            self.effects
+                .force_cleanup(&build.operation_id, &build.platform)
+        }))
+        .await;
+        {
+            let mut state = self.lifecycle.state.lock().await;
+            state.phase = BuildRuntimePhase::Stopped;
+        }
+        self.lifecycle.changed.notify_waiters();
+    }
+
+    async fn wait_for_active_builds_to_finish(&self) {
+        loop {
+            let changed = self.lifecycle.changed.notified();
+            if self.lifecycle.state.lock().await.active.is_empty() {
+                return;
+            }
+            changed.await;
+        }
+    }
+
+    async fn wait_for_stopped(&self) {
+        loop {
+            let changed = self.lifecycle.changed.notified();
+            if self.lifecycle.state.lock().await.phase == BuildRuntimePhase::Stopped {
+                return;
+            }
+            changed.await;
+        }
+    }
+
     async fn start(
         &self,
         request: MachineBuildStartRpcRequest,
     ) -> Result<MachineBuildStartRpcOk, MachineBuildStartDomainError> {
+        if self.lifecycle.state.lock().await.phase != BuildRuntimePhase::Accepting {
+            return Err(build_runtime_stopped());
+        }
         if request.platform != self.local_platform {
             return Err(MachineBuildStartDomainError::PlatformFailed {
                 failure: BuildPlatformFailure::PlatformMismatch {
@@ -86,24 +239,52 @@ impl MachineBuildRuntime {
         }
         let timeout = requested_build_timeout(request.timeout_millis)?;
         let (cancel, cancel_rx) = watch::channel(false);
-        {
-            let mut active = self.active.lock().await;
-            if active.contains_key(&request.operation_id) {
-                return Err(MachineBuildStartDomainError::AlreadyRunning);
-            }
-            active.insert(request.operation_id.clone(), cancel.clone());
-        }
         let runtime = self.clone();
         let operation_id = request.operation_id.clone();
+        let registered_operation_id = operation_id.clone();
+        let platform = request.platform.clone();
+        let task_cancel = cancel.clone();
         let deadline = Instant::now() + timeout;
-        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
+        let (result_tx, result_rx) = oneshot::channel();
+        let (launch, launch_rx) = oneshot::channel();
+        let completion = Arc::new(BuildSupervisorCompletion::new());
+        let completion_guard = BuildSupervisorCompletionGuard(completion.clone());
+        let task_operation_id = operation_id.clone();
+        let supervisor = tokio::spawn(async move {
+            let _completion = completion_guard;
+            if launch_rx.await.is_err() {
+                return;
+            }
             let result = runtime
-                .run_build(request, cancel, cancel_rx, deadline)
+                .run_build(request, task_cancel, cancel_rx, deadline)
                 .await;
-            runtime.active.lock().await.remove(&operation_id);
+            runtime.remove_active(&task_operation_id).await;
             let _ = result_tx.send(result);
         });
+        {
+            let mut state = self.lifecycle.state.lock().await;
+            if state.phase != BuildRuntimePhase::Accepting {
+                supervisor.abort();
+                return Err(build_runtime_stopped());
+            }
+            if state.active.contains_key(&operation_id) {
+                supervisor.abort();
+                return Err(MachineBuildStartDomainError::AlreadyRunning);
+            }
+            state.active.insert(
+                operation_id,
+                ActiveBuild {
+                    platform,
+                    cancel: cancel.clone(),
+                    supervisor: supervisor.abort_handle(),
+                    completion,
+                },
+            );
+        }
+        if launch.send(()).is_err() {
+            supervisor.abort();
+            self.remove_active(&registered_operation_id).await;
+        }
         result_rx.await.unwrap_or_else(|_| {
             Err(MachineBuildStartDomainError::PlatformFailed {
                 failure: BuildPlatformFailure::MachineUnavailable {
@@ -154,33 +335,32 @@ impl MachineBuildRuntime {
         let machine_id = self.machine_id.clone();
         let task_progress = progress.clone();
         let task_cancel_rx = cancel_rx.clone();
-        let task = tokio::spawn(async move {
-            task_effects
-                .execute_and_ingest(machine_id, request, task_cancel_rx, task_progress, deadline)
-                .await
-        });
-        tokio::pin!(task);
-        let completion = tokio::select! {
-            biased;
-            () = tokio::time::sleep_until(deadline) => {
-                BuildTaskCompletion::TimedOut
+        let completion = {
+            let task = task_effects.execute_and_ingest(
+                machine_id,
+                request,
+                task_cancel_rx,
+                task_progress,
+                deadline,
+            );
+            tokio::pin!(task);
+            let completion = tokio::select! {
+                biased;
+                () = tokio::time::sleep_until(deadline) => {
+                    BuildTaskCompletion::TimedOut
+                }
+                changed = cancel_rx.changed() => {
+                    let _ = changed;
+                    BuildTaskCompletion::Cancelled
+                }
+                result = &mut task => BuildTaskCompletion::Finished(Box::new(result)),
+            };
+            if !matches!(completion, BuildTaskCompletion::Finished(_)) {
+                let _ = cancel.send(true);
+                let _ = tokio::time::timeout(BUILD_TASK_DRAIN_TIMEOUT, &mut task).await;
             }
-            changed = cancel_rx.changed() => {
-                let _ = changed;
-                BuildTaskCompletion::Cancelled
-            }
-            result = &mut task => BuildTaskCompletion::Finished(Box::new(join_build(result))),
+            completion
         };
-        if !matches!(completion, BuildTaskCompletion::Finished(_)) {
-            let _ = cancel.send(true);
-            if tokio::time::timeout(BUILD_TASK_DRAIN_TIMEOUT, &mut task)
-                .await
-                .is_err()
-            {
-                task.abort();
-                let _ = task.await;
-            }
-        }
         let cleanup = self.effects.force_cleanup(&operation_id, &platform).await;
         let (final_log_sequence, omitted_log_bytes) = progress.summary();
         let log_summary = BuildLogSummary::new(final_log_sequence, omitted_log_bytes);
@@ -218,12 +398,22 @@ impl MachineBuildRuntime {
     }
 
     async fn cancel(&self, operation_id: &OperationId) -> MachineBuildCancelOutcome {
-        let active = self.active.lock().await;
-        let Some(cancel) = active.get(operation_id) else {
+        let state = self.lifecycle.state.lock().await;
+        let Some(build) = state.active.get(operation_id) else {
             return MachineBuildCancelOutcome::NotRunning;
         };
-        let _ = cancel.send(true);
+        let _ = build.cancel.send(true);
         MachineBuildCancelOutcome::Requested
+    }
+
+    async fn remove_active(&self, operation_id: &OperationId) {
+        self.lifecycle
+            .state
+            .lock()
+            .await
+            .active
+            .remove(operation_id);
+        self.lifecycle.changed.notify_waiters();
     }
 }
 
@@ -231,6 +421,13 @@ enum BuildTaskCompletion {
     Finished(Box<Result<MachineBuildStartRpcOk, BuildExecutionError>>),
     Cancelled,
     TimedOut,
+}
+
+struct ResidualBuild {
+    operation_id: OperationId,
+    platform: OciPlatform,
+    supervisor: AbortHandle,
+    completion: Arc<BuildSupervisorCompletion>,
 }
 
 impl BuildEffects {
@@ -295,7 +492,7 @@ impl BuildEffects {
             #[cfg(test)]
             Self::Test(effects) => {
                 let _ = deadline;
-                effects.execute_and_ingest(log_progress).await
+                effects.execute_and_ingest(log_progress, cancel_rx).await
             }
         }
     }
@@ -335,16 +532,6 @@ fn requested_build_timeout(
     Ok(timeout)
 }
 
-fn join_build(
-    result: Result<Result<MachineBuildStartRpcOk, BuildExecutionError>, tokio::task::JoinError>,
-) -> Result<MachineBuildStartRpcOk, BuildExecutionError> {
-    result.map_err(|error| BuildExecutionError::Infrastructure {
-        action: "join machine build task",
-        message: error.to_string(),
-        log_summary: BuildLogSummary::none(),
-    })?
-}
-
 fn machine_build_error(
     error: BuildExecutionError,
     cleanup: MachineBuildCleanupOutcome,
@@ -374,6 +561,15 @@ fn machine_build_error(
             },
             log_summary,
         },
+    }
+}
+
+fn build_runtime_stopped() -> MachineBuildStartDomainError {
+    MachineBuildStartDomainError::PlatformFailed {
+        failure: BuildPlatformFailure::MachineUnavailable {
+            message: failure_message("machine build runtime is shutting down"),
+        },
+        log_summary: BuildLogSummary::none(),
     }
 }
 

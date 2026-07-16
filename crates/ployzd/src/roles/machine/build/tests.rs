@@ -7,6 +7,7 @@ pub(super) struct TestBuildEffects {
     pub(super) cleanup_calls: std::sync::atomic::AtomicUsize,
     pub(super) task_active: std::sync::atomic::AtomicBool,
     cleanup_completes: bool,
+    observes_cancellation: bool,
 }
 
 impl TestBuildEffects {
@@ -16,17 +17,32 @@ impl TestBuildEffects {
             cleanup_calls: std::sync::atomic::AtomicUsize::new(0),
             task_active: std::sync::atomic::AtomicBool::new(false),
             cleanup_completes,
+            observes_cancellation: false,
+        }
+    }
+
+    fn cooperative(cleanup_completes: bool) -> Self {
+        Self {
+            observes_cancellation: true,
+            ..Self::new(cleanup_completes)
         }
     }
 
     pub(super) async fn execute_and_ingest(
         &self,
         log_progress: BuildLogProgress,
+        mut cancelled: watch::Receiver<bool>,
     ) -> Result<MachineBuildStartRpcOk, BuildExecutionError> {
         self.task_active.store(true, Ordering::SeqCst);
         let _active = TestTaskActive(&self.task_active);
         log_progress.set_for_test(7, 11);
         self.ingest_started.notify_one();
+        if self.observes_cancellation {
+            let _ = cancelled.changed().await;
+            return Err(BuildExecutionError::Cancelled {
+                log_summary: BuildLogSummary::new(7, 11),
+            });
+        }
         std::future::pending().await
     }
 
@@ -53,7 +69,13 @@ impl MachineBuildRuntime {
         Self {
             machine_id,
             effects: BuildEffects::Test(effects),
-            active: Arc::new(Mutex::new(BTreeMap::new())),
+            lifecycle: Arc::new(BuildRuntimeLifecycle {
+                state: Mutex::new(BuildRuntimeState {
+                    phase: BuildRuntimePhase::Accepting,
+                    active: BTreeMap::new(),
+                }),
+                changed: Notify::new(),
+            }),
             machine_slot: Arc::new(Semaphore::new(1)),
             local_platform: local_platform().expect("supported test platform"),
         }
@@ -113,6 +135,16 @@ fn execution_timeout_maps_to_typed_machine_timeout_with_cleanup() {
             ..
         } if actual == log_summary
     ));
+}
+
+#[tokio::test]
+async fn supervisor_completion_observed_before_wait_is_not_lost() {
+    let completion = Arc::new(BuildSupervisorCompletion::new());
+    drop(BuildSupervisorCompletionGuard(completion.clone()));
+
+    tokio::time::timeout(std::time::Duration::from_millis(10), completion.wait())
+        .await
+        .expect("completed supervisor is observed without waiting for another notification");
 }
 
 #[tokio::test]
@@ -177,6 +209,54 @@ async fn unavailable_build_runtime_is_typed_machine_evidence() {
             }
         } if actual == machine_id
     ));
+}
+
+#[tokio::test]
+async fn shutdown_closes_build_admission_with_stable_typed_evidence() {
+    let effects = Arc::new(TestBuildEffects::new(true));
+    let runtime = MachineBuildRuntime::new_for_test(
+        MachineId::try_new("machine-a").expect("machine"),
+        effects,
+    );
+    runtime.shutdown().await;
+
+    assert!(matches!(
+        runtime.start(build_request("after-shutdown", 1_000)).await,
+        Err(MachineBuildStartDomainError::PlatformFailed {
+            failure: BuildPlatformFailure::MachineUnavailable { message },
+            ..
+        }) if message.as_str() == "machine build runtime is shutting down"
+    ));
+}
+
+#[tokio::test]
+async fn shutdown_cancels_active_build_and_waits_for_cleanup() {
+    let effects = Arc::new(TestBuildEffects::cooperative(true));
+    let runtime = MachineBuildRuntime::new_for_test(
+        MachineId::try_new("machine-a").expect("machine"),
+        effects.clone(),
+    );
+    let start_runtime = runtime.clone();
+    let start = tokio::spawn(async move {
+        start_runtime
+            .start(build_request("shutdown-active", 10_000))
+            .await
+    });
+    effects.ingest_started.notified().await;
+
+    runtime.shutdown().await;
+
+    assert!(matches!(
+        start.await.expect("start task"),
+        Err(MachineBuildStartDomainError::Cancelled {
+            cleanup: MachineBuildCleanupOutcome::Confirmed,
+            ..
+        })
+    ));
+    assert_eq!(effects.cleanup_calls.load(Ordering::SeqCst), 1);
+    assert!(!effects.task_active.load(Ordering::SeqCst));
+    assert!(runtime.lifecycle.state.lock().await.active.is_empty());
+    assert!(runtime.lifecycle.state.lock().await.phase == BuildRuntimePhase::Stopped);
 }
 
 #[tokio::test(start_paused = true)]
