@@ -685,7 +685,6 @@ mod tests {
             route_commits: Vec::new(),
             volume_pins: Vec::new(),
             eligible_machines: Vec::new(),
-            unusable_machines: Vec::new(),
             existing_replicas: Vec::new(),
             cleanup_candidates: Vec::new(),
         }

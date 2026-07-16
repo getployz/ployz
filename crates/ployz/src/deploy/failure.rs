@@ -1,3 +1,4 @@
+use crate::machine::command::render_storage_unavailable_reason;
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{ContainerId, MachineId, NamespaceRevisionId, ServiceId};
 use ployz_core::machine::MachineUsabilityReason;
@@ -387,8 +388,9 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
                     MachineUsabilityReason::StorageUnavailable {
                         reason: unavailable,
                     } => format!(
-                        "{} storage is unavailable: {unavailable:?}",
-                        reason.machine_id.as_str()
+                        "{} storage is unavailable: {}",
+                        reason.machine_id.as_str(),
+                        render_storage_unavailable_reason(unavailable),
                     ),
                     MachineUsabilityReason::StoragePoolMismatch { expected, reported } => format!(
                         "{} reports storage pool {}, expected {}",

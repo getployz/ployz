@@ -135,6 +135,12 @@ impl RuntimeSnapshotQueryService {
             .map(|machine| machine.machine_id.clone())
             .collect::<Vec<_>>();
         let facts = read_available_machine_facts_by_id(&self.facts_reader, machine_ids).await;
+        let storage_testimony = facts
+            .values()
+            .map(|facts| {
+                MachineStorageTestimony::new(facts.machine_id().clone(), facts.storage().cloned())
+            })
+            .collect::<Vec<_>>();
         let gateway_statuses = self
             .facts
             .gateway_statuses()
@@ -149,6 +155,7 @@ impl RuntimeSnapshotQueryService {
             snapshot: runtime_snapshot_from_sources(
                 intent,
                 &facts,
+                &storage_testimony,
                 &gateway_statuses,
                 ingress,
                 read_at_unix_seconds,

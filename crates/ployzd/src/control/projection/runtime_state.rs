@@ -59,6 +59,7 @@ pub(crate) async fn load_ingress_sources(
 pub(crate) fn from_sources(
     intent: IntentSnapshot,
     facts: &BTreeMap<MachineId, MachineFactsSnapshot>,
+    fresh_storage_testimony: &[MachineStorageTestimony],
     gateway_statuses: &BTreeMap<MachineId, GatewayStatusObservation>,
     ingress: RuntimeIngressSources,
     read_at_unix_seconds: u64,
@@ -74,14 +75,8 @@ pub(crate) fn from_sources(
         .iter()
         .map(|machine| machine.machine_id.clone())
         .collect::<Vec<_>>();
-    let storage_testimony = facts
-        .values()
-        .map(|facts| {
-            MachineStorageTestimony::new(facts.machine_id().clone(), facts.storage().cloned())
-        })
-        .collect::<Vec<_>>();
     let storage_alarms =
-        derive_stranded_volume_alarms(&intent.volume_pins, &machine_ids, &storage_testimony);
+        derive_stranded_volume_alarms(&intent.volume_pins, &machine_ids, fresh_storage_testimony);
     let machines = intent
         .active_machines
         .into_iter()
@@ -484,6 +479,7 @@ mod tests {
         let snapshot = from_sources(
             intent(Vec::new()),
             &BTreeMap::new(),
+            &[],
             &BTreeMap::new(),
             ingress(Some(PloyzDnsTargetAllocation::Allocated {
                 lease: lease.clone(),
@@ -516,6 +512,7 @@ mod tests {
         let snapshot = from_sources(
             intent(vec![(route.clone(), cert)]),
             &BTreeMap::new(),
+            &[],
             &BTreeMap::new(),
             ingress(None),
             50,

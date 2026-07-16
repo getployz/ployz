@@ -26,6 +26,55 @@ pub enum StorageUnavailableReason {
     PoolFaulted { pool: ZfsPoolName },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageTestimony<'a> {
+    NoAnswer,
+    Answered(Option<&'a StorageCapability>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StorageCompatibility {
+    Compatible,
+    MachineSilent,
+    TestimonyNotReported,
+    Unprepared,
+    Unavailable {
+        reason: StorageUnavailableReason,
+    },
+    PoolMismatch {
+        expected: ZfsPoolName,
+        reported: ZfsPoolName,
+    },
+}
+
+#[must_use]
+pub fn classify_storage_compatibility(
+    testimony: StorageTestimony<'_>,
+    expected_pool: Option<&ZfsPoolName>,
+) -> StorageCompatibility {
+    match testimony {
+        StorageTestimony::NoAnswer => StorageCompatibility::MachineSilent,
+        StorageTestimony::Answered(None) => StorageCompatibility::TestimonyNotReported,
+        StorageTestimony::Answered(Some(StorageCapability::Unprepared)) => {
+            StorageCompatibility::Unprepared
+        }
+        StorageTestimony::Answered(Some(StorageCapability::Unavailable { reason })) => {
+            StorageCompatibility::Unavailable {
+                reason: reason.clone(),
+            }
+        }
+        StorageTestimony::Answered(Some(StorageCapability::Ready { pool })) => {
+            match expected_pool {
+                Some(expected) if expected != pool => StorageCompatibility::PoolMismatch {
+                    expected: expected.clone(),
+                    reported: pool.clone(),
+                },
+                Some(_) | None => StorageCompatibility::Compatible,
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineStorageTestimony {
     machine_id: MachineId,
@@ -117,24 +166,24 @@ pub fn derive_stranded_volume_alarms(
             }
 
             let expected_pool = dataset.pool();
-            let reason = match answered_testimony.get(pin.machine_id()) {
-                None => StrandedVolumeReason::MachineSilent,
-                Some(None) => StrandedVolumeReason::StorageTestimonyNotReported,
-                Some(Some(StorageCapability::Unprepared)) => {
-                    StrandedVolumeReason::StorageUnprepared
+            let testimony = answered_testimony
+                .get(pin.machine_id())
+                .map_or(StorageTestimony::NoAnswer, |storage| {
+                    StorageTestimony::Answered(*storage)
+                });
+            let reason = match classify_storage_compatibility(testimony, Some(&expected_pool)) {
+                StorageCompatibility::Compatible => return None,
+                StorageCompatibility::MachineSilent => StrandedVolumeReason::MachineSilent,
+                StorageCompatibility::TestimonyNotReported => {
+                    StrandedVolumeReason::StorageTestimonyNotReported
                 }
-                Some(Some(StorageCapability::Unavailable { reason })) => {
-                    StrandedVolumeReason::StorageUnavailable {
-                        reason: (*reason).clone(),
-                    }
+                StorageCompatibility::Unprepared => StrandedVolumeReason::StorageUnprepared,
+                StorageCompatibility::Unavailable { reason } => {
+                    StrandedVolumeReason::StorageUnavailable { reason }
                 }
-                Some(Some(StorageCapability::Ready { pool })) if pool != &expected_pool => {
-                    StrandedVolumeReason::PoolMismatch {
-                        expected: expected_pool,
-                        reported: (*pool).clone(),
-                    }
+                StorageCompatibility::PoolMismatch { expected, reported } => {
+                    StrandedVolumeReason::PoolMismatch { expected, reported }
                 }
-                Some(Some(StorageCapability::Ready { .. })) => return None,
             };
 
             Some(StrandedVolumeAlarm::new(

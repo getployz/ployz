@@ -1113,17 +1113,21 @@ fn render_storage(machine: &MachineSnapshot) -> String {
         None => "not reported".to_owned(),
         Some(StorageCapability::Unprepared) => "unprepared".to_owned(),
         Some(StorageCapability::Ready { pool }) => format!("ready pool={}", pool.as_str()),
-        Some(StorageCapability::Unavailable { reason }) => match reason {
-            StorageUnavailableReason::ZfsModuleMissing => {
-                "unavailable zfs-module-missing".to_owned()
-            }
-            StorageUnavailableReason::PoolNotImported { pool } => {
-                format!("unavailable pool-not-imported pool={}", pool.as_str())
-            }
-            StorageUnavailableReason::PoolFaulted { pool } => {
-                format!("unavailable pool-faulted pool={}", pool.as_str())
-            }
-        },
+        Some(StorageCapability::Unavailable { reason }) => {
+            format!("unavailable {}", render_storage_unavailable_reason(reason))
+        }
+    }
+}
+
+pub(crate) fn render_storage_unavailable_reason(reason: &StorageUnavailableReason) -> String {
+    match reason {
+        StorageUnavailableReason::ZfsModuleMissing => "zfs-module-missing".to_owned(),
+        StorageUnavailableReason::PoolNotImported { pool } => {
+            format!("pool-not-imported pool={}", pool.as_str())
+        }
+        StorageUnavailableReason::PoolFaulted { pool } => {
+            format!("pool-faulted pool={}", pool.as_str())
+        }
     }
 }
 
@@ -1141,15 +1145,9 @@ fn render_storage_alarms(machine: &MachineSnapshot) -> String {
                     "storage-not-reported".to_owned()
                 }
                 StrandedVolumeReason::StorageUnprepared => "storage-unprepared".to_owned(),
-                StrandedVolumeReason::StorageUnavailable { reason } => match reason {
-                    StorageUnavailableReason::ZfsModuleMissing => "zfs-module-missing".to_owned(),
-                    StorageUnavailableReason::PoolNotImported { pool } => {
-                        format!("pool-not-imported({})", pool.as_str())
-                    }
-                    StorageUnavailableReason::PoolFaulted { pool } => {
-                        format!("pool-faulted({})", pool.as_str())
-                    }
-                },
+                StrandedVolumeReason::StorageUnavailable { reason } => {
+                    render_storage_unavailable_reason(reason)
+                }
                 StrandedVolumeReason::PoolMismatch { expected, reported } => format!(
                     "pool-mismatch(expected={},reported={})",
                     expected.as_str(),

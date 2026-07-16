@@ -9,7 +9,7 @@ use crate::roles::machine::protocol::{
 use crate::roles::machine::runner::{
     ExistingManagedContainerState, MachineContainerRunner, MachineContainerRunnerError,
 };
-use crate::roles::machine::storage_capability::observe_storage_capability;
+use crate::roles::machine::volume::observe_storage_capability;
 use ployz_core::ids::MachineId;
 use ployz_core::machine::MachineEndpointObservation;
 use ployz_core::machine::runtime::{

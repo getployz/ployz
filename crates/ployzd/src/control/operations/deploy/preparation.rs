@@ -188,6 +188,7 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         .map(|unusable| unusable.machine_id.clone())
         .collect::<Vec<_>>();
     let mut services = Vec::new();
+    let mut unusable_machines = facts.unusable_machines.clone();
     for service in request.services() {
         let storage_requirement =
             provisioned_storage_requirement(&request, service, &facts.namespace_volume_pins);
@@ -196,6 +197,11 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
             &facts.machine_storage_testimony,
             &storage_requirement,
         );
+        for unusable in storage_unusable_machines {
+            if !unusable_machines.contains(&unusable) {
+                unusable_machines.push(unusable);
+            }
+        }
         let is_promoted = facts.namespace_serving_entries.iter().any(|entry| {
             entry.namespace_id == *request.namespace_id()
                 && entry.service_id == service.service_id
@@ -241,23 +247,12 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
             route_commits,
             volume_pins: facts.namespace_volume_pins.clone(),
             eligible_machines: prepared.eligible_machines,
-            unusable_machines: facts
-                .unusable_machines
-                .iter()
-                .cloned()
-                .chain(storage_unusable_machines)
-                .collect(),
             existing_replicas: prepared.existing_replicas,
             cleanup_candidates: prepared.cleanup_candidates,
         });
     }
     let ployz_automatic_hostnames = facts.automatic_hostname_mode.is_ployz();
-    let mut unusable_machines = services
-        .iter()
-        .flat_map(|service| service.unusable_machines.iter().cloned())
-        .collect::<Vec<_>>();
     unusable_machines.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
-    unusable_machines.dedup();
     let exact_certificate_routes = exact_certificate_routes(&services, ployz_automatic_hostnames);
 
     // Manifest omission removes a service: its containers are cleanup

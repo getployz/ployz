@@ -4,6 +4,7 @@ use crate::control::intent::service::NatsIntentReader;
 use crate::control::projection::runtime_state::{
     RuntimeIngressSources, from_sources as runtime_snapshot_from_sources, load_ingress_sources,
 };
+use crate::control::role_client::machine::{NatsMachineFactsReader, read_available_machine_facts};
 use crate::control::store::CoreStore;
 use crate::process_support::BackoffSchedule;
 use crate::role_testimony::RoleTestimonyCache;
@@ -28,6 +29,7 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 const NATS_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+const STORAGE_ALARM_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 const RETRY_SCHEDULE: BackoffSchedule = BackoffSchedule {
     interval: std::time::Duration::from_millis(100),
     cap: std::time::Duration::from_secs(5),
@@ -195,6 +197,10 @@ struct PassiveRuntimeProjection {
     intent: Option<IntentSnapshot>,
     ingress: Option<RuntimeIngressSources>,
     facts: RoleTestimonyCache,
+    // Alarm liveness comes from the latest point-of-use gather. The cache
+    // remains last-known display evidence and never answers whether a machine
+    // is currently silent.
+    fresh_storage_testimony: Vec<ployz_core::machine::MachineStorageTestimony>,
     snapshots: watch::Sender<Option<RuntimeSnapshot>>,
 }
 
@@ -206,15 +212,30 @@ impl PassiveRuntimeProjection {
                 intent: None,
                 ingress: None,
                 facts,
+                fresh_storage_testimony: Vec::new(),
                 snapshots,
             },
             receiver,
         )
     }
 
-    fn replace_sources(&mut self, intent: IntentSnapshot, ingress: RuntimeIngressSources) {
+    fn replace_sources(
+        &mut self,
+        intent: IntentSnapshot,
+        ingress: RuntimeIngressSources,
+        fresh_storage_testimony: Vec<ployz_core::machine::MachineStorageTestimony>,
+    ) {
         self.intent = Some(intent);
         self.ingress = Some(ingress);
+        self.fresh_storage_testimony = fresh_storage_testimony;
+        self.refresh();
+    }
+
+    fn refresh_with_storage_testimony(
+        &mut self,
+        fresh_storage_testimony: Vec<ployz_core::machine::MachineStorageTestimony>,
+    ) {
+        self.fresh_storage_testimony = fresh_storage_testimony;
         self.refresh();
     }
 
@@ -226,6 +247,7 @@ impl PassiveRuntimeProjection {
             intent.clone(),
             ingress.clone(),
             &self.facts,
+            &self.fresh_storage_testimony,
         )));
     }
 }
@@ -277,6 +299,7 @@ pub(crate) async fn start_runtime_projection(
             intent_changes,
             ingress_changes,
             fact_changes,
+            facts_reader: NatsMachineFactsReader::new(client.clone()),
             core_store,
         },
         health.clone(),
@@ -297,6 +320,7 @@ struct RuntimeProjectionSources {
     intent_changes: async_nats::Subscriber,
     ingress_changes: async_nats::Subscriber,
     fact_changes: watch::Receiver<u64>,
+    facts_reader: NatsMachineFactsReader,
     core_store: CoreStore,
 }
 
@@ -311,11 +335,16 @@ async fn run_projection(
         mut intent_changes,
         mut ingress_changes,
         mut fact_changes,
+        facts_reader,
         core_store,
     } = sources;
     let intent = retry_intent_read(&intent_reader, &health).await;
     let ingress = retry_ingress_read(&core_store, &health).await;
-    projection.replace_sources(intent, ingress);
+    let fresh_storage_testimony = gather_storage_testimony(&facts_reader, &intent).await;
+    projection.replace_sources(intent, ingress, fresh_storage_testimony);
+    let mut storage_alarm_refresh = tokio::time::interval(STORAGE_ALARM_REFRESH_INTERVAL);
+    storage_alarm_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    storage_alarm_refresh.tick().await;
     loop {
         tokio::select! {
             result = fact_changes.changed() => {
@@ -332,7 +361,8 @@ async fn run_projection(
                 }
                 let intent = retry_intent_read(&intent_reader, &health).await;
                 let ingress = retry_ingress_read(&core_store, &health).await;
-                projection.replace_sources(intent, ingress);
+                let testimony = gather_storage_testimony(&facts_reader, &intent).await;
+                projection.replace_sources(intent, ingress, testimony);
             }
             message = ingress_changes.next() => {
                 if message.is_none() {
@@ -343,20 +373,58 @@ async fn run_projection(
                 projection.ingress = Some(ingress);
                 projection.refresh();
             }
+            _ = storage_alarm_refresh.tick() => {
+                let testimony = gather_projection_storage_testimony(&facts_reader, &projection).await;
+                projection.refresh_with_storage_testimony(testimony);
+            }
         }
     }
+}
+
+async fn gather_projection_storage_testimony(
+    facts_reader: &NatsMachineFactsReader,
+    projection: &PassiveRuntimeProjection,
+) -> Vec<ployz_core::machine::MachineStorageTestimony> {
+    let Some(intent) = projection.intent.as_ref() else {
+        return Vec::new();
+    };
+    gather_storage_testimony(facts_reader, intent).await
+}
+
+async fn gather_storage_testimony(
+    facts_reader: &NatsMachineFactsReader,
+    intent: &IntentSnapshot,
+) -> Vec<ployz_core::machine::MachineStorageTestimony> {
+    let machine_ids = intent
+        .active_machines
+        .iter()
+        .map(|machine| machine.machine_id.clone())
+        .collect::<Vec<_>>();
+    read_available_machine_facts(facts_reader, machine_ids)
+        .await
+        .into_iter()
+        .map(|facts| {
+            ployz_core::machine::MachineStorageTestimony::new(
+                facts.machine_id().clone(),
+                facts.storage().cloned(),
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes, VolumeName, ZfsPoolName};
     use ployz_core::intent::ActiveMachineState;
     use ployz_core::intent::recovery::ControlPlaneEpoch;
+    use ployz_core::intent::{VolumeKind, VolumePinState};
     use ployz_core::machine::GatewayServingStatus;
     use ployz_core::machine::GatewayStatusObservation;
     use ployz_core::machine::MachineLifecycle;
     use ployz_core::machine::MachineName;
     use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
+    use ployz_core::machine::{MachineStorageTestimony, StorageCapability, StrandedVolumeReason};
     use ployz_core::network::{DataplaneProjection, MachineEndpointSubnet, WireGuardPublicKey};
     use ployz_core::roles::InstallRolePolicy;
 
@@ -380,6 +448,7 @@ mod tests {
         projection.replace_sources(
             intent(vec![serving_target_entry("svc_api", "entry_2")]),
             ingress(),
+            Vec::new(),
         );
         let snapshot = snapshots.borrow();
         let snapshot = snapshot.as_ref().expect("initialized snapshot");
@@ -395,17 +464,77 @@ mod tests {
         );
     }
 
+    #[test]
+    fn passive_projection_replaces_last_known_ready_with_fresh_silence_alarm() {
+        let facts = RoleTestimonyCache::default();
+        facts.record_machine_facts(machine_facts_with_storage(
+            "machine_a",
+            "ctr_initial",
+            Some(StorageCapability::Ready {
+                pool: ZfsPoolName::try_new("tank").expect("valid pool"),
+            }),
+        ));
+        let (mut projection, snapshots) = PassiveRuntimeProjection::new(facts);
+        let mut cluster_intent = intent(Vec::new());
+        cluster_intent.volume_pins = vec![provisioned_pin("data", "machine_a", "tank")];
+        projection.replace_sources(
+            cluster_intent,
+            ingress(),
+            vec![MachineStorageTestimony::new(
+                machine_id("machine_a"),
+                Some(StorageCapability::Ready {
+                    pool: ZfsPoolName::try_new("tank").expect("valid pool"),
+                }),
+            )],
+        );
+        {
+            let snapshot = snapshots.borrow();
+            let [machine] = snapshot
+                .as_ref()
+                .expect("initialized snapshot")
+                .machines
+                .as_slice()
+            else {
+                panic!("one projected machine");
+            };
+            assert!(machine.storage_alarms.is_empty());
+        }
+
+        projection.refresh_with_storage_testimony(Vec::new());
+
+        let snapshot = snapshots.borrow();
+        let [machine] = snapshot
+            .as_ref()
+            .expect("initialized snapshot")
+            .machines
+            .as_slice()
+        else {
+            panic!("one projected machine");
+        };
+        let [alarm] = machine.storage_alarms.as_slice() else {
+            panic!("one stranded-volume alarm");
+        };
+        assert_eq!(alarm.namespace_id.as_str(), "default");
+        assert_eq!(alarm.volume_name.as_str(), "data");
+        assert_eq!(alarm.reason, StrandedVolumeReason::MachineSilent);
+        let MachineTestimony::Answered { storage, .. } = &machine.testimony else {
+            panic!("last-known display testimony remains available");
+        };
+        assert!(matches!(storage, Some(StorageCapability::Ready { .. })));
+    }
+
     #[tokio::test]
     async fn intent_machine_and_gateway_replacements_emit_full_snapshots() {
         let facts = RoleTestimonyCache::default();
         facts.record_machine_facts(machine_facts("machine_a", "ctr_initial"));
         let (mut projection, mut snapshots) = PassiveRuntimeProjection::new(facts.clone());
-        projection.replace_sources(intent(Vec::new()), ingress());
+        projection.replace_sources(intent(Vec::new()), ingress(), Vec::new());
         let _ = snapshots.borrow_and_update();
 
         projection.replace_sources(
             intent(vec![serving_target_entry("svc_api", "entry_2")]),
             ingress(),
+            Vec::new(),
         );
         snapshots.changed().await.expect("intent replacement");
         assert_eq!(
@@ -518,6 +647,14 @@ mod tests {
     }
 
     fn machine_facts(machine: &str, container: &str) -> MachineFactsSnapshot {
+        machine_facts_with_storage(machine, container, None)
+    }
+
+    fn machine_facts_with_storage(
+        machine: &str,
+        container: &str,
+        storage: Option<StorageCapability>,
+    ) -> MachineFactsSnapshot {
         let machine_id = machine_id(machine);
         let observation = containers::observation(machine, container)
             .with(containers::identity("svc_api").entry("entry_2"))
@@ -529,11 +666,28 @@ mod tests {
                 .expect("container snapshot"),
             None,
             test_disk_space(),
-            None,
+            storage,
             ployz_core::image::OciPlatform::current(),
             1_000,
         )
         .expect("machine facts")
+    }
+
+    fn provisioned_pin(volume: &str, machine: &str, pool: &str) -> VolumePinState {
+        let namespace_id = ployz_test_support::ids::namespace_id("default");
+        let volume_name = VolumeName::try_new(volume).expect("valid volume name");
+        let pool = ZfsPoolName::try_new(pool).expect("valid pool");
+        VolumePinState::try_new(
+            namespace_id.clone(),
+            volume_name.clone(),
+            machine_id(machine),
+            VolumeKind::Provisioned {
+                dataset: DatasetName::for_volume(&pool, &namespace_id, &volume_name)
+                    .expect("canonical dataset"),
+                max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("non-zero size"),
+            },
+        )
+        .expect("valid provisioned pin")
     }
 }
 
@@ -693,11 +847,13 @@ fn assemble_snapshot(
     intent: IntentSnapshot,
     ingress: RuntimeIngressSources,
     facts: &RoleTestimonyCache,
+    fresh_storage_testimony: &[ployz_core::machine::MachineStorageTestimony],
 ) -> RuntimeSnapshot {
     let (machine_facts, gateway_statuses) = facts.runtime_projection_facts();
     runtime_snapshot_from_sources(
         intent,
         &machine_facts,
+        fresh_storage_testimony,
         &gateway_statuses,
         ingress,
         current_unix_seconds(),

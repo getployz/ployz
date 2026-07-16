@@ -5,7 +5,8 @@ use ployz_core::machine::DataplaneUnavailableReason;
 use ployz_core::machine::MachineUsabilityReason;
 use ployz_core::machine::placement_rejection;
 use ployz_core::machine::{
-    DataplaneProjectionAdmissionFailure, validate_declared_local_machine,
+    DataplaneProjectionAdmissionFailure, StorageCompatibility, StorageTestimony,
+    classify_storage_compatibility, validate_declared_local_machine,
     validate_placement_machine_peers,
 };
 use ployz_core::network::{DataplaneProjection, DataplaneProjectionMember, MachineDataplaneStatus};
@@ -32,27 +33,34 @@ pub(super) fn classify_storage_usability(
     let mut eligible = Vec::new();
     let mut unusable = Vec::new();
     for machine_id in candidates {
-        let reason = testimony.get(machine_id).map_or(
-            Some(MachineUsabilityReason::FactsUnavailable),
-            |storage| match storage {
-                None => Some(MachineUsabilityReason::StorageTestimonyNotReported),
-                Some(ployz_core::machine::StorageCapability::Unprepared) => {
-                    Some(MachineUsabilityReason::StorageUnprepared)
-                }
-                Some(ployz_core::machine::StorageCapability::Unavailable { reason }) => {
-                    Some(MachineUsabilityReason::StorageUnavailable {
-                        reason: reason.clone(),
-                    })
-                }
-                Some(ployz_core::machine::StorageCapability::Ready { pool }) => expected_pools
-                    .iter()
-                    .find(|expected| *expected != pool)
-                    .map(|expected| MachineUsabilityReason::StoragePoolMismatch {
-                        expected: expected.clone(),
-                        reported: pool.clone(),
-                    }),
-            },
-        );
+        let storage = testimony
+            .get(machine_id)
+            .map_or(StorageTestimony::NoAnswer, |storage| {
+                StorageTestimony::Answered(storage.as_ref())
+            });
+        let compatibility = if expected_pools.is_empty() {
+            classify_storage_compatibility(storage, None)
+        } else {
+            expected_pools
+                .iter()
+                .map(|expected| classify_storage_compatibility(storage, Some(expected)))
+                .find(|compatibility| *compatibility != StorageCompatibility::Compatible)
+                .unwrap_or(StorageCompatibility::Compatible)
+        };
+        let reason = match compatibility {
+            StorageCompatibility::Compatible => None,
+            StorageCompatibility::MachineSilent => Some(MachineUsabilityReason::FactsUnavailable),
+            StorageCompatibility::TestimonyNotReported => {
+                Some(MachineUsabilityReason::StorageTestimonyNotReported)
+            }
+            StorageCompatibility::Unprepared => Some(MachineUsabilityReason::StorageUnprepared),
+            StorageCompatibility::Unavailable { reason } => {
+                Some(MachineUsabilityReason::StorageUnavailable { reason })
+            }
+            StorageCompatibility::PoolMismatch { expected, reported } => {
+                Some(MachineUsabilityReason::StoragePoolMismatch { expected, reported })
+            }
+        };
         match reason {
             None => eligible.push(machine_id.clone()),
             Some(reason) => unusable.push(UnusableMachine {
