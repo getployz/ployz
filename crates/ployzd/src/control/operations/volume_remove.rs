@@ -9,14 +9,14 @@ use crate::control::role_client::machine::{
 };
 use crate::control::sequencer::OperationControllers;
 use crate::tasks::TaskSpawner;
-use ployz_core::deploy::VolumeName;
-use ployz_core::ids::{NamespaceId, OperationId};
-use ployz_core::intent::{IntentSnapshot, VolumePinState};
+use ployz_core::deploy::{DatasetName, VolumeName};
+use ployz_core::ids::{MachineId, NamespaceId, OperationId};
+use ployz_core::intent::{IntentSnapshot, ProvisionedVolumePinState, VolumePinState};
 use ployz_core::operation::{
     FailureMessage, VolumeRemoveFailure, VolumeRemoveRunningStage, VolumeRemoveTransition,
 };
 
-use crate::roles::machine::protocol::{MachineVolumeRemoveDomainError, ProvisionedVolumePinState};
+use crate::roles::machine::protocol::MachineVolumeRemoveDomainError;
 use ployz_nats::subjects::INTENT_CHANGED;
 use std::future::Future;
 use std::time::Duration;
@@ -291,11 +291,12 @@ async fn run_volume_remove<R: VolumeRemoveRuntime>(
             record_failed(
                 runtime,
                 operation_id,
-                VolumeRemoveFailure::DatasetDestroyFailed {
-                    machine_id: pin.machine_id().clone(),
+                provisioned_dataset_remove_failure(
+                    pin.machine_id(),
+                    pin.volume_name(),
                     dataset,
-                    message: dataset_destroy_failure_message(error),
-                },
+                    error,
+                ),
             )
             .await;
             return;
@@ -341,29 +342,57 @@ async fn record_failed<R: VolumeRemoveRuntime>(
         .await;
 }
 
-fn dataset_destroy_failure_message(error: MachineVolumeRemoveError) -> FailureMessage {
+fn provisioned_dataset_remove_failure(
+    machine_id: &MachineId,
+    volume: &VolumeName,
+    dataset: DatasetName,
+    error: MachineVolumeRemoveError,
+) -> VolumeRemoveFailure {
     match error {
-        MachineVolumeRemoveError::Unavailable { message, .. } => message,
+        MachineVolumeRemoveError::Unavailable {
+            machine_id: _,
+            message,
+        } => VolumeRemoveFailure::DatasetDestroyFailed {
+            machine_id: machine_id.clone(),
+            dataset,
+            message,
+        },
         MachineVolumeRemoveError::Domain {
-            error: MachineVolumeRemoveDomainError::DatasetDestroyFailed { failure, .. },
-            ..
-        } => failure_message(failure.to_string()),
+            machine_id: _,
+            error:
+                MachineVolumeRemoveDomainError::DatasetDestroyFailed {
+                    dataset: _,
+                    failure,
+                },
+        } => VolumeRemoveFailure::DatasetDestroyFailed {
+            machine_id: machine_id.clone(),
+            dataset,
+            message: failure_message(failure.to_string()),
+        },
         MachineVolumeRemoveError::Domain {
+            machine_id: _,
             error: MachineVolumeRemoveDomainError::DockerRemoveFailed { message },
-            ..
-        } => message,
+        } => VolumeRemoveFailure::VolumeRemoveFailed {
+            machine_id: machine_id.clone(),
+            volume: volume.clone(),
+            message,
+        },
         MachineVolumeRemoveError::Domain {
+            machine_id: _,
             error:
                 MachineVolumeRemoveDomainError::MachineMismatch {
                     expected_machine_id,
                     responder_machine_id,
                 },
-            ..
-        } => failure_message(format!(
-            "dataset destroy reached machine {} for pin owned by {}",
-            responder_machine_id.as_str(),
-            expected_machine_id.as_str()
-        )),
+        } => VolumeRemoveFailure::DatasetDestroyFailed {
+            machine_id: machine_id.clone(),
+            dataset,
+            message: failure_message(format!(
+                "dataset destroy reached machine {} for pin owned by {}",
+                responder_machine_id.as_str(),
+                expected_machine_id.as_str()
+            )),
+        },
     }
 }
 

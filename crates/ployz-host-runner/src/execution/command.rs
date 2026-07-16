@@ -408,6 +408,7 @@ struct CapturedCommandOutput {
     stdout: String,
     stdout_truncated: bool,
     stderr: String,
+    stderr_truncated: bool,
 }
 
 impl CapturedCommandOutput {
@@ -422,6 +423,9 @@ impl CapturedCommandOutput {
         if !stderr.is_empty() {
             summary.push_str("; stderr: ");
             summary.push_str(stderr);
+        }
+        if self.stderr_truncated {
+            summary.push_str("; stderr evidence was truncated");
         }
         summary
     }
@@ -473,6 +477,7 @@ fn run_os_command_with_display(
         stdout: stdout.text,
         stdout_truncated: stdout.truncated,
         stderr: stderr.text,
+        stderr_truncated: stderr.truncated,
     })
 }
 
@@ -541,6 +546,7 @@ fn failure_message(message: impl Into<String>) -> FailureMessage {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::process::Command;
     use std::time::Duration;
 
     use super::{
@@ -822,5 +828,47 @@ mod tests {
 
         assert_eq!(output.text.len(), super::COMMAND_OUTPUT_CAPTURE_LIMIT_BYTES);
         assert!(output.truncated);
+    }
+
+    #[test]
+    fn exact_capture_limit_stderr_is_not_reported_as_truncated() {
+        let input = vec![b'e'; super::COMMAND_OUTPUT_CAPTURE_LIMIT_BYTES];
+        let stderr = super::read_limited_pipe(input.as_slice()).expect("capture succeeds");
+        let output = super::CapturedCommandOutput {
+            command: "test-command".to_owned(),
+            status: Command::new("false").status().expect("false command runs"),
+            stdout: String::new(),
+            stdout_truncated: false,
+            stderr: stderr.text,
+            stderr_truncated: stderr.truncated,
+        };
+
+        assert!(!output.stderr_truncated);
+        assert!(
+            !output
+                .failure_summary()
+                .contains("stderr evidence was truncated")
+        );
+    }
+
+    #[test]
+    fn stderr_past_capture_limit_is_reported_as_truncated() {
+        let input = vec![b'e'; super::COMMAND_OUTPUT_CAPTURE_LIMIT_BYTES + 1];
+        let stderr = super::read_limited_pipe(input.as_slice()).expect("capture succeeds");
+        let output = super::CapturedCommandOutput {
+            command: "test-command".to_owned(),
+            status: Command::new("false").status().expect("false command runs"),
+            stdout: String::new(),
+            stdout_truncated: false,
+            stderr: stderr.text,
+            stderr_truncated: stderr.truncated,
+        };
+
+        assert!(output.stderr_truncated);
+        assert!(
+            output
+                .failure_summary()
+                .contains("stderr evidence was truncated")
+        );
     }
 }

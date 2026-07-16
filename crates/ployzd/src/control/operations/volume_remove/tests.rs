@@ -36,6 +36,7 @@ struct FakeState {
     transition_operation_ids: Vec<OperationId>,
     effects: Vec<EffectCall>,
     pin_present: bool,
+    commit_attempts: usize,
     published: usize,
 }
 
@@ -53,6 +54,7 @@ impl FakeRuntime {
                 transition_operation_ids: Vec::new(),
                 effects: Vec::new(),
                 pin_present: true,
+                commit_attempts: 0,
                 published: 0,
             }),
         }
@@ -132,6 +134,7 @@ impl VolumeRemoveRuntime for FakeRuntime {
         _volume_name: &VolumeName,
     ) -> Result<(), FailureMessage> {
         let mut state = self.state.lock().unwrap();
+        state.commit_attempts += 1;
         state.commit_result.clone()?;
         state.pin_present = false;
         Ok(())
@@ -331,6 +334,56 @@ async fn dataset_failure_preserves_exact_dataset_evidence_and_pin() {
             message: failure_message("destructive ZFS effect refused: dataset busy"),
         }
     );
+}
+
+#[tokio::test]
+async fn defensive_dataset_step_docker_failure_preserves_volume_failure_and_pin() {
+    let pin = provisioned_pin();
+    let runtime = FakeRuntime::new(pin.clone());
+    runtime.state.lock().unwrap().dataset_result = Err(MachineVolumeRemoveError::Domain {
+        machine_id: machine_id("machine_a"),
+        error: MachineVolumeRemoveDomainError::DockerRemoveFailed {
+            message: failure_message("volume was reattached"),
+        },
+    });
+
+    runtime.run().await;
+
+    let state = runtime.state.lock().unwrap();
+    assert_eq!(
+        state.effects,
+        [
+            EffectCall {
+                effect: EffectKind::DockerReference,
+                pin: pin.clone(),
+            },
+            EffectCall {
+                effect: EffectKind::ProvisionedDataset,
+                pin,
+            },
+        ]
+    );
+    assert_eq!(
+        state.transitions,
+        [
+            VolumeRemoveTransition::Running {
+                stage: VolumeRemoveRunningStage::RemovingVolumeData,
+            },
+            VolumeRemoveTransition::Running {
+                stage: VolumeRemoveRunningStage::RemovingDataset,
+            },
+            VolumeRemoveTransition::Failed {
+                failure: VolumeRemoveFailure::VolumeRemoveFailed {
+                    machine_id: machine_id("machine_a"),
+                    volume: volume_name(),
+                    message: failure_message("volume was reattached"),
+                },
+            },
+        ]
+    );
+    assert!(state.pin_present);
+    assert_eq!(state.commit_attempts, 0);
+    assert_eq!(state.published, 0);
 }
 
 #[tokio::test]

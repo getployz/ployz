@@ -21,7 +21,6 @@ use crate::roles::machine::protocol::{
     MachineSubstrateUpdateDomainError, MachineSubstrateUpdateRpcOk,
     MachineSubstrateUpdateRpcRequest, MachineVolumeEnsureRpcOk, MachineVolumeEnsureRpcRequest,
     MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
-    ProvisionedVolumePinState,
 };
 use futures_util::{StreamExt, stream};
 use ployz_core::deploy::VolumeName;
@@ -29,7 +28,7 @@ use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::image::{
     ImageEnsureOk, ImageEnsureRequest, ImageRemoveOk, ImageRemoveRequest, ImageRpcDomainError,
 };
-use ployz_core::intent::VolumePinState;
+use ployz_core::intent::{ProvisionedVolumePinState, VolumePinState};
 use ployz_core::machine::MachineLifecycle;
 use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::network::{MachineDataplaneStatus, NetworkStatusMode};
