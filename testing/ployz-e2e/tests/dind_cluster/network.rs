@@ -241,7 +241,7 @@ async fn group_network_repair() {
             "network repair did not complete: {repaired:?}"
         );
         wait_for_ready_dataplane(&core, &intent.dataplane_projection).await;
-        assert_dataplane_survives_control_loss(&core, &gateway_hostname).await;
+        assert_last_known_good_survives_control_role_downtime(&core, &gateway_hostname).await;
         super::timed(
             "internal_service_dns",
             super::assert_internal_service_dns_reaches_cross_machine_sibling(&core),
@@ -272,20 +272,27 @@ fn routed_internal_dns_deploy_target() -> DeployRequest {
     target
 }
 
-async fn assert_dataplane_survives_control_loss(core: &CoreContext, gateway_hostname: &str) {
+/// The control-plane-core outage stops `ployzd-control` while independently
+/// supervised substrate and data-plane roles keep serving last-known-good.
+async fn assert_last_known_good_survives_control_role_downtime(
+    core: &CoreContext,
+    gateway_hostname: &str,
+) {
     let gateway_before = wait_for_gateway_response(core, gateway_hostname)
         .await
-        .expect("Gateway route serves before Control loss");
+        .expect("Gateway route serves before ployzd-control downtime");
     assert!(
         gateway_before.contains("Welcome to nginx"),
-        "Gateway route returned an unexpected response before Control loss: {gateway_before}"
+        "Gateway route returned an unexpected response before ployzd-control downtime: {gateway_before}"
     );
     let internal_traffic = cross_machine_internal_traffic_probe(core)
         .await
         .expect("managed cross-machine client/server pair exists");
     wait_for_cross_machine_internal_traffic(core, &internal_traffic)
         .await
-        .expect("managed workload reaches its cross-machine sibling before Control loss");
+        .expect(
+            "managed workload reaches its cross-machine sibling before ployzd-control downtime",
+        );
 
     let stopped = exec_in_container(
         &core.docker,
@@ -295,7 +302,7 @@ async fn assert_dataplane_survives_control_loss(core: &CoreContext, gateway_host
     .await;
     assert!(
         matches!(&stopped, Ok(outcome) if outcome.success()),
-        "stopping only Control failed: {stopped:?}"
+        "stopping ployzd-control failed: {stopped:?}"
     );
 
     let request_budget = DEFAULT_OPERATION_API_REQUEST_TIMEOUT + Duration::from_secs(2);
@@ -320,7 +327,7 @@ async fn assert_dataplane_survives_control_loss(core: &CoreContext, gateway_host
     .await;
     assert!(
         matches!(&restarted, Ok(outcome) if outcome.success()),
-        "restarting Control failed: {restarted:?}"
+        "restarting ployzd-control failed: {restarted:?}"
     );
     assert_unit_active(core, core.cluster.core(), "ployzd-control").await;
     wait_for_machine_observations(core, &machine_id("core_1")).await;
@@ -338,16 +345,16 @@ async fn assert_dataplane_survives_control_loss(core: &CoreContext, gateway_host
                 ..
             }))
         ),
-        "operation request did not report typed Control unavailability: {unavailable:?}"
+        "operation request did not report typed ployzd-control unavailability: {unavailable:?}"
     );
     let gateway_during =
-        gateway_during.expect("Gateway route remains available while Control is stopped");
+        gateway_during.expect("Gateway route remains available while ployzd-control is stopped");
     assert!(
         gateway_during.contains("Welcome to nginx"),
-        "Gateway route returned an unexpected response while Control was stopped: {gateway_during}"
+        "Gateway route returned an unexpected response while ployzd-control was stopped: {gateway_during}"
     );
     internal_traffic_during.expect(
-        "managed workload internal DNS and traffic remain available while Control is stopped",
+        "managed workload internal DNS and traffic remain available while ployzd-control is stopped",
     );
 }
 
