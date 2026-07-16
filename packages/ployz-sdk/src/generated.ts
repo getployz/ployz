@@ -154,7 +154,13 @@ export type VolumePinState = { namespace_id: NamespaceId, volume_name: VolumeNam
 
 export type VolumeStatus = "in_use" | "orphaned";
 
-export type VolumeSnapshot = { namespace_id: NamespaceId, volume_name: VolumeName, machine_id: MachineId, status: VolumeStatus, };
+export type VolumeTestimony = { "status": "available", used_bytes: number, last_write_unix_seconds: number, } | { "status": "unavailable" } | { "status": "no_answer" };
+
+export type VolumeSnapshot = { namespace_id: NamespaceId, volume_name: VolumeName, machine_id: MachineId, kind: VolumeKind,
+/**
+ * Service ids are sorted and deduplicated by the projection owner.
+ */
+referencing_services: Array<ServiceId>, testimony: VolumeTestimony, status: VolumeStatus, };
 
 export type HealthcheckShellCommand = Brand<string, "HealthcheckShellCommand">;
 
@@ -635,6 +641,13 @@ export type PoolCapacityFacts = { total_bytes: number,
  * Unrelated pool or backing-filesystem allocations are excluded.
  */
 provisioned_used_bytes: number, free_bytes: number, child_quotas: Array<DatasetQuotaFact>, };
+
+export type VolumeUsageFacts = { used_bytes: number,
+/**
+ * Modification time of the volume's mount directory, not a recursive
+ * latest-write scan of its contents.
+ */
+last_write_unix_seconds: number, };
 
 export type StorageCapability = { "state": "unprepared" } | { "state": "ready", pool: ZfsPoolName, capacity: PoolCapacityFacts, } | { "state": "unavailable", reason: StorageUnavailableReason, };
 
