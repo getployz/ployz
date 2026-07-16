@@ -3,9 +3,10 @@ use super::execution::build::{
 };
 use super::images::AvailableImageService;
 use super::protocol::{
-    MachineBuildCancelOutcome, MachineBuildCancelRpcOk, MachineBuildCancelRpcRequest,
-    MachineBuildCancelRpcResponse, MachineBuildCleanupOutcome, MachineBuildStartDomainError,
-    MachineBuildStartRpcOk, MachineBuildStartRpcRequest, MachineBuildStartRpcResponse,
+    BuildLogSummary, MachineBuildCancelOutcome, MachineBuildCancelRpcOk,
+    MachineBuildCancelRpcRequest, MachineBuildCancelRpcResponse, MachineBuildCleanupOutcome,
+    MachineBuildStartDomainError, MachineBuildStartRpcOk, MachineBuildStartRpcRequest,
+    MachineBuildStartRpcResponse,
 };
 use super::response::{failure_message, machine_domain_error, machine_success};
 use ployz_core::build::{
@@ -79,8 +80,7 @@ impl MachineBuildRuntime {
                     expected: request.platform,
                     actual: self.local_platform.clone(),
                 },
-                final_log_sequence: 0,
-                omitted_log_bytes: 0,
+                log_summary: BuildLogSummary::none(),
             });
         }
         let timeout = requested_build_timeout(request.timeout_millis)?;
@@ -110,8 +110,7 @@ impl MachineBuildRuntime {
                         "machine build task stopped before returning a result",
                     ),
                 },
-                final_log_sequence: 0,
-                omitted_log_bytes: 0,
+                log_summary: BuildLogSummary::none(),
             })
         })
     }
@@ -130,24 +129,21 @@ impl MachineBuildRuntime {
                 return Err(MachineBuildStartDomainError::TimedOut {
                     message: failure_message("build timed out waiting for the machine build slot"),
                     cleanup: MachineBuildCleanupOutcome::Confirmed,
-                    final_log_sequence: 0,
-                    omitted_log_bytes: 0,
+                    log_summary: BuildLogSummary::none(),
                 });
             }
             changed = cancel_rx.changed() => {
                 let _ = changed;
                 return Err(MachineBuildStartDomainError::Cancelled {
                     cleanup: MachineBuildCleanupOutcome::Confirmed,
-                    final_log_sequence: 0,
-                    omitted_log_bytes: 0,
+                    log_summary: BuildLogSummary::none(),
                 });
             }
             permit = slot => permit.map_err(|_| MachineBuildStartDomainError::PlatformFailed {
                 failure: BuildPlatformFailure::MachineUnavailable {
                     message: failure_message("machine build slot closed"),
                 },
-                final_log_sequence: 0,
-                omitted_log_bytes: 0,
+                log_summary: BuildLogSummary::none(),
             })?,
         };
         let operation_id = request.operation_id.clone();
@@ -186,11 +182,11 @@ impl MachineBuildRuntime {
         }
         let cleanup = self.effects.force_cleanup(&operation_id, &platform).await;
         let (final_log_sequence, omitted_log_bytes) = progress.summary();
+        let log_summary = BuildLogSummary::new(final_log_sequence, omitted_log_bytes);
         match completion {
             BuildTaskCompletion::Cancelled => Err(MachineBuildStartDomainError::Cancelled {
                 cleanup,
-                final_log_sequence,
-                omitted_log_bytes,
+                log_summary,
             }),
             BuildTaskCompletion::TimedOut => Err(MachineBuildStartDomainError::TimedOut {
                 message: failure_message(match cleanup {
@@ -202,8 +198,7 @@ impl MachineBuildRuntime {
                     }
                 }),
                 cleanup,
-                final_log_sequence,
-                omitted_log_bytes,
+                log_summary,
             }),
             BuildTaskCompletion::Finished(result) => {
                 if cleanup == MachineBuildCleanupOutcome::Unconfirmed {
@@ -213,8 +208,7 @@ impl MachineBuildRuntime {
                                 "build workspace cleanup did not finish successfully",
                             ),
                         },
-                        final_log_sequence,
-                        omitted_log_bytes,
+                        log_summary,
                     });
                 }
                 (*result).map_err(|error| machine_build_error(error, cleanup))
@@ -261,8 +255,7 @@ impl BuildEffects {
                         log_progress,
                     )
                     .await?;
-                let (final_log_sequence, omitted_log_bytes) =
-                    (result.final_log_sequence, result.omitted_log_bytes);
+                let log_summary = result.log_summary;
                 let Some(images) = &effects.image_state else {
                     return Err(BuildExecutionError::Platform {
                         failure: BuildPlatformFailure::MachineUnavailable {
@@ -270,8 +263,7 @@ impl BuildEffects {
                                 "machine image content service is unavailable",
                             ),
                         },
-                        final_log_sequence,
-                        omitted_log_bytes,
+                        log_summary,
                     });
                 };
                 images
@@ -281,8 +273,7 @@ impl BuildEffects {
                         failure: BuildPlatformFailure::ImagePushFailed {
                             message: failure_message(message),
                         },
-                        final_log_sequence,
-                        omitted_log_bytes,
+                        log_summary,
                     })?;
                 Ok(MachineBuildStartRpcOk {
                     machine_id: machine_id.clone(),
@@ -293,8 +284,7 @@ impl BuildEffects {
                     },
                     verified_commit: result.verified_commit,
                     toolchain: result.toolchain,
-                    final_log_sequence,
-                    omitted_log_bytes,
+                    log_summary,
                 })
             }
             #[cfg(test)]
@@ -331,8 +321,7 @@ fn requested_build_timeout(
         return Err(MachineBuildStartDomainError::TimedOut {
             message: failure_message("build timeout must be between 1ms and 30m"),
             cleanup: MachineBuildCleanupOutcome::Confirmed,
-            final_log_sequence: 0,
-            omitted_log_bytes: 0,
+            log_summary: BuildLogSummary::none(),
         });
     }
     Ok(timeout)
@@ -344,8 +333,7 @@ fn join_build(
     result.map_err(|error| BuildExecutionError::Infrastructure {
         action: "join machine build task",
         message: error.to_string(),
-        final_log_sequence: 0,
-        omitted_log_bytes: 0,
+        log_summary: BuildLogSummary::none(),
     })?
 }
 
@@ -353,18 +341,16 @@ fn machine_build_error(
     error: BuildExecutionError,
     cleanup: MachineBuildCleanupOutcome,
 ) -> MachineBuildStartDomainError {
-    let (final_log_sequence, omitted_log_bytes) = error.log_summary();
+    let log_summary = error.log_summary();
     match error {
         BuildExecutionError::Cancelled { .. } => MachineBuildStartDomainError::Cancelled {
             cleanup,
-            final_log_sequence,
-            omitted_log_bytes,
+            log_summary,
         },
         BuildExecutionError::Platform { failure, .. } => {
             MachineBuildStartDomainError::PlatformFailed {
                 failure,
-                final_log_sequence,
-                omitted_log_bytes,
+                log_summary,
             }
         }
         BuildExecutionError::Infrastructure {
@@ -373,8 +359,7 @@ fn machine_build_error(
             failure: BuildPlatformFailure::MachineUnavailable {
                 message: failure_message(format!("{action}: {message}")),
             },
-            final_log_sequence,
-            omitted_log_bytes,
+            log_summary,
         },
     }
 }
@@ -408,8 +393,7 @@ pub(crate) async fn handle_build_start(
                 failure: BuildPlatformFailure::MachineUnavailable {
                     message: failure_message("machine build runtime is unavailable"),
                 },
-                final_log_sequence: 0,
-                omitted_log_bytes: 0,
+                log_summary: BuildLogSummary::none(),
             },
         });
     };

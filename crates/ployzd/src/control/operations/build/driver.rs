@@ -20,9 +20,10 @@ use crate::control::role_client::machine_convergence::gather_dataplane_statuses;
 use crate::control::sequencer::{AcceptedBuildExecution, OperationControllers};
 use crate::roles::machine::MachineRuntimeUnavailableReason;
 use crate::roles::machine::protocol::{
-    MachineBuildCancelDomainError, MachineBuildCancelOutcome, MachineBuildCancelRpcOk,
-    MachineBuildCancelRpcRequest, MachineBuildCleanupOutcome, MachineBuildLogFrame,
-    MachineBuildStartDomainError, MachineBuildStartRpcOk, MachineBuildStartRpcRequest,
+    BuildLogSummary, MachineBuildCancelDomainError, MachineBuildCancelOutcome,
+    MachineBuildCancelRpcOk, MachineBuildCancelRpcRequest, MachineBuildCleanupOutcome,
+    MachineBuildLogFrame, MachineBuildStartDomainError, MachineBuildStartRpcOk,
+    MachineBuildStartRpcRequest,
 };
 use crate::tasks::TaskSpawner;
 
@@ -443,32 +444,26 @@ impl BuildOperationDriver {
             Ok(ok) => BuildSummary::Completed(ok),
             Err(MachineCallError::Domain(MachineBuildStartDomainError::PlatformFailed {
                 failure,
-                final_log_sequence,
-                omitted_log_bytes,
+                log_summary,
             })) => BuildSummary::Failed {
                 failure,
-                final_log_sequence,
-                omitted_log_bytes,
+                log_summary,
             },
             Err(MachineCallError::Domain(MachineBuildStartDomainError::Cancelled {
                 cleanup,
-                final_log_sequence,
-                omitted_log_bytes,
+                log_summary,
             })) => BuildSummary::Cancelled {
                 cleanup,
-                final_log_sequence,
-                omitted_log_bytes,
+                log_summary,
             },
             Err(MachineCallError::Domain(MachineBuildStartDomainError::TimedOut {
                 message,
                 cleanup,
-                final_log_sequence,
-                omitted_log_bytes,
+                log_summary,
             })) => BuildSummary::TimedOut {
                 message,
                 cleanup,
-                final_log_sequence,
-                omitted_log_bytes,
+                log_summary,
             },
             Err(MachineCallError::Unavailable(
                 reason @ (MachineRuntimeUnavailableReason::RequestTimedOut
@@ -476,8 +471,7 @@ impl BuildOperationDriver {
             )) => BuildSummary::TimedOut {
                 message: reason.failure_message(),
                 cleanup: MachineBuildCleanupOutcome::Unconfirmed,
-                final_log_sequence: 0,
-                omitted_log_bytes: 0,
+                log_summary: BuildLogSummary::none(),
             },
             Err(error) => {
                 let operation_failure =
@@ -501,7 +495,10 @@ impl BuildOperationDriver {
                 return Ok(PlatformOutcome::Failed(operation_failure));
             }
         };
-        let (final_log_sequence, omitted_log_bytes) = summary.log_summary();
+        let BuildLogSummary {
+            final_log_sequence,
+            omitted_log_bytes,
+        } = summary.log_summary();
         let drain_deadline = tokio::time::sleep(BUILD_LOG_DRAIN_TIMEOUT);
         tokio::pin!(drain_deadline);
         while next <= final_log_sequence {
@@ -814,41 +811,29 @@ enum BuildSummary {
     Completed(MachineBuildStartRpcOk),
     Failed {
         failure: BuildPlatformFailure,
-        final_log_sequence: u64,
-        omitted_log_bytes: u64,
+        log_summary: BuildLogSummary,
     },
     Cancelled {
         cleanup: MachineBuildCleanupOutcome,
-        final_log_sequence: u64,
-        omitted_log_bytes: u64,
+        log_summary: BuildLogSummary,
     },
     TimedOut {
         message: FailureMessage,
         cleanup: MachineBuildCleanupOutcome,
-        final_log_sequence: u64,
-        omitted_log_bytes: u64,
+        log_summary: BuildLogSummary,
     },
 }
 
 impl BuildSummary {
-    fn log_summary(&self) -> (u64, u64) {
+    fn log_summary(&self) -> BuildLogSummary {
         match self {
-            Self::Completed(ok) => (ok.final_log_sequence, ok.omitted_log_bytes),
-            Self::Failed {
-                final_log_sequence,
-                omitted_log_bytes,
-                ..
-            }
+            Self::Completed(ok) => ok.log_summary,
+            Self::Failed { log_summary, .. }
             | Self::Cancelled {
                 cleanup: _,
-                final_log_sequence,
-                omitted_log_bytes,
+                log_summary,
             }
-            | Self::TimedOut {
-                final_log_sequence,
-                omitted_log_bytes,
-                ..
-            } => (*final_log_sequence, *omitted_log_bytes),
+            | Self::TimedOut { log_summary, .. } => *log_summary,
         }
     }
 }

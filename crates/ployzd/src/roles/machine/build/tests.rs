@@ -188,8 +188,10 @@ async fn timeout_during_ingestion_aborts_then_cleans_once_without_late_success()
         result,
         Err(MachineBuildStartDomainError::TimedOut {
             cleanup: MachineBuildCleanupOutcome::Confirmed,
-            final_log_sequence: 7,
-            omitted_log_bytes: 11,
+            log_summary: BuildLogSummary {
+                final_log_sequence: 7,
+                omitted_log_bytes: 11,
+            },
             ..
         })
     ));
@@ -226,8 +228,10 @@ async fn cancellation_during_ingestion_aborts_then_returns_typed_cleanup() {
         start.await.expect("start task"),
         Err(MachineBuildStartDomainError::Cancelled {
             cleanup: MachineBuildCleanupOutcome::Confirmed,
-            final_log_sequence: 7,
-            omitted_log_bytes: 11,
+            log_summary: BuildLogSummary {
+                final_log_sequence: 7,
+                omitted_log_bytes: 11,
+            },
         })
     ));
     assert_eq!(effects.cleanup_calls.load(Ordering::SeqCst), 1);
@@ -260,8 +264,10 @@ async fn bounded_cleanup_reports_unconfirmed_when_it_cannot_finish() {
         start.await.expect("start task"),
         Err(MachineBuildStartDomainError::TimedOut {
             cleanup: MachineBuildCleanupOutcome::Unconfirmed,
-            final_log_sequence: 7,
-            omitted_log_bytes: 11,
+            log_summary: BuildLogSummary {
+                final_log_sequence: 7,
+                omitted_log_bytes: 11,
+            },
             ..
         })
     ));

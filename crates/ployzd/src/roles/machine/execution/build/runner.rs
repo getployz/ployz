@@ -12,12 +12,13 @@ use super::workspace::{
     clean_failed_workspace, prepare_private_directory, prepare_workspace, remove_workspace_tree,
     verify_helper,
 };
+use crate::roles::machine::protocol::BuildLogSummary;
 use ployz_core::build::{BuildAdapter, GitSource};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::image::OciPlatform;
 use ployz_core::operation::{BuildPlatformFailure, BuildToolchainEvidence, FailureMessage};
 use ployz_nats::service_runtime::NatsClient;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio::sync::watch;
 
 #[derive(Clone)]
@@ -70,13 +71,9 @@ impl DockerBuildExecutor {
         source: &GitSource,
         adapter: &BuildAdapter,
         platform: &OciPlatform,
-        cancelled: watch::Receiver<bool>,
+        mut cancelled: watch::Receiver<bool>,
         log_progress: BuildLogProgress,
     ) -> Result<BuildExecutionResult, BuildExecutionError> {
-        let mut control = BuildExecutionControl {
-            cancelled,
-            log_progress,
-        };
         let workspace = self.workspace(operation_id, platform);
         prepare_private_directory(&self.workspace_root).await?;
         let Some(operation_workspace) = workspace.parent() else {
@@ -93,8 +90,8 @@ impl DockerBuildExecutor {
                 source,
                 adapter,
                 platform,
-                &workspace,
-                &mut control,
+                &mut cancelled,
+                log_progress,
             )
             .await;
         clean_failed_workspace(&workspace, result).await
@@ -106,11 +103,12 @@ impl DockerBuildExecutor {
         source: &GitSource,
         adapter: &BuildAdapter,
         platform: &OciPlatform,
-        workspace: &Path,
-        control: &mut BuildExecutionControl,
+        cancelled: &mut watch::Receiver<bool>,
+        log_progress: BuildLogProgress,
     ) -> Result<BuildExecutionResult, BuildExecutionError> {
-        check_cancelled(&control.cancelled)?;
-        let checkout = checkout_git_source(source, workspace)
+        let workspace = self.workspace(operation_id, platform);
+        check_cancelled(cancelled)?;
+        let checkout = checkout_git_source(source, &workspace)
             .await
             .map_err(|error| {
                 platform_failure(BuildPlatformFailure::SourceFetchFailed {
@@ -123,14 +121,14 @@ impl DockerBuildExecutor {
             })
         })?;
         verify_helper(&toolchain).await?;
-        let plan = lower_build_adapter(&checkout, adapter, platform, workspace, &toolchain)
+        let plan = lower_build_adapter(&checkout, adapter, platform, &workspace, &toolchain)
             .map_err(|error| {
                 platform_failure(BuildPlatformFailure::AdapterFailed {
                     message: failure(error.to_string()),
                 })
             })?;
         if let Some(prepare) = &plan.prepare {
-            run_prepare(prepare, source, &mut control.cancelled).await?;
+            run_prepare(prepare, source, cancelled).await?;
         }
         tokio::fs::create_dir_all(&plan.oci_layout)
             .await
@@ -171,7 +169,7 @@ impl DockerBuildExecutor {
             &builder,
             operation_id,
             platform,
-            workspace,
+            &workspace,
             &toolchain.buildkit_reference,
         )
         .await?;
@@ -183,17 +181,17 @@ impl DockerBuildExecutor {
             )
             .await?;
             require_success("start BuildKit", &started)?;
-            await_buildkit(&builder, &mut control.cancelled).await?;
+            await_buildkit(&builder, cancelled).await?;
             run_buildctl(
                 &builder,
                 &plan,
                 source,
-                &mut control.cancelled,
+                cancelled,
                 &self.client,
                 &self.machine_id,
                 operation_id,
                 platform,
-                control.log_progress.clone(),
+                log_progress,
             )
             .await
         }
@@ -219,8 +217,7 @@ impl DockerBuildExecutor {
             layout,
             verified_commit: checkout.commit().clone(),
             toolchain: toolchain.evidence(),
-            final_log_sequence: logs.final_sequence,
-            omitted_log_bytes: logs.omitted_bytes,
+            log_summary: BuildLogSummary::new(logs.final_sequence, logs.omitted_bytes),
         })
     }
 
@@ -231,17 +228,11 @@ impl DockerBuildExecutor {
     }
 }
 
-struct BuildExecutionControl {
-    cancelled: watch::Receiver<bool>,
-    log_progress: BuildLogProgress,
-}
-
 pub struct BuildExecutionResult {
     pub layout: ValidatedOciLayout,
     pub verified_commit: ployz_core::build::VerifiedGitCommit,
     pub toolchain: BuildToolchainEvidence,
-    pub final_log_sequence: u64,
-    pub omitted_log_bytes: u64,
+    pub log_summary: BuildLogSummary,
 }
 
 pub(super) fn check_cancelled(
@@ -263,8 +254,7 @@ pub(super) fn adapter_failure(message: impl Into<String>) -> BuildExecutionError
 pub(super) fn platform_failure(failure: BuildPlatformFailure) -> BuildExecutionError {
     BuildExecutionError::Platform {
         failure,
-        final_log_sequence: 0,
-        omitted_log_bytes: 0,
+        log_summary: BuildLogSummary::none(),
     }
 }
 
@@ -285,38 +275,31 @@ pub(super) fn infrastructure(
     BuildExecutionError::Infrastructure {
         action,
         message: message.into(),
-        final_log_sequence: 0,
-        omitted_log_bytes: 0,
+        log_summary: BuildLogSummary::none(),
     }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum BuildExecutionError {
     #[error("build was cancelled")]
-    Cancelled {
-        final_log_sequence: u64,
-        omitted_log_bytes: u64,
-    },
+    Cancelled { log_summary: BuildLogSummary },
     #[error("build platform failed: {failure:?}")]
     Platform {
         failure: BuildPlatformFailure,
-        final_log_sequence: u64,
-        omitted_log_bytes: u64,
+        log_summary: BuildLogSummary,
     },
     #[error("failed to {action}: {message}")]
     Infrastructure {
         action: &'static str,
         message: String,
-        final_log_sequence: u64,
-        omitted_log_bytes: u64,
+        log_summary: BuildLogSummary,
     },
 }
 
 impl BuildExecutionError {
     pub(super) fn cancelled() -> Self {
         Self::Cancelled {
-            final_log_sequence: 0,
-            omitted_log_bytes: 0,
+            log_summary: BuildLogSummary::none(),
         }
     }
 
@@ -327,42 +310,28 @@ impl BuildExecutionError {
         } = logs;
         match self {
             Self::Cancelled { .. } => Self::Cancelled {
-                final_log_sequence: final_sequence,
-                omitted_log_bytes: omitted_bytes,
+                log_summary: BuildLogSummary::new(final_sequence, omitted_bytes),
             },
             Self::Platform { failure, .. } => Self::Platform {
                 failure,
-                final_log_sequence: final_sequence,
-                omitted_log_bytes: omitted_bytes,
+                log_summary: BuildLogSummary::new(final_sequence, omitted_bytes),
             },
             Self::Infrastructure {
                 action, message, ..
             } => Self::Infrastructure {
                 action,
                 message,
-                final_log_sequence: final_sequence,
-                omitted_log_bytes: omitted_bytes,
+                log_summary: BuildLogSummary::new(final_sequence, omitted_bytes),
             },
         }
     }
 
     #[must_use]
-    pub const fn log_summary(&self) -> (u64, u64) {
+    pub const fn log_summary(&self) -> BuildLogSummary {
         match self {
-            Self::Cancelled {
-                final_log_sequence,
-                omitted_log_bytes,
-            }
-            | Self::Platform {
-                final_log_sequence,
-                omitted_log_bytes,
-                ..
-            }
-            | Self::Infrastructure {
-                final_log_sequence,
-                omitted_log_bytes,
-                ..
-            } => (*final_log_sequence, *omitted_log_bytes),
+            Self::Cancelled { log_summary }
+            | Self::Platform { log_summary, .. }
+            | Self::Infrastructure { log_summary, .. } => *log_summary,
         }
     }
 }
