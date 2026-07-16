@@ -368,9 +368,9 @@ export type VolumeEnsureFailure = { "kind": "machine_mismatch", expected_machine
 
 export type VolumeRemoveOperationState = { "state": "accepted" } | { "state": "running", stage: VolumeRemoveRunningStage, } | { "state": "completed" } | { "state": "failed", failure: VolumeRemoveFailure, } | { "state": "interrupted", evidence: OperationInterruptionEvidence, };
 
-export type VolumeRemoveRunningStage = "removing_volume_data";
+export type VolumeRemoveRunningStage = "removing_volume_data" | "removing_dataset";
 
-export type VolumeRemoveFailure = { "kind": "volume_not_found", namespace_id: NamespaceId, volume_name: VolumeName, } | { "kind": "volume_in_use", namespace_id: NamespaceId, volume_name: VolumeName, referencing_services: Array<ServiceId>, } | { "kind": "intent_read_failed", namespace_id: NamespaceId, volume_name: VolumeName, message: FailureMessage, } | { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "volume_remove_failed", machine_id: MachineId, volume: VolumeName, message: FailureMessage, } | { "kind": "control_plane_commit_failed", namespace_id: NamespaceId, volume_name: VolumeName, message: FailureMessage, };
+export type VolumeRemoveFailure = { "kind": "volume_not_found", namespace_id: NamespaceId, volume_name: VolumeName, } | { "kind": "volume_in_use", namespace_id: NamespaceId, volume_name: VolumeName, referencing_services: Array<ServiceId>, } | { "kind": "intent_read_failed", namespace_id: NamespaceId, volume_name: VolumeName, message: FailureMessage, } | { "kind": "machine_unavailable", machine_id: MachineId, message: FailureMessage, } | { "kind": "volume_remove_failed", machine_id: MachineId, volume: VolumeName, message: FailureMessage, } | { "kind": "dataset_destroy_failed", machine_id: MachineId, dataset: DatasetName, message: FailureMessage, } | { "kind": "control_plane_commit_failed", namespace_id: NamespaceId, volume_name: VolumeName, message: FailureMessage, };
 
 export type CertOperationState = { "state": "accepted" } | { "state": "running", stage: CertRunningStage, } | { "state": "completed" } | { "state": "failed", failure: CertOperationFailure, } | { "state": "cancelled", reason: CancellationReason, };
 

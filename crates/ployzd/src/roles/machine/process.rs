@@ -703,6 +703,15 @@ mod tests {
             })
         }
 
+        async fn destroy_provisioned_dataset(
+            &self,
+            dataset: &ployz_core::deploy::DatasetName,
+        ) -> Result<(), ployz_core::storage::StorageEffectFailure> {
+            Err(ployz_core::storage::StorageEffectFailure::ProcessFailed {
+                message: format!("dataset destroy not used: {}", dataset.as_str()),
+            })
+        }
+
         async fn restart_managed_container(
             &self,
             container_id: &ContainerId,
@@ -852,6 +861,15 @@ mod tests {
             Err(MachineContainerRunnerError::RemoveVolume {
                 docker_volume_name: docker_volume_name.to_owned(),
                 message: "not used".to_owned(),
+            })
+        }
+
+        async fn destroy_provisioned_dataset(
+            &self,
+            dataset: &ployz_core::deploy::DatasetName,
+        ) -> Result<(), ployz_core::storage::StorageEffectFailure> {
+            Err(ployz_core::storage::StorageEffectFailure::ProcessFailed {
+                message: format!("dataset destroy not used: {}", dataset.as_str()),
             })
         }
 

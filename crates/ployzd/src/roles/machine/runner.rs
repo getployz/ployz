@@ -1,6 +1,8 @@
 use std::future::Future;
 
-use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredential, VolumeName};
+use ployz_core::deploy::{
+    ContainerRuntimeSpec, DatasetName, ImageReference, RegistryCredential, VolumeName,
+};
 use ployz_core::ids::ContainerId;
 use ployz_core::image::OciDigest;
 use ployz_core::intent::VolumePinState;
@@ -181,6 +183,11 @@ pub trait MachineContainerRunner {
         &self,
         docker_volume_name: &str,
     ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
+
+    fn destroy_provisioned_dataset(
+        &self,
+        dataset: &DatasetName,
+    ) -> impl Future<Output = Result<(), ployz_core::storage::StorageEffectFailure>> + Send;
 }
 
 pub trait MachineImageRemovalRunner {

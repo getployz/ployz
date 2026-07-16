@@ -10,8 +10,8 @@ use crate::roles::machine::protocol::{
     MachineContainerRunRpcOk, MachineContainerRunRpcRequest, MachineContainerRunRpcResponse,
     MachineImagePull, MachineRunContainerOutcome, MachineSubstrateReportRpcOk,
     MachineSubstrateReportRpcResponse, MachineVolumeEnsureRpcOk, MachineVolumeEnsureRpcRequest,
-    MachineVolumeEnsureRpcResponse, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
-    MachineVolumeRemoveRpcResponse,
+    MachineVolumeEnsureRpcResponse, MachineVolumeRemoveEffect, MachineVolumeRemoveRpcOk,
+    MachineVolumeRemoveRpcRequest, MachineVolumeRemoveRpcResponse,
 };
 use crate::service_catalog::machine_role_service;
 use ployz_core::deploy::{ImageReference, VolumeName};
@@ -323,18 +323,23 @@ async fn nats_machine_runtime_calls_volume_remove_service() {
         .await
         .expect("flush service subscription");
     let runtime = NatsMachineContainerRuntime::new(nats.client);
+    let pin = VolumePinState::plain(
+        namespace_id("prod"),
+        VolumeName::try_new("data").expect("valid volume name"),
+        machine_id.clone(),
+    );
     let expected_request = MachineVolumeRemoveRpcRequest {
         operation_id: operation_id("op_123"),
-        namespace_id: namespace_id("prod"),
-        volume_name: VolumeName::try_new("data").expect("valid volume name"),
+        volume: pin.clone(),
+        effect: MachineVolumeRemoveEffect::DockerReference,
     };
 
     runtime
         .remove_volume(
             &machine_id,
             operation_id("op_123"),
-            &namespace_id("prod"),
-            &VolumeName::try_new("data").expect("valid volume name"),
+            &pin,
+            MachineVolumeRemoveEffect::DockerReference,
         )
         .await
         .expect("machine volume remove succeeds");

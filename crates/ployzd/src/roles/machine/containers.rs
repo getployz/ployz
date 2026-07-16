@@ -18,8 +18,8 @@ use crate::roles::machine::protocol::{
     MachineContainerRunRpcResponse, MachineContainerStopDomainError,
     MachineContainerStopRpcRequest, MachineContainerStopRpcResponse, MachineRunContainerOutcome,
     MachineVolumeEnsureRpcOk, MachineVolumeEnsureRpcRequest, MachineVolumeEnsureRpcResponse,
-    MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
-    MachineVolumeRemoveRpcResponse,
+    MachineVolumeRemoveDomainError, MachineVolumeRemoveEffect, MachineVolumeRemoveRpcOk,
+    MachineVolumeRemoveRpcRequest, MachineVolumeRemoveRpcResponse,
 };
 use crate::roles::machine::runner::{
     CreateManagedContainer, MachineContainerRunDecision, MachineContainerRunner,
@@ -495,20 +495,56 @@ where
         Err(response) => return response,
     };
 
-    let docker_volume_name = docker_volume_name(&request.namespace_id, &request.volume_name);
-    match runner.remove_volume(&docker_volume_name).await {
-        Ok(()) => machine_success(MachineVolumeRemoveRpcResponse::Ok(
-            MachineVolumeRemoveRpcOk { machine_id },
-        )),
-        Err(MachineContainerRunnerError::RemoveVolume { message, .. }) => {
-            machine_domain_error(MachineVolumeRemoveRpcResponse::DomainError {
-                machine_id,
-                error: MachineVolumeRemoveDomainError::RemoveFailed {
-                    message: failure_message(format!("volume remove failed: {message}")),
-                },
-            })
+    if request.volume.machine_id() != &machine_id {
+        return machine_domain_error(MachineVolumeRemoveRpcResponse::DomainError {
+            error: MachineVolumeRemoveDomainError::MachineMismatch {
+                expected_machine_id: request.volume.machine_id().clone(),
+                responder_machine_id: machine_id.clone(),
+            },
+            machine_id,
+        });
+    }
+
+    match request.effect {
+        MachineVolumeRemoveEffect::DockerReference => {
+            let docker_volume_name =
+                docker_volume_name(request.volume.namespace_id(), request.volume.volume_name());
+            match runner.remove_volume(&docker_volume_name).await {
+                Ok(()) => machine_success(MachineVolumeRemoveRpcResponse::Ok(
+                    MachineVolumeRemoveRpcOk { machine_id },
+                )),
+                Err(MachineContainerRunnerError::RemoveVolume { message, .. }) => {
+                    machine_domain_error(MachineVolumeRemoveRpcResponse::DomainError {
+                        machine_id,
+                        error: MachineVolumeRemoveDomainError::DockerRemoveFailed {
+                            message: failure_message(format!("volume remove failed: {message}")),
+                        },
+                    })
+                }
+                Err(error) => runner_error(error),
+            }
         }
-        Err(error) => runner_error(error),
+        MachineVolumeRemoveEffect::ProvisionedDataset => {
+            let ployz_core::intent::VolumeKind::Provisioned { dataset, .. } = request.volume.kind()
+            else {
+                return machine_domain_error(MachineVolumeRemoveRpcResponse::DomainError {
+                    machine_id,
+                    error: MachineVolumeRemoveDomainError::ProvisionedDatasetRequired,
+                });
+            };
+            match runner.destroy_provisioned_dataset(dataset).await {
+                Ok(()) => machine_success(MachineVolumeRemoveRpcResponse::Ok(
+                    MachineVolumeRemoveRpcOk { machine_id },
+                )),
+                Err(failure) => machine_domain_error(MachineVolumeRemoveRpcResponse::DomainError {
+                    machine_id,
+                    error: MachineVolumeRemoveDomainError::DatasetDestroyFailed {
+                        dataset: dataset.clone(),
+                        failure,
+                    },
+                }),
+            }
+        }
     }
 }
 

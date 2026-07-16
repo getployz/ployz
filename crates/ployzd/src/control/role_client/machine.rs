@@ -20,11 +20,12 @@ use crate::roles::machine::protocol::{
     MachineStoragePrepareRpcRequest, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
     MachineSubstrateUpdateDomainError, MachineSubstrateUpdateRpcOk,
     MachineSubstrateUpdateRpcRequest, MachineVolumeEnsureRpcOk, MachineVolumeEnsureRpcRequest,
-    MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
+    MachineVolumeRemoveDomainError, MachineVolumeRemoveEffect, MachineVolumeRemoveRpcOk,
+    MachineVolumeRemoveRpcRequest,
 };
 use futures_util::{StreamExt, stream};
 use ployz_core::deploy::VolumeName;
-use ployz_core::ids::{MachineId, NamespaceId, OperationId};
+use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::image::{
     ImageEnsureOk, ImageEnsureRequest, ImageRemoveOk, ImageRemoveRequest, ImageRpcDomainError,
 };
@@ -203,10 +204,10 @@ pub enum MachineVolumeRemoveError {
         machine_id: MachineId,
         message: ployz_core::operation::FailureMessage,
     },
-    #[error("machine {} volume remove failed: {}", machine_id.as_str(), message.as_str())]
-    RemoveFailed {
+    #[error("machine {} volume remove failed: {error:?}", machine_id.as_str())]
+    Domain {
         machine_id: MachineId,
-        message: ployz_core::operation::FailureMessage,
+        error: MachineVolumeRemoveDomainError,
     },
 }
 
@@ -644,13 +645,13 @@ impl NatsMachineContainerRuntime {
         &self,
         machine_id: &MachineId,
         operation_id: OperationId,
-        namespace_id: &NamespaceId,
-        volume_name: &VolumeName,
+        volume: &VolumePinState,
+        effect: MachineVolumeRemoveEffect,
     ) -> Result<(), MachineVolumeRemoveError> {
         let request = MachineVolumeRemoveRpcRequest {
             operation_id,
-            namespace_id: namespace_id.clone(),
-            volume_name: volume_name.clone(),
+            volume: volume.clone(),
+            effect,
         };
         call_machine::<MachineVolumeRemoveRpcOk, MachineVolumeRemoveDomainError>(
             &self.client,
@@ -666,12 +667,10 @@ impl NatsMachineContainerRuntime {
                 machine_id: machine_id.clone(),
                 message: reason.failure_message(),
             },
-            MachineCallError::Domain(MachineVolumeRemoveDomainError::RemoveFailed { message }) => {
-                MachineVolumeRemoveError::RemoveFailed {
-                    machine_id: machine_id.clone(),
-                    message,
-                }
-            }
+            MachineCallError::Domain(error) => MachineVolumeRemoveError::Domain {
+                machine_id: machine_id.clone(),
+                error,
+            },
         })
     }
 

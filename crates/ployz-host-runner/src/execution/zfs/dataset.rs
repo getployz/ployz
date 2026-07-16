@@ -11,12 +11,12 @@ use ployz_core::machine::{
     DatasetQuotaFact, PoolCapacityAdmissionFailure, PoolCapacityFacts, admit_pool_quota_total,
 };
 use ployz_core::storage::{
-    PROVISIONED_VOLUME_MOUNTPOINT, PreparedStorageOrigin, PreparedStorageState,
-    StorageEffectFailure as ZfsEffectError,
+    DATASET_DESTROY_INNER_COMMAND_TIMEOUT, PROVISIONED_VOLUME_MOUNTPOINT, PreparedStorageOrigin,
+    PreparedStorageState, StorageEffectFailure as ZfsEffectError,
 };
 
 use super::command::{COMMAND_TIMEOUT, EffectClass, checked, parse_u64};
-use super::state::{load_and_verify, verify_child};
+use super::state::{load_and_verify, load_and_verify_with_timeout, verify_child};
 use crate::execution::HostRunnerCommandRunner;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -30,6 +30,7 @@ pub struct DatasetFacts {
 
 const DATASET_ENSURE_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 const DATASET_ENSURE_LOCK_RETRY: Duration = Duration::from_millis(25);
+const COMMAND_OUTPUT_CAPTURE_LIMIT_BYTES: usize = 4 * 1024;
 
 pub fn ensure_dataset(
     runner: &mut impl HostRunnerCommandRunner,
@@ -240,16 +241,84 @@ pub fn destroy_dataset(
     state_directory: &Path,
     dataset: &DatasetName,
 ) -> Result<(), ZfsEffectError> {
-    let state = load_and_verify(runner, state_directory)?;
+    let state = load_and_verify_with_timeout(
+        runner,
+        state_directory,
+        DATASET_DESTROY_INNER_COMMAND_TIMEOUT,
+    )?;
     verify_child(&state, dataset)?;
+    if !direct_child_listing_contains(
+        runner,
+        &state,
+        dataset,
+        DATASET_DESTROY_INNER_COMMAND_TIMEOUT,
+    )? {
+        return Ok(());
+    }
     checked(
         runner,
         "zfs",
         &["destroy", dataset.as_str()],
-        COMMAND_TIMEOUT,
+        DATASET_DESTROY_INNER_COMMAND_TIMEOUT,
         EffectClass::Destructive,
     )?;
     Ok(())
+}
+
+fn direct_child_listing_contains(
+    runner: &mut impl HostRunnerCommandRunner,
+    state: &PreparedStorageState,
+    requested: &DatasetName,
+    command_timeout: Duration,
+) -> Result<bool, ZfsEffectError> {
+    let root = state.dataset_root().as_str();
+    let output = checked(
+        runner,
+        "zfs",
+        &["list", "-H", "-d", "1", "-o", "name", root],
+        command_timeout,
+        EffectClass::Destructive,
+    )?;
+    if output.stdout.len() >= COMMAND_OUTPUT_CAPTURE_LIMIT_BYTES {
+        return Err(ZfsEffectError::GatherParse {
+            message: "direct-child dataset listing reached the command output capture limit"
+                .to_owned(),
+        });
+    }
+    let mut saw_root = false;
+    let mut children = Vec::new();
+    for row in output.stdout.lines() {
+        if row != row.trim() || row.is_empty() {
+            return Err(ZfsEffectError::GatherParse {
+                message: format!("invalid direct-child dataset row {row:?}"),
+            });
+        }
+        if row == root {
+            if saw_root {
+                return Err(ZfsEffectError::GatherParse {
+                    message: format!("duplicate dataset root row {row:?}"),
+                });
+            }
+            saw_root = true;
+            continue;
+        }
+        let child = DatasetName::try_new(row).map_err(|error| ZfsEffectError::GatherParse {
+            message: format!("invalid direct-child dataset row {row:?}: {error}"),
+        })?;
+        verify_child(state, &child)?;
+        if children.contains(&child) {
+            return Err(ZfsEffectError::GatherParse {
+                message: format!("duplicate direct-child dataset row {row:?}"),
+            });
+        }
+        children.push(child);
+    }
+    if !saw_root {
+        return Err(ZfsEffectError::GatherParse {
+            message: format!("direct-child dataset listing omitted root {root}"),
+        });
+    }
+    Ok(children.contains(requested))
 }
 
 pub fn gather_pool_capacity(

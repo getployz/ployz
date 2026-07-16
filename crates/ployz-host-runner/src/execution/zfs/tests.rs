@@ -1045,18 +1045,181 @@ fn dataset_facts_use_zfs_used_bytes_and_mount_directory_metadata_time() {
 }
 
 #[test]
-fn destroy_is_bounded_and_non_recursive() {
+fn destroy_lists_direct_children_then_destroys_present_exact_dataset_non_recursively() {
     let state = tempfile::tempdir().unwrap();
     persist(state.path(), PreparedStorageOrigin::Adopted);
-    let mut runner = RecordingRunner::new([success(), stdout(VOLUME_MOUNTPOINT), success()]);
     let dataset = dataset("tank");
+    let listing = format!("tank/ployz/volumes\n{}\n", dataset.as_str());
+    let mut runner = RecordingRunner::new([
+        success(),
+        stdout(VOLUME_MOUNTPOINT),
+        stdout(&listing),
+        success(),
+    ]);
     destroy_dataset(&mut runner, state.path(), &dataset).unwrap();
     assert_eq!(
         invocation(&runner, 2),
         &Invocation {
             program: "zfs".to_owned(),
-            args: vec!["destroy".to_owned(), dataset.as_str().to_owned()],
-            timeout: COMMAND_TIMEOUT,
+            args: vec![
+                "list".to_owned(),
+                "-H".to_owned(),
+                "-d".to_owned(),
+                "1".to_owned(),
+                "-o".to_owned(),
+                "name".to_owned(),
+                "tank/ployz/volumes".to_owned(),
+            ],
+            timeout: DATASET_DESTROY_INNER_COMMAND_TIMEOUT,
         }
     );
+    assert_eq!(
+        invocation(&runner, 3),
+        &Invocation {
+            program: "zfs".to_owned(),
+            args: vec!["destroy".to_owned(), dataset.as_str().to_owned()],
+            timeout: DATASET_DESTROY_INNER_COMMAND_TIMEOUT,
+        }
+    );
+    assert!(
+        runner
+            .invocations
+            .iter()
+            .all(|invocation| invocation.timeout == DATASET_DESTROY_INNER_COMMAND_TIMEOUT)
+    );
+}
+
+#[test]
+fn owned_image_destroy_uses_five_inner_commands_with_the_destroy_budget() {
+    let state = tempfile::tempdir().unwrap();
+    persist(
+        state.path(),
+        PreparedStorageOrigin::OwnedImage {
+            backing_file: PathBuf::from(PLOYZ_OWNED_ZFS_BACKING_FILE),
+        },
+    );
+    let dataset = dataset(PLOYZ_OWNED_ZFS_POOL);
+    let root = format!("{PLOYZ_OWNED_ZFS_POOL}/ployz/volumes");
+    let listing = format!("{root}\n{}\n", dataset.as_str());
+    let mut runner = RecordingRunner::new([
+        success(),
+        stdout(VOLUME_MOUNTPOINT),
+        stdout(PLOYZ_OWNED_ZFS_BACKING_FILE),
+        stdout(&listing),
+        success(),
+    ]);
+
+    destroy_dataset(&mut runner, state.path(), &dataset).unwrap();
+
+    assert_eq!(
+        runner.invocations.len(),
+        ployz_core::storage::DATASET_DESTROY_MAX_INNER_COMMANDS as usize
+    );
+    assert!(
+        runner
+            .invocations
+            .iter()
+            .all(|invocation| invocation.timeout == DATASET_DESTROY_INNER_COMMAND_TIMEOUT)
+    );
+}
+
+#[test]
+fn destroy_treats_valid_listing_omission_as_no_op() {
+    let state = tempfile::tempdir().unwrap();
+    persist(state.path(), PreparedStorageOrigin::Adopted);
+    let mut runner = RecordingRunner::new([
+        success(),
+        stdout(VOLUME_MOUNTPOINT),
+        stdout("tank/ployz/volumes\n"),
+    ]);
+
+    destroy_dataset(&mut runner, state.path(), &dataset("tank")).unwrap();
+
+    assert_eq!(runner.invocations.len(), 3);
+    assert_eq!(
+        invocation(&runner, 2).args.first().map(String::as_str),
+        Some("list")
+    );
+}
+
+#[test]
+fn destroy_rejects_wrong_root_before_listing_or_destroy() {
+    let state = tempfile::tempdir().unwrap();
+    persist(state.path(), PreparedStorageOrigin::Adopted);
+    let mut runner = RecordingRunner::new([success(), stdout(VOLUME_MOUNTPOINT)]);
+
+    assert!(matches!(
+        destroy_dataset(&mut runner, state.path(), &dataset("other")),
+        Err(ZfsEffectError::DestructiveEffect { .. })
+    ));
+
+    assert_eq!(runner.invocations.len(), 2);
+}
+
+#[test]
+fn destroy_retains_failed_malformed_foreign_and_ambiguous_listing_testimony() {
+    let requested = dataset("tank");
+    let foreign = dataset("other");
+    let capture_limited = "x".repeat(4 * 1024);
+    let cases = [
+        (
+            failed("listing failed"),
+            "failed",
+            ZfsEffectError::DestructiveEffect {
+                message: "listing failed".to_owned(),
+            },
+        ),
+        (
+            stdout("tank/ployz/volumes\n\n"),
+            "malformed",
+            ZfsEffectError::GatherParse {
+                message: "invalid direct-child dataset row \"\"".to_owned(),
+            },
+        ),
+        (
+            stdout(&format!("tank/ployz/volumes\n{}\n", foreign.as_str())),
+            "foreign",
+            ZfsEffectError::DestructiveEffect {
+                message: format!(
+                    "dataset {} is not a direct child of tank/ployz/volumes",
+                    foreign.as_str()
+                ),
+            },
+        ),
+        (
+            stdout(&format!(
+                "tank/ployz/volumes\n{}\n{}\n",
+                requested.as_str(),
+                requested.as_str()
+            )),
+            "ambiguous",
+            ZfsEffectError::GatherParse {
+                message: format!(
+                    "duplicate direct-child dataset row {:?}",
+                    requested.as_str()
+                ),
+            },
+        ),
+        (
+            stdout(&capture_limited),
+            "capture-limited",
+            ZfsEffectError::GatherParse {
+                message: "direct-child dataset listing reached the command output capture limit"
+                    .to_owned(),
+            },
+        ),
+    ];
+
+    for (listing, label, expected) in cases {
+        let state = tempfile::tempdir().unwrap();
+        persist(state.path(), PreparedStorageOrigin::Adopted);
+        let mut runner = RecordingRunner::new([success(), stdout(VOLUME_MOUNTPOINT), listing]);
+
+        assert_eq!(
+            destroy_dataset(&mut runner, state.path(), &requested),
+            Err(expected),
+            "{label} listing"
+        );
+        assert_eq!(runner.invocations.len(), 3, "{label} listing");
+    }
 }

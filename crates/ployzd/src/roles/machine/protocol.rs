@@ -1,7 +1,7 @@
 //! Machine-local NATS RPC protocol types.
 
-use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredential, VolumeName};
-use ployz_core::ids::{ContainerId, MachineId, NamespaceId, OperationId, StepId};
+use ployz_core::deploy::{ContainerRuntimeSpec, DatasetName, ImageReference, RegistryCredential};
+use ployz_core::ids::{ContainerId, MachineId, OperationId, StepId};
 use ployz_core::image::{IMAGE_MESH_REGISTRY_PORT, ImageRepository, OciDigest};
 use ployz_core::install::InstallArtifactVersion;
 use ployz_core::intent::VolumePinState;
@@ -295,8 +295,15 @@ pub enum MachineContainerRemoveDomainError {
 #[serde(deny_unknown_fields)]
 pub struct MachineVolumeRemoveRpcRequest {
     pub operation_id: OperationId,
-    pub namespace_id: NamespaceId,
-    pub volume_name: VolumeName,
+    pub volume: VolumePinState,
+    pub effect: MachineVolumeRemoveEffect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MachineVolumeRemoveEffect {
+    DockerReference,
+    ProvisionedDataset,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -318,7 +325,18 @@ pub type MachineVolumeRemoveRpcResponse =
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineVolumeRemoveDomainError {
-    RemoveFailed { message: FailureMessage },
+    MachineMismatch {
+        expected_machine_id: MachineId,
+        responder_machine_id: MachineId,
+    },
+    DockerRemoveFailed {
+        message: FailureMessage,
+    },
+    ProvisionedDatasetRequired,
+    DatasetDestroyFailed {
+        dataset: DatasetName,
+        failure: ployz_core::storage::StorageEffectFailure,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
