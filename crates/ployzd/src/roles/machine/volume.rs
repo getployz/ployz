@@ -53,12 +53,16 @@ async fn decode_typed_storage_host_command<T: DeserializeOwned>(
             }
         });
     }
-    serde_json::from_slice(&output.stderr).map_err(|error| StorageEffectFailure::ProcessFailed {
-        message: format!(
-            "dataset ensure failed without typed evidence: {error}; stderr={}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ),
-    })
+    let failure =
+        serde_json::from_slice::<StorageEffectFailure>(&output.stderr).map_err(|error| {
+            StorageEffectFailure::ProcessFailed {
+                message: format!(
+                    "dataset ensure failed without typed evidence: {error}; stderr={}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+            }
+        })?;
+    Err(failure)
 }
 
 async fn run_storage_host_command<T: DeserializeOwned>(subcommand: &str) -> Option<T> {
@@ -194,6 +198,23 @@ mod tests {
                 requested: 1024,
                 ..
             })
+        ));
+    }
+
+    #[tokio::test]
+    async fn dataset_ensure_protocol_rejects_malformed_failure_evidence() {
+        let mut command = tokio::process::Command::new("sh");
+        command.args(["-c", "printf '%s' 'not-json' >&2; exit 1"]);
+
+        let result =
+            decode_typed_storage_host_command::<serde_json::Value>(command, Duration::from_secs(1))
+                .await;
+
+        assert!(matches!(
+            result,
+            Err(ployz_core::storage::StorageEffectFailure::ProcessFailed { message })
+                if message.contains("dataset ensure failed without typed evidence")
+                    && message.contains("stderr=not-json")
         ));
     }
 }
