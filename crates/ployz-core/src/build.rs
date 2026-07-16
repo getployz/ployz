@@ -53,21 +53,13 @@ pub const BUILD_RESPONSE_PERMISSION_EXPIRY: Duration =
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(try_from = "GitSourceWire", into = "GitSourceWire")]
+#[serde(deny_unknown_fields)]
 pub struct GitSource {
     url: GitRepositoryUrl,
     commit: GitCommit,
     credential: GitBasicCredential,
-    subdir: Option<BuildContextPath>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct GitSourceWire {
-    url: GitRepositoryUrl,
-    commit: GitCommit,
-    credential: GitBasicCredential,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "typescript", ts(optional))]
     subdir: Option<BuildContextPath>,
 }
 
@@ -91,7 +83,11 @@ impl GitSource {
 
     #[must_use]
     pub fn evidence(&self) -> GitSourceEvidence {
-        Self::evidence_from_parts(&self.url, &self.commit, self.subdir.as_ref())
+        GitSourceEvidence {
+            url: self.url.clone(),
+            commit: self.commit.clone(),
+            subdir: self.subdir.clone(),
+        }
     }
 
     #[must_use]
@@ -109,58 +105,9 @@ impl GitSource {
         self.subdir.as_ref()
     }
 
-    fn evidence_from_parts(
-        url: &GitRepositoryUrl,
-        commit: &GitCommit,
-        subdir: Option<&BuildContextPath>,
-    ) -> GitSourceEvidence {
-        GitSourceEvidence {
-            url: url.clone(),
-            commit: commit.clone(),
-            credential_supplied: true,
-            subdir: subdir.cloned(),
-        }
-    }
-
     #[must_use]
     pub fn credential(&self) -> &GitBasicCredential {
         &self.credential
-    }
-}
-
-impl TryFrom<GitSourceWire> for GitSource {
-    type Error = GitSourceError;
-
-    fn try_from(value: GitSourceWire) -> Result<Self, Self::Error> {
-        let GitSourceWire {
-            url,
-            commit,
-            credential,
-            subdir,
-        } = value;
-        Ok(Self {
-            url,
-            commit,
-            credential,
-            subdir,
-        })
-    }
-}
-
-impl From<GitSource> for GitSourceWire {
-    fn from(value: GitSource) -> Self {
-        let GitSource {
-            url,
-            commit,
-            credential,
-            subdir,
-        } = value;
-        Self {
-            url,
-            commit,
-            credential,
-            subdir,
-        }
     }
 }
 
@@ -531,7 +478,6 @@ impl From<BuildPlatforms> for Vec<OciPlatform> {
 pub struct GitSourceEvidence {
     pub url: GitRepositoryUrl,
     pub commit: GitCommit,
-    pub credential_supplied: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subdir: Option<BuildContextPath>,
 }
@@ -745,9 +691,16 @@ mod tests {
             source.credential().redact_secret_in("git: super-secret"),
             "git: [redacted]"
         );
-        let json = serde_json::to_string(&source.evidence()).expect("evidence");
-        assert!(!json.contains("super-secret"));
-        assert!(json.contains("\"credential_supplied\":true"));
+        let evidence = serde_json::to_value(source.evidence()).expect("evidence");
+        assert!(!evidence.to_string().contains("super-secret"));
+        assert_eq!(
+            evidence,
+            serde_json::json!({
+                "url": "https://github.com/getployz/example.git",
+                "commit": "0123456789abcdef0123456789abcdef01234567",
+                "subdir": "apps/api",
+            })
+        );
     }
 
     #[test]

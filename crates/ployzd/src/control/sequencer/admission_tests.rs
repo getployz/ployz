@@ -77,7 +77,6 @@ async fn build_submit_records_redacted_accepted_evidence_before_execution() {
         state,
         ployz_core::operation::BuildOperationState::Accepted
     ));
-    assert!(source.credential_supplied);
     assert!(
         !serde_json::to_string(&source)
             .expect("source evidence serializes")

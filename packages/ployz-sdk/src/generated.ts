@@ -138,9 +138,9 @@ export type BuildAdapter = { "adapter": "dockerfile", dockerfile: BuildContextPa
 
 export type BuildPlatforms = Array<OciPlatform>;
 
-export type GitSource = { url: GitRepositoryUrl, commit: GitCommit, credential: GitBasicCredential, subdir: BuildContextPath | null, };
+export type GitSource = { url: GitRepositoryUrl, commit: GitCommit, credential: GitBasicCredential, subdir?: BuildContextPath, };
 
-export type GitSourceEvidence = { url: GitRepositoryUrl, commit: GitCommit, credential_supplied: boolean, subdir?: BuildContextPath | null, };
+export type GitSourceEvidence = { url: GitRepositoryUrl, commit: GitCommit, subdir?: BuildContextPath | null, };
 
 export type VerifiedGitCommit = { url: GitRepositoryUrl, commit: GitCommit, subdir?: BuildContextPath | null, };
 
@@ -678,7 +678,7 @@ export type DeploySubmitRequest = { idempotency_key: OperationIdempotencyKey, re
 
 export type BuildSubmitRequest = { operation_id: OperationId, source: GitSource, adapter: BuildAdapter, platforms: BuildPlatforms, };
 
-export type BuildSubmitError = { "error": "invalid_request", operation_id: OperationId, message: FailureMessage, } | { "error": "operation_conflict", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, };
+export type BuildSubmitError = { "error": "operation_conflict", operation_id: OperationId, } | { "error": "unavailable", operation_id: OperationId, message: string, };
 
 export type BuildCancelRequest = { operation_id: OperationId, reason: CancellationReason, };
 

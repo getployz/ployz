@@ -18,11 +18,6 @@ pub type BuildSubmitResponse = OperationApiResponse<AcceptedOperation, BuildSubm
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, thiserror::Error)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BuildSubmitError {
-    #[error("build request for operation {} is invalid: {message}", .operation_id.as_str())]
-    InvalidRequest {
-        operation_id: OperationId,
-        message: FailureMessage,
-    },
     #[error("operation {} already exists with a different build request", .operation_id.as_str())]
     OperationConflict { operation_id: OperationId },
     #[error("build submit {} unavailable: {message}", .operation_id.as_str())]
@@ -71,6 +66,14 @@ mod tests {
             .expect("object")
             .insert("command".into(), serde_json::json!("unsafe"));
         assert!(serde_json::from_value::<BuildSubmitRequest>(unknown).is_err());
+        let mut unknown_source = valid_json();
+        unknown_source
+            .as_object_mut()
+            .and_then(|request| request.get_mut("source"))
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("source object")
+            .insert("branch".into(), serde_json::json!("main"));
+        assert!(serde_json::from_value::<BuildSubmitRequest>(unknown_source).is_err());
         let mut duplicate = valid_json();
         duplicate
             .as_object_mut()
@@ -93,8 +96,14 @@ mod tests {
     #[test]
     fn durable_source_evidence_cannot_serialize_request_credential() {
         let request: BuildSubmitRequest = serde_json::from_value(valid_json()).expect("request");
-        let evidence = serde_json::to_string(&request.source.evidence()).expect("evidence");
-        assert!(!evidence.contains("token"));
-        assert!(evidence.contains("credential_supplied"));
+        let evidence = serde_json::to_value(request.source.evidence()).expect("evidence");
+        assert!(!evidence.to_string().contains("token"));
+        assert_eq!(
+            evidence,
+            serde_json::json!({
+                "url": "https://example.com/repo.git",
+                "commit": "0123456789abcdef0123456789abcdef01234567",
+            })
+        );
     }
 }

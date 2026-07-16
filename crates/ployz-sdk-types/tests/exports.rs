@@ -22,7 +22,7 @@ use ployz_sdk_types::{
     DeployReserveError, DeployReserveRequest, DeployReserved, DeployRunningStage,
     DeployServiceSpec, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse, EventSequence,
     EventSequenceError, GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessHealth,
-    GatewayStatusPublishFailure, GatewayWatchFailure, HostPortAssurance, ImageReference,
+    GatewayStatusPublishFailure, GatewayWatchFailure, GitSource, HostPortAssurance, ImageReference,
     ImageReferenceError, IngressConfiguration, IngressConfigureError, IngressConfigureRequest,
     IngressEndpointProjectionIdentity, InitFirstMachineActivateError,
     InitFirstMachineActivateRequest, InitFirstMachineActivated, InstallContractError,
@@ -61,7 +61,17 @@ use ployz_sdk_types::{
         VolumeListApi, VolumeRemoveApi,
     },
 };
-use ts_rs::TS;
+use ts_rs::{Config, TS};
+
+#[test]
+fn git_source_typescript_subdir_is_optional() {
+    let declaration = GitSource::decl(&Config::default());
+    assert!(
+        declaration.contains("subdir?: BuildContextPath"),
+        "{declaration}"
+    );
+    assert!(!declaration.contains("subdir: BuildContextPath | null"));
+}
 
 #[test]
 fn sdk_exports_core_wire_types() {
