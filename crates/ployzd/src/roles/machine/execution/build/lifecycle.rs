@@ -1,4 +1,4 @@
-use super::logs::{BuildLogPublisher, PublishedLogs, read_output};
+use super::logs::{BuildLogProgress, BuildLogPublisher, PublishedLogs, read_output};
 use super::plan::{BuildExecutionPlan, PrepareCommand};
 use super::runner::{
     BuildExecutionError, adapter_failure, check_cancelled, infrastructure, platform_failure,
@@ -234,6 +234,7 @@ pub(super) async fn run_buildctl(
     machine_id: &MachineId,
     operation_id: &OperationId,
     platform: &OciPlatform,
+    log_progress: BuildLogProgress,
 ) -> Result<PublishedLogs, BuildExecutionError> {
     let mut command = Command::new("docker");
     command
@@ -263,6 +264,7 @@ pub(super) async fn run_buildctl(
         operation_id.clone(),
         platform.clone(),
         source.credential().secret().secret(),
+        log_progress,
     );
     while let Some(bytes) = tokio::select! {
         bytes = output_rx.recv() => bytes,

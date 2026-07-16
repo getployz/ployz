@@ -1,4 +1,6 @@
-use super::execution::build::{BuildExecutionError, BuildExecutionResult, DockerBuildExecutor};
+use super::execution::build::{
+    BuildExecutionError, BuildExecutionResult, BuildLogProgress, DockerBuildExecutor,
+};
 use super::images::AvailableImageService;
 use super::protocol::{
     MachineBuildCancelOutcome, MachineBuildCancelRpcOk, MachineBuildCancelRpcRequest,
@@ -22,11 +24,23 @@ use tokio::time::Instant;
 #[derive(Clone)]
 pub(crate) struct MachineBuildRuntime {
     machine_id: MachineId,
-    executor: DockerBuildExecutor,
-    image_state: Option<AvailableImageService>,
+    effects: BuildEffects,
     active: Arc<Mutex<BTreeMap<OperationId, watch::Sender<bool>>>>,
     machine_slot: Arc<Semaphore>,
     local_platform: OciPlatform,
+}
+
+#[derive(Clone)]
+enum BuildEffects {
+    Docker(Box<DockerBuildEffects>),
+    #[cfg(test)]
+    Test(Arc<tests::TestBuildEffects>),
+}
+
+#[derive(Clone)]
+struct DockerBuildEffects {
+    executor: DockerBuildExecutor,
+    image_state: Option<AvailableImageService>,
 }
 
 impl MachineBuildRuntime {
@@ -37,8 +51,10 @@ impl MachineBuildRuntime {
     ) -> Result<Self, String> {
         Ok(Self {
             machine_id,
-            executor,
-            image_state,
+            effects: BuildEffects::Docker(Box::new(DockerBuildEffects {
+                executor,
+                image_state,
+            })),
             active: Arc::new(Mutex::new(BTreeMap::new())),
             machine_slot: Arc::new(Semaphore::new(1)),
             local_platform: local_platform()?,
@@ -46,7 +62,11 @@ impl MachineBuildRuntime {
     }
 
     pub(crate) async fn recover_orphans(&self) -> Result<(), BuildExecutionError> {
-        self.executor.recover_orphans().await
+        match &self.effects {
+            BuildEffects::Docker(effects) => effects.executor.recover_orphans().await,
+            #[cfg(test)]
+            BuildEffects::Test(_) => Ok(()),
+        }
     }
 
     async fn start(
@@ -105,20 +125,7 @@ impl MachineBuildRuntime {
     ) -> Result<MachineBuildStartRpcOk, MachineBuildStartDomainError> {
         let slot = self.machine_slot.clone().acquire_owned();
         let _slot = tokio::select! {
-            permit = slot => permit.map_err(|_| MachineBuildStartDomainError::PlatformFailed {
-                failure: BuildPlatformFailure::MachineUnavailable {
-                    message: failure_message("machine build slot closed"),
-                },
-                final_log_sequence: 0,
-                omitted_log_bytes: 0,
-            })?,
-            changed = cancel_rx.changed() => {
-                let _ = changed;
-                return Err(MachineBuildStartDomainError::Cancelled {
-                    final_log_sequence: 0,
-                    omitted_log_bytes: 0,
-                });
-            }
+            biased;
             () = tokio::time::sleep_until(deadline) => {
                 return Err(MachineBuildStartDomainError::TimedOut {
                     message: failure_message("build timed out waiting for the machine build slot"),
@@ -127,148 +134,92 @@ impl MachineBuildRuntime {
                     omitted_log_bytes: 0,
                 });
             }
+            changed = cancel_rx.changed() => {
+                let _ = changed;
+                return Err(MachineBuildStartDomainError::Cancelled {
+                    cleanup: MachineBuildCleanupOutcome::Confirmed,
+                    final_log_sequence: 0,
+                    omitted_log_bytes: 0,
+                });
+            }
+            permit = slot => permit.map_err(|_| MachineBuildStartDomainError::PlatformFailed {
+                failure: BuildPlatformFailure::MachineUnavailable {
+                    message: failure_message("machine build slot closed"),
+                },
+                final_log_sequence: 0,
+                omitted_log_bytes: 0,
+            })?,
         };
-        let executor = self.executor.clone();
-        let cleanup_executor = self.executor.clone();
         let operation_id = request.operation_id.clone();
-        let cleanup_operation_id = operation_id.clone();
-        let source = request.source;
-        let adapter = request.adapter;
-        let platform = request.platform;
-        let cleanup_platform = platform.clone();
+        let platform = request.platform.clone();
+        let progress = BuildLogProgress::default();
+        let task_effects = self.effects.clone();
+        let machine_id = self.machine_id.clone();
+        let task_progress = progress.clone();
+        let task_cancel_rx = cancel_rx.clone();
         let task = tokio::spawn(async move {
-            executor
-                .execute(&operation_id, &source, &adapter, &platform, cancel_rx)
+            task_effects
+                .execute_and_ingest(machine_id, request, task_cancel_rx, task_progress)
                 .await
         });
         tokio::pin!(task);
-        let result = tokio::select! {
-            result = &mut task => join_build(result),
+        let completion = tokio::select! {
+            biased;
             () = tokio::time::sleep_until(deadline) => {
-                let _ = cancel.send(true);
-                match tokio::time::timeout(BUILD_TASK_DRAIN_TIMEOUT, &mut task).await {
-                    Ok(result) => {
-                        let cleanup = join_build(result);
-                        let (final_log_sequence, omitted_log_bytes) = cleanup
-                            .as_ref()
-                            .err()
-                            .map(BuildExecutionError::log_summary)
-                            .unwrap_or((0, 0));
-                        let cleanup = force_cleanup_outcome(
-                            &cleanup_executor,
-                            &cleanup_operation_id,
-                            &cleanup_platform,
-                        )
-                        .await;
-                        let message = match cleanup {
-                            MachineBuildCleanupOutcome::Confirmed => {
-                                "build exceeded its operation deadline"
-                            }
-                            MachineBuildCleanupOutcome::Unconfirmed => {
-                                "build exceeded its deadline and cleanup did not finish"
-                            }
-                        };
-                        return Err(MachineBuildStartDomainError::TimedOut {
-                            message: failure_message(message),
-                            cleanup,
-                            final_log_sequence,
-                            omitted_log_bytes,
-                        });
-                    }
-                    Err(_) => {
-                        task.abort();
-                        let cleanup = force_cleanup_outcome(
-                            &cleanup_executor,
-                            &cleanup_operation_id,
-                            &cleanup_platform,
-                        )
-                        .await;
-                        let message = match cleanup {
-                            MachineBuildCleanupOutcome::Confirmed => {
-                                "build cleanup required task termination"
-                            }
-                            MachineBuildCleanupOutcome::Unconfirmed => {
-                                "build cleanup did not finish before its deadline"
-                            }
-                        };
-                        return Err(MachineBuildStartDomainError::TimedOut {
-                            message: failure_message(message),
-                            cleanup,
-                            final_log_sequence: 0,
-                            omitted_log_bytes: 0,
-                        });
-                    }
-                }
+                BuildTaskCompletion::TimedOut
             }
+            changed = cancel_rx.changed() => {
+                let _ = changed;
+                BuildTaskCompletion::Cancelled
+            }
+            result = &mut task => BuildTaskCompletion::Finished(Box::new(join_build(result))),
         };
-        let BuildExecutionResult {
-            layout,
-            verified_commit,
-            toolchain,
-            final_log_sequence,
-            omitted_log_bytes,
-        } = result.map_err(machine_build_error)?;
-        let ingest = match &self.image_state {
-            Some(images) => images
-                .ingest_build_layout(&layout)
+        if !matches!(completion, BuildTaskCompletion::Finished(_)) {
+            let _ = cancel.send(true);
+            if tokio::time::timeout(BUILD_TASK_DRAIN_TIMEOUT, &mut task)
                 .await
-                .map_err(|message| MachineBuildStartDomainError::PlatformFailed {
-                    failure: BuildPlatformFailure::ImagePushFailed {
-                        message: failure_message(message),
-                    },
-                    final_log_sequence,
-                    omitted_log_bytes,
-                }),
-            None => Err(MachineBuildStartDomainError::PlatformFailed {
-                failure: BuildPlatformFailure::MachineUnavailable {
-                    message: failure_message("machine image content service is unavailable"),
-                },
+                .is_err()
+            {
+                task.abort();
+                let _ = task.await;
+            }
+        }
+        let cleanup = self.effects.force_cleanup(&operation_id, &platform).await;
+        let (final_log_sequence, omitted_log_bytes) = progress.summary();
+        match completion {
+            BuildTaskCompletion::Cancelled => Err(MachineBuildStartDomainError::Cancelled {
+                cleanup,
                 final_log_sequence,
                 omitted_log_bytes,
             }),
-        };
-        let cleanup = tokio::time::timeout(
-            BUILD_FORCE_CLEANUP_TIMEOUT,
-            self.executor
-                .force_cleanup(&cleanup_operation_id, &cleanup_platform),
-        )
-        .await;
-        match cleanup {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                return Err(MachineBuildStartDomainError::PlatformFailed {
-                    failure: BuildPlatformFailure::MachineUnavailable {
-                        message: failure_message(format!(
-                            "build workspace cleanup failed: {error}"
-                        )),
-                    },
-                    final_log_sequence,
-                    omitted_log_bytes,
-                });
-            }
-            Err(_) => {
-                return Err(MachineBuildStartDomainError::PlatformFailed {
-                    failure: BuildPlatformFailure::MachineUnavailable {
-                        message: failure_message("build workspace cleanup timed out"),
-                    },
-                    final_log_sequence,
-                    omitted_log_bytes,
-                });
+            BuildTaskCompletion::TimedOut => Err(MachineBuildStartDomainError::TimedOut {
+                message: failure_message(match cleanup {
+                    MachineBuildCleanupOutcome::Confirmed => {
+                        "build exceeded its operation deadline"
+                    }
+                    MachineBuildCleanupOutcome::Unconfirmed => {
+                        "build exceeded its deadline and cleanup did not finish"
+                    }
+                }),
+                cleanup,
+                final_log_sequence,
+                omitted_log_bytes,
+            }),
+            BuildTaskCompletion::Finished(result) => {
+                if cleanup == MachineBuildCleanupOutcome::Unconfirmed {
+                    return Err(MachineBuildStartDomainError::PlatformFailed {
+                        failure: BuildPlatformFailure::MachineUnavailable {
+                            message: failure_message(
+                                "build workspace cleanup did not finish successfully",
+                            ),
+                        },
+                        final_log_sequence,
+                        omitted_log_bytes,
+                    });
+                }
+                (*result).map_err(|error| machine_build_error(error, cleanup))
             }
         }
-        ingest?;
-        Ok(MachineBuildStartRpcOk {
-            machine_id: self.machine_id.clone(),
-            image: PlatformImage {
-                seed: self.machine_id.clone(),
-                manifest_digest: layout.manifest_digest().clone(),
-                image_id: layout.image_id().clone(),
-            },
-            verified_commit,
-            toolchain,
-            final_log_sequence,
-            omitted_log_bytes,
-        })
     }
 
     async fn cancel(&self, operation_id: &OperationId) -> MachineBuildCancelOutcome {
@@ -278,6 +229,97 @@ impl MachineBuildRuntime {
         };
         let _ = cancel.send(true);
         MachineBuildCancelOutcome::Requested
+    }
+}
+
+enum BuildTaskCompletion {
+    Finished(Box<Result<MachineBuildStartRpcOk, BuildExecutionError>>),
+    Cancelled,
+    TimedOut,
+}
+
+impl BuildEffects {
+    async fn execute_and_ingest(
+        &self,
+        machine_id: MachineId,
+        request: MachineBuildStartRpcRequest,
+        cancel_rx: watch::Receiver<bool>,
+        log_progress: BuildLogProgress,
+    ) -> Result<MachineBuildStartRpcOk, BuildExecutionError> {
+        match self {
+            Self::Docker(effects) => {
+                let operation_id = request.operation_id;
+                let platform = request.platform;
+                let result: BuildExecutionResult = effects
+                    .executor
+                    .execute(
+                        &operation_id,
+                        &request.source,
+                        &request.adapter,
+                        &platform,
+                        cancel_rx,
+                        log_progress,
+                    )
+                    .await?;
+                let (final_log_sequence, omitted_log_bytes) =
+                    (result.final_log_sequence, result.omitted_log_bytes);
+                let Some(images) = &effects.image_state else {
+                    return Err(BuildExecutionError::Platform {
+                        failure: BuildPlatformFailure::MachineUnavailable {
+                            message: failure_message(
+                                "machine image content service is unavailable",
+                            ),
+                        },
+                        final_log_sequence,
+                        omitted_log_bytes,
+                    });
+                };
+                images
+                    .ingest_build_layout(&result.layout)
+                    .await
+                    .map_err(|message| BuildExecutionError::Platform {
+                        failure: BuildPlatformFailure::ImagePushFailed {
+                            message: failure_message(message),
+                        },
+                        final_log_sequence,
+                        omitted_log_bytes,
+                    })?;
+                Ok(MachineBuildStartRpcOk {
+                    machine_id: machine_id.clone(),
+                    image: PlatformImage {
+                        seed: machine_id,
+                        manifest_digest: result.layout.manifest_digest().clone(),
+                        image_id: result.layout.image_id().clone(),
+                    },
+                    verified_commit: result.verified_commit,
+                    toolchain: result.toolchain,
+                    final_log_sequence,
+                    omitted_log_bytes,
+                })
+            }
+            #[cfg(test)]
+            Self::Test(effects) => effects.execute_and_ingest(log_progress).await,
+        }
+    }
+
+    async fn force_cleanup(
+        &self,
+        operation_id: &OperationId,
+        platform: &OciPlatform,
+    ) -> MachineBuildCleanupOutcome {
+        let cleanup = async {
+            match self {
+                Self::Docker(effects) => {
+                    effects.executor.force_cleanup(operation_id, platform).await
+                }
+                #[cfg(test)]
+                Self::Test(effects) => effects.force_cleanup().await,
+            }
+        };
+        match tokio::time::timeout(BUILD_FORCE_CLEANUP_TIMEOUT, cleanup).await {
+            Ok(Ok(())) => MachineBuildCleanupOutcome::Confirmed,
+            Ok(Err(_)) | Err(_) => MachineBuildCleanupOutcome::Unconfirmed,
+        }
     }
 }
 
@@ -296,25 +338,9 @@ fn requested_build_timeout(
     Ok(timeout)
 }
 
-async fn force_cleanup_outcome(
-    executor: &DockerBuildExecutor,
-    operation_id: &OperationId,
-    platform: &OciPlatform,
-) -> MachineBuildCleanupOutcome {
-    match tokio::time::timeout(
-        BUILD_FORCE_CLEANUP_TIMEOUT,
-        executor.force_cleanup(operation_id, platform),
-    )
-    .await
-    {
-        Ok(Ok(())) => MachineBuildCleanupOutcome::Confirmed,
-        Ok(Err(_)) | Err(_) => MachineBuildCleanupOutcome::Unconfirmed,
-    }
-}
-
 fn join_build(
-    result: Result<Result<BuildExecutionResult, BuildExecutionError>, tokio::task::JoinError>,
-) -> Result<BuildExecutionResult, BuildExecutionError> {
+    result: Result<Result<MachineBuildStartRpcOk, BuildExecutionError>, tokio::task::JoinError>,
+) -> Result<MachineBuildStartRpcOk, BuildExecutionError> {
     result.map_err(|error| BuildExecutionError::Infrastructure {
         action: "join machine build task",
         message: error.to_string(),
@@ -323,10 +349,14 @@ fn join_build(
     })?
 }
 
-fn machine_build_error(error: BuildExecutionError) -> MachineBuildStartDomainError {
+fn machine_build_error(
+    error: BuildExecutionError,
+    cleanup: MachineBuildCleanupOutcome,
+) -> MachineBuildStartDomainError {
     let (final_log_sequence, omitted_log_bytes) = error.log_summary();
     match error {
         BuildExecutionError::Cancelled { .. } => MachineBuildStartDomainError::Cancelled {
+            cleanup,
             final_log_sequence,
             omitted_log_bytes,
         },
@@ -416,91 +446,4 @@ pub(crate) async fn handle_build_cancel(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use ployz_core::machine::rpc::MachineRpcResponse;
-
-    #[test]
-    fn local_platform_uses_oci_architecture_names() {
-        let platform = local_platform().expect("supported test host");
-        assert_eq!(platform.os(), std::env::consts::OS);
-        assert!(matches!(platform.architecture(), "amd64" | "arm64"));
-    }
-
-    #[test]
-    fn build_timeout_accepts_the_shared_limit_and_rejects_larger_requests() {
-        assert_eq!(
-            requested_build_timeout(BUILD_MAX_EXECUTION_TIMEOUT.as_millis() as u64),
-            Ok(BUILD_MAX_EXECUTION_TIMEOUT)
-        );
-        assert!(matches!(
-            requested_build_timeout(BUILD_MAX_EXECUTION_TIMEOUT.as_millis() as u64 + 1),
-            Err(MachineBuildStartDomainError::TimedOut { message, .. })
-                if message.as_str() == "build timeout must be between 1ms and 30m"
-        ));
-    }
-
-    #[tokio::test]
-    async fn build_start_rejects_malformed_requests_at_the_transport_boundary() {
-        let response = handle_build_start(
-            MachineId::try_new("machine-a").expect("machine"),
-            None,
-            NatsServiceRequest {
-                payload: b"not-json".to_vec(),
-                headers: None,
-            },
-        )
-        .await;
-
-        assert!(matches!(
-            response,
-            NatsServiceResponse::TransportError { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn unavailable_build_runtime_is_typed_machine_evidence() {
-        let machine_id = MachineId::try_new("machine-a").expect("machine");
-        let request = MachineBuildStartRpcRequest {
-            operation_id: OperationId::try_new("build-1").expect("operation"),
-            source: ployz_core::build::GitSource::try_new(
-                "https://example.test/repo.git",
-                "0123456789abcdef0123456789abcdef01234567",
-                "git",
-                "secret",
-                None::<String>,
-            )
-            .expect("source"),
-            adapter: ployz_core::build::BuildAdapter::Railpack {
-                cache_scope: ployz_core::build::BuildCacheScope::try_new("test").expect("scope"),
-            },
-            platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
-            timeout_millis: 1_000,
-        };
-        let response = handle_build_start(
-            machine_id.clone(),
-            None,
-            NatsServiceRequest {
-                payload: serde_json::to_vec(&request).expect("request"),
-                headers: None,
-            },
-        )
-        .await;
-        let NatsServiceResponse::DomainError { payload } = response else {
-            panic!("unavailable runtime should be a domain error");
-        };
-        let response: MachineBuildStartRpcResponse =
-            serde_json::from_slice(&payload).expect("typed response");
-
-        assert!(matches!(
-            response,
-            MachineRpcResponse::DomainError {
-                machine_id: actual,
-                error: MachineBuildStartDomainError::PlatformFailed {
-                    failure: BuildPlatformFailure::MachineUnavailable { .. },
-                    ..
-                }
-            } if actual == machine_id
-        ));
-    }
-}
+mod tests;

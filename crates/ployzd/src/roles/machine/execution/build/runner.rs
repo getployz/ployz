@@ -4,7 +4,7 @@ use super::lifecycle::{
     builder_name, create_builder, pull_exact_image, remove_builder, require_success, run_bounded,
     run_buildctl, run_prepare,
 };
-use super::logs::PublishedLogs;
+use super::logs::{BuildLogProgress, PublishedLogs};
 use super::oci::validate_oci_layout;
 use super::plan::{BuildAdapterToolchain, lower_build_adapter, toolchain_for_platform};
 use super::source::checkout_git_source;
@@ -70,8 +70,13 @@ impl DockerBuildExecutor {
         source: &GitSource,
         adapter: &BuildAdapter,
         platform: &OciPlatform,
-        mut cancelled: watch::Receiver<bool>,
+        cancelled: watch::Receiver<bool>,
+        log_progress: BuildLogProgress,
     ) -> Result<BuildExecutionResult, BuildExecutionError> {
+        let mut control = BuildExecutionControl {
+            cancelled,
+            log_progress,
+        };
         let workspace = self.workspace(operation_id, platform);
         prepare_private_directory(&self.workspace_root).await?;
         let Some(operation_workspace) = workspace.parent() else {
@@ -89,7 +94,7 @@ impl DockerBuildExecutor {
                 adapter,
                 platform,
                 &workspace,
-                &mut cancelled,
+                &mut control,
             )
             .await;
         clean_failed_workspace(&workspace, result).await
@@ -102,9 +107,9 @@ impl DockerBuildExecutor {
         adapter: &BuildAdapter,
         platform: &OciPlatform,
         workspace: &Path,
-        cancelled: &mut watch::Receiver<bool>,
+        control: &mut BuildExecutionControl,
     ) -> Result<BuildExecutionResult, BuildExecutionError> {
-        check_cancelled(cancelled)?;
+        check_cancelled(&control.cancelled)?;
         let checkout = checkout_git_source(source, workspace)
             .await
             .map_err(|error| {
@@ -125,7 +130,7 @@ impl DockerBuildExecutor {
                 })
             })?;
         if let Some(prepare) = &plan.prepare {
-            run_prepare(prepare, source, cancelled).await?;
+            run_prepare(prepare, source, &mut control.cancelled).await?;
         }
         tokio::fs::create_dir_all(&plan.oci_layout)
             .await
@@ -178,16 +183,17 @@ impl DockerBuildExecutor {
             )
             .await?;
             require_success("start BuildKit", &started)?;
-            await_buildkit(&builder, cancelled).await?;
+            await_buildkit(&builder, &mut control.cancelled).await?;
             run_buildctl(
                 &builder,
                 &plan,
                 source,
-                cancelled,
+                &mut control.cancelled,
                 &self.client,
                 &self.machine_id,
                 operation_id,
                 platform,
+                control.log_progress.clone(),
             )
             .await
         }
@@ -223,6 +229,11 @@ impl DockerBuildExecutor {
             .join(operation_id.as_str())
             .join(format!("{}-{}", platform.os(), platform.architecture()))
     }
+}
+
+struct BuildExecutionControl {
+    cancelled: watch::Receiver<bool>,
+    log_progress: BuildLogProgress,
 }
 
 pub struct BuildExecutionResult {

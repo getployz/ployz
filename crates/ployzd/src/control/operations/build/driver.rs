@@ -310,6 +310,7 @@ impl BuildOperationDriver {
                 omitted_log_bytes,
             },
             Err(MachineCallError::Domain(MachineBuildStartDomainError::Cancelled {
+                cleanup: _,
                 final_log_sequence,
                 omitted_log_bytes,
             })) => BuildSummary::Cancelled {

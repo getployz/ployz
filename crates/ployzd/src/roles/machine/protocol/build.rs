@@ -49,6 +49,7 @@ pub enum MachineBuildStartDomainError {
         omitted_log_bytes: u64,
     },
     Cancelled {
+        cleanup: MachineBuildCleanupOutcome,
         final_log_sequence: u64,
         omitted_log_bytes: u64,
     },
@@ -158,6 +159,22 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<MachineBuildStartDomainError>(encoded)
                 .expect("decode timeout"),
+            error
+        );
+    }
+
+    #[test]
+    fn cancelled_response_preserves_typed_cleanup_outcome() {
+        let error = MachineBuildStartDomainError::Cancelled {
+            cleanup: MachineBuildCleanupOutcome::Confirmed,
+            final_log_sequence: 2,
+            omitted_log_bytes: 7,
+        };
+        let encoded = serde_json::to_value(&error).expect("encode cancellation");
+        assert_eq!(encoded.get("cleanup").expect("cleanup field"), "confirmed");
+        assert_eq!(
+            serde_json::from_value::<MachineBuildStartDomainError>(encoded)
+                .expect("decode cancellation"),
             error
         );
     }

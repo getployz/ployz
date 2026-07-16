@@ -5,10 +5,42 @@ use ployz_core::image::OciPlatform;
 use ployz_core::operation::{BuildLogChunk, MAX_BUILD_LOG_CHUNK_BYTES};
 use ployz_nats::service_runtime::NatsClient;
 use ployz_nats::subjects::machine_build_log;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
 
 const BUILD_LOG_LIMIT_BYTES: u64 = 8 * 1024 * 1024;
+
+#[derive(Clone, Default)]
+pub(crate) struct BuildLogProgress {
+    sequence: Arc<AtomicU64>,
+    omitted_bytes: Arc<AtomicU64>,
+}
+
+impl BuildLogProgress {
+    #[must_use]
+    pub(crate) fn summary(&self) -> (u64, u64) {
+        (
+            self.sequence.load(Ordering::Acquire),
+            self.omitted_bytes.load(Ordering::Acquire),
+        )
+    }
+
+    fn published(&self, sequence: u64) {
+        self.sequence.store(sequence, Ordering::Release);
+    }
+
+    fn omitted(&self, omitted_bytes: u64) {
+        self.omitted_bytes.store(omitted_bytes, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_for_test(&self, sequence: u64, omitted_bytes: u64) {
+        self.published(sequence);
+        self.omitted(omitted_bytes);
+    }
+}
 
 pub(super) async fn read_output<R: tokio::io::AsyncRead + Unpin>(
     mut reader: R,
@@ -41,6 +73,7 @@ pub(super) struct BuildLogPublisher {
     sequence: u64,
     published_bytes: u64,
     omitted_bytes: u64,
+    progress: BuildLogProgress,
 }
 
 impl BuildLogPublisher {
@@ -50,6 +83,7 @@ impl BuildLogPublisher {
         operation_id: OperationId,
         platform: OciPlatform,
         secret: &str,
+        progress: BuildLogProgress,
     ) -> Self {
         Self {
             client,
@@ -61,6 +95,7 @@ impl BuildLogPublisher {
             sequence: 0,
             published_bytes: 0,
             omitted_bytes: 0,
+            progress,
         }
     }
 
@@ -99,6 +134,7 @@ impl BuildLogPublisher {
                     .omitted_bytes
                     .saturating_add(bytes)
                     .saturating_add(u64::try_from(text.len()).unwrap_or(u64::MAX));
+                self.progress.omitted(self.omitted_bytes);
                 break;
             }
             self.sequence = self.sequence.saturating_add(1);
@@ -120,6 +156,7 @@ impl BuildLogPublisher {
                 .await
                 .map_err(|error| infrastructure("publish build log", error.to_string()))?;
             self.published_bytes = self.published_bytes.saturating_add(bytes);
+            self.progress.published(self.sequence);
         }
         Ok(())
     }
