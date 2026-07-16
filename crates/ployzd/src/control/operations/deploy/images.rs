@@ -605,6 +605,7 @@ mod tests {
             route_binding_removals: Vec::new(),
             serving_target_removals: Vec::new(),
             namespace_cleanup_candidates: Vec::new(),
+            storage_testimony: BTreeMap::new(),
             machine_platforms: [(target_machine.clone(), target_platform.clone())]
                 .into_iter()
                 .collect(),
