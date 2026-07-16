@@ -191,6 +191,8 @@ async fn assert_success_evidence(
 }
 
 async fn deploy_receipt(core: &CoreContext, label: &str, receipt: PushedImageReceipt) {
+    let image = ImageReference::try_new(format!("local/build-{label}@{}", receipt.index_digest()))
+        .expect("digest-pinned logical build image reference");
     let target = DeployRequest {
         namespace_id: namespace_id(&format!("build-{label}")),
         origin: None,
@@ -198,8 +200,7 @@ async fn deploy_receipt(core: &CoreContext, label: &str, receipt: PushedImageRec
         services: vec![DeployServiceSpec {
             keep: None,
             service_id: service_id(&format!("svc-build-{label}")),
-            image: ImageReference::try_new(format!("local/build-{label}:exact"))
-                .expect("logical build image reference"),
+            image,
             image_source: ImageSource::PushedToSeed(receipt),
             replicas: ReplicaCount::try_new(1).expect("one replica"),
             runtime: ContainerRuntimeSpec::image_defaults(),
