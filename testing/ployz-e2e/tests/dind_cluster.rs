@@ -250,7 +250,7 @@ async fn group_core_deploy_semantics() {
     .await;
     timed(
         "boot_crash_failure_journey",
-        rollback::assert_boot_crash_preserves_serving_and_failure_evidence(&core),
+        rollback::assert_boot_crash_preserves_serving_and_failure_evidence(&core, &workload_image),
     )
     .await;
     timed(
@@ -432,6 +432,28 @@ fn apply_prepared_workload_image(target: &mut DeployRequest, image: &PreparedWor
     };
     service.image = image.reference.clone();
     service.image_source = image.source.clone();
+}
+
+async fn committed_route_hostname(core: &CoreContext, namespace: &str, fixture: &str) -> String {
+    let controller = connect_core_client(
+        core,
+        NatsPrincipal::Controller,
+        &core.material.controller_seed,
+    )
+    .await
+    .unwrap_or_else(|error| panic!("connect controller for {fixture} route intent: {error}"));
+    let intent = read_intent(&controller, CONNECT_TIMEOUT)
+        .await
+        .unwrap_or_else(|error| panic!("read {fixture} route intent: {error}"));
+    intent
+        .route_bindings
+        .iter()
+        .find(|binding| binding.namespace_id == namespace_id(namespace))
+        .unwrap_or_else(|| panic!("{fixture} route binding is committed"))
+        .target
+        .hostname
+        .as_str()
+        .to_owned()
 }
 
 async fn assert_auto_hostname_https_survives_core_stop(
@@ -1584,62 +1606,12 @@ async fn assert_internal_service_dns_reaches_cross_machine_sibling(core: &CoreCo
             "internal DNS deploy did not complete: {status:?}"
         );
 
-        let mut servers = Vec::new();
-        let mut clients = Vec::new();
-        for machine in std::iter::once(core.cluster.core()).chain(core.cluster.edges()) {
-            for container in managed_workload_containers(core, machine).await {
-                match container.labels.get(SERVICE_ID_LABEL).map(String::as_str) {
-                    Some("server") => servers.push((machine.clone(), container)),
-                    Some("client") => clients.push((machine.clone(), container)),
-                    Some(_) | None => {}
-                }
-            }
-        }
-        let [(server_machine, server)] = servers.as_slice() else {
-            panic!("expected one server container, got {servers:?}");
-        };
-        let Some((client_machine, client)) = clients
-            .iter()
-            .find(|(machine, _)| machine.name != server_machine.name)
-        else {
-            panic!("expected a client on the machine opposite {server_machine:?}: {clients:?}");
-        };
-        let Some(server_ip) = server.endpoint_ip else {
-            panic!("server container has no endpoint IP: {server:?}");
-        };
-        let Some(client_ip) = client.endpoint_ip else {
-            panic!("client container has no endpoint IP: {client:?}");
-        };
-
-        let deadline = Instant::now() + OVERLAY_FIRST_CONTACT_BUDGET;
-        let last = loop {
-            let outcome = exec_in_container(
-                docker,
-                &client_machine.container_id,
-                &[
-                    "docker",
-                    "exec",
-                    &client.id,
-                    "sh",
-                    "-c",
-                    "wget -T 2 -qO- http://server/ | grep -q 'Welcome to nginx'",
-                ],
-            )
-            .await;
-            if matches!(&outcome, Ok(outcome) if outcome.success()) {
-                break outcome;
-            }
-            if Instant::now() >= deadline {
-                break outcome;
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        };
-        assert!(
-            matches!(&last, Ok(outcome) if outcome.success()),
-            "plain service DNS failed from {}:{client_ip} to {}:{server_ip}: {last:?}",
-            client_machine.name,
-            server_machine.name,
-        );
+        let traffic = cross_machine_internal_traffic_probe(core)
+            .await
+            .unwrap_or_else(|error| panic!("managed cross-machine pair discovery failed: {error}"));
+        wait_for_cross_machine_internal_traffic(core, &traffic)
+            .await
+            .unwrap_or_else(|error| panic!("plain service DNS failed: {error}"));
 
         let stopped_control = exec_in_container(
             docker,
@@ -1652,38 +1624,16 @@ async fn assert_internal_service_dns_reaches_cross_machine_sibling(core: &CoreCo
             "stopping core control plane failed: {stopped_control:?}"
         );
 
-        let deadline = Instant::now() + OVERLAY_FIRST_CONTACT_BUDGET;
-        let last = loop {
-            let outcome = exec_in_container(
-                docker,
-                &client_machine.container_id,
-                &[
-                    "docker",
-                    "exec",
-                    &client.id,
-                    "sh",
-                    "-c",
-                    "wget -T 2 -qO- http://server/ | grep -q 'Welcome to nginx'",
-                ],
-            )
-            .await;
-            if matches!(&outcome, Ok(outcome) if outcome.success()) {
-                break outcome;
-            }
-            if Instant::now() >= deadline {
-                break outcome;
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        };
-        assert!(
-            matches!(&last, Ok(outcome) if outcome.success()),
-            "plain service DNS lost last-known-good facts with core control stopped: {last:?}"
-        );
+        wait_for_cross_machine_internal_traffic(core, &traffic)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("plain service DNS lost last-known-good facts with core control stopped: {error}")
+            });
 
         let stopped_server = exec_in_container(
             docker,
-            &server_machine.container_id,
-            &["docker", "stop", &server.id],
+            &traffic.server_machine.container_id,
+            &["docker", "stop", &traffic.server_container_id],
         )
         .await;
         assert!(
@@ -1695,11 +1645,11 @@ async fn assert_internal_service_dns_reaches_cross_machine_sibling(core: &CoreCo
         let last = loop {
             let outcome = exec_in_container(
                 docker,
-                &client_machine.container_id,
+                &traffic.client_machine.container_id,
                 &[
                     "docker",
                     "exec",
-                    &client.id,
+                    &traffic.client_container_id,
                     "sh",
                     "-c",
                     "wget -T 2 -qO- http://server/ | grep -q 'Welcome to nginx'",
@@ -1722,6 +1672,96 @@ async fn assert_internal_service_dns_reaches_cross_machine_sibling(core: &CoreCo
         );
     })
     .await;
+}
+
+struct CrossMachineInternalTrafficProbe {
+    client_machine: DindMachine,
+    client_container_id: String,
+    client_endpoint_ip: std::net::IpAddr,
+    server_machine: DindMachine,
+    server_container_id: String,
+    server_endpoint_ip: std::net::IpAddr,
+}
+
+async fn cross_machine_internal_traffic_probe(
+    core: &CoreContext,
+) -> Result<CrossMachineInternalTrafficProbe, String> {
+    let [edge] = core.cluster.edges() else {
+        return Err(String::from("scenario requires exactly one edge machine"));
+    };
+    let mut servers = Vec::new();
+    let mut clients = Vec::new();
+    for machine in [core.cluster.core(), edge] {
+        for container in managed_workload_containers(core, machine).await {
+            match container.labels.get(SERVICE_ID_LABEL).map(String::as_str) {
+                Some("server") => servers.push((machine, container)),
+                Some("client") => clients.push((machine, container)),
+                Some(_) | None => {}
+            }
+        }
+    }
+    let [(server_machine, server)] = servers.as_slice() else {
+        return Err(format!("expected one managed server, got {servers:?}"));
+    };
+    let Some((client_machine, client)) = clients
+        .iter()
+        .find(|(machine, _)| machine.name != server_machine.name)
+    else {
+        return Err(format!(
+            "expected a managed client opposite {}, got {clients:?}",
+            server_machine.name
+        ));
+    };
+    let Some(server_endpoint_ip) = server.endpoint_ip else {
+        return Err(format!("server container has no endpoint IP: {server:?}"));
+    };
+    let Some(client_endpoint_ip) = client.endpoint_ip else {
+        return Err(format!("client container has no endpoint IP: {client:?}"));
+    };
+
+    Ok(CrossMachineInternalTrafficProbe {
+        client_machine: (**client_machine).clone(),
+        client_container_id: client.id.clone(),
+        client_endpoint_ip,
+        server_machine: (*server_machine).clone(),
+        server_container_id: server.id.clone(),
+        server_endpoint_ip,
+    })
+}
+
+async fn wait_for_cross_machine_internal_traffic(
+    core: &CoreContext,
+    probe: &CrossMachineInternalTrafficProbe,
+) -> Result<(), String> {
+    let deadline = Instant::now() + OVERLAY_FIRST_CONTACT_BUDGET;
+    let mut last = None;
+    while Instant::now() < deadline {
+        let outcome = exec_in_container(
+            &core.docker,
+            &probe.client_machine.container_id,
+            &[
+                "docker",
+                "exec",
+                &probe.client_container_id,
+                "sh",
+                "-c",
+                "wget -T 2 -qO- http://server/ | grep -q 'Welcome to nginx'",
+            ],
+        )
+        .await;
+        if matches!(&outcome, Ok(outcome) if outcome.success()) {
+            return Ok(());
+        }
+        last = Some(outcome);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    Err(format!(
+        "managed client on {}:{} could not reach server on {}:{} through internal DNS: {last:?}",
+        probe.client_machine.name,
+        probe.client_endpoint_ip,
+        probe.server_machine.name,
+        probe.server_endpoint_ip,
+    ))
 }
 
 // ---------------------------------------------------------------------------
