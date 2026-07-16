@@ -22,6 +22,7 @@ use ployz_sdk_types::{
     ControlRuntimeProjectionServiceHealth, RuntimeSnapshot,
 };
 use serde::Deserialize;
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
@@ -231,6 +232,16 @@ impl PassiveRuntimeProjection {
         self.refresh();
     }
 
+    fn replace_intent_and_ingress(
+        &mut self,
+        intent: IntentSnapshot,
+        ingress: RuntimeIngressSources,
+    ) {
+        self.intent = Some(intent);
+        self.ingress = Some(ingress);
+        self.refresh();
+    }
+
     fn refresh_with_storage_testimony(
         &mut self,
         fresh_storage_testimony: Vec<ployz_core::machine::MachineStorageTestimony>,
@@ -324,6 +335,75 @@ struct RuntimeProjectionSources {
     core_store: CoreStore,
 }
 
+type StorageTestimony = Vec<ployz_core::machine::MachineStorageTestimony>;
+
+struct StorageAlarmGather {
+    intent_generation: u64,
+    task: Option<JoinHandle<(u64, StorageTestimony)>>,
+}
+
+impl StorageAlarmGather {
+    fn new() -> Self {
+        Self {
+            intent_generation: 0,
+            task: None,
+        }
+    }
+
+    fn replace(&mut self, gather: impl Future<Output = StorageTestimony> + Send + 'static) {
+        self.intent_generation = self.intent_generation.wrapping_add(1);
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+        self.start(gather);
+    }
+
+    fn start_if_idle<Gather, GatherFuture>(&mut self, gather: Gather) -> bool
+    where
+        Gather: FnOnce() -> GatherFuture,
+        GatherFuture: Future<Output = StorageTestimony> + Send + 'static,
+    {
+        if self.task.is_some() {
+            return false;
+        }
+        self.start(gather());
+        true
+    }
+
+    fn start(&mut self, gather: impl Future<Output = StorageTestimony> + Send + 'static) {
+        let generation = self.intent_generation;
+        self.task = Some(tokio::spawn(async move { (generation, gather.await) }));
+    }
+
+    fn is_running(&self) -> bool {
+        self.task.is_some()
+    }
+
+    async fn join(&mut self) -> Option<StorageTestimony> {
+        let result = {
+            let task = self.task.as_mut()?;
+            task.await
+        };
+        self.task = None;
+        let Ok((generation, testimony)) = result else {
+            return None;
+        };
+        self.accept(generation, testimony)
+    }
+
+    fn accept(&self, generation: u64, testimony: StorageTestimony) -> Option<StorageTestimony> {
+        (generation == self.intent_generation).then_some(testimony)
+    }
+}
+
+impl Drop for StorageAlarmGather {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
 async fn run_projection(
     mut projection: PassiveRuntimeProjection,
     sources: RuntimeProjectionSources,
@@ -340,8 +420,10 @@ async fn run_projection(
     } = sources;
     let intent = retry_intent_read(&intent_reader, &health).await;
     let ingress = retry_ingress_read(&core_store, &health).await;
-    let fresh_storage_testimony = gather_storage_testimony(&facts_reader, &intent).await;
-    projection.replace_sources(intent, ingress, fresh_storage_testimony);
+    let machine_ids = storage_testimony_machine_ids(&intent);
+    projection.replace_sources(intent, ingress, Vec::new());
+    let mut storage_alarm_gather = StorageAlarmGather::new();
+    storage_alarm_gather.replace(gather_storage_testimony(facts_reader.clone(), machine_ids));
     let mut storage_alarm_refresh = tokio::time::interval(STORAGE_ALARM_REFRESH_INTERVAL);
     storage_alarm_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     storage_alarm_refresh.tick().await;
@@ -361,8 +443,12 @@ async fn run_projection(
                 }
                 let intent = retry_intent_read(&intent_reader, &health).await;
                 let ingress = retry_ingress_read(&core_store, &health).await;
-                let testimony = gather_storage_testimony(&facts_reader, &intent).await;
-                projection.replace_sources(intent, ingress, testimony);
+                let machine_ids = storage_testimony_machine_ids(&intent);
+                projection.replace_intent_and_ingress(intent, ingress);
+                storage_alarm_gather.replace(gather_storage_testimony(
+                    facts_reader.clone(),
+                    machine_ids,
+                ));
             }
             message = ingress_changes.next() => {
                 if message.is_none() {
@@ -373,34 +459,38 @@ async fn run_projection(
                 projection.ingress = Some(ingress);
                 projection.refresh();
             }
+            testimony = storage_alarm_gather.join(), if storage_alarm_gather.is_running() => {
+                if let Some(testimony) = testimony {
+                    projection.refresh_with_storage_testimony(testimony);
+                }
+            }
             _ = storage_alarm_refresh.tick() => {
-                let testimony = gather_projection_storage_testimony(&facts_reader, &projection).await;
-                projection.refresh_with_storage_testimony(testimony);
+                let Some(intent) = projection.intent.as_ref() else {
+                    continue;
+                };
+                let machine_ids = storage_testimony_machine_ids(intent);
+                let facts_reader = facts_reader.clone();
+                storage_alarm_gather.start_if_idle(move || {
+                    gather_storage_testimony(facts_reader, machine_ids)
+                });
             }
         }
     }
 }
 
-async fn gather_projection_storage_testimony(
-    facts_reader: &NatsMachineFactsReader,
-    projection: &PassiveRuntimeProjection,
-) -> Vec<ployz_core::machine::MachineStorageTestimony> {
-    let Some(intent) = projection.intent.as_ref() else {
-        return Vec::new();
-    };
-    gather_storage_testimony(facts_reader, intent).await
-}
-
-async fn gather_storage_testimony(
-    facts_reader: &NatsMachineFactsReader,
-    intent: &IntentSnapshot,
-) -> Vec<ployz_core::machine::MachineStorageTestimony> {
-    let machine_ids = intent
+fn storage_testimony_machine_ids(intent: &IntentSnapshot) -> Vec<ployz_core::ids::MachineId> {
+    intent
         .active_machines
         .iter()
         .map(|machine| machine.machine_id.clone())
-        .collect::<Vec<_>>();
-    read_available_machine_facts(facts_reader, machine_ids)
+        .collect()
+}
+
+async fn gather_storage_testimony(
+    facts_reader: NatsMachineFactsReader,
+    machine_ids: Vec<ployz_core::ids::MachineId>,
+) -> StorageTestimony {
+    read_available_machine_facts(&facts_reader, machine_ids)
         .await
         .into_iter()
         .map(|facts| {
@@ -432,6 +522,8 @@ mod tests {
     use ployz_test_support::containers;
     use ployz_test_support::fixtures::{serving_target_entry, test_disk_space};
     use ployz_test_support::ids::{machine_id, operation_id};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::oneshot;
 
     #[test]
     fn unconfigured_projection_withholds_a_runtime_snapshot() {
@@ -521,6 +613,77 @@ mod tests {
             panic!("last-known display testimony remains available");
         };
         assert!(matches!(storage, Some(StorageCapability::Ready { .. })));
+    }
+
+    #[tokio::test]
+    async fn pending_storage_alarm_gather_does_not_block_projection_signals() {
+        let mut gather = StorageAlarmGather::new();
+        gather.replace(std::future::pending());
+        let (signal, mut signals) = watch::channel(0_u8);
+        signal.send_replace(1);
+
+        tokio::select! {
+            testimony = gather.join() => panic!("pending gather completed: {testimony:?}"),
+            changed = signals.changed() => changed.expect("projection signal remains live"),
+        }
+
+        assert_eq!(*signals.borrow_and_update(), 1);
+    }
+
+    #[test]
+    fn storage_alarm_gather_rejects_a_stale_intent_generation() {
+        let gather = StorageAlarmGather {
+            intent_generation: 2,
+            task: None,
+        };
+
+        assert!(gather.accept(1, Vec::new()).is_none());
+        assert_eq!(gather.accept(2, Vec::new()), Some(Vec::new()));
+    }
+
+    #[tokio::test]
+    async fn replacing_storage_alarm_gather_cancels_the_previous_intent() {
+        struct NotifyOnDrop(Option<oneshot::Sender<()>>);
+
+        impl Drop for NotifyOnDrop {
+            fn drop(&mut self) {
+                if let Some(notify) = self.0.take() {
+                    let _ = notify.send(());
+                }
+            }
+        }
+
+        let (dropped, previous_dropped) = oneshot::channel();
+        let mut gather = StorageAlarmGather::new();
+        gather.replace(async move {
+            let _notify = NotifyOnDrop(Some(dropped));
+            std::future::pending().await
+        });
+        tokio::task::yield_now().await;
+
+        gather.replace(async { Vec::new() });
+
+        timeout(std::time::Duration::from_secs(1), previous_dropped)
+            .await
+            .expect("previous gather cancellation is bounded")
+            .expect("previous gather reports cancellation");
+        assert_eq!(gather.join().await, Some(Vec::new()));
+    }
+
+    #[tokio::test]
+    async fn periodic_storage_alarm_gathers_do_not_overlap() {
+        let starts = AtomicUsize::new(0);
+        let mut gather = StorageAlarmGather::new();
+
+        assert!(gather.start_if_idle(|| {
+            starts.fetch_add(1, Ordering::Relaxed);
+            std::future::pending()
+        }));
+        assert!(!gather.start_if_idle(|| {
+            starts.fetch_add(1, Ordering::Relaxed);
+            std::future::ready(Vec::new())
+        }));
+        assert_eq!(starts.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]
