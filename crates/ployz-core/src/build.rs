@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Component, Path};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -16,6 +17,39 @@ const MAX_CREDENTIAL_SECRET_BYTES: usize = 8_192;
 const MAX_BUILD_PATH_BYTES: usize = 1_024;
 const MAX_DOCKERFILE_STAGE_BYTES: usize = 128;
 const MAX_BUILD_CACHE_SCOPE_BYTES: usize = 256;
+
+/// Longest build execution budget accepted by a machine.
+pub const BUILD_MAX_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Time allowed for a build task to observe cancellation and stop.
+pub const BUILD_TASK_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+/// Time allowed for forced workspace cleanup after task shutdown.
+pub const BUILD_FORCE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
+/// Longest time a machine build request can legitimately take to answer.
+pub const BUILD_MAX_MACHINE_RESPONSE_LIFETIME: Duration = BUILD_MAX_EXECUTION_TIMEOUT
+    .saturating_add(BUILD_TASK_DRAIN_TIMEOUT)
+    .saturating_add(BUILD_FORCE_CLEANUP_TIMEOUT);
+/// Controller margin beyond the machine's maximum response lifetime.
+pub const BUILD_CONTROL_RESPONSE_MARGIN: Duration = Duration::from_secs(5);
+/// Outer machine endpoint margin beyond the machine's maximum response lifetime.
+pub const BUILD_ENDPOINT_RESPONSE_MARGIN: Duration = Duration::from_secs(10);
+/// Dynamic NATS response-authority margin beyond the machine endpoint lifetime.
+pub const BUILD_RESPONSE_PERMISSION_MARGIN: Duration = Duration::from_secs(5);
+
+/// Controller request budget for a build with the supplied execution budget.
+#[must_use]
+pub const fn build_control_request_timeout(execution_timeout: Duration) -> Duration {
+    execution_timeout
+        .saturating_add(BUILD_TASK_DRAIN_TIMEOUT)
+        .saturating_add(BUILD_FORCE_CLEANUP_TIMEOUT)
+        .saturating_add(BUILD_CONTROL_RESPONSE_MARGIN)
+}
+
+/// Maximum BuildStart handler lifetime.
+pub const BUILD_START_ENDPOINT_TIMEOUT: Duration =
+    BUILD_MAX_MACHINE_RESPONSE_LIFETIME.saturating_add(BUILD_ENDPOINT_RESPONSE_MARGIN);
+/// Lifetime of one request-scoped NATS response grant.
+pub const BUILD_RESPONSE_PERMISSION_EXPIRY: Duration =
+    BUILD_START_ENDPOINT_TIMEOUT.saturating_add(BUILD_RESPONSE_PERMISSION_MARGIN);
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -745,5 +779,19 @@ mod tests {
         let platforms = BuildPlatforms::try_new([arm64, amd64]).expect("platforms");
         let architectures: Vec<_> = platforms.iter().map(OciPlatform::architecture).collect();
         assert_eq!(architectures, vec!["amd64", "arm64"]);
+    }
+
+    #[test]
+    fn build_response_budgets_cover_both_cleanup_windows_in_order() {
+        assert_eq!(
+            BUILD_MAX_MACHINE_RESPONSE_LIFETIME,
+            BUILD_MAX_EXECUTION_TIMEOUT + BUILD_TASK_DRAIN_TIMEOUT + BUILD_FORCE_CLEANUP_TIMEOUT
+        );
+        assert!(
+            build_control_request_timeout(BUILD_MAX_EXECUTION_TIMEOUT)
+                > BUILD_MAX_MACHINE_RESPONSE_LIFETIME
+        );
+        assert!(BUILD_START_ENDPOINT_TIMEOUT > BUILD_MAX_MACHINE_RESPONSE_LIFETIME);
+        assert!(BUILD_RESPONSE_PERMISSION_EXPIRY > BUILD_START_ENDPOINT_TIMEOUT);
     }
 }

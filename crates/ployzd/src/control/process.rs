@@ -53,6 +53,7 @@ use crate::role_testimony::{
 };
 use crate::seed::{SeedCoreError, seed_core_from_snapshot};
 use crate::tasks::{TaskRegistry, TaskRegistryQuiesceError};
+use ployz_core::build::BUILD_MAX_EXECUTION_TIMEOUT;
 use ployz_core::intent::recovery::ControlPlaneEpoch;
 use ployz_core::intent::recovery::PendingMachineJoinRecovery;
 use ployz_core::operation::OperationInterruptionCause;
@@ -66,7 +67,6 @@ use std::time::Duration;
 const CONTROL_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const INTENT_PUBLISH_INTERVAL: Duration = Duration::from_secs(30);
 const REACHABILITY_RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
-const BUILD_OPERATION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 pub struct RunningControlProcess {
     intent: RunningIntentService,
@@ -480,7 +480,7 @@ async fn start_control_process_with_client_reload_and_issuer(
         facts_reader.clone(),
         machine_roster.clone(),
         controllers.clone(),
-        BUILD_OPERATION_TIMEOUT,
+        BUILD_MAX_EXECUTION_TIMEOUT,
         task_spawner,
     );
     let operation_api = start_operation_api_service_with_handlers(

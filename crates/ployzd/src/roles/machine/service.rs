@@ -29,6 +29,7 @@ use crate::roles::machine::runner::{
     MachineContainerRunner, MachineImageRemovalRunner, MachineLogReader,
 };
 use crate::service_catalog::{machine_endpoint_spec, machine_role_service_base};
+use ployz_core::build::BUILD_START_ENDPOINT_TIMEOUT;
 use ployz_core::ids::MachineId;
 #[cfg(test)]
 use ployz_core::machine::MachineEndpointObservation;
@@ -50,7 +51,6 @@ use std::time::Duration;
 // The request carries the operation-owned execution timeout. This outer bound
 // limits malformed or future callers that fail to supply a useful inner bound.
 const PRE_START_HOOK_ENDPOINT_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
-const BUILD_START_ENDPOINT_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60 + 60);
 
 pub use super::facts::MachineFactsReadError;
 
@@ -589,6 +589,7 @@ mod tests {
     fn build_start_endpoint_covers_the_max_operation_and_cleanup_budget() {
         let policy = machine_endpoint_policy(MachineServiceEndpoint::BuildStart);
 
-        assert!(policy.request_timeout > Duration::from_secs(24 * 60 * 60));
+        assert_eq!(policy.request_timeout, BUILD_START_ENDPOINT_TIMEOUT);
+        assert!(policy.request_timeout > ployz_core::build::BUILD_MAX_MACHINE_RESPONSE_LIFETIME);
     }
 }

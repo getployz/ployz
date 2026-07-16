@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use ployz_core::build::build_control_request_timeout;
 use ployz_core::deploy::PushedImageReceipt;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::operation::{
@@ -281,7 +282,7 @@ impl BuildOperationDriver {
         let request = build_start_request(accepted, platform.clone(), self.timeout);
         let result = call_machine::<MachineBuildStartRpcOk, MachineBuildStartDomainError>(
             &self.client,
-            self.timeout + Duration::from_secs(1),
+            build_control_request_timeout(self.timeout),
             &machine_id,
             MachineServiceEndpoint::BuildStart,
             &request,
@@ -660,6 +661,11 @@ mod tests {
         assert_eq!(
             execution_timeout_millis(Duration::from_millis(7_321)),
             7_321
+        );
+        assert_eq!(
+            build_control_request_timeout(ployz_core::build::BUILD_MAX_EXECUTION_TIMEOUT),
+            ployz_core::build::BUILD_MAX_MACHINE_RESPONSE_LIFETIME
+                + ployz_core::build::BUILD_CONTROL_RESPONSE_MARGIN
         );
     }
 
