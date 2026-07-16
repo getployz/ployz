@@ -2,8 +2,9 @@ use ployz_sdk_types::operation_api::OperationApiEndpoint;
 use ployz_sdk_types::{
     AcceptedOperation, AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue,
     AcmeHttp01Challenge, ActiveCertState, ActiveCertificateMetadata,
-    AutomaticHostnameConfiguration, CertBundleRef, CertId, CertOperationState, CertRunningStage,
-    CertTextError, CertValidAt, CertValidityWindow, CertificateOwner, CloudBootstrapAttemptId,
+    AutomaticHostnameConfiguration, BuildCancelError, BuildCancelRequest, BuildSubmitError,
+    BuildSubmitRequest, CertBundleRef, CertId, CertOperationState, CertRunningStage, CertTextError,
+    CertValidAt, CertValidityWindow, CertificateOwner, CloudBootstrapAttemptId,
     CloudBootstrapCallbackAccepted, CloudBootstrapCallbackRequest, CloudBootstrapCallbackToken,
     CloudBootstrapDecision, CloudBootstrapEnvelope, CloudBootstrapIntent, CloudBootstrapOutcome,
     CloudBootstrapRedemptionId, CloudBootstrapSessionCreateRequest, CloudBootstrapSessionCreated,
@@ -50,14 +51,14 @@ use ployz_sdk_types::{
     SubjectTokenError, VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError,
     VolumeRemoveRequest,
     operation_api::{
-        CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi, CredentialListApi,
-        CredentialRemoveApi, DeployReserveApi, DeploySubmitApi, IngressConfigureApi,
-        InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineInspectApi,
-        MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi, MachineStoragePrepareApi,
-        MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi,
-        NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi,
-        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeListApi,
-        VolumeRemoveApi,
+        BuildCancelApi, BuildSubmitApi, CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi,
+        CredentialListApi, CredentialRemoveApi, DeployReserveApi, DeploySubmitApi,
+        IngressConfigureApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
+        MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
+        MachineStoragePrepareApi, MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi,
+        NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi,
+        OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi,
+        VolumeListApi, VolumeRemoveApi,
     },
 };
 use ts_rs::TS;
@@ -468,6 +469,8 @@ fn typescript_contract_fixture_matches_rust_wire_types() {
 
 #[test]
 fn operation_api_contract_registry_owns_endpoint_shapes() {
+    assert_contract::<BuildSubmitApi, BuildSubmitRequest, AcceptedOperation, BuildSubmitError>();
+    assert_contract::<BuildCancelApi, BuildCancelRequest, AcceptedOperation, BuildCancelError>();
     assert_contract::<DeployReserveApi, DeployReserveRequest, DeployReserved, DeployReserveError>();
     assert_contract::<DeploySubmitApi, DeploySubmitRequest, AcceptedOperation, DeploySubmitError>();
     assert_contract::<
@@ -588,6 +591,8 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
     assert_eq!(
         operation_api_contract_endpoints(),
         [
+            OperationApiEndpoint::BuildSubmit,
+            OperationApiEndpoint::BuildCancel,
             OperationApiEndpoint::DeployReserve,
             OperationApiEndpoint::DeploySubmit,
             OperationApiEndpoint::InitFirstMachineActivate,
@@ -674,6 +679,10 @@ fn machine_join_bundle() -> MachineJoinBundle {
             recovery_key_wrapped: ployz_core::install::WrappedCaKey::new(vec![1, 2, 3]),
             core_seeds_wrapped: ployz_core::install::WrappedCoreSeeds::new(vec![4, 5, 6]),
             ployzd: machine_join_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
+            railpack: machine_join_artifact(
+                "/tmp/ployz-railpack",
+                "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
+            ),
             ebpf_bytecode: machine_join_artifact(
                 "/tmp/ployz-ebpf-tc",
                 "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
