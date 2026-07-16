@@ -11,12 +11,10 @@ pub(super) async fn assert_boot_crash_preserves_serving_and_failure_evidence(cor
         let first = core
             .api
             .deploy_submit(
-                &reserved_deploy_request(
+                &reserved_boot_crash_deploy_request(
                     core,
                     "idem_dind_boot_crash_v1",
-                    boot_crash_deploy_target(
-                        "printf 'failure-journey-v1' > /usr/share/nginx/html/index.html; exec nginx -g 'daemon off;'",
-                    ),
+                    "printf 'failure-journey-v1' > /usr/share/nginx/html/index.html; exec nginx -g 'daemon off;'",
                 )
                 .await,
             )
@@ -62,10 +60,10 @@ pub(super) async fn assert_boot_crash_preserves_serving_and_failure_evidence(cor
         let failed = core
             .api
             .deploy_submit(
-                &reserved_deploy_request(
+                &reserved_boot_crash_deploy_request(
                     core,
                     "idem_dind_boot_crash_failed",
-                    boot_crash_deploy_target("exit 23"),
+                    "exit 23",
                 )
                 .await,
             )
@@ -134,12 +132,10 @@ pub(super) async fn assert_boot_crash_preserves_serving_and_failure_evidence(cor
         let retry = core
             .api
             .deploy_submit(
-                &reserved_deploy_request(
+                &reserved_boot_crash_deploy_request(
                     core,
                     "idem_dind_boot_crash_retry",
-                    boot_crash_deploy_target(
-                        "printf 'failure-journey-v2' > /usr/share/nginx/html/index.html; exec nginx -g 'daemon off;'",
-                    ),
+                    "printf 'failure-journey-v2' > /usr/share/nginx/html/index.html; exec nginx -g 'daemon off;'",
                 )
                 .await,
             )
@@ -171,6 +167,23 @@ pub(super) async fn assert_boot_crash_preserves_serving_and_failure_evidence(cor
         );
     })
     .await;
+}
+
+async fn reserved_boot_crash_deploy_request(
+    core: &CoreContext,
+    idempotency: &str,
+    command: &str,
+) -> DeploySubmitRequest {
+    let mut target = boot_crash_deploy_target(command);
+    let pushed = prepare_deploy_images(&core.api, &mut target.services, false)
+        .await
+        .expect("boot-crash fixture image pushes from the local DinD seed");
+    assert_eq!(
+        pushed.len(),
+        1,
+        "boot-crash fixture must use its one locally seeded image"
+    );
+    reserved_deploy_request(core, idempotency, target).await
 }
 
 fn boot_crash_deploy_target(command: &str) -> DeployRequest {
