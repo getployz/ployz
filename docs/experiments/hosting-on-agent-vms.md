@@ -6,6 +6,11 @@ Codex cloud VMs are the same shape). The goal was to answer three questions for
 a "for the lulz" blog post: **how long does the box stay up, is Ployz
 installable, and can server init be made to "just work"?***
 
+> This page is the distilled, topic-organized writeup. For the blow-by-blow
+> **chronological log of everything we tried, in order** (dead ends included —
+> the raw material for the post), see
+> [`hosting-on-agent-vms-log.md`](./hosting-on-agent-vms-log.md).
+
 TL;DR: **Yes — a single-machine Ployz core boots and serves its NATS control
 plane inside the sandbox.** But it is not free. Three sandbox properties fight
 the stock install path, and each needs a deliberate workaround. The reusable
