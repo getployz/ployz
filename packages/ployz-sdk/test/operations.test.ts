@@ -1287,6 +1287,10 @@ function machineJoinBundle(): MachineJoinBundle {
         "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
       ),
       ebpf_ctl: machineJoinArtifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
+      railpack: machineJoinArtifact(
+        "/tmp/railpack",
+        "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
+      ),
     },
   };
 }
