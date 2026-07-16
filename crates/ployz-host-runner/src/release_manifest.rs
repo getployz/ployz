@@ -80,6 +80,7 @@ pub struct ReleaseManifest {
     ebpf_tc_sha256: String,
     ebpf_ctl_url: String,
     ebpf_ctl_sha256: String,
+    railpack: RailpackManifestEntry,
     /// Absent when the manifest ships no `nats-server` (a dev substrate
     /// push); installs that found or promote a core reject such a manifest.
     nats_server: Option<NatsServerManifestEntry>,
@@ -87,6 +88,13 @@ pub struct ReleaseManifest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NatsServerManifestEntry {
+    version: String,
+    url: String,
+    sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RailpackManifestEntry {
     version: String,
     url: String,
     sha256: String,
@@ -102,6 +110,7 @@ impl ReleaseManifest {
             ebpf_tc_sha256: manifest_value(contents, "PLOYZ_EBPF_TC_SHA256")?,
             ebpf_ctl_url: manifest_value(contents, "PLOYZ_EBPF_CTL_URL")?,
             ebpf_ctl_sha256: manifest_value(contents, "PLOYZ_EBPF_CTL_SHA256")?,
+            railpack: railpack_entry(contents)?,
             nats_server: nats_server_entry(contents)?,
         })
     }
@@ -126,6 +135,12 @@ impl ReleaseManifest {
                 &self.ebpf_ctl_sha256,
                 "/usr/local/bin/ployz-ebpf-ctl",
             )?,
+            railpack: artifact_spec(
+                &self.railpack.version,
+                &self.railpack.url,
+                &self.railpack.sha256,
+                "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
+            )?,
             nats_server: self
                 .nats_server
                 .as_ref()
@@ -146,6 +161,20 @@ impl ReleaseManifest {
                 .transpose()?,
         })
     }
+}
+
+fn railpack_entry(contents: &str) -> Result<RailpackManifestEntry, String> {
+    let version = manifest_value(contents, "PLOYZ_RAILPACK_VERSION")?;
+    if version != "v0.31.0" {
+        return Err(format!(
+            "release manifest has unsupported PLOYZ_RAILPACK_VERSION={version}; expected v0.31.0"
+        ));
+    }
+    Ok(RailpackManifestEntry {
+        version,
+        url: manifest_value(contents, "PLOYZ_RAILPACK_URL")?,
+        sha256: manifest_value(contents, "PLOYZ_RAILPACK_SHA256")?,
+    })
 }
 
 /// A manifest either carries all three `PLOYZ_NATS_SERVER_*` values or none;
@@ -272,6 +301,9 @@ mod tests {
              PLOYZ_EBPF_TC_SHA256={SHA}\n\
              PLOYZ_EBPF_CTL_URL=https://example.test/ployz-ebpf-ctl\n\
              PLOYZ_EBPF_CTL_SHA256={SHA}\n\
+             PLOYZ_RAILPACK_VERSION=v0.31.0\n\
+             PLOYZ_RAILPACK_URL=https://example.test/railpack\n\
+             PLOYZ_RAILPACK_SHA256={SHA}\n\
              PLOYZ_NATS_SERVER_VERSION=2.14.2\n\
              PLOYZ_NATS_SERVER_URL=https://example.test/nats-server\n\
              PLOYZ_NATS_SERVER_SHA256={SHA}\n"
@@ -282,6 +314,11 @@ mod tests {
         assert_eq!(
             artifacts.ployzd.install_path.as_str(),
             "/usr/local/bin/ployzd"
+        );
+        assert_eq!(artifacts.railpack.version.as_str(), "v0.31.0");
+        assert_eq!(
+            artifacts.railpack.install_path.as_str(),
+            "/usr/local/lib/ployz/railpack/v0.31.0/railpack"
         );
         assert_eq!(
             artifacts
@@ -294,6 +331,34 @@ mod tests {
     }
 
     #[test]
+    fn release_manifest_requires_the_complete_railpack_tuple() {
+        let missing = ReleaseManifest::parse(&format!(
+            "PLOYZ_VERSION=0.1.0\n\
+             PLOYZD_URL=https://example.test/ployzd\n\
+             PLOYZD_SHA256={SHA}\n\
+             PLOYZ_EBPF_TC_URL=https://example.test/ployz-ebpf-tc\n\
+             PLOYZ_EBPF_TC_SHA256={SHA}\n\
+             PLOYZ_EBPF_CTL_URL=https://example.test/ployz-ebpf-ctl\n\
+             PLOYZ_EBPF_CTL_SHA256={SHA}\n"
+        ))
+        .expect_err("Railpack is required release material");
+        assert!(missing.contains("PLOYZ_RAILPACK_VERSION"));
+
+        let partial = ReleaseManifest::parse(&format!(
+            "PLOYZ_VERSION=0.1.0\n\
+             PLOYZD_URL=https://example.test/ployzd\n\
+             PLOYZD_SHA256={SHA}\n\
+             PLOYZ_EBPF_TC_URL=https://example.test/ployz-ebpf-tc\n\
+             PLOYZ_EBPF_TC_SHA256={SHA}\n\
+             PLOYZ_EBPF_CTL_URL=https://example.test/ployz-ebpf-ctl\n\
+             PLOYZ_EBPF_CTL_SHA256={SHA}\n\
+             PLOYZ_RAILPACK_VERSION=v0.31.0\n"
+        ))
+        .expect_err("partial Railpack tuple is rejected");
+        assert!(partial.contains("PLOYZ_RAILPACK_URL"));
+    }
+
+    #[test]
     fn release_manifest_without_nats_server_omits_the_artifact() {
         let manifest = ReleaseManifest::parse(&format!(
             "PLOYZ_VERSION=0.1.0\n\
@@ -302,7 +367,10 @@ mod tests {
              PLOYZ_EBPF_TC_URL=https://example.test/ployz-ebpf-tc\n\
              PLOYZ_EBPF_TC_SHA256={SHA}\n\
              PLOYZ_EBPF_CTL_URL=https://example.test/ployz-ebpf-ctl\n\
-             PLOYZ_EBPF_CTL_SHA256={SHA}\n"
+             PLOYZ_EBPF_CTL_SHA256={SHA}\n\
+             PLOYZ_RAILPACK_VERSION=v0.31.0\n\
+             PLOYZ_RAILPACK_URL=https://example.test/railpack\n\
+             PLOYZ_RAILPACK_SHA256={SHA}\n"
         ))
         .expect("manifest parses");
         let artifacts = manifest.install_artifacts().expect("artifacts build");
@@ -320,6 +388,9 @@ mod tests {
              PLOYZ_EBPF_TC_SHA256={SHA}\n\
              PLOYZ_EBPF_CTL_URL=https://example.test/ployz-ebpf-ctl\n\
              PLOYZ_EBPF_CTL_SHA256={SHA}\n\
+             PLOYZ_RAILPACK_VERSION=v0.31.0\n\
+             PLOYZ_RAILPACK_URL=https://example.test/railpack\n\
+             PLOYZ_RAILPACK_SHA256={SHA}\n\
              PLOYZ_NATS_SERVER_VERSION=2.14.2\n"
         ))
         .expect_err("partial entry is rejected");

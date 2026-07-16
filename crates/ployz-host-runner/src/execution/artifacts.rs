@@ -20,6 +20,7 @@ pub enum ArtifactKind {
     EbpfCtl,
     NatsServer,
     Ployzd,
+    Railpack,
 }
 
 pub type ArtifactVersion = InstallArtifactVersion;

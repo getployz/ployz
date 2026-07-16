@@ -189,6 +189,191 @@ fn release_asset_verifier_rejects_manifest_referencing_missing_asset() {
 
 #[cfg(unix)]
 #[test]
+fn release_asset_verifier_rejects_missing_railpack_asset() {
+    let root = temp_dir("ployz-release-verify-missing-railpack");
+    let assets_dir = root.join("assets");
+    fs::create_dir_all(&assets_dir).expect("assets dir can be created");
+    write_complete_release_assets(&assets_dir, "v0.0.2-alpha.1");
+    fs::remove_file(assets_dir.join("railpack-linux-amd64"))
+        .expect("Railpack asset can be removed");
+
+    let output = run_verifier(&[
+        "v0.0.2-alpha.1",
+        "--assets-dir",
+        assets_dir.to_str().expect("asset dir is utf8"),
+    ]);
+
+    assert!(!output.status.success());
+    assert_stderr_contains(&output, "references missing asset railpack-linux-amd64");
+}
+
+#[cfg(unix)]
+#[test]
+fn release_asset_verifier_rejects_an_unpinned_railpack_version() {
+    let root = temp_dir("ployz-release-verify-railpack-version");
+    let assets_dir = root.join("assets");
+    fs::create_dir_all(&assets_dir).expect("assets dir can be created");
+    write_complete_release_assets(&assets_dir, "v0.0.2-alpha.1");
+    replace_in_file(
+        &assets_dir.join("ployz-release-linux-amd64.env"),
+        "PLOYZ_RAILPACK_VERSION=v0.31.0",
+        "PLOYZ_RAILPACK_VERSION=v0.32.0",
+    );
+
+    let output = run_verifier(&[
+        "v0.0.2-alpha.1",
+        "--assets-dir",
+        assets_dir.to_str().expect("asset dir is utf8"),
+    ]);
+
+    assert!(!output.status.success());
+    assert_stderr_contains(&output, "PLOYZ_RAILPACK_VERSION=v0.32.0, expected v0.31.0");
+}
+
+#[cfg(unix)]
+#[test]
+fn release_packager_stages_the_checksum_verified_native_railpack_helper() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = temp_dir("ployz-release-package-railpack");
+    let artifact_dir = root.join("artifacts");
+    let dist_dir = root.join("dist");
+    let fixture_dir = root.join("railpack-fixture");
+    let bin_dir = root.join("bin");
+    fs::create_dir_all(&artifact_dir).expect("artifact dir can be created");
+    fs::create_dir_all(&fixture_dir).expect("fixture dir can be created");
+    fs::create_dir_all(&bin_dir).expect("bin dir can be created");
+    for artifact in ["ployz", "ployzd", "ployz-ebpf-ctl", "ployz-ebpf-tc"] {
+        fs::write(artifact_dir.join(artifact), artifact).expect("artifact can be written");
+    }
+    fs::write(fixture_dir.join("railpack"), "railpack-amd64\n")
+        .expect("Railpack fixture can be written");
+    let archive = root.join("railpack.tar.gz");
+    let tar = Command::new("tar")
+        .args(["-czf"])
+        .arg(&archive)
+        .args(["-C"])
+        .arg(&fixture_dir)
+        .arg("railpack")
+        .output()
+        .expect("fixture archive can be created");
+    assert_success(&tar);
+
+    let curl = bin_dir.join("curl");
+    fs::write(
+        &curl,
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+output=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output) output="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+cp "${PLOYZ_TEST_RAILPACK_ARCHIVE}" "${output}"
+"#,
+    )
+    .expect("fake curl can be written");
+    fs::set_permissions(&curl, fs::Permissions::from_mode(0o755))
+        .expect("fake curl can be executable");
+    let sha256sum = bin_dir.join("sha256sum");
+    fs::write(
+        &sha256sum,
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+case "${1##*/}" in
+  railpack-v0.31.0-x86_64-unknown-linux-musl.tar.gz)
+    printf 'f75416cf4c452db2841d864f54dbfd8e4d77f2d4a02b23b87561e7760fa278fd  %s\n' "$1"
+    ;;
+  *) exec /usr/bin/sha256sum "$@" ;;
+esac
+"#,
+    )
+    .expect("fake sha256sum can be written");
+    fs::set_permissions(&sha256sum, fs::Permissions::from_mode(0o755))
+        .expect("fake sha256sum can be executable");
+
+    let output = Command::new("bash")
+        .arg(repo_path("scripts/package-release.sh"))
+        .env("PATH", format!("{}:/usr/bin:/bin", bin_dir.display()))
+        .env("PLOYZ_RELEASE_SKIP_BUILD", "1")
+        .env("PLOYZ_RELEASE_VERSION", "v0.0.2-alpha.1")
+        .env("PLOYZ_RELEASE_PLATFORM", "linux/amd64")
+        .env("PLOYZ_RELEASE_ARTIFACT_DIR", &artifact_dir)
+        .env("PLOYZ_RELEASE_DIST_DIR", &dist_dir)
+        .env("PLOYZ_NATS_SERVER_VERSION", "2.14.2")
+        .env("PLOYZ_NATS_SERVER_URL", "https://example.invalid/nats.tar.gz")
+        .env("PLOYZ_NATS_SERVER_SHA256", EMPTY_SHA256)
+        .env("PLOYZ_RAILPACK_VERSION", "v0.31.0")
+        .env(
+            "PLOYZ_RAILPACK_ARCHIVE_URL",
+            "https://github.com/railwayapp/railpack/releases/download/v0.31.0/railpack-v0.31.0-x86_64-unknown-linux-musl.tar.gz",
+        )
+        .env(
+            "PLOYZ_RAILPACK_ARCHIVE_SHA256",
+            "f75416cf4c452db2841d864f54dbfd8e4d77f2d4a02b23b87561e7760fa278fd",
+        )
+        .env("PLOYZ_TEST_RAILPACK_ARCHIVE", &archive)
+        .output()
+        .expect("release packager can run");
+    assert_success(&output);
+
+    let railpack = dist_dir.join("railpack-linux-amd64");
+    assert_eq!(
+        fs::read_to_string(&railpack).expect("staged Railpack is readable"),
+        "railpack-amd64\n"
+    );
+    assert_ne!(
+        fs::metadata(&railpack)
+            .expect("staged Railpack metadata is readable")
+            .permissions()
+            .mode()
+            & 0o111,
+        0
+    );
+    let manifest = fs::read_to_string(dist_dir.join("ployz-release-linux-amd64.env"))
+        .expect("release manifest is readable");
+    assert!(manifest.contains("PLOYZ_RAILPACK_VERSION=v0.31.0\n"));
+    assert!(manifest.contains(
+        "PLOYZ_RAILPACK_URL=https://github.com/getployz/ployz/releases/download/v0.0.2-alpha.1/railpack-linux-amd64\n"
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn release_packager_rejects_a_non_official_railpack_archive() {
+    let root = temp_dir("ployz-release-package-wrong-railpack");
+    let artifact_dir = root.join("artifacts");
+    fs::create_dir_all(&artifact_dir).expect("artifact dir can be created");
+    for artifact in ["ployz", "ployzd", "ployz-ebpf-ctl", "ployz-ebpf-tc"] {
+        fs::write(artifact_dir.join(artifact), artifact).expect("artifact can be written");
+    }
+
+    let output = Command::new("bash")
+        .arg(repo_path("scripts/package-release.sh"))
+        .env("PLOYZ_RELEASE_SKIP_BUILD", "1")
+        .env("PLOYZ_RELEASE_PLATFORM", "linux/amd64")
+        .env("PLOYZ_RELEASE_ARTIFACT_DIR", &artifact_dir)
+        .env("PLOYZ_RELEASE_DIST_DIR", root.join("dist"))
+        .env("PLOYZ_RAILPACK_VERSION", "v0.31.0")
+        .env(
+            "PLOYZ_RAILPACK_ARCHIVE_URL",
+            "https://example.invalid/railpack.tar.gz",
+        )
+        .env(
+            "PLOYZ_RAILPACK_ARCHIVE_SHA256",
+            "f75416cf4c452db2841d864f54dbfd8e4d77f2d4a02b23b87561e7760fa278fd",
+        )
+        .output()
+        .expect("release packager can run");
+
+    assert!(!output.status.success());
+    assert_stderr_contains(&output, "unexpected Railpack release URL");
+}
+
+#[cfg(unix)]
+#[test]
 fn release_asset_verifier_rejects_manifest_identity_mismatch() {
     let root = temp_dir("ployz-release-verify-identity-mismatch");
     let assets_dir = root.join("assets");
@@ -359,6 +544,7 @@ fn write_complete_release_assets(assets_dir: &Path, release_tag: &str) {
             ("PLOYZD", "ployzd-linux-amd64"),
             ("PLOYZ_EBPF_CTL", "ployz-ebpf-ctl-linux-amd64"),
             ("PLOYZ_EBPF_TC", "ployz-ebpf-tc-linux-amd64"),
+            ("PLOYZ_RAILPACK", "railpack-linux-amd64"),
         ],
     );
     write_platform(
@@ -371,6 +557,7 @@ fn write_complete_release_assets(assets_dir: &Path, release_tag: &str) {
             ("PLOYZD", "ployzd-linux-arm64"),
             ("PLOYZ_EBPF_CTL", "ployz-ebpf-ctl-linux-arm64"),
             ("PLOYZ_EBPF_TC", "ployz-ebpf-tc-linux-arm64"),
+            ("PLOYZ_RAILPACK", "railpack-linux-arm64"),
         ],
     );
     write_platform(
@@ -399,6 +586,9 @@ fn write_platform(
     let mut manifest = format!(
         "PLOYZ_VERSION={semver}\nPLOYZ_RELEASE_TAG={release_tag}\nPLOYZ_RELEASE_PLATFORM={platform}\n"
     );
+    if platform.starts_with("linux-") {
+        manifest.push_str("PLOYZ_RAILPACK_VERSION=v0.31.0\n");
+    }
     for (key, asset) in assets {
         fs::write(assets_dir.join(asset), "").expect("asset can be written");
         manifest.push_str(&format!(

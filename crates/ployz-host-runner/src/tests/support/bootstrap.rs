@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 
 use super::artifacts::{
     artifact_source as source, artifact_version as version, nats_server_artifact, ployzd_artifact,
-    sha256_digest as digest,
+    railpack_artifact, sha256_digest as digest,
 };
 use crate::execution::{ArtifactKind, ArtifactTarget, DataplaneArtifactTargets};
 use crate::execution::{PloyzdRoleEnvironmentFile, SupervisorUnitTarget};
@@ -105,6 +105,7 @@ impl HostRunnerJoinRedeemer for RecordingJoinRedeemer {
                 host_runner_join_material(),
                 ployzd_artifact(),
                 dataplane_artifacts(),
+                railpack_artifact(),
                 NonEmptyRoleSet::try_new(vec![DaemonProcessRole::Machine(machine_id("machine_7"))])
                     .expect("non-empty role set"),
                 role_environment(),
@@ -249,6 +250,7 @@ pub fn first_machine_plan() -> crate::plan::HostRunnerStepPlan {
         machine_id("machine_1"),
         ployzd_artifact(),
         dataplane_artifacts(),
+        railpack_artifact(),
         nats_server_artifact(),
         InstallRolePolicy::install_all().without_gateway(),
         ployz_core::install::HostPortAssurance::Keeper,

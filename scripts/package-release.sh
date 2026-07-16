@@ -52,6 +52,36 @@ case "${platform_os}" in
       ployz-ebpf-ctl
       ployz-ebpf-tc
     )
+    : "${PLOYZ_RAILPACK_VERSION:?PLOYZ_RAILPACK_VERSION is required for Linux release manifests}"
+    : "${PLOYZ_RAILPACK_ARCHIVE_URL:?PLOYZ_RAILPACK_ARCHIVE_URL is required for Linux release manifests}"
+    : "${PLOYZ_RAILPACK_ARCHIVE_SHA256:?PLOYZ_RAILPACK_ARCHIVE_SHA256 is required for Linux release manifests}"
+    case "${platform_arch}" in
+      amd64)
+        railpack_archive_name="railpack-v0.31.0-x86_64-unknown-linux-musl.tar.gz"
+        railpack_archive_sha256="f75416cf4c452db2841d864f54dbfd8e4d77f2d4a02b23b87561e7760fa278fd"
+        ;;
+      arm64)
+        railpack_archive_name="railpack-v0.31.0-arm64-unknown-linux-musl.tar.gz"
+        railpack_archive_sha256="de4c197e3a9d0c3de14d1e55fe933611622b399f35f495b4274012609490158a"
+        ;;
+      *)
+        echo "unsupported linux release architecture: ${platform_arch} (supported: amd64, arm64)" >&2
+        exit 1
+        ;;
+    esac
+    railpack_archive_url="https://github.com/railwayapp/railpack/releases/download/v0.31.0/${railpack_archive_name}"
+    if [ "${PLOYZ_RAILPACK_VERSION}" != "v0.31.0" ]; then
+      echo "unsupported Railpack release version: ${PLOYZ_RAILPACK_VERSION} (expected v0.31.0)" >&2
+      exit 1
+    fi
+    if [ "${PLOYZ_RAILPACK_ARCHIVE_URL}" != "${railpack_archive_url}" ]; then
+      echo "unexpected Railpack release URL: ${PLOYZ_RAILPACK_ARCHIVE_URL} (expected ${railpack_archive_url})" >&2
+      exit 1
+    fi
+    if [ "${PLOYZ_RAILPACK_ARCHIVE_SHA256}" != "${railpack_archive_sha256}" ]; then
+      echo "unexpected Railpack release SHA-256: ${PLOYZ_RAILPACK_ARCHIVE_SHA256} (expected ${railpack_archive_sha256})" >&2
+      exit 1
+    fi
     if [ "${PLOYZ_RELEASE_SKIP_BUILD:-0}" != "1" ]; then
       PLOYZ_DIND_PLATFORM="${platform}" \
         bash "${ROOT_DIR}/scripts/build-dind-machine-image.sh" artifacts-only
@@ -100,6 +130,14 @@ done
 
 mkdir -p "${dist_dir}"
 
+work_dir=""
+cleanup() {
+  if [ -n "${work_dir}" ]; then
+    rm -rf "${work_dir}"
+  fi
+}
+trap cleanup EXIT
+
 copy_asset() {
   local name="$1"
   local mode="$2"
@@ -134,10 +172,22 @@ if [ "${platform_os}" = "linux" ]; then
   ployzd_asset="$(copy_asset ployzd 0755)"
   ebpf_ctl_asset="$(copy_asset ployz-ebpf-ctl 0755)"
   ebpf_tc_asset="$(copy_asset ployz-ebpf-tc 0644)"
+  work_dir="$(mktemp -d)"
+  railpack_archive="${work_dir}/${railpack_archive_name}"
+  curl --fail --location --silent --show-error "${PLOYZ_RAILPACK_ARCHIVE_URL}" --output "${railpack_archive}"
+  actual_railpack_sha256="$(sha256_of "${railpack_archive}")"
+  if [ "${actual_railpack_sha256}" != "${railpack_archive_sha256}" ]; then
+    echo "Railpack release archive has SHA-256 ${actual_railpack_sha256}, expected ${railpack_archive_sha256}" >&2
+    exit 1
+  fi
+  tar -xzf "${railpack_archive}" -C "${work_dir}" railpack
+  railpack_asset="railpack-${platform_slug}"
+  install -m 0755 "${work_dir}/railpack" "${dist_dir}/${railpack_asset}"
   staged_assets+=(
     "${ployzd_asset}"
     "${ebpf_ctl_asset}"
     "${ebpf_tc_asset}"
+    "${railpack_asset}"
   )
 fi
 
@@ -152,6 +202,8 @@ fi
     write_manifest_pair PLOYZD "${ployzd_asset}"
     write_manifest_pair PLOYZ_EBPF_CTL "${ebpf_ctl_asset}"
     write_manifest_pair PLOYZ_EBPF_TC "${ebpf_tc_asset}"
+    printf 'PLOYZ_RAILPACK_VERSION=%s\n' "${PLOYZ_RAILPACK_VERSION}"
+    write_manifest_pair PLOYZ_RAILPACK "${railpack_asset}"
     printf 'PLOYZ_NATS_SERVER_VERSION=%s\n' "${PLOYZ_NATS_SERVER_VERSION}"
     printf 'PLOYZ_NATS_SERVER_URL=%s\n' "${PLOYZ_NATS_SERVER_URL}"
     printf 'PLOYZ_NATS_SERVER_SHA256=%s\n' "${PLOYZ_NATS_SERVER_SHA256}"

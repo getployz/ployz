@@ -52,3 +52,15 @@ pub fn nats_server_artifact() -> ArtifactTarget {
     )
     .expect("valid nats-server artifact")
 }
+
+#[must_use]
+pub fn railpack_artifact() -> ArtifactTarget {
+    ArtifactTarget::new(
+        ArtifactKind::Railpack,
+        artifact_version("v0.31.0"),
+        artifact_source("https://example.invalid/railpack"),
+        sha256_digest(TEST_PLOYZD_DIGEST),
+        PathBuf::from("/usr/local/lib/ployz/railpack/v0.31.0/railpack"),
+    )
+    .expect("valid Railpack artifact")
+}

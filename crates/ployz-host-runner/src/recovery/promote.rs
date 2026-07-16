@@ -107,11 +107,19 @@ pub(crate) fn run_core_promote_command(promote: HostRunnerCorePromote) -> ExitCo
             return ExitCode::FAILURE;
         }
     };
+    let railpack_artifact = match artifact_target(ArtifactKind::Railpack, &artifacts.railpack) {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("release manifest Railpack artifact is invalid: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     let (target, access) = match resolve_core_promote_target(
         nats_server_artifact,
         ployzd_artifact,
         DataplaneArtifactTargets::new(ebpf_bytecode_artifact, ebpf_ctl_artifact),
+        railpack_artifact,
     ) {
         Ok(resolved) => resolved,
         Err(message) => {
@@ -210,6 +218,7 @@ fn resolve_core_promote_target(
     nats_server_artifact: ArtifactTarget,
     ployzd_artifact: ArtifactTarget,
     dataplane_artifacts: DataplaneArtifactTargets,
+    railpack_artifact: ArtifactTarget,
 ) -> Result<(CorePromoteTarget, PromotedCoreAccess), String> {
     let assigned_substrate = promoted_assigned_substrate(Path::new(HOST_RUNNER_STATE_DIR))?;
     let join_dir = PathBuf::from(HOST_RUNNER_STATE_DIR).join(JOIN_MATERIAL_DIR);
@@ -298,6 +307,7 @@ fn resolve_core_promote_target(
         nats_server_artifact,
         ployzd_artifact,
         dataplane_artifacts,
+        railpack_artifact,
         nats_identity,
         ployz_core::install::WrappedCaKey::new(wrapped),
         wrapped_seeds,
