@@ -47,6 +47,10 @@ fn operation_event_subjects_are_pinned() {
         "plz.v1.progress.namespace.default.operation.op_123.deploy.running.serving_target_commit"
     );
     assert_eq!(
+        deploy_running(&op_id, DeployRunningStage::EnsuringVolumes).nats_subject(&deploy_scope),
+        "plz.v1.progress.namespace.default.operation.op_123.deploy.running.ensuring_volumes"
+    );
+    assert_eq!(
         container_started(&op_id).nats_subject(&deploy_scope),
         "plz.v1.progress.namespace.default.operation.op_123.deploy.container.started.machine_7.ctr_1"
     );
@@ -167,6 +171,10 @@ fn machine_subjects_use_known_endpoint_and_event_tokens() {
         "plz.v1.rpc.machine.command.machine_7.volume.remove"
     );
     assert_eq!(
+        machine_service(&machine_id, MachineServiceEndpoint::VolumeEnsure),
+        "plz.v1.rpc.machine.command.machine_7.volume.ensure"
+    );
+    assert_eq!(
         machine_service(&machine_id, MachineServiceEndpoint::DataplanePublicKey),
         "plz.v1.rpc.machine.query.machine_7.dataplane.public_key"
     );
@@ -218,6 +226,18 @@ fn credential_endpoints_pin_subjects_and_execution_classes() {
                 OperationApiEndpointExecution::AcceptsOperation,
             ),
         ]
+    );
+}
+
+#[test]
+fn volume_create_endpoint_pins_subject_and_execution_class() {
+    assert_eq!(
+        OperationApiEndpoint::VolumeCreate.subject(),
+        "plz.v1.rpc.operator.command.volume.create"
+    );
+    assert_eq!(
+        OperationApiEndpoint::VolumeCreate.execution(),
+        OperationApiEndpointExecution::AcceptsOperation
     );
 }
 

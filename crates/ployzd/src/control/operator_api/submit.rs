@@ -10,13 +10,14 @@ use crate::control::sequencer::{
     IngressConfigureSubmitCommand, IngressConfigureSubmitError, MachineAddBootstrapMaterial,
     MachineAddBootstrapMaterialError, MachineAddSubmitCommand, MachineLifecycleSubmitCommand,
     MachineUpdateSubmitCommand, NamespaceRemoveSubmitCommand, NetworkRepairSubmitCommand,
-    OperationControllers, ServiceRestartSubmitCommand, VolumeRemoveSubmitCommand,
+    OperationControllers, ServiceRestartSubmitCommand, VolumeCreateSubmitCommand,
+    VolumeRemoveSubmitCommand,
 };
 use ployz_core::deploy::ImageSource;
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::machine::MachineLifecycle;
 use ployz_core::network::internal_dns::InternalServiceName;
-use ployz_core::operation::{CredentialGrantAction, EventSequence};
+use ployz_core::operation::{CredentialGrantAction, EventSequence, VolumeCreateRequest};
 use ployz_nats::subjects::{OperationProgressScope, operation_progress_watch};
 use ployz_sdk_types::{
     AcceptedOperation, CoreReplaceError, CoreReplaceRequest, CredentialAddError,
@@ -26,7 +27,7 @@ use ployz_sdk_types::{
     MachineAddRequest, MachineJoinToken, MachineLifecycleError, MachineLifecycleRequest,
     MachineUpdateError, MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest,
     NetworkRepairError, NetworkRepairRequest, ServiceRestartError, ServiceRestartRequest,
-    VolumeRemoveError, VolumeRemoveRequest,
+    VolumeCreateError, VolumeRemoveError, VolumeRemoveRequest,
 };
 
 use super::OperationApiHandlers;
@@ -678,6 +679,49 @@ pub async fn volume_remove(
         accepted.start_sequence,
     );
     handlers.volume_remove().start(accepted).await;
+    Ok(operation)
+}
+
+/// Accepts a volume-create request and starts its owned operation work.
+pub async fn submit_volume_create(
+    handlers: &OperationApiHandlers,
+    request: VolumeCreateRequest,
+) -> Result<AcceptedOperation, VolumeCreateError> {
+    let operation_id = request.operation_id.clone();
+    let accepted = handlers
+        .controllers()
+        .submit_volume_create(VolumeCreateSubmitCommand { request })
+        .await
+        .map_err(|error| match super::error_map::submit_failure(error) {
+            super::error_map::SubmitFailure::ResourceBusy {
+                namespace_id,
+                owner,
+            } => VolumeCreateError::ResourceBusy {
+                operation_id: operation_id.clone(),
+                namespace_id,
+                owner_operation_id: owner,
+            },
+            super::error_map::SubmitFailure::Unavailable { message } => {
+                VolumeCreateError::Unavailable {
+                    operation_id: operation_id.clone(),
+                    message,
+                }
+            }
+            super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence } => {
+                VolumeCreateError::DuplicateSequenceMismatch {
+                    operation_id: operation_id.clone(),
+                    sequence,
+                }
+            }
+        })?;
+    let operation = owned_operation(
+        accepted.request.operation_id.clone(),
+        OperationProgressScope::Namespace {
+            namespace_id: accepted.request.namespace_id.clone(),
+        },
+        accepted.start_sequence,
+    );
+    handlers.volume_create().start(accepted).await;
     Ok(operation)
 }
 

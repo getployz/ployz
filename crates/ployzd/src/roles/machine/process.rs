@@ -606,6 +606,13 @@ mod tests {
     }
 
     impl MachineContainerRunner for StaticRunner {
+        async fn ensure_volume(
+            &self,
+            _volume: &ployz_core::intent::VolumePinState,
+        ) -> Result<(), ployz_core::machine::VolumeEnsureFailure> {
+            Ok(())
+        }
+
         async fn existing_managed_containers(
             &self,
         ) -> Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError> {
@@ -756,6 +763,13 @@ mod tests {
     }
 
     impl MachineContainerRunner for FailingListRunner {
+        async fn ensure_volume(
+            &self,
+            _volume: &ployz_core::intent::VolumePinState,
+        ) -> Result<(), ployz_core::machine::VolumeEnsureFailure> {
+            Ok(())
+        }
+
         async fn existing_managed_containers(
             &self,
         ) -> Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError> {

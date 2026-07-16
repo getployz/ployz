@@ -14,7 +14,8 @@ use std::time::Duration;
 use super::phase::{DeployFailedPhase, DeployFailurePhase};
 use super::{
     DeployContainer, DeployExecutionCommand, DeployExecutionStep, DeployFailureRecordError,
-    DeployOperationRecordError, DeployOperationRecorder, NamespaceCommitError,
+    DeployOperationRecordError, DeployOperationRecorder, MachineVolumeEnsureError,
+    NamespaceCommitError,
 };
 
 fn failure_service_id(command: &DeployExecutionCommand) -> ServiceId {
@@ -215,6 +216,8 @@ pub enum DeployExecutionError {
     },
     #[error("container execution failed: {0:?}")]
     RunContainer(MachineContainerRuntimeError),
+    #[error("volume ensure failed")]
+    EnsureVolume(Box<MachineVolumeEnsureError>),
     #[error("pre-start hook failed: {0:?}")]
     PreStartHook(PreStartHookRuntimeError),
     #[error(
@@ -429,6 +432,7 @@ impl DeployExecutionStep {
             Self::WaitHealthy => "wait_healthy",
             Self::EnsureCertificate { .. } => "ensure_certificate",
             Self::CommitVolumePins => "commit_volume_pins",
+            Self::EnsureVolume { .. } => "ensure_volume",
             Self::RemoveRoute { .. } => "remove_route",
             Self::RemoveServingTarget { .. } => "remove_serving_target",
             Self::CommitServingTarget { .. } => "commit_serving_target_entry",
@@ -471,6 +475,11 @@ impl DeployExecutionStep {
             Self::CommitVolumePins => DeployOperationFailure::ControlPlaneCommitFailed {
                 scope: failure_commit_scope(command),
                 message: timeout_failure_message("volume pin commit", timeout),
+                retained_artifacts,
+            },
+            Self::EnsureVolume { machine_id, .. } => DeployOperationFailure::RuntimeUnavailable {
+                machine_id: machine_id.clone(),
+                message: timeout_failure_message("volume ensure", timeout),
                 retained_artifacts,
             },
             Self::RemoveRoute { route } => DeployOperationFailure::RouteCutoverFailed {
@@ -522,6 +531,12 @@ impl From<DeployHealthCheckError> for DeployExecutionError {
     }
 }
 
+impl From<MachineVolumeEnsureError> for DeployExecutionError {
+    fn from(value: MachineVolumeEnsureError) -> Self {
+        Self::EnsureVolume(Box::new(value))
+    }
+}
+
 impl DeployExecutionError {
     #[must_use]
     pub fn deploy_failure(
@@ -549,17 +564,6 @@ impl DeployExecutionError {
                     message: failure_message("volume-backed service has conflicting volume pins"),
                 }
             }
-            Self::Plan(DeployPlanError::ProvisionedVolumeRequiresProvisioning {
-                service_id,
-                volume_name,
-            }) => DeployOperationFailure::PlanningFailed {
-                service_id: service_id.clone(),
-                namespace_revision_id: failure_namespace_revision_id(command),
-                message: failure_message(format!(
-                    "provisioned volume {} requires the volume provisioning stage",
-                    volume_name.as_str()
-                )),
-            },
             Self::Plan(DeployPlanError::VolumeAdmission {
                 service_id,
                 failure,
@@ -625,6 +629,26 @@ impl DeployExecutionError {
             }
             Self::Image { failure } => (**failure).clone(),
             Self::RunContainer(error) => error.deploy_failure(retained_artifacts),
+            Self::EnsureVolume(error) => match error.as_ref() {
+                MachineVolumeEnsureError::Unavailable {
+                    machine_id,
+                    volume_name: _,
+                    reason,
+                } => DeployOperationFailure::RuntimeUnavailable {
+                    machine_id: machine_id.clone(),
+                    message: reason.failure_message(),
+                    retained_artifacts,
+                },
+                MachineVolumeEnsureError::Domain {
+                    machine_id,
+                    volume_name,
+                    failure,
+                } => DeployOperationFailure::VolumeEnsureFailed {
+                    machine_id: machine_id.clone(),
+                    volume_name: volume_name.clone(),
+                    failure: failure.clone(),
+                },
+            },
             Self::PreStartHook(error) => error.deploy_failure(retained_artifacts),
             Self::PreStartHookExited {
                 machine_id,
@@ -951,6 +975,7 @@ fn add_retained_artifacts(failure: &mut DeployOperationFailure, artifacts: Vec<R
         | DeployOperationFailure::ImageDigestMismatch { .. }
         | DeployOperationFailure::SeedUnavailable { .. }
         | DeployOperationFailure::PlatformImageUnavailable { .. }
+        | DeployOperationFailure::VolumeEnsureFailed { .. }
         | DeployOperationFailure::UnsupportedTargetPlatform { .. } => return,
     };
 

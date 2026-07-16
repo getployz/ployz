@@ -394,6 +394,7 @@ async fn reusable_interrupted_deploy_operation_ids(
                 reusable.insert(id);
             }
             OperationStatus::Deploy { .. }
+            | OperationStatus::VolumeCreate { .. }
             | OperationStatus::Cert { .. }
             | OperationStatus::MachineAdd { .. }
             | OperationStatus::MachineUpdate { .. }

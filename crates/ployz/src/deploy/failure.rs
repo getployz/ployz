@@ -46,6 +46,7 @@ impl<'a> DeployFailureView<'a> {
                 }
             }
             DeployOperationFailure::RuntimeUnavailable { machine_id, .. }
+            | DeployOperationFailure::VolumeEnsureFailed { machine_id, .. }
             | DeployOperationFailure::ContainerStartFailed { machine_id, .. }
             | DeployOperationFailure::ImageResolutionFailed { machine_id, .. }
             | DeployOperationFailure::PlatformImageUnavailable { machine_id, .. }
@@ -215,6 +216,7 @@ impl<'a> DeployFailureView<'a> {
                 FailureSafety::NothingChanged
             }
             DeployOperationFailure::RuntimeUnavailable { .. }
+            | DeployOperationFailure::VolumeEnsureFailed { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. }
@@ -241,6 +243,7 @@ impl<'a> DeployFailureView<'a> {
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
+            | DeployOperationFailure::VolumeEnsureFailed { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. }
@@ -264,6 +267,7 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::PlatformImageUnavailable { .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
+            | DeployOperationFailure::VolumeEnsureFailed { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. }
@@ -305,6 +309,7 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::PlatformImageUnavailable { .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
+            | DeployOperationFailure::VolumeEnsureFailed { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. }
@@ -333,6 +338,7 @@ impl<'a> DeployFailureView<'a> {
             },
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
+            | DeployOperationFailure::VolumeEnsureFailed { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. }
@@ -502,6 +508,16 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
         DeployOperationFailure::RuntimeUnavailable { message, .. } => {
             format!("container runtime unavailable: {}", message.as_str())
         }
+        DeployOperationFailure::VolumeEnsureFailed {
+            machine_id,
+            volume_name,
+            failure,
+        } => format!(
+            "volume {} could not be ensured on {}: {}",
+            volume_name.as_str(),
+            machine_id.as_str(),
+            crate::volume::presentation::ensure_failure(failure)
+        ),
         DeployOperationFailure::ContainerStartFailed { message, .. } => {
             format!("container failed to start: {}", message.as_str())
         }

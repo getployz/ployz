@@ -1583,7 +1583,7 @@ fn parse_duration_micros(value: &str) -> Result<u64, String> {
     Ok(total_micros)
 }
 
-pub(super) fn parse_byte_quantity(value: &str, noun: &str) -> Result<u64, String> {
+pub(crate) fn parse_byte_quantity(value: &str, noun: &str) -> Result<u64, String> {
     let value = value.trim();
     if value.is_empty() {
         return Err(format!("{noun} is empty"));

@@ -20,7 +20,8 @@ use crate::{
     OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult,
     ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
     ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
-    VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
+    VolumeCreateError, VolumeCreateRequest, VolumeListError, VolumeListRequest, VolumeListResult,
+    VolumeRemoveError, VolumeRemoveRequest,
 };
 use ployz_core::operation::OperationEventReplayPage;
 
@@ -47,6 +48,7 @@ pub enum OperationApiEndpoint {
     ServiceRestart,
     NamespaceRemove,
     VolumeList,
+    VolumeCreate,
     VolumeRemove,
     RuntimeSnapshot,
     LogsTail,
@@ -85,6 +87,7 @@ macro_rules! operation_api_contracts {
             $crate::operation_api::MachineResumeApi,
             $crate::operation_api::ServiceRestartApi,
             $crate::operation_api::NamespaceRemoveApi,
+            $crate::operation_api::VolumeCreateApi,
             $crate::operation_api::VolumeRemoveApi,
             $crate::operation_api::CoreReplaceApi,
             $crate::operation_api::CoreReplaceReportApi,
@@ -301,6 +304,18 @@ impl OperationApiContract for VolumeRemoveApi {
 
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::VolumeRemove;
     const RESPONSE_ALIAS: &'static str = "VolumeRemoveResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VolumeCreateApi;
+
+impl OperationApiContract for VolumeCreateApi {
+    type Request = VolumeCreateRequest;
+    type Success = AcceptedOperation;
+    type Error = VolumeCreateError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::VolumeCreate;
+    const RESPONSE_ALIAS: &'static str = "VolumeCreateResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

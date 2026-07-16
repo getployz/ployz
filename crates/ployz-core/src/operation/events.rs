@@ -33,6 +33,7 @@ use super::namespace_remove::{NamespaceRemoveEvent, NamespaceRemoveTransition};
 use super::network_repair::{NetworkRepairEvent, NetworkRepairEvidence, NetworkRepairTransition};
 use super::service_restart::{ServiceRestartEvent, ServiceRestartTransition};
 use super::text::CancellationReason;
+use super::volume_create::{VolumeCreateEvent, VolumeCreateTransition};
 use super::volume_remove::{VolumeRemoveEvent, VolumeRemoveTransition};
 use super::{
     CertOperationFailure, CertRunningStage, DeployCleanupFailure, DeployCompletionOutcome,
@@ -40,8 +41,8 @@ use super::{
     MachineAddOperationState, MachineLifecycleFailure, MachineStoragePrepareFailure,
     MachineSubstrateVersions, MachineUpdateFailure, NamespaceRemoveFailure,
     NamespaceRemoveRunningStage, NetworkRepairFailure, NetworkRepairRunningStage, OperationKind,
-    RouteTarget, ServiceRestartFailure, ServiceRestartRunningStage, VolumeRemoveFailure,
-    VolumeRemoveRunningStage,
+    RouteTarget, ServiceRestartFailure, ServiceRestartRunningStage, VolumeCreateFailure,
+    VolumeCreateRequest, VolumeCreateRunningStage, VolumeRemoveFailure, VolumeRemoveRunningStage,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +78,10 @@ pub enum OperationSubject {
     IngressConfigure,
     NamespaceRemove {
         namespace_id: NamespaceId,
+    },
+    VolumeCreate {
+        namespace_id: NamespaceId,
+        volume_name: VolumeName,
     },
     VolumeRemove {
         namespace_id: NamespaceId,
@@ -388,6 +393,23 @@ pub enum OperationEvent {
         operation_id: OperationId,
         failure: NamespaceRemoveFailure,
     },
+    VolumeCreateSubmitted {
+        request: VolumeCreateRequest,
+    },
+    VolumeCreatePlanningStarted {
+        operation_id: OperationId,
+    },
+    VolumeCreateRunning {
+        operation_id: OperationId,
+        stage: VolumeCreateRunningStage,
+    },
+    VolumeCreateCompleted {
+        operation_id: OperationId,
+    },
+    VolumeCreateFailed {
+        operation_id: OperationId,
+        failure: VolumeCreateFailure,
+    },
     VolumeRemoveSubmitted {
         operation_id: OperationId,
         namespace_id: NamespaceId,
@@ -484,12 +506,17 @@ impl OperationEvent {
             | Self::NamespaceRemoveContainerRemoved { operation_id, .. }
             | Self::NamespaceRemoveCompleted { operation_id }
             | Self::NamespaceRemoveFailed { operation_id, .. }
+            | Self::VolumeCreatePlanningStarted { operation_id }
+            | Self::VolumeCreateRunning { operation_id, .. }
+            | Self::VolumeCreateCompleted { operation_id }
+            | Self::VolumeCreateFailed { operation_id, .. }
             | Self::VolumeRemoveSubmitted { operation_id, .. }
             | Self::VolumeRemoveRunning { operation_id, .. }
             | Self::VolumeRemoveCompleted { operation_id }
             | Self::VolumeRemoveFailed { operation_id, .. }
             | Self::OperationInterrupted { operation_id, .. }
             | Self::Cancelled { operation_id, .. } => operation_id,
+            Self::VolumeCreateSubmitted { request } => &request.operation_id,
         }
     }
 
@@ -571,6 +598,11 @@ impl OperationEvent {
             | Self::NamespaceRemoveContainerRemoved { .. }
             | Self::NamespaceRemoveCompleted { .. }
             | Self::NamespaceRemoveFailed { .. }
+            | Self::VolumeCreateSubmitted { .. }
+            | Self::VolumeCreatePlanningStarted { .. }
+            | Self::VolumeCreateRunning { .. }
+            | Self::VolumeCreateCompleted { .. }
+            | Self::VolumeCreateFailed { .. }
             | Self::VolumeRemoveSubmitted { .. }
             | Self::VolumeRemoveRunning { .. }
             | Self::VolumeRemoveCompleted { .. }
@@ -706,6 +738,11 @@ impl OperationEvent {
             | Self::NamespaceRemoveContainerRemoved { .. }
             | Self::NamespaceRemoveCompleted { .. }
             | Self::NamespaceRemoveFailed { .. }
+            | Self::VolumeCreateSubmitted { .. }
+            | Self::VolumeCreatePlanningStarted { .. }
+            | Self::VolumeCreateRunning { .. }
+            | Self::VolumeCreateCompleted { .. }
+            | Self::VolumeCreateFailed { .. }
             | Self::VolumeRemoveSubmitted { .. }
             | Self::VolumeRemoveRunning { .. }
             | Self::VolumeRemoveCompleted { .. }
@@ -785,6 +822,10 @@ pub(super) enum ClassifiedOperationEvent {
         operation_id: OperationId,
         event: NamespaceRemoveEvent,
     },
+    VolumeCreate {
+        operation_id: OperationId,
+        event: VolumeCreateEvent,
+    },
     VolumeRemove {
         operation_id: OperationId,
         event: VolumeRemoveEvent,
@@ -811,7 +852,8 @@ impl ClassifiedOperationEvent {
             | Self::ManagedDnsReconcile { operation_id, .. }
             | Self::IngressConfigure { operation_id, .. }
             | Self::NamespaceRemove { operation_id, .. } => operation_id,
-            Self::VolumeRemove { operation_id, .. }
+            Self::VolumeCreate { operation_id, .. }
+            | Self::VolumeRemove { operation_id, .. }
             | Self::OperationInterrupted { operation_id, .. } => operation_id,
         }
     }
@@ -1404,6 +1446,32 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                     volume_name,
                 },
             },
+            OperationEvent::VolumeCreateSubmitted { request } => Self::VolumeCreate {
+                operation_id: request.operation_id.clone(),
+                event: VolumeCreateEvent::Submitted { request },
+            },
+            OperationEvent::VolumeCreatePlanningStarted { operation_id } => Self::VolumeCreate {
+                operation_id,
+                event: VolumeCreateEvent::Transition(VolumeCreateTransition::Planning),
+            },
+            OperationEvent::VolumeCreateRunning {
+                operation_id,
+                stage,
+            } => Self::VolumeCreate {
+                operation_id,
+                event: VolumeCreateEvent::Transition(VolumeCreateTransition::Running { stage }),
+            },
+            OperationEvent::VolumeCreateCompleted { operation_id } => Self::VolumeCreate {
+                operation_id,
+                event: VolumeCreateEvent::Transition(VolumeCreateTransition::Completed),
+            },
+            OperationEvent::VolumeCreateFailed {
+                operation_id,
+                failure,
+            } => Self::VolumeCreate {
+                operation_id,
+                event: VolumeCreateEvent::Transition(VolumeCreateTransition::Failed { failure }),
+            },
             OperationEvent::VolumeRemoveRunning {
                 operation_id,
                 stage,
@@ -1495,6 +1563,10 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 OperationKind::VolumeRemove => Self::VolumeRemove {
                     operation_id,
                     event: VolumeRemoveEvent::Cancelled(reason),
+                },
+                OperationKind::VolumeCreate => Self::VolumeCreate {
+                    operation_id,
+                    event: VolumeCreateEvent::Cancelled,
                 },
             },
         }

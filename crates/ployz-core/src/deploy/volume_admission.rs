@@ -22,6 +22,16 @@ pub struct VolumeAdmissionInput<'a> {
     pub storage_testimony: StorageTestimony<'a>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct SingleVolumeAdmissionInput<'a> {
+    pub namespace_id: &'a NamespaceId,
+    pub volume_name: &'a VolumeName,
+    pub declaration: &'a VolumeSpec,
+    pub volume_pins: &'a [VolumePinState],
+    pub selected_machine_id: &'a MachineId,
+    pub storage_testimony: StorageTestimony<'a>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VolumeAdmissionDecision {
     Existing {
@@ -46,7 +56,9 @@ impl VolumeAdmissionDecision {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, thiserror::Error)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VolumeAdmissionFailure {
     #[error("mounted volume {volume_name:?} has no declaration")]
     MissingDeclaration { volume_name: VolumeName },
@@ -109,11 +121,12 @@ pub enum VolumeAdmissionFailure {
     UnpinnedDatasetExists { dataset: DatasetName },
     #[error("quota admission arithmetic overflowed")]
     CapacityOverflow,
-    #[error(
-        "quota admission exceeds available capacity: available={available_bytes} requested_total={requested_total_bytes}"
-    )]
+    #[error("quota admission exceeds available capacity")]
     CapacityExceeded {
-        available_bytes: u64,
+        total_bytes: u64,
+        provisioned_used_bytes: u64,
+        free_bytes: u64,
+        required_headroom_bytes: u64,
         requested_total_bytes: u64,
     },
     #[error(
@@ -130,8 +143,24 @@ pub enum VolumeAdmissionFailure {
 pub fn admit_mounted_volumes(
     input: VolumeAdmissionInput<'_>,
 ) -> Result<Vec<VolumeAdmissionDecision>, VolumeAdmissionFailure> {
-    let testimony = input.storage_testimony;
-    classify_mounted_volumes(input)?.complete(testimony)
+    let storage_testimony = input.storage_testimony;
+    let classified = classify_mounted_volumes(input)?;
+    complete_volume_admissions(classified, storage_testimony)
+}
+
+#[must_use = "volume admission decisions must be executed or rejected"]
+pub fn admit_volume(
+    input: SingleVolumeAdmissionInput<'_>,
+) -> Result<VolumeAdmissionDecision, VolumeAdmissionFailure> {
+    let namespace_id = input.namespace_id;
+    let selected_machine_id = input.selected_machine_id;
+    let storage_testimony = input.storage_testimony;
+    complete_volume_admission(
+        classify_volume(input)?,
+        namespace_id,
+        selected_machine_id,
+        storage_testimony,
+    )
 }
 
 /// Validates durable birth-kind and quota monotonicity without consulting
@@ -144,41 +173,22 @@ pub fn validate_mounted_volume_structure(
 }
 
 #[derive(Debug)]
-struct ClassifiedVolumeAdmission {
+struct ClassifiedMountedVolumeAdmissions {
     namespace_id: NamespaceId,
     selected_machine_id: MachineId,
     decisions: Vec<VolumeAdmissionDecision>,
     pending_provisioned: Vec<PendingProvisionedAdmission>,
 }
 
-impl ClassifiedVolumeAdmission {
-    fn complete(
-        mut self,
-        storage_testimony: StorageTestimony<'_>,
-    ) -> Result<Vec<VolumeAdmissionDecision>, VolumeAdmissionFailure> {
-        if !self.pending_provisioned.is_empty() {
-            let (pool, capacity) = ready_capacity(&self.selected_machine_id, storage_testimony)?;
-            let capacity_decisions = admit_provisioned_capacity(
-                &self.namespace_id,
-                &self.selected_machine_id,
-                pool,
-                capacity,
-                self.pending_provisioned,
-            )?;
-            self.decisions.extend(capacity_decisions);
-        }
-        self.decisions.sort_by(|left, right| {
-            left.desired_pin()
-                .volume_name()
-                .cmp(right.desired_pin().volume_name())
-        });
-        Ok(self.decisions)
-    }
+#[derive(Debug)]
+enum ClassifiedVolumeAdmission {
+    Decided(VolumeAdmissionDecision),
+    PendingProvisioned(PendingProvisionedAdmission),
 }
 
 fn classify_mounted_volumes(
     input: VolumeAdmissionInput<'_>,
-) -> Result<ClassifiedVolumeAdmission, VolumeAdmissionFailure> {
+) -> Result<ClassifiedMountedVolumeAdmissions, VolumeAdmissionFailure> {
     let mounted_volume_names = input
         .mounted_volume_names
         .iter()
@@ -191,109 +201,134 @@ fn classify_mounted_volumes(
         let Some(declaration) = input.declarations.get(&volume_name) else {
             return Err(VolumeAdmissionFailure::MissingDeclaration { volume_name });
         };
-        let matching_pins = input
-            .volume_pins
-            .iter()
-            .filter(|pin| {
-                pin.namespace_id() == input.namespace_id && pin.volume_name() == &volume_name
-            })
-            .collect::<Vec<_>>();
-        let pin = match matching_pins.as_slice() {
-            [] => None,
-            [pin] => Some(*pin),
-            pins => {
-                return Err(VolumeAdmissionFailure::AmbiguousPins {
-                    volume_name,
-                    pin_count: pins.len(),
-                });
-            }
-        };
-
-        if let Some(pin) = pin {
-            if pin.machine_id() != input.selected_machine_id {
-                return Err(VolumeAdmissionFailure::PinnedToDifferentMachine {
-                    volume_name,
-                    pinned_machine_id: pin.machine_id().clone(),
-                    selected_machine_id: input.selected_machine_id.clone(),
-                });
-            }
-            match (declaration, pin.kind()) {
-                (VolumeSpec::Plain, VolumeKind::Plain) => {
-                    decisions.push(VolumeAdmissionDecision::Existing { pin: pin.clone() });
-                }
-                (VolumeSpec::Plain, pin_kind @ VolumeKind::Provisioned { .. })
-                | (VolumeSpec::Provisioned { .. }, pin_kind @ VolumeKind::Plain) => {
-                    return Err(VolumeAdmissionFailure::KindConversion {
-                        volume_name,
-                        declaration: declaration.clone(),
-                        pin_kind: pin_kind.clone(),
-                    });
-                }
-                (
-                    VolumeSpec::Provisioned {
-                        max_size_bytes: declared,
-                    },
-                    VolumeKind::Provisioned {
-                        max_size_bytes: pinned,
-                        ..
-                    },
-                ) if declared.get() < pinned.get() => {
-                    return Err(VolumeAdmissionFailure::QuotaShrink {
-                        volume_name,
-                        declared_max_size_bytes: *declared,
-                        pinned_max_size_bytes: *pinned,
-                    });
-                }
-                (
-                    VolumeSpec::Provisioned {
-                        max_size_bytes: declared,
-                    },
-                    VolumeKind::Provisioned {
-                        max_size_bytes: pinned,
-                        ..
-                    },
-                ) if declared == pinned => {
-                    decisions.push(VolumeAdmissionDecision::Existing { pin: pin.clone() });
-                }
-                (
-                    VolumeSpec::Provisioned { max_size_bytes },
-                    VolumeKind::Provisioned { dataset, .. },
-                ) => {
-                    pending_provisioned.push(PendingProvisionedAdmission::Growth {
-                        volume_name,
-                        requested: *max_size_bytes,
-                        current: pin.clone(),
-                        dataset: dataset.clone(),
-                    });
-                }
-            }
-        } else {
-            match declaration {
-                VolumeSpec::Plain => {
-                    decisions.push(VolumeAdmissionDecision::NeedsCreation {
-                        pin: VolumePinState::plain(
-                            input.namespace_id.clone(),
-                            volume_name,
-                            input.selected_machine_id.clone(),
-                        ),
-                    });
-                }
-                VolumeSpec::Provisioned { max_size_bytes } => {
-                    pending_provisioned.push(PendingProvisionedAdmission::Creation {
-                        volume_name,
-                        requested: *max_size_bytes,
-                    });
-                }
+        match classify_volume(SingleVolumeAdmissionInput {
+            namespace_id: input.namespace_id,
+            volume_name: &volume_name,
+            declaration,
+            volume_pins: input.volume_pins,
+            selected_machine_id: input.selected_machine_id,
+            storage_testimony: input.storage_testimony,
+        })? {
+            ClassifiedVolumeAdmission::Decided(decision) => decisions.push(decision),
+            ClassifiedVolumeAdmission::PendingProvisioned(pending) => {
+                pending_provisioned.push(pending);
             }
         }
     }
 
-    Ok(ClassifiedVolumeAdmission {
+    Ok(ClassifiedMountedVolumeAdmissions {
         namespace_id: input.namespace_id.clone(),
         selected_machine_id: input.selected_machine_id.clone(),
         decisions,
         pending_provisioned,
     })
+}
+
+fn classify_volume(
+    input: SingleVolumeAdmissionInput<'_>,
+) -> Result<ClassifiedVolumeAdmission, VolumeAdmissionFailure> {
+    let matching_pins = input
+        .volume_pins
+        .iter()
+        .filter(|pin| {
+            pin.namespace_id() == input.namespace_id && pin.volume_name() == input.volume_name
+        })
+        .collect::<Vec<_>>();
+    let pin = match matching_pins.as_slice() {
+        [] => None,
+        [pin] => Some(*pin),
+        pins => {
+            return Err(VolumeAdmissionFailure::AmbiguousPins {
+                volume_name: input.volume_name.clone(),
+                pin_count: pins.len(),
+            });
+        }
+    };
+
+    let decision = if let Some(pin) = pin {
+        if pin.machine_id() != input.selected_machine_id {
+            return Err(VolumeAdmissionFailure::PinnedToDifferentMachine {
+                volume_name: input.volume_name.clone(),
+                pinned_machine_id: pin.machine_id().clone(),
+                selected_machine_id: input.selected_machine_id.clone(),
+            });
+        }
+        match (input.declaration, pin.kind()) {
+            (VolumeSpec::Plain, VolumeKind::Plain) => {
+                ClassifiedVolumeAdmission::Decided(VolumeAdmissionDecision::Existing {
+                    pin: pin.clone(),
+                })
+            }
+            (VolumeSpec::Plain, pin_kind @ VolumeKind::Provisioned { .. })
+            | (VolumeSpec::Provisioned { .. }, pin_kind @ VolumeKind::Plain) => {
+                return Err(VolumeAdmissionFailure::KindConversion {
+                    volume_name: input.volume_name.clone(),
+                    declaration: input.declaration.clone(),
+                    pin_kind: pin_kind.clone(),
+                });
+            }
+            (
+                VolumeSpec::Provisioned {
+                    max_size_bytes: declared,
+                },
+                VolumeKind::Provisioned {
+                    max_size_bytes: pinned,
+                    ..
+                },
+            ) if declared.get() < pinned.get() => {
+                return Err(VolumeAdmissionFailure::QuotaShrink {
+                    volume_name: input.volume_name.clone(),
+                    declared_max_size_bytes: *declared,
+                    pinned_max_size_bytes: *pinned,
+                });
+            }
+            (
+                VolumeSpec::Provisioned {
+                    max_size_bytes: declared,
+                },
+                VolumeKind::Provisioned {
+                    max_size_bytes: pinned,
+                    ..
+                },
+            ) if declared == pinned => {
+                ClassifiedVolumeAdmission::Decided(VolumeAdmissionDecision::Existing {
+                    pin: pin.clone(),
+                })
+            }
+            (
+                VolumeSpec::Provisioned { max_size_bytes },
+                VolumeKind::Provisioned { dataset, .. },
+            ) => {
+                ClassifiedVolumeAdmission::PendingProvisioned(PendingProvisionedAdmission::Growth {
+                    volume_name: input.volume_name.clone(),
+                    requested: *max_size_bytes,
+                    current: pin.clone(),
+                    dataset: dataset.clone(),
+                })
+            }
+        }
+    } else {
+        match input.declaration {
+            VolumeSpec::Plain => {
+                ClassifiedVolumeAdmission::Decided(VolumeAdmissionDecision::NeedsCreation {
+                    pin: VolumePinState::plain(
+                        input.namespace_id.clone(),
+                        input.volume_name.clone(),
+                        input.selected_machine_id.clone(),
+                    ),
+                })
+            }
+            VolumeSpec::Provisioned { max_size_bytes } => {
+                ClassifiedVolumeAdmission::PendingProvisioned(
+                    PendingProvisionedAdmission::Creation {
+                        volume_name: input.volume_name.clone(),
+                        requested: *max_size_bytes,
+                    },
+                )
+            }
+        }
+    };
+    Ok(decision)
 }
 
 #[derive(Debug)]
@@ -340,59 +375,124 @@ fn ready_capacity<'a>(
     }
 }
 
-fn admit_provisioned_capacity(
+fn complete_volume_admission(
+    classified: ClassifiedVolumeAdmission,
     namespace_id: &NamespaceId,
-    machine_id: &MachineId,
-    pool: &ZfsPoolName,
-    capacity: &PoolCapacityFacts,
-    pending: Vec<PendingProvisionedAdmission>,
-) -> Result<Vec<VolumeAdmissionDecision>, VolumeAdmissionFailure> {
-    let mut decisions = Vec::with_capacity(pending.len());
-    let mut quotas = BTreeMap::new();
-    let mut requested_total = 0_u64;
-    for fact in &capacity.child_quotas {
-        if quotas
-            .insert(fact.dataset.clone(), fact.quota_bytes)
-            .is_some()
-        {
-            return Err(VolumeAdmissionFailure::DuplicateDatasetQuota {
-                dataset: fact.dataset.clone(),
-            });
+    selected_machine_id: &MachineId,
+    storage_testimony: StorageTestimony<'_>,
+) -> Result<VolumeAdmissionDecision, VolumeAdmissionFailure> {
+    match classified {
+        ClassifiedVolumeAdmission::Decided(decision) => Ok(decision),
+        ClassifiedVolumeAdmission::PendingProvisioned(pending) => {
+            let mut capacity = ProvisionedCapacityAdmission::new(
+                namespace_id,
+                selected_machine_id,
+                storage_testimony,
+            )?;
+            let decision = capacity.admit(pending)?;
+            capacity.finish()?;
+            Ok(decision)
         }
-        requested_total = requested_total
-            .checked_add(fact.quota_bytes)
-            .ok_or(VolumeAdmissionFailure::CapacityOverflow)?;
+    }
+}
+
+fn complete_volume_admissions(
+    mut classified: ClassifiedMountedVolumeAdmissions,
+    storage_testimony: StorageTestimony<'_>,
+) -> Result<Vec<VolumeAdmissionDecision>, VolumeAdmissionFailure> {
+    if !classified.pending_provisioned.is_empty() {
+        let mut capacity = ProvisionedCapacityAdmission::new(
+            &classified.namespace_id,
+            &classified.selected_machine_id,
+            storage_testimony,
+        )?;
+        for pending in classified.pending_provisioned {
+            classified.decisions.push(capacity.admit(pending)?);
+        }
+        capacity.finish()?;
+    }
+    classified.decisions.sort_by(|left, right| {
+        left.desired_pin()
+            .volume_name()
+            .cmp(right.desired_pin().volume_name())
+    });
+    Ok(classified.decisions)
+}
+
+struct ProvisionedCapacityAdmission<'a> {
+    namespace_id: &'a NamespaceId,
+    machine_id: &'a MachineId,
+    pool: &'a ZfsPoolName,
+    capacity: &'a PoolCapacityFacts,
+    quotas: BTreeMap<DatasetName, u64>,
+    requested_total: u64,
+}
+
+impl<'a> ProvisionedCapacityAdmission<'a> {
+    fn new(
+        namespace_id: &'a NamespaceId,
+        machine_id: &'a MachineId,
+        storage_testimony: StorageTestimony<'a>,
+    ) -> Result<Self, VolumeAdmissionFailure> {
+        let (pool, capacity) = ready_capacity(machine_id, storage_testimony)?;
+        let mut quotas = BTreeMap::new();
+        let mut requested_total = 0_u64;
+        for fact in &capacity.child_quotas {
+            if quotas
+                .insert(fact.dataset.clone(), fact.quota_bytes)
+                .is_some()
+            {
+                return Err(VolumeAdmissionFailure::DuplicateDatasetQuota {
+                    dataset: fact.dataset.clone(),
+                });
+            }
+            requested_total = requested_total
+                .checked_add(fact.quota_bytes)
+                .ok_or(VolumeAdmissionFailure::CapacityOverflow)?;
+        }
+
+        Ok(Self {
+            namespace_id,
+            machine_id,
+            pool,
+            capacity,
+            quotas,
+            requested_total,
+        })
     }
 
-    for admission in pending {
+    fn admit(
+        &mut self,
+        admission: PendingProvisionedAdmission,
+    ) -> Result<VolumeAdmissionDecision, VolumeAdmissionFailure> {
         match admission {
             PendingProvisionedAdmission::Creation {
                 volume_name,
                 requested,
             } => {
-                let dataset = DatasetName::for_volume(pool, namespace_id, &volume_name).map_err(
-                    |source| VolumeAdmissionFailure::DatasetIdentity {
-                        volume_name: volume_name.clone(),
-                        source,
-                    },
-                )?;
-                if quotas.contains_key(&dataset) {
+                let dataset = DatasetName::for_volume(self.pool, self.namespace_id, &volume_name)
+                    .map_err(|source| VolumeAdmissionFailure::DatasetIdentity {
+                    volume_name: volume_name.clone(),
+                    source,
+                })?;
+                if self.quotas.contains_key(&dataset) {
                     return Err(VolumeAdmissionFailure::UnpinnedDatasetExists { dataset });
                 }
-                requested_total = requested_total
+                self.requested_total = self
+                    .requested_total
                     .checked_add(requested.get())
                     .ok_or(VolumeAdmissionFailure::CapacityOverflow)?;
                 let pin = VolumePinState::try_new(
-                    namespace_id.clone(),
+                    self.namespace_id.clone(),
                     volume_name,
-                    machine_id.clone(),
+                    self.machine_id.clone(),
                     VolumeKind::Provisioned {
                         dataset,
                         max_size_bytes: requested,
                     },
                 )
                 .expect("canonical dataset identity matches its volume");
-                decisions.push(VolumeAdmissionDecision::NeedsCreation { pin });
+                Ok(VolumeAdmissionDecision::NeedsCreation { pin })
             }
             PendingProvisionedAdmission::Growth {
                 volume_name,
@@ -401,58 +501,65 @@ fn admit_provisioned_capacity(
                 dataset,
             } => {
                 let pinned_pool = dataset.pool();
-                if &pinned_pool != pool {
+                if &pinned_pool != self.pool {
                     return Err(VolumeAdmissionFailure::PoolMismatch {
                         volume_name,
                         pinned_pool,
-                        reported_pool: pool.clone(),
+                        reported_pool: self.pool.clone(),
                     });
                 }
-                let Some(observed_quota) = quotas.get(&dataset) else {
+                let Some(observed_quota) = self.quotas.get(&dataset) else {
                     return Err(VolumeAdmissionFailure::DatasetQuotaNotReported { dataset });
                 };
-                requested_total = requested_total
+                self.requested_total = self
+                    .requested_total
                     .checked_sub(*observed_quota)
                     .and_then(|total| total.checked_add(requested.get()))
                     .ok_or(VolumeAdmissionFailure::CapacityOverflow)?;
                 let replacement = VolumePinState::try_new(
-                    namespace_id.clone(),
+                    self.namespace_id.clone(),
                     volume_name,
-                    machine_id.clone(),
+                    self.machine_id.clone(),
                     VolumeKind::Provisioned {
                         dataset,
                         max_size_bytes: requested,
                     },
                 )
                 .expect("existing canonical dataset identity remains unchanged");
-                decisions.push(VolumeAdmissionDecision::NeedsQuotaGrowth {
+                Ok(VolumeAdmissionDecision::NeedsQuotaGrowth {
                     current,
                     replacement,
-                });
+                })
             }
         }
     }
-    admit_pool_quota_total(capacity, requested_total).map_err(|failure| match failure {
-        PoolCapacityAdmissionFailure::InconsistentFacts {
-            total_bytes,
-            provisioned_used_bytes,
-            free_bytes,
-        } => VolumeAdmissionFailure::InconsistentCapacityFacts {
-            total_bytes,
-            provisioned_used_bytes,
-            free_bytes,
-        },
-        PoolCapacityAdmissionFailure::Overflow => VolumeAdmissionFailure::CapacityOverflow,
-        PoolCapacityAdmissionFailure::Exceeded {
-            free_bytes,
-            requested_total_bytes,
-            ..
-        } => VolumeAdmissionFailure::CapacityExceeded {
-            available_bytes: free_bytes,
-            requested_total_bytes,
-        },
-    })?;
-    Ok(decisions)
+
+    fn finish(self) -> Result<(), VolumeAdmissionFailure> {
+        admit_pool_quota_total(self.capacity, self.requested_total).map_err(|failure| match failure
+        {
+            PoolCapacityAdmissionFailure::InconsistentFacts {
+                total_bytes,
+                provisioned_used_bytes,
+                free_bytes,
+            } => VolumeAdmissionFailure::InconsistentCapacityFacts {
+                total_bytes,
+                provisioned_used_bytes,
+                free_bytes,
+            },
+            PoolCapacityAdmissionFailure::Overflow => VolumeAdmissionFailure::CapacityOverflow,
+            PoolCapacityAdmissionFailure::Exceeded {
+                free_bytes,
+                required_headroom_bytes,
+                requested_total_bytes,
+            } => VolumeAdmissionFailure::CapacityExceeded {
+                total_bytes: self.capacity.total_bytes,
+                provisioned_used_bytes: self.capacity.provisioned_used_bytes,
+                free_bytes,
+                required_headroom_bytes,
+                requested_total_bytes,
+            },
+        })
+    }
 }
 
 #[cfg(test)]
@@ -509,6 +616,30 @@ mod tests {
             },
         )
         .expect("pin")
+    }
+
+    #[test]
+    fn single_volume_admission_returns_one_canonical_decision() {
+        let namespace = namespace_id();
+        let machine = machine_id("machine-a");
+        let volume = volume_name("data");
+
+        let decision = admit_volume(SingleVolumeAdmissionInput {
+            namespace_id: &namespace,
+            volume_name: &volume,
+            declaration: &VolumeSpec::Plain,
+            volume_pins: &[],
+            selected_machine_id: &machine,
+            storage_testimony: StorageTestimony::NoAnswer,
+        })
+        .expect("plain volume needs no storage testimony");
+
+        assert_eq!(
+            decision,
+            VolumeAdmissionDecision::NeedsCreation {
+                pin: VolumePinState::plain(namespace, volume, machine)
+            }
+        );
     }
 
     #[test]
@@ -858,7 +989,10 @@ mod tests {
                 storage_testimony: StorageTestimony::Answered(Some(&insufficient)),
             }),
             Err(VolumeAdmissionFailure::CapacityExceeded {
-                available_bytes: 100,
+                total_bytes: 100,
+                provisioned_used_bytes: 0,
+                free_bytes: 100,
+                required_headroom_bytes: 101,
                 requested_total_bytes: 101,
             })
         );

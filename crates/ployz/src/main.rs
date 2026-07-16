@@ -150,8 +150,7 @@ fn host_command_name(command: &ployz_host_runner::cli::HostRunnerCommand) -> &'s
         HostRunnerCommand::StoragePrepare(_) => "host storage-prepare",
         HostRunnerCommand::StorageCapability => "host internal-storage-capability",
         HostRunnerCommand::StoragePoolFacts => "host internal-storage-pool-facts",
-        HostRunnerCommand::StorageDatasetCreate(_) => "host internal-storage-dataset-create",
-        HostRunnerCommand::StorageDatasetGrow(_) => "host internal-storage-dataset-grow",
+        HostRunnerCommand::StorageDatasetEnsure(_) => "host internal-storage-dataset-ensure",
         HostRunnerCommand::StorageDatasetFacts(_) => "host internal-storage-dataset-facts",
         HostRunnerCommand::StorageDatasetDestroy(_) => "host internal-storage-dataset-destroy",
     }

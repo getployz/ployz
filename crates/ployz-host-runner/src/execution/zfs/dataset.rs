@@ -1,6 +1,10 @@
 //! Provisioned Volume dataset effects and facts.
 
-use std::path::Path;
+use std::fs::{File, OpenOptions};
+use std::io;
+use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes};
 use ployz_core::machine::{
@@ -24,7 +28,10 @@ pub struct DatasetFacts {
     pub mount_directory_modified_unix_seconds: u64,
 }
 
-pub fn create_dataset(
+const DATASET_ENSURE_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
+const DATASET_ENSURE_LOCK_RETRY: Duration = Duration::from_millis(25);
+
+pub fn ensure_dataset(
     runner: &mut impl HostRunnerCommandRunner,
     state_directory: &Path,
     dataset: &DatasetName,
@@ -32,60 +39,162 @@ pub fn create_dataset(
 ) -> Result<(), ZfsEffectError> {
     let state = load_and_verify(runner, state_directory)?;
     verify_child(&state, dataset)?;
-    admit_quota(runner, &state, dataset, quota.get())?;
-    checked(
-        runner,
-        "zfs",
-        &[
-            "create",
-            "-o",
-            &format!("quota={}", quota.get()),
-            dataset.as_str(),
-        ],
-        COMMAND_TIMEOUT,
-        EffectClass::Dataset,
-    )?;
-    Ok(())
-}
-
-pub fn grow_dataset_quota(
-    runner: &mut impl HostRunnerCommandRunner,
-    state_directory: &Path,
-    dataset: &DatasetName,
-    requested: VolumeMaxSizeBytes,
-) -> Result<(), ZfsEffectError> {
-    let state = load_and_verify(runner, state_directory)?;
-    verify_child(&state, dataset)?;
-    let output = checked(
-        runner,
-        "zfs",
-        &["get", "-H", "-p", "-o", "value", "quota", dataset.as_str()],
-        COMMAND_TIMEOUT,
-        EffectClass::Dataset,
-    )?;
-    let current = parse_u64("dataset quota", output.stdout.trim())?;
-    if requested.get() < current {
+    let _lock = DatasetEnsureLock::acquire(state_directory, state.pool().as_str())?;
+    let facts = gather_pool_capacity_for_state(runner, &state)?;
+    let current = facts
+        .child_quotas
+        .iter()
+        .find(|fact| fact.dataset == *dataset)
+        .map(|fact| fact.quota_bytes);
+    if current.is_some() {
+        verify_existing_dataset_shape(runner, dataset)?;
+    }
+    if let Some(current) = current
+        && quota.get() < current
+    {
         return Err(ZfsEffectError::QuotaShrink {
             dataset: dataset.clone(),
             current,
-            requested: requested.get(),
+            requested: quota.get(),
         });
     }
-    if requested.get() > current {
-        admit_quota(runner, &state, dataset, requested.get())?;
-        checked(
-            runner,
-            "zfs",
-            &[
-                "set",
-                &format!("quota={}", requested.get()),
-                dataset.as_str(),
-            ],
-            COMMAND_TIMEOUT,
-            EffectClass::Dataset,
-        )?;
+    if current == Some(quota.get()) {
+        return Ok(());
+    }
+    admit_quota(&facts, dataset, quota.get())?;
+    match current {
+        None => {
+            checked(
+                runner,
+                "zfs",
+                &[
+                    "create",
+                    "-o",
+                    &format!("quota={}", quota.get()),
+                    dataset.as_str(),
+                ],
+                COMMAND_TIMEOUT,
+                EffectClass::Dataset,
+            )?;
+        }
+        Some(_) => {
+            checked(
+                runner,
+                "zfs",
+                &["set", &format!("quota={}", quota.get()), dataset.as_str()],
+                COMMAND_TIMEOUT,
+                EffectClass::Dataset,
+            )?;
+        }
     }
     Ok(())
+}
+
+fn verify_existing_dataset_shape(
+    runner: &mut impl HostRunnerCommandRunner,
+    dataset: &DatasetName,
+) -> Result<(), ZfsEffectError> {
+    let observed = checked(
+        runner,
+        "zfs",
+        &[
+            "get",
+            "-H",
+            "-o",
+            "value",
+            "mountpoint,mounted",
+            dataset.as_str(),
+        ],
+        COMMAND_TIMEOUT,
+        EffectClass::Mismatch,
+    )?;
+    let mut values = observed.stdout.lines();
+    let mountpoint = values.next();
+    let mounted = values.next();
+    let (Some(mountpoint), Some(mounted)) = (mountpoint, mounted) else {
+        return Err(ZfsEffectError::PreparedStateMismatch {
+            message: format!(
+                "dataset {} returned invalid mountpoint/mounted testimony {:?}",
+                dataset.as_str(),
+                observed.stdout.trim()
+            ),
+        });
+    };
+    if values.next().is_some() {
+        return Err(ZfsEffectError::PreparedStateMismatch {
+            message: format!(
+                "dataset {} returned invalid mountpoint/mounted testimony {:?}",
+                dataset.as_str(),
+                observed.stdout.trim()
+            ),
+        });
+    }
+    let Some((_, leaf)) = dataset.as_str().rsplit_once('/') else {
+        return Err(ZfsEffectError::PreparedStateMismatch {
+            message: format!("dataset {} has no canonical child leaf", dataset.as_str()),
+        });
+    };
+    let expected_mountpoint = format!("{PROVISIONED_VOLUME_MOUNTPOINT}/{leaf}");
+    if mountpoint != expected_mountpoint || mounted != "yes" {
+        return Err(ZfsEffectError::PreparedStateMismatch {
+            message: format!(
+                "dataset {} has mountpoint {:?} and mounted {:?}, expected {:?} and mounted yes",
+                dataset.as_str(),
+                mountpoint,
+                mounted,
+                expected_mountpoint
+            ),
+        });
+    }
+    Ok(())
+}
+
+pub(super) struct DatasetEnsureLock {
+    file: File,
+}
+
+impl DatasetEnsureLock {
+    pub(super) fn acquire(state_directory: &Path, pool: &str) -> Result<Self, ZfsEffectError> {
+        let path = dataset_ensure_lock_path(state_directory, pool);
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|error| lock_error(&path, error))?;
+        let deadline = Instant::now() + DATASET_ENSURE_LOCK_TIMEOUT;
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(Self { file }),
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    if Instant::now() >= deadline {
+                        return Err(ZfsEffectError::OperationTimedOut);
+                    }
+                    thread::sleep(DATASET_ENSURE_LOCK_RETRY);
+                }
+                Err(std::fs::TryLockError::Error(error)) => {
+                    return Err(lock_error(&path, error));
+                }
+            }
+        }
+    }
+}
+
+impl Drop for DatasetEnsureLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+pub(super) fn dataset_ensure_lock_path(state_directory: &Path, pool: &str) -> PathBuf {
+    state_directory.join(format!("storage-dataset-ensure-{pool}.lock"))
+}
+
+fn lock_error(path: &Path, error: io::Error) -> ZfsEffectError {
+    ZfsEffectError::Dataset {
+        message: format!("failed to lock {}: {error}", path.display()),
+    }
 }
 
 pub fn gather_dataset_facts(
@@ -263,28 +372,30 @@ fn parse_capacity_row(label: &str, output: &str) -> Result<(u64, u64), ZfsEffect
 }
 
 fn admit_quota(
-    runner: &mut impl HostRunnerCommandRunner,
-    state: &PreparedStorageState,
+    facts: &PoolCapacityFacts,
     dataset: &DatasetName,
     requested: u64,
 ) -> Result<(), ZfsEffectError> {
-    let facts = gather_pool_capacity_for_state(runner, state)?;
     let requested_total = facts
         .child_quotas
         .iter()
         .filter(|fact| fact.dataset != *dataset)
         .try_fold(requested, |total, fact| total.checked_add(fact.quota_bytes))
-        .ok_or(ZfsEffectError::QuotaCapacityExceeded {
-            available: facts.free_bytes,
-            requested_total: u64::MAX,
+        .ok_or_else(|| ZfsEffectError::GatherParse {
+            message: "dataset quota total overflowed".to_owned(),
         })?;
-    admit_pool_quota_total(&facts, requested_total).map_err(|failure| match failure {
-        PoolCapacityAdmissionFailure::Exceeded { free_bytes, .. } => {
-            ZfsEffectError::QuotaCapacityExceeded {
-                available: free_bytes,
-                requested_total,
-            }
-        }
+    admit_pool_quota_total(facts, requested_total).map_err(|failure| match failure {
+        PoolCapacityAdmissionFailure::Exceeded {
+            free_bytes,
+            required_headroom_bytes,
+            requested_total_bytes,
+        } => ZfsEffectError::QuotaCapacityExceeded {
+            total_bytes: facts.total_bytes,
+            provisioned_used_bytes: facts.provisioned_used_bytes,
+            free_bytes,
+            required_headroom_bytes,
+            requested_total_bytes,
+        },
         PoolCapacityAdmissionFailure::Overflow
         | PoolCapacityAdmissionFailure::InconsistentFacts { .. } => ZfsEffectError::GatherParse {
             message: failure.to_string(),

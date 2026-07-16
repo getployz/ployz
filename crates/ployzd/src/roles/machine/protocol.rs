@@ -4,6 +4,8 @@ use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredentia
 use ployz_core::ids::{ContainerId, MachineId, NamespaceId, OperationId, StepId};
 use ployz_core::image::{IMAGE_MESH_REGISTRY_PORT, ImageRepository, OciDigest};
 use ployz_core::install::InstallArtifactVersion;
+use ployz_core::intent::VolumePinState;
+use ployz_core::machine::VolumeEnsureFailure;
 pub use ployz_core::machine::rpc::{MachineRpcResponder, MachineRpcResponse};
 use ployz_core::machine::runtime::{ManagedContainerIdentity, ManagedContainerObservation};
 use ployz_core::network::{
@@ -318,6 +320,28 @@ pub type MachineVolumeRemoveRpcResponse =
 pub enum MachineVolumeRemoveDomainError {
     RemoveFailed { message: FailureMessage },
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineVolumeEnsureRpcRequest {
+    pub volume: VolumePinState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineVolumeEnsureRpcOk {
+    pub machine_id: MachineId,
+}
+
+impl MachineRpcResponder for MachineVolumeEnsureRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        let Self { machine_id } = self;
+        machine_id
+    }
+}
+
+pub type MachineVolumeEnsureRpcResponse =
+    MachineRpcResponse<MachineVolumeEnsureRpcOk, VolumeEnsureFailure>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -193,12 +193,13 @@ pub enum StorageEffectFailure {
         current: u64,
         requested: u64,
     },
-    #[error(
-        "quota admission exceeds available capacity: available={available} requested_total={requested_total}"
-    )]
+    #[error("quota admission exceeds available capacity")]
     QuotaCapacityExceeded {
-        available: u64,
-        requested_total: u64,
+        total_bytes: u64,
+        provisioned_used_bytes: u64,
+        free_bytes: u64,
+        required_headroom_bytes: u64,
+        requested_total_bytes: u64,
     },
     #[error("destructive ZFS effect refused: {message}")]
     DestructiveEffect { message: String },

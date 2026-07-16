@@ -2,7 +2,8 @@ use ployz_core::operation::{
     DeployInterruptionStage, DeployRunningStage, NamespaceRemoveRunningStage,
     NetworkRepairRunningStage, OperationInterruptionCause, OperationInterruptionEvidence,
     OperationInterruptionNextAction, OperationInterruptionStage,
-    OperationInterruptionUncertainWork, ServiceRestartRunningStage, VolumeRemoveRunningStage,
+    OperationInterruptionUncertainWork, ServiceRestartRunningStage, VolumeCreateRunningStage,
+    VolumeRemoveRunningStage,
 };
 
 pub(crate) fn render_interruption(evidence: &OperationInterruptionEvidence) -> String {
@@ -66,18 +67,31 @@ fn stage(stage: OperationInterruptionStage) -> String {
         OperationInterruptionStage::VolumeRemoveRunning { stage } => {
             format!("volume remove running {}", volume_remove_stage(stage))
         }
+        OperationInterruptionStage::VolumeCreateAccepted => "volume create accepted".to_owned(),
+        OperationInterruptionStage::VolumeCreatePlanning => "volume create planning".to_owned(),
+        OperationInterruptionStage::VolumeCreateRunning { stage } => {
+            format!("volume create running {}", volume_create_stage(stage))
+        }
     }
 }
 
 const fn deploy_stage(stage: DeployRunningStage) -> &'static str {
     match stage {
         DeployRunningStage::EnsuringImages => "ensuring images",
+        DeployRunningStage::EnsuringVolumes => "ensuring volumes",
         DeployRunningStage::StartingContainers => "starting containers",
         DeployRunningStage::WaitingForHealth => "waiting for health",
         DeployRunningStage::EnsuringCertificates => "ensuring certificates",
         DeployRunningStage::RouteCutover => "route cutover",
         DeployRunningStage::ServingTargetCommit => "serving target commit",
         DeployRunningStage::RemovingSupersededContainers => "removing superseded containers",
+    }
+}
+
+const fn volume_create_stage(stage: VolumeCreateRunningStage) -> &'static str {
+    match stage {
+        VolumeCreateRunningStage::CommittingPin => "committing pin",
+        VolumeCreateRunningStage::EnsuringVolume => "ensuring volume",
     }
 }
 

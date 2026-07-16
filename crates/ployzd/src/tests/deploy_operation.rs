@@ -10,6 +10,7 @@ use crate::control::operations::deploy::{
     MachineContainerRuntimeError, MachineImageRemovalRuntime, NamespaceStateCommitter,
     execute_deploy_operation,
 };
+use crate::control::role_client::machine::MachineVolumeEnsureError;
 use fixtures::*;
 use ployz_core::deploy::{ContainerCommand, ContainerRestartPolicy, ReplicaCount};
 use ployz_core::intent::{ServingTargetEntry, VolumePinState};
@@ -21,6 +22,8 @@ use ployz_core::operation::{
     OperationInterruptionCause, PreStartHookFailure, RouteHostname, RouteTarget,
 };
 use ployz_test_support::ids::{failure_message, namespace_id};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 fn assert_deploy_event_order(
@@ -121,6 +124,12 @@ async fn deploy_worker_runs_containers_then_completes() {
         ]
     );
     assert_eq!(runtime.requests.len(), 2);
+    assert!(!recorder.records.iter().any(|record| {
+        record
+            == &RecordedOperation::Transition(DeployTransition::Running {
+                stage: DeployRunningStage::EnsuringVolumes,
+            })
+    }));
     assert!(runtime.requests.iter().all(|(_, request)| matches!(
         &request.pull,
         crate::roles::machine::protocol::MachineImagePull::Registry {
@@ -606,9 +615,11 @@ async fn pre_start_hook_cleanup_failure_is_typed_and_blocks_service_start() {
 #[tokio::test]
 async fn deploy_worker_commits_volume_pin_and_mounts_volume() {
     let mut recorder = RecordingOperations::default();
-    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
+    let pin_committed = Arc::new(AtomicBool::new(false));
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"])
+        .requiring_pin_commit(Arc::clone(&pin_committed));
     let mut health = RecordingHealth::healthy();
-    let mut namespace_state = RecordingNamespaceState::stored();
+    let mut namespace_state = RecordingNamespaceState::signaling_pin_commit(pin_committed);
     let command = volume_backed_deploy_command(1);
 
     execute_deploy(
@@ -641,6 +652,118 @@ async fn deploy_worker_commits_volume_pin_and_mounts_volume() {
     };
     assert_eq!(mount.volume_name, volume_name("postgres_data"));
     assert_eq!(mount.target.as_str(), "/var/lib/postgresql/data");
+    assert_eq!(
+        runtime.volume_ensures,
+        vec![(
+            machine_id("machine_a"),
+            VolumePinState::plain(
+                namespace_id("default"),
+                volume_name("postgres_data"),
+                machine_id("machine_a"),
+            ),
+        )]
+    );
+    assert_deploy_event_order(
+        &recorder.records,
+        DeployRunningStage::EnsuringVolumes,
+        DeployRunningStage::StartingContainers,
+    );
+    assert_eq!(
+        recorder
+            .records
+            .iter()
+            .filter(|record| {
+                record
+                    == &&RecordedOperation::Transition(DeployTransition::Running {
+                        stage: DeployRunningStage::EnsuringVolumes,
+                    })
+            })
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn deploy_volume_ensure_failure_retains_pin_and_retry_reissues_effect_before_containers() {
+    let (first_command, volume) = provisioned_volume_backed_deploy_command(false);
+    let dataset = match volume.kind() {
+        ployz_core::intent::VolumeKind::Provisioned { dataset, .. } => dataset.clone(),
+        ployz_core::intent::VolumeKind::Plain => panic!("fixture is provisioned"),
+    };
+    let failure = ployz_core::machine::VolumeEnsureFailure::Dataset {
+        dataset,
+        failure: ployz_core::storage::StorageEffectFailure::Dataset {
+            message: "synthetic dataset create failure".to_owned(),
+        },
+    };
+    let mut first_recorder = RecordingOperations::default();
+    let mut first_runtime = RecordingRuntime::with_containers(["unused"])
+        .with_volume_ensure_failure(MachineVolumeEnsureError::Domain {
+            machine_id: machine_id("machine_a"),
+            volume_name: volume_name("postgres_data"),
+            failure: failure.clone(),
+        });
+    let mut first_namespace_state = RecordingNamespaceState::stored();
+    let error = execute_deploy(
+        first_command,
+        DeployExecutionPorts {
+            recorder: &mut first_recorder,
+            machine_runtime: &mut first_runtime,
+            health_checker: &mut RecordingHealth::healthy(),
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut first_namespace_state,
+        },
+    )
+    .await
+    .expect_err("volume ensure failure fails deploy");
+    let DeployExecutionError::Failed {
+        failure: operation_failure,
+        ..
+    } = error
+    else {
+        panic!("expected recorded deploy failure");
+    };
+    assert_eq!(
+        *operation_failure,
+        DeployOperationFailure::VolumeEnsureFailed {
+            machine_id: machine_id("machine_a"),
+            volume_name: volume_name("postgres_data"),
+            failure,
+        }
+    );
+    assert_eq!(
+        first_namespace_state.volume_pin_requests,
+        vec![volume.clone()]
+    );
+    assert_eq!(
+        first_runtime.volume_ensures,
+        vec![(machine_id("machine_a"), volume.clone())]
+    );
+    assert!(first_runtime.requests.is_empty());
+
+    let mut retry_recorder = RecordingOperations::default();
+    let mut retry_runtime = RecordingRuntime::with_containers(["ctr_retry"]);
+    let mut retry_namespace_state = RecordingNamespaceState::stored();
+    let (retry_command, retry_pin) = provisioned_volume_backed_deploy_command(true);
+    assert_eq!(retry_pin, volume);
+    execute_deploy(
+        retry_command,
+        DeployExecutionPorts {
+            recorder: &mut retry_recorder,
+            machine_runtime: &mut retry_runtime,
+            health_checker: &mut RecordingHealth::healthy(),
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut retry_namespace_state,
+        },
+    )
+    .await
+    .expect("retry converges from committed pin and missing machine effect");
+    assert!(retry_namespace_state.volume_pin_requests.is_empty());
+    assert_eq!(
+        retry_runtime.volume_ensures,
+        vec![(machine_id("machine_a"), volume)]
+    );
+    assert_eq!(retry_runtime.requests.len(), 1);
 }
 
 #[tokio::test]

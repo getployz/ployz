@@ -232,6 +232,9 @@ pub async fn execute_command(
             crate::service::runtime::list(command, config).await
         }
         PloyzctlCommand::VolumeList(command) => crate::volume::runtime::list(command, config).await,
+        PloyzctlCommand::VolumeCreate(command) => {
+            crate::volume::runtime::create(command, config).await
+        }
         PloyzctlCommand::ServiceInspect(command) => {
             crate::service::runtime::inspect(command, config).await
         }

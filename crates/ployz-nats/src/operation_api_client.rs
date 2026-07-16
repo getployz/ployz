@@ -26,7 +26,8 @@ use ployz_sdk_types::{
     OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult,
     ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
     ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
-    VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
+    VolumeCreateError, VolumeCreateRequest, VolumeListError, VolumeListRequest, VolumeListResult,
+    VolumeRemoveError, VolumeRemoveRequest,
     operation_api::{
         CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi, CredentialListApi,
         CredentialRemoveApi, DeployReserveApi, DeploySubmitApi, IngressConfigureApi,
@@ -35,7 +36,7 @@ use ployz_sdk_types::{
         MachineResumeApi, MachineStoragePrepareApi, MachineUpdateApi, NamespaceRemoveApi,
         NetworkRepairApi, NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi,
         OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi,
-        ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
+        ServiceRestartApi, VolumeCreateApi, VolumeListApi, VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -258,6 +259,13 @@ impl OperationApiClient {
         request: &VolumeRemoveRequest,
     ) -> Result<AcceptedOperation, OperationApiClientError<VolumeRemoveError>> {
         self.request_api::<VolumeRemoveApi>(request).await
+    }
+
+    pub async fn volume_create(
+        &self,
+        request: &VolumeCreateRequest,
+    ) -> Result<AcceptedOperation, OperationApiClientError<VolumeCreateError>> {
+        self.request_api::<VolumeCreateApi>(request).await
     }
 
     pub async fn runtime_snapshot(

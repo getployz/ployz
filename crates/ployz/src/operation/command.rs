@@ -310,6 +310,7 @@ const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::ManagedDnsReconcile => "managed-dns-reconcile",
         OperationKind::IngressConfigure => "ingress-configure",
         OperationKind::NamespaceRemove => "namespace-remove",
+        OperationKind::VolumeCreate => "volume-create",
         OperationKind::VolumeRemove => "volume-remove",
     }
 }
@@ -394,6 +395,12 @@ fn operation_subject(status: &OperationStatus) -> String {
             volume_name,
             ..
         } => format!("volume {}/{}", namespace_id.as_str(), volume_name.as_str()),
+        OperationStatus::VolumeCreate { request, .. } => format!(
+            "volume {}/{} machine {}",
+            request.namespace_id.as_str(),
+            request.volume_name.as_str(),
+            request.machine_id.as_str()
+        ),
         OperationStatus::ManagedDnsReconcile { subject, .. } => match subject {
             ployz_sdk_types::ManagedDnsReconcileSubject::Acquire => {
                 "Ployz DNS target acquisition".to_owned()
@@ -464,6 +471,7 @@ fn operation_state(status: &OperationStatus) -> String {
         }
         OperationStatus::NamespaceRemove { state, .. } => namespace_remove_state(state).to_owned(),
         OperationStatus::VolumeRemove { state, .. } => volume_remove_state(state).to_owned(),
+        OperationStatus::VolumeCreate { state, .. } => volume_create_state(state).to_owned(),
     }
 }
 
@@ -561,6 +569,20 @@ const fn volume_remove_state(state: &ployz_sdk_types::VolumeRemoveOperationState
     }
 }
 
+const fn volume_create_state(state: &ployz_sdk_types::VolumeCreateOperationState) -> &'static str {
+    match state {
+        ployz_sdk_types::VolumeCreateOperationState::Accepted => "accepted",
+        ployz_sdk_types::VolumeCreateOperationState::Planning => "planning",
+        ployz_sdk_types::VolumeCreateOperationState::Running { stage } => match stage {
+            ployz_sdk_types::VolumeCreateRunningStage::CommittingPin => "running:committing-pin",
+            ployz_sdk_types::VolumeCreateRunningStage::EnsuringVolume => "running:ensuring-volume",
+        },
+        ployz_sdk_types::VolumeCreateOperationState::Completed => "completed",
+        ployz_sdk_types::VolumeCreateOperationState::Failed { .. } => "failed",
+        ployz_sdk_types::VolumeCreateOperationState::Interrupted { .. } => "interrupted",
+    }
+}
+
 fn status_failure_detail(status: &OperationStatus) -> Option<String> {
     if let Some(evidence) = status.terminal_interruption_evidence() {
         return Some(format!("interruption {}", render_interruption(evidence)));
@@ -607,6 +629,13 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
             "failure {}",
             machine_storage_prepare_failure(failure)
         )),
+        OperationStatus::VolumeCreate {
+            state: ployz_sdk_types::VolumeCreateOperationState::Failed { failure },
+            ..
+        } => Some(format!(
+            "failure {}",
+            crate::volume::presentation::create_failure(failure)
+        )),
         OperationStatus::Deploy { .. }
         | OperationStatus::Cert { .. }
         | OperationStatus::MachineAdd { .. }
@@ -620,6 +649,7 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
         | OperationStatus::ManagedDnsReconcile { .. }
         | OperationStatus::IngressConfigure { .. }
         | OperationStatus::NamespaceRemove { .. }
+        | OperationStatus::VolumeCreate { .. }
         | OperationStatus::VolumeRemove { .. } => None,
     }
 }
@@ -728,6 +758,7 @@ const fn deploy_completion_outcome(
 const fn deploy_running_stage(stage: DeployRunningStage) -> &'static str {
     match stage {
         DeployRunningStage::EnsuringImages => "running:ensuring-images",
+        DeployRunningStage::EnsuringVolumes => "running:ensuring-volumes",
         DeployRunningStage::StartingContainers => "running:starting-containers",
         DeployRunningStage::WaitingForHealth => "running:waiting-for-health",
         DeployRunningStage::EnsuringCertificates => "running:ensuring-certificates",
@@ -883,6 +914,11 @@ impl DeployEventRenderContext {
             | OperationEvent::VolumeRemoveRunning { .. }
             | OperationEvent::VolumeRemoveCompleted { .. }
             | OperationEvent::VolumeRemoveFailed { .. }
+            | OperationEvent::VolumeCreateSubmitted { .. }
+            | OperationEvent::VolumeCreatePlanningStarted { .. }
+            | OperationEvent::VolumeCreateRunning { .. }
+            | OperationEvent::VolumeCreateCompleted { .. }
+            | OperationEvent::VolumeCreateFailed { .. }
             | OperationEvent::OperationInterrupted { .. }
             | OperationEvent::Cancelled { .. } => {}
         }
@@ -1015,6 +1051,11 @@ fn render_replayed_event_text(
         | OperationEvent::VolumeRemoveRunning { .. }
         | OperationEvent::VolumeRemoveCompleted { .. }
         | OperationEvent::VolumeRemoveFailed { .. }
+        | OperationEvent::VolumeCreateSubmitted { .. }
+        | OperationEvent::VolumeCreatePlanningStarted { .. }
+        | OperationEvent::VolumeCreateRunning { .. }
+        | OperationEvent::VolumeCreateCompleted { .. }
+        | OperationEvent::VolumeCreateFailed { .. }
         | OperationEvent::Cancelled { .. } => {
             format!("{} {}", event.sequence.get(), label)
         }
@@ -1135,6 +1176,11 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::VolumeRemoveRunning { .. } => "volume.remove.running",
         OperationEvent::VolumeRemoveCompleted { .. } => "volume.remove.completed",
         OperationEvent::VolumeRemoveFailed { .. } => "volume.remove.failed",
+        OperationEvent::VolumeCreateSubmitted { .. } => "volume.create.submitted",
+        OperationEvent::VolumeCreatePlanningStarted { .. } => "volume.create.planning",
+        OperationEvent::VolumeCreateRunning { .. } => "volume.create.running",
+        OperationEvent::VolumeCreateCompleted { .. } => "volume.create.completed",
+        OperationEvent::VolumeCreateFailed { .. } => "volume.create.failed",
         OperationEvent::OperationInterrupted { .. } => "operation.interrupted",
         OperationEvent::Cancelled { .. } => "cancelled",
     }
