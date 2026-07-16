@@ -6,6 +6,7 @@ use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes, VolumeName, ZfsPoolNam
 use ployz_core::ids::{NamespaceId, OperationId};
 use ployz_core::machine::{DatasetQuotaFact, PoolCapacityFacts};
 use ployz_core::operation::FailureMessage;
+use ployz_core::storage::PROVISIONED_VOLUME_MOUNTPOINT;
 
 use super::dataset::{DatasetEnsureLock, dataset_ensure_lock_path};
 use super::state::persist_prepared_storage_state;

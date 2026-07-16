@@ -343,8 +343,14 @@ mod dataset_name_error_tests {
         };
 
         let encoded = serde_json::to_value(&error).expect("serialize dataset name error");
-        assert_eq!(encoded["kind"], "name_budget_exceeded");
-        assert_eq!(encoded["bytes"], 300);
+        assert_eq!(
+            encoded.get("kind").and_then(serde_json::Value::as_str),
+            Some("name_budget_exceeded")
+        );
+        assert_eq!(
+            encoded.get("bytes").and_then(serde_json::Value::as_u64),
+            Some(300)
+        );
         assert_eq!(
             serde_json::from_value::<DatasetNameError>(encoded)
                 .expect("deserialize dataset name error"),

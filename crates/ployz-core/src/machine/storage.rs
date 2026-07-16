@@ -142,7 +142,10 @@ mod capacity_tests {
         };
 
         let encoded = serde_json::to_value(&failure).expect("serialize failure");
-        assert_eq!(encoded["kind"], "machine_mismatch");
+        assert_eq!(
+            encoded.get("kind").and_then(serde_json::Value::as_str),
+            Some("machine_mismatch")
+        );
         assert_eq!(
             serde_json::from_value::<VolumeEnsureFailure>(encoded).expect("deserialize failure"),
             failure
@@ -164,7 +167,12 @@ mod capacity_tests {
         };
 
         let encoded = serde_json::to_value(&failure).expect("serialize failure");
-        assert_eq!(encoded["retained_dataset"], dataset.as_str());
+        assert_eq!(
+            encoded
+                .get("retained_dataset")
+                .and_then(serde_json::Value::as_str),
+            Some(dataset.as_str())
+        );
         assert_eq!(
             serde_json::from_value::<VolumeEnsureFailure>(encoded).expect("deserialize failure"),
             failure
