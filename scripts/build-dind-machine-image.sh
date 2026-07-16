@@ -186,7 +186,6 @@ stage_railpack() {
       ;;
   esac
 
-  mkdir -p "${TARGET_DIR}/release"
   stamp="${TARGET_DIR}/release/railpack.source"
   stamp_value="${platform} ${RAILPACK_VERSION} ${archive_sha256}"
   if [ -x "${TARGET_DIR}/release/railpack" ] \
@@ -206,10 +205,19 @@ stage_railpack() {
       exit 1
     fi
     tar -xzf "${archive}" -C "${work_dir}" railpack
-    install -m 0755 "${work_dir}/railpack" "${TARGET_DIR}/release/railpack.tmp.$$"
-    mv "${TARGET_DIR}/release/railpack.tmp.$$" "${TARGET_DIR}/release/railpack"
-    printf '%s\n' "${stamp_value}" > "${stamp}.tmp.$$"
-    mv "${stamp}.tmp.$$" "${stamp}"
+    printf '%s\n' "${stamp_value}" > "${work_dir}/railpack.source"
+    ensure_builder_image
+    docker run --rm \
+      --platform "${platform}" \
+      --volume "${TARGET_DIR}:/target" \
+      --volume "${work_dir}:/railpack-input:ro" \
+      "${BUILDER_IMAGE}" \
+      bash -c 'set -euo pipefail
+install -d -m 0755 /target/release
+install -m 0755 /railpack-input/railpack /target/release/railpack.tmp
+mv /target/release/railpack.tmp /target/release/railpack
+install -m 0644 /railpack-input/railpack.source /target/release/railpack.source.tmp
+mv /target/release/railpack.source.tmp /target/release/railpack.source'
   )
 }
 
