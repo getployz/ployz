@@ -237,6 +237,11 @@ async fn group_core_deploy_semantics() {
     )
     .await;
     timed(
+        "boot_crash_failure_journey",
+        rollback::assert_boot_crash_preserves_serving_and_failure_evidence(&core),
+    )
+    .await;
+    timed(
         "private_registry_digest_pinning",
         assert_private_registry_digest_pinning(&core),
     )

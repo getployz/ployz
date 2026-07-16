@@ -2,6 +2,217 @@ use super::*;
 use ployz::commands::parse_command;
 use ployz::deploy::history_store::{ClusterFingerprint, DeployHistory};
 use ployz::dispatcher::{PloyzctlRuntimeConfig, execute_command};
+use ployz_core::operation::{HealthCheckFailure, RetainedArtifact};
+
+pub(super) async fn assert_boot_crash_preserves_serving_and_failure_evidence(core: &CoreContext) {
+    with_evidence(&core.cluster, async {
+        wait_for_machine_observations(core, &machine_id("core_1")).await;
+
+        let first = core
+            .api
+            .deploy_submit(
+                &reserved_deploy_request(
+                    core,
+                    "idem_dind_boot_crash_v1",
+                    boot_crash_deploy_target(
+                        "printf 'failure-journey-v1' > /usr/share/nginx/html/index.html; exec nginx -g 'daemon off;'",
+                    ),
+                )
+                .await,
+            )
+            .await
+            .expect("boot-crash v1 deploy submits");
+        let first_operation = first.operation_id;
+        let first_status =
+            wait_for_terminal_deploy_status(core, &first_operation, DEPLOY_TERMINAL_BUDGET).await;
+        assert!(
+            matches!(
+                &first_status,
+                OperationStatus::Deploy {
+                    state: DeployOperationState::Completed {
+                        outcome: DeployCompletionOutcome::Completed,
+                    },
+                    ..
+                }
+            ),
+            "boot-crash v1 deploy did not complete: {first_status:?}"
+        );
+
+        let controller = connect_core_client(
+            core,
+            NatsPrincipal::Controller,
+            &core.material.controller_seed,
+        )
+        .await
+        .expect("connect controller for boot-crash route intent");
+        let intent = read_intent(&controller, CONNECT_TIMEOUT)
+            .await
+            .expect("read boot-crash route intent");
+        let hostname = intent
+            .route_bindings
+            .iter()
+            .find(|binding| binding.namespace_id == namespace_id("boot_crash"))
+            .expect("boot-crash route binding committed")
+            .target
+            .hostname
+            .as_str()
+            .to_owned();
+        assert_boot_crash_route_body(core, &hostname, "failure-journey-v1").await;
+
+        let failed = core
+            .api
+            .deploy_submit(
+                &reserved_deploy_request(
+                    core,
+                    "idem_dind_boot_crash_failed",
+                    boot_crash_deploy_target("exit 23"),
+                )
+                .await,
+            )
+            .await
+            .expect("boot-crash replacement submits");
+        let failed_operation = failed.operation_id;
+        assert_ne!(failed_operation, first_operation);
+        let failed_status =
+            wait_for_terminal_deploy_status(core, &failed_operation, DEPLOY_TERMINAL_BUDGET).await;
+        let OperationStatus::Deploy {
+            state:
+                DeployOperationState::Failed {
+                    failure:
+                        failed_failure @ DeployOperationFailure::HealthCheckFailed {
+                            health_check:
+                                HealthCheckFailure::ProbeFailed {
+                                    container_id: failed_container_id,
+                                    message,
+                                    ..
+                                },
+                            retained_artifacts,
+                        },
+                },
+            ..
+        } = &failed_status
+        else {
+            panic!("boot-crash replacement did not leave typed failure: {failed_status:?}");
+        };
+        assert_eq!(message.as_str(), "container exited");
+        assert!(
+            matches!(
+                retained_artifacts.as_slice(),
+                [RetainedArtifact::StartedContainer { container_id, .. }]
+                    if container_id == failed_container_id
+            ),
+            "boot-crash failure did not retain exactly its exited container: {failed_failure:?}"
+        );
+
+        let retained = namespace_managed_containers(core, "boot_crash").await;
+        assert!(
+            retained.iter().any(|container| {
+                container.id == failed_container_id.as_str()
+                    && container.labels.get(OPERATION_ID_LABEL).map(String::as_str)
+                        == Some(failed_operation.as_str())
+            }),
+            "boot-crash replacement container is not inspectable: {retained:?}"
+        );
+        assert!(
+            retained.iter().any(|container| {
+                container.labels.get(OPERATION_ID_LABEL).map(String::as_str)
+                    == Some(first_operation.as_str())
+            }),
+            "previous serving container was removed by failed replacement: {retained:?}"
+        );
+        assert_boot_crash_route_body(core, &hostname, "failure-journey-v1").await;
+
+        let failed_events = terminal_operation_events(core, &failed_operation).await;
+        assert!(failed_events.iter().any(|event| matches!(
+            event,
+            OperationEvent::DeployFailed {
+                operation_id,
+                failure,
+            } if operation_id == &failed_operation && failure == failed_failure
+        )));
+
+        let retry = core
+            .api
+            .deploy_submit(
+                &reserved_deploy_request(
+                    core,
+                    "idem_dind_boot_crash_retry",
+                    boot_crash_deploy_target(
+                        "printf 'failure-journey-v2' > /usr/share/nginx/html/index.html; exec nginx -g 'daemon off;'",
+                    ),
+                )
+                .await,
+            )
+            .await
+            .expect("boot-crash retry submits");
+        let retry_operation = retry.operation_id;
+        assert_ne!(retry_operation, failed_operation);
+        assert_ne!(retry_operation, first_operation);
+        let retry_status =
+            wait_for_terminal_deploy_status(core, &retry_operation, DEPLOY_TERMINAL_BUDGET).await;
+        assert!(
+            matches!(
+                &retry_status,
+                OperationStatus::Deploy {
+                    state: DeployOperationState::Completed {
+                        outcome: DeployCompletionOutcome::Completed,
+                    },
+                    ..
+                }
+            ),
+            "boot-crash retry did not complete: {retry_status:?}"
+        );
+        assert_boot_crash_route_body(core, &hostname, "failure-journey-v2").await;
+
+        assert_eq!(operation_status(core, &failed_operation).await, failed_status);
+        assert_eq!(
+            terminal_operation_events(core, &failed_operation).await,
+            failed_events
+        );
+    })
+    .await;
+}
+
+fn boot_crash_deploy_target(command: &str) -> DeployRequest {
+    let mut runtime = ContainerRuntimeSpec::image_defaults();
+    runtime.command = Some(
+        ContainerCommand::try_new(vec!["sh".to_owned(), "-c".to_owned(), command.to_owned()])
+            .expect("valid boot-crash command"),
+    );
+    DeployRequest {
+        namespace_id: namespace_id("boot_crash"),
+        origin: None,
+        volumes: BTreeMap::new(),
+        services: vec![DeployServiceSpec {
+            keep: None,
+            service_id: service_id("svc_boot_crash"),
+            image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
+            image_source: ployz_core::deploy::ImageSource::Registry,
+            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            runtime,
+            pre_start: None,
+            depends_on: Vec::new(),
+            routes: vec![DeployRoute {
+                target: DeployRouteTarget::AutoHostname {
+                    label: ployz_core::ingress::AutomaticHostnameLabel::try_new("failure-journey")
+                        .expect("valid automatic hostname label"),
+                },
+                endpoint_port: route_port(WORKLOAD_ENDPOINT_PORT),
+            }],
+        }],
+    }
+}
+
+async fn assert_boot_crash_route_body(core: &CoreContext, hostname: &str, expected: &str) {
+    let response =
+        gateway_https_get_unverified(core.cluster.core().published.gateway_tls, hostname)
+            .await
+            .unwrap_or_else(|error| panic!("boot-crash route did not answer: {error}"));
+    assert!(
+        response.contains(expected),
+        "boot-crash route did not serve {expected:?}: {response}"
+    );
+}
 
 /// Rollback replays successful local history as a fresh deploy with the exact
 /// pinned image identity, and a missing pinned registry artifact fails without

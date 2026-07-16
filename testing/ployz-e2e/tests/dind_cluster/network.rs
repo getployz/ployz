@@ -1,23 +1,31 @@
 use std::time::{Duration, Instant};
 
+use ployz_core::deploy::{DeployRequest, DeployRoute, DeployRouteTarget};
+use ployz_core::ingress::AutomaticHostnameLabel;
 use ployz_core::operation::{
     DeployCompletionOutcome, DeployOperationState, NetworkRepairOperationState, OperationStatus,
 };
 use ployz_core::security::NatsPrincipal;
-use ployz_e2e::dind::{self, exec_in_container};
-use ployz_sdk_types::{
-    NetworkDataplaneTestimony, NetworkInternalDnsTestimony, NetworkRepairRequest,
-    NetworkResolveMachineTestimony, NetworkResolveRequest, NetworkStatusMachine,
-    NetworkStatusRequest,
+use ployz_e2e::dind::{self, DindMachine, exec_in_container};
+use ployz_nats::operation_api_client::{
+    DEFAULT_OPERATION_API_REQUEST_TIMEOUT, OperationApiClientError,
 };
-use ployz_test_support::ids::{machine_id, operation_id};
+use ployz_nats::service_runtime::NatsServiceRequestFailure;
+use ployz_sdk_types::{
+    DeployReserveRequest, NetworkDataplaneTestimony, NetworkInternalDnsTestimony,
+    NetworkRepairRequest, NetworkResolveMachineTestimony, NetworkResolveRequest,
+    NetworkStatusMachine, NetworkStatusRequest,
+};
+use ployz_test_support::ids::{machine_id, namespace_id, operation_id, route_port};
 use ployz_test_support::ops::wait_for_terminal_status;
 
 use super::{
-    CONNECT_TIMEOUT, DEPLOY_TERMINAL_BUDGET, OVERLAY_FIRST_CONTACT_BUDGET, add_and_join_edge,
-    assert_unit_active, connect_core_client, finish, init_core_cluster, internal_dns_deploy_target,
-    read_intent, reserved_deploy_request, wait_for_machine_observations, wait_for_ready_dataplane,
-    wait_for_terminal_deploy_status, with_evidence,
+    CONNECT_TIMEOUT, CoreContext, DEPLOY_TERMINAL_BUDGET, OVERLAY_FIRST_CONTACT_BUDGET,
+    SERVICE_ID_LABEL, add_and_join_edge, assert_unit_active, connect_core_client, finish,
+    gateway_https_get_unverified, init_core_cluster, internal_dns_deploy_target,
+    managed_workload_containers, read_intent, reserved_deploy_request,
+    wait_for_machine_observations, wait_for_ready_dataplane, wait_for_terminal_deploy_status,
+    with_evidence,
 };
 
 /// Network observability is driven by intended membership, resolver answers
@@ -84,7 +92,7 @@ async fn group_network_repair() {
                 &reserved_deploy_request(
                     &core,
                     "idem_dind_network_resolve",
-                    internal_dns_deploy_target(),
+                    routed_internal_dns_deploy_target(),
                 )
                 .await,
             )
@@ -144,6 +152,18 @@ async fn group_network_repair() {
             answer_sets.all(|addresses| addresses == first),
             "known service answers diverged: {resolved:?}"
         );
+        let deployed_intent = read_intent(&controller, CONNECT_TIMEOUT)
+            .await
+            .expect("read routed network fixture intent");
+        let gateway_hostname = deployed_intent
+            .route_bindings
+            .iter()
+            .find(|binding| binding.namespace_id == namespace_id("internal_dns"))
+            .expect("network fixture route binding is committed")
+            .target
+            .hostname
+            .as_str()
+            .to_owned();
 
         let stopped = exec_in_container(
             &docker,
@@ -231,6 +251,7 @@ async fn group_network_repair() {
             "network repair did not complete: {repaired:?}"
         );
         wait_for_ready_dataplane(&core, &intent.dataplane_projection).await;
+        assert_dataplane_survives_control_loss(&core, &gateway_hostname).await;
         super::timed(
             "internal_service_dns",
             super::assert_internal_service_dns_reaches_cross_machine_sibling(&core),
@@ -240,6 +261,193 @@ async fn group_network_repair() {
     .await;
 
     finish(core).await;
+}
+
+fn routed_internal_dns_deploy_target() -> DeployRequest {
+    let mut target = internal_dns_deploy_target();
+    let Some(server) = target
+        .services
+        .iter_mut()
+        .find(|service| service.service_id.as_str() == "server")
+    else {
+        panic!("internal DNS fixture omits its server service")
+    };
+    server.routes.push(DeployRoute {
+        target: DeployRouteTarget::AutoHostname {
+            label: AutomaticHostnameLabel::try_new("network-failure")
+                .expect("valid network failure route label"),
+        },
+        endpoint_port: route_port(80),
+    });
+    target
+}
+
+async fn assert_dataplane_survives_control_loss(core: &CoreContext, gateway_hostname: &str) {
+    let gateway_before = wait_for_gateway_response(core, gateway_hostname)
+        .await
+        .expect("Gateway route serves before Control loss");
+    assert!(
+        gateway_before.contains("Welcome to nginx"),
+        "Gateway route returned an unexpected response before Control loss: {gateway_before}"
+    );
+    let internal_traffic = cross_machine_internal_traffic_probe(core)
+        .await
+        .expect("managed cross-machine client/server pair exists");
+    wait_for_cross_machine_internal_traffic(core, &internal_traffic)
+        .await
+        .expect("managed workload reaches its cross-machine sibling before Control loss");
+
+    let stopped = exec_in_container(
+        &core.docker,
+        &core.cluster.core().container_id,
+        &["systemctl", "stop", "ployzd-control"],
+    )
+    .await;
+    assert!(
+        matches!(&stopped, Ok(outcome) if outcome.success()),
+        "stopping only Control failed: {stopped:?}"
+    );
+
+    let request_budget = DEFAULT_OPERATION_API_REQUEST_TIMEOUT + Duration::from_secs(2);
+    let request_started = Instant::now();
+    let unavailable = tokio::time::timeout(
+        request_budget,
+        core.api.deploy_reserve(&DeployReserveRequest {
+            namespace_id: namespace_id("control_unavailable"),
+        }),
+    )
+    .await;
+    let request_elapsed = request_started.elapsed();
+    let gateway_during = wait_for_gateway_response(core, gateway_hostname).await;
+    let internal_traffic_during =
+        wait_for_cross_machine_internal_traffic(core, &internal_traffic).await;
+
+    let restarted = exec_in_container(
+        &core.docker,
+        &core.cluster.core().container_id,
+        &["systemctl", "start", "ployzd-control"],
+    )
+    .await;
+    assert!(
+        matches!(&restarted, Ok(outcome) if outcome.success()),
+        "restarting Control failed: {restarted:?}"
+    );
+    assert_unit_active(core, core.cluster.core(), "ployzd-control").await;
+    wait_for_machine_observations(core, &machine_id("core_1")).await;
+
+    assert!(
+        request_elapsed <= request_budget,
+        "operation request exceeded its bounded failure budget: {request_elapsed:?}"
+    );
+    assert!(
+        matches!(
+            unavailable,
+            Ok(Err(OperationApiClientError::Request {
+                failure: NatsServiceRequestFailure::NoResponders
+                    | NatsServiceRequestFailure::TimedOut,
+                ..
+            }))
+        ),
+        "operation request did not report typed Control unavailability: {unavailable:?}"
+    );
+    let gateway_during =
+        gateway_during.expect("Gateway route remains available while Control is stopped");
+    assert!(
+        gateway_during.contains("Welcome to nginx"),
+        "Gateway route returned an unexpected response while Control was stopped: {gateway_during}"
+    );
+    internal_traffic_during.expect(
+        "managed workload internal DNS and traffic remain available while Control is stopped",
+    );
+}
+
+async fn wait_for_gateway_response(core: &CoreContext, hostname: &str) -> Result<String, String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut last = Err(String::from("Gateway route was not queried"));
+    while Instant::now() < deadline {
+        last =
+            gateway_https_get_unverified(core.cluster.core().published.gateway_tls, hostname).await;
+        if matches!(&last, Ok(response) if response.contains("Welcome to nginx")) {
+            return last;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    last
+}
+
+struct CrossMachineInternalTrafficProbe {
+    client_machine: DindMachine,
+    client_container_id: String,
+    server_machine_name: String,
+}
+
+async fn cross_machine_internal_traffic_probe(
+    core: &CoreContext,
+) -> Result<CrossMachineInternalTrafficProbe, String> {
+    let [edge] = core.cluster.edges() else {
+        return Err(String::from("scenario requires exactly one edge machine"));
+    };
+    let mut servers = Vec::new();
+    let mut clients = Vec::new();
+    for machine in [core.cluster.core(), edge] {
+        for container in managed_workload_containers(core, machine).await {
+            match container.labels.get(SERVICE_ID_LABEL).map(String::as_str) {
+                Some("server") => servers.push((machine, container)),
+                Some("client") => clients.push((machine, container)),
+                Some(_) | None => {}
+            }
+        }
+    }
+    let [(server_machine, _server)] = servers.as_slice() else {
+        return Err(format!("expected one managed server, got {servers:?}"));
+    };
+    let Some((client_machine, client)) = clients
+        .iter()
+        .find(|(machine, _)| machine.name != server_machine.name)
+    else {
+        return Err(format!(
+            "expected a managed client opposite {}, got {clients:?}",
+            server_machine.name
+        ));
+    };
+
+    Ok(CrossMachineInternalTrafficProbe {
+        client_machine: (**client_machine).clone(),
+        client_container_id: client.id.clone(),
+        server_machine_name: server_machine.name.clone(),
+    })
+}
+
+async fn wait_for_cross_machine_internal_traffic(
+    core: &CoreContext,
+    probe: &CrossMachineInternalTrafficProbe,
+) -> Result<(), String> {
+    let deadline = Instant::now() + OVERLAY_FIRST_CONTACT_BUDGET;
+    let mut last = None;
+    while Instant::now() < deadline {
+        let outcome = exec_in_container(
+            &core.docker,
+            &probe.client_machine.container_id,
+            &[
+                "docker",
+                "exec",
+                &probe.client_container_id,
+                "sh",
+                "-c",
+                "wget -T 2 -qO- http://server/ | grep -q 'Welcome to nginx'",
+            ],
+        )
+        .await;
+        if matches!(&outcome, Ok(outcome) if outcome.success()) {
+            return Ok(());
+        }
+        last = Some(outcome);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    Err(format!(
+        "managed client on {} could not reach server on {} through internal DNS: {last:?}",
+        probe.client_machine.name, probe.server_machine_name
+    ))
 }
 
 fn network_queries_ready(machines: &[NetworkStatusMachine]) -> bool {
