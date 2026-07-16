@@ -167,6 +167,12 @@ pub async fn execute_command(
             Err(PloyzctlExecutionError::CloudUnconfigured { command: "login" })
         }
         PloyzctlCommand::Telemetry(_) => Err(PloyzctlExecutionError::LocalCommand),
+        PloyzctlCommand::BuildSubmit(command) => {
+            crate::build::runtime::submit(command, config).await
+        }
+        PloyzctlCommand::BuildCancel(command) => {
+            crate::build::runtime::cancel(command, config).await
+        }
         PloyzctlCommand::CorePromote(command) => {
             crate::core::runtime::promote(command, config).await
         }

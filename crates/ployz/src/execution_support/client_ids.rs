@@ -121,6 +121,16 @@ pub(crate) fn generate_client_ingress_configure_id()
     generate_client_operation_id("ingress", "configure")
 }
 
+pub(crate) fn generate_client_build_id()
+-> Result<ClientGeneratedOperationId, ClientGeneratedIdsError> {
+    let suffix = generated_id_suffix();
+    Ok(ClientGeneratedOperationId {
+        operation_id: OperationId::try_new(format!("op_build_{suffix}"))
+            .map_err(|source| ClientGeneratedIdsError::OperationId { source })?,
+        suffix,
+    })
+}
+
 fn generate_client_operation_id(
     action: &'static str,
     subject: &str,
