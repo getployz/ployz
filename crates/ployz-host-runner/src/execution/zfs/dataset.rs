@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 
 use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes};
 use ployz_core::machine::{
-    DatasetQuotaFact, PoolCapacityAdmissionFailure, PoolCapacityFacts, admit_pool_quota_total,
+    DatasetQuotaFact, PoolCapacityAdmissionFailure, PoolCapacityFacts, VolumeUsageFacts,
+    admit_pool_quota_total,
 };
 use ployz_core::storage::{
     PROVISIONED_VOLUME_MOUNTPOINT, PreparedStorageOrigin, PreparedStorageState,
@@ -18,15 +19,6 @@ use ployz_core::storage::{
 use super::command::{COMMAND_TIMEOUT, EffectClass, checked, parse_u64};
 use super::state::{load_and_verify, verify_child};
 use crate::execution::HostRunnerCommandRunner;
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DatasetFacts {
-    pub used_bytes: u64,
-    /// Modification time of the dataset mount directory itself. This is
-    /// directory metadata testimony, not a recursive signal of file writes.
-    pub mount_directory_modified_unix_seconds: u64,
-}
 
 const DATASET_ENSURE_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 const DATASET_ENSURE_LOCK_RETRY: Duration = Duration::from_millis(25);
@@ -201,7 +193,7 @@ pub fn gather_dataset_facts(
     runner: &mut impl HostRunnerCommandRunner,
     state_directory: &Path,
     dataset: &DatasetName,
-) -> Result<DatasetFacts, ZfsEffectError> {
+) -> Result<VolumeUsageFacts, ZfsEffectError> {
     let state = load_and_verify(runner, state_directory)?;
     verify_child(&state, dataset)?;
     let used = checked(
@@ -226,9 +218,9 @@ pub fn gather_dataset_facts(
         COMMAND_TIMEOUT,
         EffectClass::Dataset,
     )?;
-    Ok(DatasetFacts {
+    Ok(VolumeUsageFacts {
         used_bytes: parse_u64("dataset used bytes", used.stdout.trim())?,
-        mount_directory_modified_unix_seconds: parse_u64(
+        last_write_unix_seconds: parse_u64(
             "dataset mount-directory modification timestamp",
             directory_modified.stdout.trim(),
         )?,

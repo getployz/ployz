@@ -21,6 +21,8 @@ use crate::roles::machine::protocol::{
     MachineSubstrateUpdateDomainError, MachineSubstrateUpdateRpcOk,
     MachineSubstrateUpdateRpcRequest, MachineVolumeEnsureRpcOk, MachineVolumeEnsureRpcRequest,
     MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
+    MachineVolumeTestimonyDomainError, MachineVolumeTestimonyResult, MachineVolumeTestimonyRpcOk,
+    MachineVolumeTestimonyRpcRequest,
 };
 use futures_util::{StreamExt, stream};
 use ployz_core::deploy::VolumeName;
@@ -44,6 +46,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 pub const DEFAULT_MACHINE_RPC_TIMEOUT: Duration = Duration::from_secs(30);
+pub const DEFAULT_VOLUME_TESTIMONY_RPC_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const MAX_CONCURRENT_MACHINE_READS: usize = 16;
 
 #[derive(Debug, Clone)]
@@ -56,6 +59,12 @@ pub struct NatsMachineContainerRuntime {
 pub struct NatsMachineFactsReader {
     pub(super) client: async_nats::Client,
     pub(super) request_timeout: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct NatsMachineVolumeTestimonyReader {
+    client: async_nats::Client,
+    request_timeout: Duration,
 }
 
 #[derive(Debug, Clone)]
@@ -224,6 +233,28 @@ pub enum MachineVolumeEnsureError {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MachineVolumeTestimonyReadError {
+    #[error(
+        "machine {} volume testimony unavailable: {}",
+        machine_id.as_str(),
+        reason.failure_message().as_str()
+    )]
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
+    #[error(
+        "machine {} rejected volume testimony pin for {}",
+        responder_machine_id.as_str(),
+        expected_machine_id.as_str()
+    )]
+    MachineMismatch {
+        expected_machine_id: MachineId,
+        responder_machine_id: MachineId,
+    },
+}
+
 /// Outcome of one machine RPC round trip: either the machine answered with a typed
 /// domain error, or the call never produced a usable answer.
 #[derive(Debug)]
@@ -365,6 +396,51 @@ impl NatsMachineFactsReader {
                     message,
                 }
             }
+        })
+    }
+}
+
+impl NatsMachineVolumeTestimonyReader {
+    #[must_use]
+    pub fn new(client: async_nats::Client) -> Self {
+        Self {
+            client,
+            request_timeout: DEFAULT_VOLUME_TESTIMONY_RPC_TIMEOUT,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_request_timeout(mut self, request_timeout: Duration) -> Self {
+        self.request_timeout = request_timeout;
+        self
+    }
+
+    pub async fn volume_testimony(
+        &self,
+        machine_id: &MachineId,
+        pins: Vec<VolumePinState>,
+    ) -> Result<Vec<MachineVolumeTestimonyResult>, MachineVolumeTestimonyReadError> {
+        call_machine::<MachineVolumeTestimonyRpcOk, MachineVolumeTestimonyDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::VolumeTestimony,
+            &MachineVolumeTestimonyRpcRequest { pins },
+        )
+        .await
+        .map(|ok| ok.results)
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => MachineVolumeTestimonyReadError::Unavailable {
+                machine_id: machine_id.clone(),
+                reason,
+            },
+            MachineCallError::Domain(MachineVolumeTestimonyDomainError::MachineMismatch {
+                expected_machine_id,
+                responder_machine_id,
+            }) => MachineVolumeTestimonyReadError::MachineMismatch {
+                expected_machine_id,
+                responder_machine_id,
+            },
         })
     }
 }

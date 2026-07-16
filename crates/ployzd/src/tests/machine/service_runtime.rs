@@ -1,7 +1,10 @@
 use crate::control::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
 };
-use crate::control::role_client::machine::{NatsMachineContainerRuntime, NatsMachineFactsReader};
+use crate::control::role_client::machine::{
+    MachineVolumeTestimonyReadError, NatsMachineContainerRuntime, NatsMachineFactsReader,
+    NatsMachineVolumeTestimonyReader,
+};
 use crate::roles::machine::protocol::{
     MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,
     MachineContainerRemoveRpcRequest, MachineContainerRemoveRpcResponse,
@@ -16,7 +19,7 @@ use crate::roles::machine::protocol::{
     MachineRunContainerOutcome, MachineSubstrateReportRpcRequest,
     MachineSubstrateReportRpcResponse, MachineVolumeEnsureRpcOk, MachineVolumeEnsureRpcRequest,
     MachineVolumeEnsureRpcResponse, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
-    MachineVolumeRemoveRpcResponse,
+    MachineVolumeRemoveRpcResponse, MachineVolumeTestimony, MachineVolumeTestimonyResult,
 };
 use crate::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
@@ -31,11 +34,11 @@ use ployz_core::deploy::ImageReference;
 use ployz_core::deploy::VolumeName;
 use ployz_core::ids::ContainerId;
 use ployz_core::intent::VolumePinState;
-use ployz_core::machine::VolumeEnsureFailure;
 use ployz_core::machine::runtime::{
     ContainerRuntimeState, MachineContainerFactDelta, MachineFactsSnapshot,
     ManagedContainerIdentity, ManagedContainerKind,
 };
+use ployz_core::machine::{VolumeEnsureFailure, VolumeUsageFacts};
 use ployz_core::network::{
     EbpfAttachmentStatus, EbpfForwardingReady, EbpfForwardingReadyEvidence, MachineDataplaneStatus,
     PloyzNativeMeshReady, WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardEbpfPrepareError,
@@ -50,6 +53,7 @@ use ployz_test_support::containers;
 use ployz_test_support::ids::{
     container_id, failure_message, machine_id, namespace_id, operation_id,
 };
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -1264,6 +1268,77 @@ async fn machine_volume_ensure_requires_the_subject_machine_and_runs_once() {
     assert_eq!(state.volume_ensures().len(), 1);
 }
 
+#[tokio::test]
+async fn machine_volume_testimony_is_stable_drained_and_machine_fenced() {
+    let nats = test_nats().await;
+    let state = RecordingRunnerState::default();
+    let available = VolumeUsageFacts {
+        used_bytes: 4096,
+        last_write_unix_seconds: 1_700_000_000,
+    };
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(state.clone()).with_volume_usage("alpha", available.clone()),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a.flush().await.expect("flush subscription");
+    let alpha = VolumePinState::plain(
+        namespace_id("default"),
+        VolumeName::try_new("alpha").expect("volume"),
+        machine_id("machine_a"),
+    );
+    let zeta = VolumePinState::plain(
+        namespace_id("default"),
+        VolumeName::try_new("zeta").expect("volume"),
+        machine_id("machine_a"),
+    );
+    let reader = NatsMachineVolumeTestimonyReader::new(nats.client.clone())
+        .with_request_timeout(Duration::from_secs(1));
+
+    let testimony = reader
+        .volume_testimony(
+            &machine_id("machine_a"),
+            vec![zeta.clone(), alpha.clone(), alpha.clone()],
+        )
+        .await
+        .expect("volume testimony succeeds");
+
+    assert_eq!(
+        testimony,
+        vec![
+            MachineVolumeTestimonyResult {
+                pin: alpha.clone(),
+                testimony: MachineVolumeTestimony::Available { facts: available },
+            },
+            MachineVolumeTestimonyResult {
+                pin: zeta.clone(),
+                testimony: MachineVolumeTestimony::Unavailable,
+            },
+        ]
+    );
+    assert_eq!(state.volume_reads(), vec![alpha, zeta]);
+
+    let wrong = VolumePinState::plain(
+        namespace_id("default"),
+        VolumeName::try_new("wrong").expect("volume"),
+        machine_id("machine_b"),
+    );
+    assert_eq!(
+        reader
+            .volume_testimony(&machine_id("machine_a"), vec![wrong])
+            .await,
+        Err(MachineVolumeTestimonyReadError::MachineMismatch {
+            expected_machine_id: machine_id("machine_b"),
+            responder_machine_id: machine_id("machine_a"),
+        })
+    );
+    assert_eq!(state.volume_reads().len(), 2);
+}
+
 #[derive(Clone, Default)]
 struct RecordingRunnerState {
     inner: Arc<Mutex<RecordingRunnerInner>>,
@@ -1328,6 +1403,14 @@ impl RecordingRunnerState {
             .clone()
     }
 
+    fn volume_reads(&self) -> Vec<VolumePinState> {
+        self.inner
+            .lock()
+            .expect("recording runner lock is not poisoned")
+            .volume_reads
+            .clone()
+    }
+
     fn stops(&self) -> Vec<ContainerId> {
         self.inner
             .lock()
@@ -1347,6 +1430,7 @@ struct RecordingRunnerInner {
     removes: Vec<ContainerId>,
     volume_removes: Vec<String>,
     volume_ensures: Vec<VolumePinState>,
+    volume_reads: Vec<VolumePinState>,
 }
 
 #[derive(Clone)]
@@ -1360,6 +1444,7 @@ struct RecordingRunner {
     stop_failure: Option<(ContainerId, String)>,
     remove_failure: Option<(ContainerId, String)>,
     wait_exit_code: i64,
+    volume_usage: BTreeMap<VolumeName, VolumeUsageFacts>,
 }
 
 impl RecordingRunner {
@@ -1374,6 +1459,7 @@ impl RecordingRunner {
             stop_failure: None,
             remove_failure: None,
             wait_exit_code: 0,
+            volume_usage: BTreeMap::new(),
         }
     }
 
@@ -1427,6 +1513,12 @@ impl RecordingRunner {
         self.wait_exit_code = exit_code;
         self
     }
+
+    fn with_volume_usage(mut self, volume: &str, facts: VolumeUsageFacts) -> Self {
+        self.volume_usage
+            .insert(VolumeName::try_new(volume).expect("volume"), facts);
+        self
+    }
 }
 
 impl crate::roles::machine::runner::MachineImageRemovalRunner for RecordingRunner {
@@ -1450,6 +1542,16 @@ impl MachineContainerRunner for RecordingRunner {
             .volume_ensures
             .push(volume.clone());
         Ok(())
+    }
+
+    async fn read_volume_usage(&self, volume: &VolumePinState) -> Option<VolumeUsageFacts> {
+        self.state
+            .inner
+            .lock()
+            .expect("recording runner lock is not poisoned")
+            .volume_reads
+            .push(volume.clone());
+        self.volume_usage.get(volume.volume_name()).cloned()
     }
 
     async fn existing_managed_containers(

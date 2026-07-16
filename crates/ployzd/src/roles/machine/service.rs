@@ -20,7 +20,7 @@ use super::substrate::{
     handle_storage_prepare, handle_storage_prepare_report, handle_substrate_report,
     handle_substrate_update,
 };
-use super::volume::DATASET_ENSURE_HOST_COMMAND_TIMEOUT;
+use super::volume::{DATASET_ENSURE_HOST_COMMAND_TIMEOUT, handle_volume_testimony};
 use crate::roles::machine::execution::host_dataplane::dataplane_status_budget;
 use crate::roles::machine::projection::MachineProjectionState;
 #[cfg(test)]
@@ -341,6 +341,14 @@ where
     bind_machine_endpoint(
         &mut runtime,
         &machine_id,
+        MachineServiceEndpoint::VolumeTestimony,
+        runner.clone(),
+        handle_volume_testimony,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
         MachineServiceEndpoint::DataplanePublicKey,
         preparer.clone(),
         handle_dataplane_public_key,
@@ -492,6 +500,7 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         | MachineServiceEndpoint::ContainerStop
         | MachineServiceEndpoint::ContainerRemove
         | MachineServiceEndpoint::VolumeRemove
+        | MachineServiceEndpoint::VolumeTestimony
         | MachineServiceEndpoint::DataplanePublicKey
         | MachineServiceEndpoint::SubstrateUpdate
         | MachineServiceEndpoint::SubstrateReport

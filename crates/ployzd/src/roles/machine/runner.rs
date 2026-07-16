@@ -4,8 +4,8 @@ use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredentia
 use ployz_core::ids::ContainerId;
 use ployz_core::image::OciDigest;
 use ployz_core::intent::VolumePinState;
-use ployz_core::machine::VolumeEnsureFailure;
 use ployz_core::machine::runtime::ContainerHealth;
+use ployz_core::machine::{VolumeEnsureFailure, VolumeUsageFacts};
 use std::net::IpAddr;
 
 use crate::roles::machine::protocol::MachineImagePull;
@@ -122,6 +122,13 @@ pub trait MachineContainerRunner {
         &self,
         volume: &VolumePinState,
     ) -> impl Future<Output = Result<(), VolumeEnsureFailure>> + Send;
+
+    fn read_volume_usage(
+        &self,
+        _volume: &VolumePinState,
+    ) -> impl Future<Output = Option<VolumeUsageFacts>> + Send {
+        async { None }
+    }
 
     fn existing_managed_containers(
         &self,

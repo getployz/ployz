@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes, VolumeName, ZfsPoolName};
 use ployz_core::ids::{NamespaceId, OperationId};
-use ployz_core::machine::{DatasetQuotaFact, PoolCapacityFacts};
+use ployz_core::machine::{DatasetQuotaFact, PoolCapacityFacts, VolumeUsageFacts};
 use ployz_core::operation::FailureMessage;
 use ployz_core::storage::PROVISIONED_VOLUME_MOUNTPOINT;
 
@@ -1028,9 +1028,9 @@ fn dataset_facts_use_zfs_used_bytes_and_mount_directory_metadata_time() {
 
     assert_eq!(
         facts,
-        DatasetFacts {
+        VolumeUsageFacts {
             used_bytes: 4096,
-            mount_directory_modified_unix_seconds: 1_700_000_000,
+            last_write_unix_seconds: 1_700_000_000,
         }
     );
     assert_eq!(invocation(&runner, 3).program, "stat");
