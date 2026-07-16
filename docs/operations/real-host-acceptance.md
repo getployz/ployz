@@ -33,10 +33,10 @@ backends:
 
 Use fresh hosts. The harness rejects another OS/architecture pair, requires
 root SSH to both public IPs, and leaves the machines running for inspection.
-The operator machine needs Bash, Git, SSH, curl, Python 3, GNU coreutils
-`timeout`, and its key in `ssh-agent`. The core needs enough free space for the
-Ployz-owned ZFS backing file and PostgreSQL image and data; do not use a
-production or shared host.
+The operator machine needs Bash 4.4 or newer, Git, SSH, curl, Python 3, GNU
+coreutils `timeout`, and its key in `ssh-agent`. The core needs enough free
+space for the Ployz-owned ZFS backing file and PostgreSQL image and data; do
+not use a production or shared host.
 
 ## Seal the public candidate
 
@@ -154,7 +154,7 @@ The evidence root contains `metadata.env`, `live-alpha.env`, `transcript.log`,
 `sealed-harness.sh`, `commands.log`, `recovery.txt`,
 `zfs-module-recovery.env`, numbered phase logs, and `sha256sums`. Copy
 [`real-host-zfs-536-391-evidence.md`](real-host-zfs-536-391-evidence.md) beside
-them and fill it from those artifacts. A successful run ends with:
+them and fill it from those artifacts. A successful run prints:
 
 ```text
 ZFS REAL-HOST CERTIFICATION PASSED
@@ -175,23 +175,28 @@ origin `/var/lib/ployz/zfs/ployz.img`. The harness records the descriptor hash
 and the backing file's resolved path, filesystem/inode identity, and size, then
 requires them to remain identical after every reboot and during failure.
 
-The PostgreSQL fixture must declare a positive `x-ployz.max-size`, pin the
-Provisioned Volume to the Rocky core, and use a unique row value derived from
-the run id. Record the deploy operation and the exact dataset shown by
+The PostgreSQL fixture declares `x-ployz.max-size: 2G`, which is exactly
+2,147,483,648 bytes. The live dataset must report `quota=2147483648` and
+`refquota=none`; record both at baseline and require both values to remain
+unchanged after the normal reboot and each recovery reboot. The fixture pins
+the Provisioned Volume to the Rocky core and uses a unique row value derived
+from the run id. Record the deploy operation and the exact dataset shown by
 `ployz volume list`. Before reboot, prove all of the following:
 
 - the database container uses the expected `/var/lib/ployz/volumes/...`
   dataset mount rather than a plain Docker volume or directory;
 - every required `plz.*` recovery label names the expected namespace and
   service, and the complete label map remains equivalent across every phase;
-- `zfs list` reports that exact dataset with its expected mountpoint and quota;
+- `zfs` reports that exact dataset with its expected mountpoint, quota, and
+  refquota;
 - PostgreSQL returns the unique row;
 - the dataset and container identifiers, row marker, pool health, and storage
   testimony are captured.
 
 After a normal Rocky reboot, wait through absolute monotonic SSH and service
-readiness deadlines. Each SSH attempt is locally terminated within 15 seconds,
-so a remote transport timeout cannot extend the overall deadline. Prove that
+readiness deadlines. Each SSH attempt made by those retry loops is locally
+terminated within 15 seconds, so a remote transport timeout cannot extend the
+overall retry-loop deadline. Prove that
 ZFS is imported before Docker starts the workload, the
 same dataset identity and mountpoint exist, the database returns the same row,
 and storage testimony is `ready`. A newly empty database, a different dataset,
@@ -251,16 +256,21 @@ If SSH is unavailable:
 3. Mount the original root filesystem read-write at a temporary recovery
    mount. Do not import the Ployz ZFS pool or mount its dataset merely to make
    the machine appear healthy.
-4. Apply `recovery.txt` relative to that mounted root, preserving the recorded
-   module file's ownership, mode, and hash.
-5. Run `depmod` for the original kernel and verify `modinfo` discovers the
-   restored module. Do not rebuild initramfs: certification preflight proved
-   that the active initramfs did not contain ZFS.
+4. Set `PLOYZ_RECOVERY_MOUNT_ROOT` to the canonical absolute mountpoint and run
+   `recovery.txt`. It rejects a symlink/non-mount root, verifies the original
+   machine id and kernel module tree, and applies every recorded path beneath
+   that mounted root while preserving the module file's ownership, mode, and
+   hash.
+5. The recorded recovery commands chroot into the mounted original root for
+   `depmod` and `modinfo`, so both operate on the original kernel tree rather
+   than the rescue image. Do not rebuild initramfs: certification preflight
+   proved that the active initramfs did not contain ZFS.
 6. Reboot the original system and continue the scripted recovery assertions.
 
-After recovery, require the module, pool, exact dataset, testimony, alarm
-clearance, PostgreSQL container, and original unique row to return. Keep the
-failure and recovery evidence even after the final state is healthy.
+After recovery, require the module, pool, exact dataset with its unchanged
+quota/refquota, testimony, alarm clearance, PostgreSQL container, and original
+unique row to return. Keep the failure and recovery evidence even after the
+final state is healthy.
 The exit trap continues to print emergency recovery instructions until the
 restoration, recovery assertions, final reboot, and evidence checks all
 succeed; an intermediate healthy observation never clears that warning.
