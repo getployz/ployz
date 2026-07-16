@@ -1,5 +1,7 @@
 //! Registry image references and validation.
 
+use std::time::Duration;
+
 use super::*;
 
 pub use crate::image::{
@@ -7,7 +9,8 @@ pub use crate::image::{
     RegistryCredentialError, RegistryCredentialSecret, RegistryCredentialUsername,
 };
 
-const IMAGE_AVAILABILITY_SAFETY_MARGIN_SECONDS: u64 = 5 * 60;
+/// Clock and cleanup margin removed from machine content-lease availability.
+pub const IMAGE_AVAILABILITY_SAFETY_MARGIN: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -39,7 +42,7 @@ impl ImageAvailabilityExpiresAt {
         Self::try_new(
             lease_expires_at
                 .unix_seconds()
-                .saturating_sub(IMAGE_AVAILABILITY_SAFETY_MARGIN_SECONDS),
+                .saturating_sub(IMAGE_AVAILABILITY_SAFETY_MARGIN.as_secs()),
         )
     }
 

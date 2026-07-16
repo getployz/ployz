@@ -90,6 +90,10 @@ mod tests {
                     }),
                     storage: None,
                     build: crate::roles::machine::protocol::MachineBuildCapability::Available,
+                    clock: crate::control::role_client::machine::MachineClockTestimony {
+                        control_request_started_at_unix_ms: 1,
+                        machine_observed_at_unix_ms: 1,
+                    },
                 },
             ),
         };

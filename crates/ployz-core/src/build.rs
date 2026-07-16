@@ -24,6 +24,8 @@ const MAX_BUILD_CACHE_SCOPE_BYTES: usize = 256;
 
 /// Longest build execution budget accepted by a machine.
 pub const BUILD_MAX_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Longest time Control may spend selecting and recording build placement.
+pub const BUILD_MAX_PLACEMENT_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 /// Time allowed for a build task to observe cancellation and stop.
 pub const BUILD_TASK_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 /// Time allowed for forced workspace cleanup after task shutdown.
@@ -34,6 +36,8 @@ pub const BUILD_MAX_MACHINE_RESPONSE_LIFETIME: Duration = BUILD_MAX_EXECUTION_TI
     .saturating_add(BUILD_FORCE_CLEANUP_TIMEOUT);
 /// Controller margin beyond the machine's maximum response lifetime.
 pub const BUILD_CONTROL_RESPONSE_MARGIN: Duration = Duration::from_secs(5);
+/// Time reserved for terminal operation evidence to reach an attached caller.
+pub const BUILD_ATTACHED_WATCH_TERMINAL_MARGIN: Duration = Duration::from_secs(55);
 /// Outer machine endpoint margin beyond the machine's maximum response lifetime.
 pub const BUILD_ENDPOINT_RESPONSE_MARGIN: Duration = Duration::from_secs(10);
 /// Dynamic NATS response-authority margin beyond the machine endpoint lifetime.
@@ -47,6 +51,11 @@ pub const fn build_control_request_timeout(execution_timeout: Duration) -> Durat
         .saturating_add(BUILD_FORCE_CLEANUP_TIMEOUT)
         .saturating_add(BUILD_CONTROL_RESPONSE_MARGIN)
 }
+
+/// Default attached watch budget for the longest accepted build.
+pub const BUILD_MAX_ATTACHED_WATCH_TIMEOUT: Duration = BUILD_MAX_PLACEMENT_TIMEOUT
+    .saturating_add(build_control_request_timeout(BUILD_MAX_EXECUTION_TIMEOUT))
+    .saturating_add(BUILD_ATTACHED_WATCH_TERMINAL_MARGIN);
 
 /// Maximum BuildStart handler lifetime.
 pub const BUILD_START_ENDPOINT_TIMEOUT: Duration =
@@ -750,5 +759,22 @@ mod tests {
         );
         assert!(BUILD_START_ENDPOINT_TIMEOUT > BUILD_MAX_MACHINE_RESPONSE_LIFETIME);
         assert!(BUILD_RESPONSE_PERMISSION_EXPIRY > BUILD_START_ENDPOINT_TIMEOUT);
+    }
+
+    #[test]
+    fn attached_watch_budget_proves_the_full_control_lifetime() {
+        assert_eq!(BUILD_MAX_PLACEMENT_TIMEOUT, Duration::from_secs(3 * 60));
+        assert_eq!(
+            build_control_request_timeout(BUILD_MAX_EXECUTION_TIMEOUT),
+            Duration::from_secs(31 * 60 + 5)
+        );
+        assert_eq!(
+            BUILD_ATTACHED_WATCH_TERMINAL_MARGIN,
+            Duration::from_secs(55)
+        );
+        assert_eq!(
+            BUILD_MAX_ATTACHED_WATCH_TIMEOUT,
+            Duration::from_secs(35 * 60)
+        );
     }
 }

@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ployz_core::deploy::{
-    DeployCleanupAction, DeployPlan, DeployPlanStep, DeployServicePlan, ImageSource,
-    VolumeDeclaredDeployRequest,
+    DeployCleanupAction, DeployPlan, DeployPlanStep, DeployServicePlan,
+    IMAGE_AVAILABILITY_SAFETY_MARGIN, ImageSource, VolumeDeclaredDeployRequest,
 };
 use ployz_core::image::{
     ImageEnsureRequest, ImageRemoveDomainError, ImageRepository, ImageRpcDomainError,
@@ -16,7 +16,8 @@ use ployz_core::operation::{
 };
 
 use crate::control::role_client::machine::{
-    MachineImageEnsureError, MachineImageRemoveError, MachineImageResolveError,
+    MachineClockTestimony, MachineImageEnsureError, MachineImageRemoveError,
+    MachineImageResolveError,
 };
 use crate::roles::machine::protocol::MachineContainerRemoveRpcRequest;
 use crate::roles::machine::protocol::{MachineContainerResolveImageRpcRequest, MachineImagePull};
@@ -402,6 +403,15 @@ where
                     }),
                 });
             };
+            if let Some(failure) = seed_clock_failure(
+                &service.service.service_id,
+                platform_image,
+                command.seed_clock_testimony.get(&platform_image.seed),
+            ) {
+                return Err(DeployExecutionError::Image {
+                    failure: Box::new(failure),
+                });
+            }
             if let Some(failure) = expired_platform_failure(
                 &service.service.service_id,
                 &target_platform,
@@ -456,6 +466,35 @@ where
         }
     }
     Ok(())
+}
+
+fn seed_clock_failure(
+    service_id: &ployz_core::ids::ServiceId,
+    platform_image: &ployz_core::deploy::PlatformImage,
+    testimony: Option<&MachineClockTestimony>,
+) -> Option<DeployOperationFailure> {
+    let Some(testimony) = testimony else {
+        return Some(DeployOperationFailure::SeedUnavailable {
+            service_id: service_id.clone(),
+            seed: platform_image.seed.clone(),
+            message: deploy_failure_message("fresh clock testimony from image seed is unavailable"),
+        });
+    };
+    let maximum_seed_time = testimony.control_request_started_at_unix_ms.saturating_add(
+        IMAGE_AVAILABILITY_SAFETY_MARGIN
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX),
+    );
+    (testimony.machine_observed_at_unix_ms > maximum_seed_time).then(|| {
+        DeployOperationFailure::SeedUnavailable {
+            service_id: service_id.clone(),
+            seed: platform_image.seed.clone(),
+            message: deploy_failure_message(
+                "image seed clock is more than 300 seconds ahead of Control",
+            ),
+        }
+    })
 }
 
 fn current_unix_seconds() -> Result<u64, DeployExecutionError> {
@@ -597,6 +636,82 @@ mod tests {
     use ployz_core::ids::{MachineId, NamespaceId, NamespaceRevisionId, OperationId, ServiceId};
     use ployz_core::image::{OciDigest, OciPlatform};
 
+    use crate::control::role_client::machine::MachineClockTestimony;
+
+    #[test]
+    fn missing_seed_clock_testimony_is_rejected() {
+        let service = pushed_service();
+        let platform_image = pushed_platform(&service);
+
+        assert!(matches!(
+            seed_clock_failure(
+                &service.service.service_id,
+                platform_image,
+                None,
+            ),
+            Some(DeployOperationFailure::SeedUnavailable { message, .. })
+                if message.as_str() == "fresh clock testimony from image seed is unavailable"
+        ));
+    }
+
+    #[test]
+    fn seed_clock_more_than_the_safety_margin_ahead_is_rejected() {
+        let service = pushed_service();
+        let platform_image = pushed_platform(&service);
+        let testimony = MachineClockTestimony {
+            control_request_started_at_unix_ms: 1_000_000,
+            machine_observed_at_unix_ms: 1_300_001,
+        };
+
+        assert!(matches!(
+            seed_clock_failure(
+                &service.service.service_id,
+                platform_image,
+                Some(&testimony),
+            ),
+            Some(DeployOperationFailure::SeedUnavailable { message, .. })
+                if message.as_str() == "image seed clock is more than 300 seconds ahead of Control"
+        ));
+    }
+
+    #[test]
+    fn seed_clock_at_the_safety_margin_boundary_is_accepted() {
+        let service = pushed_service();
+        let platform_image = pushed_platform(&service);
+        let testimony = MachineClockTestimony {
+            control_request_started_at_unix_ms: 1_000_000,
+            machine_observed_at_unix_ms: 1_300_000,
+        };
+
+        assert!(
+            seed_clock_failure(
+                &service.service.service_id,
+                platform_image,
+                Some(&testimony),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn seed_clock_behind_control_is_accepted() {
+        let service = pushed_service();
+        let platform_image = pushed_platform(&service);
+        let testimony = MachineClockTestimony {
+            control_request_started_at_unix_ms: 1_000_000,
+            machine_observed_at_unix_ms: 900_000,
+        };
+
+        assert!(
+            seed_clock_failure(
+                &service.service.service_id,
+                platform_image,
+                Some(&testimony),
+            )
+            .is_none()
+        );
+    }
+
     #[test]
     fn pushed_receipt_without_target_platform_is_a_typed_failure() {
         let service = pushed_service();
@@ -697,6 +812,7 @@ mod tests {
             machine_platforms: [(target_machine.clone(), target_platform.clone())]
                 .into_iter()
                 .collect(),
+            seed_clock_testimony: BTreeMap::new(),
             dataplane_members: Vec::new(),
             exact_certificate_routes: Vec::new(),
             ployz_automatic_hostnames: false,
@@ -783,6 +899,15 @@ mod tests {
             existing_replicas: Vec::new(),
             cleanup_candidates: Vec::new(),
         }
+    }
+
+    fn pushed_platform(service: &DeployServiceExecutionCommand) -> &PlatformImage {
+        let ImageSource::PushedToSeed(receipt) = &service.service.image_source else {
+            panic!("pushed service");
+        };
+        let target_platform = platform("amd64");
+        let platform_image = receipt.platform(&target_platform).expect("platform image");
+        platform_image
     }
 
     fn machine_id(value: &str) -> MachineId {

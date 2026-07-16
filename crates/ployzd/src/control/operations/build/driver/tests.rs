@@ -5,6 +5,21 @@ use crate::roles::machine::protocol::MachineBuildLogFrame;
 use ployz_core::image::OciPlatform;
 use ployz_core::operation::BuildLogChunk;
 
+#[tokio::test(start_paused = true)]
+async fn placement_deadline_is_a_typed_control_failure() {
+    let pending = std::future::pending::<Result<(), BuildOperationFailure>>();
+    let result = within_placement_deadline(pending);
+    tokio::pin!(result);
+
+    tokio::time::advance(ployz_core::build::BUILD_MAX_PLACEMENT_TIMEOUT).await;
+
+    assert!(matches!(
+        result.await,
+        Err(BuildOperationFailure::ControlUnavailable { message })
+            if message.as_str() == "build placement exceeded its 180-second deadline"
+    ));
+}
+
 #[test]
 fn caller_budget_is_explicit_and_deterministic() {
     assert_eq!(
