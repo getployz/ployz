@@ -1,7 +1,7 @@
 use super::{
-    CertOperationPayload, CertOperationSubmission, CoreReplaceOperationSubmission,
-    CoreReplacePayload, CredentialGrantOperationSubmission, DeployOperationPayload,
-    DeployOperationSubmission, IngressConfigureOperationSubmission,
+    BuildOperationPayload, BuildOperationSubmission, CertOperationPayload, CertOperationSubmission,
+    CoreReplaceOperationSubmission, CoreReplacePayload, CredentialGrantOperationSubmission,
+    DeployOperationPayload, DeployOperationSubmission, IngressConfigureOperationSubmission,
     MachineLifecycleOperationSubmission, MachineLifecyclePayload,
     MachineStoragePrepareOperationSubmission, MachineStoragePreparePayload,
     MachineUpdateOperationSubmission, MachineUpdatePayload, ManagedDnsReconcileOperationSubmission,
@@ -24,6 +24,54 @@ pub(super) trait OperationAction: Sized {
         payload: &Self::Payload,
         sequence: EventSequence,
     ) -> OperationStatus;
+}
+
+impl OperationAction for BuildOperationSubmission {
+    type Payload = BuildOperationPayload;
+    const KIND: OperationKind = OperationKind::Build;
+
+    fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEvent {
+        OperationEvent::BuildSubmitted {
+            operation_id,
+            source: payload.source,
+            adapter: payload.adapter,
+            platforms: payload.platforms,
+        }
+    }
+
+    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
+        let OperationEvent::BuildSubmitted {
+            operation_id,
+            source,
+            adapter,
+            platforms,
+        } = event
+        else {
+            return None;
+        };
+        Some((
+            operation_id,
+            BuildOperationPayload {
+                source,
+                adapter,
+                platforms,
+            },
+        ))
+    }
+
+    fn accepted_status(
+        operation_id: OperationId,
+        payload: &Self::Payload,
+        sequence: EventSequence,
+    ) -> OperationStatus {
+        OperationStatus::build_accepted(
+            operation_id,
+            payload.source.clone(),
+            payload.adapter.clone(),
+            payload.platforms.clone(),
+            sequence,
+        )
+    }
 }
 
 impl OperationAction for DeployOperationSubmission {

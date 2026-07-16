@@ -1,10 +1,12 @@
 use super::*;
 use crate::control::intent::ingress_intent::IngressIntentStore;
 use crate::control::store::CoreStore;
+use ployz_core::build::{BuildAdapter, BuildCacheScope, BuildPlatforms, GitSource};
 use ployz_core::deploy::{
     ContainerRuntimeSpec, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec,
     ImageReference, ImageSource, ReplicaCount,
 };
+use ployz_core::image::OciPlatform;
 use ployz_core::ingress::{
     AutomaticHostnameConfiguration, AutomaticHostnameLabel, IngressConfiguration,
     PloyzDnsTargetIntent,
@@ -29,6 +31,59 @@ fn storage_prepare_command(operation: &str) -> MachineStoragePrepareSubmitComman
         machine_id: machine_id("machine-a"),
         requested_pool: None,
     }
+}
+
+fn build_submit_command(operation: &str) -> BuildSubmitCommand {
+    BuildSubmitCommand {
+        operation_id: operation_id(operation),
+        source: GitSource::try_new(
+            "https://example.com/repository.git",
+            "0123456789abcdef0123456789abcdef01234567",
+            "git",
+            "private-token",
+            None::<String>,
+        )
+        .expect("valid git source"),
+        adapter: BuildAdapter::Railpack {
+            cache_scope: BuildCacheScope::try_new("build-scope").expect("valid cache scope"),
+        },
+        platforms: BuildPlatforms::try_new([
+            OciPlatform::try_new("linux", "amd64").expect("valid platform")
+        ])
+        .expect("non-empty platforms"),
+    }
+}
+
+#[tokio::test]
+async fn build_submit_records_redacted_accepted_evidence_before_execution() {
+    let (_nats, controllers, _intent) = test_controllers().await;
+    let command = build_submit_command("build_accepted");
+
+    let accepted = controllers
+        .submit_build(command)
+        .await
+        .expect("build submits");
+    let status = controllers
+        .repository()
+        .get(&accepted.submission.operation_id)
+        .await
+        .expect("status reads")
+        .expect("status exists");
+
+    let OperationStatus::Build { source, state, .. } = status else {
+        panic!("build submission must project build status");
+    };
+    assert!(matches!(
+        state,
+        ployz_core::operation::BuildOperationState::Accepted
+    ));
+    assert!(source.credential_supplied);
+    assert!(
+        !serde_json::to_string(&source)
+            .expect("source evidence serializes")
+            .contains("private-token")
+    );
+    assert!(accepted.submission.should_start_execution);
 }
 
 #[tokio::test]
