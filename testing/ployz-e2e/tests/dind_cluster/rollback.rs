@@ -7,6 +7,7 @@ use ployz_core::operation::{HealthCheckFailure, RetainedArtifact};
 pub(super) async fn assert_boot_crash_preserves_serving_and_failure_evidence(core: &CoreContext) {
     with_evidence(&core.cluster, async {
         wait_for_machine_observations(core, &machine_id("core_1")).await;
+        let image = prepare_boot_crash_registry_image(core).await;
 
         let first = core
             .api
@@ -15,6 +16,7 @@ pub(super) async fn assert_boot_crash_preserves_serving_and_failure_evidence(cor
                     core,
                     "idem_dind_boot_crash_v1",
                     "printf 'failure-journey-v1' > /usr/share/nginx/html/index.html; exec nginx -g 'daemon off;'",
+                    &image,
                 )
                 .await,
             )
@@ -64,6 +66,7 @@ pub(super) async fn assert_boot_crash_preserves_serving_and_failure_evidence(cor
                     core,
                     "idem_dind_boot_crash_failed",
                     "exit 23",
+                    &image,
                 )
                 .await,
             )
@@ -136,6 +139,7 @@ pub(super) async fn assert_boot_crash_preserves_serving_and_failure_evidence(cor
                     core,
                     "idem_dind_boot_crash_retry",
                     "printf 'failure-journey-v2' > /usr/share/nginx/html/index.html; exec nginx -g 'daemon off;'",
+                    &image,
                 )
                 .await,
             )
@@ -169,20 +173,42 @@ pub(super) async fn assert_boot_crash_preserves_serving_and_failure_evidence(cor
     .await;
 }
 
+async fn prepare_boot_crash_registry_image(core: &CoreContext) -> ImageReference {
+    let image = "127.0.0.1:5002/failure-journey/nginx:seeded";
+    let setup = core
+        .exec_sh(
+            core.cluster.core(),
+            &format!(
+                "set -eu
+docker rm -f ployz-failure-journey-registry >/dev/null 2>&1 || true
+docker run -d --name ployz-failure-journey-registry -p 5002:5000 {REGISTRY_IMAGE} >/dev/null
+for attempt in $(seq 1 30); do
+  if curl -fsS http://127.0.0.1:5002/v2/ >/dev/null; then break; fi
+  sleep 1
+done
+docker tag {WORKLOAD_IMAGE} {image}
+docker push {image} >/dev/null"
+            ),
+        )
+        .await;
+    assert!(
+        setup.success(),
+        "boot-crash local registry image setup failed: {setup:?}"
+    );
+    ImageReference::try_new(image).expect("valid boot-crash local registry image")
+}
+
 async fn reserved_boot_crash_deploy_request(
     core: &CoreContext,
     idempotency: &str,
     command: &str,
+    image: &ImageReference,
 ) -> DeploySubmitRequest {
     let mut target = boot_crash_deploy_target(command);
-    let pushed = prepare_deploy_images(&core.api, &mut target.services, false)
-        .await
-        .expect("boot-crash fixture image pushes from the local DinD seed");
-    assert_eq!(
-        pushed.len(),
-        1,
-        "boot-crash fixture must use its one locally seeded image"
-    );
+    let [service] = target.services.as_mut_slice() else {
+        panic!("boot-crash fixture must contain one service")
+    };
+    service.image = image.clone();
     reserved_deploy_request(core, idempotency, target).await
 }
 
