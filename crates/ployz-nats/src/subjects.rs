@@ -412,6 +412,7 @@ pub const fn namespace_remove_running_stage(stage: &NamespaceRemoveRunningStage)
 pub const fn volume_remove_running_stage(stage: &VolumeRemoveRunningStage) -> &'static str {
     match stage {
         VolumeRemoveRunningStage::RemovingVolumeData => "removing_volume_data",
+        VolumeRemoveRunningStage::RemovingDataset => "removing_dataset",
     }
 }
 

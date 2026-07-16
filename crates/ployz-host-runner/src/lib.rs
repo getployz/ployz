@@ -114,7 +114,7 @@ pub fn run_host_runner_command(command: HostRunnerCommand) -> ExitCode {
                 &dataset,
             )
         }),
-        HostRunnerCommand::StorageDatasetDestroy(dataset) => run_storage_effect(|| {
+        HostRunnerCommand::StorageDatasetDestroy(dataset) => run_typed_storage_effect(|| {
             destroy_dataset(
                 &mut SystemHostRunnerCommandRunner::default(),
                 std::path::Path::new(HOST_RUNNER_STATE_DIRECTORY),

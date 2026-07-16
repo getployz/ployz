@@ -121,6 +121,7 @@ const fn namespace_remove_stage(stage: NamespaceRemoveRunningStage) -> &'static 
 const fn volume_remove_stage(stage: VolumeRemoveRunningStage) -> &'static str {
     match stage {
         VolumeRemoveRunningStage::RemovingVolumeData => "removing volume data",
+        VolumeRemoveRunningStage::RemovingDataset => "removing dataset",
     }
 }
 

@@ -21,6 +21,11 @@ pub const MACHINE_STORAGE_PREPARE_TERMINATION_GRACE: Duration =
 pub const MACHINE_STORAGE_PREPARE_RPC_TIMEOUT: Duration = Duration::from_secs(
     MACHINE_STORAGE_PREPARE_BUDGET_SECONDS + MACHINE_STORAGE_PREPARE_TERMINATION_GRACE_SECONDS,
 );
+pub const DATASET_DESTROY_INNER_COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
+pub const DATASET_DESTROY_MAX_INNER_COMMANDS: u32 = 5;
+pub const DATASET_DESTROY_MAX_INNER_BUDGET: Duration = Duration::from_secs(
+    DATASET_DESTROY_INNER_COMMAND_TIMEOUT.as_secs() * DATASET_DESTROY_MAX_INNER_COMMANDS as u64,
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]

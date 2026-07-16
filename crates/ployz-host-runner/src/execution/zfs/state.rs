@@ -234,12 +234,20 @@ pub(super) fn load_and_verify(
     runner: &mut impl HostRunnerCommandRunner,
     state_directory: &Path,
 ) -> Result<PreparedStorageState, ZfsEffectError> {
+    load_and_verify_with_timeout(runner, state_directory, COMMAND_TIMEOUT)
+}
+
+pub(super) fn load_and_verify_with_timeout(
+    runner: &mut impl HostRunnerCommandRunner,
+    state_directory: &Path,
+    command_timeout: std::time::Duration,
+) -> Result<PreparedStorageState, ZfsEffectError> {
     let state = load_prepared_storage_state(state_directory)?;
     checked(
         runner,
         "zpool",
         &["list", "-H", "-o", "name", state.pool().as_str()],
-        COMMAND_TIMEOUT,
+        command_timeout,
         EffectClass::Mismatch,
     )?;
     let observed = checked(
@@ -253,7 +261,7 @@ pub(super) fn load_and_verify(
             "mountpoint",
             state.dataset_root().as_str(),
         ],
-        COMMAND_TIMEOUT,
+        command_timeout,
         EffectClass::Mismatch,
     )?;
     if observed.stdout.trim() != PROVISIONED_VOLUME_MOUNTPOINT {
@@ -271,7 +279,7 @@ pub(super) fn load_and_verify(
             runner,
             "zpool",
             &["status", "-P", state.pool().as_str()],
-            COMMAND_TIMEOUT,
+            command_timeout,
             EffectClass::Mismatch,
         )?;
         if !observed.stdout.lines().any(|line| line.trim() == path) {

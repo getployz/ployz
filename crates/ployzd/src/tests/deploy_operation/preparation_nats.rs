@@ -605,6 +605,15 @@ impl MachineContainerRunner for StaticRunner {
             message: "not used".to_owned(),
         })
     }
+
+    async fn destroy_provisioned_dataset(
+        &self,
+        dataset: &ployz_core::deploy::DatasetName,
+    ) -> Result<(), ployz_core::storage::StorageEffectFailure> {
+        Err(ployz_core::storage::StorageEffectFailure::ProcessFailed {
+            message: format!("dataset destroy not used: {}", dataset.as_str()),
+        })
+    }
 }
 
 fn existing_state(state: &ContainerRuntimeState) -> ExistingManagedContainerState {

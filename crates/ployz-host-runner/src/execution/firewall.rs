@@ -353,6 +353,7 @@ mod tests {
             success: true,
             exit_code: Some(0),
             stdout: stdout.to_owned(),
+            stdout_truncated: false,
             failure: String::new(),
         })
     }
@@ -362,6 +363,7 @@ mod tests {
             success: false,
             exit_code: Some(3),
             stdout: String::new(),
+            stdout_truncated: false,
             failure: "inactive".to_owned(),
         }
     }
@@ -371,6 +373,7 @@ mod tests {
             success: false,
             exit_code: Some(1),
             stdout: String::new(),
+            stdout_truncated: false,
             failure: "absent".to_owned(),
         }
     }
@@ -380,6 +383,7 @@ mod tests {
             success: false,
             exit_code: Some(2),
             stdout: String::new(),
+            stdout_truncated: false,
             failure: message.to_owned(),
         })
     }

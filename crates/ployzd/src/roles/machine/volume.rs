@@ -13,6 +13,8 @@ use std::time::Duration;
 const STORAGE_HOST_COMMAND_TIMEOUT: Duration = Duration::from_secs(4);
 const MAX_CONCURRENT_VOLUME_READS: usize = 16;
 pub(super) const DATASET_ENSURE_HOST_COMMAND_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+pub(super) const DATASET_DESTROY_HOST_COMMAND_TIMEOUT: Duration =
+    ployz_core::storage::DATASET_DESTROY_MAX_INNER_BUDGET.saturating_add(Duration::from_secs(20));
 
 pub(crate) fn docker_volume_name(namespace_id: &NamespaceId, volume_name: &VolumeName) -> String {
     volume_name.stable_storage_name(namespace_id)
@@ -36,9 +38,38 @@ pub(super) async fn ensure_provisioned_dataset(
         .arg(quota.get().to_string())
         .stdin(Stdio::null())
         .kill_on_drop(true);
-    decode_typed_storage_host_command(command, DATASET_ENSURE_HOST_COMMAND_TIMEOUT)
-        .await
-        .map(|_: serde_json::Value| ())
+    decode_typed_storage_host_command(
+        command,
+        DATASET_ENSURE_HOST_COMMAND_TIMEOUT,
+        "dataset ensure",
+    )
+    .await
+    .map(|_: serde_json::Value| ())
+}
+
+pub(super) async fn destroy_provisioned_dataset(
+    dataset: &DatasetName,
+) -> Result<(), StorageEffectFailure> {
+    let command = dataset_destroy_command(dataset);
+    decode_typed_storage_host_command(
+        command,
+        DATASET_DESTROY_HOST_COMMAND_TIMEOUT,
+        "dataset destroy",
+    )
+    .await
+    .map(|_: serde_json::Value| ())
+}
+
+fn dataset_destroy_command(dataset: &DatasetName) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new("ployz");
+    command
+        .arg("host")
+        .arg("internal-storage-dataset-destroy")
+        .arg("--dataset")
+        .arg(dataset.as_str())
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+    command
 }
 
 pub(super) async fn read_provisioned_volume_usage(
@@ -153,6 +184,7 @@ fn compare_volume_pins(left: &VolumePinState, right: &VolumePinState) -> std::cm
 async fn decode_typed_storage_host_command<T: DeserializeOwned>(
     mut command: tokio::process::Command,
     timeout: Duration,
+    effect: &str,
 ) -> Result<T, StorageEffectFailure> {
     let output = tokio::time::timeout(timeout, command.output())
         .await
@@ -163,7 +195,7 @@ async fn decode_typed_storage_host_command<T: DeserializeOwned>(
     if output.status.success() {
         return serde_json::from_slice(&output.stdout).map_err(|error| {
             StorageEffectFailure::ProcessFailed {
-                message: format!("dataset ensure returned invalid JSON: {error}"),
+                message: format!("{effect} returned invalid JSON: {error}"),
             }
         });
     }
@@ -171,7 +203,7 @@ async fn decode_typed_storage_host_command<T: DeserializeOwned>(
         serde_json::from_slice::<StorageEffectFailure>(&output.stderr).map_err(|error| {
             StorageEffectFailure::ProcessFailed {
                 message: format!(
-                    "dataset ensure failed without typed evidence: {error}; stderr={}",
+                    "{effect} failed without typed evidence: {error}; stderr={}",
                     String::from_utf8_lossy(&output.stderr).trim()
                 ),
             }
@@ -207,9 +239,10 @@ async fn decode_storage_host_command<T: DeserializeOwned>(
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_storage_host_command, decode_typed_storage_host_command, docker_volume_name,
+        DATASET_DESTROY_HOST_COMMAND_TIMEOUT, dataset_destroy_command, decode_storage_host_command,
+        decode_typed_storage_host_command, docker_volume_name,
     };
-    use ployz_core::deploy::{VolumeName, ZfsPoolName};
+    use ployz_core::deploy::{DatasetName, VolumeName, ZfsPoolName};
     use ployz_core::machine::{PoolCapacityFacts, StorageCapability};
     use ployz_test_support::ids::namespace_id;
     use std::time::Duration;
@@ -226,6 +259,14 @@ mod tests {
         assert_ne!(
             docker_volume_name(&left, &volume_name("c")),
             docker_volume_name(&right, &volume_name("b-c"))
+        );
+    }
+
+    #[test]
+    fn dataset_destroy_child_budget_exceeds_owned_image_inner_maximum() {
+        assert!(
+            DATASET_DESTROY_HOST_COMMAND_TIMEOUT
+                > ployz_core::storage::DATASET_DESTROY_MAX_INNER_BUDGET
         );
     }
 
@@ -318,9 +359,12 @@ mod tests {
             "-c",
             "printf '%s' '{\"kind\":\"quota_shrink\",\"dataset\":\"tank/ployz/volumes/ployz-n7-default-v4-data\",\"current\":2048,\"requested\":1024}' >&2; exit 1",
         ]);
-        let result =
-            decode_typed_storage_host_command::<serde_json::Value>(command, Duration::from_secs(1))
-                .await;
+        let result = decode_typed_storage_host_command::<serde_json::Value>(
+            command,
+            Duration::from_secs(1),
+            "dataset ensure",
+        )
+        .await;
 
         assert!(matches!(
             result,
@@ -333,18 +377,70 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dataset_ensure_protocol_rejects_malformed_failure_evidence() {
+    async fn dataset_destroy_protocol_preserves_typed_failure() {
+        let mut command = tokio::process::Command::new("sh");
+        command.args([
+            "-c",
+            "printf '%s' '{\"kind\":\"process_failed\",\"message\":\"zfs destroy failed\"}' >&2; exit 1",
+        ]);
+
+        let result = decode_typed_storage_host_command::<serde_json::Value>(
+            command,
+            Duration::from_secs(1),
+            "dataset destroy",
+        )
+        .await;
+
+        assert_eq!(
+            result,
+            Err(ployz_core::storage::StorageEffectFailure::ProcessFailed {
+                message: "zfs destroy failed".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn dataset_destroy_command_forwards_the_exact_dataset() {
+        let dataset = DatasetName::for_volume(
+            &ZfsPoolName::try_new("stored-pool").expect("valid pool"),
+            &namespace_id("exact-namespace"),
+            &volume_name("exact-volume"),
+        )
+        .expect("valid dataset");
+        let command = dataset_destroy_command(&dataset);
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            args,
+            [
+                "host",
+                "internal-storage-dataset-destroy",
+                "--dataset",
+                dataset.as_str(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn dataset_destroy_protocol_rejects_malformed_failure_evidence() {
         let mut command = tokio::process::Command::new("sh");
         command.args(["-c", "printf '%s' 'not-json' >&2; exit 1"]);
 
-        let result =
-            decode_typed_storage_host_command::<serde_json::Value>(command, Duration::from_secs(1))
-                .await;
+        let result = decode_typed_storage_host_command::<serde_json::Value>(
+            command,
+            Duration::from_secs(1),
+            "dataset destroy",
+        )
+        .await;
 
         assert!(matches!(
             result,
             Err(ployz_core::storage::StorageEffectFailure::ProcessFailed { message })
-                if message.contains("dataset ensure failed without typed evidence")
+                if message.contains("dataset destroy failed without typed evidence")
                     && message.contains("stderr=not-json")
         ));
     }
