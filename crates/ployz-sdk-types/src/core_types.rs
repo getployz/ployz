@@ -60,6 +60,7 @@ pub use ployz_core::machine::{
     DataplaneUnavailableReason, GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessHealth,
     GatewayServingStatus, GatewayStatusObservation, GatewayStatusPublishFailure,
     GatewayWatchFailure, MachineEndpointObservation, MachineLifecycle, MachineUsabilityReason,
+    StorageCapability, StorageUnavailableReason, StrandedVolumeAlarm, StrandedVolumeReason,
 };
 pub use ployz_core::nats_config::{
     CredentialGrant, CredentialName, CredentialNameError, CredentialRole, NatsAuthorizationGrant,

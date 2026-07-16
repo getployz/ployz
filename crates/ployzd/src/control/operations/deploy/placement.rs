@@ -5,13 +5,72 @@ use ployz_core::machine::DataplaneUnavailableReason;
 use ployz_core::machine::MachineUsabilityReason;
 use ployz_core::machine::placement_rejection;
 use ployz_core::machine::{
-    DataplaneProjectionAdmissionFailure, validate_declared_local_machine,
+    DataplaneProjectionAdmissionFailure, StorageCompatibility, StorageTestimony,
+    classify_storage_compatibility, validate_declared_local_machine,
     validate_placement_machine_peers,
 };
 use ployz_core::network::{DataplaneProjection, DataplaneProjectionMember, MachineDataplaneStatus};
 use ployz_core::operation::{FailureMessage, UnusableMachine};
 
 use crate::control::role_client::machine::MachinePlacementFacts;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ProvisionedStorageRequirement {
+    None,
+    Ready {
+        expected_pools: Vec<ployz_core::deploy::ZfsPoolName>,
+    },
+}
+
+pub(super) fn classify_storage_usability(
+    candidates: &[MachineId],
+    testimony: &BTreeMap<MachineId, Option<ployz_core::machine::StorageCapability>>,
+    requirement: &ProvisionedStorageRequirement,
+) -> (Vec<MachineId>, Vec<UnusableMachine>) {
+    let ProvisionedStorageRequirement::Ready { expected_pools } = requirement else {
+        return (candidates.to_vec(), Vec::new());
+    };
+    let mut eligible = Vec::new();
+    let mut unusable = Vec::new();
+    for machine_id in candidates {
+        let storage = testimony
+            .get(machine_id)
+            .map_or(StorageTestimony::NoAnswer, |storage| {
+                StorageTestimony::Answered(storage.as_ref())
+            });
+        let compatibility = if expected_pools.is_empty() {
+            classify_storage_compatibility(storage, None)
+        } else {
+            expected_pools
+                .iter()
+                .map(|expected| classify_storage_compatibility(storage, Some(expected)))
+                .find(|compatibility| *compatibility != StorageCompatibility::Compatible)
+                .unwrap_or(StorageCompatibility::Compatible)
+        };
+        let reason = match compatibility {
+            StorageCompatibility::Compatible => None,
+            StorageCompatibility::MachineSilent => Some(MachineUsabilityReason::FactsUnavailable),
+            StorageCompatibility::TestimonyNotReported => {
+                Some(MachineUsabilityReason::StorageTestimonyNotReported)
+            }
+            StorageCompatibility::Unprepared => Some(MachineUsabilityReason::StorageUnprepared),
+            StorageCompatibility::Unavailable { reason } => {
+                Some(MachineUsabilityReason::StorageUnavailable { reason })
+            }
+            StorageCompatibility::PoolMismatch { expected, reported } => {
+                Some(MachineUsabilityReason::StoragePoolMismatch { expected, reported })
+            }
+        };
+        match reason {
+            None => eligible.push(machine_id.clone()),
+            Some(reason) => unusable.push(UnusableMachine {
+                machine_id: machine_id.clone(),
+                reason,
+            }),
+        }
+    }
+    (eligible, unusable)
+}
 
 struct PreliminaryCandidate<'a> {
     machine_id: MachineId,
@@ -119,6 +178,7 @@ mod tests {
     use super::*;
     use ployz_core::machine::MachineLifecycle;
     use ployz_core::machine::runtime::MachineContainerObservationSnapshot;
+    use ployz_core::machine::{StorageCapability, StorageUnavailableReason};
     use ployz_core::network::{
         DataplaneProjectionRevisions, DataplaneProjectionTestimony, EbpfAttachmentStatus,
         EndpointBridgeStatus, MachineEndpointSubnet, NativeDataplaneProjectionStatus,
@@ -149,6 +209,86 @@ mod tests {
                 ),
             }]
         );
+    }
+
+    #[test]
+    fn provisioned_storage_filters_only_when_required_and_preserves_typed_reasons() {
+        let ready = machine_id("ready");
+        let legacy = machine_id("legacy");
+        let unprepared = machine_id("unprepared");
+        let faulted = machine_id("faulted");
+        let candidates = vec![
+            ready.clone(),
+            legacy.clone(),
+            unprepared.clone(),
+            faulted.clone(),
+        ];
+        let pool = ployz_core::deploy::ZfsPoolName::try_new("tank").expect("valid pool");
+        let testimony = BTreeMap::from([
+            (
+                ready.clone(),
+                Some(StorageCapability::Ready { pool: pool.clone() }),
+            ),
+            (legacy.clone(), None),
+            (unprepared.clone(), Some(StorageCapability::Unprepared)),
+            (
+                faulted.clone(),
+                Some(StorageCapability::Unavailable {
+                    reason: StorageUnavailableReason::PoolFaulted { pool: pool.clone() },
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            classify_storage_usability(
+                &candidates,
+                &testimony,
+                &ProvisionedStorageRequirement::None,
+            ),
+            (candidates.clone(), Vec::new())
+        );
+        let (eligible, unusable) = classify_storage_usability(
+            &candidates,
+            &testimony,
+            &ProvisionedStorageRequirement::Ready {
+                expected_pools: vec![pool.clone()],
+            },
+        );
+        assert_eq!(eligible, vec![ready]);
+        assert!(matches!(
+            unusable.as_slice(),
+            [
+                UnusableMachine {
+                    reason: MachineUsabilityReason::StorageTestimonyNotReported,
+                    ..
+                },
+                UnusableMachine {
+                    reason: MachineUsabilityReason::StorageUnprepared,
+                    ..
+                },
+                UnusableMachine {
+                    reason: MachineUsabilityReason::StorageUnavailable { .. },
+                    ..
+                },
+            ]
+        ));
+
+        let (_, mismatch) = classify_storage_usability(
+            &[machine_id("ready")],
+            &testimony,
+            &ProvisionedStorageRequirement::Ready {
+                expected_pools: vec![
+                    ployz_core::deploy::ZfsPoolName::try_new("other").expect("valid pool"),
+                ],
+            },
+        );
+        assert!(matches!(
+            mismatch.as_slice(),
+            [UnusableMachine {
+                reason: MachineUsabilityReason::StoragePoolMismatch { .. },
+                ..
+            }]
+        ));
     }
 
     #[test]
@@ -303,6 +443,7 @@ mod tests {
                     platform: ployz_core::image::OciPlatform::try_new("linux", "amd64")
                         .expect("platform"),
                     endpoints: None,
+                    storage: None,
                 },
             ),
             machine_id,

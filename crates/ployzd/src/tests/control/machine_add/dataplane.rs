@@ -288,6 +288,7 @@ async fn start_join_dataplane_responder(
                     mesh_endpoints: vec!["192.0.2.10:51820".parse().expect("mesh endpoint")],
                 }),
                 ployz_test_support::fixtures::test_disk_space(),
+                None,
                 ployz_core::image::OciPlatform::current(),
                 1,
             )

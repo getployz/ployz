@@ -18,7 +18,8 @@ use ployz_core::roles::InstallRolePolicy;
 use ployz_sdk_types::{
     AcceptedOperation, MachineAddAccepted, MachineAddRequest, MachineEndpointObservation,
     MachineInspectRequest, MachineListRequest, MachineListResult, MachineSnapshot,
-    MachineStoragePrepareRequest, MachineTestimony, MachineUpdateRequest,
+    MachineStoragePrepareRequest, MachineTestimony, MachineUpdateRequest, StorageCapability,
+    StorageUnavailableReason, StrandedVolumeReason,
 };
 
 pub use ployz_sdk_types::MachineName;
@@ -999,7 +1000,7 @@ impl MachineInspectOutput {
     #[must_use]
     pub fn render(&self) -> String {
         format!(
-            "machine {}\nname {}\nactivated-by {}\ncontrol-endpoints {}\nmesh-endpoints {}\ngateway {}\ncontainers {}\ndisk-space {}\n",
+            "machine {}\nname {}\nactivated-by {}\ncontrol-endpoints {}\nmesh-endpoints {}\ngateway {}\ncontainers {}\ndisk-space {}\nstorage {}\nstorage-alarms {}\n",
             self.machine.active.machine_id.as_str(),
             self.machine.active.name.as_str(),
             self.machine.active.activated_by.as_str(),
@@ -1008,19 +1009,23 @@ impl MachineInspectOutput {
             render_gateway(&self.machine),
             render_container_count(&self.machine),
             render_disk_space(&self.machine),
+            render_storage(&self.machine),
+            render_storage_alarms(&self.machine),
         )
     }
 }
 
 fn render_machine_summary(machine: &MachineSnapshot) -> String {
     format!(
-        "{} {} control-endpoints {} mesh-endpoints {} gateway {} containers {}",
+        "{} {} control-endpoints {} mesh-endpoints {} gateway {} containers {} storage {} alarms {}",
         machine.active.machine_id.as_str(),
         machine.active.name.as_str(),
         render_control_endpoints(machine),
         render_mesh_endpoints(machine),
         render_gateway(machine),
         render_container_count(machine),
+        render_storage(machine),
+        machine.storage_alarms.len(),
     )
 }
 
@@ -1098,6 +1103,66 @@ fn render_disk_space(machine: &MachineSnapshot) -> String {
         ),
         MachineTestimony::NoAnswer => "no answer".to_owned(),
     }
+}
+
+fn render_storage(machine: &MachineSnapshot) -> String {
+    let MachineTestimony::Answered { storage, .. } = &machine.testimony else {
+        return "no answer".to_owned();
+    };
+    match storage {
+        None => "not reported".to_owned(),
+        Some(StorageCapability::Unprepared) => "unprepared".to_owned(),
+        Some(StorageCapability::Ready { pool }) => format!("ready pool={}", pool.as_str()),
+        Some(StorageCapability::Unavailable { reason }) => {
+            format!("unavailable {}", render_storage_unavailable_reason(reason))
+        }
+    }
+}
+
+pub(crate) fn render_storage_unavailable_reason(reason: &StorageUnavailableReason) -> String {
+    match reason {
+        StorageUnavailableReason::ZfsModuleMissing => "zfs-module-missing".to_owned(),
+        StorageUnavailableReason::PoolNotImported { pool } => {
+            format!("pool-not-imported pool={}", pool.as_str())
+        }
+        StorageUnavailableReason::PoolFaulted { pool } => {
+            format!("pool-faulted pool={}", pool.as_str())
+        }
+    }
+}
+
+fn render_storage_alarms(machine: &MachineSnapshot) -> String {
+    if machine.storage_alarms.is_empty() {
+        return "none".to_owned();
+    }
+    machine
+        .storage_alarms
+        .iter()
+        .map(|alarm| {
+            let reason = match &alarm.reason {
+                StrandedVolumeReason::MachineSilent => "machine-silent".to_owned(),
+                StrandedVolumeReason::StorageTestimonyNotReported => {
+                    "storage-not-reported".to_owned()
+                }
+                StrandedVolumeReason::StorageUnprepared => "storage-unprepared".to_owned(),
+                StrandedVolumeReason::StorageUnavailable { reason } => {
+                    render_storage_unavailable_reason(reason)
+                }
+                StrandedVolumeReason::PoolMismatch { expected, reported } => format!(
+                    "pool-mismatch(expected={},reported={})",
+                    expected.as_str(),
+                    reported.as_str()
+                ),
+            };
+            format!(
+                "{}/{}:{}",
+                alarm.namespace_id.as_str(),
+                alarm.volume_name.as_str(),
+                reason
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 const fn render_gateway_serving(serving: GatewayServingStatus) -> &'static str {

@@ -11,7 +11,8 @@ use ployz::machine::command::{
     MachineListOutput, MachineName, derive_machine_identity,
 };
 use ployz::ssh::{SshClient, SshCommandError, SshPhase, SshTarget, SshTargetParseError};
-use ployz_core::ids::MachineId;
+use ployz_core::deploy::VolumeName;
+use ployz_core::ids::{MachineId, NamespaceId};
 use ployz_core::install::{
     AbsoluteInstallPath, HostPortAssurance, InstallArtifactSource, InstallArtifactSpec,
     InstallArtifactVersion, InstallSha256Digest, MachineJoinBundle, MachineJoinClusterName,
@@ -21,7 +22,7 @@ use ployz_core::intent::ActiveMachineState;
 use ployz_core::machine::GatewayServingStatus;
 use ployz_core::machine::GatewayStatusObservation;
 use ployz_core::machine::MachineEndpointObservation;
-use ployz_core::machine::MachineLifecycle;
+use ployz_core::machine::{MachineLifecycle, StrandedVolumeAlarm, StrandedVolumeReason};
 use ployz_core::nats_config::NatsCaCertificatePem;
 use ployz_core::roles::{GatewayRole, InstallRolePolicy};
 
@@ -138,7 +139,7 @@ fn machine_list_renders_machine_summaries() {
 
     assert_eq!(
         output,
-        "machine_1 edge_1 control-endpoints 203.0.113.10 mesh-endpoints 203.0.113.10:51820 gateway current 127.0.0.1:8080 routes 2 containers 3\n"
+        "machine_1 edge_1 control-endpoints 203.0.113.10 mesh-endpoints 203.0.113.10:51820 gateway current 127.0.0.1:8080 routes 2 containers 3 storage not reported alarms 0\n"
     );
 }
 
@@ -162,8 +163,23 @@ fn machine_inspect_renders_machine_detail() {
 
     assert_eq!(
         output,
-        "machine machine_1\nname edge_1\nactivated-by op_machine\ncontrol-endpoints 203.0.113.10\nmesh-endpoints 203.0.113.10:51820\ngateway last-known-good 127.0.0.1:8080 routes 2\ncontainers 3\ndisk-space 40 available / 100 total\n"
+        "machine machine_1\nname edge_1\nactivated-by op_machine\ncontrol-endpoints 203.0.113.10\nmesh-endpoints 203.0.113.10:51820\ngateway last-known-good 127.0.0.1:8080 routes 2\ncontainers 3\ndisk-space 40 available / 100 total\nstorage not reported\nstorage-alarms none\n"
     );
+}
+
+#[test]
+fn machine_inspect_renders_stranded_volume_identity_and_reason() {
+    let mut machine = machine_snapshot("machine_1", Some(GatewayServingStatus::Current));
+    machine.storage_alarms.push(StrandedVolumeAlarm::new(
+        NamespaceId::try_new("team-a").expect("valid namespace id"),
+        VolumeName::try_new("data").expect("valid volume name"),
+        machine.active.machine_id.clone(),
+        StrandedVolumeReason::MachineSilent,
+    ));
+
+    let output = MachineInspectOutput::new(machine).render();
+
+    assert!(output.contains("storage-alarms team-a/data:machine-silent\n"));
 }
 
 #[test]
@@ -174,6 +190,7 @@ fn machine_inspect_renders_missing_observations_as_unknown() {
         gateway: None,
         observed_container_count: 3,
         disk_space: ployz_test_support::fixtures::test_disk_space(),
+        storage: None,
         last_observed_at_unix_seconds: 60,
     };
 
@@ -181,7 +198,7 @@ fn machine_inspect_renders_missing_observations_as_unknown() {
 
     assert_eq!(
         output,
-        "machine machine_1\nname edge_1\nactivated-by op_machine\ncontrol-endpoints unknown\nmesh-endpoints unknown\ngateway none\ncontainers 3\ndisk-space 40 available / 100 total\n"
+        "machine machine_1\nname edge_1\nactivated-by op_machine\ncontrol-endpoints unknown\nmesh-endpoints unknown\ngateway none\ncontainers 3\ndisk-space 40 available / 100 total\nstorage not reported\nstorage-alarms none\n"
     );
 }
 
@@ -194,7 +211,7 @@ fn machine_inspect_renders_no_answer() {
 
     assert_eq!(
         output,
-        "machine machine_1\nname edge_1\nactivated-by op_machine\ncontrol-endpoints no answer\nmesh-endpoints no answer\ngateway no answer\ncontainers no answer\ndisk-space no answer\n"
+        "machine machine_1\nname edge_1\nactivated-by op_machine\ncontrol-endpoints no answer\nmesh-endpoints no answer\ngateway no answer\ncontainers no answer\ndisk-space no answer\nstorage no answer\nstorage-alarms none\n"
     );
 }
 
@@ -242,8 +259,10 @@ fn machine_snapshot(machine_id: &str, gateway: Option<GatewayServingStatus>) -> 
             }),
             observed_container_count: 3,
             disk_space: ployz_test_support::fixtures::test_disk_space(),
+            storage: None,
             last_observed_at_unix_seconds: 60,
         },
+        storage_alarms: Vec::new(),
     }
 }
 

@@ -740,8 +740,10 @@ fn machine_snapshot(machine_id: &str) -> MachineSnapshot {
             })),
             observed_container_count: 3,
             disk_space: ployz_test_support::fixtures::test_disk_space(),
+            storage: None,
             last_observed_at_unix_seconds: 60,
         },
+        storage_alarms: Vec::new(),
     }
 }
 

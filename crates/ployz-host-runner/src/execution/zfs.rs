@@ -13,6 +13,7 @@ use ployz_core::storage::{
 pub use preparation::*;
 #[cfg(test)]
 use state::load_prepared_storage_state;
+pub use state::observe_storage_capability;
 
 #[cfg(test)]
 use command::{COMMAND_TIMEOUT, INSTALL_TIMEOUT};

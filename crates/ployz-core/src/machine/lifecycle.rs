@@ -23,7 +23,18 @@ pub enum MachineLifecycle {
 pub enum MachineUsabilityReason {
     Draining,
     FactsUnavailable,
-    DataplaneUnavailable { reason: DataplaneUnavailableReason },
+    StorageTestimonyNotReported,
+    StorageUnprepared,
+    StorageUnavailable {
+        reason: super::StorageUnavailableReason,
+    },
+    StoragePoolMismatch {
+        expected: crate::deploy::ZfsPoolName,
+        reported: crate::deploy::ZfsPoolName,
+    },
+    DataplaneUnavailable {
+        reason: DataplaneUnavailableReason,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

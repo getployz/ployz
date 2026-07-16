@@ -9,6 +9,7 @@ use crate::roles::machine::protocol::{
 use crate::roles::machine::runner::{
     ExistingManagedContainerState, MachineContainerRunner, MachineContainerRunnerError,
 };
+use crate::roles::machine::volume::observe_storage_capability;
 use ployz_core::ids::MachineId;
 use ployz_core::machine::MachineEndpointObservation;
 use ployz_core::machine::runtime::{
@@ -98,9 +99,11 @@ async fn publish_machine_facts_snapshot<R>(
 where
     R: MachineContainerRunner,
 {
-    let facts = read_machine_facts_snapshot(machine_id, runner, endpoints, current_unix_ms())
-        .await
-        .map_err(MachineFactsPublishError::Read)?;
+    let storage = observe_storage_capability().await;
+    let facts =
+        read_machine_facts_snapshot(machine_id, runner, endpoints, storage, current_unix_ms())
+            .await
+            .map_err(MachineFactsPublishError::Read)?;
     let payload = serde_json::to_vec(&facts).map_err(MachineFactsPublishError::Encode)?;
     client
         .publish(machine_facts(machine_id), payload.into())
@@ -147,8 +150,15 @@ where
         Some(observation) => Some(observation),
         None => observe_interface_endpoints(&machine_id, state.endpoint_cache.wg_ifname()).await,
     };
-    match read_machine_facts_snapshot(&machine_id, &state.runner, endpoints, current_unix_ms())
-        .await
+    let storage = observe_storage_capability().await;
+    match read_machine_facts_snapshot(
+        &machine_id,
+        &state.runner,
+        endpoints,
+        storage,
+        current_unix_ms(),
+    )
+    .await
     {
         Ok(facts) => machine_success(MachineFactsGetRpcResponse::Ok(MachineFactsGetRpcOk {
             facts,
@@ -226,6 +236,7 @@ pub(crate) async fn read_machine_facts_snapshot<R>(
     machine_id: &MachineId,
     runner: &R,
     endpoints: Option<MachineEndpointObservation>,
+    storage: Option<ployz_core::machine::StorageCapability>,
     observed_at_unix_ms: u64,
 ) -> Result<MachineFactsSnapshot, MachineFactsReadError>
 where
@@ -256,6 +267,7 @@ where
         containers,
         endpoints,
         disk_space,
+        storage,
         ployz_core::image::OciPlatform::current(),
         observed_at_unix_ms,
     )

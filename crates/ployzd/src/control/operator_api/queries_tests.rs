@@ -174,6 +174,7 @@ fn machine_facts(
             .expect("valid container snapshot"),
         None,
         ployz_test_support::fixtures::test_disk_space(),
+        None,
         ployz_core::image::OciPlatform::current(),
         1,
     )

@@ -364,6 +364,7 @@ pub(crate) struct MachinePlacementFactsAnswer {
     pub containers: MachineContainerObservationSnapshot,
     pub platform: ployz_core::image::OciPlatform,
     pub endpoints: Option<ployz_core::machine::MachineEndpointObservation>,
+    pub storage: Option<ployz_core::machine::StorageCapability>,
 }
 
 pub(crate) async fn read_machine_placement_facts(
@@ -380,6 +381,7 @@ pub(crate) async fn read_machine_placement_facts(
                     containers: facts.containers().clone(),
                     platform: facts.platform().clone(),
                     endpoints: facts.endpoints().cloned(),
+                    storage: facts.storage().cloned(),
                 });
             MachinePlacementFacts {
                 machine_id,

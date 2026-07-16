@@ -142,6 +142,79 @@ fn persist(directory: &Path, origin: PreparedStorageOrigin) {
 }
 
 #[test]
+fn storage_capability_distinguishes_unprepared_and_unavailable_hosts() {
+    let unprepared = tempfile::tempdir().unwrap();
+    let mut runner = RecordingRunner::new([]);
+    assert_eq!(
+        observe_storage_capability(
+            &mut runner,
+            unprepared.path(),
+            &unprepared.path().join("zfs")
+        )
+        .unwrap(),
+        ployz_core::machine::StorageCapability::Unprepared
+    );
+    assert!(runner.invocations.is_empty());
+
+    let prepared = tempfile::tempdir().unwrap();
+    persist(prepared.path(), PreparedStorageOrigin::Adopted);
+    let mut runner = RecordingRunner::new([]);
+    assert_eq!(
+        observe_storage_capability(
+            &mut runner,
+            prepared.path(),
+            &prepared.path().join("missing")
+        )
+        .unwrap(),
+        ployz_core::machine::StorageCapability::Unavailable {
+            reason: ployz_core::machine::StorageUnavailableReason::ZfsModuleMissing,
+        }
+    );
+    assert!(runner.invocations.is_empty());
+}
+
+#[test]
+fn storage_capability_reports_pool_absence_fault_and_readiness() {
+    let state = tempfile::tempdir().unwrap();
+    persist(state.path(), PreparedStorageOrigin::Adopted);
+    let module = state.path().join("zfs");
+    std::fs::create_dir(&module).unwrap();
+    let pool = ZfsPoolName::try_new("tank").unwrap();
+
+    let mut absent = RecordingRunner::new([stdout("other\n")]);
+    assert_eq!(
+        observe_storage_capability(&mut absent, state.path(), &module).unwrap(),
+        ployz_core::machine::StorageCapability::Unavailable {
+            reason: ployz_core::machine::StorageUnavailableReason::PoolNotImported {
+                pool: pool.clone(),
+            },
+        }
+    );
+
+    let mut faulted = RecordingRunner::new([stdout("tank\n"), stdout("FAULTED\n")]);
+    assert_eq!(
+        observe_storage_capability(&mut faulted, state.path(), &module).unwrap(),
+        ployz_core::machine::StorageCapability::Unavailable {
+            reason: ployz_core::machine::StorageUnavailableReason::PoolFaulted {
+                pool: pool.clone(),
+            },
+        }
+    );
+
+    let mut ready = RecordingRunner::new([stdout("tank\n"), stdout("ONLINE\n")]);
+    assert_eq!(
+        observe_storage_capability(&mut ready, state.path(), &module).unwrap(),
+        ployz_core::machine::StorageCapability::Ready { pool }
+    );
+    assert!(
+        ready
+            .invocations
+            .iter()
+            .all(|invocation| invocation.timeout == COMMAND_TIMEOUT)
+    );
+}
+
+#[test]
 fn unsupported_profile_refuses_before_mutation() {
     let state = tempfile::tempdir().unwrap();
     let mut runner = RecordingRunner::new([]);

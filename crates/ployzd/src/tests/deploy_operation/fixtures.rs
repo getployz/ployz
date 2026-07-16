@@ -1010,6 +1010,7 @@ fn execution_input_for_request(
         request,
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries,
@@ -1037,6 +1038,7 @@ pub(super) fn pinned_deploy_command() -> DeployExecutionInput {
         request,
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
@@ -1072,6 +1074,7 @@ pub(super) fn deploy_command_with_healthcheck(replicas: u16) -> DeployExecutionI
         request,
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
@@ -1119,6 +1122,7 @@ pub(super) fn deploy_command_with_pre_start() -> DeployExecutionInput {
         request,
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
@@ -1164,6 +1168,7 @@ fn routed_deploy_command_with_stored_routes(
         routed_deploy_request(replicas),
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings,
             namespace_serving_entries: Vec::new(),
@@ -1235,6 +1240,7 @@ pub(super) fn ployz_automatic_deploy_command() -> DeployExecutionInput {
         },
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
@@ -1327,6 +1333,7 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
             ]
             .into_iter()
             .collect(),
+            machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
@@ -1380,6 +1387,7 @@ pub(super) fn volume_backed_deploy_command(replicas: u16) -> DeployExecutionInpu
         request,
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
@@ -1418,6 +1426,7 @@ pub(super) fn deploy_command_with_existing_container(
         request,
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: vec![promoted],
@@ -1487,6 +1496,7 @@ pub(super) fn deploy_command_replacing_old_container_with_keep(
         request,
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
@@ -1559,6 +1569,7 @@ fn prepared_deploy_command(
         target_deploy_request(replicas),
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
@@ -1600,6 +1611,7 @@ pub(super) fn empty_deploy_command_with_running_container(
         },
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: vec![RouteBindingState {
                 id: RouteBindingId::try_new("route_api").expect("valid route binding id"),

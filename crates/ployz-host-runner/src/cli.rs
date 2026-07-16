@@ -37,6 +37,7 @@ pub enum HostRunnerCommand {
     CoreDemote(HostRunnerCoreDemote),
     SubstrateUpdate(HostRunnerSubstrateUpdate),
     StoragePrepare(HostRunnerStoragePrepare),
+    StorageCapability,
     StoragePoolFacts,
     StorageDatasetCreate(HostRunnerDatasetQuota),
     StorageDatasetGrow(HostRunnerDatasetQuota),
@@ -252,6 +253,7 @@ pub fn load_command(
         Some(HostRunnerSubcommand::StoragePrepare { operation_id, pool }) => Ok(
             HostRunnerCommand::StoragePrepare(HostRunnerStoragePrepare { operation_id, pool }),
         ),
+        Some(HostRunnerSubcommand::StorageCapability) => Ok(HostRunnerCommand::StorageCapability),
         Some(HostRunnerSubcommand::StoragePoolFacts) => Ok(HostRunnerCommand::StoragePoolFacts),
         Some(HostRunnerSubcommand::StorageDatasetCreate { dataset, quota }) => Ok(
             HostRunnerCommand::StorageDatasetCreate(HostRunnerDatasetQuota { dataset, quota }),
@@ -335,6 +337,8 @@ enum HostRunnerSubcommand {
         #[arg(long, value_name = "pool", value_parser = parse_zfs_pool)]
         pool: Option<ZfsPoolName>,
     },
+    #[command(name = "internal-storage-capability", hide = true)]
+    StorageCapability,
     #[command(name = "internal-storage-pool-facts", hide = true)]
     StoragePoolFacts,
     #[command(name = "internal-storage-dataset-create", hide = true)]

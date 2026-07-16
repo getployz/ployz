@@ -24,7 +24,7 @@ use cli::HostRunnerCommand;
 use execution::{
     HostRunnerCommandRunner, PoolSelection, SystemHostRunnerCommandRunner, create_dataset,
     destroy_dataset, gather_dataset_facts, gather_pool_capacity, grow_dataset_quota,
-    prepare_storage_for_operation,
+    observe_storage_capability, prepare_storage_for_operation,
 };
 
 const HOST_RUNNER_STATE_DIRECTORY: &str = "/var/lib/ployz";
@@ -84,6 +84,13 @@ pub fn run_host_runner_command(command: HostRunnerCommand) -> ExitCode {
                 std::path::Path::new(DOCKER_SYSTEMD_DROP_IN_DIRECTORY),
             )
             .map_err(|error| error.to_string())
+        }),
+        HostRunnerCommand::StorageCapability => run_storage_effect(|| {
+            observe_storage_capability(
+                &mut SystemHostRunnerCommandRunner::default(),
+                std::path::Path::new(HOST_RUNNER_STATE_DIRECTORY),
+                std::path::Path::new("/sys/module/zfs"),
+            )
         }),
         HostRunnerCommand::StoragePoolFacts => run_storage_effect(|| {
             gather_pool_capacity(
