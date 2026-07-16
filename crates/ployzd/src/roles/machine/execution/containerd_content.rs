@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use time::format_description::well_known::Rfc3339;
 use time::{Duration as TimeDuration, OffsetDateTime};
+use tokio::io::AsyncReadExt;
 
 const CONTAINERD_NAMESPACE: &str = "moby";
 const CONTAINERD_NAMESPACE_HEADER: &str = "containerd-namespace";
@@ -247,6 +248,46 @@ impl ContainerdContentStore {
         }
     }
 
+    pub async fn ingest_file(
+        &self,
+        path: &Path,
+        digest: OciDigest,
+        total_size: u64,
+        lease: ContentLease,
+    ) -> Result<(), ContainerdContentError> {
+        let mut file = tokio::fs::File::open(path).await.map_err(|error| {
+            ContainerdContentError::ReadFile {
+                path: path.to_path_buf(),
+                message: error.to_string(),
+            }
+        })?;
+        let ingest = ContentIngest::new(digest, total_size, lease);
+        let mut offset = 0_u64;
+        let mut buffer = vec![0_u8; ployz_core::image::IMAGE_BLOB_CHUNK_MAX_BYTES];
+        loop {
+            let read =
+                file.read(&mut buffer)
+                    .await
+                    .map_err(|error| ContainerdContentError::ReadFile {
+                        path: path.to_path_buf(),
+                        message: error.to_string(),
+                    })?;
+            if read == 0 {
+                break;
+            }
+            let Some(bytes) = buffer.get(..read) else {
+                return Err(ContainerdContentError::ReadFile {
+                    path: path.to_path_buf(),
+                    message: "reader returned an impossible byte count".to_owned(),
+                });
+            };
+            offset = self
+                .write_ingest_chunk(&ingest, offset, bytes.to_vec())
+                .await?;
+        }
+        self.commit_ingest(&ingest, offset).await
+    }
+
     async fn write_message(
         &self,
         ingest: &ContentIngest,
@@ -425,6 +466,8 @@ pub enum ContainerdContentError {
     },
     #[error("ingest size mismatch: expected {expected}, got {actual}")]
     SizeMismatch { expected: u64, actual: u64 },
+    #[error("failed to read OCI content file {path:?}: {message}")]
+    ReadFile { path: PathBuf, message: String },
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 //! NATS Service API wiring for machine-local commands.
 
+use super::build::{MachineBuildRuntime, handle_build_cancel, handle_build_start};
 use super::containers::{
     MachineContainerState, handle_container_inspect, handle_container_remove,
     handle_container_resolve_image, handle_container_restart, handle_container_run,
@@ -49,6 +50,7 @@ use std::time::Duration;
 // The request carries the operation-owned execution timeout. This outer bound
 // limits malformed or future callers that fail to supply a useful inner bound.
 const PRE_START_HOOK_ENDPOINT_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+const BUILD_START_ENDPOINT_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60 + 60);
 
 pub use super::facts::MachineFactsReadError;
 
@@ -142,6 +144,7 @@ where
         log_reader,
         endpoint_cache,
         MachineRoleProjectionServices {
+            build_state: None,
             image_state: None,
             projection_state: projection_state.clone(),
         },
@@ -200,6 +203,7 @@ where
         log_reader,
         endpoint_cache,
         MachineRoleProjectionServices {
+            build_state: None,
             image_state: None,
             projection_state: MachineProjectionState::new(),
         },
@@ -222,6 +226,7 @@ where
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
     let MachineRoleProjectionServices {
+        build_state,
         image_state,
         projection_state,
     } = projection_services;
@@ -234,6 +239,22 @@ where
         .await
         .map_err(MachineServiceError::Nats)?;
 
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::BuildStart,
+        build_state.clone(),
+        handle_build_start,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::BuildCancel,
+        build_state,
+        handle_build_cancel,
+    )
+    .await?;
     bind_machine_endpoint(
         &mut runtime,
         &machine_id,
@@ -465,6 +486,9 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         MachineServiceEndpoint::StoragePrepare => {
             policy.request_timeout = ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT;
         }
+        MachineServiceEndpoint::BuildStart => {
+            policy.request_timeout = BUILD_START_ENDPOINT_TIMEOUT;
+        }
         MachineServiceEndpoint::Inspect
         | MachineServiceEndpoint::FactsGet
         | MachineServiceEndpoint::FactsRefresh
@@ -488,6 +512,7 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         | MachineServiceEndpoint::ImageManifestPush
         | MachineServiceEndpoint::ImageEnsure
         | MachineServiceEndpoint::ImageRemove
+        | MachineServiceEndpoint::BuildCancel
         | MachineServiceEndpoint::CertificateArtifactStatus
         | MachineServiceEndpoint::CertificateArtifactPush
         | MachineServiceEndpoint::CertificateArtifactRemove
@@ -529,6 +554,7 @@ pub enum MachineServiceError {
 }
 
 pub(crate) struct MachineRoleProjectionServices {
+    pub build_state: Option<MachineBuildRuntime>,
     pub image_state: Option<AvailableImageService>,
     pub projection_state: MachineProjectionState,
 }
@@ -557,5 +583,12 @@ mod tests {
             policy.request_timeout,
             ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT
         );
+    }
+
+    #[test]
+    fn build_start_endpoint_covers_the_max_operation_and_cleanup_budget() {
+        let policy = machine_endpoint_policy(MachineServiceEndpoint::BuildStart);
+
+        assert!(policy.request_timeout > Duration::from_secs(24 * 60 * 60));
     }
 }

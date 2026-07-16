@@ -68,6 +68,34 @@ impl AvailableImageService {
             committed_leases: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
+
+    pub(crate) async fn ingest_build_layout(
+        &self,
+        layout: &crate::roles::machine::execution::build::ValidatedOciLayout,
+    ) -> Result<(), String> {
+        let lease = self
+            .content
+            .acquire_lease()
+            .await
+            .map_err(|error| error.to_string())?;
+        for blob in layout.blobs() {
+            if let Err(error) = self
+                .content
+                .ingest_file(
+                    blob.path(),
+                    blob.digest().clone(),
+                    blob.size(),
+                    lease.clone(),
+                )
+                .await
+            {
+                let _ = self.content.release_lease(lease).await;
+                return Err(error.to_string());
+            }
+        }
+        store_committed_lease(self, layout.manifest_digest().clone(), lease).await;
+        Ok(())
+    }
 }
 
 struct UploadSession {

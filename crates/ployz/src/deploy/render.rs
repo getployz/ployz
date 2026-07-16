@@ -329,7 +329,8 @@ impl DeployTree {
                         };
                     }
                 }
-                OperationKind::Cert
+                OperationKind::Build
+                | OperationKind::Cert
                 | OperationKind::IngressConfigure
                 | OperationKind::ManagedDnsReconcile
                 | OperationKind::MachineAdd
@@ -358,7 +359,21 @@ impl DeployTree {
                     };
                 }
             }
-            OperationEvent::MachineStoragePrepareSubmitted { .. }
+            OperationEvent::BuildSubmitted { .. }
+            | OperationEvent::BuildPlacementStarted { .. }
+            | OperationEvent::BuildPlatformPlaced { .. }
+            | OperationEvent::BuildCommitVerified { .. }
+            | OperationEvent::BuildPlatformToolchainVerified { .. }
+            | OperationEvent::BuildRunning { .. }
+            | OperationEvent::BuildPlatformLog { .. }
+            | OperationEvent::BuildPlatformLogTruncated { .. }
+            | OperationEvent::BuildPlatformCompleted { .. }
+            | OperationEvent::BuildPlatformFailed { .. }
+            | OperationEvent::BuildCompleted { .. }
+            | OperationEvent::BuildFailed { .. }
+            | OperationEvent::BuildCancelled { .. }
+            | OperationEvent::BuildTimedOut { .. }
+            | OperationEvent::MachineStoragePrepareSubmitted { .. }
             | OperationEvent::MachineStoragePreparePreparing { .. }
             | OperationEvent::MachineStoragePrepareCompleted { .. }
             | OperationEvent::MachineStoragePrepareFailed { .. } => {}

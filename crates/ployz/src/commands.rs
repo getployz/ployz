@@ -34,7 +34,7 @@ pub enum PloyzctlCommand {
     DeployRollback(deploy::DeployRollbackCommand),
     InternalInit(Box<init::FirstMachineInitCommand>),
     InitFirstMachineActivate(init::FirstMachineActivateCommand),
-    InitJoinTemplate(init::join_template::MachineJoinTemplateCommand),
+    InitJoinTemplate(Box<init::join_template::MachineJoinTemplateCommand>),
     IngressConfigure(ingress::IngressConfigureCommand),
     MachineInit(machine::MachineInitCommand),
     MachineAdd(machine::MachineAddCommand),
@@ -434,6 +434,7 @@ fn init_command_from_cli(command: InitRootCli) -> Result<PloyzctlCommand, Ployzc
         }
         Some(InitCli::JoinTemplate(subcommand)) => {
             init::join_template::machine_join_template_command(subcommand)
+                .map(Box::new)
                 .map(PloyzctlCommand::InitJoinTemplate)
         }
         None => init::init_command(command.init)

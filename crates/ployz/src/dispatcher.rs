@@ -192,7 +192,7 @@ pub async fn execute_command(
             crate::machine::runtime::activate_founder(command, config).await
         }
         PloyzctlCommand::InitJoinTemplate(command) => {
-            Ok(crate::machine::runtime::render_join_template(command))
+            Ok(crate::machine::runtime::render_join_template(*command))
         }
         PloyzctlCommand::IngressConfigure(command) => {
             crate::ingress::runtime::configure(command, config).await

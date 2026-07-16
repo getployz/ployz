@@ -347,6 +347,28 @@ pub fn machine_service_command_scope(machine_id: &MachineId) -> String {
 }
 
 #[must_use]
+pub fn machine_build_log(machine_id: &MachineId, operation_id: &OperationId) -> String {
+    format!(
+        "plz.v1.signal.machine.{}.build.operation.{}.log",
+        machine_id.as_str(),
+        operation_id.as_str()
+    )
+}
+
+#[must_use]
+pub fn machine_build_log_publish_scope(machine_id: &MachineId) -> String {
+    format!(
+        "plz.v1.signal.machine.{}.build.operation.*.log",
+        machine_id.as_str()
+    )
+}
+
+#[must_use]
+pub fn machine_build_log_subscribe_scope() -> String {
+    "plz.v1.signal.machine.*.build.operation.*.log".to_owned()
+}
+
+#[must_use]
 pub fn machine_facts(machine_id: &MachineId) -> String {
     format!("plz.v1.testimony.machine.{}.snapshot", machine_id.as_str())
 }
@@ -447,6 +469,8 @@ pub enum MachineServiceEndpoint {
     ImageManifestPush,
     ImageEnsure,
     ImageRemove,
+    BuildStart,
+    BuildCancel,
     CertificateArtifactStatus,
     CertificateArtifactPush,
     CertificateArtifactRemove,
@@ -491,6 +515,8 @@ impl MachineServiceEndpoint {
             Self::ImageManifestPush => "image.manifest.push",
             Self::ImageEnsure => "container.ensure_image",
             Self::ImageRemove => "container.remove_image",
+            Self::BuildStart => "build.start",
+            Self::BuildCancel => "build.cancel",
             Self::CertificateArtifactStatus => "certificate.artifact.status",
             Self::CertificateArtifactPush => "certificate.artifact.push",
             Self::CertificateArtifactRemove => "certificate.artifact.remove",
@@ -532,6 +558,8 @@ impl MachineServiceEndpoint {
             | Self::ImageManifestPush
             | Self::ImageEnsure
             | Self::ImageRemove
+            | Self::BuildStart
+            | Self::BuildCancel
             | Self::CertificateArtifactPush
             | Self::CertificateArtifactRemove
             | Self::CertificateChallengeApply
@@ -579,6 +607,20 @@ mod build_contract_tests {
                 ployz_sdk_types::operation_api::OperationApiEndpoint::BuildCancel
             ),
             OperationApiEndpoint::BuildCancel
+        );
+    }
+
+    #[test]
+    fn machine_build_transport_subjects_are_stable_and_machine_scoped() {
+        let machine = MachineId::try_new("machine-a").expect("machine");
+        let operation = OperationId::try_new("build-1").expect("operation");
+        assert_eq!(
+            machine_service(&machine, MachineServiceEndpoint::BuildStart),
+            "plz.v1.rpc.machine.command.machine-a.build.start"
+        );
+        assert_eq!(
+            machine_build_log(&machine, &operation),
+            "plz.v1.signal.machine.machine-a.build.operation.build-1.log"
         );
     }
 }

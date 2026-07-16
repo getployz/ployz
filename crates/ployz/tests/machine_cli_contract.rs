@@ -305,6 +305,12 @@ fn machine_join_bundle(runtime_nats_url: &str) -> MachineJoinBundle {
                 sha256: digest("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
                 install_path: absolute_path("/usr/local/bin/ployz-ebpf-ctl"),
             },
+            railpack: InstallArtifactSpec {
+                version: version("v0.31.0"),
+                source: source("/tmp/railpack"),
+                sha256: digest("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                install_path: absolute_path("/usr/local/lib/ployz/railpack/v0.31.0/railpack"),
+            },
         },
     }
 }

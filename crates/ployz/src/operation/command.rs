@@ -297,6 +297,7 @@ fn render_watch_events(events: &[ReplayedOperationEvent], output: OpsWatchOutput
 /// the core accessors on [`OperationStatus`].
 const fn operation_kind_name(kind: OperationKind) -> &'static str {
     match kind {
+        OperationKind::Build => "build",
         OperationKind::Deploy => "deploy",
         OperationKind::Cert => "cert",
         OperationKind::MachineAdd => "machine-add",
@@ -316,6 +317,11 @@ const fn operation_kind_name(kind: OperationKind) -> &'static str {
 
 fn operation_subject(status: &OperationStatus) -> String {
     match status {
+        OperationStatus::Build { source, .. } => format!(
+            "source {} commit {}",
+            source.url.as_str(),
+            source.commit.as_str()
+        ),
         OperationStatus::Deploy { service_id, .. } => {
             format!("service {}", service_id.as_str())
         }
@@ -442,6 +448,7 @@ const fn machine_lifecycle_state(
 
 fn operation_state(status: &OperationStatus) -> String {
     match status {
+        OperationStatus::Build { state, .. } => build_state(state).to_owned(),
         OperationStatus::Deploy { state, .. } => deploy_state(state).to_owned(),
         OperationStatus::Cert { state, .. } => cert_state(state).to_owned(),
         OperationStatus::MachineAdd { state, .. } => machine_add_state(state).to_owned(),
@@ -464,6 +471,19 @@ fn operation_state(status: &OperationStatus) -> String {
         }
         OperationStatus::NamespaceRemove { state, .. } => namespace_remove_state(state).to_owned(),
         OperationStatus::VolumeRemove { state, .. } => volume_remove_state(state).to_owned(),
+    }
+}
+
+const fn build_state(state: &ployz_sdk_types::BuildOperationState) -> &'static str {
+    match state {
+        ployz_sdk_types::BuildOperationState::Accepted => "accepted",
+        ployz_sdk_types::BuildOperationState::Placing => "placing",
+        ployz_sdk_types::BuildOperationState::Building => "building",
+        ployz_sdk_types::BuildOperationState::Completed { .. } => "completed",
+        ployz_sdk_types::BuildOperationState::Failed { .. } => "failed",
+        ployz_sdk_types::BuildOperationState::Cancelled { .. } => "cancelled",
+        ployz_sdk_types::BuildOperationState::TimedOut { .. } => "timed-out",
+        ployz_sdk_types::BuildOperationState::Interrupted { .. } => "interrupted",
     }
 }
 
@@ -566,6 +586,10 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
         return Some(format!("interruption {}", render_interruption(evidence)));
     }
     match status {
+        OperationStatus::Build {
+            state: ployz_sdk_types::BuildOperationState::Failed { failure },
+            ..
+        } => Some(format!("failure {failure:?}")),
         OperationStatus::Deploy {
             service_id,
             state: DeployOperationState::Failed { failure },
@@ -607,7 +631,8 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
             "failure {}",
             machine_storage_prepare_failure(failure)
         )),
-        OperationStatus::Deploy { .. }
+        OperationStatus::Build { .. }
+        | OperationStatus::Deploy { .. }
         | OperationStatus::Cert { .. }
         | OperationStatus::MachineAdd { .. }
         | OperationStatus::MachineUpdate { .. }
@@ -815,7 +840,21 @@ impl DeployEventRenderContext {
             OperationEvent::DeploySubmitted { target, .. } => {
                 self.service_id = Some(target.status_service_id());
             }
-            OperationEvent::DeployPlanningStarted { .. }
+            OperationEvent::BuildSubmitted { .. }
+            | OperationEvent::BuildPlacementStarted { .. }
+            | OperationEvent::BuildPlatformPlaced { .. }
+            | OperationEvent::BuildCommitVerified { .. }
+            | OperationEvent::BuildPlatformToolchainVerified { .. }
+            | OperationEvent::BuildRunning { .. }
+            | OperationEvent::BuildPlatformLog { .. }
+            | OperationEvent::BuildPlatformLogTruncated { .. }
+            | OperationEvent::BuildPlatformCompleted { .. }
+            | OperationEvent::BuildPlatformFailed { .. }
+            | OperationEvent::BuildCompleted { .. }
+            | OperationEvent::BuildFailed { .. }
+            | OperationEvent::BuildCancelled { .. }
+            | OperationEvent::BuildTimedOut { .. }
+            | OperationEvent::DeployPlanningStarted { .. }
             | OperationEvent::DeployImageResolved { .. }
             | OperationEvent::DeployPlanCreated { .. }
             | OperationEvent::DeployRunning { .. }
@@ -951,7 +990,21 @@ fn render_replayed_event_text(
                 "absent"
             }
         ),
-        OperationEvent::DeployPlanningStarted { .. }
+        OperationEvent::BuildSubmitted { .. }
+        | OperationEvent::BuildPlacementStarted { .. }
+        | OperationEvent::BuildPlatformPlaced { .. }
+        | OperationEvent::BuildCommitVerified { .. }
+        | OperationEvent::BuildPlatformToolchainVerified { .. }
+        | OperationEvent::BuildRunning { .. }
+        | OperationEvent::BuildPlatformLog { .. }
+        | OperationEvent::BuildPlatformLogTruncated { .. }
+        | OperationEvent::BuildPlatformCompleted { .. }
+        | OperationEvent::BuildPlatformFailed { .. }
+        | OperationEvent::BuildCompleted { .. }
+        | OperationEvent::BuildFailed { .. }
+        | OperationEvent::BuildCancelled { .. }
+        | OperationEvent::BuildTimedOut { .. }
+        | OperationEvent::DeployPlanningStarted { .. }
         | OperationEvent::DeployPlanCreated { .. }
         | OperationEvent::DeployRunning { .. }
         | OperationEvent::DeployContainerStarted { .. }
@@ -1027,6 +1080,22 @@ fn render_replayed_event_json(event: &ReplayedOperationEvent) -> String {
 
 fn operation_event_label(event: &OperationEvent) -> &'static str {
     match event {
+        OperationEvent::BuildSubmitted { .. } => "build.submitted",
+        OperationEvent::BuildPlacementStarted { .. } => "build.placement_started",
+        OperationEvent::BuildPlatformPlaced { .. } => "build.platform_placed",
+        OperationEvent::BuildCommitVerified { .. } => "build.commit_verified",
+        OperationEvent::BuildPlatformToolchainVerified { .. } => {
+            "build.platform_toolchain_verified"
+        }
+        OperationEvent::BuildRunning { .. } => "build.running",
+        OperationEvent::BuildPlatformLog { .. } => "build.platform_log",
+        OperationEvent::BuildPlatformLogTruncated { .. } => "build.platform_log_truncated",
+        OperationEvent::BuildPlatformCompleted { .. } => "build.platform_completed",
+        OperationEvent::BuildPlatformFailed { .. } => "build.platform_failed",
+        OperationEvent::BuildCompleted { .. } => "build.completed",
+        OperationEvent::BuildFailed { .. } => "build.failed",
+        OperationEvent::BuildCancelled { .. } => "build.cancelled",
+        OperationEvent::BuildTimedOut { .. } => "build.timed_out",
         OperationEvent::DeploySubmitted { .. } => "deploy.submitted",
         OperationEvent::DeployPlanningStarted { .. } => "deploy.planning",
         OperationEvent::DeployImageResolved { .. } => "deploy.image_resolved",

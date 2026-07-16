@@ -179,6 +179,7 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         .filter(|unusable| match unusable.reason {
             ployz_core::machine::MachineUsabilityReason::Draining => true,
             ployz_core::machine::MachineUsabilityReason::FactsUnavailable
+            | ployz_core::machine::MachineUsabilityReason::PlatformMismatch { .. }
             | ployz_core::machine::MachineUsabilityReason::StorageTestimonyNotReported
             | ployz_core::machine::MachineUsabilityReason::StorageUnprepared
             | ployz_core::machine::MachineUsabilityReason::StorageUnavailable { .. }
