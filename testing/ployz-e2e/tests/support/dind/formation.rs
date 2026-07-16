@@ -422,34 +422,6 @@ const NATS_SERVER_ARCHIVE_PATH: &str = "/opt/ployz/nats-server.tar.gz";
 const NATS_SERVER_VERSION_PATH: &str = "/opt/ployz/nats-server.version";
 const RAILPACK_VERSION: &str = "v0.31.0";
 
-#[cfg(test)]
-mod tests {
-    use super::{ARTIFACTS_MOUNT_PATH, ArtifactShas, release_manifest};
-
-    #[test]
-    fn release_manifest_includes_pinned_railpack_artifact() {
-        let manifest = release_manifest(&ArtifactShas {
-            ployzd: "ployzd-sha".to_owned(),
-            ebpf_bytecode: "ebpf-bytecode-sha".to_owned(),
-            ebpf_ctl: "ebpf-ctl-sha".to_owned(),
-            railpack: "railpack-sha".to_owned(),
-            nats_server: "nats-sha".to_owned(),
-            nats_server_version: "2.14.2".to_owned(),
-        });
-
-        for required in [
-            "PLOYZ_RAILPACK_VERSION=v0.31.0",
-            &format!("PLOYZ_RAILPACK_URL={ARTIFACTS_MOUNT_PATH}/railpack"),
-            "PLOYZ_RAILPACK_SHA256=railpack-sha",
-        ] {
-            assert!(
-                manifest.lines().any(|line| line == required),
-                "release manifest omitted {required:?}: {manifest}"
-            );
-        }
-    }
-}
-
 async fn read_file_in_machine(docker: &Docker, machine: &DindMachine, path: &str) -> String {
     let outcome = exec_in_container(docker, &machine.container_id, &["cat", path])
         .await
@@ -595,4 +567,32 @@ pub async fn finish(core: CoreContext) {
         .teardown()
         .await
         .expect("teardown DinD cluster");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ARTIFACTS_MOUNT_PATH, ArtifactShas, release_manifest};
+
+    #[test]
+    fn release_manifest_includes_pinned_railpack_artifact() {
+        let manifest = release_manifest(&ArtifactShas {
+            ployzd: "ployzd-sha".to_owned(),
+            ebpf_bytecode: "ebpf-bytecode-sha".to_owned(),
+            ebpf_ctl: "ebpf-ctl-sha".to_owned(),
+            railpack: "railpack-sha".to_owned(),
+            nats_server: "nats-sha".to_owned(),
+            nats_server_version: "2.14.2".to_owned(),
+        });
+
+        for required in [
+            "PLOYZ_RAILPACK_VERSION=v0.31.0",
+            &format!("PLOYZ_RAILPACK_URL={ARTIFACTS_MOUNT_PATH}/railpack"),
+            "PLOYZ_RAILPACK_SHA256=railpack-sha",
+        ] {
+            assert!(
+                manifest.lines().any(|line| line == required),
+                "release manifest omitted {required:?}: {manifest}"
+            );
+        }
+    }
 }
