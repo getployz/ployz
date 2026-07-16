@@ -4,7 +4,7 @@ use ployz_core::deploy::{ContainerRuntimeSpec, DatasetName, ImageReference, Regi
 use ployz_core::ids::{ContainerId, MachineId, OperationId, StepId};
 use ployz_core::image::{IMAGE_MESH_REGISTRY_PORT, ImageRepository, OciDigest};
 use ployz_core::install::InstallArtifactVersion;
-use ployz_core::intent::{VolumeKind, VolumePinState};
+use ployz_core::intent::{ProvisionedVolumePinState, VolumePinState};
 pub use ployz_core::machine::rpc::{MachineRpcResponder, MachineRpcResponse};
 use ployz_core::machine::runtime::{ManagedContainerIdentity, ManagedContainerObservation};
 use ployz_core::machine::{VolumeEnsureFailure, VolumeUsageFacts};
@@ -302,44 +302,6 @@ pub enum MachineVolumeRemoveRpcRequest {
         operation_id: OperationId,
         volume: ProvisionedVolumePinState,
     },
-}
-
-/// A volume pin whose variant proves that machine-local dataset destruction is valid.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(transparent)]
-pub struct ProvisionedVolumePinState(VolumePinState, #[serde(skip)] DatasetName);
-
-impl ProvisionedVolumePinState {
-    pub fn try_new(volume: VolumePinState) -> Result<Self, VolumePinState> {
-        let dataset = match volume.kind() {
-            VolumeKind::Plain => return Err(volume),
-            VolumeKind::Provisioned { dataset, .. } => dataset.clone(),
-        };
-        Ok(Self(volume, dataset))
-    }
-
-    #[must_use]
-    pub fn volume(&self) -> &VolumePinState {
-        let Self(volume, _) = self;
-        volume
-    }
-
-    #[must_use]
-    pub fn dataset(&self) -> &DatasetName {
-        let Self(_, dataset) = self;
-        dataset
-    }
-}
-
-impl<'de> Deserialize<'de> for ProvisionedVolumePinState {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let volume = VolumePinState::deserialize(deserializer)?;
-        Self::try_new(volume)
-            .map_err(|_| serde::de::Error::custom("provisioned volume pin required"))
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
