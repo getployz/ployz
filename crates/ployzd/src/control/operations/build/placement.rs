@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::build::BuildPlatforms;
 use ployz_core::ids::MachineId;
@@ -9,6 +9,7 @@ use ployz_core::operation::{BuildOperationFailure, FailureMessage, UnusableMachi
 
 use crate::control::operations::local_execution_admission::classify_local_execution_admission;
 use crate::control::role_client::machine::MachinePlacementFacts;
+use crate::roles::machine::protocol::MachineBuildCapability;
 
 /// Resolves every requested platform before any machine work starts.
 ///
@@ -21,6 +22,13 @@ pub(crate) fn place_build_platforms(
     projection: &DataplaneProjection,
     dataplane_statuses: &[(MachineId, Result<MachineDataplaneStatus, FailureMessage>)],
 ) -> Result<BTreeMap<OciPlatform, MachineId>, Box<BuildOperationFailure>> {
+    let build_unavailable = facts
+        .iter()
+        .filter_map(|candidate| {
+            let answer = candidate.answer.as_ref()?;
+            (answer.build == MachineBuildCapability::Unavailable).then_some(&candidate.machine_id)
+        })
+        .collect::<BTreeSet<_>>();
     let (admitted, shared_unusable) =
         classify_local_execution_admission(facts, projection, dataplane_statuses);
     let mut by_platform = BTreeMap::new();
@@ -28,6 +36,13 @@ pub(crate) fn place_build_platforms(
         let mut unusable = shared_unusable.clone();
         let mut eligible = Vec::new();
         for candidate in &admitted {
+            if build_unavailable.contains(candidate.machine_id) {
+                unusable.push(UnusableMachine {
+                    machine_id: candidate.machine_id.clone(),
+                    reason: MachineUsabilityReason::BuildUnavailable,
+                });
+                continue;
+            }
             if *candidate.platform == *platform {
                 eligible.push(candidate.machine_id.clone());
             } else {
@@ -129,7 +144,63 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn placement_skips_an_unavailable_builder_for_an_available_builder() {
+        let amd64 = platform("linux", "amd64");
+        let platforms = BuildPlatforms::try_new([amd64.clone()]).expect("build platforms");
+        let facts = vec![
+            answering_with_build_capability(
+                "a-unavailable",
+                amd64.clone(),
+                MachineBuildCapability::Unavailable,
+            ),
+            answering("b-available", amd64.clone()),
+        ];
+        let (projection, statuses) = ready_dataplane(&facts);
+
+        let placement = place_build_platforms(&platforms, &facts, &projection, &statuses)
+            .expect("available builder is selected");
+
+        assert_eq!(
+            placement.get(&amd64).map(MachineId::as_str),
+            Some("b-available")
+        );
+    }
+
+    #[test]
+    fn placement_reports_typed_build_unavailable_evidence() {
+        let amd64 = platform("linux", "amd64");
+        let platforms = BuildPlatforms::try_new([amd64.clone()]).expect("build platforms");
+        let facts = vec![answering_with_build_capability(
+            "builder",
+            amd64.clone(),
+            MachineBuildCapability::Unavailable,
+        )];
+        let (projection, statuses) = ready_dataplane(&facts);
+
+        let failure = place_build_platforms(&platforms, &facts, &projection, &statuses)
+            .expect_err("unavailable build runtime is rejected");
+
+        assert!(matches!(
+            *failure,
+            BuildOperationFailure::NoEligibleMachine { platform, unusable }
+                if platform == amd64
+                    && unusable == vec![UnusableMachine {
+                        machine_id: MachineId::try_new("builder").expect("machine id"),
+                        reason: MachineUsabilityReason::BuildUnavailable,
+                    }]
+        ));
+    }
+
     fn answering(machine: &str, platform: OciPlatform) -> MachinePlacementFacts {
+        answering_with_build_capability(machine, platform, MachineBuildCapability::Available)
+    }
+
+    fn answering_with_build_capability(
+        machine: &str,
+        platform: OciPlatform,
+        build: MachineBuildCapability,
+    ) -> MachinePlacementFacts {
         let machine_id = MachineId::try_new(machine).expect("machine id");
         MachinePlacementFacts {
             machine_id: machine_id.clone(),
@@ -144,6 +215,7 @@ mod tests {
                 platform,
                 endpoints: None,
                 storage: None,
+                build,
             }),
         }
     }

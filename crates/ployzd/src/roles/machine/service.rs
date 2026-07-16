@@ -10,7 +10,8 @@ use super::dataplane::{
     MachineDataplaneStatusState, handle_dataplane_public_key, handle_dataplane_status,
 };
 use super::facts::{
-    MachineEndpointCache, MachineFactsState, handle_facts_get, handle_facts_refresh,
+    MachineEndpointCache, MachineFactsGetState, MachineFactsState, handle_facts_get,
+    handle_facts_refresh,
 };
 use super::images::{
     AvailableImageService, handle_image_blob_check, handle_image_blob_push, handle_image_ensure,
@@ -230,6 +231,11 @@ where
         image_state,
         projection_state,
     } = projection_services;
+    let build_capability = if build_state.is_some() {
+        crate::roles::machine::protocol::MachineBuildCapability::Available
+    } else {
+        crate::roles::machine::protocol::MachineBuildCapability::Unavailable
+    };
     let spec = machine_role_service_base(&machine_id);
     let mutation_state = MachineContainerState {
         runner: runner.clone(),
@@ -259,10 +265,13 @@ where
         &mut runtime,
         &machine_id,
         MachineServiceEndpoint::FactsGet,
-        MachineFactsState {
-            runner: runner.clone(),
-            endpoint_cache: endpoint_cache.clone(),
-            client: client.clone(),
+        MachineFactsGetState {
+            facts: MachineFactsState {
+                runner: runner.clone(),
+                endpoint_cache: endpoint_cache.clone(),
+                client: client.clone(),
+            },
+            build: build_capability,
         },
         handle_facts_get,
     )

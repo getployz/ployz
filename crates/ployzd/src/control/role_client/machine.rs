@@ -2,7 +2,7 @@
 
 use crate::roles::machine::MachineRuntimeUnavailableReason;
 use crate::roles::machine::protocol::{
-    MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
+    MachineBuildCapability, MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
     MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,
     MachineContainerRemoveRpcRequest, MachineContainerResolveImageDomainError,
     MachineContainerResolveImageRpcOk, MachineContainerResolveImageRpcRequest,
@@ -305,6 +305,15 @@ impl NatsMachineFactsReader {
         &self,
         machine_id: &MachineId,
     ) -> Result<MachineFactsSnapshot, MachineFactsReadError> {
+        self.machine_facts_response(machine_id)
+            .await
+            .map(|ok| ok.facts)
+    }
+
+    pub(crate) async fn machine_facts_response(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<MachineFactsGetRpcOk, MachineFactsReadError> {
         call_machine::<MachineFactsGetRpcOk, MachineFactsGetDomainError>(
             &self.client,
             self.request_timeout,
@@ -313,7 +322,6 @@ impl NatsMachineFactsReader {
             &MachineFactsGetRpcRequest {},
         )
         .await
-        .map(|ok| ok.facts)
         .map_err(|error| match error {
             MachineCallError::Unavailable(reason) => MachineFactsReadError::Unavailable {
                 machine_id: machine_id.clone(),
@@ -365,6 +373,7 @@ pub(crate) struct MachinePlacementFactsAnswer {
     pub platform: ployz_core::image::OciPlatform,
     pub endpoints: Option<ployz_core::machine::MachineEndpointObservation>,
     pub storage: Option<ployz_core::machine::StorageCapability>,
+    pub build: MachineBuildCapability,
 }
 
 pub(crate) async fn read_machine_placement_facts(
@@ -374,14 +383,15 @@ pub(crate) async fn read_machine_placement_facts(
     let mut reads = stream::iter(machine_lifecycles)
         .map(|(machine_id, lifecycle)| async move {
             let answer = facts_reader
-                .machine_facts(&machine_id)
+                .machine_facts_response(&machine_id)
                 .await
                 .ok()
-                .map(|facts| MachinePlacementFactsAnswer {
-                    containers: facts.containers().clone(),
-                    platform: facts.platform().clone(),
-                    endpoints: facts.endpoints().cloned(),
-                    storage: facts.storage().cloned(),
+                .map(|response| MachinePlacementFactsAnswer {
+                    containers: response.facts.containers().clone(),
+                    platform: response.facts.platform().clone(),
+                    endpoints: response.facts.endpoints().cloned(),
+                    storage: response.facts.storage().cloned(),
+                    build: response.build,
                 });
             MachinePlacementFacts {
                 machine_id,

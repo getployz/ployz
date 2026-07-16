@@ -89,6 +89,7 @@ mod tests {
                         mesh_endpoints: Vec::new(),
                     }),
                     storage: None,
+                    build: crate::roles::machine::protocol::MachineBuildCapability::Available,
                 },
             ),
         };

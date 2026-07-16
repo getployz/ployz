@@ -385,6 +385,9 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
                     MachineUsabilityReason::FactsUnavailable => {
                         format!("{} did not answer with facts", reason.machine_id.as_str())
                     }
+                    MachineUsabilityReason::BuildUnavailable => {
+                        format!("{} cannot accept builds", reason.machine_id.as_str())
+                    }
                     MachineUsabilityReason::StorageTestimonyNotReported => format!(
                         "{} did not report storage capability",
                         reason.machine_id.as_str()

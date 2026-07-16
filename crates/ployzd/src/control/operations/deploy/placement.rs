@@ -395,6 +395,7 @@ mod tests {
                         .expect("platform"),
                     endpoints: None,
                     storage: None,
+                    build: crate::roles::machine::protocol::MachineBuildCapability::Available,
                 },
             ),
             machine_id,

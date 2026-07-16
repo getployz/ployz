@@ -27,6 +27,7 @@ pub enum MachineUsabilityReason {
     },
     Draining,
     FactsUnavailable,
+    BuildUnavailable,
     StorageTestimonyNotReported,
     StorageUnprepared,
     StorageUnavailable {
@@ -82,6 +83,14 @@ mod tests {
         assert_eq!(
             serde_json::to_value(reason).expect("json"),
             serde_json::json!({"kind":"platform_mismatch","required":{"os":"linux","architecture":"arm64"},"reported":{"os":"linux","architecture":"amd64"}})
+        );
+    }
+
+    #[test]
+    fn build_unavailable_is_typed_attempt_evidence() {
+        assert_eq!(
+            serde_json::to_value(MachineUsabilityReason::BuildUnavailable).expect("json"),
+            serde_json::json!({"kind":"build_unavailable"})
         );
     }
 }
