@@ -14,8 +14,9 @@ use crate::subjects::{
     MACHINE_RPC_QUERY_SCOPE, OPERATION_PROGRESS_SCOPE, OPERATOR_INIT_FIRST_MACHINE_ACTIVATE,
     OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE, OPERATOR_MACHINE_IMAGE_QUERY_SCOPE,
     OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE, PENDING_MACHINE_JOINS_CHANGED,
-    RUNTIME_SNAPSHOT_STREAM, gateway_status, gateway_status_scope, machine_container_facts,
-    machine_facts, machine_facts_scope, machine_service_command_scope, machine_service_query_scope,
+    RUNTIME_SNAPSHOT_STREAM, gateway_status, gateway_status_scope, machine_build_log_publish_scope,
+    machine_build_log_subscribe_scope, machine_container_facts, machine_facts, machine_facts_scope,
+    machine_service_command_scope, machine_service_query_scope,
 };
 
 const SYSTEM_EVENTS: &str = "$SYS.>";
@@ -229,6 +230,7 @@ impl NatsPermissionProfile {
                 publish_allow.push(machine_facts(machine_id));
                 publish_allow.push(machine_container_facts(machine_id));
                 publish_allow.push(gateway_status(machine_id));
+                publish_allow.push(machine_build_log_publish_scope(machine_id));
                 Self {
                     principal: principal.clone(),
                     publish: SubjectPermissions::allowing_all(publish_allow),
@@ -305,6 +307,7 @@ fn controller_subscriptions(inbox_scope: String) -> SubjectPermissions {
         INTENT_CHANGED.to_owned(),
         INGRESS_ENDPOINT_CHANGED.to_owned(),
         machine_facts_scope(),
+        machine_build_log_subscribe_scope(),
         gateway_status_scope(),
         NATS_SERVICE_DISCOVERY_SCOPE.to_owned(),
         inbox_scope,

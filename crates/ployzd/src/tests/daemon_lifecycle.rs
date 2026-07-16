@@ -490,6 +490,12 @@ fn temp_join_template_file() -> String {
         "source": "/tmp/ployz-ebpf-ctl",
         "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "install_path": "/usr/local/bin/ployz-ebpf-ctl"
+      },
+      "railpack": {
+        "version": "v0.31.0",
+        "source": "/tmp/railpack",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "install_path": "/usr/local/lib/ployz/railpack/v0.31.0/railpack"
       }
     }
   }

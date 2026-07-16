@@ -371,6 +371,14 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
             let details = reasons
                 .iter()
                 .map(|reason| match &reason.reason {
+                    MachineUsabilityReason::PlatformMismatch { required, reported } => format!(
+                        "{} reports platform {}/{}, expected {}/{}",
+                        reason.machine_id.as_str(),
+                        reported.os(),
+                        reported.architecture(),
+                        required.os(),
+                        required.architecture(),
+                    ),
                     MachineUsabilityReason::Draining => {
                         format!("{} is draining", reason.machine_id.as_str())
                     }

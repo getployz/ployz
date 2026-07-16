@@ -58,6 +58,9 @@ async fn bind_operation_endpoint(
     endpoint: OperationApiEndpoint,
 ) -> Result<(), ApiServiceError> {
     match endpoint {
+        OperationApiEndpoint::BuildSubmit | OperationApiEndpoint::BuildCancel => {
+            Err(ApiServiceError::EndpointNotImplemented { endpoint })
+        }
         OperationApiEndpoint::DeployReserve => {
             bind_operation_contract::<DeployReserveApi, _, _>(
                 runtime,
@@ -410,6 +413,8 @@ where
 pub enum ApiServiceError {
     #[error("{0}")]
     Nats(NatsServiceRuntimeError),
+    #[error("operation API endpoint {endpoint:?} is not implemented by this service")]
+    EndpointNotImplemented { endpoint: OperationApiEndpoint },
 }
 
 #[cfg(test)]

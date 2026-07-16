@@ -363,6 +363,10 @@ fn machine_join_bundle() -> MachineJoinBundle {
                 "https://example.invalid/ployz-ebpf-ctl",
                 "/usr/local/bin/ployz-ebpf-ctl",
             ),
+            railpack: artifact(
+                "https://example.invalid/railpack",
+                "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
+            ),
         },
     }
 }
