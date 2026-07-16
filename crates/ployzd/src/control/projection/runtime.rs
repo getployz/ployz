@@ -529,6 +529,7 @@ mod tests {
                 .expect("container snapshot"),
             None,
             test_disk_space(),
+            None,
             ployz_core::image::OciPlatform::current(),
             1_000,
         )

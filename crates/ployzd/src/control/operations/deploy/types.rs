@@ -47,6 +47,7 @@ pub struct DeployServiceExecutionCommand {
     pub(super) route_commits: Vec<RouteBindingState>,
     pub(super) volume_pins: Vec<VolumePinState>,
     pub(super) eligible_machines: Vec<MachineId>,
+    pub(super) unusable_machines: Vec<ployz_core::operation::UnusableMachine>,
     pub(super) existing_replicas: Vec<ExistingServiceReplica>,
     pub(super) cleanup_candidates: Vec<ObservedCleanupCandidate>,
 }

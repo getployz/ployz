@@ -88,6 +88,7 @@ mod tests {
                         control_endpoints: vec!["203.0.113.50".parse().expect("valid IP")],
                         mesh_endpoints: Vec::new(),
                     }),
+                    storage: None,
                 },
             ),
         };

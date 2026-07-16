@@ -135,6 +135,8 @@ pub struct MachineListResult {
 pub struct MachineSnapshot {
     pub active: ActiveMachineState,
     pub testimony: MachineTestimony,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub storage_alarms: Vec<StrandedVolumeAlarm>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -145,6 +147,8 @@ pub enum MachineTestimony {
         gateway: Option<Box<GatewayStatusObservation>>,
         observed_container_count: usize,
         disk_space: MachineDiskSpace,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        storage: Option<StorageCapability>,
         /// When this machine last self-reported, as display evidence for the
         /// operator. Never an input to behavior: liveness surfaces at the point
         /// of use (ADR 0027).

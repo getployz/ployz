@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use ployz_core::deploy::{DatasetName, ZfsPoolName};
+use ployz_core::machine::{StorageCapability, StorageUnavailableReason};
 use ployz_core::storage::{
     PLOYZ_OWNED_ZFS_BACKING_FILE, PLOYZ_OWNED_ZFS_POOL, PROVISIONED_VOLUME_MOUNTPOINT,
     PreparedStorageOrigin, PreparedStorageState, StorageEffectFailure as ZfsEffectError,
@@ -14,6 +15,51 @@ use crate::execution::{FileMode, HostRunnerCommandRunner, write_durable_file};
 
 pub(super) const PREPARED_STORAGE_FILE: &str = "prepared-storage.json";
 pub(super) const STORAGE_DIRECTORY: &str = "/var/lib/ployz/zfs";
+
+/// Observes the capability prepared by Ployz without importing pools or
+/// changing host storage. The prepared descriptor supplies the pool identity;
+/// current module and pool state supply the live testimony.
+pub fn observe_storage_capability(
+    runner: &mut impl HostRunnerCommandRunner,
+    state_directory: &Path,
+    zfs_module_path: &Path,
+) -> Result<StorageCapability, ZfsEffectError> {
+    let descriptor = state_directory.join(PREPARED_STORAGE_FILE);
+    if !descriptor.exists() {
+        return Ok(StorageCapability::Unprepared);
+    }
+    let state = load_prepared_storage_state(state_directory)?;
+    if !zfs_module_path.exists() {
+        return Ok(StorageCapability::Unavailable {
+            reason: StorageUnavailableReason::ZfsModuleMissing,
+        });
+    }
+    let imported = imported_pools(runner)?;
+    if !imported.contains(state.pool()) {
+        return Ok(StorageCapability::Unavailable {
+            reason: StorageUnavailableReason::PoolNotImported {
+                pool: state.pool().clone(),
+            },
+        });
+    }
+    let health = checked(
+        runner,
+        "zpool",
+        &["list", "-H", "-o", "health", state.pool().as_str()],
+        COMMAND_TIMEOUT,
+        EffectClass::PoolList,
+    )?;
+    if health.stdout.trim() != "ONLINE" {
+        return Ok(StorageCapability::Unavailable {
+            reason: StorageUnavailableReason::PoolFaulted {
+                pool: state.pool().clone(),
+            },
+        });
+    }
+    Ok(StorageCapability::Ready {
+        pool: state.pool().clone(),
+    })
+}
 
 pub(super) fn load_prepared_storage_state(
     state_directory: &Path,

@@ -741,6 +741,7 @@ mod tests {
                     .expect("container facts"),
                 None,
                 ployz_test_support::fixtures::test_disk_space(),
+                None,
                 ployz_core::image::OciPlatform::current(),
                 1,
             )

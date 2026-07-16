@@ -12,6 +12,7 @@ use ployz_core::machine::GatewayStatusObservation;
 use ployz_core::machine::runtime::{
     MachineFactsSnapshot, ManagedContainerKind, ManagedContainerObservation,
 };
+use ployz_core::machine::{MachineStorageTestimony, derive_stranded_volume_alarms};
 
 use ployz_sdk_types::{
     MachineSnapshot, MachineTestimony, RouteTlsAvailability, RouteTlsStatus,
@@ -73,10 +74,18 @@ pub(crate) fn from_sources(
         .iter()
         .map(|machine| machine.machine_id.clone())
         .collect::<Vec<_>>();
+    let storage_testimony = facts
+        .values()
+        .map(|facts| {
+            MachineStorageTestimony::new(facts.machine_id().clone(), facts.storage().cloned())
+        })
+        .collect::<Vec<_>>();
+    let storage_alarms =
+        derive_stranded_volume_alarms(&intent.volume_pins, &machine_ids, &storage_testimony);
     let machines = intent
         .active_machines
         .into_iter()
-        .map(|active| machine_snapshot(active, facts, gateway_statuses))
+        .map(|active| machine_snapshot(active, facts, gateway_statuses, &storage_alarms))
         .collect::<Vec<_>>();
     let routes = intent.route_bindings;
     let services = intent
@@ -211,6 +220,7 @@ fn machine_snapshot(
     active: ActiveMachineState,
     facts: &BTreeMap<MachineId, MachineFactsSnapshot>,
     gateways: &BTreeMap<MachineId, GatewayStatusObservation>,
+    storage_alarms: &[ployz_core::machine::StrandedVolumeAlarm],
 ) -> MachineSnapshot {
     let testimony = match facts.get(&active.machine_id) {
         Some(facts) => MachineTestimony::Answered {
@@ -218,11 +228,21 @@ fn machine_snapshot(
             gateway: gateways.get(&active.machine_id).cloned().map(Box::new),
             observed_container_count: facts.containers().containers().len(),
             disk_space: facts.disk_space(),
+            storage: facts.storage().cloned(),
             last_observed_at_unix_seconds: facts.observed_at_unix_ms() / 1_000,
         },
         None => MachineTestimony::NoAnswer,
     };
-    MachineSnapshot { active, testimony }
+    let alarms = storage_alarms
+        .iter()
+        .filter(|alarm| alarm.machine_id == active.machine_id)
+        .cloned()
+        .collect();
+    MachineSnapshot {
+        active,
+        testimony,
+        storage_alarms: alarms,
+    }
 }
 
 pub(crate) fn service_snapshot(

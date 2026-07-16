@@ -1290,6 +1290,7 @@ fn machine_facts(
             mesh_endpoints: Vec::new(),
         }),
         test_disk_space(),
+        None,
         ployz_core::image::OciPlatform::current(),
         1,
     )

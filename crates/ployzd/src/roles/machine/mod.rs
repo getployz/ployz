@@ -22,6 +22,7 @@ pub mod protocol;
 pub(crate) mod response;
 pub mod runner;
 pub mod service;
+mod storage_capability;
 mod substrate;
 mod unavailable;
 mod volume;

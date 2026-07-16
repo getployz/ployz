@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::time::Duration;
 
+use super::storage::StorageCapability;
 use super::testimony::MachineEndpointObservation;
 use crate::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId,
@@ -29,6 +30,7 @@ impl From<&MachineFactsSnapshot> for MachineFactsRefreshConfirmation {
             containers: _,
             endpoints: _,
             disk_space: _,
+            storage: _,
             platform: _,
             observed_at_unix_ms,
         } = facts;
@@ -50,6 +52,8 @@ pub struct MachineFactsSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     endpoints: Option<MachineEndpointObservation>,
     disk_space: MachineDiskSpace,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    storage: Option<StorageCapability>,
     platform: OciPlatform,
     observed_at_unix_ms: u64,
 }
@@ -60,6 +64,7 @@ impl MachineFactsSnapshot {
         containers: MachineContainerObservationSnapshot,
         endpoints: Option<MachineEndpointObservation>,
         disk_space: MachineDiskSpace,
+        storage: Option<StorageCapability>,
         platform: OciPlatform,
         observed_at_unix_ms: u64,
     ) -> Result<Self, MachineFactsSnapshotError> {
@@ -89,6 +94,7 @@ impl MachineFactsSnapshot {
             containers,
             endpoints,
             disk_space,
+            storage,
             platform,
             observed_at_unix_ms,
         })
@@ -115,6 +121,11 @@ impl MachineFactsSnapshot {
     }
 
     #[must_use]
+    pub const fn storage(&self) -> Option<&StorageCapability> {
+        self.storage.as_ref()
+    }
+
+    #[must_use]
     pub const fn platform(&self) -> &OciPlatform {
         &self.platform
     }
@@ -136,6 +147,7 @@ impl MachineFactsSnapshot {
                 .map_err(MachineFactsSnapshotError::BuildContainers)?,
             self.endpoints.clone(),
             self.disk_space,
+            self.storage.clone(),
             self.platform.clone(),
             observed_at_unix_ms,
         )
@@ -153,6 +165,7 @@ impl MachineFactsSnapshot {
                 .map_err(MachineFactsSnapshotError::BuildContainers)?,
             self.endpoints.clone(),
             self.disk_space,
+            self.storage.clone(),
             self.platform.clone(),
             observed_at_unix_ms,
         )
@@ -215,6 +228,8 @@ struct MachineFactsSnapshotWire {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     endpoints: Option<MachineEndpointObservation>,
     disk_space: MachineDiskSpace,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    storage: Option<StorageCapability>,
     platform: OciPlatform,
     observed_at_unix_ms: u64,
 }
@@ -228,6 +243,7 @@ impl TryFrom<MachineFactsSnapshotWire> for MachineFactsSnapshot {
             value.containers,
             value.endpoints,
             value.disk_space,
+            value.storage,
             value.platform,
             value.observed_at_unix_ms,
         )
@@ -241,6 +257,7 @@ impl From<MachineFactsSnapshot> for MachineFactsSnapshotWire {
             containers: value.containers,
             endpoints: value.endpoints,
             disk_space: value.disk_space,
+            storage: value.storage,
             platform: value.platform,
             observed_at_unix_ms: value.observed_at_unix_ms,
         }

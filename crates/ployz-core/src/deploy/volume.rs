@@ -170,6 +170,17 @@ impl DatasetName {
     }
 
     #[must_use]
+    pub fn pool(&self) -> ZfsPoolName {
+        let Some((pool, _)) = self.0.split_once('/') else {
+            unreachable!("validated dataset names always contain a pool component");
+        };
+        match ZfsPoolName::try_new(pool) {
+            Ok(pool) => pool,
+            Err(_) => unreachable!("validated dataset names always contain a valid pool"),
+        }
+    }
+
+    #[must_use]
     pub fn matches_volume(&self, namespace_id: &NamespaceId, volume_name: &VolumeName) -> bool {
         self.0
             .rsplit_once('/')

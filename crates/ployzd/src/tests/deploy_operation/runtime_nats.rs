@@ -1209,6 +1209,7 @@ fn machine_facts(
             .expect("machine snapshot is valid"),
         None,
         test_disk_space(),
+        None,
         ployz_core::image::OciPlatform::current(),
         1,
     )
