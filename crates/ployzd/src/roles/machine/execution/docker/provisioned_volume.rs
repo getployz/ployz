@@ -53,7 +53,7 @@ pub(super) fn local_bind_volume_request(volume: &VolumePinState) -> VolumeCreate
     }
 }
 
-fn plain_volume_request(volume: &VolumePinState) -> VolumeCreateRequest {
+pub(super) fn plain_volume_request(volume: &VolumePinState) -> VolumeCreateRequest {
     VolumeCreateRequest {
         name: Some(docker_volume_name(
             volume.namespace_id(),
@@ -64,7 +64,7 @@ fn plain_volume_request(volume: &VolumePinState) -> VolumeCreateRequest {
     }
 }
 
-fn validate_volume_shape(
+pub(super) fn validate_volume_shape(
     volume: &VolumePinState,
     observed: Volume,
     expected_driver: &str,

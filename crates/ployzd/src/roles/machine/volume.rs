@@ -1,12 +1,19 @@
+use futures_util::{StreamExt, stream};
 use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes, VolumeName};
+use ployz_core::ids::MachineId;
 use ployz_core::ids::NamespaceId;
-use ployz_core::machine::StorageCapability;
+use ployz_core::intent::VolumePinState;
+use ployz_core::machine::{StorageCapability, VolumeUsageFacts};
 use ployz_core::storage::StorageEffectFailure;
+use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decode_json_request};
 use serde::de::DeserializeOwned;
 use std::process::Stdio;
 use std::time::Duration;
 
 const STORAGE_HOST_COMMAND_TIMEOUT: Duration = Duration::from_secs(4);
+const MAX_CONCURRENT_VOLUME_READS: usize = 16;
+const VOLUME_TESTIMONY_COLLECTION_TIMEOUT: Duration = Duration::from_secs(4);
+pub(crate) const VOLUME_TESTIMONY_ENDPOINT_TIMEOUT: Duration = Duration::from_millis(4_500);
 pub(super) const DATASET_ENSURE_HOST_COMMAND_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 pub(super) const DATASET_DESTROY_HOST_COMMAND_TIMEOUT: Duration =
     ployz_core::storage::DATASET_DESTROY_MAX_INNER_BUDGET.saturating_add(Duration::from_secs(20));
@@ -65,6 +72,138 @@ fn dataset_destroy_command(dataset: &DatasetName) -> tokio::process::Command {
         .stdin(Stdio::null())
         .kill_on_drop(true);
     command
+}
+
+pub(super) async fn read_provisioned_volume_usage(
+    dataset: &DatasetName,
+) -> Option<VolumeUsageFacts> {
+    let mut command = tokio::process::Command::new("ployz");
+    command
+        .arg("host")
+        .arg("internal-storage-dataset-facts")
+        .arg("--dataset")
+        .arg(dataset.as_str())
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    decode_storage_host_command(command, STORAGE_HOST_COMMAND_TIMEOUT).await
+}
+
+pub(crate) async fn handle_volume_testimony<R>(
+    machine_id: MachineId,
+    runner: R,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse
+where
+    R: crate::roles::machine::runner::MachineVolumeUsageReader,
+{
+    use crate::roles::machine::protocol::{
+        MachineVolumeTestimony, MachineVolumeTestimonyDomainError, MachineVolumeTestimonyResult,
+        MachineVolumeTestimonyRpcOk, MachineVolumeTestimonyRpcRequest,
+        MachineVolumeTestimonyRpcResponse,
+    };
+    use crate::roles::machine::response::{machine_domain_error, machine_success};
+
+    let MachineVolumeTestimonyRpcRequest { mut pins } =
+        match decode_json_request::<MachineVolumeTestimonyRpcRequest>(&request) {
+            Ok(request) => request,
+            Err(response) => return response,
+        };
+    pins.sort_by(compare_volume_pins);
+    pins.dedup();
+    if let Some(pin) = pins.iter().find(|pin| pin.machine_id() != &machine_id) {
+        return machine_domain_error(MachineVolumeTestimonyRpcResponse::DomainError {
+            machine_id: machine_id.clone(),
+            error: MachineVolumeTestimonyDomainError::MachineMismatch {
+                expected_machine_id: pin.machine_id().clone(),
+                responder_machine_id: machine_id,
+            },
+        });
+    }
+
+    let mut reads = stream::iter(pins.iter().cloned())
+        .map(|pin| {
+            let runner = &runner;
+            async move {
+                let testimony = match runner.read_volume_usage(&pin).await {
+                    Some(facts) => MachineVolumeTestimony::Available { facts },
+                    None => MachineVolumeTestimony::Unavailable,
+                };
+                MachineVolumeTestimonyResult { pin, testimony }
+            }
+        })
+        .buffer_unordered(MAX_CONCURRENT_VOLUME_READS);
+    let deadline = tokio::time::Instant::now() + VOLUME_TESTIMONY_COLLECTION_TIMEOUT;
+    let mut completed = Vec::new();
+    while let Ok(Some(result)) = tokio::time::timeout_at(deadline, reads.next()).await {
+        completed.push(result);
+    }
+    drop(reads);
+    completed.sort_by(|left, right| compare_volume_pins(&left.pin, &right.pin));
+    let mut completed = completed.into_iter().peekable();
+    let results = pins
+        .into_iter()
+        .map(|pin| {
+            while completed
+                .peek()
+                .is_some_and(|result| compare_volume_pins(&result.pin, &pin).is_lt())
+            {
+                completed.next();
+            }
+            if let Some(result) =
+                completed.next_if(|result| compare_volume_pins(&result.pin, &pin).is_eq())
+            {
+                return result;
+            }
+            MachineVolumeTestimonyResult {
+                pin,
+                testimony: MachineVolumeTestimony::Unavailable,
+            }
+        })
+        .collect();
+
+    machine_success(MachineVolumeTestimonyRpcResponse::Ok(
+        MachineVolumeTestimonyRpcOk {
+            machine_id,
+            results,
+        },
+    ))
+}
+
+fn compare_volume_pins(left: &VolumePinState, right: &VolumePinState) -> std::cmp::Ordering {
+    let identity = (left.namespace_id(), left.volume_name(), left.machine_id()).cmp(&(
+        right.namespace_id(),
+        right.volume_name(),
+        right.machine_id(),
+    ));
+    if identity != std::cmp::Ordering::Equal {
+        return identity;
+    }
+    match (left.kind(), right.kind()) {
+        (ployz_core::intent::VolumeKind::Plain, ployz_core::intent::VolumeKind::Plain) => {
+            std::cmp::Ordering::Equal
+        }
+        (
+            ployz_core::intent::VolumeKind::Plain,
+            ployz_core::intent::VolumeKind::Provisioned { .. },
+        ) => std::cmp::Ordering::Less,
+        (
+            ployz_core::intent::VolumeKind::Provisioned { .. },
+            ployz_core::intent::VolumeKind::Plain,
+        ) => std::cmp::Ordering::Greater,
+        (
+            ployz_core::intent::VolumeKind::Provisioned {
+                dataset: left_dataset,
+                max_size_bytes: left_max_size,
+            },
+            ployz_core::intent::VolumeKind::Provisioned {
+                dataset: right_dataset,
+                max_size_bytes: right_max_size,
+            },
+        ) => left_dataset
+            .cmp(right_dataset)
+            .then_with(|| left_max_size.get().cmp(&right_max_size.get())),
+    }
 }
 
 async fn decode_typed_storage_host_command<T: DeserializeOwned>(
@@ -218,6 +357,23 @@ mod tests {
             decode_storage_host_command::<StorageCapability>(command, Duration::from_millis(10))
                 .await,
             None
+        );
+    }
+
+    #[tokio::test]
+    async fn storage_host_protocol_decodes_canonical_volume_usage() {
+        let mut command = tokio::process::Command::new("sh");
+        command.args([
+            "-c",
+            "printf '%s' '{\"used_bytes\":4096,\"last_write_unix_seconds\":1700000000}'",
+        ]);
+
+        assert_eq!(
+            decode_storage_host_command(command, Duration::from_secs(1)).await,
+            Some(ployz_core::machine::VolumeUsageFacts {
+                used_bytes: 4096,
+                last_write_unix_seconds: 1_700_000_000,
+            })
         );
     }
 

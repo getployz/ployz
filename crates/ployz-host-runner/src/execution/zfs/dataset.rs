@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 
 use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes};
 use ployz_core::machine::{
-    DatasetQuotaFact, PoolCapacityAdmissionFailure, PoolCapacityFacts, admit_pool_quota_total,
+    DatasetQuotaFact, PoolCapacityAdmissionFailure, PoolCapacityFacts, VolumeUsageFacts,
+    admit_pool_quota_total,
 };
 use ployz_core::storage::{
     DATASET_DESTROY_INNER_COMMAND_TIMEOUT, PROVISIONED_VOLUME_MOUNTPOINT, PreparedStorageOrigin,
@@ -18,15 +19,6 @@ use ployz_core::storage::{
 use super::command::{COMMAND_TIMEOUT, EffectClass, checked, parse_u64};
 use super::state::{load_and_verify, load_and_verify_with_timeout, verify_child};
 use crate::execution::HostRunnerCommandRunner;
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DatasetFacts {
-    pub used_bytes: u64,
-    /// Modification time of the dataset mount directory itself. This is
-    /// directory metadata testimony, not a recursive signal of file writes.
-    pub mount_directory_modified_unix_seconds: u64,
-}
 
 const DATASET_ENSURE_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 const DATASET_ENSURE_LOCK_RETRY: Duration = Duration::from_millis(25);
@@ -201,7 +193,7 @@ pub fn gather_dataset_facts(
     runner: &mut impl HostRunnerCommandRunner,
     state_directory: &Path,
     dataset: &DatasetName,
-) -> Result<DatasetFacts, ZfsEffectError> {
+) -> Result<VolumeUsageFacts, ZfsEffectError> {
     let state = load_and_verify(runner, state_directory)?;
     verify_child(&state, dataset)?;
     let used = checked(
@@ -219,19 +211,48 @@ pub fn gather_dataset_facts(
             message: format!("dataset {} has no leaf", dataset.as_str()),
         })?;
     let path = format!("{PROVISIONED_VOLUME_MOUNTPOINT}/{leaf}");
-    let directory_modified = checked(
+    let recursive_modified = checked(
         runner,
-        "stat",
-        &["-c", "%Y", &path],
+        "find",
+        &[&path, "-xdev", "-printf", "%T@\n"],
         COMMAND_TIMEOUT,
         EffectClass::Dataset,
     )?;
-    Ok(DatasetFacts {
+    if recursive_modified.stdout_truncated {
+        return Err(ZfsEffectError::GatherParse {
+            message: "dataset recursive modification timestamp output exceeded the capture limit"
+                .to_owned(),
+        });
+    }
+    Ok(VolumeUsageFacts {
         used_bytes: parse_u64("dataset used bytes", used.stdout.trim())?,
-        mount_directory_modified_unix_seconds: parse_u64(
-            "dataset mount-directory modification timestamp",
-            directory_modified.stdout.trim(),
-        )?,
+        last_write_unix_seconds: parse_latest_write(&recursive_modified.stdout)?,
+    })
+}
+
+fn parse_latest_write(output: &str) -> Result<u64, ZfsEffectError> {
+    let mut latest = None;
+    for value in output.lines() {
+        let value = value.trim();
+        let seconds = value.split_once('.').map_or(value, |(seconds, _)| seconds);
+        if seconds.is_empty()
+            || !seconds.bytes().all(|byte| byte.is_ascii_digit())
+            || value.strip_prefix(seconds).is_some_and(|fraction| {
+                !fraction.is_empty()
+                    && (!fraction.starts_with('.')
+                        || fraction.len() == 1
+                        || !fraction[1..].bytes().all(|byte| byte.is_ascii_digit()))
+            })
+        {
+            return Err(ZfsEffectError::GatherParse {
+                message: format!("dataset recursive modification timestamp {value:?} is invalid"),
+            });
+        }
+        let seconds = parse_u64("dataset recursive modification timestamp", seconds)?;
+        latest = Some(latest.map_or(seconds, |current: u64| current.max(seconds)));
+    }
+    latest.ok_or_else(|| ZfsEffectError::GatherParse {
+        message: "dataset recursive modification timestamp output is empty".to_owned(),
     })
 }
 

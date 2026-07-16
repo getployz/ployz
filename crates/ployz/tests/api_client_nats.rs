@@ -29,8 +29,8 @@ use ployz_sdk_types::{
     MachineJoinRedeemResponse, MachineJoinRedeemResult, MachineJoinRedeemed, MachineJoinToken,
     MachineListResponse, MachineListResult, MachineName, MachineSnapshot, OperationApiResponse,
     OpsStatusError, OpsStatusResponse, ServiceInspectRequest, ServiceInspectResponse,
-    ServiceListResponse, ServiceListResult, ServiceSnapshot, VolumeListRequest, VolumeListResponse,
-    VolumeListResult, VolumeSnapshot, VolumeStatus,
+    ServiceListResponse, ServiceListResult, ServiceSnapshot, VolumeKind, VolumeListRequest,
+    VolumeListResponse, VolumeListResult, VolumeSnapshot, VolumeStatus, VolumeTestimony,
     operation_api::{
         DeploySubmitApi, MachineAddApi, MachineInspectApi, MachineJoinRedeemApi, MachineListApi,
         OperationApiContract, OpsStatusApi, OpsWatchApi, ServiceInspectApi, ServiceListApi,
@@ -315,6 +315,9 @@ async fn operation_api_client_routes_volume_list_success() {
         namespace_id: namespace_id("prod"),
         volume_name: VolumeName::try_new("data").expect("valid volume name"),
         machine_id: machine_id("machine_1"),
+        kind: VolumeKind::Plain,
+        referencing_services: Vec::new(),
+        testimony: VolumeTestimony::NoAnswer,
         status: VolumeStatus::Orphaned,
     };
 

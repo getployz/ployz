@@ -1,7 +1,10 @@
 use crate::control::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
 };
-use crate::control::role_client::machine::{NatsMachineContainerRuntime, NatsMachineFactsReader};
+use crate::control::role_client::machine::{
+    MachineVolumeTestimonyReadError, NatsMachineContainerRuntime, NatsMachineFactsReader,
+    NatsMachineVolumeTestimonyReader,
+};
 use crate::roles::machine::protocol::{
     MachineBuildCapability, MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,
     MachineContainerRemoveRpcRequest, MachineContainerRemoveRpcResponse,
@@ -16,7 +19,8 @@ use crate::roles::machine::protocol::{
     MachineRunContainerOutcome, MachineSubstrateReportRpcRequest,
     MachineSubstrateReportRpcResponse, MachineVolumeEnsureRpcOk, MachineVolumeEnsureRpcRequest,
     MachineVolumeEnsureRpcResponse, MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk,
-    MachineVolumeRemoveRpcRequest, MachineVolumeRemoveRpcResponse,
+    MachineVolumeRemoveRpcRequest, MachineVolumeRemoveRpcResponse, MachineVolumeTestimony,
+    MachineVolumeTestimonyResult,
 };
 use crate::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
@@ -32,11 +36,11 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::ContainerId;
 use ployz_core::intent::{ProvisionedVolumePinState, VolumePinState};
-use ployz_core::machine::VolumeEnsureFailure;
 use ployz_core::machine::runtime::{
     ContainerRuntimeState, MachineContainerFactDelta, MachineFactsSnapshot,
     ManagedContainerIdentity, ManagedContainerKind,
 };
+use ployz_core::machine::{VolumeEnsureFailure, VolumeUsageFacts};
 use ployz_core::network::{
     EbpfAttachmentStatus, EbpfForwardingReady, EbpfForwardingReadyEvidence, MachineDataplaneStatus,
     PloyzNativeMeshReady, WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardEbpfPrepareError,
@@ -51,8 +55,11 @@ use ployz_test_support::containers;
 use ployz_test_support::ids::{
     container_id, failure_message, machine_id, namespace_id, operation_id,
 };
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+mod volume_testimony;
 
 #[tokio::test]
 async fn machine_role_service_reports_unknown_substrate_without_evidence() {
@@ -1564,6 +1571,14 @@ impl RecordingRunnerState {
             .clone()
     }
 
+    fn volume_reads(&self) -> Vec<VolumePinState> {
+        self.inner
+            .lock()
+            .expect("recording runner lock is not poisoned")
+            .volume_reads
+            .clone()
+    }
+
     fn stops(&self) -> Vec<ContainerId> {
         self.inner
             .lock()
@@ -1585,6 +1600,7 @@ struct RecordingRunnerInner {
     dataset_destroys: Vec<ployz_core::deploy::DatasetName>,
     volume_remove_effects: Vec<RecordedVolumeRemoveEffect>,
     volume_ensures: Vec<VolumePinState>,
+    volume_reads: Vec<VolumePinState>,
 }
 
 #[derive(Clone)]
@@ -1599,6 +1615,7 @@ struct RecordingRunner {
     remove_failure: Option<(ContainerId, String)>,
     volume_remove_failure: Option<String>,
     wait_exit_code: i64,
+    volume_usage: BTreeMap<VolumeName, VolumeUsageFacts>,
 }
 
 impl RecordingRunner {
@@ -1614,6 +1631,7 @@ impl RecordingRunner {
             remove_failure: None,
             volume_remove_failure: None,
             wait_exit_code: 0,
+            volume_usage: BTreeMap::new(),
         }
     }
 
@@ -1672,6 +1690,12 @@ impl RecordingRunner {
         self.wait_exit_code = exit_code;
         self
     }
+
+    fn with_volume_usage(mut self, volume: &str, facts: VolumeUsageFacts) -> Self {
+        self.volume_usage
+            .insert(VolumeName::try_new(volume).expect("volume"), facts);
+        self
+    }
 }
 
 impl crate::roles::machine::runner::MachineImageRemovalRunner for RecordingRunner {
@@ -1680,6 +1704,18 @@ impl crate::roles::machine::runner::MachineImageRemovalRunner for RecordingRunne
         _image_identity: &ployz_core::image::OciDigest,
     ) -> Result<ployz_core::image::ImageRemoveOutcome, String> {
         Ok(ployz_core::image::ImageRemoveOutcome::AlreadyAbsent)
+    }
+}
+
+impl crate::roles::machine::runner::MachineVolumeUsageReader for RecordingRunner {
+    async fn read_volume_usage(&self, volume: &VolumePinState) -> Option<VolumeUsageFacts> {
+        self.state
+            .inner
+            .lock()
+            .expect("recording runner lock is not poisoned")
+            .volume_reads
+            .push(volume.clone());
+        self.volume_usage.get(volume.volume_name()).cloned()
     }
 }
 

@@ -46,6 +46,10 @@ use std::time::Duration;
 pub const DEFAULT_MACHINE_RPC_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const MAX_CONCURRENT_MACHINE_READS: usize = 16;
 
+mod volume_testimony;
+
+pub use volume_testimony::{MachineVolumeTestimonyReadError, NatsMachineVolumeTestimonyReader};
+
 #[derive(Debug, Clone)]
 pub struct NatsMachineContainerRuntime {
     client: async_nats::Client,

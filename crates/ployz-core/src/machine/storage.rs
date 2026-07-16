@@ -42,6 +42,17 @@ pub struct PoolCapacityFacts {
     pub child_quotas: Vec<DatasetQuotaFact>,
 }
 
+/// Fresh machine-owned usage testimony for one mounted volume.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct VolumeUsageFacts {
+    pub used_bytes: u64,
+    /// Latest modification time among the volume root and all entries on the
+    /// same filesystem, in whole Unix seconds.
+    pub last_write_unix_seconds: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PoolCapacityAdmissionFailure {
     #[error(

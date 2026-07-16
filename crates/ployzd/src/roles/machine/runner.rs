@@ -6,8 +6,8 @@ use ployz_core::deploy::{
 use ployz_core::ids::ContainerId;
 use ployz_core::image::OciDigest;
 use ployz_core::intent::VolumePinState;
-use ployz_core::machine::VolumeEnsureFailure;
 use ployz_core::machine::runtime::ContainerHealth;
+use ployz_core::machine::{VolumeEnsureFailure, VolumeUsageFacts};
 use std::net::IpAddr;
 
 use crate::roles::machine::protocol::MachineImagePull;
@@ -188,6 +188,15 @@ pub trait MachineContainerRunner {
         &self,
         dataset: &DatasetName,
     ) -> impl Future<Output = Result<(), ployz_core::storage::StorageEffectFailure>> + Send;
+}
+
+/// Fresh, machine-owned volume testimony. Implementations must return `None`
+/// whenever either usage or latest-write evidence cannot be gathered fully.
+pub trait MachineVolumeUsageReader {
+    fn read_volume_usage(
+        &self,
+        volume: &VolumePinState,
+    ) -> impl Future<Output = Option<VolumeUsageFacts>> + Send;
 }
 
 pub trait MachineImageRemovalRunner {

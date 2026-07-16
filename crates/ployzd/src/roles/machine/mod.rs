@@ -29,6 +29,8 @@ mod volume;
 
 pub(crate) use unavailable::MachineRequestFailure;
 pub use unavailable::MachineRuntimeUnavailableReason;
+#[cfg(test)]
+pub(crate) use volume::{VOLUME_TESTIMONY_ENDPOINT_TIMEOUT, handle_volume_testimony};
 
 pub(crate) fn current_unix_ms() -> u64 {
     let Ok(elapsed) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {

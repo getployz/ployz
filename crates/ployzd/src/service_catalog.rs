@@ -342,6 +342,7 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         MachineServiceEndpoint::ContainerRemove => "machine.container.remove",
         MachineServiceEndpoint::VolumeEnsure => "machine.volume.ensure",
         MachineServiceEndpoint::VolumeRemove => "machine.volume.remove",
+        MachineServiceEndpoint::VolumeTestimony => "machine.volume.testimony",
         MachineServiceEndpoint::DataplanePublicKey => "machine.dataplane.public_key",
         MachineServiceEndpoint::DataplaneStatus => "machine.dataplane.status",
         MachineServiceEndpoint::SubstrateUpdate => "machine.substrate.update",

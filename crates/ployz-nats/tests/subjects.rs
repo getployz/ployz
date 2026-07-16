@@ -175,6 +175,10 @@ fn machine_subjects_use_known_endpoint_and_event_tokens() {
         "plz.v1.rpc.machine.command.machine_7.volume.ensure"
     );
     assert_eq!(
+        machine_service(&machine_id, MachineServiceEndpoint::VolumeTestimony),
+        "plz.v1.rpc.machine.query.machine_7.volume.testimony"
+    );
+    assert_eq!(
         machine_service(&machine_id, MachineServiceEndpoint::DataplanePublicKey),
         "plz.v1.rpc.machine.query.machine_7.dataplane.public_key"
     );

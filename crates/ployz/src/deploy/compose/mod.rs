@@ -360,6 +360,41 @@ mod tests {
     }
 
     #[test]
+    fn unmounted_declared_volume_is_advisory_in_both_modes() {
+        let source = r#"
+            name: default
+            volumes:
+              unused: {}
+            services:
+              web:
+                image: nginx
+        "#;
+
+        for mode in [
+            UnsupportedFieldMode::Strict,
+            UnsupportedFieldMode::AllowUnsupported,
+        ] {
+            let (parsed, warnings) = parse_deploy_file(ComposeInput {
+                source,
+                base_dir: Path::new("."),
+                interpolation_env: BTreeMap::new(),
+                namespace_override: None,
+                mode,
+            })
+            .expect("an unmounted volume declaration is non-fatal");
+
+            assert_eq!(parsed.volumes.len(), 1);
+            let [warning] = warnings.as_slice() else {
+                panic!("expected one unused-volume advisory");
+            };
+            assert_eq!(
+                warning.0,
+                "volumes.unused  warning  advisory  declared volume is not mounted and will not be created"
+            );
+        }
+    }
+
+    #[test]
     fn provisioned_volume_rejects_a_zero_max_size() {
         let error = parse_deploy_file(ComposeInput {
             source: r#"

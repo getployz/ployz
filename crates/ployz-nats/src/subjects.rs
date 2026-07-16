@@ -466,6 +466,7 @@ pub enum MachineServiceEndpoint {
     ContainerRemove,
     VolumeEnsure,
     VolumeRemove,
+    VolumeTestimony,
     DataplanePublicKey,
     DataplaneStatus,
     SubstrateUpdate,
@@ -513,6 +514,7 @@ impl MachineServiceEndpoint {
             Self::ContainerRemove => "container.remove",
             Self::VolumeEnsure => "volume.ensure",
             Self::VolumeRemove => "volume.remove",
+            Self::VolumeTestimony => "volume.testimony",
             Self::DataplanePublicKey => "dataplane.public_key",
             Self::DataplaneStatus => "dataplane.status",
             Self::SubstrateUpdate => "substrate.update",
@@ -546,6 +548,7 @@ impl MachineServiceEndpoint {
             | Self::DnsStatus
             | Self::ContainerInspect
             | Self::ContainerResolveImage
+            | Self::VolumeTestimony
             | Self::DataplanePublicKey
             | Self::SubstrateReport
             | Self::StoragePrepareReport

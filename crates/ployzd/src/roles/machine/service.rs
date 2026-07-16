@@ -22,13 +22,16 @@ use super::substrate::{
     handle_storage_prepare, handle_storage_prepare_report, handle_substrate_report,
     handle_substrate_update,
 };
-use super::volume::{DATASET_DESTROY_HOST_COMMAND_TIMEOUT, DATASET_ENSURE_HOST_COMMAND_TIMEOUT};
+use super::volume::{
+    DATASET_DESTROY_HOST_COMMAND_TIMEOUT, DATASET_ENSURE_HOST_COMMAND_TIMEOUT,
+    VOLUME_TESTIMONY_ENDPOINT_TIMEOUT, handle_volume_testimony,
+};
 use crate::roles::machine::execution::host_dataplane::dataplane_status_budget;
 use crate::roles::machine::projection::MachineProjectionState;
 #[cfg(test)]
 use crate::roles::machine::projection::{RunningProjectionTask, start_projection_task};
 use crate::roles::machine::runner::{
-    MachineContainerRunner, MachineImageRemovalRunner, MachineLogReader,
+    MachineContainerRunner, MachineImageRemovalRunner, MachineLogReader, MachineVolumeUsageReader,
 };
 use crate::service_catalog::{machine_endpoint_spec, machine_role_service_base};
 use ployz_core::build::BUILD_START_ENDPOINT_TIMEOUT;
@@ -87,7 +90,13 @@ pub async fn start_machine_role_runtime<R, P, L>(
     log_reader: L,
 ) -> Result<RunningMachineRoleRuntime, MachineServiceError>
 where
-    R: Clone + MachineContainerRunner + MachineImageRemovalRunner + Send + Sync + 'static,
+    R: Clone
+        + MachineContainerRunner
+        + MachineImageRemovalRunner
+        + MachineVolumeUsageReader
+        + Send
+        + Sync
+        + 'static,
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
@@ -112,7 +121,13 @@ pub async fn start_machine_role_runtime_with_endpoint_observation<R, P, L>(
     endpoint_observation: MachineEndpointObservation,
 ) -> Result<RunningMachineRoleRuntime, MachineServiceError>
 where
-    R: Clone + MachineContainerRunner + MachineImageRemovalRunner + Send + Sync + 'static,
+    R: Clone
+        + MachineContainerRunner
+        + MachineImageRemovalRunner
+        + MachineVolumeUsageReader
+        + Send
+        + Sync
+        + 'static,
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
@@ -137,7 +152,13 @@ async fn start_machine_role_runtime_with_endpoint_cache<R, P, L>(
     endpoint_cache: MachineEndpointCache,
 ) -> Result<RunningMachineRoleRuntime, MachineServiceError>
 where
-    R: Clone + MachineContainerRunner + MachineImageRemovalRunner + Send + Sync + 'static,
+    R: Clone
+        + MachineContainerRunner
+        + MachineImageRemovalRunner
+        + MachineVolumeUsageReader
+        + Send
+        + Sync
+        + 'static,
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
@@ -172,7 +193,13 @@ pub async fn start_machine_role_service<R, P, L>(
     log_reader: L,
 ) -> Result<RunningNatsService, MachineServiceError>
 where
-    R: Clone + MachineContainerRunner + MachineImageRemovalRunner + Send + Sync + 'static,
+    R: Clone
+        + MachineContainerRunner
+        + MachineImageRemovalRunner
+        + MachineVolumeUsageReader
+        + Send
+        + Sync
+        + 'static,
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
@@ -197,7 +224,13 @@ pub(crate) async fn start_machine_role_service_with_endpoint_cache<R, P, L>(
     endpoint_cache: MachineEndpointCache,
 ) -> Result<RunningNatsService, MachineServiceError>
 where
-    R: Clone + MachineContainerRunner + MachineImageRemovalRunner + Send + Sync + 'static,
+    R: Clone
+        + MachineContainerRunner
+        + MachineImageRemovalRunner
+        + MachineVolumeUsageReader
+        + Send
+        + Sync
+        + 'static,
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
@@ -227,7 +260,13 @@ pub(crate) async fn start_machine_role_service_with_endpoint_cache_and_image<R, 
     projection_services: MachineRoleProjectionServices,
 ) -> Result<RunningNatsService, MachineServiceError>
 where
-    R: Clone + MachineContainerRunner + MachineImageRemovalRunner + Send + Sync + 'static,
+    R: Clone
+        + MachineContainerRunner
+        + MachineImageRemovalRunner
+        + MachineVolumeUsageReader
+        + Send
+        + Sync
+        + 'static,
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
@@ -368,6 +407,14 @@ where
         MachineServiceEndpoint::VolumeRemove,
         runner.clone(),
         handle_volume_remove,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::VolumeTestimony,
+        runner.clone(),
+        handle_volume_testimony,
     )
     .await?;
     bind_machine_endpoint(
@@ -516,6 +563,9 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         }
         MachineServiceEndpoint::VolumeRemove => {
             policy.request_timeout = VOLUME_REMOVE_ENDPOINT_TIMEOUT;
+        }
+        MachineServiceEndpoint::VolumeTestimony => {
+            policy.request_timeout = VOLUME_TESTIMONY_ENDPOINT_TIMEOUT;
         }
         MachineServiceEndpoint::Inspect
         | MachineServiceEndpoint::FactsGet

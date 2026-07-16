@@ -184,7 +184,13 @@ export type VolumePinState = { namespace_id: NamespaceId, volume_name: VolumeNam
 
 export type VolumeStatus = "in_use" | "orphaned";
 
-export type VolumeSnapshot = { namespace_id: NamespaceId, volume_name: VolumeName, machine_id: MachineId, status: VolumeStatus, };
+export type VolumeTestimony = { "status": "available", used_bytes: number, last_write_unix_seconds: number, } | { "status": "unavailable" } | { "status": "no_answer" };
+
+export type VolumeSnapshot = { namespace_id: NamespaceId, volume_name: VolumeName, machine_id: MachineId, kind: VolumeKind,
+/**
+ * Service ids are sorted and deduplicated by the projection owner.
+ */
+referencing_services: Array<ServiceId>, testimony: VolumeTestimony, status: VolumeStatus, };
 
 export type HealthcheckShellCommand = Brand<string, "HealthcheckShellCommand">;
 

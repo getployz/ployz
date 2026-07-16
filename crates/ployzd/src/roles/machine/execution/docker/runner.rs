@@ -132,7 +132,7 @@ impl DockerManagedContainerRunner {
         }
     }
 
-    async fn docker(&self) -> Result<&Docker, DockerManagedContainerRunnerConnectError> {
+    pub(super) async fn docker(&self) -> Result<&Docker, DockerManagedContainerRunnerConnectError> {
         match &self.docker {
             #[cfg(test)]
             DockerHandle::Connected(docker) => Ok(docker),

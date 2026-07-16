@@ -25,7 +25,7 @@ use crate::roles::machine::projection::{
     MachineProjectionState, RunningProjectionTask, start_projection_task,
 };
 use crate::roles::machine::runner::{
-    MachineContainerRunner, MachineImageRemovalRunner, MachineLogReader,
+    MachineContainerRunner, MachineImageRemovalRunner, MachineLogReader, MachineVolumeUsageReader,
 };
 use crate::roles::machine::service::{
     MachineFactsReadError, MachineRoleProjectionServices, MachineServiceError,
@@ -215,7 +215,13 @@ pub(crate) async fn start_machine_process_with_ports<R, P, L>(
     image_state: Option<AvailableImageService>,
 ) -> Result<RunningMachineProcess, MachineProcessError>
 where
-    R: Clone + MachineContainerRunner + MachineImageRemovalRunner + Send + Sync + 'static,
+    R: Clone
+        + MachineContainerRunner
+        + MachineImageRemovalRunner
+        + MachineVolumeUsageReader
+        + Send
+        + Sync
+        + 'static,
     P: Clone
         + crate::roles::machine::service::MachinePloyzNativeMeshPreparer
         + Send
@@ -533,7 +539,7 @@ mod tests {
     use crate::roles::machine::runner::{
         CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
         MachineContainerRunner, MachineContainerRunnerError, MachineImageRemovalRunner,
-        MachineLogReader, MachineLogReaderError, MachineLogTail,
+        MachineLogReader, MachineLogReaderError, MachineLogTail, MachineVolumeUsageReader,
     };
     use futures_util::StreamExt;
     use ployz_core::ids::{ContainerId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
@@ -772,6 +778,15 @@ mod tests {
         }
     }
 
+    impl MachineVolumeUsageReader for StaticRunner {
+        async fn read_volume_usage(
+            &self,
+            _volume: &ployz_core::intent::VolumePinState,
+        ) -> Option<ployz_core::machine::VolumeUsageFacts> {
+            None
+        }
+    }
+
     #[tokio::test]
     async fn machine_observer_shutdown_cancels_blocked_fact_collection() {
         let nats = TestNats::start_bootstrapped().await;
@@ -930,6 +945,15 @@ mod tests {
                 container_id: container_id.clone(),
                 message: "not used".to_owned(),
             })
+        }
+    }
+
+    impl MachineVolumeUsageReader for FailingListRunner {
+        async fn read_volume_usage(
+            &self,
+            _volume: &ployz_core::intent::VolumePinState,
+        ) -> Option<ployz_core::machine::VolumeUsageFacts> {
+            None
         }
     }
 

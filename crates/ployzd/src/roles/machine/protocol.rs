@@ -17,10 +17,13 @@ use serde::{Deserialize, Serialize};
 mod build;
 mod dataplane_status;
 mod facts;
+mod volume_testimony;
 
 pub use build::*;
 pub use dataplane_status::*;
 pub use facts::*;
+pub use volume_testimony::*;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineRunContainerOutcome {
