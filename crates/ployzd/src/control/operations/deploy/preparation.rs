@@ -246,6 +246,7 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
             service: prepared.service,
             route_commits,
             volume_pins: facts.namespace_volume_pins.clone(),
+            storage_testimony: facts.machine_storage_testimony.clone(),
             eligible_machines: prepared.eligible_machines,
             existing_replicas: prepared.existing_replicas,
             cleanup_candidates: prepared.cleanup_candidates,
@@ -298,13 +299,12 @@ fn provisioned_storage_requirement(
         return ProvisionedStorageRequirement::None;
     }
     for mount in &service.runtime.volume_mounts {
-        let Some(pin) = pins.iter().find(|pin| {
+        for pin in pins.iter().filter(|pin| {
             pin.namespace_id() == request.namespace_id() && pin.volume_name() == &mount.volume_name
-        }) else {
-            continue;
-        };
-        if let ployz_core::intent::VolumeKind::Provisioned { dataset, .. } = pin.kind() {
-            expected_pools.push(dataset.pool());
+        }) {
+            if let ployz_core::intent::VolumeKind::Provisioned { dataset, .. } = pin.kind() {
+                expected_pools.push(dataset.pool());
+            }
         }
     }
     expected_pools.sort();

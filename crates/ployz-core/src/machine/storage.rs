@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::deploy::{VolumeName, ZfsPoolName};
+use crate::deploy::{DatasetName, VolumeName, ZfsPoolName};
 use crate::ids::{MachineId, NamespaceId};
 use crate::intent::{VolumeKind, VolumePinState};
 
@@ -13,8 +13,29 @@ use crate::intent::{VolumeKind, VolumePinState};
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StorageCapability {
     Unprepared,
-    Ready { pool: ZfsPoolName },
-    Unavailable { reason: StorageUnavailableReason },
+    Ready {
+        pool: ZfsPoolName,
+        capacity: PoolCapacityFacts,
+    },
+    Unavailable {
+        reason: StorageUnavailableReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct DatasetQuotaFact {
+    pub dataset: DatasetName,
+    pub quota_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct PoolCapacityFacts {
+    pub available_bytes: u64,
+    pub child_quotas: Vec<DatasetQuotaFact>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -63,7 +84,7 @@ pub fn classify_storage_compatibility(
                 reason: reason.clone(),
             }
         }
-        StorageTestimony::Answered(Some(StorageCapability::Ready { pool })) => {
+        StorageTestimony::Answered(Some(StorageCapability::Ready { pool, .. })) => {
             match expected_pool {
                 Some(expected) if expected != pool => StorageCompatibility::PoolMismatch {
                     expected: expected.clone(),

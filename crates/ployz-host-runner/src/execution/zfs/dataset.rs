@@ -3,31 +3,17 @@
 use std::path::Path;
 
 use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes};
+use ployz_core::machine::{DatasetQuotaFact, PoolCapacityFacts};
 use ployz_core::storage::{
     PROVISIONED_VOLUME_MOUNTPOINT, PreparedStorageOrigin, PreparedStorageState,
     StorageEffectFailure as ZfsEffectError,
 };
-use serde::{Deserialize, Serialize};
 
 use super::command::{COMMAND_TIMEOUT, EffectClass, checked, parse_last_u64, parse_u64};
 use super::state::{load_and_verify, verify_child};
 use crate::execution::HostRunnerCommandRunner;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DatasetQuotaFact {
-    pub dataset: DatasetName,
-    pub quota_bytes: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PoolCapacityFacts {
-    pub available_bytes: u64,
-    pub child_quotas: Vec<DatasetQuotaFact>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DatasetFacts {
     pub used_bytes: u64,
@@ -163,7 +149,7 @@ pub fn gather_pool_capacity(
     gather_pool_capacity_for_state(runner, &state)
 }
 
-fn gather_pool_capacity_for_state(
+pub(super) fn gather_pool_capacity_for_state(
     runner: &mut impl HostRunnerCommandRunner,
     state: &PreparedStorageState,
 ) -> Result<PoolCapacityFacts, ZfsEffectError> {

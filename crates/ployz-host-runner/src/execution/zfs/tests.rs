@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes, VolumeName, ZfsPoolName};
 use ployz_core::ids::{NamespaceId, OperationId};
+use ployz_core::machine::{DatasetQuotaFact, PoolCapacityFacts};
 use ployz_core::operation::FailureMessage;
 
 use super::state::persist_prepared_storage_state;
@@ -201,10 +202,21 @@ fn storage_capability_reports_pool_absence_fault_and_readiness() {
         }
     );
 
-    let mut ready = RecordingRunner::new([stdout("tank\n"), stdout("ONLINE\n")]);
+    let mut ready = RecordingRunner::new([
+        stdout("tank\n"),
+        stdout("ONLINE\n"),
+        stdout("8192\n"),
+        stdout("tank/ployz/volumes\tnone\n"),
+    ]);
     assert_eq!(
         observe_storage_capability(&mut ready, state.path(), &module).unwrap(),
-        ployz_core::machine::StorageCapability::Ready { pool }
+        ployz_core::machine::StorageCapability::Ready {
+            pool,
+            capacity: PoolCapacityFacts {
+                available_bytes: 8192,
+                child_quotas: Vec::new(),
+            },
+        }
     );
     assert!(
         ready
@@ -212,6 +224,24 @@ fn storage_capability_reports_pool_absence_fault_and_readiness() {
             .iter()
             .all(|invocation| invocation.timeout == COMMAND_TIMEOUT)
     );
+}
+
+#[test]
+fn storage_capability_does_not_report_ready_without_capacity() {
+    let state = tempfile::tempdir().unwrap();
+    persist(state.path(), PreparedStorageOrigin::Adopted);
+    let module = state.path().join("zfs");
+    std::fs::create_dir(&module).unwrap();
+    let mut runner = RecordingRunner::new([
+        stdout("tank\n"),
+        stdout("ONLINE\n"),
+        failed("capacity unavailable"),
+    ]);
+
+    assert!(matches!(
+        observe_storage_capability(&mut runner, state.path(), &module),
+        Err(ZfsEffectError::Dataset { .. })
+    ));
 }
 
 #[test]

@@ -567,6 +567,10 @@ mod tests {
             "ctr_initial",
             Some(StorageCapability::Ready {
                 pool: ZfsPoolName::try_new("tank").expect("valid pool"),
+                capacity: ployz_core::machine::PoolCapacityFacts {
+                    available_bytes: 1024 * 1024,
+                    child_quotas: Vec::new(),
+                },
             }),
         ));
         let (mut projection, snapshots) = PassiveRuntimeProjection::new(facts);
@@ -579,6 +583,10 @@ mod tests {
                 machine_id("machine_a"),
                 Some(StorageCapability::Ready {
                     pool: ZfsPoolName::try_new("tank").expect("valid pool"),
+                    capacity: ployz_core::machine::PoolCapacityFacts {
+                        available_bytes: 1024 * 1024,
+                        child_quotas: Vec::new(),
+                    },
                 }),
             )]),
         );

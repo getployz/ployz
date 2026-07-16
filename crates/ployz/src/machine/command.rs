@@ -1112,7 +1112,7 @@ fn render_storage(machine: &MachineSnapshot) -> String {
     match storage {
         None => "not reported".to_owned(),
         Some(StorageCapability::Unprepared) => "unprepared".to_owned(),
-        Some(StorageCapability::Ready { pool }) => format!("ready pool={}", pool.as_str()),
+        Some(StorageCapability::Ready { pool, .. }) => format!("ready pool={}", pool.as_str()),
         Some(StorageCapability::Unavailable { reason }) => {
             format!("unavailable {}", render_storage_unavailable_reason(reason))
         }

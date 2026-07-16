@@ -10,6 +10,7 @@ use ployz_core::storage::{
 };
 
 use super::command::{COMMAND_TIMEOUT, EffectClass, checked, parse_last_u64};
+use super::dataset::gather_pool_capacity_for_state;
 use super::preparation::PoolSelection;
 use crate::execution::{FileMode, HostRunnerCommandRunner, write_durable_file};
 
@@ -56,8 +57,10 @@ pub fn observe_storage_capability(
             },
         });
     }
+    let capacity = gather_pool_capacity_for_state(runner, &state)?;
     Ok(StorageCapability::Ready {
         pool: state.pool().clone(),
+        capacity,
     })
 }
 

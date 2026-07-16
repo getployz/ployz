@@ -610,7 +610,11 @@ export type MachineTestimony = { "status": "answered", endpoints: MachineEndpoin
  */
 last_observed_at_unix_seconds: number, } | { "status": "no_answer" };
 
-export type StorageCapability = { "state": "unprepared" } | { "state": "ready", pool: ZfsPoolName, } | { "state": "unavailable", reason: StorageUnavailableReason, };
+export type DatasetQuotaFact = { dataset: DatasetName, quota_bytes: number, };
+
+export type PoolCapacityFacts = { available_bytes: number, child_quotas: Array<DatasetQuotaFact>, };
+
+export type StorageCapability = { "state": "unprepared" } | { "state": "ready", pool: ZfsPoolName, capacity: PoolCapacityFacts, } | { "state": "unavailable", reason: StorageUnavailableReason, };
 
 export type StorageUnavailableReason = { "reason": "zfs_module_missing" } | { "reason": "pool_not_imported", pool: ZfsPoolName, } | { "reason": "pool_faulted", pool: ZfsPoolName, };
 

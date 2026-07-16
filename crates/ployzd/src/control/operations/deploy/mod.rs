@@ -398,6 +398,7 @@ pub(super) fn deploy_plan(
                 existing_replicas: service.existing_replicas.clone(),
                 cleanup_candidates: service.cleanup_candidates.clone(),
                 volume_pins: service.volume_pins.clone(),
+                storage_testimony: service.storage_testimony.clone(),
             })
             .collect(),
         command.namespace_cleanup_candidates().to_vec(),

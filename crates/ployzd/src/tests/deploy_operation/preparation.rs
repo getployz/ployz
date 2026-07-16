@@ -275,6 +275,10 @@ fn provisioned_mount_requires_fresh_ready_storage_without_filtering_plain_work()
             machine_id("machine_a"),
             Some(StorageCapability::Ready {
                 pool: ZfsPoolName::try_new("ployz").expect("valid pool"),
+                capacity: ployz_core::machine::PoolCapacityFacts {
+                    available_bytes: 1024 * 1024,
+                    child_quotas: Vec::new(),
+                },
             }),
         ),
         (machine_id("machine_b"), None),
@@ -383,6 +387,10 @@ fn pinned_provisioned_mount_rejects_ready_testimony_from_the_wrong_pool() {
                 machine_id("machine_a"),
                 Some(StorageCapability::Ready {
                     pool: reported.clone(),
+                    capacity: ployz_core::machine::PoolCapacityFacts {
+                        available_bytes: 1024 * 1024,
+                        child_quotas: Vec::new(),
+                    },
                 }),
             )]),
             unusable_machines: Vec::new(),

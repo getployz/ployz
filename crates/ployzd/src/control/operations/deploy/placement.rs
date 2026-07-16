@@ -227,7 +227,13 @@ mod tests {
         let testimony = BTreeMap::from([
             (
                 ready.clone(),
-                Some(StorageCapability::Ready { pool: pool.clone() }),
+                Some(StorageCapability::Ready {
+                    pool: pool.clone(),
+                    capacity: ployz_core::machine::PoolCapacityFacts {
+                        available_bytes: 1024,
+                        child_quotas: Vec::new(),
+                    },
+                }),
             ),
             (legacy.clone(), None),
             (unprepared.clone(), Some(StorageCapability::Unprepared)),

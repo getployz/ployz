@@ -560,29 +560,13 @@ impl DeployExecutionError {
                     volume_name.as_str()
                 )),
             },
-            Self::Plan(DeployPlanError::VolumePinIncompatible {
+            Self::Plan(DeployPlanError::VolumeAdmission {
                 service_id,
-                volume_name,
-                ..
+                failure,
             }) => DeployOperationFailure::PlanningFailed {
                 service_id: service_id.clone(),
                 namespace_revision_id: failure_namespace_revision_id(command),
-                message: failure_message(format!(
-                    "stored pin is incompatible with declared volume {}",
-                    volume_name.as_str()
-                )),
-            },
-            Self::Plan(DeployPlanError::ProvisionedVolumeShrink {
-                service_id,
-                volume_name,
-                ..
-            }) => DeployOperationFailure::PlanningFailed {
-                service_id: service_id.clone(),
-                namespace_revision_id: failure_namespace_revision_id(command),
-                message: failure_message(format!(
-                    "provisioned volume {} cannot shrink below its pinned maximum",
-                    volume_name.as_str()
-                )),
+                message: failure_message(failure.to_string()),
             },
             Self::Plan(DeployPlanError::UnknownServiceDependency {
                 service_id,

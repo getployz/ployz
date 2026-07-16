@@ -684,6 +684,7 @@ mod tests {
             registry_credential: None,
             route_commits: Vec::new(),
             volume_pins: Vec::new(),
+            storage_testimony: std::collections::BTreeMap::new(),
             eligible_machines: Vec::new(),
             existing_replicas: Vec::new(),
             cleanup_candidates: Vec::new(),

@@ -46,6 +46,8 @@ pub struct DeployServiceExecutionCommand {
     pub(super) registry_credential: Option<RegistryCredential>,
     pub(super) route_commits: Vec<RouteBindingState>,
     pub(super) volume_pins: Vec<VolumePinState>,
+    pub(super) storage_testimony:
+        BTreeMap<MachineId, Option<ployz_core::machine::StorageCapability>>,
     pub(super) eligible_machines: Vec<MachineId>,
     pub(super) existing_replicas: Vec<ExistingServiceReplica>,
     pub(super) cleanup_candidates: Vec<ObservedCleanupCandidate>,
