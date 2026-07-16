@@ -3,6 +3,7 @@
 //! event to its kind's projection. Each kind's projection logic lives in
 //! that kind's module.
 
+use super::build::{self, BuildOperationState};
 use super::cert::{self, CertOperationState};
 use super::core_replace::{self, CoreReplaceOperationState};
 use super::credential_grant::{self, CredentialGrantOperationState};
@@ -98,6 +99,7 @@ pub enum StatusProjectionError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectionOperationState {
+    Build(BuildOperationState),
     Deploy(DeployOperationState),
     Cert(CertOperationState),
     MachineAdd(MachineAddOperationState),
@@ -118,6 +120,7 @@ impl ProjectionOperationState {
     #[must_use]
     pub const fn kind(&self) -> OperationKind {
         match self {
+            Self::Build(_) => OperationKind::Build,
             Self::Deploy(_) => OperationKind::Deploy,
             Self::Cert(_) => OperationKind::Cert,
             Self::MachineAdd(_) => OperationKind::MachineAdd,
@@ -138,6 +141,7 @@ impl ProjectionOperationState {
 
 pub(crate) const fn operation_kind_name(kind: OperationKind) -> &'static str {
     match kind {
+        OperationKind::Build => "build",
         OperationKind::Deploy => "deploy",
         OperationKind::Cert => "cert",
         OperationKind::MachineAdd => "machine-add",
@@ -157,6 +161,7 @@ pub(crate) const fn operation_kind_name(kind: OperationKind) -> &'static str {
 
 fn subject_ref_text(subject: &OperationSubjectRef) -> String {
     match subject {
+        OperationSubjectRef::Build => "build".to_owned(),
         OperationSubjectRef::Cert(cert_id) => format!("cert {}", cert_id.as_str()),
         OperationSubjectRef::MachineAdd(machine_id) => {
             format!("machine-add {}", machine_id.as_str())
@@ -269,6 +274,30 @@ pub fn project_operation_event(
         return Ok(OperationProjection::AlreadySatisfied);
     }
     match event {
+        ClassifiedOperationEvent::Build { event, .. } => {
+            let OperationStatus::Build {
+                id,
+                source,
+                adapter,
+                platforms,
+                state,
+                ..
+            } = current
+            else {
+                return Err(kind_mismatch(current, OperationKind::Build));
+            };
+            build::project_event(
+                build::BuildFields {
+                    id,
+                    source,
+                    adapter,
+                    platforms,
+                    state,
+                },
+                event,
+                event_sequence,
+            )
+        }
         ClassifiedOperationEvent::Deploy { event, .. } => {
             let OperationStatus::Deploy {
                 id,
@@ -509,6 +538,14 @@ fn project_operation_interruption(
 
     let mut status = current.clone();
     match &mut status {
+        OperationStatus::Build {
+            state,
+            last_event_sequence,
+            ..
+        } => {
+            *state = BuildOperationState::interrupted(evidence);
+            *last_event_sequence = event_sequence;
+        }
         OperationStatus::Deploy {
             state,
             last_event_sequence,

@@ -21,6 +21,10 @@ pub enum MachineLifecycle {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineUsabilityReason {
+    PlatformMismatch {
+        required: crate::image::OciPlatform,
+        reported: crate::image::OciPlatform,
+    },
     Draining,
     FactsUnavailable,
     StorageTestimonyNotReported,
@@ -66,6 +70,18 @@ mod tests {
         assert_eq!(
             placement_rejection(MachineLifecycle::Draining),
             Some(MachineUsabilityReason::Draining)
+        );
+    }
+
+    #[test]
+    fn platform_mismatch_is_typed_attempt_evidence() {
+        let reason = MachineUsabilityReason::PlatformMismatch {
+            required: crate::image::OciPlatform::try_new("linux", "arm64").expect("required"),
+            reported: crate::image::OciPlatform::try_new("linux", "amd64").expect("reported"),
+        };
+        assert_eq!(
+            serde_json::to_value(reason).expect("json"),
+            serde_json::json!({"kind":"platform_mismatch","required":{"os":"linux","architecture":"arm64"},"reported":{"os":"linux","architecture":"amd64"}})
         );
     }
 }

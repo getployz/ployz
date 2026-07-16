@@ -23,6 +23,7 @@ pub enum OperationProgressScope {
 }
 
 mod accessors;
+mod build;
 mod cert;
 mod core_replace;
 mod credential_grant;
@@ -45,6 +46,11 @@ mod text;
 mod volume_remove;
 
 pub use accessors::NextEventSequenceError;
+pub use build::{
+    BuildAdapterToolchainEvidence, BuildCleanupEvidence, BuildEvidence, BuildLogChunk,
+    BuildLogChunkError, BuildOperationFailure, BuildOperationState, BuildPlatformFailure,
+    BuildTimeoutFailure, BuildToolchainEvidence, BuildTransition, MAX_BUILD_LOG_CHUNK_BYTES,
+};
 pub use cert::{
     CertInterruptionStage, CertOperationFailure, CertOperationFailureError, CertOperationState,
     CertRunningStage, CertTransition, CertificateInterruptionNextAction,
@@ -68,8 +74,8 @@ pub use ingress_configure::{
     IngressConfigureFailure, IngressConfigureOperationState, IngressConfigureTransition,
 };
 pub use interruption::{
-    DeployInterruptionStage, OperationInterruptionCause, OperationInterruptionEvidence,
-    OperationInterruptionNextAction, OperationInterruptionStage,
+    BuildInterruptionStage, DeployInterruptionStage, OperationInterruptionCause,
+    OperationInterruptionEvidence, OperationInterruptionNextAction, OperationInterruptionStage,
     OperationInterruptionUncertainWork,
 };
 pub use machine_add::{MachineAddOperationState, MachineAddOperationStateName};
@@ -124,6 +130,7 @@ pub const MAX_OPERATION_EVENT_REPLAY_LIMIT: u16 = 512;
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum OperationKind {
+    Build,
     Deploy,
     Cert,
     MachineAdd,
@@ -148,6 +155,14 @@ pub enum OperationKind {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperationStatus {
+    Build {
+        id: OperationId,
+        source: crate::build::GitSourceEvidence,
+        adapter: crate::build::BuildAdapter,
+        platforms: crate::build::BuildPlatforms,
+        state: BuildOperationState,
+        last_event_sequence: EventSequence,
+    },
     Deploy {
         id: OperationId,
         namespace_id: NamespaceId,
@@ -264,6 +279,24 @@ impl OperationStatusSnapshot {
 }
 
 impl OperationStatus {
+    #[must_use]
+    pub fn build_accepted(
+        id: OperationId,
+        source: crate::build::GitSourceEvidence,
+        adapter: crate::build::BuildAdapter,
+        platforms: crate::build::BuildPlatforms,
+        event_sequence: EventSequence,
+    ) -> Self {
+        Self::Build {
+            id,
+            source,
+            adapter,
+            platforms,
+            state: BuildOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
     #[must_use]
     pub fn deploy_accepted(
         id: OperationId,
@@ -482,6 +515,7 @@ impl OperationStatus {
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
+            Self::Build { state, .. } => state.is_terminal(),
             Self::Deploy { state, .. } => state.is_terminal(),
             Self::Cert { state, .. } => state.is_terminal(),
             Self::MachineAdd { state, .. } => state.is_terminal(),
@@ -511,6 +545,10 @@ impl OperationStatus {
         // Reaching here means the state is terminal, so anything that is
         // neither completed nor cancelled is a failure.
         let outcome = match self {
+            Self::Build { state, .. } => OperationOutcome::from_terminal(
+                matches!(state, BuildOperationState::Completed { .. }),
+                matches!(state, BuildOperationState::Cancelled { .. }),
+            ),
             Self::Deploy { state, .. } => OperationOutcome::from_terminal(
                 matches!(state, DeployOperationState::Completed { .. }),
                 matches!(state, DeployOperationState::Cancelled { .. }),

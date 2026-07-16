@@ -1,11 +1,12 @@
 //! User-facing operation API contract registry.
 
 use crate::{
-    AcceptedOperation, CoreReplaceError, CoreReplaceReportError, CoreReplaceReportRequest,
-    CoreReplaceReported, CoreReplaceRequest, CredentialAddError, CredentialAddRequest,
-    CredentialListError, CredentialListRequest, CredentialListResult, CredentialRemoveError,
-    CredentialRemoveRequest, DeployReserveError, DeployReserveRequest, DeployReserved,
-    DeploySubmitError, DeploySubmitRequest, IngressConfigureError, IngressConfigureRequest,
+    AcceptedOperation, BuildCancelError, BuildCancelRequest, BuildSubmitError, BuildSubmitRequest,
+    CoreReplaceError, CoreReplaceReportError, CoreReplaceReportRequest, CoreReplaceReported,
+    CoreReplaceRequest, CredentialAddError, CredentialAddRequest, CredentialListError,
+    CredentialListRequest, CredentialListResult, CredentialRemoveError, CredentialRemoveRequest,
+    DeployReserveError, DeployReserveRequest, DeployReserved, DeploySubmitError,
+    DeploySubmitRequest, IngressConfigureError, IngressConfigureRequest,
     InitFirstMachineActivateError, InitFirstMachineActivateRequest, InitFirstMachineActivated,
     LogsTailError, LogsTailRequest, LogsTailResult, MachineAddAccepted, MachineAddError,
     MachineAddRequest, MachineInspectError, MachineInspectRequest, MachineJoinRedeemError,
@@ -27,6 +28,8 @@ use ployz_core::operation::OperationEventReplayPage;
 /// Transport-neutral identifier for one public operation API contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApiEndpoint {
+    BuildSubmit,
+    BuildCancel,
     DeployReserve,
     DeploySubmit,
     InitFirstMachineActivate,
@@ -75,6 +78,8 @@ pub trait OperationApiContract {
 macro_rules! operation_api_contracts {
     ($macro:ident) => {
         $macro!(
+            $crate::operation_api::BuildSubmitApi,
+            $crate::operation_api::BuildCancelApi,
             $crate::operation_api::DeployReserveApi,
             $crate::operation_api::DeploySubmitApi,
             $crate::operation_api::InitFirstMachineActivateApi,
@@ -109,6 +114,30 @@ macro_rules! operation_api_contracts {
             $crate::operation_api::OpsWatchApi
         );
     };
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuildSubmitApi;
+
+impl OperationApiContract for BuildSubmitApi {
+    type Request = BuildSubmitRequest;
+    type Success = AcceptedOperation;
+    type Error = BuildSubmitError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::BuildSubmit;
+    const RESPONSE_ALIAS: &'static str = "BuildSubmitResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuildCancelApi;
+
+impl OperationApiContract for BuildCancelApi {
+    type Request = BuildCancelRequest;
+    type Success = AcceptedOperation;
+    type Error = BuildCancelError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::BuildCancel;
+    const RESPONSE_ALIAS: &'static str = "BuildCancelResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
