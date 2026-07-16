@@ -27,7 +27,7 @@ pub use submit::owned_operation;
 pub use submit::{
     core_replace, credential_add, credential_remove, deploy_reserve, deploy_submit,
     ingress_configure, machine_add, machine_drain, machine_resume, machine_update,
-    namespace_remove, network_repair, service_restart, volume_remove,
+    namespace_remove, network_repair, service_restart, submit_volume_create, volume_remove,
 };
 
 use crate::control::authorization::MachineCredentialMint;

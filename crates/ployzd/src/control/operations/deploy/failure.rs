@@ -217,7 +217,7 @@ pub enum DeployExecutionError {
     #[error("container execution failed: {0:?}")]
     RunContainer(MachineContainerRuntimeError),
     #[error("volume ensure failed")]
-    EnsureVolume(MachineVolumeEnsureError),
+    EnsureVolume(Box<MachineVolumeEnsureError>),
     #[error("pre-start hook failed: {0:?}")]
     PreStartHook(PreStartHookRuntimeError),
     #[error(
@@ -533,7 +533,7 @@ impl From<DeployHealthCheckError> for DeployExecutionError {
 
 impl From<MachineVolumeEnsureError> for DeployExecutionError {
     fn from(value: MachineVolumeEnsureError) -> Self {
-        Self::EnsureVolume(value)
+        Self::EnsureVolume(Box::new(value))
     }
 }
 
@@ -629,7 +629,7 @@ impl DeployExecutionError {
             }
             Self::Image { failure } => (**failure).clone(),
             Self::RunContainer(error) => error.deploy_failure(retained_artifacts),
-            Self::EnsureVolume(error) => match error {
+            Self::EnsureVolume(error) => match error.as_ref() {
                 MachineVolumeEnsureError::Unavailable {
                     machine_id,
                     volume_name: _,

@@ -52,6 +52,7 @@ pub enum PloyzctlCommand {
     ServiceRestart(service::ServiceRestartCommand),
     NamespaceRemove(namespace::NamespaceRemoveCommand),
     VolumeList(volume::VolumeListCommand),
+    VolumeCreate(volume::VolumeCreateCommand),
     VolumeRemove(volume::VolumeRemoveCommand),
     LogsTail(logs::LogsTailCommand),
     OpsList(ops::OpsListCommand),
@@ -100,6 +101,7 @@ impl PloyzctlCommand {
             Self::ServiceRestart(_) => Some("service restart"),
             Self::NamespaceRemove(_) => Some("namespace rm"),
             Self::VolumeList(_) => Some("volume list"),
+            Self::VolumeCreate(_) => Some("volume create"),
             Self::VolumeRemove(_) => Some("volume rm"),
             Self::LogsTail(_) => Some("logs"),
             Self::OpsList(_) => Some("ops list"),
@@ -273,6 +275,7 @@ enum NamespaceCli {
 enum VolumeCli {
     #[command(alias = "ls")]
     List(volume::VolumeListCli),
+    Create(volume::VolumeCreateCli),
     Rm(volume::VolumeRemoveCli),
 }
 
@@ -393,6 +396,9 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
             VolumeCli::List(command) => Ok(PloyzctlCommand::VolumeList(
                 volume::volume_list_command(command),
             )),
+            VolumeCli::Create(command) => {
+                volume::volume_create_command(command).map(PloyzctlCommand::VolumeCreate)
+            }
             VolumeCli::Rm(command) => {
                 volume::volume_remove_command(command).map(PloyzctlCommand::VolumeRemove)
             }

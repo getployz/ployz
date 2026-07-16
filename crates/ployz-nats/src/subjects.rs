@@ -45,6 +45,7 @@ pub const OPERATOR_SERVICE_RESTART: &str = "plz.v1.rpc.operator.command.service.
 pub const OPERATOR_NAMESPACE_REMOVE: &str = "plz.v1.rpc.operator.command.namespace.remove";
 pub const OPERATOR_VOLUME_LIST: &str = "plz.v1.rpc.operator.query.volume.list";
 pub const OPERATOR_VOLUME_REMOVE: &str = "plz.v1.rpc.operator.command.volume.remove";
+pub const OPERATOR_VOLUME_CREATE: &str = "plz.v1.rpc.operator.command.volume.create";
 pub const OPERATOR_RUNTIME_SNAPSHOT: &str = "plz.v1.rpc.operator.query.runtime.snapshot";
 pub const OPERATOR_LOGS_TAIL: &str = "plz.v1.rpc.operator.query.logs.tail";
 pub const OPERATOR_MACHINE_DRAIN: &str = "plz.v1.rpc.operator.command.machine.drain";
@@ -80,6 +81,7 @@ pub enum OperationApiEndpoint {
     ServiceRestart,
     NamespaceRemove,
     VolumeList,
+    VolumeCreate,
     VolumeRemove,
     RuntimeSnapshot,
     LogsTail,
@@ -125,6 +127,7 @@ impl OperationApiEndpoint {
             Self::ServiceRestart => "service.restart",
             Self::NamespaceRemove => "namespace.remove",
             Self::VolumeList => "volume.list",
+            Self::VolumeCreate => "volume.create",
             Self::VolumeRemove => "volume.remove",
             Self::RuntimeSnapshot => "runtime.snapshot",
             Self::LogsTail => "logs.tail",
@@ -163,6 +166,7 @@ impl OperationApiEndpoint {
             Self::ServiceRestart => OPERATOR_SERVICE_RESTART,
             Self::NamespaceRemove => OPERATOR_NAMESPACE_REMOVE,
             Self::VolumeList => OPERATOR_VOLUME_LIST,
+            Self::VolumeCreate => OPERATOR_VOLUME_CREATE,
             Self::VolumeRemove => OPERATOR_VOLUME_REMOVE,
             Self::RuntimeSnapshot => OPERATOR_RUNTIME_SNAPSHOT,
             Self::LogsTail => OPERATOR_LOGS_TAIL,
@@ -191,6 +195,7 @@ impl OperationApiEndpoint {
             | Self::ServiceRestart
             | Self::NamespaceRemove
             | Self::VolumeRemove
+            | Self::VolumeCreate
             | Self::CoreReplace
             | Self::CredentialAdd
             | Self::CredentialRemove
@@ -242,6 +247,7 @@ impl From<ployz_sdk_types::operation_api::OperationApiEndpoint> for OperationApi
             Core::ServiceRestart => Self::ServiceRestart,
             Core::NamespaceRemove => Self::NamespaceRemove,
             Core::VolumeList => Self::VolumeList,
+            Core::VolumeCreate => Self::VolumeCreate,
             Core::VolumeRemove => Self::VolumeRemove,
             Core::RuntimeSnapshot => Self::RuntimeSnapshot,
             Core::LogsTail => Self::LogsTail,

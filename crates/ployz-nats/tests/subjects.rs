@@ -230,6 +230,18 @@ fn credential_endpoints_pin_subjects_and_execution_classes() {
 }
 
 #[test]
+fn volume_create_endpoint_pins_subject_and_execution_class() {
+    assert_eq!(
+        OperationApiEndpoint::VolumeCreate.subject(),
+        "plz.v1.rpc.operator.command.volume.create"
+    );
+    assert_eq!(
+        OperationApiEndpoint::VolumeCreate.execution(),
+        OperationApiEndpointExecution::AcceptsOperation
+    );
+}
+
+#[test]
 fn ids_reject_wildcard_subject_tokens() {
     assert_eq!(
         OperationId::try_new("op.>"),

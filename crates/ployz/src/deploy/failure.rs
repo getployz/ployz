@@ -1,7 +1,7 @@
 use crate::machine::command::render_storage_unavailable_reason;
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{ContainerId, MachineId, NamespaceRevisionId, ServiceId};
-use ployz_core::machine::MachineUsabilityReason;
+use ployz_core::machine::{MachineUsabilityReason, VolumeEnsureFailure};
 use ployz_core::operation::{
     ArtifactUnavailableReason, CertificateProvisionFailure, ControlPlaneCommitScope,
     DeployOperationFailure, HealthCheckFailure, PreStartHookFailure, RetainedArtifact,
@@ -46,6 +46,7 @@ impl<'a> DeployFailureView<'a> {
                 }
             }
             DeployOperationFailure::RuntimeUnavailable { machine_id, .. }
+            | DeployOperationFailure::VolumeEnsureFailed { machine_id, .. }
             | DeployOperationFailure::ContainerStartFailed { machine_id, .. }
             | DeployOperationFailure::ImageResolutionFailed { machine_id, .. }
             | DeployOperationFailure::PlatformImageUnavailable { machine_id, .. }
@@ -215,6 +216,7 @@ impl<'a> DeployFailureView<'a> {
                 FailureSafety::NothingChanged
             }
             DeployOperationFailure::RuntimeUnavailable { .. }
+            | DeployOperationFailure::VolumeEnsureFailed { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. }
@@ -241,6 +243,7 @@ impl<'a> DeployFailureView<'a> {
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
+            | DeployOperationFailure::VolumeEnsureFailed { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. }
@@ -264,6 +267,7 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::PlatformImageUnavailable { .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
+            | DeployOperationFailure::VolumeEnsureFailed { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. }
@@ -305,6 +309,7 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::PlatformImageUnavailable { .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
+            | DeployOperationFailure::VolumeEnsureFailed { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. }
@@ -333,6 +338,7 @@ impl<'a> DeployFailureView<'a> {
             },
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
+            | DeployOperationFailure::VolumeEnsureFailed { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. }
@@ -502,6 +508,16 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
         DeployOperationFailure::RuntimeUnavailable { message, .. } => {
             format!("container runtime unavailable: {}", message.as_str())
         }
+        DeployOperationFailure::VolumeEnsureFailed {
+            machine_id,
+            volume_name,
+            failure,
+        } => format!(
+            "volume {} could not be ensured on {}: {}",
+            volume_name.as_str(),
+            machine_id.as_str(),
+            render_volume_ensure_failure(failure)
+        ),
         DeployOperationFailure::ContainerStartFailed { message, .. } => {
             format!("container failed to start: {}", message.as_str())
         }
@@ -571,6 +587,118 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
                     format!("route {target} cutover timed out after {timeout_seconds}s")
                 }
             }
+        }
+    }
+}
+
+pub(crate) fn render_volume_ensure_failure(failure: &VolumeEnsureFailure) -> String {
+    match failure {
+        VolumeEnsureFailure::MachineMismatch {
+            expected_machine_id,
+            responder_machine_id,
+        } => format!(
+            "machine response was from {}, expected {}",
+            responder_machine_id.as_str(),
+            expected_machine_id.as_str()
+        ),
+        VolumeEnsureFailure::Dataset { dataset, failure } => format!(
+            "dataset {} effect failed: {}",
+            dataset.as_str(),
+            render_storage_effect_failure(failure)
+        ),
+        VolumeEnsureFailure::DockerShapeMismatch {
+            volume_name,
+            message,
+        } => format!(
+            "Docker volume {} has the wrong shape: {message}",
+            volume_name.as_str()
+        ),
+        VolumeEnsureFailure::DockerEnsureFailed {
+            volume_name,
+            retained_dataset,
+            message,
+        } => retained_dataset.as_ref().map_or_else(
+            || {
+                format!(
+                    "Docker volume {} ensure failed: {message}",
+                    volume_name.as_str()
+                )
+            },
+            |dataset| {
+                format!(
+                    "Docker volume {} ensure failed; retained dataset {}: {message}",
+                    volume_name.as_str(),
+                    dataset.as_str()
+                )
+            },
+        ),
+    }
+}
+
+fn render_storage_effect_failure(failure: &ployz_core::storage::StorageEffectFailure) -> String {
+    use ployz_core::storage::StorageEffectFailure;
+
+    match failure {
+        StorageEffectFailure::UnsupportedPlatform => {
+            "ZFS preparation is unsupported on this host profile".to_owned()
+        }
+        StorageEffectFailure::Installation { message } => {
+            format!("ZFS installation or module loading failed: {message}")
+        }
+        StorageEffectFailure::PoolList { message } => {
+            format!("failed to list imported ZFS pools: {message}")
+        }
+        StorageEffectFailure::AmbiguousPools { candidates } => format!(
+            "multiple imported ZFS pools require an explicit selection: {}",
+            candidates
+                .iter()
+                .map(|pool| pool.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        StorageEffectFailure::ExplicitPoolAbsent { pool } => {
+            format!("explicit ZFS pool {} is not imported", pool.as_str())
+        }
+        StorageEffectFailure::SparsePool { message } => {
+            format!("Ployz sparse image pool preparation failed: {message}")
+        }
+        StorageEffectFailure::Dataset { message } => {
+            format!("ZFS property or dataset effect failed: {message}")
+        }
+        StorageEffectFailure::PreparedStateUnavailable { message } => {
+            format!("prepared storage state is unavailable: {message}")
+        }
+        StorageEffectFailure::PreparedStateMismatch { message } => {
+            format!("prepared storage state does not match observed ZFS state: {message}")
+        }
+        StorageEffectFailure::GatherParse { message } => {
+            format!("ZFS fact output is invalid: {message}")
+        }
+        StorageEffectFailure::QuotaShrink {
+            dataset,
+            current,
+            requested,
+        } => format!(
+            "quota shrink is forbidden for {}: current={current} requested={requested}",
+            dataset.as_str()
+        ),
+        StorageEffectFailure::QuotaCapacityExceeded {
+            total_bytes,
+            provisioned_used_bytes,
+            free_bytes,
+            required_headroom_bytes,
+            requested_total_bytes,
+        } => format!(
+            "quota admission exceeds capacity: total={total_bytes} provisioned-used={provisioned_used_bytes} free={free_bytes} required-headroom={required_headroom_bytes} requested-total={requested_total_bytes}"
+        ),
+        StorageEffectFailure::DestructiveEffect { message } => {
+            format!("destructive ZFS effect refused: {message}")
+        }
+        StorageEffectFailure::OperationTimedOut => {
+            "storage preparation exceeded its operation budget".to_owned()
+        }
+        StorageEffectFailure::ProcessFailed { message } => {
+            format!("storage preparation process failed: {message}")
         }
     }
 }

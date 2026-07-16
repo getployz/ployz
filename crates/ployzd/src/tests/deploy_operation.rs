@@ -10,6 +10,7 @@ use crate::control::operations::deploy::{
     MachineContainerRuntimeError, MachineImageRemovalRuntime, NamespaceStateCommitter,
     execute_deploy_operation,
 };
+use crate::control::role_client::machine::MachineVolumeEnsureError;
 use fixtures::*;
 use ployz_core::deploy::{ContainerCommand, ContainerRestartPolicy, ReplicaCount};
 use ployz_core::intent::{ServingTargetEntry, VolumePinState};

@@ -1,18 +1,17 @@
 use ployz_core::certificate::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
 use ployz_core::deploy::{
     ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerMountPath,
-    DependencyCondition, DeployCleanupContainer, DeployRequest, DeployRoute, DeployRouteTarget,
-    DeployServiceSpec, HealthcheckShellCommand, ImageReference, PreStartHook, ReplicaCount,
-    ServiceDependency, ServiceVolumeMount, VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName,
+    DatasetName, DependencyCondition, DeployCleanupContainer, DeployRequest, DeployRoute,
+    DeployRouteTarget, DeployServiceSpec, HealthcheckShellCommand, ImageReference, PreStartHook,
+    ReplicaCount, ServiceDependency, ServiceVolumeMount, VolumeMaxSizeBytes, VolumeName,
+    VolumeSpec, ZfsPoolName,
 };
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId,
     RouteBindingId, ServiceId,
 };
 use ployz_core::ingress::{AutomaticHostnameLabel, RouteBindingOrigin};
-use ployz_core::intent::{
-    DatasetName, RouteBindingState, ServingTargetEntry, VolumeKind, VolumePinState,
-};
+use ployz_core::intent::{RouteBindingState, ServingTargetEntry, VolumeKind, VolumePinState};
 use ployz_core::machine::runtime::{
     MachineContainerObservationSnapshot, ManagedContainerObservation,
 };

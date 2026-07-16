@@ -546,7 +546,7 @@ mod tests {
                     total_bytes: 100,
                     provisioned_used_bytes: 0,
                     free_bytes: 100,
-                    dataset_quotas: Vec::new(),
+                    child_quotas: Vec::new(),
                 },
             })),
         }

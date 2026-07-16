@@ -47,6 +47,7 @@ fn sdk_contract_registry_maps_to_every_nats_operation_endpoint() {
             OperationApiEndpoint::MachineResume,
             OperationApiEndpoint::ServiceRestart,
             OperationApiEndpoint::NamespaceRemove,
+            OperationApiEndpoint::VolumeCreate,
             OperationApiEndpoint::VolumeRemove,
             OperationApiEndpoint::CoreReplace,
             OperationApiEndpoint::CoreReplaceReport,

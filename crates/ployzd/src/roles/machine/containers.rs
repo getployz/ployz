@@ -554,34 +554,6 @@ fn validate_volume_target(
     })
 }
 
-#[cfg(test)]
-mod volume_ensure_tests {
-    use super::validate_volume_target;
-    use ployz_core::deploy::VolumeName;
-    use ployz_core::ids::{MachineId, NamespaceId};
-    use ployz_core::intent::VolumePinState;
-    use ployz_core::machine::VolumeEnsureFailure;
-
-    #[test]
-    fn volume_ensure_rejects_a_pin_for_another_machine_before_effects() {
-        let expected_machine_id = MachineId::try_new("machine-a").expect("machine");
-        let responder_machine_id = MachineId::try_new("machine-b").expect("machine");
-        let volume = VolumePinState::plain(
-            NamespaceId::try_new("default").expect("namespace"),
-            VolumeName::try_new("data").expect("volume"),
-            expected_machine_id.clone(),
-        );
-
-        assert_eq!(
-            validate_volume_target(&responder_machine_id, &volume),
-            Err(VolumeEnsureFailure::MachineMismatch {
-                expected_machine_id,
-                responder_machine_id,
-            })
-        );
-    }
-}
-
 pub(crate) async fn handle_container_stop<R>(
     machine_id: MachineId,
     state: MachineContainerState<R>,
@@ -767,4 +739,32 @@ where
             resolved_image_identity: container.resolved_image_identity,
             created_at_unix_seconds: container.created_at_unix_seconds,
         })
+}
+
+#[cfg(test)]
+mod volume_ensure_tests {
+    use super::validate_volume_target;
+    use ployz_core::deploy::VolumeName;
+    use ployz_core::ids::{MachineId, NamespaceId};
+    use ployz_core::intent::VolumePinState;
+    use ployz_core::machine::VolumeEnsureFailure;
+
+    #[test]
+    fn volume_ensure_rejects_a_pin_for_another_machine_before_effects() {
+        let expected_machine_id = MachineId::try_new("machine-a").expect("machine");
+        let responder_machine_id = MachineId::try_new("machine-b").expect("machine");
+        let volume = VolumePinState::plain(
+            NamespaceId::try_new("default").expect("namespace"),
+            VolumeName::try_new("data").expect("volume"),
+            expected_machine_id.clone(),
+        );
+
+        assert_eq!(
+            validate_volume_target(&responder_machine_id, &volume),
+            Err(VolumeEnsureFailure::MachineMismatch {
+                expected_machine_id,
+                responder_machine_id,
+            })
+        );
+    }
 }

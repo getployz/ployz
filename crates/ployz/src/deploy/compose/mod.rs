@@ -14,6 +14,7 @@ use ployz_core::ids::NamespaceId;
 use serde_yaml::Value;
 
 pub use diagnostics::{RenderedWarning, UnsupportedFieldMode};
+pub(crate) use translate::parse_byte_quantity;
 
 use self::diagnostics::{ComposeDiagnostics, ComposeFinding, ComposePath, KnownUnsupported};
 use self::interpolate::{InterpolationFindingKind, apply_merge, interpolate_value};
