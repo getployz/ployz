@@ -1996,6 +1996,7 @@ async fn scenario_runtime_fields_deploy(core: &CoreContext, workload_image: &Ima
 }
 
 async fn scenario_failing_healthcheck_deploy(core: &CoreContext, workload_image: &ImageReference) {
+    wait_for_fresh_peer_handshakes(core).await;
     let accepted = core
         .api
         .deploy_submit(
@@ -2012,16 +2013,16 @@ async fn scenario_failing_healthcheck_deploy(core: &CoreContext, workload_image:
 
     let status =
         wait_for_terminal_deploy_status(core, &deploy_operation, DEPLOY_TERMINAL_BUDGET).await;
-    assert!(
-        matches!(
-            &status,
-            OperationStatus::Deploy {
-                state: DeployOperationState::Failed { .. },
-                ..
-            }
-        ),
-        "failing healthcheck deploy did not fail: {status:?}"
-    );
+    let OperationStatus::Deploy {
+        state:
+            DeployOperationState::Failed {
+                failure: DeployOperationFailure::HealthCheckFailed { .. },
+            },
+        ..
+    } = &status
+    else {
+        panic!("failing healthcheck deploy had an unexpected terminal status: {status:?}");
+    };
 
     let filter = format!("label={SERVICE_ID_LABEL}=svc_bad_health");
     let mut retained = Vec::new();
