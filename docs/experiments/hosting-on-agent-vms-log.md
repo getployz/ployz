@@ -315,3 +315,161 @@ motivating case for a userspace/DERP-over-443 provider — the built-in kernel-W
 provider can't run here, but the abstraction exists to let another one take its
 place. Turning that seam into a shipped provider (Tailscale-shaped, or
 iroh-shaped) is the open thread the notebook closes on.
+
+## Act IX — Codex VM pass: proxy-only networking, iroh with explicit proxy, Docker still boxed in
+
+**32. Corrected the premise.** The previous acts were Claude Code-specific:
+they proved that Claude's agent VM could be coerced through a low-level
+`bootstrap core` path with an offline manifest and a `systemctl` shim. For the
+Codex VM pass, the useful question is different: take the Claude log as a map,
+run the normal happy path where it applies, and characterize what connectivity
+and container runtime primitives this VM actually has.
+
+**33. Happy-path install works.** The public installer succeeds through the
+Codex egress proxy:
+
+```text
+resolved ployz channel alpha -> v0.0.2-alpha.65
+/tmp/tmp.XXXX: OK
+installed /usr/local/bin/ployz
+```
+
+So the easy part is still easy: `https://ployz.sh` and the Ployz release artifact
+are reachable, and SHA-256 verification passes.
+
+**34. Codex has no direct internet route.** With `HTTP_PROXY=http://proxy:8080`
+and `HTTPS_PROXY=http://proxy:8080`, `curl https://ployz.sh/ployz.sh` works.
+Disable those proxy variables and the same request fails immediately:
+
+```text
+curl: (7) Failed to connect to ployz.sh port 443 ... Couldn't connect to server
+```
+
+Raw TCP probes to `1.1.1.1:443`, `1.1.1.1:80`, `1.1.1.1:7844`,
+`github.com:443`, and `github.com:22` all fail with `Network is unreachable`.
+UDP probes to DNS/NTP/WireGuard/iroh relay ports fail the same way. This VM is
+not "443 mostly works"; it is **proxy or nothing**.
+
+**35. CONNECT to 443 works, but it is TLS-intercepted.** Manual CONNECT probes
+through `proxy:8080` returned `HTTP/1.1 200 OK` for `ployz.sh:443`,
+`github.com:443`, `controlplane.tailscale.com:443`, and
+`use1-1.relay.n0.iroh.link:443`. An `openssl s_client` connection through that
+CONNECT path returned certificates issued by `O=OpenAI, CN=egress-proxy` rather
+than the public origin CA. That is the usable primitive on Codex: software must
+honor the HTTP(S) proxy **and** either trust the OpenAI egress CA or expose a way
+to install/override trust roots.
+
+**36. Docker, pass one: rootful can be made to start, but not run containers.**
+This Codex image did not initially have Docker installed; `apt-get install
+-y docker.io` worked. A normal daemon cannot manage the default bridge/NAT
+iptables chains, but `dockerd --iptables=false --ip-masq=false --bridge=none`
+starts and `docker info` answers. From there the walls are image storage and
+namespaces:
+
+- Docker 29 with the containerd snapshotter downloads image layers but fails
+  extraction on a denied bind mount.
+- Classic `overlay2` graphdriver fails because overlay mounts are denied.
+- `vfs` graphdriver starts, but both registry pulls and `docker import` fail
+  with `unshare: operation not permitted`.
+- Direct `unshare -m`, `unshare -n`, `unshare -p`, and `unshare -i` all fail;
+  only user-namespace-wrapped variants such as `unshare -Ur -m` work.
+
+So rootful Docker can be useful for `docker info`-level readiness only; it cannot
+pull/import/run containers in the usual way.
+
+**37. Docker, pass two: rootless gets closer, but still no runnable Docker.**
+Installed `rootlesskit`, `slirp4netns`, `fuse-overlayfs`, and `uidmap`. Plain
+RootlessKit failed because the VM blocks the `newuidmap` multi-id map write:
+
+```text
+newuidmap ... write to uid_map failed: Operation not permitted
+```
+
+A single-id user namespace works manually, so I tried launching `dockerd
+--rootless` inside `unshare -Ur -m`. That got farther, but:
+
+- a Unix socket listener fails because the daemon cannot `chown` the socket under
+  the single-id mapping;
+- a localhost TCP listener gets through listener setup, starts managed
+  containerd, then the Ubuntu-packaged Docker 29 daemon panics during startup
+  before the API is usable.
+
+**Docker verdict:** on this Codex VM, Docker can be installed and partially
+started, but I did not get a working `docker run`. The hard constraints are not
+networking; they are namespace/mount/id-map restrictions. If "Docker must work"
+is a requirement for hosting Ployz here, the next path is not another daemon flag:
+it is either (a) a VM profile with mount/net namespace and subordinate id-map
+support, or (b) a purpose-built rootless/container runtime path that avoids
+Docker's layer application and daemon assumptions. For this exact VM profile,
+Docker is not a reliable substrate.
+
+**38. Tailscale: yes to userspace mode and proxy detection; no proof of full
+netcheck without auth/proxy quirks.** Installing Tailscale from the official apt
+repository worked (`tailscale 1.98.9`). `tailscaled --tun=userspace-networking
+--state=mem:` starts without `/dev/net/tun`, uses a fake/no-op TUN and fake
+router/DNS configurators, and logs the proxy in link state:
+
+```text
+tshttpproxy: using proxy "http://proxy:8080" for URL: "https://controlplane.tailscale.com/"
+link state: ... httpproxy=http://proxy:8080 ...
+```
+
+That answers the configuration question: **Tailscale can be run in userspace mode
+and it detects/uses the HTTP proxy for control-plane traffic.** But
+`tailscale netcheck` still failed before producing DERP latencies because its
+DERP-map fetch attempted direct TCP and hit `Network is unreachable`, even when
+`HTTPS_PROXY`, `HTTP_PROXY`, and `ALL_PROXY` were forced and a userspace
+`tailscaled` socket was provided. Curling the same DERP map URL through the proxy
+works and returns 28 regions, and sample DERP HTTPS endpoints return HTTP
+responses. A real auth-key join may get farther than unauthenticated `netcheck`,
+but the unauthenticated diagnostic path did not prove it here.
+
+**39. iroh: the CLI diagnostic does not use the proxy, but the library can.**
+The latest `iroh-doctor` needed newer Rust than this VM had, so I installed
+`iroh-doctor 0.91.0`. Its default relay tests failed with `Network is
+unreachable`, and forcing upper/lowercase `HTTP_PROXY`/`HTTPS_PROXY` did not
+change that. Reading the installed iroh sources showed why this was worth
+pushing further: the library exposes both `Endpoint::proxy_from_env` and
+`iroh_relay::client::ClientBuilder::proxy_url`, but the doctor command path I ran
+did not appear to wire those into the relay URL test.
+
+A tiny Rust probe that called `ClientBuilder::proxy_url("http://proxy:8080")`
+against `https://use1-1.relay.n0.iroh.link/` changed the failure from `Network is
+unreachable` to TLS trust:
+
+```text
+Error: tls connection failed
+Caused by: invalid peer certificate: UnknownIssuer
+```
+
+Rebuilding that same probe with iroh-relay's test-only
+`insecure_skip_cert_verify(true)` proved the transport path:
+
+```text
+iroh-explicit-proxy-connect-ok
+```
+
+So iroh is the more promising of the two for Codex **if the application explicitly
+sets the proxy URL and handles the OpenAI egress CA**. The relay/websocket path
+can work through the proxy; the stock diagnostic CLI just did not exercise that
+configuration.
+
+**40. What looks best on Codex now?**
+
+| Option | Codex result | Notes |
+|--------|--------------|-------|
+| Plain HTTPS/curl | ✅ Works | Proxy env is mandatory. |
+| Direct raw TCP/UDP | ❌ No route | Even direct `:443` fails with `Network is unreachable`. |
+| Rootful Docker | ❌ Not runnable | Daemon can answer only in reduced mode; layer/import/run hit mount and namespace denials. |
+| Rootless Docker | ❌ Not runnable here | Single-id namespaces work, but subordinate id-map and daemon startup break before `docker run`. |
+| Tailscale | ⚠️ Partial | Userspace daemon starts and detects proxy; unauthenticated `netcheck` still bypasses proxy for DERP map. Needs auth-key join test before calling it viable. |
+| iroh | ✅ Promising with app wiring | Explicit `proxy_url` reaches the relay; remaining issue is OpenAI egress CA trust, not routing. |
+| Purpose-built HTTPS/WebSocket tunnel | ✅ Most plausible | Best fit if it is proxy-native and trust-configurable. |
+
+**Codex verdict:** this VM is a mandatory HTTP(S)-proxy environment with no direct
+sockets and no currently usable Docker runtime. For networking, iroh is the best
+lead because its library has explicit proxy support and a direct probe reached
+the relay through Codex's proxy once certificate verification was bypassed. For
+Docker, the substrate is still blocked: the daemon can be installed and partially
+started, but container execution needs namespace/id-map/mount capabilities this
+VM profile does not expose.
