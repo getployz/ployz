@@ -7,11 +7,39 @@ use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
+use tokio::sync::watch;
+use tokio::time::Instant;
 
 const MAX_OCI_METADATA_BYTES: u64 = 4 * 1024 * 1024;
 const OCI_IMAGE_INDEX_MEDIA_TYPE: &str = "application/vnd.oci.image.index.v1+json";
 const OCI_IMAGE_LAYER_MEDIA_TYPE: &str = "application/vnd.oci.image.layer.v1.tar";
 const OCI_IMAGE_LAYER_ZSTD_MEDIA_TYPE: &str = "application/vnd.oci.image.layer.v1.tar+zstd";
+const OCI_READ_CHUNK_BYTES: usize = 64 * 1024;
+
+pub(super) struct OciValidationControl {
+    deadline: Instant,
+    cancelled: watch::Receiver<bool>,
+}
+
+impl OciValidationControl {
+    #[must_use]
+    pub(super) fn new(deadline: Instant, cancelled: watch::Receiver<bool>) -> Self {
+        Self {
+            deadline,
+            cancelled,
+        }
+    }
+
+    fn check(&self) -> Result<(), OciLayoutError> {
+        if Instant::now() >= self.deadline {
+            Err(OciLayoutError::TimedOut)
+        } else if *self.cancelled.borrow() {
+            Err(OciLayoutError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedOciLayout {
@@ -61,19 +89,21 @@ impl ValidatedOciBlob {
     }
 }
 
-pub fn validate_oci_layout(
+pub(super) fn validate_oci_layout(
     layout: &Path,
     expected_platform: &OciPlatform,
+    control: &OciValidationControl,
 ) -> Result<ValidatedOciLayout, OciLayoutError> {
+    control.check()?;
     let root =
         std::fs::canonicalize(layout).map_err(|error| io("canonicalize OCI layout", error))?;
-    let layout_version: OciLayoutVersion = read_json(&root, &root.join("oci-layout"))?;
+    let layout_version: OciLayoutVersion = read_json(&root, &root.join("oci-layout"), control)?;
     if layout_version.image_layout_version != "1.0.0" {
         return Err(OciLayoutError::UnsupportedLayoutVersion {
             version: layout_version.image_layout_version,
         });
     }
-    let index: OciIndex = read_json(&root, &root.join("index.json"))?;
+    let index: OciIndex = read_json(&root, &root.join("index.json"), control)?;
     if index.schema_version != 2 {
         return Err(OciLayoutError::InvalidSchemaVersion {
             document: "index",
@@ -108,8 +138,8 @@ pub fn validate_oci_layout(
             actual: manifest_descriptor.media_type.clone(),
         });
     }
-    let manifest_blob = validate_blob(&root, manifest_descriptor)?;
-    let manifest: OciManifest = read_json(&root, manifest_blob.path())?;
+    let manifest_blob = validate_blob(&root, manifest_descriptor, control)?;
+    let manifest: OciManifest = read_json(&root, manifest_blob.path(), control)?;
     if manifest.schema_version != 2 {
         return Err(OciLayoutError::InvalidSchemaVersion {
             document: "manifest",
@@ -128,8 +158,8 @@ pub fn validate_oci_layout(
             actual: manifest.config.media_type,
         });
     }
-    let config_blob = validate_blob(&root, &manifest.config)?;
-    let config: OciImageConfig = read_json(&root, config_blob.path())?;
+    let config_blob = validate_blob(&root, &manifest.config, control)?;
+    let config: OciImageConfig = read_json(&root, config_blob.path(), control)?;
     if config.os != expected_platform.os()
         || config.architecture != expected_platform.architecture()
     {
@@ -151,7 +181,7 @@ pub fn validate_oci_layout(
                 actual: layer.media_type,
             });
         }
-        blobs.push(validate_blob(&root, &layer)?);
+        blobs.push(validate_blob(&root, &layer, control)?);
     }
     blobs.sort_by(|left, right| left.digest.as_str().cmp(right.digest.as_str()));
     blobs.dedup_by(|left, right| left.digest == right.digest);
@@ -165,7 +195,9 @@ pub fn validate_oci_layout(
 fn validate_blob(
     root: &Path,
     descriptor: &OciDescriptor,
+    control: &OciValidationControl,
 ) -> Result<ValidatedOciBlob, OciLayoutError> {
+    control.check()?;
     let encoded = descriptor
         .digest
         .as_str()
@@ -186,7 +218,7 @@ fn validate_blob(
             actual: metadata.len(),
         });
     }
-    let actual = hash_file(&path)?;
+    let actual = hash_file(&path, control)?;
     if actual != descriptor.digest {
         return Err(OciLayoutError::BlobDigestMismatch {
             expected: descriptor.digest.clone(),
@@ -200,7 +232,12 @@ fn validate_blob(
     })
 }
 
-fn read_json<T: for<'de> Deserialize<'de>>(root: &Path, path: &Path) -> Result<T, OciLayoutError> {
+fn read_json<T: for<'de> Deserialize<'de>>(
+    root: &Path,
+    path: &Path,
+    control: &OciValidationControl,
+) -> Result<T, OciLayoutError> {
+    control.check()?;
     let path = canonical_descendant(root, path)?;
     let metadata = std::fs::metadata(&path).map_err(|error| io("inspect OCI metadata", error))?;
     if !metadata.is_file() || metadata.len() > MAX_OCI_METADATA_BYTES {
@@ -210,10 +247,43 @@ fn read_json<T: for<'de> Deserialize<'de>>(root: &Path, path: &Path) -> Result<T
         });
     }
     let file = File::open(&path).map_err(|error| io("open OCI metadata", error))?;
-    serde_json::from_reader(BufReader::new(file)).map_err(|error| OciLayoutError::InvalidJson {
+    let mut reader = BufReader::new(file);
+    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).map_err(|error| {
+        OciLayoutError::InvalidJson {
+            path: path.clone(),
+            message: error.to_string(),
+        }
+    })?);
+    read_to_end_controlled(&mut reader, &mut bytes, control)?;
+    control.check()?;
+    serde_json::from_slice(&bytes).map_err(|error| OciLayoutError::InvalidJson {
         path,
         message: error.to_string(),
     })
+}
+
+fn read_to_end_controlled<R: Read>(
+    reader: &mut R,
+    bytes: &mut Vec<u8>,
+    control: &OciValidationControl,
+) -> Result<(), OciLayoutError> {
+    let mut buffer = [0_u8; OCI_READ_CHUNK_BYTES];
+    loop {
+        control.check()?;
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|error| io("read OCI metadata", error))?;
+        if read == 0 {
+            return Ok(());
+        }
+        let Some(chunk) = buffer.get(..read) else {
+            return Err(OciLayoutError::Io {
+                action: "read OCI metadata",
+                message: "metadata reader returned an impossible byte count".to_owned(),
+            });
+        };
+        bytes.extend_from_slice(chunk);
+    }
 }
 
 fn canonical_descendant(root: &Path, candidate: &Path) -> Result<PathBuf, OciLayoutError> {
@@ -225,12 +295,19 @@ fn canonical_descendant(root: &Path, candidate: &Path) -> Result<PathBuf, OciLay
     Ok(candidate)
 }
 
-fn hash_file(path: &Path) -> Result<OciDigest, OciLayoutError> {
+fn hash_file(path: &Path, control: &OciValidationControl) -> Result<OciDigest, OciLayoutError> {
     let file = File::open(path).map_err(|error| io("open OCI blob", error))?;
-    let mut reader = BufReader::new(file);
+    hash_reader(BufReader::new(file), control)
+}
+
+fn hash_reader<R: Read>(
+    mut reader: R,
+    control: &OciValidationControl,
+) -> Result<OciDigest, OciLayoutError> {
     let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
+    let mut buffer = [0_u8; OCI_READ_CHUNK_BYTES];
     loop {
+        control.check()?;
         let read = reader
             .read(&mut buffer)
             .map_err(|error| io("read OCI blob", error))?;
@@ -314,6 +391,10 @@ fn io(action: &'static str, error: std::io::Error) -> OciLayoutError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum OciLayoutError {
+    #[error("OCI validation was cancelled")]
+    Cancelled,
+    #[error("OCI validation exceeded its deadline")]
+    TimedOut,
     #[error("unsupported OCI layout version {version:?}")]
     UnsupportedLayoutVersion { version: String },
     #[error("OCI {document} has schema version {actual}, expected 2")]
@@ -373,6 +454,15 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::fs;
+    use std::io::Cursor;
+
+    fn active_control() -> OciValidationControl {
+        let (_cancel, cancelled) = watch::channel(false);
+        OciValidationControl::new(
+            Instant::now() + std::time::Duration::from_secs(60),
+            cancelled,
+        )
+    }
 
     fn write_blob(root: &Path, value: serde_json::Value) -> (OciDigest, u64) {
         let bytes = serde_json::to_vec(&value).expect("json");
@@ -429,7 +519,8 @@ mod tests {
     fn validates_exact_requested_platform_and_every_blob() {
         let platform = OciPlatform::try_new("linux", "amd64").expect("platform");
         let temp = layout(&platform);
-        let layout = validate_oci_layout(temp.path(), &platform).expect("valid layout");
+        let layout =
+            validate_oci_layout(temp.path(), &platform, &active_control()).expect("valid layout");
         assert_eq!(layout.blobs().len(), 3);
         assert_ne!(layout.manifest_digest(), layout.image_id());
     }
@@ -440,7 +531,7 @@ mod tests {
         let arm64 = OciPlatform::try_new("linux", "arm64").expect("platform");
         let temp = layout(&amd64);
         assert!(matches!(
-            validate_oci_layout(temp.path(), &arm64),
+            validate_oci_layout(temp.path(), &arm64, &active_control()),
             Err(OciLayoutError::PlatformSelection { matches: 0, .. })
         ));
     }
@@ -462,9 +553,75 @@ mod tests {
             .trim_start_matches("sha256:");
         fs::write(temp.path().join("blobs/sha256").join(digest), "tampered").expect("tamper");
         assert!(matches!(
-            validate_oci_layout(temp.path(), &platform),
+            validate_oci_layout(temp.path(), &platform, &active_control()),
             Err(OciLayoutError::BlobSizeMismatch { .. })
                 | Err(OciLayoutError::BlobDigestMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_validation_cancelled_before_start() {
+        let platform = OciPlatform::try_new("linux", "amd64").expect("platform");
+        let temp = layout(&platform);
+        let (cancel, cancelled) = watch::channel(false);
+        cancel.send(true).expect("validation receiver remains open");
+        let control = OciValidationControl::new(
+            Instant::now() + std::time::Duration::from_secs(60),
+            cancelled,
+        );
+
+        assert!(matches!(
+            validate_oci_layout(temp.path(), &platform, &control),
+            Err(OciLayoutError::Cancelled)
+        ));
+    }
+
+    #[test]
+    fn rejects_validation_after_deadline() {
+        let platform = OciPlatform::try_new("linux", "amd64").expect("platform");
+        let temp = layout(&platform);
+        let (_cancel, cancelled) = watch::channel(false);
+        let control = OciValidationControl::new(Instant::now(), cancelled);
+
+        assert!(matches!(
+            validate_oci_layout(temp.path(), &platform, &control),
+            Err(OciLayoutError::TimedOut)
+        ));
+    }
+
+    struct CancelAfterFirstRead<R> {
+        inner: R,
+        cancel: watch::Sender<bool>,
+        first_read: bool,
+    }
+
+    impl<R: Read> Read for CancelAfterFirstRead<R> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let read = self.inner.read(buffer)?;
+            if !self.first_read && read > 0 {
+                self.first_read = true;
+                let _ = self.cancel.send(true);
+            }
+            Ok(read)
+        }
+    }
+
+    #[test]
+    fn cancellation_interrupts_hashing_between_chunks() {
+        let (cancel, cancelled) = watch::channel(false);
+        let control = OciValidationControl::new(
+            Instant::now() + std::time::Duration::from_secs(60),
+            cancelled,
+        );
+        let reader = CancelAfterFirstRead {
+            inner: Cursor::new(vec![7_u8; OCI_READ_CHUNK_BYTES * 2]),
+            cancel,
+            first_read: false,
+        };
+
+        assert!(matches!(
+            hash_reader(reader, &control),
+            Err(OciLayoutError::Cancelled)
         ));
     }
 }

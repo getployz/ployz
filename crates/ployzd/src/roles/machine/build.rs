@@ -1,5 +1,6 @@
 use super::execution::build::{
-    BuildExecutionError, BuildExecutionResult, BuildLogProgress, DockerBuildExecutor,
+    BuildExecutionError, BuildExecutionRequest, BuildExecutionResult, BuildLogProgress,
+    DockerBuildExecutor,
 };
 use super::images::AvailableImageService;
 use super::protocol::{
@@ -155,7 +156,7 @@ impl MachineBuildRuntime {
         let task_cancel_rx = cancel_rx.clone();
         let task = tokio::spawn(async move {
             task_effects
-                .execute_and_ingest(machine_id, request, task_cancel_rx, task_progress)
+                .execute_and_ingest(machine_id, request, task_cancel_rx, task_progress, deadline)
                 .await
         });
         tokio::pin!(task);
@@ -239,6 +240,7 @@ impl BuildEffects {
         request: MachineBuildStartRpcRequest,
         cancel_rx: watch::Receiver<bool>,
         log_progress: BuildLogProgress,
+        deadline: Instant,
     ) -> Result<MachineBuildStartRpcOk, BuildExecutionError> {
         match self {
             Self::Docker(effects) => {
@@ -247,12 +249,15 @@ impl BuildEffects {
                 let result: BuildExecutionResult = effects
                     .executor
                     .execute(
-                        &operation_id,
-                        &request.source,
-                        &request.adapter,
-                        &platform,
+                        BuildExecutionRequest::new(
+                            &operation_id,
+                            &request.source,
+                            &request.adapter,
+                            &platform,
+                        ),
                         cancel_rx,
                         log_progress,
+                        deadline,
                     )
                     .await?;
                 let log_summary = result.log_summary;
@@ -288,7 +293,10 @@ impl BuildEffects {
                 })
             }
             #[cfg(test)]
-            Self::Test(effects) => effects.execute_and_ingest(log_progress).await,
+            Self::Test(effects) => {
+                let _ = deadline;
+                effects.execute_and_ingest(log_progress).await
+            }
         }
     }
 
@@ -344,6 +352,11 @@ fn machine_build_error(
     let log_summary = error.log_summary();
     match error {
         BuildExecutionError::Cancelled { .. } => MachineBuildStartDomainError::Cancelled {
+            cleanup,
+            log_summary,
+        },
+        BuildExecutionError::TimedOut { .. } => MachineBuildStartDomainError::TimedOut {
+            message: failure_message("build exceeded its operation deadline"),
             cleanup,
             log_summary,
         },

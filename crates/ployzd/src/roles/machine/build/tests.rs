@@ -99,6 +99,22 @@ fn build_timeout_accepts_the_shared_limit_and_rejects_larger_requests() {
     ));
 }
 
+#[test]
+fn execution_timeout_maps_to_typed_machine_timeout_with_cleanup() {
+    let log_summary = BuildLogSummary::new(7, 11);
+    assert!(matches!(
+        machine_build_error(
+            BuildExecutionError::TimedOut { log_summary },
+            MachineBuildCleanupOutcome::Confirmed,
+        ),
+        MachineBuildStartDomainError::TimedOut {
+            cleanup: MachineBuildCleanupOutcome::Confirmed,
+            log_summary: actual,
+            ..
+        } if actual == log_summary
+    ));
+}
+
 #[tokio::test]
 async fn build_start_rejects_malformed_requests_at_the_transport_boundary() {
     let response = handle_build_start(

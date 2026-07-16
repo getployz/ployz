@@ -5,7 +5,7 @@ use super::lifecycle::{
     run_buildctl, run_prepare,
 };
 use super::logs::{BuildLogProgress, PublishedLogs};
-use super::oci::validate_oci_layout;
+use super::oci::{OciLayoutError, OciValidationControl, validate_oci_layout};
 use super::plan::{BuildAdapterToolchain, lower_build_adapter, toolchain_for_platform};
 use super::source::checkout_git_source;
 use super::workspace::{
@@ -19,13 +19,16 @@ use ployz_core::image::OciPlatform;
 use ployz_core::operation::{BuildPlatformFailure, BuildToolchainEvidence, FailureMessage};
 use ployz_nats::service_runtime::NatsClient;
 use std::path::PathBuf;
-use tokio::sync::watch;
+use std::sync::Arc;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
+use tokio::time::Instant;
 
 #[derive(Clone)]
 pub struct DockerBuildExecutor {
     machine_id: MachineId,
     client: NatsClient,
     workspace_root: PathBuf,
+    effect_guard: BuildEffectGuard,
 }
 
 impl DockerBuildExecutor {
@@ -35,6 +38,7 @@ impl DockerBuildExecutor {
             machine_id,
             client,
             workspace_root,
+            effect_guard: BuildEffectGuard::default(),
         }
     }
 
@@ -59,6 +63,7 @@ impl DockerBuildExecutor {
         operation_id: &OperationId,
         platform: &OciPlatform,
     ) -> Result<(), BuildExecutionError> {
+        let _effect_guard = self.effect_guard.acquire().await?;
         let builder = builder_name(operation_id, platform);
         let builder_result = remove_builder(&builder).await;
         let workspace_result = remove_workspace_tree(&self.workspace(operation_id, platform)).await;
@@ -67,14 +72,13 @@ impl DockerBuildExecutor {
 
     pub async fn execute(
         &self,
-        operation_id: &OperationId,
-        source: &GitSource,
-        adapter: &BuildAdapter,
-        platform: &OciPlatform,
+        request: BuildExecutionRequest<'_>,
         mut cancelled: watch::Receiver<bool>,
         log_progress: BuildLogProgress,
+        deadline: Instant,
     ) -> Result<BuildExecutionResult, BuildExecutionError> {
-        let workspace = self.workspace(operation_id, platform);
+        let effect_guard = self.effect_guard.acquire().await?;
+        let workspace = self.workspace(request.operation_id, request.platform);
         prepare_private_directory(&self.workspace_root).await?;
         let Some(operation_workspace) = workspace.parent() else {
             return Err(infrastructure(
@@ -86,12 +90,11 @@ impl DockerBuildExecutor {
         prepare_workspace(&workspace).await?;
         let result = self
             .execute_in_workspace(
-                operation_id,
-                source,
-                adapter,
-                platform,
+                request,
                 &mut cancelled,
                 log_progress,
+                deadline,
+                effect_guard,
             )
             .await;
         clean_failed_workspace(&workspace, result).await
@@ -99,13 +102,18 @@ impl DockerBuildExecutor {
 
     async fn execute_in_workspace(
         &self,
-        operation_id: &OperationId,
-        source: &GitSource,
-        adapter: &BuildAdapter,
-        platform: &OciPlatform,
+        request: BuildExecutionRequest<'_>,
         cancelled: &mut watch::Receiver<bool>,
         log_progress: BuildLogProgress,
+        deadline: Instant,
+        effect_guard: OwnedSemaphorePermit,
     ) -> Result<BuildExecutionResult, BuildExecutionError> {
+        let BuildExecutionRequest {
+            operation_id,
+            source,
+            adapter,
+            platform,
+        } = request;
         let workspace = self.workspace(operation_id, platform);
         check_cancelled(cancelled)?;
         let checkout = checkout_git_source(source, &workspace)
@@ -203,21 +211,20 @@ impl DockerBuildExecutor {
         };
         let layout_path = plan.oci_layout;
         let platform_for_validation = platform.clone();
+        let validation_control = OciValidationControl::new(deadline, cancelled.clone());
+        let log_summary = BuildLogSummary::new(logs.final_sequence, logs.omitted_bytes);
         let layout = tokio::task::spawn_blocking(move || {
-            validate_oci_layout(&layout_path, &platform_for_validation)
+            let _effect_guard = effect_guard;
+            validate_oci_layout(&layout_path, &platform_for_validation, &validation_control)
         })
         .await
         .map_err(|error| infrastructure("join OCI validation", error.to_string()))?
-        .map_err(|error| {
-            platform_failure(BuildPlatformFailure::ImagePushFailed {
-                message: failure(error.to_string()),
-            })
-        })?;
+        .map_err(|error| validation_failure(error, log_summary))?;
         Ok(BuildExecutionResult {
             layout,
             verified_commit: checkout.commit().clone(),
             toolchain: toolchain.evidence(),
-            log_summary: BuildLogSummary::new(logs.final_sequence, logs.omitted_bytes),
+            log_summary,
         })
     }
 
@@ -225,6 +232,54 @@ impl DockerBuildExecutor {
         self.workspace_root
             .join(operation_id.as_str())
             .join(format!("{}-{}", platform.os(), platform.architecture()))
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct BuildExecutionRequest<'a> {
+    operation_id: &'a OperationId,
+    source: &'a GitSource,
+    adapter: &'a BuildAdapter,
+    platform: &'a OciPlatform,
+}
+
+impl<'a> BuildExecutionRequest<'a> {
+    #[must_use]
+    pub(crate) const fn new(
+        operation_id: &'a OperationId,
+        source: &'a GitSource,
+        adapter: &'a BuildAdapter,
+        platform: &'a OciPlatform,
+    ) -> Self {
+        Self {
+            operation_id,
+            source,
+            adapter,
+            platform,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct BuildEffectGuard {
+    semaphore: Arc<Semaphore>,
+}
+
+impl Default for BuildEffectGuard {
+    fn default() -> Self {
+        Self {
+            semaphore: Arc::new(Semaphore::new(1)),
+        }
+    }
+}
+
+impl BuildEffectGuard {
+    async fn acquire(&self) -> Result<OwnedSemaphorePermit, BuildExecutionError> {
+        self.semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|error| infrastructure("acquire build effect guard", error.to_string()))
     }
 }
 
@@ -279,10 +334,39 @@ pub(super) fn infrastructure(
     }
 }
 
+fn validation_failure(error: OciLayoutError, log_summary: BuildLogSummary) -> BuildExecutionError {
+    match error {
+        OciLayoutError::Cancelled => BuildExecutionError::Cancelled { log_summary },
+        OciLayoutError::TimedOut => BuildExecutionError::TimedOut { log_summary },
+        error @ (OciLayoutError::UnsupportedLayoutVersion { .. }
+        | OciLayoutError::InvalidSchemaVersion { .. }
+        | OciLayoutError::PlatformSelection { .. }
+        | OciLayoutError::UnexpectedMediaType { .. }
+        | OciLayoutError::UnexpectedLayerMediaType { .. }
+        | OciLayoutError::ConfigPlatformMismatch { .. }
+        | OciLayoutError::InvalidDigestPath { .. }
+        | OciLayoutError::InvalidComputedDigest { .. }
+        | OciLayoutError::PathEscapesLayout { .. }
+        | OciLayoutError::BlobNotFile { .. }
+        | OciLayoutError::BlobSizeMismatch { .. }
+        | OciLayoutError::BlobDigestMismatch { .. }
+        | OciLayoutError::MetadataOutOfBounds { .. }
+        | OciLayoutError::InvalidJson { .. }
+        | OciLayoutError::Io { .. }) => BuildExecutionError::Platform {
+            failure: BuildPlatformFailure::ImagePushFailed {
+                message: failure(error.to_string()),
+            },
+            log_summary,
+        },
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum BuildExecutionError {
     #[error("build was cancelled")]
     Cancelled { log_summary: BuildLogSummary },
+    #[error("build exceeded its deadline")]
+    TimedOut { log_summary: BuildLogSummary },
     #[error("build platform failed: {failure:?}")]
     Platform {
         failure: BuildPlatformFailure,
@@ -312,6 +396,9 @@ impl BuildExecutionError {
             Self::Cancelled { .. } => Self::Cancelled {
                 log_summary: BuildLogSummary::new(final_sequence, omitted_bytes),
             },
+            Self::TimedOut { .. } => Self::TimedOut {
+                log_summary: BuildLogSummary::new(final_sequence, omitted_bytes),
+            },
             Self::Platform { failure, .. } => Self::Platform {
                 failure,
                 log_summary: BuildLogSummary::new(final_sequence, omitted_bytes),
@@ -330,8 +417,46 @@ impl BuildExecutionError {
     pub const fn log_summary(&self) -> BuildLogSummary {
         match self {
             Self::Cancelled { log_summary }
+            | Self::TimedOut { log_summary }
             | Self::Platform { log_summary, .. }
             | Self::Infrastructure { log_summary, .. } => *log_summary,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cleanup_waits_until_blocking_validation_releases_effect_guard() {
+        let guard = BuildEffectGuard::default();
+        let validation_guard = guard.acquire().await.expect("validation guard");
+        let cleanup_guard = guard.clone();
+        let cleanup = tokio::spawn(async move {
+            let _permit = cleanup_guard.acquire().await.expect("cleanup guard");
+        });
+        tokio::task::yield_now().await;
+        assert!(!cleanup.is_finished());
+
+        drop(validation_guard);
+        cleanup.await.expect("cleanup waiter");
+    }
+
+    #[test]
+    fn validation_interruptions_preserve_typed_outcome_and_log_summary() {
+        let log_summary = BuildLogSummary::new(7, 11);
+        assert!(matches!(
+            validation_failure(OciLayoutError::Cancelled, log_summary),
+            BuildExecutionError::Cancelled {
+                log_summary: actual
+            } if actual == log_summary
+        ));
+        assert!(matches!(
+            validation_failure(OciLayoutError::TimedOut, log_summary),
+            BuildExecutionError::TimedOut {
+                log_summary: actual
+            } if actual == log_summary
+        ));
     }
 }
