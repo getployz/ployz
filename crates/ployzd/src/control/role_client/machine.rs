@@ -48,10 +48,7 @@ pub(crate) const MAX_CONCURRENT_MACHINE_READS: usize = 16;
 
 mod volume_testimony;
 
-pub use volume_testimony::{
-    DEFAULT_VOLUME_TESTIMONY_RPC_TIMEOUT, MachineVolumeTestimonyReadError,
-    NatsMachineVolumeTestimonyReader,
-};
+pub use volume_testimony::{MachineVolumeTestimonyReadError, NatsMachineVolumeTestimonyReader};
 
 #[derive(Debug, Clone)]
 pub struct NatsMachineContainerRuntime {

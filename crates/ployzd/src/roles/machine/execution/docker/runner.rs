@@ -10,7 +10,9 @@ use crate::roles::machine::runner::{
     MachineContainerRunner, MachineContainerRunnerError, MachineImageRemovalRunner,
     MachineLogQuery, MachineLogReader, MachineLogReaderError, MachineLogTail, MachineLogTimestamps,
 };
-use crate::roles::machine::volume::{destroy_provisioned_dataset, ensure_provisioned_dataset};
+use crate::roles::machine::volume::{
+    destroy_provisioned_dataset, docker_volume_name, ensure_provisioned_dataset,
+};
 use bollard::Docker;
 use bollard::auth::DockerCredentials;
 use bollard::errors::Error as BollardError;

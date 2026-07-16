@@ -1,9 +1,9 @@
 use super::*;
+use crate::roles::machine::handle_volume_testimony;
 use crate::roles::machine::protocol::{
     MachineVolumeTestimonyRpcRequest, MachineVolumeTestimonyRpcResponse,
 };
 use crate::roles::machine::runner::MachineVolumeUsageReader;
-use crate::roles::machine::volume::handle_volume_testimony;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse};
 
 #[tokio::test]
