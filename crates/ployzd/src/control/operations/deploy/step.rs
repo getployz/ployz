@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::time::Duration;
 
+use ployz_core::deploy::VolumeName;
 use ployz_core::ids::MachineId;
 use ployz_core::operation::{ControlPlaneCommitScope, RouteHostname, RouteTarget};
 
@@ -29,14 +30,30 @@ pub enum DeployFailureRecordError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployExecutionStep {
     RecordOperationEvent,
-    RunContainer { machine_id: MachineId },
-    RunPreStartHook { machine_id: MachineId },
+    RunContainer {
+        machine_id: MachineId,
+    },
+    RunPreStartHook {
+        machine_id: MachineId,
+    },
     WaitHealthy,
-    EnsureCertificate { hostname: RouteHostname },
+    EnsureCertificate {
+        hostname: RouteHostname,
+    },
     CommitVolumePins,
-    RemoveRoute { route: RouteTarget },
-    CommitServingTarget { scope: ControlPlaneCommitScope },
-    RemoveServingTarget { scope: ControlPlaneCommitScope },
+    EnsureVolume {
+        machine_id: MachineId,
+        volume_name: VolumeName,
+    },
+    RemoveRoute {
+        route: RouteTarget,
+    },
+    CommitServingTarget {
+        scope: ControlPlaneCommitScope,
+    },
+    RemoveServingTarget {
+        scope: ControlPlaneCommitScope,
+    },
 }
 
 pub(super) async fn with_step_timeout<T, E, F>(
