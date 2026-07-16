@@ -2263,7 +2263,6 @@ async fn scenario_named_volume_survives_redeploy(
         "orphaned volume did not preserve data: {preserved:?}"
     );
 
-    wait_for_fresh_peer_handshakes(core).await;
     let reattach = core
         .api
         .deploy_submit(
