@@ -163,6 +163,7 @@ impl BuildOperationDriver {
                         | Some(OperationStatus::ManagedDnsReconcile { .. })
                         | Some(OperationStatus::IngressConfigure { .. })
                         | Some(OperationStatus::NamespaceRemove { .. })
+                        | Some(OperationStatus::VolumeCreate { .. })
                         | Some(OperationStatus::VolumeRemove { .. }) => {
                             BuildCancelDisposition::NoSuchOperation
                         }
