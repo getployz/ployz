@@ -41,7 +41,8 @@ file and PostgreSQL image and data; do not use a production or shared host.
 
 The certification path installs an immutable public tag; an unpublished local
 binary does not satisfy this gate. The tag must resolve exactly to the sealed
-runtime SHA, and that SHA must contain commit `2f754ab5c` at minimum. Start
+runtime SHA, and that SHA must contain commit
+`2f754ab5cff785fd67cf4c83231f4025ec6ad8ee` at minimum. Start
 from a clean local checkout: the harness records its separate harness SHA but
 does not require it to equal the runtime SHA.
 
@@ -54,17 +55,18 @@ tag=<immutable-v-tag>
 runtime_sha=<40-lowercase-hex-sealed-sha>
 
 test "$(git rev-list -n 1 "${tag}")" = "${runtime_sha}"
-git merge-base --is-ancestor 2f754ab5c "${runtime_sha}"
+git merge-base --is-ancestor \
+  2f754ab5cff785fd67cf4c83231f4025ec6ad8ee "${runtime_sha}"
 scripts/verify-release-assets.sh "${tag}" --print-channel
 curl -fsSL https://ployz.sh/channels/alpha.env
 ```
 
 The downloaded alpha channel must name `tag`, its release manifests and
 assets must pass verification, and the release/tag must be immutable before
-the run begins. After installation, the harness records the installed release
-manifest and rejects a tag or immutable release URL mismatch. Record the
-installed version on both hosts in the evidence template; do not proceed
-merely because `ployz --help` works.
+the run begins. After installation, the harness records and verifies the
+installed release tag and immutable manifest URL on both hosts. Record those
+values in the evidence template; do not proceed merely because
+`ployz --help` works.
 
 ## Provision least-privilege hosts
 
@@ -137,8 +139,9 @@ the fixed host matrix, the installed public release, and an empty evidence
 destination. Rescue-console readiness remains an operator prerequisite and
 must be recorded separately before invocation.
 
-The evidence root contains `metadata.env`, `transcript.log`, `recovery.txt`,
-`zfs-module-recovery.env`, and numbered phase logs. Copy
+The evidence root contains `metadata.env`, `live-alpha.env`, `transcript.log`,
+`sealed-harness.sh`, `commands.log`, `recovery.txt`,
+`zfs-module-recovery.env`, numbered phase logs, and `sha256sums`. Copy
 [`real-host-zfs-536-391-evidence.md`](real-host-zfs-536-391-evidence.md) beside
 them and fill it from those artifacts. A successful run ends with:
 
@@ -227,8 +230,9 @@ If SSH is unavailable:
    the machine appear healthy.
 4. Apply `recovery.txt` relative to that mounted root, preserving the recorded
    module file's ownership, mode, and hash.
-5. Run `depmod` and the distribution's initramfs rebuild in a suitable chroot,
-   then inspect the rebuilt initramfs.
+5. Run `depmod` for the original kernel and verify `modinfo` discovers the
+   restored module. Do not rebuild initramfs: certification preflight proved
+   that the active initramfs did not contain ZFS.
 6. Reboot the original system and continue the scripted recovery assertions.
 
 After recovery, require the module, pool, exact dataset, testimony, alarm

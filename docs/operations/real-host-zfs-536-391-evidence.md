@@ -14,11 +14,12 @@ candidate.
 - Evidence root digest/inventory: `<location>`
 - Immutable release tag: `<v-tag>`
 - Runtime SHA resolved from tag: `<40-lowercase-hex>`
-- `git merge-base --is-ancestor 2f754ab5c <runtime-sha>`: `<command/output>`
+- `git merge-base --is-ancestor 2f754ab5cff785fd67cf4c83231f4025ec6ad8ee <runtime-sha>`:
+  `<command/output>`
 - Release asset verification: `<command/output/location>`
 - Alpha channel equality: `<channel fields/output/location>`
-- Installed core tag/version: `<release.env evidence>`
-- Installed edge tag/version: `<release.env evidence>`
+- Installed core tag/manifest: `<release.env evidence>`
+- Installed edge tag/manifest: `<release.env evidence>`
 - Clean harness SHA: `<sha; git status evidence>`
 - Harness/script SHA comparison with runtime SHA: `<recorded comparison>`
 - Success marker and exit status: `<location; status>`
@@ -43,10 +44,14 @@ and public-release paths were used.
 | Required artifact | Present | SHA-256 or immutable reference | Notes |
 | --- | --- | --- | --- |
 | `metadata.env` | [ ] | `<digest>` | `<redactions>` |
+| `live-alpha.env` | [ ] | `<digest>` | `<channel equality>` |
 | `transcript.log` | [ ] | `<digest>` | `<notes>` |
+| `sealed-harness.sh` | [ ] | `<digest/harness SHA>` | `<notes>` |
+| `commands.log` | [ ] | `<digest>` | `<notes>` |
 | `recovery.txt` | [ ] | `<digest>` | `<notes>` |
 | `zfs-module-recovery.env` | [ ] | `<digest>` | `<redactions>` |
 | numbered phase logs | [ ] | `<inventory digest>` | `<range/notes>` |
+| `sha256sums` | [ ] | `<digest>` | `<verification output>` |
 | release asset verifier output | [ ] | `<digest/location>` | `<notes>` |
 | alpha channel response | [ ] | `<digest/location>` | `<notes>` |
 | provider console/rescue evidence | [ ] | `<digest/location>` | `<notes>` |
@@ -56,7 +61,7 @@ and public-release paths were used.
 
 | Acceptance item | Assertion | Commands/output | Timing UTC/duration | Evidence location | Result |
 | --- | --- | --- | --- | --- | --- |
-| Public sealed candidate | Immutable tag resolves exactly to runtime SHA; assets verified; alpha promoted; installed manifests and versions recorded; runtime contains `2f754ab5c` | `<evidence>` | `<time>` | `<location>` | [ ] |
+| Public sealed candidate | Immutable tag resolves exactly to runtime SHA; assets verified; alpha promoted; both hosts' installed tags/manifests recorded; runtime contains `2f754ab5cff785fd67cf4c83231f4025ec6ad8ee` | `<evidence>` | `<time>` | `<location>` | [ ] |
 | Fixed mixed-architecture pair | Rocky 9 amd64 core and Ubuntu 24.04 arm64 edge match native kernels and release assets | `<evidence>` | `<time>` | `<location>` | [ ] |
 | Explicit destructive consent | All four exact environment guards accepted; evidence root was absolute and empty | `<evidence>` | `<time>` | `<location>` | [ ] |
 | Storage preparation | Public operation id reaches terminal success; storage is Ready; pool, descriptor, dataset root, capacity, and mountpoint agree | `<operation/commands>` | `<time>` | `<location>` | [ ] |
