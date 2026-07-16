@@ -16,7 +16,6 @@ use super::interruption::render_interruption;
 use crate::certificate::presentation::provision_failure_detail;
 use crate::commands::PloyzctlCliError;
 use crate::deploy::failure::DeployFailureView;
-use crate::deploy::failure::render_volume_ensure_failure;
 
 mod network_repair;
 
@@ -633,7 +632,10 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
         OperationStatus::VolumeCreate {
             state: ployz_sdk_types::VolumeCreateOperationState::Failed { failure },
             ..
-        } => Some(format!("failure {}", volume_create_failure(failure))),
+        } => Some(format!(
+            "failure {}",
+            crate::volume::presentation::create_failure(failure)
+        )),
         OperationStatus::Deploy { .. }
         | OperationStatus::Cert { .. }
         | OperationStatus::MachineAdd { .. }
@@ -658,154 +660,6 @@ fn ingress_configure_failure(failure: &ployz_sdk_types::IngressConfigureFailure)
         | ployz_sdk_types::IngressConfigureFailure::IntentStoreFailed { message } => {
             message.as_str()
         }
-    }
-}
-
-fn volume_create_failure(failure: &ployz_sdk_types::VolumeCreateFailure) -> String {
-    match failure {
-        ployz_sdk_types::VolumeCreateFailure::IntentReadFailed { message } => {
-            format!("volume intent could not be read: {}", message.as_str())
-        }
-        ployz_sdk_types::VolumeCreateFailure::MachineNotAccepted { machine_id } => {
-            format!("machine {} is not accepted", machine_id.as_str())
-        }
-        ployz_sdk_types::VolumeCreateFailure::AdmissionFailed { failure } => {
-            render_volume_admission_failure(failure)
-        }
-        ployz_sdk_types::VolumeCreateFailure::PinCommitFailed { pin, message } => format!(
-            "volume {}/{} pin to machine {} could not be committed: {}",
-            pin.namespace_id().as_str(),
-            pin.volume_name().as_str(),
-            pin.machine_id().as_str(),
-            message.as_str()
-        ),
-        ployz_sdk_types::VolumeCreateFailure::MachineUnavailable {
-            machine_id,
-            message,
-        } => format!(
-            "machine {} is unavailable: {}",
-            machine_id.as_str(),
-            message.as_str()
-        ),
-        ployz_sdk_types::VolumeCreateFailure::EnsureFailed {
-            machine_id,
-            volume_name,
-            failure,
-        } => format!(
-            "volume {} could not be ensured on {}: {}",
-            volume_name.as_str(),
-            machine_id.as_str(),
-            render_volume_ensure_failure(failure)
-        ),
-    }
-}
-
-fn render_volume_admission_failure(failure: &ployz_sdk_types::VolumeAdmissionFailure) -> String {
-    use ployz_sdk_types::VolumeAdmissionFailure;
-
-    match failure {
-        VolumeAdmissionFailure::MissingDeclaration { volume_name } => {
-            format!("volume {} has no declaration", volume_name.as_str())
-        }
-        VolumeAdmissionFailure::AmbiguousPins {
-            volume_name,
-            pin_count,
-        } => format!(
-            "volume {} has {pin_count} durable pins",
-            volume_name.as_str()
-        ),
-        VolumeAdmissionFailure::PinnedToDifferentMachine {
-            volume_name,
-            pinned_machine_id,
-            selected_machine_id,
-        } => format!(
-            "volume {} is pinned to machine {}, not selected machine {}",
-            volume_name.as_str(),
-            pinned_machine_id.as_str(),
-            selected_machine_id.as_str()
-        ),
-        VolumeAdmissionFailure::KindConversion { volume_name, .. } => {
-            format!(
-                "volume {} cannot change kind after birth",
-                volume_name.as_str()
-            )
-        }
-        VolumeAdmissionFailure::QuotaShrink {
-            volume_name,
-            declared_max_size_bytes,
-            pinned_max_size_bytes,
-        } => format!(
-            "provisioned volume {} cannot shrink from {} to {} bytes",
-            volume_name.as_str(),
-            pinned_max_size_bytes.get(),
-            declared_max_size_bytes.get()
-        ),
-        VolumeAdmissionFailure::MachineSilent { machine_id } => {
-            format!(
-                "machine {} did not answer storage testimony",
-                machine_id.as_str()
-            )
-        }
-        VolumeAdmissionFailure::StorageTestimonyNotReported { machine_id } => format!(
-            "machine {} did not report storage capability",
-            machine_id.as_str()
-        ),
-        VolumeAdmissionFailure::StorageUnprepared { machine_id } => {
-            format!("machine {} has not prepared storage", machine_id.as_str())
-        }
-        VolumeAdmissionFailure::StorageUnavailable { machine_id, reason } => format!(
-            "machine {} storage is unavailable: {}",
-            machine_id.as_str(),
-            crate::machine::command::render_storage_unavailable_reason(reason)
-        ),
-        VolumeAdmissionFailure::PoolMismatch {
-            volume_name,
-            pinned_pool,
-            reported_pool,
-        } => format!(
-            "provisioned volume {} belongs to pool {}, not ready pool {}",
-            volume_name.as_str(),
-            pinned_pool.as_str(),
-            reported_pool.as_str()
-        ),
-        VolumeAdmissionFailure::DatasetIdentity {
-            volume_name,
-            source,
-        } => format!(
-            "cannot construct the dataset for volume {}: {source}",
-            volume_name.as_str()
-        ),
-        VolumeAdmissionFailure::DuplicateDatasetQuota { dataset } => format!(
-            "storage testimony contains duplicate quota rows for {}",
-            dataset.as_str()
-        ),
-        VolumeAdmissionFailure::DatasetQuotaNotReported { dataset } => format!(
-            "storage testimony has no quota row for existing dataset {}",
-            dataset.as_str()
-        ),
-        VolumeAdmissionFailure::UnpinnedDatasetExists { dataset } => format!(
-            "dataset {} exists without a durable volume pin",
-            dataset.as_str()
-        ),
-        VolumeAdmissionFailure::CapacityOverflow => {
-            "quota admission arithmetic overflowed".to_owned()
-        }
-        VolumeAdmissionFailure::CapacityExceeded {
-            total_bytes,
-            provisioned_used_bytes,
-            free_bytes,
-            required_headroom_bytes,
-            requested_total_bytes,
-        } => format!(
-            "quota admission exceeds capacity: total={total_bytes} provisioned-used={provisioned_used_bytes} free={free_bytes} required-headroom={required_headroom_bytes} requested-total={requested_total_bytes}"
-        ),
-        VolumeAdmissionFailure::InconsistentCapacityFacts {
-            total_bytes,
-            provisioned_used_bytes,
-            free_bytes,
-        } => format!(
-            "storage capacity facts are inconsistent: total={total_bytes} provisioned-used={provisioned_used_bytes} free={free_bytes}"
-        ),
     }
 }
 

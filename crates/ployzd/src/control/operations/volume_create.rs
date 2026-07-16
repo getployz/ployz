@@ -1,6 +1,5 @@
 //! Operation-owned explicit volume admission and creation.
 
-use std::collections::BTreeMap;
 use std::time::Duration;
 
 use crate::control::intent::namespace_intent::NamespaceIntentStore;
@@ -12,7 +11,7 @@ use crate::control::role_client::machine::{
 use crate::control::sequencer::OperationControllers;
 use crate::tasks::TaskSpawner;
 use async_trait::async_trait;
-use ployz_core::deploy::{VolumeAdmissionInput, VolumeSpec, admit_mounted_volumes};
+use ployz_core::deploy::{SingleVolumeAdmissionInput, VolumeSpec, admit_volume};
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::intent::VolumePinState;
 use ployz_core::machine::{StorageCapability, StorageTestimony, VolumeEnsureFailure};
@@ -386,23 +385,18 @@ fn admitted_pin(
     request: &VolumeCreateRequest,
     context: &VolumeCreateContext,
 ) -> Result<VolumePinState, ployz_core::deploy::VolumeAdmissionFailure> {
-    let declarations = BTreeMap::from([(request.volume_name.clone(), request.spec.clone())]);
-    let mounted_volume_names = [request.volume_name.clone()];
     let storage_testimony = match &context.storage {
         VolumeStorageObservation::NoAnswer => StorageTestimony::NoAnswer,
         VolumeStorageObservation::Answered(storage) => StorageTestimony::Answered(storage.as_ref()),
     };
-    let decisions = admit_mounted_volumes(VolumeAdmissionInput {
+    let decision = admit_volume(SingleVolumeAdmissionInput {
         namespace_id: &request.namespace_id,
-        mounted_volume_names: &mounted_volume_names,
-        declarations: &declarations,
+        volume_name: &request.volume_name,
+        declaration: &request.spec,
         volume_pins: &context.volume_pins,
         selected_machine_id: &request.machine_id,
         storage_testimony,
     })?;
-    let [decision] = decisions.as_slice() else {
-        unreachable!("one mounted volume produces exactly one admission decision")
-    };
     Ok(decision.desired_pin().clone())
 }
 

@@ -742,13 +742,7 @@ async fn ensure_volumes<N>(
 where
     N: MachineContainerRuntime,
 {
-    let mut volumes = plan.volume_ensures.iter().collect::<Vec<_>>();
-    volumes.sort_by(|left, right| {
-        left.machine_id()
-            .cmp(right.machine_id())
-            .then_with(|| left.volume_name().cmp(right.volume_name()))
-    });
-    for volume in volumes {
+    for volume in &plan.volume_ensures {
         with_step_timeout(
             command,
             DeployExecutionStep::EnsureVolume {
