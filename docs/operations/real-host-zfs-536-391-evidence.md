@@ -64,21 +64,26 @@ and public-release paths were used.
 | Public sealed candidate | Immutable tag resolves exactly to runtime SHA; assets verified; alpha promoted; both hosts' installed tags/manifests recorded; runtime contains `2f754ab5cff785fd67cf4c83231f4025ec6ad8ee` | `<evidence>` | `<time>` | `<location>` | [ ] |
 | Fixed mixed-architecture pair | Rocky 9 amd64 core and Ubuntu 24.04 arm64 edge match native kernels and release assets | `<evidence>` | `<time>` | `<location>` | [ ] |
 | Explicit destructive consent | All four exact environment guards accepted; evidence root was absolute and empty | `<evidence>` | `<time>` | `<location>` | [ ] |
-| Storage preparation | Public operation id reaches terminal success; storage is Ready; pool, descriptor, dataset root, capacity, and mountpoint agree | `<operation/commands>` | `<time>` | `<location>` | [ ] |
-| Real Provisioned Volume | PostgreSQL pin names Rocky; `volume list`, Docker mount, and `zfs list` identify the same quota-bearing dataset | `<commands>` | `<time>` | `<location>` | [ ] |
+| Storage preparation | Public operation id reaches terminal success; storage is Ready; `/var/lib/ployz/prepared-storage.json`, owned backing file, pool, dataset root, capacity, and mountpoint agree | `<operation/commands>` | `<time>` | `<location>` | [ ] |
+| Real Provisioned Volume | PostgreSQL pin names Rocky; `volume list`, Docker mount and recovery labels, and `zfs list` identify the same quota-bearing `/var/lib/ployz/volumes/...` dataset | `<commands>` | `<time>` | `<location>` | [ ] |
 | Pre-reboot row | Unique row is written and read; row marker, dataset, container, pool health, and testimony captured | `<commands>` | `<time>` | `<location>` | [ ] |
 | Pool import ordering | Normal reboot returns without manual import; ZFS precedes Docker workload start | `<systemd/zpool evidence>` | `<time>` | `<location>` | [ ] |
 | Reboot persistence | Same dataset and row return; no plain-directory or empty-database substitution | `<commands>` | `<time>` | `<location>` | [ ] |
-| Reversible quarantine | Exact running-kernel loadable module path, hash, owner, mode, initramfs content, backup, and recovery steps recorded before mutation | `<commands>` | `<time>` | `<location>` | [ ] |
+| Reversible quarantine | Exact running-kernel loadable module path, hash, owner, mode, successful initramfs inventory, pre-mutation `lsmod`/ZFS units, verified backup, and local emergency recovery steps recorded before mutation | `<commands>` | `<time>` | `<location>` | [ ] |
 | Module-break reboot | Reboot occurs with ZFS absent from module search paths and stale initramfs recovery excluded | `<commands>` | `<time>` | `<location>` | [ ] |
 | Loud workload failure | Database is not running or replaced against an empty directory; failure is visible and bounded | `<Docker/mount/query evidence>` | `<time>` | `<location>` | [ ] |
 | Typed testimony | Fresh testimony is `Unavailable { ZfsModuleMissing }` / CLI `unavailable zfs-module-missing` | `<commands/output>` | `<time>` | `<location>` | [ ] |
 | Stranded-pin alarm | Alarm names exact machine, namespace, volume, and dataset/pin reason | `<commands/output>` | `<time>` | `<location>` | [ ] |
 | Control-plane independence | Control services remain active and bounded non-storage commands answer during storage failure | `<commands/output>` | `<time>` | `<location>` | [ ] |
-| Non-destructive failure | Backing file, descriptor, Docker labels, operation evidence, dataset identity, and row marker are preserved | `<commands/output>` | `<time>` | `<location>` | [ ] |
-| Recovery | Module file restored with recorded hash/owner/mode; `depmod` and `modinfo` verified; reboot succeeds | `<commands/output>` | `<time>` | `<location>` | [ ] |
+| Non-destructive failure | Backing-file resolved path and identity, descriptor hash/content, complete Docker label map, operation evidence, dataset identity, and row marker are preserved | `<commands/output>` | `<time>` | `<location>` | [ ] |
+| Recovery | Fail-closed transaction restores the module with recorded hash/owner/mode; recorded-kernel `depmod` and exact-path `modinfo` verified; reboot succeeds | `<commands/output>` | `<time>` | `<location>` | [ ] |
 | Data recovery | Module, pool, same dataset, Ready testimony, cleared alarm, container, and original row all return | `<commands/output>` | `<time>` | `<location>` | [ ] |
 | Runbook and evidence | Transcript, commands, outputs, timings, diagnosis, recovery, and teardown inventory are complete | `<inventory>` | `<time>` | `<location>` | [ ] |
+
+Record the local `scripts/real-host-acceptance.sh --self-test` transcript with
+the candidate. Every reboot, API, container, and testimony wait must show an
+absolute deadline with locally bounded SSH attempts; a remote timeout alone is
+not sufficient evidence of a bounded wait.
 
 ## #391 Core/CLI checklist claims
 

@@ -33,9 +33,10 @@ backends:
 
 Use fresh hosts. The harness rejects another OS/architecture pair, requires
 root SSH to both public IPs, and leaves the machines running for inspection.
-The operator machine needs Bash, Git, SSH, curl, Python 3, and its key in
-`ssh-agent`. The core needs enough free space for the Ployz-owned ZFS backing
-file and PostgreSQL image and data; do not use a production or shared host.
+The operator machine needs Bash, Git, SSH, curl, Python 3, GNU coreutils
+`timeout`, and its key in `ssh-agent`. The core needs enough free space for the
+Ployz-owned ZFS backing file and PostgreSQL image and data; do not use a
+production or shared host.
 
 ## Seal the public candidate
 
@@ -139,6 +140,16 @@ the fixed host matrix, the installed public release, and an empty evidence
 destination. Rescue-console readiness remains an operator prerequisite and
 must be recorded separately before invocation.
 
+Before provisioning, run the harness's deterministic local phase regression:
+
+```sh
+scripts/real-host-acceptance.sh --self-test
+```
+
+It uses no network or host mutation. It proves a failed assertion terminates a
+phase before the next command and a successful phase can pass captured identity
+to the next phase while its output is both streamed and retained.
+
 The evidence root contains `metadata.env`, `live-alpha.env`, `transcript.log`,
 `sealed-harness.sh`, `commands.log`, `recovery.txt`,
 `zfs-module-recovery.env`, numbered phase logs, and `sha256sums`. Copy
@@ -159,6 +170,10 @@ by calling hidden Host Runner commands. Preserve the operation id, full
 `ployz ops watch <operation-id> --json` output, and `ployz machine inspect`
 testimony. Storage must be `ready`, and the prepared descriptor, pool, dataset
 root, quota, and mountpoint must agree with live `zpool`/`zfs` output.
+The descriptor must be `/var/lib/ployz/prepared-storage.json` with owned-image
+origin `/var/lib/ployz/zfs/ployz.img`. The harness records the descriptor hash
+and the backing file's resolved path, filesystem/inode identity, and size, then
+requires them to remain identical after every reboot and during failure.
 
 The PostgreSQL fixture must declare a positive `x-ployz.max-size`, pin the
 Provisioned Volume to the Rocky core, and use a unique row value derived from
@@ -167,13 +182,17 @@ the run id. Record the deploy operation and the exact dataset shown by
 
 - the database container uses the expected `/var/lib/ployz/volumes/...`
   dataset mount rather than a plain Docker volume or directory;
+- every required `plz.*` recovery label names the expected namespace and
+  service, and the complete label map remains equivalent across every phase;
 - `zfs list` reports that exact dataset with its expected mountpoint and quota;
 - PostgreSQL returns the unique row;
 - the dataset and container identifiers, row marker, pool health, and storage
   testimony are captured.
 
-After a normal Rocky reboot, wait through bounded SSH and service readiness
-budgets. Prove that ZFS is imported before Docker starts the workload, the
+After a normal Rocky reboot, wait through absolute monotonic SSH and service
+readiness deadlines. Each SSH attempt is locally terminated within 15 seconds,
+so a remote transport timeout cannot extend the overall deadline. Prove that
+ZFS is imported before Docker starts the workload, the
 same dataset identity and mountpoint exist, the database returns the same row,
 and storage testimony is `ready`. A newly empty database, a different dataset,
 a recreated plain directory, or a manual `zpool import` is a failure even when
@@ -184,10 +203,14 @@ the query later succeeds.
 The harness records the running kernel, the exact loadable module file reported
 by `modinfo -n zfs`, that file's checksum, mode and owner, loaded modules, ZFS
 units, and whether the active initramfs contains ZFS before changing anything.
-It refuses the destructive phase if that initramfs contains ZFS. It then writes
-a recovery manifest, creates a verified copy outside boot module search paths,
-quarantines the loadable file, runs `depmod`, and checks that `modinfo` can no
-longer discover ZFS before reboot. `zfs-module-recovery.env`, `recovery.txt`,
+Failure to run `lsinitrd` is distinct from a successful inventory containing
+ZFS; either condition stops the phase. The harness then writes a recovery
+manifest, creates and verifies a copy outside boot module search paths, copies
+the manifest locally, and prints emergency recovery instructions before moving
+the module. A separate fail-closed `set -euo pipefail` transaction quarantines
+the loadable file, runs `depmod` for the recorded kernel, and checks that
+`modinfo` can no longer discover ZFS before reboot.
+`zfs-module-recovery.env`, `recovery.txt`,
 and the checksum manifest in the recorded remote recovery root together are
 the authority for restoration; do not improvise different paths from memory.
 
@@ -238,6 +261,9 @@ If SSH is unavailable:
 After recovery, require the module, pool, exact dataset, testimony, alarm
 clearance, PostgreSQL container, and original unique row to return. Keep the
 failure and recovery evidence even after the final state is healthy.
+The exit trap continues to print emergency recovery instructions until the
+restoration, recovery assertions, final reboot, and evidence checks all
+succeed; an intermediate healthy observation never clears that warning.
 
 Never run `zpool create`, `zpool destroy`, `zfs destroy`, `ployz volume rm`,
 Docker volume deletion, backing-file truncation, host re-provisioning, or
