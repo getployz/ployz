@@ -24,6 +24,7 @@ pub fn operation_event_subject_suffix(event: &OperationEvent) -> String {
         OperationEvent::BuildPlatformLogTruncated { .. } => {
             "build.platform.log_truncated".to_owned()
         }
+        OperationEvent::BuildPlatformLogGap { .. } => "build.platform.log_gap".to_owned(),
         OperationEvent::BuildPlatformCompleted { .. } => "build.platform.completed".to_owned(),
         OperationEvent::BuildPlatformFailed { .. } => "build.platform.failed".to_owned(),
         OperationEvent::BuildCompleted { .. } => "build.completed".to_owned(),

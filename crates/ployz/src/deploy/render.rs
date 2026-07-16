@@ -367,6 +367,7 @@ impl DeployTree {
             | OperationEvent::BuildRunning { .. }
             | OperationEvent::BuildPlatformLog { .. }
             | OperationEvent::BuildPlatformLogTruncated { .. }
+            | OperationEvent::BuildPlatformLogGap { .. }
             | OperationEvent::BuildPlatformCompleted { .. }
             | OperationEvent::BuildPlatformFailed { .. }
             | OperationEvent::BuildCompleted { .. }

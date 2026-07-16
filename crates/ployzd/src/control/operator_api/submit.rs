@@ -17,7 +17,7 @@ use ployz_core::deploy::ImageSource;
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::machine::MachineLifecycle;
 use ployz_core::network::internal_dns::InternalServiceName;
-use ployz_core::operation::{CredentialGrantAction, EventSequence, OperationStatus};
+use ployz_core::operation::{CredentialGrantAction, EventSequence};
 use ployz_nats::subjects::{OperationProgressScope, operation_progress_watch};
 use ployz_sdk_types::{
     AcceptedOperation, BuildCancelError, BuildCancelRequest, BuildSubmitError, BuildSubmitRequest,
@@ -70,30 +70,7 @@ pub async fn build_cancel(
     request: BuildCancelRequest,
 ) -> Result<AcceptedOperation, BuildCancelError> {
     let operation_id = request.operation_id;
-    let status = handlers
-        .controllers()
-        .repository()
-        .get(&operation_id)
-        .await
-        .map_err(|error| BuildCancelError::Unavailable {
-            operation_id: operation_id.clone(),
-            message: error.to_string(),
-        })?
-        .ok_or_else(|| BuildCancelError::NoSuchOperation {
-            operation_id: operation_id.clone(),
-        })?;
-    let OperationStatus::Build {
-        state,
-        last_event_sequence,
-        ..
-    } = status
-    else {
-        return Err(BuildCancelError::NoSuchOperation { operation_id });
-    };
-    if state.is_terminal() {
-        return Err(BuildCancelError::AlreadyTerminal { operation_id });
-    }
-    handlers
+    let disposition = handlers
         .build_driver()
         .cancel(&operation_id, request.reason)
         .await
@@ -101,10 +78,21 @@ pub async fn build_cancel(
             operation_id: operation_id.clone(),
             message,
         })?;
+    let watch_start_sequence = match disposition {
+        crate::control::operations::build::BuildCancelDisposition::NoSuchOperation => {
+            return Err(BuildCancelError::NoSuchOperation { operation_id });
+        }
+        crate::control::operations::build::BuildCancelDisposition::AlreadyTerminal => {
+            return Err(BuildCancelError::AlreadyTerminal { operation_id });
+        }
+        crate::control::operations::build::BuildCancelDisposition::Accepted {
+            watch_start_sequence,
+        } => watch_start_sequence,
+    };
     Ok(owned_operation(
         operation_id,
         OperationProgressScope::Cluster,
-        last_event_sequence,
+        watch_start_sequence,
     ))
 }
 
