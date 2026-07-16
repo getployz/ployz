@@ -10,13 +10,14 @@ use crate::control::sequencer::{
     IngressConfigureSubmitCommand, IngressConfigureSubmitError, MachineAddBootstrapMaterial,
     MachineAddBootstrapMaterialError, MachineAddSubmitCommand, MachineLifecycleSubmitCommand,
     MachineUpdateSubmitCommand, NamespaceRemoveSubmitCommand, NetworkRepairSubmitCommand,
-    OperationControllers, ServiceRestartSubmitCommand, VolumeRemoveSubmitCommand,
+    OperationControllers, ServiceRestartSubmitCommand, SubmitCommandError,
+    VolumeCreateSubmitCommand, VolumeRemoveSubmitCommand,
 };
 use ployz_core::deploy::ImageSource;
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::machine::MachineLifecycle;
 use ployz_core::network::internal_dns::InternalServiceName;
-use ployz_core::operation::{CredentialGrantAction, EventSequence};
+use ployz_core::operation::{CredentialGrantAction, EventSequence, VolumeCreateRequest};
 use ployz_nats::subjects::{OperationProgressScope, operation_progress_watch};
 use ployz_sdk_types::{
     AcceptedOperation, CoreReplaceError, CoreReplaceRequest, CredentialAddError,
@@ -678,6 +679,26 @@ pub async fn volume_remove(
         accepted.start_sequence,
     );
     handlers.volume_remove().start(accepted).await;
+    Ok(operation)
+}
+
+/// Accepts a volume-create request and starts its owned operation work.
+pub async fn submit_volume_create(
+    handlers: &OperationApiHandlers,
+    request: VolumeCreateRequest,
+) -> Result<AcceptedOperation, SubmitCommandError> {
+    let accepted = handlers
+        .controllers()
+        .submit_volume_create(VolumeCreateSubmitCommand { request })
+        .await?;
+    let operation = owned_operation(
+        accepted.request.operation_id.clone(),
+        OperationProgressScope::Namespace {
+            namespace_id: accepted.request.namespace_id.clone(),
+        },
+        accepted.start_sequence,
+    );
+    handlers.volume_create().start(accepted).await;
     Ok(operation)
 }
 

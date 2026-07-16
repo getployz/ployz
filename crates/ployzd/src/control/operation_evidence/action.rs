@@ -7,7 +7,8 @@ use super::{
     MachineUpdateOperationSubmission, MachineUpdatePayload, ManagedDnsReconcileOperationSubmission,
     ManagedDnsReconcilePayload, NamespaceRemoveOperationSubmission, NamespaceRemovePayload,
     NetworkRepairOperationSubmission, NetworkRepairPayload, ServiceRestartOperationSubmission,
-    ServiceRestartPayload, VolumeRemoveOperationSubmission, VolumeRemovePayload,
+    ServiceRestartPayload, VolumeCreateOperationSubmission, VolumeCreatePayload,
+    VolumeRemoveOperationSubmission, VolumeRemovePayload,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::operation::{
@@ -490,6 +491,37 @@ impl OperationAction for VolumeRemoveOperationSubmission {
             payload.volume_name.clone(),
             sequence,
         )
+    }
+}
+
+impl OperationAction for VolumeCreateOperationSubmission {
+    type Payload = VolumeCreatePayload;
+    const KIND: OperationKind = OperationKind::VolumeCreate;
+
+    fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEvent {
+        debug_assert_eq!(operation_id, payload.request.operation_id);
+        OperationEvent::VolumeCreateSubmitted {
+            request: payload.request,
+        }
+    }
+
+    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
+        let OperationEvent::VolumeCreateSubmitted { request } = event else {
+            return None;
+        };
+        Some((
+            request.operation_id.clone(),
+            VolumeCreatePayload { request },
+        ))
+    }
+
+    fn accepted_status(
+        operation_id: OperationId,
+        payload: &Self::Payload,
+        sequence: EventSequence,
+    ) -> OperationStatus {
+        debug_assert_eq!(operation_id, payload.request.operation_id);
+        OperationStatus::volume_create_accepted(payload.request.clone(), sequence)
     }
 }
 

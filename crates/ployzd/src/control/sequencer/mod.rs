@@ -13,7 +13,8 @@ use crate::control::operation_evidence::{
     MachineJoinIdentity, MachineJoinRedemption, MachineLifecycleOperationSubmission,
     NamespaceRemoveOperationSubmission, NetworkRepairOperationSubmission, OperationRepository,
     OperationStatusStoreError, RedeemMachineJoinTokenError, ServiceRestartOperationSubmission,
-    SubmitMachineAddError, SubmitOperationError, VolumeRemoveOperationSubmission,
+    SubmitMachineAddError, SubmitOperationError, VolumeCreateOperationSubmission,
+    VolumeRemoveOperationSubmission,
 };
 use ployz_core::deploy::{
     DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS, DeployReservationExpiresAt, DeployReservationId,
@@ -124,6 +125,11 @@ pub struct VolumeRemoveSubmitCommand {
     pub operation_id: OperationId,
     pub namespace_id: NamespaceId,
     pub volume_name: VolumeName,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeCreateSubmitCommand {
+    pub request: ployz_core::operation::VolumeCreateRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -660,6 +666,49 @@ impl OperationControllers {
                 if matches!(claim, NamespaceClaim::Acquired) {
                     self.release_namespace(&namespace_id, &command.operation_id)
                         .await;
+                }
+                Err(SubmitCommandError::Submit(error))
+            }
+        }
+    }
+
+    pub async fn submit_volume_create(
+        &self,
+        command: VolumeCreateSubmitCommand,
+    ) -> Result<
+        crate::control::operation_evidence::AcceptedVolumeCreateSubmission,
+        SubmitCommandError,
+    > {
+        let namespace_id = command.request.namespace_id.clone();
+        let operation_id = command.request.operation_id.clone();
+        let claim = self.claim_namespace(&namespace_id, &operation_id).await;
+        if let NamespaceClaim::Busy { owner } = claim {
+            return Err(SubmitCommandError::NamespaceBusy {
+                namespace_id,
+                owner,
+            });
+        }
+
+        let submitted = self
+            .repository
+            .submit_volume_create(VolumeCreateOperationSubmission {
+                request: command.request,
+            })
+            .await;
+        match submitted {
+            Ok(accepted) => {
+                if !accepted.should_start_execution && matches!(claim, NamespaceClaim::Acquired) {
+                    self.release_namespace(
+                        &accepted.request.namespace_id,
+                        &accepted.request.operation_id,
+                    )
+                    .await;
+                }
+                Ok(accepted)
+            }
+            Err(error) => {
+                if matches!(claim, NamespaceClaim::Acquired) {
+                    self.release_namespace(&namespace_id, &operation_id).await;
                 }
                 Err(SubmitCommandError::Submit(error))
             }

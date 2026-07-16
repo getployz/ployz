@@ -237,6 +237,16 @@ pub struct VolumeRemoveOperationSubmission {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeCreateOperationSubmission {
+    pub request: ployz_core::operation::VolumeCreateRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct VolumeCreatePayload {
+    pub(super) request: ployz_core::operation::VolumeCreateRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct VolumeRemovePayload {
     pub(super) namespace_id: NamespaceId,
     pub(super) volume_name: VolumeName,
@@ -340,6 +350,13 @@ pub struct AcceptedVolumeRemoveSubmission {
     pub start_sequence: EventSequence,
     pub namespace_id: NamespaceId,
     pub volume_name: VolumeName,
+    pub should_start_execution: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedVolumeCreateSubmission {
+    pub request: ployz_core::operation::VolumeCreateRequest,
+    pub start_sequence: EventSequence,
     pub should_start_execution: bool,
 }
 
