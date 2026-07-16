@@ -46,7 +46,9 @@ use crate::control::operations::network_repair::NetworkRepairOperation;
 use crate::control::operations::service_restart::ServiceRestartOperation;
 use crate::control::operations::volume_create::VolumeCreateOperation;
 use crate::control::operations::volume_remove::VolumeRemoveOperation;
-use crate::control::role_client::machine::{NatsMachineFactsReader, NatsMachineLogsTailer};
+use crate::control::role_client::machine::{
+    NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineVolumeTestimonyReader,
+};
 use crate::control::sequencer::OperationControllers;
 use crate::control::store::CoreStore;
 use crate::role_testimony::RoleTestimonyCache;
@@ -138,7 +140,10 @@ impl OperationApiHandlers {
         let service_query = ServiceQueryService::new(intent_reader.clone(), facts_reader.clone());
         let network_query =
             NetworkQueryService::new(intent_reader.clone(), intent_change_client.clone());
-        let volume_query = VolumeQueryService::new(intent_reader.clone());
+        let volume_query = VolumeQueryService::new(
+            intent_reader.clone(),
+            NatsMachineVolumeTestimonyReader::new(intent_change_client.clone()),
+        );
         let runtime_snapshot_query = RuntimeSnapshotQueryService::new(
             intent_reader.clone(),
             facts.clone(),
