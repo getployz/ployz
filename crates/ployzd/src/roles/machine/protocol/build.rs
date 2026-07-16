@@ -54,9 +54,17 @@ pub enum MachineBuildStartDomainError {
     },
     TimedOut {
         message: FailureMessage,
+        cleanup: MachineBuildCleanupOutcome,
         final_log_sequence: u64,
         omitted_log_bytes: u64,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MachineBuildCleanupOutcome {
+    Confirmed,
+    Unconfirmed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,5 +140,25 @@ mod tests {
             "chunk": "x".repeat(ployz_core::operation::MAX_BUILD_LOG_CHUNK_BYTES + 1)
         });
         assert!(serde_json::from_value::<MachineBuildLogFrame>(frame).is_err());
+    }
+
+    #[test]
+    fn timed_out_response_preserves_typed_cleanup_outcome() {
+        let error = MachineBuildStartDomainError::TimedOut {
+            message: FailureMessage::try_new("deadline exceeded").expect("message"),
+            cleanup: MachineBuildCleanupOutcome::Unconfirmed,
+            final_log_sequence: 3,
+            omitted_log_bytes: 5,
+        };
+        let encoded = serde_json::to_value(&error).expect("encode timeout");
+        assert_eq!(
+            encoded.get("cleanup").expect("cleanup field"),
+            "unconfirmed"
+        );
+        assert_eq!(
+            serde_json::from_value::<MachineBuildStartDomainError>(encoded)
+                .expect("decode timeout"),
+            error
+        );
     }
 }

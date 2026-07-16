@@ -478,7 +478,7 @@ async fn start_control_process_with_client_reload_and_issuer(
     let build_driver = BuildOperationDriver::new(
         client.clone(),
         facts_reader.clone(),
-        machine_roster.clone(),
+        intent_reader.clone(),
         controllers.clone(),
         BUILD_MAX_EXECUTION_TIMEOUT,
         task_spawner,
