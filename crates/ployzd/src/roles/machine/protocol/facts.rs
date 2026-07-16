@@ -111,8 +111,8 @@ mod tests {
             };
             let encoded = serde_json::to_value(&response).expect("encode");
             assert_eq!(
-                encoded["build"],
-                serde_json::to_value(build).expect("value")
+                encoded.get("build").expect("build field"),
+                &serde_json::to_value(build).expect("value")
             );
             assert_eq!(
                 serde_json::from_value::<MachineFactsGetRpcOk>(encoded).expect("decode"),

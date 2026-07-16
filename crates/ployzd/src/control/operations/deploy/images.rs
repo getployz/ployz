@@ -906,8 +906,7 @@ mod tests {
             panic!("pushed service");
         };
         let target_platform = platform("amd64");
-        let platform_image = receipt.platform(&target_platform).expect("platform image");
-        platform_image
+        receipt.platform(&target_platform).expect("platform image")
     }
 
     fn machine_id(value: &str) -> MachineId {
