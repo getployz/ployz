@@ -1,10 +1,18 @@
-use ployz_core::build::GitSource;
+use std::time::Duration;
+
+use ployz_core::build::{BUILD_MAX_EXECUTION_TIMEOUT, GitSource, build_control_request_timeout};
 use ployz_sdk_types::{BuildCancelRequest, BuildSubmitRequest};
 
 use crate::build::command::{BuildCancelCommand, BuildSubmitCommand};
 use crate::dispatcher::PloyzctlRuntimeConfig;
 use crate::execution_error::PloyzctlExecutionError;
 use crate::execution_support::{PloyzctlExecutionOutput, api_error, operation_api_client};
+
+const DEFAULT_ATTACHED_BUILD_WATCH_TIMEOUT: Duration = Duration::from_secs(35 * 60);
+const _: () = assert!(
+    DEFAULT_ATTACHED_BUILD_WATCH_TIMEOUT.as_secs()
+        > build_control_request_timeout(BUILD_MAX_EXECUTION_TIMEOUT).as_secs()
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BuildExecutionError {
@@ -50,7 +58,13 @@ pub(crate) async fn submit(
             crate::operation::command::AcceptedOperationOutput::from_accepted(accepted).render(),
         ));
     }
-    crate::operation::runtime::watch_accepted(&api, accepted.operation_id, config).await
+    crate::operation::runtime::watch_accepted_with_timeout(
+        &api,
+        accepted.operation_id,
+        attached_build_watch_timeout(config),
+        config,
+    )
+    .await
 }
 
 pub(crate) async fn cancel(
@@ -66,4 +80,45 @@ pub(crate) async fn cancel(
         .await
         .map_err(api_error)?;
     crate::operation::runtime::watch_accepted(&api, accepted.operation_id, config).await
+}
+
+fn attached_build_watch_timeout(config: &PloyzctlRuntimeConfig) -> Duration {
+    config
+        .ops_watch_timeout
+        .unwrap_or(DEFAULT_ATTACHED_BUILD_WATCH_TIMEOUT)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::execution_support::DEFAULT_OPS_WATCH_TIMEOUT;
+
+    #[test]
+    fn attached_build_uses_build_budget_without_changing_generic_watch_default() {
+        let config = PloyzctlRuntimeConfig::default();
+
+        assert_eq!(
+            attached_build_watch_timeout(&config),
+            Duration::from_secs(35 * 60)
+        );
+        assert_eq!(config.ops_watch_timeout(), DEFAULT_OPS_WATCH_TIMEOUT);
+        assert_eq!(DEFAULT_OPS_WATCH_TIMEOUT, Duration::from_secs(10 * 60));
+        assert!(
+            DEFAULT_ATTACHED_BUILD_WATCH_TIMEOUT
+                > build_control_request_timeout(BUILD_MAX_EXECUTION_TIMEOUT)
+        );
+    }
+
+    #[test]
+    fn attached_build_honors_explicit_watch_timeout() {
+        let explicit = Duration::from_secs(47);
+        let config = PloyzctlRuntimeConfig {
+            ops_watch_timeout: Some(explicit),
+            ..PloyzctlRuntimeConfig::default()
+        };
+
+        assert_eq!(attached_build_watch_timeout(&config), explicit);
+    }
 }
