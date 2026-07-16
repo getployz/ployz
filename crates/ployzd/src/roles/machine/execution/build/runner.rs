@@ -103,8 +103,7 @@ impl DockerBuildExecutor {
                 &mut cancelled,
             )
             .await;
-        let _ = tokio::fs::remove_dir_all(&workspace).await;
-        result
+        clean_failed_workspace(&workspace, result).await
     }
 
     async fn execute_in_workspace(
@@ -283,6 +282,19 @@ async fn remove_workspace_tree(path: &Path) -> Result<(), BuildExecutionError> {
             .map_err(|error| infrastructure("remove build workspace", error.to_string()))?;
     }
     Ok(())
+}
+
+async fn clean_failed_workspace<T>(
+    workspace: &Path,
+    result: Result<T, BuildExecutionError>,
+) -> Result<T, BuildExecutionError> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            remove_workspace_tree(workspace).await?;
+            Err(error)
+        }
+    }
 }
 
 async fn verify_helper(toolchain: &BuildToolchain) -> Result<(), BuildExecutionError> {
@@ -961,6 +973,43 @@ mod tests {
         assert_eq!(
             builder_name(&operation, &platform),
             "ployz-build-build-01-linux-arm64"
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_workspace_is_retained_until_image_ingestion() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let blob = workspace.path().join("blob");
+        tokio::fs::write(&blob, b"validated OCI blob")
+            .await
+            .expect("blob");
+
+        clean_failed_workspace(workspace.path(), Ok::<_, BuildExecutionError>(()))
+            .await
+            .expect("successful build");
+
+        assert!(tokio::fs::try_exists(blob).await.expect("inspect blob"));
+    }
+
+    #[tokio::test]
+    async fn failed_workspace_is_removed_immediately() {
+        let root = tempfile::tempdir().expect("root");
+        let workspace = root.path().join("workspace");
+        tokio::fs::create_dir(&workspace).await.expect("workspace");
+        tokio::fs::write(workspace.join("credential"), b"secret")
+            .await
+            .expect("credential");
+
+        assert!(
+            clean_failed_workspace::<()>(&workspace, Err(BuildExecutionError::cancelled()))
+                .await
+                .is_err()
+        );
+
+        assert!(
+            !tokio::fs::try_exists(workspace)
+                .await
+                .expect("inspect workspace")
         );
     }
 }

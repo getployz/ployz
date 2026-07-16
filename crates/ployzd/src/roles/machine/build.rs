@@ -161,8 +161,20 @@ impl MachineBuildRuntime {
                             .err()
                             .map(BuildExecutionError::log_summary)
                             .unwrap_or((0, 0));
+                        let cleanup = tokio::time::timeout(
+                            BUILD_CLEANUP_TIMEOUT,
+                            cleanup_executor
+                                .force_cleanup(&cleanup_operation_id, &cleanup_platform),
+                        )
+                        .await;
+                        let message = match cleanup {
+                            Ok(Ok(())) => "build exceeded its operation deadline",
+                            Ok(Err(_)) | Err(_) => {
+                                "build exceeded its deadline and cleanup did not finish"
+                            }
+                        };
                         return Err(MachineBuildStartDomainError::TimedOut {
-                            message: failure_message("build exceeded its operation deadline"),
+                            message: failure_message(message),
                             final_log_sequence,
                             omitted_log_bytes,
                         });
@@ -197,25 +209,55 @@ impl MachineBuildRuntime {
             final_log_sequence,
             omitted_log_bytes,
         } = result.map_err(machine_build_error)?;
-        let Some(images) = &self.image_state else {
-            return Err(MachineBuildStartDomainError::PlatformFailed {
+        let ingest = match &self.image_state {
+            Some(images) => images
+                .ingest_build_layout(&layout)
+                .await
+                .map_err(|message| MachineBuildStartDomainError::PlatformFailed {
+                    failure: BuildPlatformFailure::ImagePushFailed {
+                        message: failure_message(message),
+                    },
+                    final_log_sequence,
+                    omitted_log_bytes,
+                }),
+            None => Err(MachineBuildStartDomainError::PlatformFailed {
                 failure: BuildPlatformFailure::MachineUnavailable {
                     message: failure_message("machine image content service is unavailable"),
                 },
                 final_log_sequence,
                 omitted_log_bytes,
-            });
+            }),
         };
-        images
-            .ingest_build_layout(&layout)
-            .await
-            .map_err(|message| MachineBuildStartDomainError::PlatformFailed {
-                failure: BuildPlatformFailure::ImagePushFailed {
-                    message: failure_message(message),
-                },
-                final_log_sequence,
-                omitted_log_bytes,
-            })?;
+        let cleanup = tokio::time::timeout(
+            BUILD_CLEANUP_TIMEOUT,
+            self.executor
+                .force_cleanup(&cleanup_operation_id, &cleanup_platform),
+        )
+        .await;
+        match cleanup {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                return Err(MachineBuildStartDomainError::PlatformFailed {
+                    failure: BuildPlatformFailure::MachineUnavailable {
+                        message: failure_message(format!(
+                            "build workspace cleanup failed: {error}"
+                        )),
+                    },
+                    final_log_sequence,
+                    omitted_log_bytes,
+                });
+            }
+            Err(_) => {
+                return Err(MachineBuildStartDomainError::PlatformFailed {
+                    failure: BuildPlatformFailure::MachineUnavailable {
+                        message: failure_message("build workspace cleanup timed out"),
+                    },
+                    final_log_sequence,
+                    omitted_log_bytes,
+                });
+            }
+        }
+        ingest?;
         Ok(MachineBuildStartRpcOk {
             machine_id: self.machine_id.clone(),
             image: PlatformImage {
