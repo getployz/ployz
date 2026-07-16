@@ -201,7 +201,7 @@ struct PassiveRuntimeProjection {
     // Alarm liveness comes from the latest point-of-use gather. The cache
     // remains last-known display evidence and never answers whether a machine
     // is currently silent.
-    fresh_storage_testimony: Vec<ployz_core::machine::MachineStorageTestimony>,
+    fresh_storage_testimony: Option<Vec<ployz_core::machine::MachineStorageTestimony>>,
     snapshots: watch::Sender<Option<RuntimeSnapshot>>,
 }
 
@@ -213,7 +213,7 @@ impl PassiveRuntimeProjection {
                 intent: None,
                 ingress: None,
                 facts,
-                fresh_storage_testimony: Vec::new(),
+                fresh_storage_testimony: None,
                 snapshots,
             },
             receiver,
@@ -224,7 +224,7 @@ impl PassiveRuntimeProjection {
         &mut self,
         intent: IntentSnapshot,
         ingress: RuntimeIngressSources,
-        fresh_storage_testimony: Vec<ployz_core::machine::MachineStorageTestimony>,
+        fresh_storage_testimony: Option<Vec<ployz_core::machine::MachineStorageTestimony>>,
     ) {
         self.intent = Some(intent);
         self.ingress = Some(ingress);
@@ -239,6 +239,7 @@ impl PassiveRuntimeProjection {
     ) {
         self.intent = Some(intent);
         self.ingress = Some(ingress);
+        self.fresh_storage_testimony = None;
         self.refresh();
     }
 
@@ -246,7 +247,7 @@ impl PassiveRuntimeProjection {
         &mut self,
         fresh_storage_testimony: Vec<ployz_core::machine::MachineStorageTestimony>,
     ) {
-        self.fresh_storage_testimony = fresh_storage_testimony;
+        self.fresh_storage_testimony = Some(fresh_storage_testimony);
         self.refresh();
     }
 
@@ -258,7 +259,7 @@ impl PassiveRuntimeProjection {
             intent.clone(),
             ingress.clone(),
             &self.facts,
-            &self.fresh_storage_testimony,
+            self.fresh_storage_testimony.as_deref(),
         )));
     }
 }
@@ -335,11 +336,11 @@ struct RuntimeProjectionSources {
     core_store: CoreStore,
 }
 
-type StorageTestimony = Vec<ployz_core::machine::MachineStorageTestimony>;
+type StorageAlarmGatherOutput = Vec<ployz_core::machine::MachineStorageTestimony>;
 
 struct StorageAlarmGather {
     intent_generation: u64,
-    task: Option<JoinHandle<(u64, StorageTestimony)>>,
+    task: Option<JoinHandle<(u64, StorageAlarmGatherOutput)>>,
 }
 
 impl StorageAlarmGather {
@@ -350,7 +351,7 @@ impl StorageAlarmGather {
         }
     }
 
-    fn replace(&mut self, gather: impl Future<Output = StorageTestimony> + Send + 'static) {
+    fn replace(&mut self, gather: impl Future<Output = StorageAlarmGatherOutput> + Send + 'static) {
         self.intent_generation = self.intent_generation.wrapping_add(1);
         if let Some(task) = self.task.take() {
             task.abort();
@@ -361,7 +362,7 @@ impl StorageAlarmGather {
     fn start_if_idle<Gather, GatherFuture>(&mut self, gather: Gather) -> bool
     where
         Gather: FnOnce() -> GatherFuture,
-        GatherFuture: Future<Output = StorageTestimony> + Send + 'static,
+        GatherFuture: Future<Output = StorageAlarmGatherOutput> + Send + 'static,
     {
         if self.task.is_some() {
             return false;
@@ -370,7 +371,7 @@ impl StorageAlarmGather {
         true
     }
 
-    fn start(&mut self, gather: impl Future<Output = StorageTestimony> + Send + 'static) {
+    fn start(&mut self, gather: impl Future<Output = StorageAlarmGatherOutput> + Send + 'static) {
         let generation = self.intent_generation;
         self.task = Some(tokio::spawn(async move { (generation, gather.await) }));
     }
@@ -379,7 +380,7 @@ impl StorageAlarmGather {
         self.task.is_some()
     }
 
-    async fn join(&mut self) -> Option<StorageTestimony> {
+    async fn join(&mut self) -> Option<StorageAlarmGatherOutput> {
         let result = {
             let task = self.task.as_mut()?;
             task.await
@@ -391,7 +392,11 @@ impl StorageAlarmGather {
         self.accept(generation, testimony)
     }
 
-    fn accept(&self, generation: u64, testimony: StorageTestimony) -> Option<StorageTestimony> {
+    fn accept(
+        &self,
+        generation: u64,
+        testimony: StorageAlarmGatherOutput,
+    ) -> Option<StorageAlarmGatherOutput> {
         (generation == self.intent_generation).then_some(testimony)
     }
 }
@@ -421,7 +426,7 @@ async fn run_projection(
     let intent = retry_intent_read(&intent_reader, &health).await;
     let ingress = retry_ingress_read(&core_store, &health).await;
     let machine_ids = storage_testimony_machine_ids(&intent);
-    projection.replace_sources(intent, ingress, Vec::new());
+    projection.replace_sources(intent, ingress, None);
     let mut storage_alarm_gather = StorageAlarmGather::new();
     storage_alarm_gather.replace(gather_storage_testimony(facts_reader.clone(), machine_ids));
     let mut storage_alarm_refresh = tokio::time::interval(STORAGE_ALARM_REFRESH_INTERVAL);
@@ -489,7 +494,7 @@ fn storage_testimony_machine_ids(intent: &IntentSnapshot) -> Vec<ployz_core::ids
 async fn gather_storage_testimony(
     facts_reader: NatsMachineFactsReader,
     machine_ids: Vec<ployz_core::ids::MachineId>,
-) -> StorageTestimony {
+) -> StorageAlarmGatherOutput {
     read_available_machine_facts(&facts_reader, machine_ids)
         .await
         .into_iter()
@@ -540,7 +545,7 @@ mod tests {
         projection.replace_sources(
             intent(vec![serving_target_entry("svc_api", "entry_2")]),
             ingress(),
-            Vec::new(),
+            None,
         );
         let snapshot = snapshots.borrow();
         let snapshot = snapshot.as_ref().expect("initialized snapshot");
@@ -572,12 +577,12 @@ mod tests {
         projection.replace_sources(
             cluster_intent,
             ingress(),
-            vec![MachineStorageTestimony::new(
+            Some(vec![MachineStorageTestimony::new(
                 machine_id("machine_a"),
                 Some(StorageCapability::Ready {
                     pool: ZfsPoolName::try_new("tank").expect("valid pool"),
                 }),
-            )],
+            )]),
         );
         {
             let snapshot = snapshots.borrow();
@@ -613,6 +618,55 @@ mod tests {
             panic!("last-known display testimony remains available");
         };
         assert!(matches!(storage, Some(StorageCapability::Ready { .. })));
+    }
+
+    #[test]
+    fn initial_unknown_storage_testimony_suppresses_stranded_alarms() {
+        let facts = RoleTestimonyCache::default();
+        facts.record_machine_facts(machine_facts("machine_a", "ctr_initial"));
+        let (mut projection, snapshots) = PassiveRuntimeProjection::new(facts);
+        let mut cluster_intent = intent(vec![serving_target_entry("svc_api", "entry_2")]);
+        cluster_intent.volume_pins = vec![provisioned_pin("data", "machine_a", "tank")];
+
+        projection.replace_sources(cluster_intent, ingress(), None);
+
+        let snapshot = snapshots.borrow();
+        let snapshot = snapshot.as_ref().expect("initialized snapshot");
+        let [machine] = snapshot.machines.as_slice() else {
+            panic!("one projected machine");
+        };
+        assert!(machine.storage_alarms.is_empty());
+        assert_eq!(snapshot.services.len(), 1);
+        assert_eq!(snapshot.containers.len(), 1);
+    }
+
+    #[test]
+    fn intent_replacement_invalidates_storage_testimony_before_publishing() {
+        let facts = RoleTestimonyCache::default();
+        facts.record_machine_facts(machine_facts("machine_a", "ctr_initial"));
+        let (mut projection, snapshots) = PassiveRuntimeProjection::new(facts);
+        let mut previous_intent = intent(Vec::new());
+        previous_intent.volume_pins = vec![provisioned_pin("data", "machine_a", "tank")];
+        projection.replace_sources(
+            previous_intent,
+            ingress(),
+            Some(vec![MachineStorageTestimony::new(
+                machine_id("machine_a"),
+                None,
+            )]),
+        );
+
+        let mut replacement_intent = intent(vec![serving_target_entry("svc_api", "entry_2")]);
+        replacement_intent.volume_pins = vec![provisioned_pin("data", "machine_a", "tank")];
+        projection.replace_intent_and_ingress(replacement_intent, ingress());
+
+        let snapshot = snapshots.borrow();
+        let snapshot = snapshot.as_ref().expect("replacement snapshot");
+        let [machine] = snapshot.machines.as_slice() else {
+            panic!("one projected machine");
+        };
+        assert!(machine.storage_alarms.is_empty());
+        assert_eq!(snapshot.services.len(), 1);
     }
 
     #[tokio::test]
@@ -691,13 +745,13 @@ mod tests {
         let facts = RoleTestimonyCache::default();
         facts.record_machine_facts(machine_facts("machine_a", "ctr_initial"));
         let (mut projection, mut snapshots) = PassiveRuntimeProjection::new(facts.clone());
-        projection.replace_sources(intent(Vec::new()), ingress(), Vec::new());
+        projection.replace_sources(intent(Vec::new()), ingress(), Some(Vec::new()));
         let _ = snapshots.borrow_and_update();
 
         projection.replace_sources(
             intent(vec![serving_target_entry("svc_api", "entry_2")]),
             ingress(),
-            Vec::new(),
+            Some(Vec::new()),
         );
         snapshots.changed().await.expect("intent replacement");
         assert_eq!(
@@ -1010,7 +1064,7 @@ fn assemble_snapshot(
     intent: IntentSnapshot,
     ingress: RuntimeIngressSources,
     facts: &RoleTestimonyCache,
-    fresh_storage_testimony: &[ployz_core::machine::MachineStorageTestimony],
+    fresh_storage_testimony: Option<&[ployz_core::machine::MachineStorageTestimony]>,
 ) -> RuntimeSnapshot {
     let (machine_facts, gateway_statuses) = facts.runtime_projection_facts();
     runtime_snapshot_from_sources(
