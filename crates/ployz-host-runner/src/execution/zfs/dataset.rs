@@ -278,48 +278,47 @@ fn direct_child_listing_contains(
         command_timeout,
         EffectClass::Destructive,
     )?;
+    let parse_error = |message| ZfsEffectError::GatherParse { message };
     if output.stdout_truncated {
-        return Err(ZfsEffectError::GatherParse {
-            message: "direct-child dataset listing exceeded the command output capture limit"
-                .to_owned(),
-        });
+        return Err(parse_error(
+            "direct-child dataset listing exceeded the command output capture limit".to_owned(),
+        ));
     }
-    let mut root_rows = 0;
-    let mut requested_rows = 0;
+    let mut saw_root = false;
+    let mut saw_requested = false;
     for row in output.stdout.lines() {
         if row != row.trim() || row.is_empty() {
-            return Err(ZfsEffectError::GatherParse {
-                message: format!("invalid direct-child dataset row {row:?}"),
-            });
+            return Err(parse_error(format!(
+                "invalid direct-child dataset row {row:?}"
+            )));
         }
         if row == root {
-            root_rows += 1;
+            if saw_root {
+                return Err(parse_error(format!(
+                    "duplicate direct-child dataset root row {root:?}"
+                )));
+            }
+            saw_root = true;
             continue;
         }
         let child = DatasetName::try_new(row).map_err(|error| ZfsEffectError::GatherParse {
             message: format!("invalid direct-child dataset row {row:?}: {error}"),
         })?;
         verify_child(state, &child)?;
-        if child == *requested {
-            requested_rows += 1;
-        }
-    }
-    if root_rows != 1 {
-        return Err(ZfsEffectError::GatherParse {
-            message: format!(
-                "direct-child dataset listing returned {root_rows} rows for root {root}, expected exactly one"
-            ),
-        });
-    }
-    if requested_rows > 1 {
-        return Err(ZfsEffectError::GatherParse {
-            message: format!(
+        if child == *requested && saw_requested {
+            return Err(parse_error(format!(
                 "duplicate direct-child dataset row {:?}",
                 requested.as_str()
-            ),
-        });
+            )));
+        }
+        saw_requested |= child == *requested;
     }
-    Ok(requested_rows == 1)
+    if !saw_root {
+        return Err(parse_error(format!(
+            "direct-child dataset listing omitted root {root}"
+        )));
+    }
+    Ok(saw_requested)
 }
 
 pub fn gather_pool_capacity(

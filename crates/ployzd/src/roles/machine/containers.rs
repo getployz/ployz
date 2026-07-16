@@ -544,7 +544,18 @@ where
                             },
                         })
                     }
-                    error => runner_error(error),
+                    error @ (MachineContainerRunnerError::ListExisting { .. }
+                    | MachineContainerRunnerError::EnsureEndpointNetwork { .. }
+                    | MachineContainerRunnerError::EndpointNetworkSubnetMismatch {
+                        ..
+                    }
+                    | MachineContainerRunnerError::Create { .. }
+                    | MachineContainerRunnerError::ImagePull { .. }
+                    | MachineContainerRunnerError::Start { .. }
+                    | MachineContainerRunnerError::Wait { .. }
+                    | MachineContainerRunnerError::Stop { .. }
+                    | MachineContainerRunnerError::Restart { .. }
+                    | MachineContainerRunnerError::Remove { .. }) => runner_error(error),
                 };
             }
             match runner.destroy_provisioned_dataset(dataset).await {

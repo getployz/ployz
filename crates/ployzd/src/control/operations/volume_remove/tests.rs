@@ -243,8 +243,13 @@ async fn plain_remove_never_requests_dataset_destruction() {
     runtime.run().await;
 
     let state = runtime.state.lock().unwrap();
-    assert_eq!(state.effects.len(), 1);
-    assert_eq!(state.effects[0].effect, EffectKind::DockerReference);
+    assert_eq!(
+        state.effects,
+        [EffectCall {
+            effect: EffectKind::DockerReference,
+            pin: plain_pin(),
+        }]
+    );
     assert!(!state.pin_present);
     assert_eq!(
         state.transitions.last(),

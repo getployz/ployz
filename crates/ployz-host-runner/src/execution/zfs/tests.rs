@@ -1216,14 +1216,15 @@ fn destroy_retains_failed_malformed_foreign_and_ambiguous_listing_testimony() {
             )),
             "duplicate-root",
             ZfsEffectError::GatherParse {
-                message: "direct-child dataset listing returned 2 rows for root tank/ployz/volumes, expected exactly one".to_owned(),
+                message: "duplicate direct-child dataset root row \"tank/ployz/volumes\""
+                    .to_owned(),
             },
         ),
         (
             stdout(requested.as_str()),
             "missing-root",
             ZfsEffectError::GatherParse {
-                message: "direct-child dataset listing returned 0 rows for root tank/ployz/volumes, expected exactly one".to_owned(),
+                message: "direct-child dataset listing omitted root tank/ployz/volumes".to_owned(),
             },
         ),
         (
