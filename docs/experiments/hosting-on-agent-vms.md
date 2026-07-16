@@ -213,6 +213,15 @@ reach through the proxy and you get honest end-to-end TLS — but only to `:443`
   over wss/443 configured to use `HTTPS_PROXY`, rides the same passthrough path.
   TLS-shaped protocols are guaranteed to pass (ngrok proved it); raw SSH after
   CONNECT is likely but not certain (the gateway may expect TLS-shaped bytes).
+- **iroh: yes.** Its QUIC/UDP path is dead, but it falls back to a
+  relay-over-websocket on TCP/443; `iroh-doctor` reports `udp: false` yet homes
+  on a relay (`use1` at ~338 ms). A P2P byte-pipe; needs a small bridge
+  (`dumbpipe`) to front a service.
+- **Tailscale: yes, and most turnkey.** It bundles **userspace WireGuard** (no
+  kernel module), **auto-uses the CONNECT proxy** (`tshttpproxy`), and falls back
+  to **DERP over 443**. `tailscale netcheck` shows `UDP: false` but every DERP
+  region reachable, nearest at **56 ms**. Gives a real L3 tailnet, not just a
+  byte-pipe. (Full join needs an auth key; `netcheck` confirms the rest.)
 
 ### Wiring a tunnel to the gateway
 
@@ -223,18 +232,19 @@ public hostname. The gateway's on-machine host-port/eBPF routing is unchanged.
 
 ### Bottom line
 
-Internally you can stand up a full cluster; **publicly, the box is reachable
-only through a 443 tunnel that traverses the CONNECT proxy** — which paid ngrok
-or a self-hosted 443 relay can do, and Cloudflare Tunnel structurally cannot.
+**Publicly, the box is reachable only through a 443 tunnel that traverses the
+CONNECT proxy.** Cloudflare Tunnel structurally cannot (port 7844); paid ngrok or
+a self-hosted 443 relay can; and the cleanest are the **P2P stacks whose relay
+fallback speaks plain HTTPS — iroh and Tailscale**, both confirmed working here.
 That is a deliberate isolation property of the agent sandbox, not a ployz limit.
 
-## 7. The data plane (WireGuard): the multi-machine wall
+## 7. The data plane: the multi-machine wall — and the seam that answers it
 
 The core booted single-machine, which never exercises the overlay. Add a second
-machine and ployz forms a **WireGuard** data plane between hosts (the
-`51820/udp` seen in bootstrap). That cannot happen in these sandboxes, for two
-independent reasons — neither of which is a permission you can grant from the
-**Network access** settings:
+machine and ployz's **built-in provider** forms a **WireGuard** data plane
+between hosts (the `51820/udp` seen in bootstrap). That specific provider cannot
+run in these sandboxes, for two independent reasons — neither a permission you
+can grant from the **Network access** settings:
 
 1. **No WireGuard in the kernel.** `ip link add dev wg0 type wireguard` returns
    `Unknown device type`. There is no `/lib/modules/$(uname -r)` at all (no
@@ -249,11 +259,26 @@ independent reasons — neither of which is a permission you can grant from the
    interface could never reach a peer — the same wall that stops Cloudflare's
    QUIC.
 
-So the boundary is clean: **a single-machine core runs; a multi-machine cluster
-is structurally impossible across agent VMs.** A second sandbox has the same
-missing kernel WireGuard and the same UDP-blocked network, so the overlay can
-never come up. This matches ployz's own stance that real WireGuard / tcx eBPF
-need real hosts and are uncoverable even by the DinD harness.
+So the boundary is clean for the **default** provider: **the built-in Ployz
+WireGuard Provider can't form an overlay across agent VMs** — a second sandbox
+has the same missing kernel WireGuard and UDP-blocked network. This matches
+ployz's own stance that real WireGuard / tcx eBPF need real hosts.
+
+But "WireGuard" is a provider detail, not the architecture. Ployz's data plane
+is **swappable by design**: `CONTEXT.md` defines a cluster-level **Dataplane
+Provider**, a **Dataplane Provider Transition** operation, and the built-in
+WireGuard+eBPF as *the "Ployz WireGuard Provider — one implementation behind
+Dataplane Prepare,"* alongside a **Tailnet Integration** family for bringing an
+active Tailscale tailnet "to a degree." And Tailscale runs here: `tailscaled
+--tun=userspace-networking` needs no kernel module, auto-uses the CONNECT proxy,
+and falls back to DERP over 443 (`netcheck`: `UDP: false`, nearest relay 56 ms).
+
+So the honest conclusion is sharper than "impossible": **the default
+kernel-WireGuard provider can't run in this environment, but this environment is
+exactly the motivating case for the swappable-provider design** — a userspace,
+DERP-over-443 provider (Tailscale-shaped) is what would work. The seam is named
+in the domain model; it is not a shipped plugin (`DataplaneProvider` is not yet a
+trait in code), and the Tailnet integrations are cluster-level, not per-machine.
 
 ## 8. Takeaways
 
@@ -263,11 +288,14 @@ need real hosts and are uncoverable even by the DinD harness.
   workaround. [`host-on-agent-vm.sh`](./host-on-agent-vm.sh) folds them into one
   idempotent script.
 - **Public ingress: only via a 443 proxy-traversing tunnel.** No inbound, no raw
-  sockets, no non-443 ports — a paid ngrok or a self-hosted 443 relay can punch
-  out through the CONNECT proxy; Cloudflare Tunnel (port 7844) cannot.
-- **Multi-machine: impossible.** The WireGuard data plane needs kernel WireGuard
-  (absent — no module, not built in) and UDP between hosts (blocked). Only the
-  single-machine core is reachable; the overlay can never form across agent VMs.
+  sockets, no non-443 ports; Cloudflare Tunnel (7844) can't. The clean options
+  are the P2P stacks whose relay fallback speaks HTTPS — **iroh and Tailscale,
+  both confirmed working** — or paid ngrok / a self-hosted 443 relay.
+- **Multi-machine: not with the default provider — but the design has an out.**
+  The built-in kernel-WireGuard data plane can't form here (no kernel WG, UDP
+  blocked). Ployz's **Dataplane Provider is swappable by design**, and this is
+  the motivating case: a userspace/DERP-over-443 provider (Tailscale-shaped)
+  works where the default can't. Named seam, not a shipped plugin yet.
 - **Hosting: no.** These are ephemeral, inactivity-reclaimed dev sandboxes.
   Perfect for a live demo or a "look, it runs anywhere" screenshot; wrong tool
   for anything that must outlive the session.

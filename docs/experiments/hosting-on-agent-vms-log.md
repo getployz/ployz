@@ -244,22 +244,74 @@ auth stay **end-to-end** between a remote CLI and the sandbox's nats-server.
 This is the payoff: **a Ployz core hosted in a Claude sandbox, operated from
 anywhere over iroh** — because the entire control plane is NATS/TCP.
 
+## Act VIII — Tailscale, and where the design already points
+
+**30. Swap WireGuard for Tailscale?** Tailscale *is* WireGuard — plus the two
+things raw WG lacks here: a userspace implementation and a 443 relay fallback.
+Pulled the binaries, ran `tailscaled --tun=userspace-networking` (no kernel
+module, no `/dev/net/tun`) and `tailscale netcheck` (no auth needed):
+
+```text
+UDP: false                       ← direct WireGuard/UDP dead, as always
+Nearest DERP: New York City
+DERP latency: nyc 56.1ms  ord 61.2ms  tor 67.1ms … (every region over 443)
+tshttpproxy: using proxy "http://127.0.0.1:33533" for controlplane.tailscale.com
+```
+
+**Tailscale works — and more turnkey than iroh.** It (1) uses userspace
+WireGuard so the kernel-module wall doesn't apply, (2) **auto-detected and used
+the CONNECT proxy** (`tshttpproxy`, zero config) so control + DERP ride the
+opaque-passthrough 443 path with real certs, and (3) falls back to **DERP-only**
+over 443 with a 56 ms nearest relay (vs iroh's 338 ms). Bringing a node fully
+onto a tailnet needs an auth key; `netcheck` confirms every connectivity
+primitive short of that.
+
+**31. Correcting the record on "ployz-native."** An earlier draft of this log
+called swapping WireGuard for Tailscale "against ployz's design." That was
+wrong. Ployz's data plane is **swappable by design**: `CONTEXT.md` defines a
+cluster-level **Dataplane Provider**, an explicit **Dataplane Provider
+Transition** operation to change it, and frames the built-in WireGuard+eBPF as
+the *"Ployz WireGuard Provider — one implementation behind Dataplane Prepare."*
+The machine-endpoint code is already Tailscale-aware (it excludes `tailscale0`
+from mesh candidates). Tailscale is a *named, contemplated* integration — the
+**Tailnet Integration** family (Access Bridge, Subnet Access) lets you bring an
+active tailnet for access/reachability/subnet routing *"to a degree,"* and a
+Tailscale-as-provider is explicitly left open ("without making Tailscale the
+provider **by default**"). Two honest qualifiers: it's **cluster-level, not
+per-machine** ("machines do not bring their own provider"), and there's **no
+`DataplaneProvider` trait in code yet** — it's a designed-for seam, not a
+shipped plugin.
+
+So the sandbox isn't a counterexample to ployz's design; it's the **motivating
+case** for it. This is precisely the environment where the built-in WireGuard
+provider physically can't run (no kernel WG, UDP blocked) and a userspace,
+DERP-over-443 provider is the only thing that works — which is exactly the door
+the Dataplane Provider abstraction was built to leave open.
+
 ## Where it lands
 
-| Layer | Transport | Over iroh? |
-|-------|-----------|------------|
-| Control plane — NATS 4222, CLI, machine RPC, ops, testimony | TCP + TLS | ✅ rides `dumbpipe` directly |
-| Data plane — machine overlay (WireGuard 51820/UDP, kernel), gateway eBPF | UDP + kernel WG | ❌ can't form |
+| Layer | Transport | Works here? |
+|-------|-----------|-------------|
+| Control plane — NATS 4222, CLI, machine RPC, ops, testimony | TCP + TLS | ✅ rides iroh/`dumbpipe` (or a tailnet) directly |
+| Data plane — **built-in** Ployz WireGuard Provider (kernel WG 51820/UDP + eBPF) | UDP + kernel WG | ❌ can't form (no kernel WG, UDP blocked) |
+| Data plane — a **userspace/DERP-over-443 provider** (Tailscale-shaped) | TCP 443 relay | ✅ the transport works; not a shipped ployz provider yet |
 
-**Host a single-machine core, operate it from anywhere over iroh; the data plane
-is the ceiling.** Everything above is a sidecar you run — ployz doesn't
-orchestrate iroh — and the box is still ephemeral.
+**Host a single-machine core and operate it from anywhere over iroh or a
+tailnet.** The built-in WireGuard data plane is the ceiling *for the default
+provider*; a userspace-WG/relay provider (which Tailscale proves is viable here)
+is exactly what ployz's swappable **Dataplane Provider** design anticipates. For
+now these are sidecars you run — ployz has the seam named, not a plugin shipped —
+and the box is still ephemeral.
 
 ## Direction / open thread
 
-The goal we're steering toward: **run the entire thing over iroh** as the
-universal transport — control plane confirmed, data plane the open question
-(userspace-WG-over-iroh is the candidate, with the caveats above; making *ployz*
-use it would need a userspace-WG fallback and a pluggable/TCP-wrappable dataplane
-transport it doesn't have today). One more investigation is pending before we
-close the notebook.
+The synthesis: **the two stacks that punch out of this sandbox — iroh and
+Tailscale — are both P2P systems whose relay fallback speaks plain HTTPS/443**,
+and both dodge the kernel-WireGuard wall (iroh via its own QUIC/relay,
+Tailscale via bundled userspace WireGuard). The control plane already rides them
+today (NATS is TCP). The data plane is the real prize: ployz's **Dataplane
+Provider** is swappable by design, and this locked-down environment is the
+motivating case for a userspace/DERP-over-443 provider — the built-in kernel-WG
+provider can't run here, but the abstraction exists to let another one take its
+place. Turning that seam into a shipped provider (Tailscale-shaped, or
+iroh-shaped) is the open thread the notebook closes on.
