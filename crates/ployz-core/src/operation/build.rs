@@ -100,6 +100,12 @@ pub enum BuildOperationFailure {
     ReceiptAssemblyFailed {
         message: FailureMessage,
     },
+    EvidenceRecordingFailed {
+        message: FailureMessage,
+    },
+    ControlUnavailable {
+        message: FailureMessage,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -239,6 +245,12 @@ pub enum BuildEvidence {
         platform: OciPlatform,
         machine_id: MachineId,
         omitted_bytes: u64,
+    },
+    PlatformLogGap {
+        platform: OciPlatform,
+        machine_id: MachineId,
+        expected_sequence: u64,
+        final_sequence: u64,
     },
     PlatformCompleted {
         platform: OciPlatform,
@@ -406,6 +418,12 @@ fn project_evidence(
             platform,
             machine_id: _,
             omitted_bytes: _,
+        }
+        | BuildEvidence::PlatformLogGap {
+            platform,
+            machine_id: _,
+            expected_sequence: _,
+            final_sequence: _,
         }
         | BuildEvidence::PlatformCompleted {
             platform,
@@ -650,6 +668,60 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn log_gap_is_nonterminal_and_preserves_completed_machine_outcome() {
+        let accepted = status0();
+        let OperationProjection::StatusChanged { status: placing } = project_event_from_status(
+            &accepted,
+            BuildTransition::Placing.event(&id()),
+            EventSequence::try_new(2).expect("sequence"),
+        )
+        .expect("placing") else {
+            panic!("changed")
+        };
+        let OperationProjection::StatusChanged { status: building } = project_event_from_status(
+            &placing,
+            BuildTransition::Building.event(&id()),
+            EventSequence::try_new(3).expect("sequence"),
+        )
+        .expect("building") else {
+            panic!("changed")
+        };
+        let OperationProjection::StatusChanged {
+            status: gap_recorded,
+        } = project_event_from_status(
+            &building,
+            OperationEvent::BuildPlatformLogGap {
+                operation_id: id(),
+                platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
+                machine_id: MachineId::try_new("machine-a").expect("machine"),
+                expected_sequence: 2,
+                final_sequence: 3,
+            },
+            EventSequence::try_new(4).expect("sequence"),
+        )
+        .expect("gap evidence")
+        else {
+            panic!("changed")
+        };
+
+        let OperationProjection::StatusChanged { status: completed } = project_event_from_status(
+            &gap_recorded,
+            BuildTransition::Completed { receipt: receipt() }.event(&id()),
+            EventSequence::try_new(5).expect("sequence"),
+        )
+        .expect("completed") else {
+            panic!("changed")
+        };
+        assert!(matches!(
+            *completed,
+            OperationStatus::Build {
+                state: BuildOperationState::Completed { .. },
+                ..
+            }
+        ));
     }
 
     #[test]

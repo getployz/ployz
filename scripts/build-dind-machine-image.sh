@@ -17,12 +17,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib.sh
 source "${ROOT_DIR}/scripts/lib.sh"
+# shellcheck source=config/railpack-pins.env
+source "${ROOT_DIR}/config/railpack-pins.env"
 
 MACHINE_IMAGE="${PLOYZ_DIND_MACHINE_IMAGE:-ployz-dind-machine:local}"
 BUILD_IMAGE="${PLOYZ_DIND_BUILD_IMAGE:-rust:1.91-bookworm}"
 BUILDER_IMAGE="${PLOYZ_DIND_BUILDER_IMAGE:-ployz-dind-builder:rust-1.91-bookworm-v2}"
 NATS_SERVER_VERSION="${PLOYZ_DIND_NATS_SERVER_VERSION:-2.14.2}"
-RAILPACK_VERSION="v0.31.0"
 WORKLOAD_IMAGE="${PLOYZ_DIND_WORKLOAD_IMAGE:-nginx:1.27-alpine}"
 REGISTRY_IMAGE="${PLOYZ_DIND_REGISTRY_IMAGE:-registry:2.8.3}"
 UMAMI_IMAGE="ghcr.io/umami-software/umami:postgresql-latest"
@@ -173,12 +174,12 @@ stage_railpack() {
   platform="$(docker_platform "${PLOYZ_DIND_PLATFORM:-}")"
   case "${platform}" in
     linux/amd64)
-      archive_name="railpack-v0.31.0-x86_64-unknown-linux-musl.tar.gz"
-      archive_sha256="f75416cf4c452db2841d864f54dbfd8e4d77f2d4a02b23b87561e7760fa278fd"
+      archive_name="${RAILPACK_AMD64_ARCHIVE}"
+      archive_sha256="${RAILPACK_AMD64_ARCHIVE_SHA256}"
       ;;
     linux/arm64)
-      archive_name="railpack-v0.31.0-arm64-unknown-linux-musl.tar.gz"
-      archive_sha256="de4c197e3a9d0c3de14d1e55fe933611622b399f35f495b4274012609490158a"
+      archive_name="${RAILPACK_ARM64_ARCHIVE}"
+      archive_sha256="${RAILPACK_ARM64_ARCHIVE_SHA256}"
       ;;
     *)
       echo "DinD Railpack staging supports linux/amd64 and linux/arm64, got ${platform}" >&2

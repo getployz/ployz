@@ -848,6 +848,7 @@ impl DeployEventRenderContext {
             | OperationEvent::BuildRunning { .. }
             | OperationEvent::BuildPlatformLog { .. }
             | OperationEvent::BuildPlatformLogTruncated { .. }
+            | OperationEvent::BuildPlatformLogGap { .. }
             | OperationEvent::BuildPlatformCompleted { .. }
             | OperationEvent::BuildPlatformFailed { .. }
             | OperationEvent::BuildCompleted { .. }
@@ -990,14 +991,28 @@ fn render_replayed_event_text(
                 "absent"
             }
         ),
+        OperationEvent::BuildPlatformLog {
+            platform,
+            machine_id,
+            chunk,
+            ..
+        } => format!(
+            "{} {} platform {}/{} machine {} {}",
+            event.sequence.get(),
+            label,
+            platform.os(),
+            platform.architecture(),
+            machine_id.as_str(),
+            chunk.as_str()
+        ),
         OperationEvent::BuildSubmitted { .. }
         | OperationEvent::BuildPlacementStarted { .. }
         | OperationEvent::BuildPlatformPlaced { .. }
         | OperationEvent::BuildCommitVerified { .. }
         | OperationEvent::BuildPlatformToolchainVerified { .. }
         | OperationEvent::BuildRunning { .. }
-        | OperationEvent::BuildPlatformLog { .. }
         | OperationEvent::BuildPlatformLogTruncated { .. }
+        | OperationEvent::BuildPlatformLogGap { .. }
         | OperationEvent::BuildPlatformCompleted { .. }
         | OperationEvent::BuildPlatformFailed { .. }
         | OperationEvent::BuildCompleted { .. }
@@ -1090,6 +1105,7 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::BuildRunning { .. } => "build.running",
         OperationEvent::BuildPlatformLog { .. } => "build.platform_log",
         OperationEvent::BuildPlatformLogTruncated { .. } => "build.platform_log_truncated",
+        OperationEvent::BuildPlatformLogGap { .. } => "build.platform_log_gap",
         OperationEvent::BuildPlatformCompleted { .. } => "build.platform_completed",
         OperationEvent::BuildPlatformFailed { .. } => "build.platform_failed",
         OperationEvent::BuildCompleted { .. } => "build.completed",
@@ -1229,16 +1245,37 @@ fn render_deploy_failure_detail(
 
 #[cfg(test)]
 mod tests {
-    use super::status_failure_detail;
+    use super::{DeployEventRenderContext, render_replayed_event_text, status_failure_detail};
     use ployz_core::certificate::{
         ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
         CertificateProvisionFailure,
     };
     use ployz_core::ids::{CertId, MachineId, OperationId};
     use ployz_core::operation::{
-        CertOperationFailure, CertOperationState, EventSequence, FailureMessage, OperationStatus,
+        BuildLogChunk, CertOperationFailure, CertOperationState, EventSequence, FailureMessage,
+        OperationEvent, OperationEventRecordedAtUnixMs, OperationStatus, ReplayedOperationEvent,
         RouteHostname,
     };
+
+    #[test]
+    fn build_log_text_includes_platform_machine_and_chunk() {
+        let event = ReplayedOperationEvent {
+            sequence: EventSequence::try_new(3).expect("sequence"),
+            recorded_at_unix_ms: OperationEventRecordedAtUnixMs::try_new(1).expect("timestamp"),
+            event: OperationEvent::BuildPlatformLog {
+                operation_id: OperationId::try_new("build-1").expect("operation id"),
+                platform: ployz_core::image::OciPlatform::try_new("linux", "amd64")
+                    .expect("platform"),
+                machine_id: MachineId::try_new("machine-a").expect("machine id"),
+                chunk: BuildLogChunk::try_new("compiling crate").expect("chunk"),
+            },
+        };
+
+        assert_eq!(
+            render_replayed_event_text(&event, &DeployEventRenderContext { service_id: None }),
+            "3 build.platform_log platform linux/amd64 machine machine-a compiling crate"
+        );
+    }
 
     #[test]
     fn every_certificate_failure_renders_in_cert_status() {

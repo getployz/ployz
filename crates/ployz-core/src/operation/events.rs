@@ -139,6 +139,13 @@ pub enum OperationEvent {
         machine_id: MachineId,
         omitted_bytes: u64,
     },
+    BuildPlatformLogGap {
+        operation_id: OperationId,
+        platform: crate::image::OciPlatform,
+        machine_id: MachineId,
+        expected_sequence: u64,
+        final_sequence: u64,
+    },
     BuildPlatformCompleted {
         operation_id: OperationId,
         platform: crate::image::OciPlatform,
@@ -504,6 +511,7 @@ impl OperationEvent {
             | Self::BuildRunning { operation_id }
             | Self::BuildPlatformLog { operation_id, .. }
             | Self::BuildPlatformLogTruncated { operation_id, .. }
+            | Self::BuildPlatformLogGap { operation_id, .. }
             | Self::BuildPlatformCompleted { operation_id, .. }
             | Self::BuildPlatformFailed { operation_id, .. }
             | Self::BuildCompleted { operation_id, .. }
@@ -611,6 +619,7 @@ impl OperationEvent {
             | Self::BuildRunning { .. }
             | Self::BuildPlatformLog { .. }
             | Self::BuildPlatformLogTruncated { .. }
+            | Self::BuildPlatformLogGap { .. }
             | Self::BuildPlatformCompleted { .. }
             | Self::BuildPlatformFailed { .. }
             | Self::BuildCompleted { .. }
@@ -762,6 +771,7 @@ impl OperationEvent {
             | Self::BuildRunning { .. }
             | Self::BuildPlatformLog { .. }
             | Self::BuildPlatformLogTruncated { .. }
+            | Self::BuildPlatformLogGap { .. }
             | Self::BuildPlatformCompleted { .. }
             | Self::BuildPlatformFailed { .. }
             | Self::BuildCompleted { .. }
@@ -1027,6 +1037,21 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                     platform,
                     machine_id,
                     omitted_bytes,
+                }),
+            },
+            OperationEvent::BuildPlatformLogGap {
+                operation_id,
+                platform,
+                machine_id,
+                expected_sequence,
+                final_sequence,
+            } => Self::Build {
+                operation_id,
+                event: BuildEvent::Evidence(BuildEvidence::PlatformLogGap {
+                    platform,
+                    machine_id,
+                    expected_sequence,
+                    final_sequence,
                 }),
             },
             OperationEvent::BuildPlatformCompleted {

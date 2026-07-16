@@ -14,7 +14,7 @@ mod types;
 
 use ployz_core::deploy::{
     ContainerRestartPolicy, DeployCleanupContainer, DeployPlan, DeployPlanStep,
-    DeployPlanningInput, ImageSource, ReplicaSlot, plan_namespace_deploy,
+    DeployPlanningContext, DeployPlanningInput, ImageSource, ReplicaSlot, plan_namespace_deploy,
 };
 use ployz_core::ids::{OperationId, StepId, SubjectTokenError};
 use ployz_core::machine::runtime::ManagedContainerKind;
@@ -40,7 +40,6 @@ use images::{
     dataplane_membership, machine_image_pull, resolve_registry_images, validate_pushed_platforms,
 };
 use phase::{CoarsePhaseProgress, DeployRun};
-pub(super) use placement::declared_local_dataplane_candidate;
 pub use ports::{
     CertificateProvisioner, DeployHealthChecker, DeployOperationRecorder, DeployPhasePromotion,
     MachineContainerRuntime, MachineImageRemovalRuntime, NamespaceCommitError,
@@ -402,6 +401,9 @@ pub(super) fn deploy_plan(
             })
             .collect(),
         command.namespace_cleanup_candidates().to_vec(),
+        DeployPlanningContext {
+            storage_testimony: &command.storage_testimony,
+        },
     )
     .map_err(DeployExecutionError::from)
 }

@@ -1,17 +1,17 @@
 use std::collections::BTreeMap;
 
 use ployz_core::ids::MachineId;
-use ployz_core::machine::DataplaneUnavailableReason;
 use ployz_core::machine::MachineUsabilityReason;
-use ployz_core::machine::placement_rejection;
 use ployz_core::machine::{
-    DataplaneProjectionAdmissionFailure, StorageCompatibility, StorageTestimony,
-    classify_storage_compatibility, validate_declared_local_machine,
+    StorageCompatibility, StorageTestimony, classify_storage_compatibility,
     validate_placement_machine_peers,
 };
-use ployz_core::network::{DataplaneProjection, DataplaneProjectionMember, MachineDataplaneStatus};
+use ployz_core::network::{DataplaneProjection, MachineDataplaneStatus};
 use ployz_core::operation::{FailureMessage, UnusableMachine};
 
+use crate::control::operations::local_execution_admission::{
+    classify_local_execution_admission, dataplane_admission_failure,
+};
 use crate::control::role_client::machine::MachinePlacementFacts;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,28 +72,17 @@ pub(super) fn classify_storage_usability(
     (eligible, unusable)
 }
 
-struct PreliminaryCandidate<'a> {
-    machine_id: MachineId,
-    member: &'a DataplaneProjectionMember,
-    status: &'a MachineDataplaneStatus,
-}
-
 pub(super) fn classify_machine_usability(
     placement_facts: &[MachinePlacementFacts],
     projection: &DataplaneProjection,
     dataplane_statuses: &[(MachineId, Result<MachineDataplaneStatus, FailureMessage>)],
 ) -> (Vec<MachineId>, Vec<UnusableMachine>) {
-    let mut preliminary = Vec::new();
-    let mut unusable = BTreeMap::new();
-
-    for facts in placement_facts {
-        match preliminary_candidate(facts, projection, dataplane_statuses) {
-            Ok(candidate) => preliminary.push(candidate),
-            Err(reason) => {
-                unusable.insert(facts.machine_id.clone(), reason);
-            }
-        }
-    }
+    let (preliminary, unusable) =
+        classify_local_execution_admission(placement_facts, projection, dataplane_statuses);
+    let mut unusable = unusable
+        .into_iter()
+        .map(|machine| (machine.machine_id, machine.reason))
+        .collect::<BTreeMap<_, _>>();
 
     let fixed_placement_set = preliminary
         .iter()
@@ -106,9 +95,12 @@ pub(super) fn classify_machine_usability(
             candidate.member,
             candidate.status,
         ) {
-            None => eligible.push(candidate.machine_id),
+            None => eligible.push(candidate.machine_id.clone()),
             Some(failure) => {
-                unusable.insert(candidate.machine_id, dataplane_admission_failure(failure));
+                unusable.insert(
+                    candidate.machine_id.clone(),
+                    dataplane_admission_failure(failure),
+                );
             }
         }
     }
@@ -120,81 +112,22 @@ pub(super) fn classify_machine_usability(
     (eligible, unusable)
 }
 
-fn preliminary_candidate<'a>(
-    facts: &MachinePlacementFacts,
-    projection: &'a DataplaneProjection,
-    dataplane_statuses: &'a [(MachineId, Result<MachineDataplaneStatus, FailureMessage>)],
-) -> Result<PreliminaryCandidate<'a>, MachineUsabilityReason> {
-    if let Some(reason) = placement_rejection(facts.lifecycle) {
-        return Err(reason);
-    }
-    if facts.answer.is_none() {
-        return Err(MachineUsabilityReason::FactsUnavailable);
-    }
-    let (member, status) =
-        declared_local_dataplane_candidate(&facts.machine_id, projection, dataplane_statuses)?;
-    Ok(PreliminaryCandidate {
-        machine_id: facts.machine_id.clone(),
-        member,
-        status,
-    })
-}
-
-pub(crate) fn declared_local_dataplane_candidate<'a>(
-    machine_id: &MachineId,
-    projection: &'a DataplaneProjection,
-    dataplane_statuses: &'a [(MachineId, Result<MachineDataplaneStatus, FailureMessage>)],
-) -> Result<(&'a DataplaneProjectionMember, &'a MachineDataplaneStatus), MachineUsabilityReason> {
-    let Some(member) = projection
-        .declared_members()
-        .iter()
-        .find(|member| &member.machine_id == machine_id)
-    else {
-        return Err(dataplane_unavailable(
-            DataplaneUnavailableReason::NotDeclared,
-        ));
-    };
-    let Some((_, testimony)) = dataplane_statuses
-        .iter()
-        .find(|(candidate_id, _)| candidate_id == machine_id)
-    else {
-        return Err(dataplane_unavailable(
-            DataplaneUnavailableReason::TestimonyMissing,
-        ));
-    };
-    let status = testimony.as_ref().map_err(|message| {
-        dataplane_admission_failure(DataplaneProjectionAdmissionFailure::NoAnswer {
-            message: message.clone(),
-        })
-    })?;
-    if let Some(failure) = validate_declared_local_machine(projection, member, status) {
-        return Err(dataplane_admission_failure(failure));
-    }
-    Ok((member, status))
-}
-
-fn dataplane_admission_failure(
-    failure: DataplaneProjectionAdmissionFailure,
-) -> MachineUsabilityReason {
-    dataplane_unavailable(DataplaneUnavailableReason::Admission { failure })
-}
-
-fn dataplane_unavailable(reason: DataplaneUnavailableReason) -> MachineUsabilityReason {
-    MachineUsabilityReason::DataplaneUnavailable { reason }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use ployz_core::machine::MachineLifecycle;
     use ployz_core::machine::runtime::MachineContainerObservationSnapshot;
-    use ployz_core::machine::{StorageCapability, StorageUnavailableReason};
+    use ployz_core::machine::{
+        DataplaneProjectionAdmissionFailure, DataplaneUnavailableReason, StorageCapability,
+        StorageUnavailableReason,
+    };
     use ployz_core::network::{
-        DataplaneProjectionRevisions, DataplaneProjectionTestimony, EbpfAttachmentStatus,
-        EndpointBridgeStatus, MachineEndpointSubnet, NativeDataplaneProjectionStatus,
-        WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardHandshakeStatus,
-        WireGuardInterfaceMtu, WireGuardMtuProbe, WireGuardPeerEndpointSubnet, WireGuardPeerStatus,
-        WireGuardPublicKey, WireGuardRttStatus, WireGuardStatus,
+        DataplaneProjectionMember, DataplaneProjectionRevisions, DataplaneProjectionTestimony,
+        EbpfAttachmentStatus, EndpointBridgeStatus, MachineEndpointSubnet,
+        NativeDataplaneProjectionStatus, WireGuardConfiguredMtu, WireGuardDetectedMtu,
+        WireGuardHandshakeStatus, WireGuardInterfaceMtu, WireGuardMtuProbe,
+        WireGuardPeerEndpointSubnet, WireGuardPeerStatus, WireGuardPublicKey, WireGuardRttStatus,
+        WireGuardStatus,
     };
 
     #[test]
@@ -237,7 +170,15 @@ mod tests {
         let testimony = BTreeMap::from([
             (
                 ready.clone(),
-                Some(StorageCapability::Ready { pool: pool.clone() }),
+                Some(StorageCapability::Ready {
+                    pool: pool.clone(),
+                    capacity: ployz_core::machine::PoolCapacityFacts {
+                        total_bytes: 1024,
+                        provisioned_used_bytes: 0,
+                        free_bytes: 1024,
+                        child_quotas: Vec::new(),
+                    },
+                }),
             ),
             (legacy.clone(), None),
             (unprepared.clone(), Some(StorageCapability::Unprepared)),

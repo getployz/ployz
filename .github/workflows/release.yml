@@ -136,14 +136,10 @@ jobs:
             platform: linux/amd64
             slug: linux-amd64
             nats_server_sha256: b3e7b14eb10c895fd90c2dacdb6b65bd3208adcc9524dd7689ba2c1024e6b97a
-            railpack_archive: railpack-v0.31.0-x86_64-unknown-linux-musl.tar.gz
-            railpack_sha256: f75416cf4c452db2841d864f54dbfd8e4d77f2d4a02b23b87561e7760fa278fd
           - runner: ubuntu-24.04-arm
             platform: linux/arm64
             slug: linux-arm64
             nats_server_sha256: 15fd0c3438e7178e5316e63be68373ad581c8d78db26e649113aa303b74e5e58
-            railpack_archive: railpack-v0.31.0-arm64-unknown-linux-musl.tar.gz
-            railpack_sha256: de4c197e3a9d0c3de14d1e55fe933611622b399f35f495b4274012609490158a
           - platform: darwin/arm64
             slug: darwin-arm64
             runner: macos-14
@@ -165,7 +161,7 @@ jobs:
             /tmp/ployz-dind-ebpf-target
             /tmp/ployz-dind-cargo-registry
             /tmp/ployz-dind-cargo-git
-          key: ployz-release-${{ matrix.slug }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs', 'ebpf/**/Cargo.lock', 'ebpf/**/Cargo.toml', 'ebpf/**/*.rs', 'scripts/build-dind-machine-image.sh', 'scripts/build-ebpf-bytecode.sh', 'scripts/lib.sh') }}
+          key: ployz-release-${{ matrix.slug }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs', 'ebpf/**/Cargo.lock', 'ebpf/**/Cargo.toml', 'ebpf/**/*.rs', 'config/railpack-pins.env', 'scripts/build-dind-machine-image.sh', 'scripts/build-ebpf-bytecode.sh', 'scripts/lib.sh') }}
           restore-keys: ployz-release-${{ matrix.slug }}-
       - name: Restore macOS build cache
         if: startsWith(matrix.platform, 'darwin/')
@@ -185,10 +181,25 @@ jobs:
           PLOYZ_NATS_SERVER_VERSION: 2.14.2
           PLOYZ_NATS_SERVER_URL: https://github.com/nats-io/nats-server/releases/download/v2.14.2/nats-server-v2.14.2-${{ matrix.slug }}.tar.gz
           PLOYZ_NATS_SERVER_SHA256: ${{ matrix.nats_server_sha256 }}
-          PLOYZ_RAILPACK_VERSION: v0.31.0
-          PLOYZ_RAILPACK_ARCHIVE_URL: https://github.com/railwayapp/railpack/releases/download/v0.31.0/${{ matrix.railpack_archive }}
-          PLOYZ_RAILPACK_ARCHIVE_SHA256: ${{ matrix.railpack_sha256 }}
-        run: bash scripts/package-release.sh
+        run: |
+          source config/railpack-pins.env
+          case "${PLOYZ_RELEASE_PLATFORM}" in
+            linux/amd64)
+              railpack_archive="${RAILPACK_AMD64_ARCHIVE}"
+              railpack_sha256="${RAILPACK_AMD64_ARCHIVE_SHA256}"
+              ;;
+            linux/arm64)
+              railpack_archive="${RAILPACK_ARM64_ARCHIVE}"
+              railpack_sha256="${RAILPACK_ARM64_ARCHIVE_SHA256}"
+              ;;
+            *)
+              exec bash scripts/package-release.sh
+              ;;
+          esac
+          export PLOYZ_RAILPACK_VERSION="${RAILPACK_VERSION}"
+          export PLOYZ_RAILPACK_ARCHIVE_URL="https://github.com/railwayapp/railpack/releases/download/${RAILPACK_VERSION}/${railpack_archive}"
+          export PLOYZ_RAILPACK_ARCHIVE_SHA256="${railpack_sha256}"
+          bash scripts/package-release.sh
       - name: Repair Linux cache ownership
         if: always() && startsWith(matrix.platform, 'linux/')
         run: |

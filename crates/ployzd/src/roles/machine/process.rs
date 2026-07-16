@@ -32,6 +32,7 @@ use crate::roles::machine::service::{
     start_machine_role_service_with_endpoint_cache_and_image,
 };
 use futures_util::StreamExt;
+use ployz_core::build::{BUILD_FORCE_CLEANUP_TIMEOUT, BUILD_TASK_DRAIN_TIMEOUT};
 use ployz_core::ids::MachineId;
 use ployz_core::image::IMAGE_MESH_REGISTRY_PORT;
 use ployz_core::intent::recovery::PendingMachineJoinRecoverySnapshot;
@@ -50,7 +51,10 @@ const MACHINE_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MACHINE_OBSERVATION_INTERVAL: Duration =
     ployz_core::machine::runtime::OBSERVATION_PUBLISH_INTERVAL;
 const MACHINE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
-const MACHINE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+const MACHINE_SHUTDOWN_TIMEOUT: Duration = BUILD_TASK_DRAIN_TIMEOUT
+    .saturating_add(BUILD_TASK_DRAIN_TIMEOUT)
+    .saturating_add(BUILD_FORCE_CLEANUP_TIMEOUT)
+    .saturating_add(Duration::from_secs(5));
 const INTENT_MIRROR_RESUBSCRIBE_DELAY: Duration = Duration::from_secs(5);
 const BUILD_WORKSPACE_ROOT: &str = "/var/lib/ployz/builds";
 
@@ -62,6 +66,7 @@ pub struct RunningMachineProcess {
     pending_join_mirror: RunningTask,
     projection: RunningProjectionTask,
     image_registry: Option<RunningRegistryV2>,
+    build_runtime: Option<MachineBuildRuntime>,
 }
 
 impl RunningMachineProcess {
@@ -74,6 +79,7 @@ impl RunningMachineProcess {
             mut pending_join_mirror,
             mut projection,
             image_registry,
+            build_runtime,
         } = self;
         pending_join_mirror.request_shutdown();
         projection.request_shutdown();
@@ -86,6 +92,9 @@ impl RunningMachineProcess {
             observer.task.abort_handle(),
         ];
         let cleanup = async {
+            if let Some(build_runtime) = build_runtime {
+                build_runtime.shutdown().await;
+            }
             if let Some(image_registry) = image_registry {
                 image_registry.shutdown().await;
             }
@@ -241,13 +250,14 @@ where
         log_reader,
         endpoint_cache.clone(),
         MachineRoleProjectionServices {
-            build_state,
+            build_state: build_state.clone(),
             image_state,
             projection_state: projection_state.clone(),
         },
     )
     .await
     .map_err(MachineProcessError::StartMachineService)?;
+    let build_runtime = build_state;
     let (intent_mirror_shutdown, intent_mirror_shutdown_rx) = broadcast::channel(1);
     let intent_mirror = spawn_intent_failover_mirror(
         client.clone(),
@@ -281,6 +291,7 @@ where
         pending_join_mirror,
         projection,
         image_registry: None,
+        build_runtime,
     })
 }
 

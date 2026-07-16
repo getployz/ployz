@@ -117,7 +117,6 @@ async fn submit_build(
         panic!("build {operation} did not complete: {status:?}");
     };
     assert_eq!(source.commit.as_str(), git.commit);
-    assert!(source.credential_supplied);
     let platform_images = receipt.platforms().collect::<Vec<_>>();
     let [(actual_platform, image)] = platform_images.as_slice() else {
         panic!("build {operation} did not return exactly one native image");

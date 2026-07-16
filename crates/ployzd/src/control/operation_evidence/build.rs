@@ -106,6 +106,18 @@ fn build_evidence_event(operation_id: &OperationId, evidence: BuildEvidence) -> 
             machine_id,
             omitted_bytes,
         },
+        BuildEvidence::PlatformLogGap {
+            platform,
+            machine_id,
+            expected_sequence,
+            final_sequence,
+        } => OperationEvent::BuildPlatformLogGap {
+            operation_id: operation_id.clone(),
+            platform,
+            machine_id,
+            expected_sequence,
+            final_sequence,
+        },
         BuildEvidence::PlatformCompleted {
             platform,
             machine_id,

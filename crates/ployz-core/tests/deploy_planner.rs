@@ -7,10 +7,11 @@ use ployz_core::deploy::{
     ExistingReplicaCreationGate, ExistingReplicaPolicy, ExistingServiceReplica,
     HealthcheckShellCommand, ImageReference, ImageSource, ObservedCleanupCandidate, PlatformImage,
     PreStartHook, PreStartHookStep, PushedImageReceipt, ReplicaCount, ReplicaSlot,
-    ServiceDependency, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeMaxSizeBytes,
-    VolumeName, VolumeSpec, ZfsPoolName, auto_hostname_route_binding_commits,
-    namespace_revision_id_for, namespace_route_binding_removals, namespace_serving_target_removals,
-    plan_namespace_deploy, prepare_deploy, validate_deploy_route_bindings,
+    ServiceDependency, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod,
+    VolumeAdmissionFailure, VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName,
+    auto_hostname_route_binding_commits, namespace_revision_id_for,
+    namespace_route_binding_removals, namespace_serving_target_removals, plan_namespace_deploy,
+    prepare_deploy, validate_deploy_route_bindings,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::image::{OciDigest, OciPlatform};
@@ -36,6 +37,7 @@ struct DeployPlanningInput {
     existing_replicas: Vec<ExistingServiceReplica>,
     cleanup_candidates: Vec<ObservedCleanupCandidate>,
     volume_pins: Vec<VolumePinState>,
+    storage_testimony: BTreeMap<MachineId, Option<ployz_core::machine::StorageCapability>>,
 }
 
 #[test]
@@ -484,7 +486,14 @@ fn namespace_planner_rejects_a_service_id_outside_the_validated_request() {
     let request = normalized_services(vec![deploy_request(1)], BTreeMap::new());
 
     assert_eq!(
-        plan_namespace_deploy(&request, vec![input], Vec::new()),
+        plan_namespace_deploy(
+            &request,
+            vec![input],
+            Vec::new(),
+            ployz_core::deploy::DeployPlanningContext {
+                storage_testimony: &BTreeMap::new(),
+            },
+        ),
         Err(DeployPlanError::UnknownService {
             service_id: service_id("svc_foreign"),
         })
@@ -788,15 +797,18 @@ fn provisioned_volume_with_a_dataset_backed_pin_can_be_placed() {
 
 #[test]
 fn plain_declaration_rejects_a_provisioned_pin() {
-    let mut input = planning_input(1, [machine_id("machine_a")]);
+    let mut input = planning_input(1, [machine_id("machine_b")]);
     declare_plain_volume_mounts(&mut input, vec![volume_mount("data", "/data")]);
     input.volume_pins = vec![provisioned_volume_pin("data", "machine_a")];
 
     assert!(matches!(
         plan_single_service(&input),
-        Err(DeployPlanError::VolumePinIncompatible {
-            declaration: VolumeSpec::Plain,
-            pin_kind: ployz_core::intent::VolumeKind::Provisioned { .. },
+        Err(DeployPlanError::VolumeAdmission {
+            failure: VolumeAdmissionFailure::KindConversion {
+                declaration: VolumeSpec::Plain,
+                pin_kind: ployz_core::intent::VolumeKind::Provisioned { .. },
+                ..
+            },
             ..
         })
     ));
@@ -818,16 +830,40 @@ fn provisioned_declaration_rejects_a_plain_pin() {
 
     assert!(matches!(
         plan_single_service(&input),
-        Err(DeployPlanError::VolumePinIncompatible {
-            declaration: VolumeSpec::Provisioned { .. },
-            pin_kind: ployz_core::intent::VolumeKind::Plain,
+        Err(DeployPlanError::VolumeAdmission {
+            failure: VolumeAdmissionFailure::KindConversion {
+                declaration: VolumeSpec::Provisioned { .. },
+                pin_kind: ployz_core::intent::VolumeKind::Plain,
+                ..
+            },
             ..
         })
     ));
 }
 
 #[test]
-fn provisioned_declaration_allows_growing_a_pinned_maximum() {
+fn duplicate_pins_for_one_volume_fail_as_ambiguous_before_placement() {
+    let mut input = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
+    declare_plain_volume_mounts(&mut input, vec![volume_mount("data", "/data")]);
+    input.volume_pins = vec![
+        volume_pin("data", "machine_a"),
+        volume_pin("data", "machine_b"),
+    ];
+
+    assert_eq!(
+        plan_single_service(&input),
+        Err(DeployPlanError::VolumeAdmission {
+            service_id: service_id("svc_api"),
+            failure: VolumeAdmissionFailure::AmbiguousPins {
+                volume_name: VolumeName::try_new("data").expect("volume name"),
+                pin_count: 2,
+            },
+        })
+    );
+}
+
+#[test]
+fn provisioned_declaration_requires_provisioning_to_grow_a_pinned_maximum() {
     let mut input = planning_input(1, [machine_id("machine_a")]);
     declare_volume_mounts(
         &mut input,
@@ -839,16 +875,23 @@ fn provisioned_declaration_allows_growing_a_pinned_maximum() {
         )],
     );
     input.volume_pins = vec![provisioned_volume_pin("data", "machine_a")];
+    input.storage_testimony = BTreeMap::from([(
+        machine_id("machine_a"),
+        Some(ready_storage_with_quota("data", 1024)),
+    )]);
 
     assert_eq!(
-        plan_single_service(&input).expect("larger declaration is grow-only"),
-        deploy_plan(&input, vec![run_step("machine_a", 1)], Vec::new())
+        plan_single_service(&input),
+        Err(DeployPlanError::ProvisionedVolumeRequiresProvisioning {
+            service_id: service_id("svc_api"),
+            volume_name: VolumeName::try_new("data").expect("volume name"),
+        })
     );
 }
 
 #[test]
 fn provisioned_declaration_rejects_shrinking_a_pinned_maximum() {
-    let mut input = planning_input(1, [machine_id("machine_a")]);
+    let mut input = planning_input(1, [machine_id("machine_b")]);
     declare_volume_mounts(
         &mut input,
         vec![(
@@ -862,11 +905,13 @@ fn provisioned_declaration_rejects_shrinking_a_pinned_maximum() {
 
     assert_eq!(
         plan_single_service(&input),
-        Err(DeployPlanError::ProvisionedVolumeShrink {
+        Err(DeployPlanError::VolumeAdmission {
             service_id: service_id("svc_api"),
-            volume_name: VolumeName::try_new("data").expect("volume name"),
-            declared_max_size_bytes: VolumeMaxSizeBytes::try_new(512).expect("non-zero size"),
-            pinned_max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("non-zero size"),
+            failure: VolumeAdmissionFailure::QuotaShrink {
+                volume_name: VolumeName::try_new("data").expect("volume name"),
+                declared_max_size_bytes: VolumeMaxSizeBytes::try_new(512).expect("non-zero size"),
+                pinned_max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("non-zero size"),
+            },
         })
     );
 }
@@ -959,6 +1004,108 @@ fn namespace_volume_pin_commits_are_visible_to_later_service_plans() {
             machines: vec![machine_id("machine_a"), machine_id("machine_b")],
         })
     );
+}
+
+#[test]
+fn multi_service_redeploy_canonicalizes_identical_pin_fan_out() {
+    let pin = volume_pin("data", "machine_a");
+    let mut api = planning_input(1, [machine_id("machine_a")]);
+    declare_plain_volume_mounts(&mut api, vec![volume_mount("data", "/data")]);
+    api.volume_pins = vec![pin.clone()];
+    let mut worker = planning_input(1, [machine_id("machine_a")]);
+    update_request(&mut worker.service, |request| {
+        request.service_id = service_id("svc_worker");
+    });
+    declare_plain_volume_mounts(&mut worker, vec![volume_mount("data", "/work")]);
+    worker.volume_pins = vec![pin];
+
+    let plan = plan_inputs(vec![api, worker], Vec::new())
+        .expect("identical snapshots from each service are one durable pin");
+
+    assert!(plan.volume_pin_commits.is_empty());
+    assert_eq!(plan.target_machines(), vec![machine_id("machine_a")]);
+}
+
+#[test]
+fn other_namespace_pin_does_not_assign_an_unpinned_current_namespace_volume() {
+    let mut input = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
+    declare_plain_volume_mounts(&mut input, vec![volume_mount("data", "/data")]);
+    input.volume_pins = vec![VolumePinState::plain(
+        namespace_id("other_namespace"),
+        VolumeName::try_new("data").expect("volume name"),
+        machine_id("machine_b"),
+    )];
+
+    let plan = plan_single_service(&input).expect("other namespace pin is irrelevant");
+
+    assert_eq!(plan.target_machines(), vec![machine_id("machine_a")]);
+    assert_eq!(
+        plan.volume_pin_commits,
+        vec![volume_pin("data", "machine_a")]
+    );
+}
+
+#[test]
+fn multi_service_provisioned_births_share_one_machine_capacity_snapshot() {
+    let mut api = planning_input(1, [machine_id("machine_a")]);
+    declare_volume_mounts(
+        &mut api,
+        vec![(
+            volume_mount("api_data", "/data"),
+            VolumeSpec::Provisioned {
+                max_size_bytes: VolumeMaxSizeBytes::try_new(600).expect("non-zero size"),
+            },
+        )],
+    );
+    let mut worker = planning_input(1, [machine_id("machine_a")]);
+    update_request(&mut worker.service, |request| {
+        request.service_id = service_id("svc_worker");
+    });
+    declare_volume_mounts(
+        &mut worker,
+        vec![(
+            volume_mount("worker_data", "/work"),
+            VolumeSpec::Provisioned {
+                max_size_bytes: VolumeMaxSizeBytes::try_new(600).expect("non-zero size"),
+            },
+        )],
+    );
+    let testimony = BTreeMap::from([(
+        machine_id("machine_a"),
+        Some(ready_storage_with_capacity(1_000, Vec::new())),
+    )]);
+    api.storage_testimony = testimony.clone();
+    worker.storage_testimony = testimony;
+
+    assert!(matches!(
+        plan_inputs(vec![api, worker], Vec::new()),
+        Err(DeployPlanError::VolumeAdmission {
+            failure: VolumeAdmissionFailure::CapacityExceeded {
+                available_bytes: 1_000,
+                requested_total_bytes: 1_200,
+            },
+            ..
+        })
+    ));
+}
+
+#[test]
+fn admitted_provisioned_birth_never_reaches_container_planning() {
+    let mut input = planning_input(1, [machine_id("machine_a")]);
+    declare_volume_mounts(
+        &mut input,
+        vec![(
+            volume_mount("data", "/data"),
+            VolumeSpec::Provisioned {
+                max_size_bytes: VolumeMaxSizeBytes::try_new(512).expect("non-zero size"),
+            },
+        )],
+    );
+
+    assert!(matches!(
+        plan_single_service(&input),
+        Err(DeployPlanError::ProvisionedVolumeRequiresProvisioning { .. })
+    ));
 }
 
 #[test]
@@ -1210,6 +1357,7 @@ fn deploy_preparation_evacuates_draining_machine_replicas() {
         existing_replicas: prepared.existing_replicas,
         cleanup_candidates: prepared.cleanup_candidates,
         volume_pins: Vec::new(),
+        storage_testimony: BTreeMap::from([(machine_id("machine_a"), Some(ready_storage()))]),
     };
     let expected = deploy_plan(
         &input,
@@ -1846,10 +1994,15 @@ fn planning_input(
     replicas: u16,
     eligible_machines: impl IntoIterator<Item = MachineId>,
 ) -> DeployPlanningInput {
+    let eligible_machines = eligible_machines.into_iter().collect::<Vec<_>>();
     DeployPlanningInput {
         service: deploy_request(replicas),
         volumes: BTreeMap::new(),
-        eligible_machines: eligible_machines.into_iter().collect(),
+        storage_testimony: eligible_machines
+            .iter()
+            .map(|machine_id| (machine_id.clone(), Some(ready_storage())))
+            .collect(),
+        eligible_machines,
         existing_replicas: Vec::new(),
         cleanup_candidates: Vec::new(),
         volume_pins: Vec::new(),
@@ -1904,6 +2057,10 @@ fn plan_inputs(
         },
     )
     .expect("planner fixture normalizes");
+    let storage_testimony = inputs
+        .iter()
+        .flat_map(|input| input.storage_testimony.clone())
+        .collect::<BTreeMap<_, _>>();
     plan_namespace_deploy(
         &request,
         inputs
@@ -1917,6 +2074,9 @@ fn plan_inputs(
             })
             .collect(),
         cleanup,
+        ployz_core::deploy::DeployPlanningContext {
+            storage_testimony: &storage_testimony,
+        },
     )
 }
 
@@ -2036,6 +2196,46 @@ fn provisioned_volume_pin(volume_name: &str, machine_id: &str) -> VolumePinState
         },
     )
     .expect("dataset identity matches pin")
+}
+
+fn ready_storage() -> ployz_core::machine::StorageCapability {
+    ready_storage_with_capacity(1024 * 1024, Vec::new())
+}
+
+fn ready_storage_with_capacity(
+    free_bytes: u64,
+    child_quotas: Vec<ployz_core::machine::DatasetQuotaFact>,
+) -> ployz_core::machine::StorageCapability {
+    ployz_core::machine::StorageCapability::Ready {
+        pool: ZfsPoolName::try_new("tank").expect("pool name"),
+        capacity: ployz_core::machine::PoolCapacityFacts {
+            total_bytes: free_bytes,
+            provisioned_used_bytes: 0,
+            free_bytes,
+            child_quotas,
+        },
+    }
+}
+
+fn ready_storage_with_quota(
+    volume_name: &str,
+    quota_bytes: u64,
+) -> ployz_core::machine::StorageCapability {
+    let pool = ZfsPoolName::try_new("tank").expect("pool name");
+    let volume_name = VolumeName::try_new(volume_name).expect("valid volume name");
+    ployz_core::machine::StorageCapability::Ready {
+        pool: pool.clone(),
+        capacity: ployz_core::machine::PoolCapacityFacts {
+            total_bytes: 1024 * 1024,
+            provisioned_used_bytes: 0,
+            free_bytes: 1024 * 1024,
+            child_quotas: vec![ployz_core::machine::DatasetQuotaFact {
+                dataset: DatasetName::for_volume(&pool, &namespace_id("default"), &volume_name)
+                    .expect("dataset name"),
+                quota_bytes,
+            }],
+        },
+    }
 }
 
 fn deploy_route(hostname: &str, endpoint_port: u16) -> DeployRoute {

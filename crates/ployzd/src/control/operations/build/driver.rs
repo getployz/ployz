@@ -1,17 +1,14 @@
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::StreamExt;
 use ployz_core::build::build_control_request_timeout;
 use ployz_core::deploy::PushedImageReceipt;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::operation::{
     BuildCleanupEvidence, BuildEvidence, BuildOperationFailure, BuildPlatformFailure,
-    BuildTimeoutFailure, BuildTransition, CancellationReason, FailureMessage,
+    BuildTimeoutFailure, BuildTransition, CancellationReason, EventSequence, FailureMessage,
+    OperationStatus,
 };
 use ployz_nats::subjects::{MachineServiceEndpoint, machine_build_log};
-use tokio::sync::Mutex;
 
 use crate::control::intent::service::NatsIntentReader;
 use crate::control::role_client::machine::{
@@ -21,15 +18,17 @@ use crate::control::role_client::machine_convergence::gather_dataplane_statuses;
 use crate::control::sequencer::{AcceptedBuildExecution, OperationControllers};
 use crate::roles::machine::MachineRuntimeUnavailableReason;
 use crate::roles::machine::protocol::{
-    MachineBuildCancelDomainError, MachineBuildCancelRpcOk, MachineBuildCancelRpcRequest,
-    MachineBuildCleanupOutcome, MachineBuildLogFrame, MachineBuildStartDomainError,
-    MachineBuildStartRpcOk, MachineBuildStartRpcRequest,
+    BuildLogSummary, MachineBuildCancelDomainError, MachineBuildCancelOutcome,
+    MachineBuildCancelRpcOk, MachineBuildCancelRpcRequest, MachineBuildCleanupOutcome,
+    MachineBuildStartDomainError, MachineBuildStartRpcOk, MachineBuildStartRpcRequest,
 };
 use crate::tasks::TaskSpawner;
 
+use super::active_registry::{ActiveBuildRegistry, CancellationRequest, RejectedAdmissionOutcome};
+use super::log_stream::{MachineCallOrLog, next_machine_call_or_log};
 use super::place_build_platforms;
+use super::platform_session::PlatformLogSession;
 
-const BUILD_LOG_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const BUILD_CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
@@ -40,13 +39,13 @@ pub(crate) struct BuildOperationDriver {
     controllers: OperationControllers,
     timeout: Duration,
     tasks: TaskSpawner,
-    active: Arc<Mutex<BTreeMap<OperationId, ActiveBuild>>>,
+    active: ActiveBuildRegistry,
 }
 
-#[derive(Clone, Default)]
-struct ActiveBuild {
-    started: BTreeSet<MachineId>,
-    cancellation_reason: Option<CancellationReason>,
+pub(crate) enum BuildCancelDisposition {
+    Accepted { watch_start_sequence: EventSequence },
+    NoSuchOperation,
+    AlreadyTerminal,
 }
 
 impl BuildOperationDriver {
@@ -65,7 +64,7 @@ impl BuildOperationDriver {
             controllers,
             timeout,
             tasks,
-            active: Arc::default(),
+            active: ActiveBuildRegistry::default(),
         }
     }
 
@@ -73,67 +72,158 @@ impl BuildOperationDriver {
         if !accepted.submission.should_start_execution {
             return;
         }
+        self.active
+            .start(
+                accepted.submission.operation_id.clone(),
+                accepted.submission.start_sequence,
+            )
+            .await;
         let driver = self.clone();
         let operation_id = accepted.submission.operation_id.clone();
         let admission = self.tasks.spawn(move || async move {
             driver.run(accepted).await;
         });
-        super::super::finish_rejected_task_admission(&self.controllers, &operation_id, admission)
-            .await;
-    }
-
-    pub(crate) async fn cancel(
-        &self,
-        operation_id: &OperationId,
-        reason: CancellationReason,
-    ) -> Result<(), String> {
-        let machines = {
-            let mut active = self.active.lock().await;
-            let Some(build) = active.get_mut(operation_id) else {
-                self.controllers
+        let Err(error) = admission else {
+            return;
+        };
+        match self.active.claim_rejected_admission(&operation_id).await {
+            RejectedAdmissionOutcome::Cancelled(reason) => {
+                if let Err(record_error) = self
+                    .controllers
                     .repository()
                     .record_build_transition(
-                        operation_id,
+                        &operation_id,
                         BuildTransition::Cancelled {
                             reason,
                             cleanup: BuildCleanupEvidence::NotRequired,
                         },
                     )
                     .await
-                    .map_err(|error| error.to_string())?;
-                return Ok(());
+                {
+                    eprintln!(
+                        "build {} cancellation after rejected task admission could not be recorded: {record_error}",
+                        operation_id.as_str()
+                    );
+                }
+            }
+            RejectedAdmissionOutcome::Interrupted => {
+                super::super::finish_rejected_task_admission(
+                    &self.controllers,
+                    &operation_id,
+                    Err(error),
+                )
+                .await;
+            }
+        }
+        self.active.remove(&operation_id).await;
+    }
+
+    pub(crate) async fn cancel(
+        &self,
+        operation_id: &OperationId,
+        reason: CancellationReason,
+    ) -> Result<BuildCancelDisposition, String> {
+        let (machines, watch_start_sequence) =
+            match self.active.request_cancellation(operation_id, reason).await {
+                CancellationRequest::Accepted {
+                    machines,
+                    watch_start_sequence,
+                } => (machines, watch_start_sequence),
+                CancellationRequest::Finalizing => {
+                    return Ok(BuildCancelDisposition::AlreadyTerminal);
+                }
+                CancellationRequest::Missing => {
+                    let status = self
+                        .controllers
+                        .repository()
+                        .get(operation_id)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    return Ok(match status {
+                        Some(OperationStatus::Build { state, .. }) if state.is_terminal() => {
+                            BuildCancelDisposition::AlreadyTerminal
+                        }
+                        Some(OperationStatus::Build { .. }) => {
+                            return Err(format!(
+                                "build {} is nonterminal but has no active execution",
+                                operation_id.as_str()
+                            ));
+                        }
+                        None
+                        | Some(OperationStatus::Deploy { .. })
+                        | Some(OperationStatus::Cert { .. })
+                        | Some(OperationStatus::MachineAdd { .. })
+                        | Some(OperationStatus::MachineUpdate { .. })
+                        | Some(OperationStatus::MachineStoragePrepare { .. })
+                        | Some(OperationStatus::MachineLifecycle { .. })
+                        | Some(OperationStatus::CoreReplace { .. })
+                        | Some(OperationStatus::CredentialGrant { .. })
+                        | Some(OperationStatus::NetworkRepair { .. })
+                        | Some(OperationStatus::ServiceRestart { .. })
+                        | Some(OperationStatus::ManagedDnsReconcile { .. })
+                        | Some(OperationStatus::IngressConfigure { .. })
+                        | Some(OperationStatus::NamespaceRemove { .. })
+                        | Some(OperationStatus::VolumeRemove { .. }) => {
+                            BuildCancelDisposition::NoSuchOperation
+                        }
+                    });
+                }
             };
-            request_cancellation(build, reason)
-        };
-        let _results =
-            futures_util::future::join_all(machines.iter().map(|machine_id| async move {
+        futures_util::future::join_all(machines.iter().map(|machine_id| async move {
+            let deadline = tokio::time::Instant::now() + BUILD_CANCEL_TIMEOUT;
+            while let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now())
+            {
                 let request = MachineBuildCancelRpcRequest {
                     operation_id: operation_id.clone(),
                 };
-                call_machine::<MachineBuildCancelRpcOk, MachineBuildCancelDomainError>(
-                    &self.client,
-                    BUILD_CANCEL_TIMEOUT,
-                    machine_id,
-                    MachineServiceEndpoint::BuildCancel,
-                    &request,
-                )
-                .await
-            }))
-            .await;
-        Ok(())
+                let result =
+                    call_machine::<MachineBuildCancelRpcOk, MachineBuildCancelDomainError>(
+                        &self.client,
+                        remaining,
+                        machine_id,
+                        MachineServiceEndpoint::BuildCancel,
+                        &request,
+                    )
+                    .await;
+                if !matches!(
+                    result,
+                    Ok(MachineBuildCancelRpcOk {
+                        outcome: MachineBuildCancelOutcome::NotRunning,
+                        ..
+                    })
+                ) {
+                    break;
+                }
+                let Some(delay) = cancel_retry_delay(tokio::time::Instant::now(), deadline) else {
+                    break;
+                };
+                tokio::time::sleep(delay).await;
+            }
+        }))
+        .await;
+        Ok(BuildCancelDisposition::Accepted {
+            watch_start_sequence,
+        })
     }
 
     async fn run(self, accepted: AcceptedBuildExecution) {
         let id = accepted.submission.operation_id.clone();
         let result = self.run_inner(&accepted).await;
-        self.active.lock().await.remove(&id);
         if let Err(failure) = result {
+            let transition = match self.active.claim_finalization(&id).await {
+                Some(reason) => BuildTransition::Cancelled {
+                    reason,
+                    cleanup: self.active.cleanup_evidence(&id, Vec::new()).await,
+                },
+                None => BuildTransition::Failed { failure },
+            };
             let _ = self
                 .controllers
                 .repository()
-                .record_build_transition(&id, BuildTransition::Failed { failure })
+                .record_build_transition(&id, transition)
                 .await;
         }
+        self.active.remove(&id).await;
     }
 
     async fn run_inner(
@@ -146,11 +236,11 @@ impl BuildOperationDriver {
             .record_build_transition(id, BuildTransition::Placing)
             .await
             .map_err(record_failure)?;
-        let intent = self
-            .intent
-            .intent()
-            .await
-            .map_err(|error| receipt_failure(error.to_string()))?;
+        let intent = self.intent.intent().await.map_err(|error| {
+            BuildOperationFailure::ControlUnavailable {
+                message: failure_message(error),
+            }
+        })?;
         let projection = intent.dataplane_projection;
         let facts = read_machine_placement_facts(
             &self.facts,
@@ -188,13 +278,6 @@ impl BuildOperationDriver {
                 .await
                 .map_err(record_failure)?;
         }
-        self.active.lock().await.insert(
-            id.clone(),
-            ActiveBuild {
-                started: BTreeSet::new(),
-                cancellation_reason: None,
-            },
-        );
         self.controllers
             .repository()
             .record_build_transition(id, BuildTransition::Building)
@@ -205,12 +288,6 @@ impl BuildOperationDriver {
                 self.run_platform(accepted, platform.clone(), machine_id.clone())
             }))
             .await;
-        let cancellation_reason = self
-            .active
-            .lock()
-            .await
-            .get(id)
-            .and_then(|build| build.cancellation_reason.clone());
         let mut images = Vec::new();
         let mut cancelled = Vec::new();
         let mut timed_out = Vec::new();
@@ -224,7 +301,10 @@ impl BuildOperationDriver {
                 Ok(PlatformOutcome::Failed(failure)) => {
                     first_failure.get_or_insert(failure);
                 }
-                Ok(PlatformOutcome::Cancelled(machine_id)) => cancelled.push(machine_id),
+                Ok(PlatformOutcome::Cancelled {
+                    machine_id,
+                    cleanup,
+                }) => cancelled.push((machine_id, cleanup)),
                 Ok(PlatformOutcome::CancelledBeforeStart) => {}
                 Ok(PlatformOutcome::TimedOut {
                     machine_id,
@@ -233,11 +313,23 @@ impl BuildOperationDriver {
                 }) => timed_out.push((machine_id, message, cleanup)),
             }
         }
+        let cancellation_reason = self.active.claim_finalization(id).await;
         if !cancelled.is_empty() || cancellation_reason.is_some() {
             let reason = cancellation_reason.unwrap_or_else(|| {
                 CancellationReason::try_new("machine cancelled build").expect("reason")
             });
-            let cleanup = cleanup_for(id, &self.active, cancelled).await;
+            let cleanup = self
+                .active
+                .cleanup_evidence(
+                    id,
+                    cancelled
+                        .into_iter()
+                        .filter_map(|(machine_id, cleanup)| {
+                            (cleanup == MachineBuildCleanupOutcome::Confirmed).then_some(machine_id)
+                        })
+                        .collect(),
+                )
+                .await;
             self.controllers
                 .repository()
                 .record_build_transition(id, BuildTransition::Cancelled { reason, cleanup })
@@ -260,7 +352,11 @@ impl BuildOperationDriver {
                 .map_err(record_failure)?;
             return Ok(());
         }
-        let receipt = assemble_receipt(images, first_failure).map_err(|failure| *failure)?;
+        if let Some(failure) = first_failure {
+            return Err(failure);
+        }
+        let receipt = PushedImageReceipt::try_new(images)
+            .map_err(|error| receipt_failure(error.to_string()))?;
         self.controllers
             .repository()
             .record_build_transition(id, BuildTransition::Completed { receipt })
@@ -276,11 +372,11 @@ impl BuildOperationDriver {
         machine_id: MachineId,
     ) -> Result<PlatformOutcome, BuildOperationFailure> {
         let id = &accepted.submission.operation_id;
-        if !claim_machine_start(&self.active, id, &machine_id).await {
+        if !self.active.claim_machine_start(id, &machine_id).await {
             return Ok(PlatformOutcome::CancelledBeforeStart);
         }
         let subject = machine_build_log(&machine_id, id);
-        let mut logs = self.client.subscribe(subject).await.map_err(|error| {
+        let logs = self.client.subscribe(subject).await.map_err(|error| {
             platform_failure(
                 platform.clone(),
                 machine_id.clone(),
@@ -289,43 +385,67 @@ impl BuildOperationDriver {
                 },
             )
         })?;
+        let mut log_session = PlatformLogSession::new(
+            self.controllers.repository(),
+            id,
+            &machine_id,
+            &platform,
+            logs,
+        );
         let request = build_start_request(accepted, platform.clone(), self.timeout);
-        let result = call_machine::<MachineBuildStartRpcOk, MachineBuildStartDomainError>(
+        if !self
+            .active
+            .machine_start_is_authorized(id, &machine_id)
+            .await
+        {
+            self.active
+                .release_machine_start_claim(id, &machine_id)
+                .await;
+            return Ok(PlatformOutcome::CancelledBeforeStart);
+        }
+        let call_machine_id = machine_id.clone();
+        let machine_call = call_machine::<MachineBuildStartRpcOk, MachineBuildStartDomainError>(
             &self.client,
             build_control_request_timeout(self.timeout),
-            &machine_id,
+            &call_machine_id,
             MachineServiceEndpoint::BuildStart,
             &request,
-        )
-        .await;
+        );
+        tokio::pin!(machine_call);
+        let result = loop {
+            let logs_open = log_session.logs_open();
+            match next_machine_call_or_log(machine_call.as_mut(), log_session.logs_mut(), logs_open)
+                .await
+            {
+                MachineCallOrLog::Call(result) => break result,
+                MachineCallOrLog::LogsClosed => log_session.record_message(None).await?,
+                MachineCallOrLog::Log(message) => log_session.record_message(message).await?,
+            }
+        };
         let summary = match result {
             Ok(ok) => BuildSummary::Completed(ok),
             Err(MachineCallError::Domain(MachineBuildStartDomainError::PlatformFailed {
                 failure,
-                final_log_sequence,
-                omitted_log_bytes,
+                log_summary,
             })) => BuildSummary::Failed {
                 failure,
-                final_log_sequence,
-                omitted_log_bytes,
+                log_summary,
             },
             Err(MachineCallError::Domain(MachineBuildStartDomainError::Cancelled {
-                final_log_sequence,
-                omitted_log_bytes,
+                cleanup,
+                log_summary,
             })) => BuildSummary::Cancelled {
-                final_log_sequence,
-                omitted_log_bytes,
+                cleanup,
+                log_summary,
             },
             Err(MachineCallError::Domain(MachineBuildStartDomainError::TimedOut {
                 message,
                 cleanup,
-                final_log_sequence,
-                omitted_log_bytes,
+                log_summary,
             })) => BuildSummary::TimedOut {
                 message,
                 cleanup,
-                final_log_sequence,
-                omitted_log_bytes,
+                log_summary,
             },
             Err(MachineCallError::Unavailable(
                 reason @ (MachineRuntimeUnavailableReason::RequestTimedOut
@@ -333,8 +453,7 @@ impl BuildOperationDriver {
             )) => BuildSummary::TimedOut {
                 message: reason.failure_message(),
                 cleanup: MachineBuildCleanupOutcome::Unconfirmed,
-                final_log_sequence: 0,
-                omitted_log_bytes: 0,
+                log_summary: BuildLogSummary::none(),
             },
             Err(error) => {
                 let operation_failure =
@@ -358,72 +477,7 @@ impl BuildOperationDriver {
                 return Ok(PlatformOutcome::Failed(operation_failure));
             }
         };
-        let (final_log_sequence, omitted_log_bytes) = summary.log_summary();
-        let mut next = 1;
-        while next <= final_log_sequence {
-            let Some(message) = tokio::time::timeout(BUILD_LOG_DRAIN_TIMEOUT, logs.next())
-                .await
-                .ok()
-                .flatten()
-            else {
-                break;
-            };
-            let Ok(frame) = serde_json::from_slice::<MachineBuildLogFrame>(&message.payload) else {
-                continue;
-            };
-            if valid_next_log_frame(id, &machine_id, &platform, next, &frame) {
-                self.controllers
-                    .repository()
-                    .record_build_evidence(
-                        id,
-                        BuildEvidence::PlatformLog {
-                            platform: platform.clone(),
-                            machine_id: machine_id.clone(),
-                            chunk: frame.chunk,
-                        },
-                    )
-                    .await
-                    .map_err(record_failure)?;
-                next += 1;
-            }
-        }
-        if next <= final_log_sequence {
-            let failure = BuildPlatformFailure::AdapterFailed {
-                message: FailureMessage::try_new(format!(
-                    "build log sequence gap: expected {next}, machine finished at {final_log_sequence}"
-                ))
-                .expect("message"),
-            };
-            self.controllers
-                .repository()
-                .record_build_evidence(
-                    id,
-                    BuildEvidence::PlatformFailed {
-                        platform: platform.clone(),
-                        machine_id: machine_id.clone(),
-                        failure: failure.clone(),
-                    },
-                )
-                .await
-                .map_err(record_failure)?;
-            return Ok(PlatformOutcome::Failed(platform_failure(
-                platform, machine_id, failure,
-            )));
-        }
-        if omitted_log_bytes > 0 {
-            self.controllers
-                .repository()
-                .record_build_evidence(
-                    id,
-                    BuildEvidence::PlatformLogTruncated {
-                        platform: platform.clone(),
-                        machine_id: machine_id.clone(),
-                        omitted_bytes: omitted_log_bytes,
-                    },
-                )
-                .await
-                .map_err(record_failure)?;
-        }
+        log_session.drain(summary.log_summary()).await?;
         let BuildSummary::Completed(ok) = summary else {
             return Ok(match summary {
                 BuildSummary::Failed { failure, .. } => {
@@ -446,7 +500,10 @@ impl BuildOperationDriver {
                     }
                     PlatformOutcome::Failed(operation_failure)
                 }
-                BuildSummary::Cancelled { .. } => PlatformOutcome::Cancelled(machine_id),
+                BuildSummary::Cancelled { cleanup, .. } => PlatformOutcome::Cancelled {
+                    machine_id,
+                    cleanup,
+                },
                 BuildSummary::TimedOut {
                     message, cleanup, ..
                 } => PlatformOutcome::TimedOut {
@@ -500,42 +557,12 @@ impl BuildOperationDriver {
     }
 }
 
-fn request_cancellation(
-    build: &mut ActiveBuild,
-    reason: CancellationReason,
-) -> BTreeSet<MachineId> {
-    build.cancellation_reason = Some(reason);
-    build.started.clone()
-}
-
-fn assemble_receipt(
-    images: Vec<(
-        ployz_core::image::OciPlatform,
-        ployz_core::deploy::PlatformImage,
-    )>,
-    first_failure: Option<BuildOperationFailure>,
-) -> Result<PushedImageReceipt, Box<BuildOperationFailure>> {
-    if let Some(failure) = first_failure {
-        return Err(Box::new(failure));
-    }
-    PushedImageReceipt::try_new(images)
-        .map_err(|error| Box::new(receipt_failure(error.to_string())))
-}
-
-async fn claim_machine_start(
-    active: &Mutex<BTreeMap<OperationId, ActiveBuild>>,
-    operation_id: &OperationId,
-    machine_id: &MachineId,
-) -> bool {
-    let mut active = active.lock().await;
-    let Some(build) = active.get_mut(operation_id) else {
-        return false;
-    };
-    if build.cancellation_reason.is_some() {
-        return false;
-    }
-    build.started.insert(machine_id.clone());
-    true
+fn cancel_retry_delay(
+    now: tokio::time::Instant,
+    deadline: tokio::time::Instant,
+) -> Option<Duration> {
+    let remaining = deadline.checked_duration_since(now)?;
+    (!remaining.is_zero()).then(|| remaining.min(Duration::from_millis(25)))
 }
 
 fn build_start_request(
@@ -556,56 +583,33 @@ fn execution_timeout_millis(timeout: Duration) -> u64 {
     timeout.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
-fn valid_next_log_frame(
-    operation_id: &OperationId,
-    machine_id: &MachineId,
-    platform: &ployz_core::image::OciPlatform,
-    next: u64,
-    frame: &MachineBuildLogFrame,
-) -> bool {
-    frame.operation_id == *operation_id
-        && frame.machine_id == *machine_id
-        && frame.platform == *platform
-        && frame.sequence == next
-}
-
 enum BuildSummary {
     Completed(MachineBuildStartRpcOk),
     Failed {
         failure: BuildPlatformFailure,
-        final_log_sequence: u64,
-        omitted_log_bytes: u64,
+        log_summary: BuildLogSummary,
     },
     Cancelled {
-        final_log_sequence: u64,
-        omitted_log_bytes: u64,
+        cleanup: MachineBuildCleanupOutcome,
+        log_summary: BuildLogSummary,
     },
     TimedOut {
         message: FailureMessage,
         cleanup: MachineBuildCleanupOutcome,
-        final_log_sequence: u64,
-        omitted_log_bytes: u64,
+        log_summary: BuildLogSummary,
     },
 }
 
 impl BuildSummary {
-    fn log_summary(&self) -> (u64, u64) {
+    fn log_summary(&self) -> BuildLogSummary {
         match self {
-            Self::Completed(ok) => (ok.final_log_sequence, ok.omitted_log_bytes),
-            Self::Failed {
-                final_log_sequence,
-                omitted_log_bytes,
-                ..
-            }
+            Self::Completed(ok) => ok.log_summary,
+            Self::Failed { log_summary, .. }
             | Self::Cancelled {
-                final_log_sequence,
-                omitted_log_bytes,
+                cleanup: _,
+                log_summary,
             }
-            | Self::TimedOut {
-                final_log_sequence,
-                omitted_log_bytes,
-                ..
-            } => (*final_log_sequence, *omitted_log_bytes),
+            | Self::TimedOut { log_summary, .. } => *log_summary,
         }
     }
 }
@@ -616,7 +620,10 @@ enum PlatformOutcome {
         image: ployz_core::deploy::PlatformImage,
     },
     Failed(BuildOperationFailure),
-    Cancelled(MachineId),
+    Cancelled {
+        machine_id: MachineId,
+        cleanup: MachineBuildCleanupOutcome,
+    },
     CancelledBeforeStart,
     TimedOut {
         machine_id: MachineId,
@@ -647,33 +654,6 @@ fn timeout_cleanup(
     }
 }
 
-async fn cleanup_for(
-    operation_id: &OperationId,
-    active: &Mutex<BTreeMap<OperationId, ActiveBuild>>,
-    confirmed: Vec<MachineId>,
-) -> BuildCleanupEvidence {
-    let started = active
-        .lock()
-        .await
-        .get(operation_id)
-        .map(|build| build.started.clone())
-        .unwrap_or_default();
-    if started.is_empty() {
-        return BuildCleanupEvidence::NotRequired;
-    }
-    let confirmed: BTreeSet<_> = confirmed.into_iter().collect();
-    let unconfirmed = started.difference(&confirmed).cloned().collect::<Vec<_>>();
-    if unconfirmed.is_empty() {
-        BuildCleanupEvidence::Completed {
-            machine_ids: confirmed.into_iter().collect(),
-        }
-    } else {
-        BuildCleanupEvidence::Unconfirmed {
-            machine_ids: unconfirmed,
-        }
-    }
-}
-
 fn platform_failure(
     platform: ployz_core::image::OciPlatform,
     machine_id: MachineId,
@@ -691,7 +671,9 @@ fn failure_message(error: impl std::fmt::Display) -> FailureMessage {
 }
 
 fn record_failure(error: impl std::fmt::Display) -> BuildOperationFailure {
-    receipt_failure(error.to_string())
+    BuildOperationFailure::EvidenceRecordingFailed {
+        message: failure_message(error),
+    }
 }
 fn receipt_failure(message: String) -> BuildOperationFailure {
     BuildOperationFailure::ReceiptAssemblyFailed {
@@ -704,15 +686,27 @@ fn machine_failure(
     error: MachineCallError<MachineBuildStartDomainError>,
 ) -> BuildOperationFailure {
     let failure = match error {
-        MachineCallError::Unavailable(reason) => BuildPlatformFailure::MachineUnavailable {
-            message: reason.failure_message(),
-        },
+        MachineCallError::Unavailable(reason) => machine_unavailable_failure(reason),
+        MachineCallError::Domain(MachineBuildStartDomainError::AlreadyRunning) => {
+            BuildPlatformFailure::MachineUnavailable {
+                message: failure_message("machine reports this build is already running"),
+            }
+        }
         MachineCallError::Domain(MachineBuildStartDomainError::PlatformFailed {
-            failure, ..
+            failure,
+            log_summary: _,
         }) => failure,
-        MachineCallError::Domain(other) => BuildPlatformFailure::AdapterFailed {
-            message: FailureMessage::try_new(format!("{other:?}")).expect("error"),
+        MachineCallError::Domain(MachineBuildStartDomainError::Cancelled {
+            cleanup: _,
+            log_summary: _,
+        }) => BuildPlatformFailure::MachineUnavailable {
+            message: failure_message("machine cancelled the build unexpectedly"),
         },
+        MachineCallError::Domain(MachineBuildStartDomainError::TimedOut {
+            message,
+            cleanup: _,
+            log_summary: _,
+        }) => BuildPlatformFailure::MachineUnavailable { message },
     };
     BuildOperationFailure::PlatformFailed {
         platform,
@@ -721,165 +715,59 @@ fn machine_failure(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ployz_core::deploy::PlatformImage;
-    use ployz_core::image::{OciDigest, OciPlatform};
-    use ployz_core::operation::BuildLogChunk;
-
-    #[test]
-    fn caller_budget_is_explicit_and_deterministic() {
-        assert_eq!(
-            execution_timeout_millis(Duration::from_millis(7_321)),
-            7_321
-        );
-        assert_eq!(
-            build_control_request_timeout(ployz_core::build::BUILD_MAX_EXECUTION_TIMEOUT),
-            ployz_core::build::BUILD_MAX_MACHINE_RESPONSE_LIFETIME
-                + ployz_core::build::BUILD_CONTROL_RESPONSE_MARGIN
-        );
-    }
-
-    #[test]
-    fn log_frames_require_exact_provenance_and_next_sequence() {
-        let operation_id = OperationId::try_new("build-1").expect("operation id");
-        let machine_id = MachineId::try_new("machine-a").expect("machine id");
-        let platform = ployz_core::image::OciPlatform::try_new("linux", "amd64").expect("platform");
-        let frame = MachineBuildLogFrame {
-            operation_id: operation_id.clone(),
-            machine_id: machine_id.clone(),
-            platform: platform.clone(),
-            sequence: 1,
-            chunk: BuildLogChunk::try_new("line").expect("log chunk"),
-        };
-
-        assert!(valid_next_log_frame(
-            &operation_id,
-            &machine_id,
-            &platform,
-            1,
-            &frame
-        ));
-        assert!(!valid_next_log_frame(
-            &operation_id,
-            &machine_id,
-            &platform,
-            2,
-            &frame
-        ));
-        assert!(!valid_next_log_frame(
-            &OperationId::try_new("build-2").expect("operation id"),
-            &machine_id,
-            &platform,
-            1,
-            &frame,
-        ));
-    }
-
-    #[tokio::test]
-    async fn cancellation_fence_prevents_a_late_machine_start() {
-        let operation_id = OperationId::try_new("build-1").expect("operation id");
-        let machine_id = MachineId::try_new("machine-a").expect("machine id");
-        let active = Mutex::new(BTreeMap::from([(
-            operation_id.clone(),
-            ActiveBuild {
-                started: BTreeSet::new(),
-                cancellation_reason: Some(CancellationReason::try_new("stop").expect("reason")),
-            },
-        )]));
-
-        assert!(!claim_machine_start(&active, &operation_id, &machine_id).await);
-        assert!(
-            active
-                .lock()
-                .await
-                .get(&operation_id)
-                .expect("active build")
-                .started
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn cancellation_fanout_targets_every_started_machine() {
-        let first = MachineId::try_new("machine-a").expect("machine id");
-        let second = MachineId::try_new("machine-b").expect("machine id");
-        let mut build = ActiveBuild {
-            started: BTreeSet::from([second.clone(), first.clone()]),
-            cancellation_reason: None,
-        };
-
-        let targets = request_cancellation(
-            &mut build,
-            CancellationReason::try_new("stop").expect("reason"),
-        );
-
-        assert_eq!(targets, BTreeSet::from([first, second]));
-        assert!(build.cancellation_reason.is_some());
-    }
-
-    #[test]
-    fn platform_failure_prevents_partial_receipt_assembly() {
-        let platform = OciPlatform::try_new("linux", "amd64").expect("platform");
-        let machine_id = MachineId::try_new("machine-a").expect("machine id");
-        let failure = platform_failure(
-            platform.clone(),
-            machine_id.clone(),
-            BuildPlatformFailure::AdapterFailed {
-                message: FailureMessage::try_new("adapter failed").expect("message"),
-            },
-        );
-        let image = PlatformImage {
-            seed: machine_id,
-            manifest_digest: OciDigest::try_new(
-                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            )
-            .expect("digest"),
-            image_id: OciDigest::try_new(
-                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            )
-            .expect("image id"),
-        };
-
-        assert_eq!(
-            assemble_receipt(vec![(platform, image)], Some(failure.clone())),
-            Err(Box::new(failure))
-        );
-    }
-
-    #[test]
-    fn timeout_cleanup_is_completed_only_when_every_machine_confirms() {
-        let confirmed = MachineId::try_new("confirmed").expect("machine id");
-        let unconfirmed = MachineId::try_new("unconfirmed").expect("machine id");
-        let message = FailureMessage::try_new("deadline exceeded").expect("message");
-
-        assert_eq!(
-            timeout_cleanup(&[(
-                confirmed.clone(),
-                message.clone(),
-                MachineBuildCleanupOutcome::Confirmed,
-            )]),
-            BuildCleanupEvidence::Completed {
-                machine_ids: vec![confirmed.clone()],
-            }
-        );
-        assert_eq!(
-            timeout_cleanup(&[
-                (
-                    confirmed,
-                    message.clone(),
-                    MachineBuildCleanupOutcome::Confirmed,
-                ),
-                (
-                    unconfirmed.clone(),
-                    message,
-                    MachineBuildCleanupOutcome::Unconfirmed,
-                ),
-            ]),
-            BuildCleanupEvidence::Unconfirmed {
-                machine_ids: vec![unconfirmed],
-            }
-        );
-    }
+fn machine_unavailable_failure(reason: MachineRuntimeUnavailableReason) -> BuildPlatformFailure {
+    let message = match reason {
+        MachineRuntimeUnavailableReason::EncodeRequest { message } => failure_message(format!(
+            "machine runtime request could not be encoded: {message}"
+        )),
+        MachineRuntimeUnavailableReason::RequestTimedOut => {
+            failure_message("machine runtime request timed out")
+        }
+        MachineRuntimeUnavailableReason::NoResponders => {
+            failure_message("machine runtime has no responders")
+        }
+        MachineRuntimeUnavailableReason::InvalidSubject => {
+            failure_message("machine runtime subject was invalid")
+        }
+        MachineRuntimeUnavailableReason::MaxPayloadExceeded => {
+            failure_message("machine runtime request exceeded NATS max payload")
+        }
+        MachineRuntimeUnavailableReason::RequestFailed { message } => {
+            failure_message(format!("machine runtime request failed: {message}"))
+        }
+        MachineRuntimeUnavailableReason::ServiceBadRequest { message } => {
+            failure_message(format!("machine runtime rejected the request: {message}"))
+        }
+        MachineRuntimeUnavailableReason::ServiceConflict { message } => {
+            failure_message(format!("machine runtime reported a conflict: {message}"))
+        }
+        MachineRuntimeUnavailableReason::ServiceResponseTooLarge => {
+            failure_message("machine runtime response_too_large")
+        }
+        MachineRuntimeUnavailableReason::ServiceUnavailable { message } => {
+            failure_message(format!("machine runtime service unavailable: {message}"))
+        }
+        MachineRuntimeUnavailableReason::ServiceTimedOut { message } => {
+            failure_message(format!("machine runtime service timed out: {message}"))
+        }
+        MachineRuntimeUnavailableReason::ServiceInternal { message } => failure_message(format!(
+            "machine runtime service failed internally: {message}"
+        )),
+        MachineRuntimeUnavailableReason::MalformedServiceError { message } => failure_message(
+            format!("machine runtime returned malformed service error headers: {message}"),
+        ),
+        MachineRuntimeUnavailableReason::DecodeResponse { message } => failure_message(format!(
+            "machine runtime response could not be decoded: {message}"
+        )),
+        MachineRuntimeUnavailableReason::WrongResponder { actual_machine_id } => {
+            failure_message(format!(
+                "machine runtime replied for a different machine: {}",
+                actual_machine_id.as_str()
+            ))
+        }
+    };
+    BuildPlatformFailure::MachineUnavailable { message }
 }
+
+#[cfg(test)]
+mod tests;
