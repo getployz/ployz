@@ -10,8 +10,10 @@ TL;DR: **Yes — a single-machine Ployz core boots and serves its NATS control
 plane inside the sandbox.** But it is not free. Three sandbox properties fight
 the stock install path, and each needs a deliberate workaround. The reusable
 recipe is [`host-on-agent-vm.sh`](./host-on-agent-vm.sh). Making it reachable
-from the *public* internet is a separate question with its own hard limits —
-see [§6](#6-can-you-expose-it-to-the-public-internet).
+from the *public* internet ([§6](#6-can-you-expose-it-to-the-public-internet))
+and scaling past one machine ([§7](#7-the-data-plane-wireguard-the-multi-machine-wall))
+are separate questions, each with its own hard limit — a single-machine core is
+as far as these sandboxes go.
 
 ---
 
@@ -31,8 +33,10 @@ see [§6](#6-can-you-expose-it-to-the-public-internet).
 | GitHub token    | Scoped to the **session's repo only**                         |
 
 The capability set is the pleasant surprise: this is essentially a privileged
-container, so eBPF, `nft`, WireGuard, and namespaces are all *permitted*. The
-constraints are elsewhere.
+container, so eBPF, `nft`, and namespaces are all *permitted*. But *permitted*
+is not *present* — the running kernel ships no WireGuard support (see
+[§7](#7-the-data-plane-wireguard-the-multi-machine-wall)), and the real
+constraints are in the kernel and the network, not the capability bits.
 
 ## 2. How long does it stay running?
 
@@ -219,7 +223,34 @@ only through a 443 tunnel that traverses the CONNECT proxy** — which paid ngro
 or a self-hosted 443 relay can do, and Cloudflare Tunnel structurally cannot.
 That is a deliberate isolation property of the agent sandbox, not a ployz limit.
 
-## 7. Takeaways
+## 7. The data plane (WireGuard): the multi-machine wall
+
+The core booted single-machine, which never exercises the overlay. Add a second
+machine and ployz forms a **WireGuard** data plane between hosts (the
+`51820/udp` seen in bootstrap). That cannot happen in these sandboxes, for two
+independent reasons — neither of which is a permission you can grant from the
+**Network access** settings:
+
+1. **No WireGuard in the kernel.** `ip link add dev wg0 type wireguard` returns
+   `Unknown device type`. There is no `/lib/modules/$(uname -r)` at all (no
+   out-of-tree `.ko` to load), and the custom `6.18.5` kernel has no built-in
+   support. The capability bits are already present (`cap_net_admin`,
+   `cap_sys_module`) — they are simply moot with nothing to load. `/dev/net/tun`
+   *does* exist, so a **userspace** implementation (`wireguard-go`/`boringtun`)
+   is theoretically possible, but ployz drives kernel WireGuard through the
+   host-runner and ships no userspace fallback.
+2. **UDP transport is blocked anyway.** WireGuard is UDP-only; outbound UDP
+   (`51820`, `7844`) is silently dropped and there is no inbound. Even a working
+   interface could never reach a peer — the same wall that stops Cloudflare's
+   QUIC.
+
+So the boundary is clean: **a single-machine core runs; a multi-machine cluster
+is structurally impossible across agent VMs.** A second sandbox has the same
+missing kernel WireGuard and the same UDP-blocked network, so the overlay can
+never come up. This matches ployz's own stance that real WireGuard / tcx eBPF
+need real hosts and are uncoverable even by the DinD harness.
+
+## 8. Takeaways
 
 - **Install: trivial.** The public channel + SHA-256 verification works as-is.
 - **Bootstrap: possible, not turnkey.** Three sandbox realities — a pinned-root
@@ -229,6 +260,9 @@ That is a deliberate isolation property of the agent sandbox, not a ployz limit.
 - **Public ingress: only via a 443 proxy-traversing tunnel.** No inbound, no raw
   sockets, no non-443 ports — a paid ngrok or a self-hosted 443 relay can punch
   out through the CONNECT proxy; Cloudflare Tunnel (port 7844) cannot.
+- **Multi-machine: impossible.** The WireGuard data plane needs kernel WireGuard
+  (absent — no module, not built in) and UDP between hosts (blocked). Only the
+  single-machine core is reachable; the overlay can never form across agent VMs.
 - **Hosting: no.** These are ephemeral, inactivity-reclaimed dev sandboxes.
   Perfect for a live demo or a "look, it runs anywhere" screenshot; wrong tool
   for anything that must outlive the session.
