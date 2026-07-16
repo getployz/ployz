@@ -473,3 +473,54 @@ the relay through Codex's proxy once certificate verification was bypassed. For
 Docker, the substrate is still blocked: the daemon can be installed and partially
 started, but container execution needs namespace/id-map/mount capabilities this
 VM profile does not expose.
+
+## Act X — Cross-VM reconciliation (reviewer's note)
+
+Acts I–VIII are the **Claude** agent VM; Act IX is the **Codex** agent VM. Read
+together they show the single most important thing: **these are not the same
+box.** "Can you host Ployz on an agent VM?" has a *profile-specific* answer.
+
+| Primitive | Claude VM (I–VIII) | Codex VM (IX) |
+|-----------|--------------------|---------------|
+| Direct sockets | direct `1.1.1.1:443` **connects** (then MITM'd) | **no route** — direct `:443` = `Network is unreachable`; proxy or nothing |
+| Egress CA | `O=Anthropic, CN=Egress Gateway SDS Issuing CA` | `O=OpenAI, CN=egress-proxy` |
+| UDP :53 | answers, but **DNS-hijacked** (web-server IPs "reply") | `Network is unreachable` (no route at all) |
+| **Docker** | **runs** — pulled images, ran the internal registry, bootstrapped the core | **not runnable** — daemon partly starts; layer extract / import / `docker run` hit mount + id-map denials |
+
+Consequences that the individual acts don't state on their own:
+
+- **Docker is the real blocker on Codex, and it's fatal to hosting.** The Ployz
+  core needs Docker as execution reality. On the Claude VM Docker works, so the
+  core boots; **on the Codex VM profile Docker won't run, so a Ployz core can't
+  be hosted at all** — the networking questions are moot until that's solved.
+  Don't read the combined log as "Docker is universally blocked"; it is
+  profile-specific (fine on Claude, blocked on Codex).
+- **Our "iroh / Tailscale confirmed working" (Claude) was over-stated; Codex
+  caught it.** On Claude, `iroh-doctor report` and `tailscale netcheck` succeeded
+  partly because the VM *has* a direct-443 route. On Codex (no direct route)
+  those same CLIs fail — Codex showed `netcheck`'s DERP fetch and the older
+  `iroh-doctor`'s relay test don't reliably use the proxy. The honest status on
+  **both** VMs is identical: **the relay transport is reachable over 443, but no
+  real end-to-end connection was proven** (no auth-key tailnet join, no 2-node
+  iroh connection). Codex's `⚠️ Partial` / "promising with app wiring" labels are
+  better-calibrated than Acts VI–VIII's "yes."
+- **iroh on Codex is proven only with TLS verification *off*.** The
+  `insecure_skip_cert_verify(true)` probe shows the relay is reachable through the
+  proxy; nobody has closed the real loop (install the egress CA via
+  `rustls-native-certs` / `SSL_CERT_FILE`, or `proxy_from_env` + trust). "Works"
+  today means "works with verification disabled."
+
+Open items neither pass closed:
+
+- **Rootless container runtime on Codex is under-explored.** Single-uid user
+  namespaces work there (`unshare -Ur`), but only Docker was tried. `podman` /
+  `containerd`+`runc` / `nerdctl` (single-uid, root-only image, `fuse-overlayfs`)
+  is untested — it may still hit the blocked `newuidmap` subordinate-id-map, but
+  it is the one path that could run a container where `dockerd`'s assumptions
+  panic. **Testing this requires a Codex VM; it can't be done from the Claude
+  box, where Docker already works.**
+- **The `iroh-doctor` "ignores the proxy" finding is version-bound.** Codex was
+  pinned to `iroh-doctor 0.91.0` by an old Rust toolchain; a newer build on the
+  Claude VM does appear to use the proxy. This may already be fixed upstream.
+- **End-to-end tunnel + CA-trust** for iroh and Tailscale, on either VM, still
+  needs a second node / auth key and the egress CA properly trusted.
