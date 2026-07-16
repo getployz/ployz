@@ -1,5 +1,6 @@
 //! NATS subject permissions and authorization-file rendering.
 
+use ployz_core::build::BUILD_RESPONSE_PERMISSION_EXPIRY;
 use ployz_core::ids::MachineId;
 use ployz_core::nats_config::{
     CredentialGrant, CredentialName, CredentialRole, NatsAuthorizationGrant, NatsInternalAuthority,
@@ -18,6 +19,7 @@ use crate::subjects::{
     machine_build_log_subscribe_scope, machine_container_facts, machine_facts, machine_facts_scope,
     machine_service_command_scope, machine_service_query_scope,
 };
+use std::time::Duration;
 
 const SYSTEM_EVENTS: &str = "$SYS.>";
 const SYSTEM_REQUESTS: &str = "$SYS.REQ.>";
@@ -25,6 +27,7 @@ const NATS_SERVICE_DISCOVERY_SCOPE: &str = "$SRV.>";
 const PRINCIPAL_MARKER_PREFIX: &str = "# ployz-principal: ";
 const CREDENTIAL_NAME_MARKER_PREFIX: &str = "# ployz-credential-name: ";
 const CREDENTIAL_ROLE_MARKER_PREFIX: &str = "# ployz-credential-role: ";
+const CONTROLLER_RESPONSE_PERMISSION_EXPIRY: Duration = Duration::from_secs(2 * 60);
 
 struct PendingAuthorization {
     principal: NatsPrincipal,
@@ -235,14 +238,18 @@ impl NatsPermissionProfile {
                     principal: principal.clone(),
                     publish: SubjectPermissions::allowing_all(publish_allow),
                     subscribe: machine_service_server_subscriptions(machine_id, inbox_scope),
-                    allow_responses: ResponsePermission::Allowed,
+                    allow_responses: ResponsePermission::RequestScoped {
+                        expires: BUILD_RESPONSE_PERMISSION_EXPIRY,
+                    },
                 }
             }
             NatsPrincipal::Controller => Self {
                 principal: principal.clone(),
                 publish: controller_publications(),
                 subscribe: controller_subscriptions(inbox_scope),
-                allow_responses: ResponsePermission::Allowed,
+                allow_responses: ResponsePermission::RequestScoped {
+                    expires: CONTROLLER_RESPONSE_PERMISSION_EXPIRY,
+                },
             },
             NatsPrincipal::Operator => Self {
                 principal: principal.clone(),
@@ -398,7 +405,7 @@ impl SubjectPermissions {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResponsePermission {
-    Allowed,
+    RequestScoped { expires: std::time::Duration },
     Denied,
 }
 
@@ -453,7 +460,10 @@ pub fn render_authorized_users(users: &[NatsAuthorizationGrant]) -> String {
         }
         rendered.push_str("        }\n");
         match profile.allow_responses {
-            ResponsePermission::Allowed => rendered.push_str("        allow_responses: true\n"),
+            ResponsePermission::RequestScoped { expires } => rendered.push_str(&format!(
+                "        allow_responses: {{ max: 1, expires: {}s }}\n",
+                expires.as_secs()
+            )),
             ResponsePermission::Denied => {}
         }
         rendered.push_str("      }\n    }\n");

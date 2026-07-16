@@ -6,6 +6,9 @@ use super::protocol::{
     MachineBuildStartRpcRequest, MachineBuildStartRpcResponse,
 };
 use super::response::{failure_message, machine_domain_error, machine_success};
+use ployz_core::build::{
+    BUILD_FORCE_CLEANUP_TIMEOUT, BUILD_MAX_EXECUTION_TIMEOUT, BUILD_TASK_DRAIN_TIMEOUT,
+};
 use ployz_core::deploy::PlatformImage;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::image::OciPlatform;
@@ -13,12 +16,8 @@ use ployz_core::operation::BuildPlatformFailure;
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decode_json_request};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::{Mutex, Semaphore, watch};
 use tokio::time::Instant;
-
-const MAX_BUILD_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
-const BUILD_CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub(crate) struct MachineBuildRuntime {
@@ -64,14 +63,7 @@ impl MachineBuildRuntime {
                 omitted_log_bytes: 0,
             });
         }
-        let timeout = Duration::from_millis(request.timeout_millis);
-        if timeout.is_zero() || timeout > MAX_BUILD_TIMEOUT {
-            return Err(MachineBuildStartDomainError::TimedOut {
-                message: failure_message("build timeout must be between 1ms and 24h"),
-                final_log_sequence: 0,
-                omitted_log_bytes: 0,
-            });
-        }
+        let timeout = requested_build_timeout(request.timeout_millis)?;
         let (cancel, cancel_rx) = watch::channel(false);
         {
             let mut active = self.active.lock().await;
@@ -153,7 +145,7 @@ impl MachineBuildRuntime {
             result = &mut task => join_build(result),
             () = tokio::time::sleep_until(deadline) => {
                 let _ = cancel.send(true);
-                match tokio::time::timeout(BUILD_CLEANUP_TIMEOUT, &mut task).await {
+                match tokio::time::timeout(BUILD_TASK_DRAIN_TIMEOUT, &mut task).await {
                     Ok(result) => {
                         let cleanup = join_build(result);
                         let (final_log_sequence, omitted_log_bytes) = cleanup
@@ -162,7 +154,7 @@ impl MachineBuildRuntime {
                             .map(BuildExecutionError::log_summary)
                             .unwrap_or((0, 0));
                         let cleanup = tokio::time::timeout(
-                            BUILD_CLEANUP_TIMEOUT,
+                            BUILD_FORCE_CLEANUP_TIMEOUT,
                             cleanup_executor
                                 .force_cleanup(&cleanup_operation_id, &cleanup_platform),
                         )
@@ -182,7 +174,7 @@ impl MachineBuildRuntime {
                     Err(_) => {
                         task.abort();
                         let cleanup = tokio::time::timeout(
-                            BUILD_CLEANUP_TIMEOUT,
+                            BUILD_FORCE_CLEANUP_TIMEOUT,
                             cleanup_executor
                                 .force_cleanup(&cleanup_operation_id, &cleanup_platform),
                         )
@@ -229,7 +221,7 @@ impl MachineBuildRuntime {
             }),
         };
         let cleanup = tokio::time::timeout(
-            BUILD_CLEANUP_TIMEOUT,
+            BUILD_FORCE_CLEANUP_TIMEOUT,
             self.executor
                 .force_cleanup(&cleanup_operation_id, &cleanup_platform),
         )
@@ -280,6 +272,20 @@ impl MachineBuildRuntime {
         let _ = cancel.send(true);
         MachineBuildCancelOutcome::Requested
     }
+}
+
+fn requested_build_timeout(
+    timeout_millis: u64,
+) -> Result<std::time::Duration, MachineBuildStartDomainError> {
+    let timeout = std::time::Duration::from_millis(timeout_millis);
+    if timeout.is_zero() || timeout > BUILD_MAX_EXECUTION_TIMEOUT {
+        return Err(MachineBuildStartDomainError::TimedOut {
+            message: failure_message("build timeout must be between 1ms and 30m"),
+            final_log_sequence: 0,
+            omitted_log_bytes: 0,
+        });
+    }
+    Ok(timeout)
 }
 
 fn join_build(
@@ -395,6 +401,19 @@ mod tests {
         let platform = local_platform().expect("supported test host");
         assert_eq!(platform.os(), std::env::consts::OS);
         assert!(matches!(platform.architecture(), "amd64" | "arm64"));
+    }
+
+    #[test]
+    fn build_timeout_accepts_the_shared_limit_and_rejects_larger_requests() {
+        assert_eq!(
+            requested_build_timeout(BUILD_MAX_EXECUTION_TIMEOUT.as_millis() as u64),
+            Ok(BUILD_MAX_EXECUTION_TIMEOUT)
+        );
+        assert!(matches!(
+            requested_build_timeout(BUILD_MAX_EXECUTION_TIMEOUT.as_millis() as u64 + 1),
+            Err(MachineBuildStartDomainError::TimedOut { message, .. })
+                if message.as_str() == "build timeout must be between 1ms and 30m"
+        ));
     }
 
     #[tokio::test]

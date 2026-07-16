@@ -3,6 +3,7 @@
 //! Client-facing helpers for `ployz`.
 
 pub mod api_client;
+pub mod build;
 pub mod certificate;
 pub mod commands;
 mod confirmation;
