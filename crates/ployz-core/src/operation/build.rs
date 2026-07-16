@@ -383,8 +383,11 @@ fn project_evidence(
         BuildEvidence::PlatformPlaced {
             platform,
             machine_id: _,
-        }
-        | BuildEvidence::ToolchainVerified {
+        } => (
+            platform,
+            matches!(fields.state, BuildOperationState::Placing),
+        ),
+        BuildEvidence::ToolchainVerified {
             platform,
             machine_id: _,
             toolchain: _,
@@ -393,11 +396,8 @@ fn project_evidence(
             platform,
             machine_id: _,
             commit: _,
-        } => (
-            platform,
-            matches!(fields.state, BuildOperationState::Placing),
-        ),
-        BuildEvidence::PlatformLog {
+        }
+        | BuildEvidence::PlatformLog {
             platform,
             machine_id: _,
             chunk: _,
@@ -556,7 +556,7 @@ fn transition_allowed(current: &BuildOperationState, attempted: &BuildOperationS
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::build::{BuildCacheScope, GitSource};
+    use crate::build::{BuildCacheScope, GitCommit, GitRepositoryUrl, GitSource};
     use crate::deploy::PlatformImage;
     use crate::image::{OciDigest, OciPlatform};
 
@@ -594,6 +594,19 @@ mod tests {
             },
         )])
         .expect("receipt")
+    }
+
+    fn railpack_toolchain() -> BuildToolchainEvidence {
+        BuildToolchainEvidence {
+            buildkit_image: OciDigest::try_new(format!("sha256:{}", "3".repeat(64)))
+                .expect("digest"),
+            adapter: BuildAdapterToolchainEvidence::Railpack {
+                helper_version: InstallArtifactVersion::try_new("v0.31.0").expect("version"),
+                helper_sha256: InstallSha256Digest::try_new("4".repeat(64)).expect("digest"),
+                frontend_image: OciDigest::try_new(format!("sha256:{}", "5".repeat(64)))
+                    .expect("digest"),
+            },
+        }
     }
 
     #[test]
@@ -758,15 +771,66 @@ mod tests {
                     operation_id: id(),
                     platform: OciPlatform::try_new("linux", "amd64").expect("platform"),
                     machine_id: MachineId::try_new("machine-amd").expect("machine"),
-                    toolchain: BuildToolchainEvidence {
-                        buildkit_image: OciDigest::try_new(format!("sha256:{}", "3".repeat(64)))
-                            .expect("digest"),
-                        adapter: BuildAdapterToolchainEvidence::Dockerfile,
-                    },
+                    toolchain: railpack_toolchain(),
                 },
                 EventSequence::try_new(3).expect("sequence"),
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn verified_build_evidence_is_accepted_while_building() {
+        let accepted = status0();
+        let OperationProjection::StatusChanged { status: placing } = project_event_from_status(
+            &accepted,
+            BuildTransition::Placing.event(&id()),
+            EventSequence::try_new(2).expect("sequence"),
+        )
+        .expect("placing") else {
+            panic!("changed")
+        };
+        let OperationProjection::StatusChanged { status: building } = project_event_from_status(
+            &placing,
+            BuildTransition::Building.event(&id()),
+            EventSequence::try_new(3).expect("sequence"),
+        )
+        .expect("building") else {
+            panic!("changed")
+        };
+        let platform = OciPlatform::try_new("linux", "amd64").expect("platform");
+        let machine_id = MachineId::try_new("machine-amd").expect("machine");
+        let OperationProjection::StatusChanged { status: verified } = project_event_from_status(
+            &building,
+            OperationEvent::BuildCommitVerified {
+                operation_id: id(),
+                platform: platform.clone(),
+                machine_id: machine_id.clone(),
+                commit: VerifiedGitCommit {
+                    url: GitRepositoryUrl::try_new("https://example.com/repo.git").expect("url"),
+                    commit: GitCommit::try_new("0123456789abcdef0123456789abcdef01234567")
+                        .expect("commit"),
+                    subdir: None,
+                },
+            },
+            EventSequence::try_new(4).expect("sequence"),
+        )
+        .expect("verified commit") else {
+            panic!("changed")
+        };
+
+        assert!(
+            project_event_from_status(
+                &verified,
+                OperationEvent::BuildPlatformToolchainVerified {
+                    operation_id: id(),
+                    platform,
+                    machine_id,
+                    toolchain: railpack_toolchain(),
+                },
+                EventSequence::try_new(5).expect("sequence"),
+            )
+            .is_ok()
         );
     }
 
