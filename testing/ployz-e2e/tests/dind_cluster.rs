@@ -107,6 +107,11 @@ const WORKLOAD_ENDPOINT_PORT: u16 = 80;
 /// (includes the image pull check and WireGuard/eBPF preparation).
 const DEPLOY_TERMINAL_BUDGET: Duration = Duration::from_secs(300);
 
+struct PreparedWorkloadImage {
+    reference: ImageReference,
+    source: ployz_core::deploy::ImageSource,
+}
+
 async fn wait_for_ready_dataplane(core: &CoreContext, projection: &DataplaneProjection) {
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
@@ -213,14 +218,19 @@ async fn group_core_deploy_semantics() {
         assert_init_and_activate_first_machine(&core),
     )
     .await;
+    let workload_image = timed(
+        "prepare_group_workload_image",
+        prepare_group_workload_image(&core),
+    )
+    .await;
     timed(
         "auto_hostname_https_survives_core_stop",
-        assert_auto_hostname_https_survives_core_stop(&core),
+        assert_auto_hostname_https_survives_core_stop(&core, &workload_image),
     )
     .await;
     timed(
         "namespace_manifest_convergence",
-        assert_namespace_manifest_convergence_sweeps_failed_retry(&core),
+        assert_namespace_manifest_convergence_sweeps_failed_retry(&core, &workload_image),
     )
     .await;
     timed(
@@ -397,17 +407,44 @@ async fn assert_init_and_activate_first_machine(core: &CoreContext) {
     .await;
 }
 
-async fn assert_auto_hostname_https_survives_core_stop(core: &CoreContext) {
+async fn prepare_group_workload_image(core: &CoreContext) -> PreparedWorkloadImage {
+    let mut target = auto_hostname_deploy_target();
+    let pushed = prepare_deploy_images(&core.api, &mut target.services, false)
+        .await
+        .expect("group workload image pushes from the local DinD seed");
+    assert_eq!(
+        pushed.len(),
+        1,
+        "group fixture must use its one locally seeded workload image"
+    );
+    let [service] = target.services.as_slice() else {
+        panic!("group workload fixture must contain one service")
+    };
+    PreparedWorkloadImage {
+        reference: service.image.clone(),
+        source: service.image_source.clone(),
+    }
+}
+
+fn apply_prepared_workload_image(target: &mut DeployRequest, image: &PreparedWorkloadImage) {
+    let [service] = target.services.as_mut_slice() else {
+        panic!("workload fixture must contain one service")
+    };
+    service.image = image.reference.clone();
+    service.image_source = image.source.clone();
+}
+
+async fn assert_auto_hostname_https_survives_core_stop(
+    core: &CoreContext,
+    image: &PreparedWorkloadImage,
+) {
     with_evidence(&core.cluster, async {
+        let mut first_target = auto_hostname_deploy_target();
+        apply_prepared_workload_image(&mut first_target, image);
         let first = core
             .api
             .deploy_submit(
-                &reserved_deploy_request(
-                    core,
-                    "idem_auto_https_first",
-                    auto_hostname_deploy_target(),
-                )
-                .await,
+                &reserved_deploy_request(core, "idem_auto_https_first", first_target).await,
             )
             .await
             .expect("auto-hostname deploy submits");
@@ -448,15 +485,12 @@ async fn assert_auto_hostname_https_survives_core_stop(core: &CoreContext) {
         assert!(hostname.starts_with("svc-auto."));
         assert!(hostname.ends_with(".up.ployz.app"));
 
+        let mut second_target = auto_hostname_deploy_target();
+        apply_prepared_workload_image(&mut second_target, image);
         let second = core
             .api
             .deploy_submit(
-                &reserved_deploy_request(
-                    core,
-                    "idem_auto_https_second",
-                    auto_hostname_deploy_target(),
-                )
-                .await,
+                &reserved_deploy_request(core, "idem_auto_https_second", second_target).await,
             )
             .await
             .expect("auto-hostname redeploy submits");
@@ -521,11 +555,15 @@ async fn assert_auto_hostname_https_survives_core_stop(core: &CoreContext) {
 
 /// A failed deploy retains its stopped container for inspection until the
 /// next explicit deploy to the namespace sweeps the prior attempt.
-async fn assert_namespace_manifest_convergence_sweeps_failed_retry(core: &CoreContext) {
+async fn assert_namespace_manifest_convergence_sweeps_failed_retry(
+    core: &CoreContext,
+    image: &PreparedWorkloadImage,
+) {
     with_evidence(&core.cluster, async {
         wait_for_machine_observations(core, &machine_id("core_1")).await;
 
         let mut failed_target = convergence_deploy_target("sleep 600");
+        apply_prepared_workload_image(&mut failed_target, image);
         let [failed_service] = failed_target.services.as_mut_slice() else {
             panic!("convergence target has one service");
         };
@@ -537,10 +575,6 @@ async fn assert_namespace_manifest_convergence_sweeps_failed_retry(core: &CoreCo
             })
             .await
             .expect("failed deploy reservation is issued");
-        let pushed = prepare_deploy_images(&core.api, &mut failed_target.services, false)
-            .await
-            .expect("convergence image pushes before deploy submit");
-        assert_eq!(pushed.len(), 1, "one convergence image must be pushed");
         let [failed_service] = failed_target.services.as_slice() else {
             panic!("convergence target has one service");
         };
