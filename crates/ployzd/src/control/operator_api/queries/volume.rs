@@ -2,6 +2,7 @@ use crate::control::intent::service::NatsIntentReader;
 use crate::control::role_client::machine::{
     MAX_CONCURRENT_MACHINE_READS, MachineVolumeTestimonyReadError, NatsMachineVolumeTestimonyReader,
 };
+use crate::roles::machine::MachineRuntimeUnavailableReason;
 use crate::roles::machine::protocol::{MachineVolumeTestimony, MachineVolumeTestimonyResult};
 use futures_util::{StreamExt, stream};
 use ployz_core::ids::MachineId;
@@ -9,8 +10,12 @@ use ployz_core::intent::{IntentSnapshot, VolumePinState};
 use ployz_sdk_types::{
     VolumeListError, VolumeListResult, VolumeSnapshot, VolumeStatus, VolumeTestimony,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
+use std::time::Duration;
+use tokio::time::Instant;
+
+const VOLUME_QUERY_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Clone)]
 pub struct VolumeQueryService {
@@ -31,14 +36,16 @@ impl VolumeQueryService {
     }
 
     pub(crate) async fn list(&self) -> Result<VolumeListResult, VolumeListError> {
-        let intent =
-            self.intent_reader
-                .intent()
-                .await
-                .map_err(|error| VolumeListError::Unavailable {
-                    message: error.to_string(),
-                })?;
-        let answers = gather_volume_testimony(&self.testimony_reader, &intent).await;
+        let deadline = Instant::now() + VOLUME_QUERY_TIMEOUT;
+        let intent = tokio::time::timeout_at(deadline, self.intent_reader.intent())
+            .await
+            .map_err(|_| VolumeListError::Unavailable {
+                message: "volume list timed out reading intent".to_owned(),
+            })?
+            .map_err(|error| VolumeListError::Unavailable {
+                message: error.to_string(),
+            })?;
+        let answers = gather_volume_testimony(&self.testimony_reader, &intent, deadline).await;
         Ok(VolumeListResult {
             volumes: volume_snapshots(&intent, answers)?,
         })
@@ -53,6 +60,7 @@ type MachineAnswer = (
 async fn gather_volume_testimony(
     reader: &NatsMachineVolumeTestimonyReader,
     intent: &IntentSnapshot,
+    deadline: Instant,
 ) -> Vec<MachineAnswer> {
     let mut pins_by_machine = BTreeMap::<MachineId, Vec<VolumePinState>>::new();
     for pin in &intent.volume_pins {
@@ -62,7 +70,7 @@ async fn gather_volume_testimony(
             .push(pin.clone());
     }
 
-    collect_bounded_machine_answers(pins_by_machine, |machine_id, pins| async move {
+    collect_bounded_machine_answers(pins_by_machine, deadline, |machine_id, pins| async move {
         let answer = reader.volume_testimony(&machine_id, pins).await;
         (machine_id, answer)
     })
@@ -71,17 +79,41 @@ async fn gather_volume_testimony(
 
 async fn collect_bounded_machine_answers<F, Fut>(
     requests: impl IntoIterator<Item = (MachineId, Vec<VolumePinState>)>,
+    deadline: Instant,
     mut read: F,
 ) -> Vec<MachineAnswer>
 where
     F: FnMut(MachineId, Vec<VolumePinState>) -> Fut,
     Fut: Future<Output = MachineAnswer>,
 {
-    let reads = stream::iter(requests)
+    let requests = requests.into_iter().collect::<Vec<_>>();
+    let mut pending = requests
+        .iter()
+        .map(|(machine_id, _)| machine_id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut reads = stream::iter(requests)
         .map(move |(machine_id, pins)| read(machine_id, pins))
         .buffer_unordered(MAX_CONCURRENT_MACHINE_READS);
 
-    let mut answers = reads.collect::<Vec<_>>().await;
+    let mut answers = Vec::new();
+    loop {
+        match tokio::time::timeout_at(deadline, reads.next()).await {
+            Ok(Some(answer)) => {
+                pending.remove(&answer.0);
+                answers.push(answer);
+            }
+            Ok(None) | Err(_) => break,
+        }
+    }
+    answers.extend(pending.into_iter().map(|machine_id| {
+        (
+            machine_id.clone(),
+            Err(MachineVolumeTestimonyReadError::Unavailable {
+                machine_id,
+                reason: MachineRuntimeUnavailableReason::RequestTimedOut,
+            }),
+        )
+    }));
     answers.sort_by(|(left, _), (right, _)| left.cmp(right));
     answers
 }
@@ -174,8 +206,8 @@ fn volume_snapshots(
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_CONCURRENT_MACHINE_READS, MachineAnswer, collect_bounded_machine_answers,
-        volume_snapshots,
+        MAX_CONCURRENT_MACHINE_READS, MachineAnswer, VOLUME_QUERY_TIMEOUT,
+        collect_bounded_machine_answers, volume_snapshots,
     };
     use crate::control::role_client::machine::MachineVolumeTestimonyReadError;
     use crate::roles::machine::MachineRuntimeUnavailableReason;
@@ -189,6 +221,7 @@ mod tests {
     use ployz_test_support::ids::{machine_id, namespace_id};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
     use tokio::sync::Semaphore;
 
     async fn wait_for_count(counter: &AtomicUsize, expected: usize) {
@@ -255,31 +288,35 @@ mod tests {
             let max_in_flight = Arc::clone(&max_in_flight);
             let release = Arc::clone(&release);
             async move {
-                collect_bounded_machine_answers(requests, move |machine_id, pins| {
-                    let started = Arc::clone(&started);
-                    let in_flight = Arc::clone(&in_flight);
-                    let max_in_flight = Arc::clone(&max_in_flight);
-                    let release = Arc::clone(&release);
-                    async move {
-                        assert!(pins.is_empty());
-                        started.fetch_add(1, Ordering::SeqCst);
-                        let current = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-                        max_in_flight.fetch_max(current, Ordering::SeqCst);
-                        release
-                            .acquire()
-                            .await
-                            .expect("release remains open")
-                            .forget();
-                        in_flight.fetch_sub(1, Ordering::SeqCst);
-                        (
-                            machine_id.clone(),
-                            Err(MachineVolumeTestimonyReadError::Unavailable {
-                                machine_id,
-                                reason: MachineRuntimeUnavailableReason::RequestTimedOut,
-                            }),
-                        )
-                    }
-                })
+                collect_bounded_machine_answers(
+                    requests,
+                    tokio::time::Instant::now() + Duration::from_secs(60),
+                    move |machine_id, pins| {
+                        let started = Arc::clone(&started);
+                        let in_flight = Arc::clone(&in_flight);
+                        let max_in_flight = Arc::clone(&max_in_flight);
+                        let release = Arc::clone(&release);
+                        async move {
+                            assert!(pins.is_empty());
+                            started.fetch_add(1, Ordering::SeqCst);
+                            let current = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                            max_in_flight.fetch_max(current, Ordering::SeqCst);
+                            release
+                                .acquire()
+                                .await
+                                .expect("release remains open")
+                                .forget();
+                            in_flight.fetch_sub(1, Ordering::SeqCst);
+                            (
+                                machine_id.clone(),
+                                Err(MachineVolumeTestimonyReadError::Unavailable {
+                                    machine_id,
+                                    reason: MachineRuntimeUnavailableReason::RequestTimedOut,
+                                }),
+                            )
+                        }
+                    },
+                )
                 .await
             }
         });
@@ -304,6 +341,48 @@ mod tests {
         };
         assert_eq!(first.0.as_str(), "machine-00");
         assert_eq!(last.0.as_str(), "machine-16");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn machine_gather_returns_every_machine_at_the_query_deadline() {
+        let request_count = 33;
+        let requests = (0..request_count)
+            .map(|index| (machine_id(&format!("machine-{index:02}")), Vec::new()))
+            .collect::<Vec<_>>();
+        let started_at = tokio::time::Instant::now();
+
+        let answers = collect_bounded_machine_answers(
+            requests,
+            started_at + VOLUME_QUERY_TIMEOUT,
+            |machine_id, pins| async move {
+                assert!(pins.is_empty());
+                if machine_id.as_str() == "machine-00" {
+                    return (machine_id, Ok(Vec::new()));
+                }
+                std::future::pending::<()>().await;
+                unreachable!("silent machine cannot complete")
+            },
+        )
+        .await;
+
+        assert_eq!(
+            tokio::time::Instant::now() - started_at,
+            VOLUME_QUERY_TIMEOUT
+        );
+        assert_eq!(answers.len(), request_count);
+        let [fast, timed_out @ ..] = answers.as_slice() else {
+            panic!("the complete request set must be retained");
+        };
+        assert_eq!(fast.0.as_str(), "machine-00");
+        assert!(fast.1.is_ok());
+        assert_eq!(timed_out.len(), request_count - 1);
+        assert!(timed_out.iter().all(|(machine_id, answer)| matches!(
+            answer,
+            Err(MachineVolumeTestimonyReadError::Unavailable {
+                machine_id: unavailable_machine_id,
+                reason: MachineRuntimeUnavailableReason::RequestTimedOut,
+            }) if unavailable_machine_id == machine_id
+        )));
     }
 
     #[test]
