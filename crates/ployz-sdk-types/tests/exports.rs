@@ -48,8 +48,8 @@ use ployz_sdk_types::{
     RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceDependency,
     ServiceId, ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
     ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
-    SubjectTokenError, VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError,
-    VolumeRemoveRequest,
+    SubjectTokenError, VolumeCreateError, VolumeCreateRequest, VolumeListError, VolumeListRequest,
+    VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
     operation_api::{
         BuildCancelApi, BuildSubmitApi, CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi,
         CredentialListApi, CredentialRemoveApi, DeployReserveApi, DeploySubmitApi,
@@ -58,7 +58,7 @@ use ployz_sdk_types::{
         MachineStoragePrepareApi, MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi,
         NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi,
         OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi,
-        VolumeListApi, VolumeRemoveApi,
+        VolumeCreateApi, VolumeListApi, VolumeRemoveApi,
     },
 };
 use ts_rs::{Config, TS};
@@ -511,6 +511,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
         NamespaceRemoveError,
     >();
     assert_contract::<VolumeRemoveApi, VolumeRemoveRequest, AcceptedOperation, VolumeRemoveError>();
+    assert_contract::<VolumeCreateApi, VolumeCreateRequest, AcceptedOperation, VolumeCreateError>();
     assert_contract::<MachineListApi, MachineListRequest, MachineListResult, MachineListError>();
     assert_contract::<MachineInspectApi, MachineInspectRequest, MachineSnapshot, MachineInspectError>(
     );
@@ -613,6 +614,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             OperationApiEndpoint::MachineResume,
             OperationApiEndpoint::ServiceRestart,
             OperationApiEndpoint::NamespaceRemove,
+            OperationApiEndpoint::VolumeCreate,
             OperationApiEndpoint::VolumeRemove,
             OperationApiEndpoint::CoreReplace,
             OperationApiEndpoint::CoreReplaceReport,

@@ -1,14 +1,14 @@
 //! Docker-owned containerd content access for pushed OCI image blobs.
 
 use containerd_client::services::v1::{
-    CreateRequest, DeleteRequest, InfoRequest, ReadContentRequest, WriteAction,
-    WriteContentRequest, WriteContentResponse,
+    AbortRequest, AddResourceRequest, CreateRequest, DeleteRequest, InfoRequest,
+    ReadContentRequest, Resource, WriteAction, WriteContentRequest, WriteContentResponse,
 };
 use containerd_client::tonic::metadata::{Ascii, MetadataValue};
 use containerd_client::tonic::transport::Channel;
 use containerd_client::tonic::{Code, Request, Status};
 use futures_util::{Stream, StreamExt, stream};
-use ployz_core::image::OciDigest;
+use ployz_core::image::{ImageContentLeaseExpiresAt, OciDigest};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -131,15 +131,17 @@ impl ContainerdContentStore {
     }
 
     pub async fn acquire_lease(&self) -> Result<ContentLease, ContainerdContentError> {
-        let expires_at = (OffsetDateTime::now_utc() + INGEST_LEASE_LIFETIME)
-            .format(&Rfc3339)
-            .map_err(|error| ContainerdContentError::Protocol {
-                message: format!("format lease expiration: {error}"),
-            })?;
+        let expires_at = OffsetDateTime::now_utc() + INGEST_LEASE_LIFETIME;
+        let expires_at_label =
+            expires_at
+                .format(&Rfc3339)
+                .map_err(|error| ContainerdContentError::Protocol {
+                    message: format!("format lease expiration: {error}"),
+                })?;
         let id = format!("ployz-image-{}", nuid::next().to_ascii_lowercase());
         let request = scoped_request(CreateRequest {
             id,
-            labels: HashMap::from([("containerd.io/gc.expire".to_owned(), expires_at)]),
+            labels: HashMap::from([("containerd.io/gc.expire".to_owned(), expires_at_label)]),
         })?;
         let response = containerd_client::Client::from(self.channel.clone())
             .leases()
@@ -157,7 +159,39 @@ impl ContainerdContentStore {
                 message: "lease create response returned an empty id".to_owned(),
             });
         }
-        Ok(ContentLease { id: lease.id })
+        let expires_at = u64::try_from(expires_at.unix_timestamp()).map_err(|_| {
+            ContainerdContentError::Protocol {
+                message: "lease expiration is before the Unix epoch".to_owned(),
+            }
+        })?;
+        Ok(ContentLease {
+            id: lease.id,
+            expires_at: ImageContentLeaseExpiresAt::try_new(expires_at).map_err(|error| {
+                ContainerdContentError::Protocol {
+                    message: format!("invalid lease expiration: {error}"),
+                }
+            })?,
+        })
+    }
+
+    pub async fn retain_content(
+        &self,
+        lease: &ContentLease,
+        digest: &OciDigest,
+    ) -> Result<(), ContainerdContentError> {
+        let request = scoped_request(AddResourceRequest {
+            id: lease.id.clone(),
+            resource: Some(Resource {
+                id: digest.as_str().to_owned(),
+                r#type: "content".to_owned(),
+            }),
+        })?;
+        containerd_client::Client::from(self.channel.clone())
+            .leases()
+            .add_resource(request)
+            .await
+            .map_err(|status| rpc_error("retain content under lease", status))?;
+        Ok(())
     }
 
     pub async fn release_lease(&self, lease: ContentLease) -> Result<(), ContainerdContentError> {
@@ -173,14 +207,14 @@ impl ContainerdContentStore {
         Ok(())
     }
 
-    pub async fn write_ingest_chunk(
+    pub(crate) async fn write_ingest_chunk(
         &self,
         ingest: &ContentIngest,
         offset: u64,
         bytes: Vec<u8>,
-    ) -> Result<u64, ContainerdContentError> {
+    ) -> Result<ContentWriteOutcome, ContainerdContentError> {
         validate_chunk(ingest.total_size, offset, bytes.len())?;
-        let response = self
+        let result = self
             .write_message(
                 ingest,
                 WriteContentRequest {
@@ -193,8 +227,20 @@ impl ContainerdContentStore {
                     labels: HashMap::new(),
                 },
             )
-            .await?;
-        checked_u64(response.offset, "containerd write offset")
+            .await;
+        match result {
+            Ok(response) => Ok(ContentWriteOutcome::AdvancedTo(checked_u64(
+                response.offset,
+                "containerd write offset",
+            )?)),
+            Err(error) => match decide_write_error(error) {
+                WriteErrorDecision::RecoverExpectedContent => {
+                    self.recover_expected_content(ingest).await?;
+                    Ok(ContentWriteOutcome::ExpectedContentRetained)
+                }
+                WriteErrorDecision::Propagate(error) => Err(error),
+            },
+        }
     }
 
     pub async fn commit_ingest(
@@ -223,28 +269,13 @@ impl ContainerdContentStore {
             )
             .await;
         match result {
-            Ok(_) => Ok(()),
-            Err(ContainerdContentError::Rpc {
-                code: Code::AlreadyExists,
-                ..
-            }) => {
-                let Some(info) = self.blob_info(&ingest.digest).await? else {
-                    return Err(ContainerdContentError::Protocol {
-                        message: format!(
-                            "containerd reported existing content {} but stat missed it",
-                            ingest.digest
-                        ),
-                    });
-                };
-                if info.size != ingest.total_size {
-                    return Err(ContainerdContentError::SizeMismatch {
-                        expected: ingest.total_size,
-                        actual: info.size,
-                    });
+            Ok(_) => self.retain_content(&ingest.lease, &ingest.digest).await,
+            Err(error) => match decide_write_error(error) {
+                WriteErrorDecision::RecoverExpectedContent => {
+                    self.recover_expected_content(ingest).await
                 }
-                Ok(())
-            }
-            Err(error) => Err(error),
+                WriteErrorDecision::Propagate(error) => Err(error),
+            },
         }
     }
 
@@ -255,13 +286,19 @@ impl ContainerdContentStore {
         total_size: u64,
         lease: ContentLease,
     ) -> Result<(), ContainerdContentError> {
+        let ingest = ContentIngest::new(digest, total_size, lease);
+        match decide_existing_content(self.blob_info(&ingest.digest).await?, total_size)? {
+            ExistingContentDecision::Absent => {}
+            ExistingContentDecision::Exact => {
+                return self.retain_content(&ingest.lease, &ingest.digest).await;
+            }
+        }
         let mut file = tokio::fs::File::open(path).await.map_err(|error| {
             ContainerdContentError::ReadFile {
                 path: path.to_path_buf(),
                 message: error.to_string(),
             }
         })?;
-        let ingest = ContentIngest::new(digest, total_size, lease);
         let mut offset = 0_u64;
         let mut buffer = vec![0_u8; ployz_core::image::IMAGE_BLOB_CHUNK_MAX_BYTES];
         loop {
@@ -281,11 +318,44 @@ impl ContainerdContentStore {
                     message: "reader returned an impossible byte count".to_owned(),
                 });
             };
-            offset = self
+            match self
                 .write_ingest_chunk(&ingest, offset, bytes.to_vec())
-                .await?;
+                .await?
+            {
+                ContentWriteOutcome::AdvancedTo(next_offset) => offset = next_offset,
+                ContentWriteOutcome::ExpectedContentRetained => return Ok(()),
+            }
         }
         self.commit_ingest(&ingest, offset).await
+    }
+
+    async fn recover_expected_content(
+        &self,
+        ingest: &ContentIngest,
+    ) -> Result<(), ContainerdContentError> {
+        match decide_existing_content(self.blob_info(&ingest.digest).await?, ingest.total_size)? {
+            ExistingContentDecision::Absent => {
+                return Err(missed_existing_content(&ingest.digest));
+            }
+            ExistingContentDecision::Exact => {}
+        }
+        self.retain_content(&ingest.lease, &ingest.digest).await?;
+        self.abort_ingest(ingest).await
+    }
+
+    async fn abort_ingest(&self, ingest: &ContentIngest) -> Result<(), ContainerdContentError> {
+        let request = scoped_request(AbortRequest {
+            r#ref: ingest.reference.clone(),
+        })?;
+        match containerd_client::Client::from(self.channel.clone())
+            .content()
+            .abort(request)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(status) if status.code() == Code::NotFound => Ok(()),
+            Err(status) => Err(rpc_error("abort content ingest", status)),
+        }
     }
 
     async fn write_message(
@@ -310,6 +380,12 @@ impl ContainerdContentStore {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContentWriteOutcome {
+    AdvancedTo(u64),
+    ExpectedContentRetained,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContentBlobInfo {
     pub size: u64,
 }
@@ -317,6 +393,14 @@ pub struct ContentBlobInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContentLease {
     id: String,
+    expires_at: ImageContentLeaseExpiresAt,
+}
+
+impl ContentLease {
+    #[must_use]
+    pub const fn expires_at(&self) -> ImageContentLeaseExpiresAt {
+        self.expires_at
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -410,6 +494,57 @@ fn checked_u64(value: i64, field: &'static str) -> Result<u64, ContainerdContent
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExistingContentDecision {
+    Absent,
+    Exact,
+}
+
+fn decide_existing_content(
+    info: Option<ContentBlobInfo>,
+    expected_size: u64,
+) -> Result<ExistingContentDecision, ContainerdContentError> {
+    match info {
+        None => Ok(ExistingContentDecision::Absent),
+        Some(ContentBlobInfo { size }) if size == expected_size => {
+            Ok(ExistingContentDecision::Exact)
+        }
+        Some(ContentBlobInfo { size }) => Err(ContainerdContentError::SizeMismatch {
+            expected: expected_size,
+            actual: size,
+        }),
+    }
+}
+
+#[derive(Debug)]
+enum WriteErrorDecision {
+    RecoverExpectedContent,
+    Propagate(ContainerdContentError),
+}
+
+fn decide_write_error(error: ContainerdContentError) -> WriteErrorDecision {
+    match error {
+        ContainerdContentError::Rpc {
+            code: Code::AlreadyExists,
+            ..
+        } => WriteErrorDecision::RecoverExpectedContent,
+        error @ (ContainerdContentError::SocketNotFound { .. }
+        | ContainerdContentError::ConnectTimedOut { .. }
+        | ContainerdContentError::Connect { .. }
+        | ContainerdContentError::Rpc { .. }
+        | ContainerdContentError::Protocol { .. }
+        | ContainerdContentError::ChunkOutOfRange { .. }
+        | ContainerdContentError::SizeMismatch { .. }
+        | ContainerdContentError::ReadFile { .. }) => WriteErrorDecision::Propagate(error),
+    }
+}
+
+fn missed_existing_content(digest: &OciDigest) -> ContainerdContentError {
+    ContainerdContentError::Protocol {
+        message: format!("containerd reported existing content {digest} but stat missed it"),
+    }
+}
+
 async fn first_write_response_after_eof<S>(
     responses: &mut S,
 ) -> Result<WriteContentResponse, ContainerdContentError>
@@ -478,7 +613,11 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::task::Poll;
 
-    use super::{ContainerdContentError, first_write_response_after_eof, validate_chunk};
+    use super::{
+        ContainerdContentError, ContentBlobInfo, ExistingContentDecision, WriteErrorDecision,
+        decide_existing_content, decide_write_error, first_write_response_after_eof,
+        missed_existing_content, validate_chunk,
+    };
 
     fn write_response(offset: i64) -> WriteContentResponse {
         WriteContentResponse {
@@ -550,6 +689,65 @@ mod tests {
                 chunk_size: 4,
                 total_size: 10,
             })
+        ));
+    }
+
+    #[test]
+    fn existing_content_decision_distinguishes_absent_exact_and_mismatch() {
+        assert_eq!(
+            decide_existing_content(None, 7).expect("absent content is ingestible"),
+            ExistingContentDecision::Absent
+        );
+        assert_eq!(
+            decide_existing_content(Some(ContentBlobInfo { size: 7 }), 7)
+                .expect("matching content is reusable"),
+            ExistingContentDecision::Exact
+        );
+        assert!(matches!(
+            decide_existing_content(Some(ContentBlobInfo { size: 8 }), 7),
+            Err(ContainerdContentError::SizeMismatch {
+                expected: 7,
+                actual: 8,
+            })
+        ));
+    }
+
+    #[test]
+    fn already_exists_requires_restat_and_other_errors_propagate() {
+        let already_exists = ContainerdContentError::Rpc {
+            action: "write content",
+            code: Code::AlreadyExists,
+            message: "present".to_owned(),
+        };
+        assert!(matches!(
+            decide_write_error(already_exists),
+            WriteErrorDecision::RecoverExpectedContent
+        ));
+
+        let unavailable = ContainerdContentError::Rpc {
+            action: "write content",
+            code: Code::Unavailable,
+            message: "offline".to_owned(),
+        };
+        assert!(matches!(
+            decide_write_error(unavailable),
+            WriteErrorDecision::Propagate(ContainerdContentError::Rpc {
+                action: "write content",
+                code: Code::Unavailable,
+                message,
+            }) if message == "offline"
+        ));
+    }
+
+    #[test]
+    fn missed_restat_uses_commit_compatible_protocol_error() {
+        let digest = ployz_core::image::OciDigest::sha256(b"blob");
+        assert!(matches!(
+            missed_existing_content(&digest),
+            ContainerdContentError::Protocol { message }
+                if message == format!(
+                    "containerd reported existing content {digest} but stat missed it"
+                )
         ));
     }
 }

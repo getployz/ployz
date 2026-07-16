@@ -468,12 +468,23 @@ impl BuildEffects {
                         log_summary,
                     });
                 };
-                images
-                    .ingest_build_layout(&result.layout)
-                    .await
-                    .map_err(|message| BuildExecutionError::Platform {
+                let lease_expires_at =
+                    images
+                        .ingest_build_layout(&result.layout)
+                        .await
+                        .map_err(|message| BuildExecutionError::Platform {
+                            failure: BuildPlatformFailure::ImagePushFailed {
+                                message: failure_message(message),
+                            },
+                            log_summary,
+                        })?;
+                let availability_expires_at =
+                    ployz_core::deploy::ImageAvailabilityExpiresAt::from_content_lease_expiry(
+                        lease_expires_at,
+                    )
+                    .map_err(|error| BuildExecutionError::Platform {
                         failure: BuildPlatformFailure::ImagePushFailed {
-                            message: failure_message(message),
+                            message: failure_message(error.to_string()),
                         },
                         log_summary,
                     })?;
@@ -483,6 +494,7 @@ impl BuildEffects {
                         seed: machine_id,
                         manifest_digest: result.layout.manifest_digest().clone(),
                         image_id: result.layout.image_id().clone(),
+                        availability_expires_at,
                     },
                     verified_commit: result.verified_commit,
                     toolchain: result.toolchain,

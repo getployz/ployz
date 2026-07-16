@@ -18,6 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use crate::certificate::GatewayCertificateTarget;
+use crate::control::role_client::machine::MachineClockTestimony;
 
 use super::placement::{ProvisionedStorageRequirement, classify_storage_usability};
 use super::{DeployExecutionCommand, DeployServiceExecutionCommand};
@@ -54,6 +55,7 @@ pub struct DeployExecutionFacts {
     pub dataplane_members: Vec<DataplaneMember>,
     pub observed_machines: Vec<MachineContainerObservationSnapshot>,
     pub machine_platforms: BTreeMap<MachineId, OciPlatform>,
+    pub seed_clock_testimony: BTreeMap<MachineId, MachineClockTestimony>,
     pub machine_storage_testimony:
         BTreeMap<MachineId, Option<ployz_core::machine::StorageCapability>>,
     pub namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
@@ -95,6 +97,17 @@ impl DeployExecutionInput {
     #[cfg(test)]
     pub fn with_step_timeout(mut self, step_timeout: Duration) -> Self {
         self.facts.step_timeout = step_timeout;
+        self
+    }
+
+    #[must_use]
+    #[cfg(test)]
+    pub(crate) fn with_seed_clock_testimony(
+        mut self,
+        seed: MachineId,
+        testimony: MachineClockTestimony,
+    ) -> Self {
+        self.facts.seed_clock_testimony.insert(seed, testimony);
         self
     }
 }
@@ -179,6 +192,7 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         .filter(|unusable| match unusable.reason {
             ployz_core::machine::MachineUsabilityReason::Draining => true,
             ployz_core::machine::MachineUsabilityReason::FactsUnavailable
+            | ployz_core::machine::MachineUsabilityReason::BuildUnavailable
             | ployz_core::machine::MachineUsabilityReason::PlatformMismatch { .. }
             | ployz_core::machine::MachineUsabilityReason::StorageTestimonyNotReported
             | ployz_core::machine::MachineUsabilityReason::StorageUnprepared
@@ -274,6 +288,7 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         namespace_cleanup_candidates,
         storage_testimony: facts.machine_storage_testimony,
         machine_platforms: facts.machine_platforms,
+        seed_clock_testimony: facts.seed_clock_testimony,
         dataplane_members: facts.dataplane_members,
         exact_certificate_routes,
         ployz_automatic_hostnames,

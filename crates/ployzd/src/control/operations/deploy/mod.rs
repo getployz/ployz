@@ -24,6 +24,7 @@ use ployz_core::operation::{
     DeployTransition, FailureMessage, OperatorHint, RetainedArtifact,
 };
 
+pub use crate::control::role_client::machine::MachineVolumeEnsureError;
 #[cfg(test)]
 pub use crate::roles::machine::MachineRuntimeUnavailableReason;
 pub use facts::{
@@ -218,11 +219,6 @@ where
     .map_err(|source| run.fail(source))?;
     validate_pushed_platforms(command, &plan).map_err(|source| run.fail(*source))?;
     let dataplane_membership = dataplane_membership(command, &plan);
-    if !plan.volume_pin_commits.is_empty() {
-        commit_volume_pins(command, &plan, &mut *ports.namespace_state)
-            .await
-            .map_err(|source| run.fail(source))?;
-    }
     if command
         .services()
         .iter()
@@ -235,6 +231,23 @@ where
         )
         .await
         .map_err(|source| run.fail(source))?;
+    }
+    if !plan.volume_pin_commits.is_empty() {
+        commit_volume_pins(command, &plan, &mut *ports.namespace_state)
+            .await
+            .map_err(|source| run.fail(source))?;
+    }
+    if !plan.volume_ensures.is_empty() {
+        record_running_stage(
+            command,
+            &mut *ports.recorder,
+            DeployRunningStage::EnsuringVolumes,
+        )
+        .await
+        .map_err(|source| run.fail(source))?;
+        ensure_volumes(command, &plan, &mut *ports.machine_runtime)
+            .await
+            .map_err(|source| run.fail(source))?;
     }
     record_running_stage(
         command,
@@ -718,6 +731,28 @@ where
         .await?;
     }
 
+    Ok(())
+}
+
+async fn ensure_volumes<N>(
+    command: &DeployExecutionCommand,
+    plan: &DeployPlan,
+    machine_runtime: &mut N,
+) -> Result<(), DeployExecutionError>
+where
+    N: MachineContainerRuntime,
+{
+    for volume in &plan.volume_ensures {
+        with_step_timeout(
+            command,
+            DeployExecutionStep::EnsureVolume {
+                machine_id: volume.machine_id().clone(),
+                volume_name: volume.volume_name().clone(),
+            },
+            machine_runtime.ensure_volume(volume.machine_id(), volume),
+        )
+        .await?;
+    }
     Ok(())
 }
 

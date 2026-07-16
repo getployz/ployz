@@ -3,7 +3,7 @@ use crate::control::operations::deploy::{
 };
 use crate::control::role_client::machine::{NatsMachineContainerRuntime, NatsMachineFactsReader};
 use crate::roles::machine::protocol::{
-    MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,
+    MachineBuildCapability, MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,
     MachineContainerRemoveRpcRequest, MachineContainerRemoveRpcResponse,
     MachineContainerRestartDomainError, MachineContainerRestartRpcRequest,
     MachineContainerRestartRpcResponse, MachineContainerRpcOk, MachineContainerRunHookRpcOk,
@@ -14,7 +14,8 @@ use crate::roles::machine::protocol::{
     MachineDataplaneStatusRpcRequest, MachineDataplaneStatusRpcResponse, MachineImagePull,
     MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineLogsTailRpcResponse,
     MachineRunContainerOutcome, MachineSubstrateReportRpcRequest,
-    MachineSubstrateReportRpcResponse, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
+    MachineSubstrateReportRpcResponse, MachineVolumeEnsureRpcOk, MachineVolumeEnsureRpcRequest,
+    MachineVolumeEnsureRpcResponse, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
     MachineVolumeRemoveRpcResponse,
 };
 use crate::roles::machine::runner::{
@@ -29,6 +30,8 @@ use futures_util::StreamExt;
 use ployz_core::deploy::ImageReference;
 use ployz_core::deploy::VolumeName;
 use ployz_core::ids::ContainerId;
+use ployz_core::intent::VolumePinState;
+use ployz_core::machine::VolumeEnsureFailure;
 use ployz_core::machine::runtime::{
     ContainerRuntimeState, MachineContainerFactDelta, MachineFactsSnapshot,
     ManagedContainerIdentity, ManagedContainerKind,
@@ -107,8 +110,15 @@ async fn machine_role_service_gets_fresh_facts_without_observation_tick() {
         .await
         .expect("flush machine service subscription");
 
-    let facts = NatsMachineFactsReader::new(nats.client)
-        .with_request_timeout(Duration::from_secs(1))
+    let facts_reader =
+        NatsMachineFactsReader::new(nats.client).with_request_timeout(Duration::from_secs(1));
+    let response = facts_reader
+        .machine_facts_response(&machine_id("machine_a"))
+        .await
+        .expect("facts response succeeds");
+    assert_eq!(response.build, MachineBuildCapability::Unavailable);
+
+    let facts = facts_reader
         .machine_facts(&machine_id("machine_a"))
         .await
         .expect("facts get succeeds");
@@ -1190,6 +1200,77 @@ async fn machine_public_key_service_answers_empty_query() {
     assert_eq!(state.prepare_count(), 0);
 }
 
+#[tokio::test]
+async fn machine_volume_ensure_requires_the_subject_machine_and_runs_once() {
+    let nats = test_nats().await;
+    let state = RecordingRunnerState::default();
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(state.clone()),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a.flush().await.expect("flush subscription");
+    let volume = VolumePinState::plain(
+        namespace_id("default"),
+        VolumeName::try_new("data").expect("volume"),
+        machine_id("machine_a"),
+    );
+    let response = request_json::<_, MachineVolumeEnsureRpcResponse>(
+        &nats.client,
+        machine_service(
+            &machine_id("machine_a"),
+            MachineServiceEndpoint::VolumeEnsure,
+        ),
+        &MachineVolumeEnsureRpcRequest {
+            volume: volume.clone(),
+        },
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("machine responds");
+    assert_eq!(
+        response,
+        MachineVolumeEnsureRpcResponse::Ok(MachineVolumeEnsureRpcOk {
+            machine_id: machine_id("machine_a"),
+        })
+    );
+    assert_eq!(state.volume_ensures(), vec![volume]);
+
+    let wrong_machine = VolumePinState::plain(
+        namespace_id("default"),
+        VolumeName::try_new("other").expect("volume"),
+        machine_id("machine_b"),
+    );
+    let response = request_json::<_, MachineVolumeEnsureRpcResponse>(
+        &nats.client,
+        machine_service(
+            &machine_id("machine_a"),
+            MachineServiceEndpoint::VolumeEnsure,
+        ),
+        &MachineVolumeEnsureRpcRequest {
+            volume: wrong_machine,
+        },
+        Duration::from_secs(1),
+    )
+    .await
+    .expect("machine responds");
+    assert_eq!(
+        response,
+        MachineVolumeEnsureRpcResponse::DomainError {
+            machine_id: machine_id("machine_a"),
+            error: VolumeEnsureFailure::MachineMismatch {
+                expected_machine_id: machine_id("machine_b"),
+                responder_machine_id: machine_id("machine_a"),
+            },
+        }
+    );
+    assert_eq!(state.volume_ensures().len(), 1);
+}
+
 #[derive(Clone, Default)]
 struct RecordingRunnerState {
     inner: Arc<Mutex<RecordingRunnerInner>>,
@@ -1246,6 +1327,14 @@ impl RecordingRunnerState {
             .clone()
     }
 
+    fn volume_ensures(&self) -> Vec<VolumePinState> {
+        self.inner
+            .lock()
+            .expect("recording runner lock is not poisoned")
+            .volume_ensures
+            .clone()
+    }
+
     fn stops(&self) -> Vec<ContainerId> {
         self.inner
             .lock()
@@ -1264,6 +1353,7 @@ struct RecordingRunnerInner {
     stops: Vec<ContainerId>,
     removes: Vec<ContainerId>,
     volume_removes: Vec<String>,
+    volume_ensures: Vec<VolumePinState>,
 }
 
 #[derive(Clone)]
@@ -1356,6 +1446,19 @@ impl crate::roles::machine::runner::MachineImageRemovalRunner for RecordingRunne
 }
 
 impl MachineContainerRunner for RecordingRunner {
+    async fn ensure_volume(
+        &self,
+        volume: &ployz_core::intent::VolumePinState,
+    ) -> Result<(), ployz_core::machine::VolumeEnsureFailure> {
+        self.state
+            .inner
+            .lock()
+            .expect("recording runner lock is not poisoned")
+            .volume_ensures
+            .push(volume.clone());
+        Ok(())
+    }
+
     async fn existing_managed_containers(
         &self,
     ) -> Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError> {

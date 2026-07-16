@@ -1,12 +1,70 @@
 use clap::Args;
-use ployz_core::deploy::VolumeName;
-use ployz_core::ids::{NamespaceId, OperationId};
+use ployz_core::deploy::{VolumeMaxSizeBytes, VolumeName, VolumeSpec};
+use ployz_core::ids::{MachineId, NamespaceId, OperationId};
 use ployz_sdk_types::{
     VolumeListRequest, VolumeListResult, VolumeRemoveRequest, VolumeSnapshot, VolumeStatus,
 };
 
 use crate::commands::{PloyzctlCliError, invalid_value};
-use crate::execution_support::generate_client_volume_remove_id;
+use crate::execution_support::{
+    generate_client_volume_create_id, generate_client_volume_remove_id,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeCreateCommand {
+    pub request: ployz_sdk_types::VolumeCreateRequest,
+}
+
+impl VolumeCreateCommand {
+    #[must_use]
+    pub fn into_request(self) -> ployz_sdk_types::VolumeCreateRequest {
+        self.request
+    }
+}
+
+pub(crate) fn volume_create_command(
+    parsed: VolumeCreateCli,
+) -> Result<VolumeCreateCommand, PloyzctlCliError> {
+    let namespace_id = NamespaceId::try_new(parsed.namespace)
+        .map_err(|error| invalid_value("<namespace>", error))?;
+    let volume_name =
+        VolumeName::try_new(parsed.volume).map_err(|error| invalid_value("<volume>", error))?;
+    let machine_id =
+        MachineId::try_new(parsed.machine).map_err(|error| invalid_value("--machine", error))?;
+    let spec = match parsed.max_size {
+        None => VolumeSpec::Plain,
+        Some(max_size) => {
+            let bytes = crate::deploy::compose::parse_byte_quantity(&max_size, "volume max size")
+                .map_err(|error| invalid_value("--max-size", error))?;
+            VolumeSpec::Provisioned {
+                max_size_bytes: VolumeMaxSizeBytes::try_new(bytes)
+                    .map_err(|error| invalid_value("--max-size", error))?,
+            }
+        }
+    };
+    let operation_id = generate_client_volume_create_id(&namespace_id, &volume_name)
+        .map_err(|error| invalid_value("<volume>", error))?
+        .operation_id;
+    Ok(VolumeCreateCommand {
+        request: ployz_sdk_types::VolumeCreateRequest {
+            operation_id,
+            namespace_id,
+            volume_name,
+            machine_id,
+            spec,
+        },
+    })
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct VolumeCreateCli {
+    namespace: String,
+    volume: String,
+    #[arg(long)]
+    machine: String,
+    #[arg(long)]
+    max_size: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VolumeListCommand;

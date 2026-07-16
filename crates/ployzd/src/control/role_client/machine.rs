@@ -2,7 +2,7 @@
 
 use crate::roles::machine::MachineRuntimeUnavailableReason;
 use crate::roles::machine::protocol::{
-    MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
+    MachineBuildCapability, MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
     MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,
     MachineContainerRemoveRpcRequest, MachineContainerResolveImageDomainError,
     MachineContainerResolveImageRpcOk, MachineContainerResolveImageRpcRequest,
@@ -19,8 +19,8 @@ use crate::roles::machine::protocol::{
     MachineStoragePrepareReportRpcRequest, MachineStoragePrepareRpcOk,
     MachineStoragePrepareRpcRequest, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
     MachineSubstrateUpdateDomainError, MachineSubstrateUpdateRpcOk,
-    MachineSubstrateUpdateRpcRequest, MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk,
-    MachineVolumeRemoveRpcRequest,
+    MachineSubstrateUpdateRpcRequest, MachineVolumeEnsureRpcOk, MachineVolumeEnsureRpcRequest,
+    MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
 };
 use futures_util::{StreamExt, stream};
 use ployz_core::deploy::VolumeName;
@@ -28,6 +28,7 @@ use ployz_core::ids::{MachineId, NamespaceId, OperationId};
 use ployz_core::image::{
     ImageEnsureOk, ImageEnsureRequest, ImageRemoveOk, ImageRemoveRequest, ImageRpcDomainError,
 };
+use ployz_core::intent::VolumePinState;
 use ployz_core::machine::MachineLifecycle;
 use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::network::{MachineDataplaneStatus, NetworkStatusMode};
@@ -209,6 +210,20 @@ pub enum MachineVolumeRemoveError {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineVolumeEnsureError {
+    Unavailable {
+        machine_id: MachineId,
+        volume_name: VolumeName,
+        reason: MachineRuntimeUnavailableReason,
+    },
+    Domain {
+        machine_id: MachineId,
+        volume_name: VolumeName,
+        failure: ployz_core::machine::VolumeEnsureFailure,
+    },
+}
+
 /// Outcome of one machine RPC round trip: either the machine answered with a typed
 /// domain error, or the call never produced a usable answer.
 #[derive(Debug)]
@@ -305,6 +320,15 @@ impl NatsMachineFactsReader {
         &self,
         machine_id: &MachineId,
     ) -> Result<MachineFactsSnapshot, MachineFactsReadError> {
+        self.machine_facts_response(machine_id)
+            .await
+            .map(|ok| ok.facts)
+    }
+
+    pub(crate) async fn machine_facts_response(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<MachineFactsGetRpcOk, MachineFactsReadError> {
         call_machine::<MachineFactsGetRpcOk, MachineFactsGetDomainError>(
             &self.client,
             self.request_timeout,
@@ -313,7 +337,6 @@ impl NatsMachineFactsReader {
             &MachineFactsGetRpcRequest {},
         )
         .await
-        .map(|ok| ok.facts)
         .map_err(|error| match error {
             MachineCallError::Unavailable(reason) => MachineFactsReadError::Unavailable {
                 machine_id: machine_id.clone(),
@@ -365,6 +388,14 @@ pub(crate) struct MachinePlacementFactsAnswer {
     pub platform: ployz_core::image::OciPlatform,
     pub endpoints: Option<ployz_core::machine::MachineEndpointObservation>,
     pub storage: Option<ployz_core::machine::StorageCapability>,
+    pub build: MachineBuildCapability,
+    pub clock: MachineClockTestimony,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MachineClockTestimony {
+    pub control_request_started_at_unix_ms: u64,
+    pub machine_observed_at_unix_ms: u64,
 }
 
 pub(crate) async fn read_machine_placement_facts(
@@ -373,16 +404,12 @@ pub(crate) async fn read_machine_placement_facts(
 ) -> Vec<MachinePlacementFacts> {
     let mut reads = stream::iter(machine_lifecycles)
         .map(|(machine_id, lifecycle)| async move {
+            let control_request_started_at_unix_ms = current_unix_millis();
             let answer = facts_reader
-                .machine_facts(&machine_id)
+                .machine_facts_response(&machine_id)
                 .await
                 .ok()
-                .map(|facts| MachinePlacementFactsAnswer {
-                    containers: facts.containers().clone(),
-                    platform: facts.platform().clone(),
-                    endpoints: facts.endpoints().cloned(),
-                    storage: facts.storage().cloned(),
-                });
+                .map(|response| placement_answer(response, control_request_started_at_unix_ms));
             MachinePlacementFacts {
                 machine_id,
                 lifecycle,
@@ -397,6 +424,30 @@ pub(crate) async fn read_machine_placement_facts(
     }
     facts.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
     facts
+}
+
+fn placement_answer(
+    response: MachineFactsGetRpcOk,
+    control_request_started_at_unix_ms: u64,
+) -> MachinePlacementFactsAnswer {
+    MachinePlacementFactsAnswer {
+        containers: response.facts.containers().clone(),
+        platform: response.facts.platform().clone(),
+        endpoints: response.facts.endpoints().cloned(),
+        storage: response.facts.storage().cloned(),
+        build: response.build,
+        clock: MachineClockTestimony {
+            control_request_started_at_unix_ms,
+            machine_observed_at_unix_ms: response.facts.observed_at_unix_ms(),
+        },
+    }
+}
+
+fn current_unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().try_into().unwrap_or(u64::MAX))
+        .unwrap_or(0)
 }
 
 pub(crate) async fn read_available_machine_facts(
@@ -660,6 +711,36 @@ impl NatsMachineContainerRuntime {
         })
     }
 
+    pub async fn ensure_volume(
+        &self,
+        machine_id: &MachineId,
+        volume: &VolumePinState,
+    ) -> Result<(), MachineVolumeEnsureError> {
+        call_machine::<MachineVolumeEnsureRpcOk, ployz_core::machine::VolumeEnsureFailure>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::VolumeEnsure,
+            &MachineVolumeEnsureRpcRequest {
+                volume: volume.clone(),
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| match error {
+            MachineCallError::Unavailable(reason) => MachineVolumeEnsureError::Unavailable {
+                machine_id: machine_id.clone(),
+                volume_name: volume.volume_name().clone(),
+                reason,
+            },
+            MachineCallError::Domain(failure) => MachineVolumeEnsureError::Domain {
+                machine_id: machine_id.clone(),
+                volume_name: volume.volume_name().clone(),
+                failure,
+            },
+        })
+    }
+
     pub(crate) async fn request_resolve_image(
         &self,
         machine_id: &MachineId,
@@ -910,5 +991,46 @@ fn machine_service_failure_reason(error: NatsServiceError) -> MachineRuntimeUnav
         NatsServiceErrorCode::Internal => MachineRuntimeUnavailableReason::ServiceInternal {
             message: error.message,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ployz_core::image::OciPlatform;
+    use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineDiskSpace};
+
+    #[test]
+    fn placement_answer_binds_seed_clock_to_control_gather_start() {
+        let machine_id = MachineId::try_new("machine-a").expect("machine id");
+        let facts = MachineFactsSnapshot::try_new(
+            machine_id.clone(),
+            MachineContainerObservationSnapshot::try_new(machine_id, []).expect("containers"),
+            None,
+            MachineDiskSpace {
+                available_bytes: 1,
+                total_bytes: 2,
+            },
+            None,
+            OciPlatform::try_new("linux", "amd64").expect("platform"),
+            1_234,
+        )
+        .expect("facts");
+
+        let answer = placement_answer(
+            MachineFactsGetRpcOk {
+                facts,
+                build: MachineBuildCapability::Available,
+            },
+            1_000,
+        );
+
+        assert_eq!(
+            answer.clock,
+            MachineClockTestimony {
+                control_request_started_at_unix_ms: 1_000,
+                machine_observed_at_unix_ms: 1_234,
+            }
+        );
     }
 }

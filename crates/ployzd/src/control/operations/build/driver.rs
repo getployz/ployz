@@ -1,8 +1,11 @@
+use std::collections::BTreeMap;
+use std::future::Future;
 use std::time::Duration;
 
-use ployz_core::build::build_control_request_timeout;
+use ployz_core::build::{BUILD_MAX_PLACEMENT_TIMEOUT, build_control_request_timeout};
 use ployz_core::deploy::PushedImageReceipt;
 use ployz_core::ids::{MachineId, OperationId};
+use ployz_core::image::OciPlatform;
 use ployz_core::operation::{
     BuildCleanupEvidence, BuildEvidence, BuildOperationFailure, BuildPlatformFailure,
     BuildTimeoutFailure, BuildTransition, CancellationReason, EventSequence, FailureMessage,
@@ -30,6 +33,17 @@ use super::place_build_platforms;
 use super::platform_session::PlatformLogSession;
 
 const BUILD_CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
+
+async fn within_placement_deadline<T>(
+    placement: impl Future<Output = Result<T, BuildOperationFailure>>,
+) -> Result<T, BuildOperationFailure> {
+    tokio::time::timeout(BUILD_MAX_PLACEMENT_TIMEOUT, placement)
+        .await
+        .map_err(|_| BuildOperationFailure::ControlUnavailable {
+            message: FailureMessage::try_new("build placement exceeded its 180-second deadline")
+                .expect("placement timeout failure is non-empty"),
+        })?
+}
 
 #[derive(Clone)]
 pub(crate) struct BuildOperationDriver {
@@ -163,6 +177,7 @@ impl BuildOperationDriver {
                         | Some(OperationStatus::ManagedDnsReconcile { .. })
                         | Some(OperationStatus::IngressConfigure { .. })
                         | Some(OperationStatus::NamespaceRemove { .. })
+                        | Some(OperationStatus::VolumeCreate { .. })
                         | Some(OperationStatus::VolumeRemove { .. }) => {
                             BuildCancelDisposition::NoSuchOperation
                         }
@@ -230,59 +245,8 @@ impl BuildOperationDriver {
         &self,
         accepted: &AcceptedBuildExecution,
     ) -> Result<(), BuildOperationFailure> {
+        let placement = within_placement_deadline(self.place(accepted)).await?;
         let id = &accepted.submission.operation_id;
-        self.controllers
-            .repository()
-            .record_build_transition(id, BuildTransition::Placing)
-            .await
-            .map_err(record_failure)?;
-        let intent = self.intent.intent().await.map_err(|error| {
-            BuildOperationFailure::ControlUnavailable {
-                message: failure_message(error),
-            }
-        })?;
-        let projection = intent.dataplane_projection;
-        let facts = read_machine_placement_facts(
-            &self.facts,
-            intent
-                .active_machines
-                .into_iter()
-                .map(|machine| (machine.machine_id, machine.lifecycle)),
-        )
-        .await;
-        let dataplane_statuses = gather_dataplane_statuses(
-            &self.facts,
-            projection
-                .declared_members()
-                .iter()
-                .map(|member| &member.machine_id),
-        )
-        .await;
-        let placement = place_build_platforms(
-            &accepted.submission.platforms,
-            &facts,
-            &projection,
-            &dataplane_statuses,
-        )
-        .map_err(|failure| *failure)?;
-        for (platform, machine_id) in placement.iter() {
-            self.controllers
-                .repository()
-                .record_build_evidence(
-                    id,
-                    BuildEvidence::PlatformPlaced {
-                        platform: platform.clone(),
-                        machine_id: machine_id.clone(),
-                    },
-                )
-                .await
-                .map_err(record_failure)?;
-        }
-        self.controllers
-            .repository()
-            .record_build_transition(id, BuildTransition::Building)
-            .await
-            .map_err(record_failure)?;
         let outcomes =
             futures_util::future::join_all(placement.iter().map(|(platform, machine_id)| {
                 self.run_platform(accepted, platform.clone(), machine_id.clone())
@@ -363,6 +327,66 @@ impl BuildOperationDriver {
             .await
             .map_err(record_failure)?;
         Ok(())
+    }
+
+    async fn place(
+        &self,
+        accepted: &AcceptedBuildExecution,
+    ) -> Result<BTreeMap<OciPlatform, MachineId>, BuildOperationFailure> {
+        let id = &accepted.submission.operation_id;
+        self.controllers
+            .repository()
+            .record_build_transition(id, BuildTransition::Placing)
+            .await
+            .map_err(record_failure)?;
+        let intent = self.intent.intent().await.map_err(|error| {
+            BuildOperationFailure::ControlUnavailable {
+                message: failure_message(error),
+            }
+        })?;
+        let projection = intent.dataplane_projection;
+        let facts = read_machine_placement_facts(
+            &self.facts,
+            intent
+                .active_machines
+                .into_iter()
+                .map(|machine| (machine.machine_id, machine.lifecycle)),
+        )
+        .await;
+        let dataplane_statuses = gather_dataplane_statuses(
+            &self.facts,
+            projection
+                .declared_members()
+                .iter()
+                .map(|member| &member.machine_id),
+        )
+        .await;
+        let placement = place_build_platforms(
+            &accepted.submission.platforms,
+            &facts,
+            &projection,
+            &dataplane_statuses,
+        )
+        .map_err(|failure| *failure)?;
+        for (platform, machine_id) in placement.iter() {
+            self.controllers
+                .repository()
+                .record_build_evidence(
+                    id,
+                    BuildEvidence::PlatformPlaced {
+                        platform: platform.clone(),
+                        machine_id: machine_id.clone(),
+                    },
+                )
+                .await
+                .map_err(record_failure)?;
+        }
+        self.controllers
+            .repository()
+            .record_build_transition(id, BuildTransition::Building)
+            .await
+            .map_err(record_failure)?;
+        Ok(placement)
     }
 
     async fn run_platform(

@@ -6,7 +6,8 @@ use super::{
     MachineStoragePrepareOperationState, MachineUpdateOperationState,
     NamespaceRemoveOperationState, NamespaceRemoveRunningStage, NetworkRepairOperationState,
     NetworkRepairRunningStage, OperationKind, OperationStatus, ServiceRestartOperationState,
-    ServiceRestartRunningStage, VolumeRemoveOperationState, VolumeRemoveRunningStage,
+    ServiceRestartRunningStage, VolumeCreateOperationState, VolumeCreateRunningStage,
+    VolumeRemoveOperationState, VolumeRemoveRunningStage,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +57,9 @@ pub enum OperationInterruptionStage {
     NamespaceRemoveRunning { stage: NamespaceRemoveRunningStage },
     VolumeRemoveAccepted,
     VolumeRemoveRunning { stage: VolumeRemoveRunningStage },
+    VolumeCreateAccepted,
+    VolumeCreatePlanning,
+    VolumeCreateRunning { stage: VolumeCreateRunningStage },
 }
 
 impl OperationInterruptionStage {
@@ -85,6 +89,9 @@ impl OperationInterruptionStage {
             Self::VolumeRemoveAccepted | Self::VolumeRemoveRunning { .. } => {
                 OperationKind::VolumeRemove
             }
+            Self::VolumeCreateAccepted
+            | Self::VolumeCreatePlanning
+            | Self::VolumeCreateRunning { .. } => OperationKind::VolumeCreate,
         }
     }
 
@@ -107,7 +114,10 @@ impl OperationInterruptionStage {
             | Self::NamespaceRemoveAccepted
             | Self::NamespaceRemoveRunning { .. }
             | Self::VolumeRemoveAccepted
-            | Self::VolumeRemoveRunning { .. } => {
+            | Self::VolumeRemoveRunning { .. }
+            | Self::VolumeCreateAccepted
+            | Self::VolumeCreatePlanning
+            | Self::VolumeCreateRunning { .. } => {
                 OperationInterruptionUncertainWork::IntentAndRuntime
             }
         }
@@ -132,7 +142,10 @@ impl OperationInterruptionStage {
             | Self::NamespaceRemoveAccepted
             | Self::NamespaceRemoveRunning { .. }
             | Self::VolumeRemoveAccepted
-            | Self::VolumeRemoveRunning { .. } => {
+            | Self::VolumeRemoveRunning { .. }
+            | Self::VolumeCreateAccepted
+            | Self::VolumeCreatePlanning
+            | Self::VolumeCreateRunning { .. } => {
                 OperationInterruptionNextAction::InspectThenResubmit
             }
         }
@@ -275,6 +288,7 @@ impl OperationStatus {
             Self::ServiceRestart { state, .. } => state.interruption_evidence(cause),
             Self::NamespaceRemove { state, .. } => state.interruption_evidence(cause),
             Self::VolumeRemove { state, .. } => state.interruption_evidence(cause),
+            Self::VolumeCreate { state, .. } => state.interruption_evidence(cause),
             Self::Cert { .. }
             | Self::MachineAdd { .. }
             | Self::CoreReplace { .. }
@@ -328,6 +342,10 @@ impl OperationStatus {
             | Self::VolumeRemove {
                 state: VolumeRemoveOperationState::Interrupted { evidence },
                 ..
+            }
+            | Self::VolumeCreate {
+                state: VolumeCreateOperationState::Interrupted { evidence },
+                ..
             } => Some(evidence),
             Self::Build { .. }
             | Self::Deploy { .. }
@@ -340,6 +358,7 @@ impl OperationStatus {
             | Self::ServiceRestart { .. }
             | Self::NamespaceRemove { .. }
             | Self::VolumeRemove { .. }
+            | Self::VolumeCreate { .. }
             | Self::Cert { .. }
             | Self::MachineAdd { .. }
             | Self::CoreReplace { .. }

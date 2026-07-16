@@ -10,6 +10,7 @@ pub use ployz_core::certificate::{
     CertValidAt, CertValidAtError, CertValidityError, CertValidityWindow,
     CertificateProvisionFailure, ManagedLeaseName,
 };
+pub use ployz_core::deploy::VolumeAdmissionFailure;
 pub use ployz_core::deploy::{
     ContainerCommand, ContainerCommandError, ContainerEntrypoint, ContainerHealthcheck,
     ContainerHealthcheckTest, ContainerMountPath, ContainerMountPathError, ContainerResourceLimits,
@@ -19,9 +20,10 @@ pub use ployz_core::deploy::{
     DeployReservationExpiresAt, DeployReservationId, DeployReservationNumberError, DeployRoute,
     DeployRouteTarget, DeployServicePlan, DeployServiceSpec, EnvName, EnvNameError, EnvValue,
     EnvValueError, HealthcheckDurationNanos, HealthcheckRetries, HealthcheckShellCommand,
-    ImageReference, ImageReferenceError, ImageSource, LinuxCapability, MemoryBytes, NanoCpus,
-    PidsLimit, PlatformImage, PreStartHook, PreStartHookStep, PushedImageReceipt,
-    PushedImageReceiptError, RegistryCredential, RegistryCredentialError, RegistryCredentialSecret,
+    ImageAvailabilityExpiresAt, ImageAvailabilityTimestampError, ImageReference,
+    ImageReferenceError, ImageSource, LinuxCapability, MemoryBytes, NanoCpus, PidsLimit,
+    PlatformImage, PreStartHook, PreStartHookStep, PushedImageReceipt, PushedImageReceiptError,
+    RegistryCredential, RegistryCredentialError, RegistryCredentialSecret,
     RegistryCredentialUsername, ReplicaCount, ReplicaCountError, ReplicaSlot, ServiceDependency,
     ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeMaxSizeBytes,
     VolumeMaxSizeError, VolumeName, VolumeNameError, VolumeSpec, ZfsPoolName, ZfsPoolNameError,
@@ -67,7 +69,7 @@ pub use ployz_core::machine::{
     GatewayProcessHealth, GatewayServingStatus, GatewayStatusObservation,
     GatewayStatusPublishFailure, GatewayWatchFailure, MachineEndpointObservation, MachineLifecycle,
     MachineUsabilityReason, PoolCapacityFacts, StorageCapability, StorageUnavailableReason,
-    StrandedVolumeAlarm, StrandedVolumeReason,
+    StrandedVolumeAlarm, StrandedVolumeReason, VolumeEnsureFailure,
 };
 pub use ployz_core::nats_config::{
     CredentialGrant, CredentialName, CredentialNameError, CredentialRole, NatsAuthorizationGrant,
@@ -114,7 +116,8 @@ pub use ployz_core::operation::{
     OperationSubject, OperatorHint, ReplayedOperationEvent, RetainedArtifact,
     RouteCutoverFailureReason, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
     RouteTarget, ServiceRestartFailure, ServiceRestartOperationState, ServiceRestartRunningStage,
-    UnusableMachine, VolumeRemoveFailure, VolumeRemoveOperationState, VolumeRemoveRunningStage,
+    UnusableMachine, VolumeCreateFailure, VolumeCreateOperationState, VolumeCreateRunningStage,
+    VolumeRemoveFailure, VolumeRemoveOperationState, VolumeRemoveRunningStage,
 };
 pub use ployz_core::operation::{
     CertInterruptionStage, CertOperationFailure, CertOperationFailureError, CertOperationState,

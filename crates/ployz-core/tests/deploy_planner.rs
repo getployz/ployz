@@ -134,14 +134,20 @@ fn retention_policy_changes_neither_service_entry_nor_namespace_revision_identit
 #[test]
 fn pushed_image_identity_uses_index_digest_across_platform_receipts() {
     let mut left = service_spec("svc_api", "api:latest", 1, None);
-    left.image_source =
-        pushed_image_source([('b', "amd64", "machine_a"), ('c', "arm64", "machine_c")]);
+    left.image_source = pushed_image_source(
+        [('b', "amd64", "machine_a"), ('c', "arm64", "machine_c")],
+        4_102_444_800,
+    );
     let mut same_content = left.clone();
-    same_content.image_source =
-        pushed_image_source([('b', "amd64", "machine_b"), ('c', "arm64", "machine_d")]);
+    same_content.image_source = pushed_image_source(
+        [('b', "amd64", "machine_b"), ('c', "arm64", "machine_d")],
+        4_000_000_000,
+    );
     let mut changed_content = same_content.clone();
-    changed_content.image_source =
-        pushed_image_source([('d', "amd64", "machine_b"), ('c', "arm64", "machine_d")]);
+    changed_content.image_source = pushed_image_source(
+        [('d', "amd64", "machine_b"), ('c', "arm64", "machine_d")],
+        4_000_000_000,
+    );
 
     assert_eq!(
         left.namespace_revision_entry_id(&namespace_id("default")),
@@ -153,7 +159,10 @@ fn pushed_image_identity_uses_index_digest_across_platform_receipts() {
     );
 }
 
-fn pushed_image_source<const N: usize>(platforms: [(char, &str, &str); N]) -> ImageSource {
+fn pushed_image_source<const N: usize>(
+    platforms: [(char, &str, &str); N],
+    availability_expires_at: u64,
+) -> ImageSource {
     let receipt =
         PushedImageReceipt::try_new(platforms.into_iter().map(|(digest, architecture, seed)| {
             (
@@ -162,6 +171,11 @@ fn pushed_image_source<const N: usize>(platforms: [(char, &str, &str); N]) -> Im
                     seed: machine_id(seed),
                     manifest_digest: oci_digest(digest),
                     image_id: oci_digest(digest),
+                    availability_expires_at:
+                        ployz_core::deploy::ImageAvailabilityExpiresAt::try_new(
+                            availability_expires_at,
+                        )
+                        .expect("expiry"),
                 },
             )
         }))
@@ -754,7 +768,7 @@ fn new_plain_volume_pin_commits_are_sorted_by_volume_name() {
 }
 
 #[test]
-fn provisioned_volume_without_a_dataset_backed_pin_fails_before_plain_pin_commit() {
+fn provisioned_volume_birth_commits_and_ensures_the_same_dataset_backed_pin() {
     let mut input = planning_input(1, [machine_id("machine_a")]);
     declare_volume_mounts(
         &mut input,
@@ -766,17 +780,14 @@ fn provisioned_volume_without_a_dataset_backed_pin_fails_before_plain_pin_commit
         )],
     );
 
-    assert_eq!(
-        plan_single_service(&input),
-        Err(DeployPlanError::ProvisionedVolumeRequiresProvisioning {
-            service_id: service_id("svc_api"),
-            volume_name: VolumeName::try_new("data").expect("volume name"),
-        })
-    );
+    let plan = plan_single_service(&input).expect("provisioned birth is admitted");
+    let pin = provisioned_volume_pin("data", "machine_a");
+    assert_eq!(plan.volume_pin_commits, vec![pin.clone()]);
+    assert_eq!(plan.volume_ensures, vec![pin]);
 }
 
 #[test]
-fn provisioned_volume_with_a_dataset_backed_pin_can_be_placed() {
+fn provisioned_pin_is_ensured_even_when_live_testimony_omits_its_dataset() {
     let mut input = planning_input(1, [machine_id("machine_a")]);
     declare_volume_mounts(
         &mut input,
@@ -788,6 +799,10 @@ fn provisioned_volume_with_a_dataset_backed_pin_can_be_placed() {
         )],
     );
     input.volume_pins = vec![provisioned_volume_pin("data", "machine_a")];
+    input.storage_testimony = BTreeMap::from([(
+        machine_id("machine_a"),
+        Some(ready_storage_with_capacity(1024 * 1024, Vec::new())),
+    )]);
 
     assert_eq!(
         plan_single_service(&input).expect("dataset-backed pin is placeable"),
@@ -863,7 +878,7 @@ fn duplicate_pins_for_one_volume_fail_as_ambiguous_before_placement() {
 }
 
 #[test]
-fn provisioned_declaration_requires_provisioning_to_grow_a_pinned_maximum() {
+fn provisioned_growth_commits_and_ensures_the_replacement_pin() {
     let mut input = planning_input(1, [machine_id("machine_a")]);
     declare_volume_mounts(
         &mut input,
@@ -880,13 +895,10 @@ fn provisioned_declaration_requires_provisioning_to_grow_a_pinned_maximum() {
         Some(ready_storage_with_quota("data", 1024)),
     )]);
 
-    assert_eq!(
-        plan_single_service(&input),
-        Err(DeployPlanError::ProvisionedVolumeRequiresProvisioning {
-            service_id: service_id("svc_api"),
-            volume_name: VolumeName::try_new("data").expect("volume name"),
-        })
-    );
+    let plan = plan_single_service(&input).expect("growth is admitted");
+    let replacement = provisioned_volume_pin_with_size("data", "machine_a", 2048);
+    assert_eq!(plan.volume_pin_commits, vec![replacement.clone()]);
+    assert_eq!(plan.volume_ensures, vec![replacement]);
 }
 
 #[test]
@@ -1081,7 +1093,10 @@ fn multi_service_provisioned_births_share_one_machine_capacity_snapshot() {
         plan_inputs(vec![api, worker], Vec::new()),
         Err(DeployPlanError::VolumeAdmission {
             failure: VolumeAdmissionFailure::CapacityExceeded {
-                available_bytes: 1_000,
+                total_bytes: 1_000,
+                provisioned_used_bytes: 0,
+                free_bytes: 1_000,
+                required_headroom_bytes: 1_200,
                 requested_total_bytes: 1_200,
             },
             ..
@@ -1090,7 +1105,7 @@ fn multi_service_provisioned_births_share_one_machine_capacity_snapshot() {
 }
 
 #[test]
-fn admitted_provisioned_birth_never_reaches_container_planning() {
+fn admitted_provisioned_birth_reaches_container_planning_with_an_ensure() {
     let mut input = planning_input(1, [machine_id("machine_a")]);
     declare_volume_mounts(
         &mut input,
@@ -1102,10 +1117,9 @@ fn admitted_provisioned_birth_never_reaches_container_planning() {
         )],
     );
 
-    assert!(matches!(
-        plan_single_service(&input),
-        Err(DeployPlanError::ProvisionedVolumeRequiresProvisioning { .. })
-    ));
+    let plan = plan_single_service(&input).expect("birth reaches container planning");
+    assert_eq!(plan.volume_ensures.len(), 1);
+    assert_eq!(plan.volume_pin_commits, plan.volume_ensures);
 }
 
 #[test]
@@ -2107,6 +2121,7 @@ fn deploy_plan_with_volume_pins(
     volume_pin_commits: Vec<VolumePinState>,
     cleanup_containers: Vec<DeployCleanupContainer>,
 ) -> DeployPlan {
+    let volume_ensures = expected_volume_ensures(input, &volume_pin_commits);
     DeployPlan {
         namespace_id: namespace_id("default"),
         namespace_revision_id: namespace_revision_id_for(
@@ -2121,6 +2136,7 @@ fn deploy_plan_with_volume_pins(
             }],
         }],
         volume_pin_commits,
+        volume_ensures,
         cleanup_actions: cleanup_containers
             .into_iter()
             .map(|target| ployz_core::deploy::DeployCleanupAction::RemoveContainer { target })
@@ -2180,6 +2196,14 @@ fn volume_pin(volume_name: &str, machine_id: &str) -> VolumePinState {
 }
 
 fn provisioned_volume_pin(volume_name: &str, machine_id: &str) -> VolumePinState {
+    provisioned_volume_pin_with_size(volume_name, machine_id, 1024)
+}
+
+fn provisioned_volume_pin_with_size(
+    volume_name: &str,
+    machine_id: &str,
+    max_size_bytes: u64,
+) -> VolumePinState {
     let volume_name = VolumeName::try_new(volume_name).expect("valid volume name");
     VolumePinState::try_new(
         namespace_id("default"),
@@ -2192,10 +2216,39 @@ fn provisioned_volume_pin(volume_name: &str, machine_id: &str) -> VolumePinState
                 &volume_name,
             )
             .expect("dataset name"),
-            max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("non-zero size"),
+            max_size_bytes: VolumeMaxSizeBytes::try_new(max_size_bytes).expect("non-zero size"),
         },
     )
     .expect("dataset identity matches pin")
+}
+
+fn expected_volume_ensures(
+    input: &DeployPlanningInput,
+    commits: &[VolumePinState],
+) -> Vec<VolumePinState> {
+    let mounted = input
+        .service
+        .runtime
+        .volume_mounts
+        .iter()
+        .map(|mount| &mount.volume_name);
+    let mut ensures = mounted
+        .filter_map(|volume_name| {
+            commits
+                .iter()
+                .find(|pin| pin.volume_name() == volume_name)
+                .or_else(|| {
+                    input
+                        .volume_pins
+                        .iter()
+                        .find(|pin| pin.volume_name() == volume_name)
+                })
+                .cloned()
+        })
+        .collect::<Vec<_>>();
+    ensures.sort_by(|left, right| left.volume_name().cmp(right.volume_name()));
+    ensures.dedup();
+    ensures
 }
 
 fn ready_storage() -> ployz_core::machine::StorageCapability {

@@ -1,16 +1,17 @@
 use ployz_core::certificate::{ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow};
 use ployz_core::deploy::{
     ContainerCommand, ContainerHealthcheck, ContainerHealthcheckTest, ContainerMountPath,
-    DependencyCondition, DeployCleanupContainer, DeployRequest, DeployRoute, DeployRouteTarget,
-    DeployServiceSpec, HealthcheckShellCommand, ImageReference, PreStartHook, ReplicaCount,
-    ServiceDependency, ServiceVolumeMount, VolumeName,
+    DatasetName, DependencyCondition, DeployCleanupContainer, DeployRequest, DeployRoute,
+    DeployRouteTarget, DeployServiceSpec, HealthcheckShellCommand, ImageReference, PreStartHook,
+    ReplicaCount, ServiceDependency, ServiceVolumeMount, VolumeMaxSizeBytes, VolumeName,
+    VolumeSpec, ZfsPoolName,
 };
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId,
     RouteBindingId, ServiceId,
 };
 use ployz_core::ingress::{AutomaticHostnameLabel, RouteBindingOrigin};
-use ployz_core::intent::{RouteBindingState, ServingTargetEntry, VolumePinState};
+use ployz_core::intent::{RouteBindingState, ServingTargetEntry, VolumeKind, VolumePinState};
 use ployz_core::machine::runtime::{
     MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
@@ -208,6 +209,10 @@ pub(super) struct RecordingRuntime {
     pub(super) stops: Vec<(MachineId, MachineContainerStopRpcRequest)>,
     pub(super) removals: Vec<(MachineId, MachineContainerRemoveRpcRequest)>,
     pub(super) image_removals: Vec<(MachineId, ployz_core::image::ImageRemoveRequest)>,
+    pub(super) image_ensures: Vec<(MachineId, ployz_core::image::ImageEnsureRequest)>,
+    pub(super) volume_ensures: Vec<(MachineId, VolumePinState)>,
+    volume_ensure_failure: Option<crate::control::operations::deploy::MachineVolumeEnsureError>,
+    required_pin_commit: Option<Arc<AtomicBool>>,
     containers: Vec<ContainerId>,
     hook_outcomes: Vec<(ContainerId, i64)>,
     fail_after_first: bool,
@@ -238,6 +243,7 @@ pub(super) struct RecordingNamespaceState {
     )>,
     pub(super) serving_removals: Vec<ServiceId>,
     pub(super) volume_pin_requests: Vec<VolumePinState>,
+    pin_commit_signal: Option<Arc<AtomicBool>>,
     certificate_ready: Option<Arc<AtomicBool>>,
 }
 
@@ -260,6 +266,12 @@ impl RecordingNamespaceState {
         state
     }
 
+    pub(super) fn signaling_pin_commit(signal: Arc<AtomicBool>) -> Self {
+        let mut state = Self::stored();
+        state.pin_commit_signal = Some(signal);
+        state
+    }
+
     fn with_serving_behavior(serving_behavior: ServingCommitBehavior) -> Self {
         Self {
             serving_behavior,
@@ -269,6 +281,7 @@ impl RecordingNamespaceState {
             phase_requests: Vec::new(),
             serving_removals: Vec::new(),
             volume_pin_requests: Vec::new(),
+            pin_commit_signal: None,
             certificate_ready: None,
         }
     }
@@ -330,6 +343,9 @@ impl NamespaceStateCommitter for RecordingNamespaceState {
         state: VolumePinState,
     ) -> Result<(), NamespaceCommitError> {
         self.volume_pin_requests.push(state);
+        if let Some(signal) = &self.pin_commit_signal {
+            signal.store(true, Ordering::SeqCst);
+        }
         Ok(())
     }
 
@@ -566,6 +582,19 @@ impl DeployContainerForAssert {
 }
 
 impl RecordingRuntime {
+    pub(super) fn requiring_pin_commit(mut self, signal: Arc<AtomicBool>) -> Self {
+        self.required_pin_commit = Some(signal);
+        self
+    }
+
+    pub(super) fn with_volume_ensure_failure(
+        mut self,
+        failure: crate::control::operations::deploy::MachineVolumeEnsureError,
+    ) -> Self {
+        self.volume_ensure_failure = Some(failure);
+        self
+    }
+
     pub(super) fn with_containers<const N: usize>(containers: [&str; N]) -> Self {
         Self {
             resolutions: Vec::new(),
@@ -574,6 +603,10 @@ impl RecordingRuntime {
             stops: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
+            image_ensures: Vec::new(),
+            volume_ensures: Vec::new(),
+            volume_ensure_failure: None,
+            required_pin_commit: None,
             containers: containers.into_iter().map(container_id).rev().collect(),
             hook_outcomes: Vec::new(),
             fail_after_first: false,
@@ -594,6 +627,10 @@ impl RecordingRuntime {
             stops: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
+            image_ensures: Vec::new(),
+            volume_ensures: Vec::new(),
+            volume_ensure_failure: None,
+            required_pin_commit: None,
             containers: containers.into_iter().map(container_id).rev().collect(),
             hook_outcomes: Vec::new(),
             fail_after_first: false,
@@ -614,6 +651,10 @@ impl RecordingRuntime {
             stops: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
+            image_ensures: Vec::new(),
+            volume_ensures: Vec::new(),
+            volume_ensure_failure: None,
+            required_pin_commit: None,
             containers: containers.into_iter().map(container_id).rev().collect(),
             hook_outcomes: Vec::new(),
             fail_after_first: false,
@@ -634,6 +675,10 @@ impl RecordingRuntime {
             stops: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
+            image_ensures: Vec::new(),
+            volume_ensures: Vec::new(),
+            volume_ensure_failure: None,
+            required_pin_commit: None,
             containers: vec![container_id("ctr_1")],
             hook_outcomes: Vec::new(),
             fail_after_first: true,
@@ -657,6 +702,10 @@ impl RecordingRuntime {
             stops: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
+            image_ensures: Vec::new(),
+            volume_ensures: Vec::new(),
+            volume_ensure_failure: None,
+            required_pin_commit: None,
             containers: vec![self::container_id(container_id)],
             hook_outcomes: Vec::new(),
             fail_after_first: false,
@@ -677,6 +726,10 @@ impl RecordingRuntime {
             stops: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
+            image_ensures: Vec::new(),
+            volume_ensures: Vec::new(),
+            volume_ensure_failure: None,
+            required_pin_commit: None,
             containers: vec![self::container_id(container_id)],
             hook_outcomes: Vec::new(),
             fail_after_first: false,
@@ -724,6 +777,25 @@ impl crate::control::operations::deploy::MachineImageRemovalRuntime for Recordin
 }
 
 impl MachineContainerRuntime for RecordingRuntime {
+    async fn ensure_volume(
+        &mut self,
+        machine_id: &MachineId,
+        volume: &VolumePinState,
+    ) -> Result<(), crate::control::operations::deploy::MachineVolumeEnsureError> {
+        if let Some(signal) = &self.required_pin_commit {
+            assert!(
+                signal.load(Ordering::SeqCst),
+                "volume pin must commit before its machine effect"
+            );
+        }
+        self.volume_ensures
+            .push((machine_id.clone(), volume.clone()));
+        match &self.volume_ensure_failure {
+            Some(failure) => Err(failure.clone()),
+            None => Ok(()),
+        }
+    }
+
     async fn resolve_image(
         &mut self,
         machine_id: &MachineId,
@@ -742,6 +814,8 @@ impl MachineContainerRuntime for RecordingRuntime {
         ployz_core::image::ImageEnsureOk,
         crate::control::role_client::machine::MachineImageEnsureError,
     > {
+        self.image_ensures
+            .push((machine_id.clone(), request.clone()));
         Ok(ployz_core::image::ImageEnsureOk {
             machine_id: machine_id.clone(),
             platform: request.platform,
@@ -1010,6 +1084,7 @@ fn execution_input_for_request(
         request,
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
@@ -1038,6 +1113,7 @@ pub(super) fn pinned_deploy_command() -> DeployExecutionInput {
         request,
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
@@ -1074,6 +1150,7 @@ pub(super) fn deploy_command_with_healthcheck(replicas: u16) -> DeployExecutionI
         request,
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
@@ -1122,6 +1199,7 @@ pub(super) fn deploy_command_with_pre_start() -> DeployExecutionInput {
         request,
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
@@ -1168,6 +1246,7 @@ fn routed_deploy_command_with_stored_routes(
         routed_deploy_request(replicas),
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings,
@@ -1240,6 +1319,7 @@ pub(super) fn ployz_automatic_deploy_command() -> DeployExecutionInput {
         },
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
@@ -1292,6 +1372,11 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
                                 "b".repeat(64)
                             ))
                             .expect("valid image id"),
+                            availability_expires_at:
+                                ployz_core::deploy::ImageAvailabilityExpiresAt::try_new(
+                                    4_102_444_800,
+                                )
+                                .expect("expiry"),
                         },
                     ),
                     (
@@ -1309,6 +1394,11 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
                                 "e".repeat(64)
                             ))
                             .expect("valid image id"),
+                            availability_expires_at:
+                                ployz_core::deploy::ImageAvailabilityExpiresAt::try_new(
+                                    4_102_444_800,
+                                )
+                                .expect("expiry"),
                         },
                     ),
                 ])
@@ -1330,6 +1420,24 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
             machine_platforms: [
                 (machine_id("machine_a"), amd64),
                 (machine_id("machine_b"), arm64),
+            ]
+            .into_iter()
+            .collect(),
+            seed_clock_testimony: [
+                (
+                    machine_id("machine_seed"),
+                    crate::control::role_client::machine::MachineClockTestimony {
+                        control_request_started_at_unix_ms: 1_000_000,
+                        machine_observed_at_unix_ms: 1_000_000,
+                    },
+                ),
+                (
+                    machine_id("machine_arm_seed"),
+                    crate::control::role_client::machine::MachineClockTestimony {
+                        control_request_started_at_unix_ms: 1_000_000,
+                        machine_observed_at_unix_ms: 1_000_000,
+                    },
+                ),
             ]
             .into_iter()
             .collect(),
@@ -1370,6 +1478,13 @@ pub(super) fn deploy_command_without_eligible_machines(replicas: u16) -> DeployE
 }
 
 pub(super) fn volume_backed_deploy_command(replicas: u16) -> DeployExecutionInput {
+    volume_backed_deploy_command_with_pins(replicas, Vec::new())
+}
+
+fn volume_backed_deploy_command_with_pins(
+    replicas: u16,
+    namespace_volume_pins: Vec<VolumePinState>,
+) -> DeployExecutionInput {
     let mut request = target_deploy_request(replicas);
     request.volumes.insert(
         volume_name("postgres_data"),
@@ -1387,11 +1502,12 @@ pub(super) fn volume_backed_deploy_command(replicas: u16) -> DeployExecutionInpu
         request,
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
-            namespace_volume_pins: Vec::new(),
+            namespace_volume_pins,
             dataplane_members: Vec::new(),
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
             namespace_cleanup_candidates: Vec::new(),
@@ -1402,6 +1518,76 @@ pub(super) fn volume_backed_deploy_command(replicas: u16) -> DeployExecutionInpu
             step_timeout: Duration::from_secs(5),
         },
     )
+}
+
+pub(super) fn provisioned_volume_backed_deploy_command(
+    existing_pin: bool,
+) -> (DeployExecutionInput, VolumePinState) {
+    let namespace_id = namespace_id("default");
+    let volume_name = volume_name("postgres_data");
+    let machine_id = machine_id("machine_a");
+    let pool = ZfsPoolName::try_new("tank").expect("valid pool");
+    let max_size_bytes = VolumeMaxSizeBytes::try_new(1024).expect("non-zero size");
+    let pin = VolumePinState::try_new(
+        namespace_id.clone(),
+        volume_name.clone(),
+        machine_id.clone(),
+        VolumeKind::Provisioned {
+            dataset: DatasetName::for_volume(&pool, &namespace_id, &volume_name)
+                .expect("canonical dataset"),
+            max_size_bytes,
+        },
+    )
+    .expect("valid volume pin");
+    let mut request = target_deploy_request(1);
+    request.volumes.insert(
+        volume_name.clone(),
+        VolumeSpec::Provisioned { max_size_bytes },
+    );
+    let [service] = request.services.as_mut_slice() else {
+        panic!("deploy request fixture has one service");
+    };
+    service.runtime.volume_mounts = vec![ServiceVolumeMount {
+        volume_name,
+        target: ContainerMountPath::try_new("/var/lib/postgresql/data").expect("valid mount path"),
+    }];
+    let input = deploy_execution_input(
+        operation_id("op_123"),
+        request,
+        DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
+            machine_storage_testimony: std::collections::BTreeMap::from([(
+                machine_id.clone(),
+                Some(ployz_core::machine::StorageCapability::Ready {
+                    pool,
+                    capacity: ployz_core::machine::PoolCapacityFacts {
+                        total_bytes: 1024 * 1024,
+                        provisioned_used_bytes: 0,
+                        free_bytes: 1024 * 1024,
+                        child_quotas: Vec::new(),
+                    },
+                }),
+            )]),
+            unusable_machines: Vec::new(),
+            namespace_route_bindings: Vec::new(),
+            namespace_serving_entries: Vec::new(),
+            namespace_volume_pins: if existing_pin {
+                vec![pin.clone()]
+            } else {
+                Vec::new()
+            },
+            dataplane_members: Vec::new(),
+            eligible_machines: vec![machine_id],
+            namespace_cleanup_candidates: Vec::new(),
+            observed_machines: Vec::new(),
+            automatic_hostname_mode: AutomaticHostnameMode::Disabled,
+            gateway_certificate_targets: Vec::new(),
+            ployz_gateway_certificate_targets: Vec::new(),
+            step_timeout: Duration::from_secs(5),
+        },
+    );
+    (input, pin)
 }
 
 pub(super) fn deploy_command_with_existing_container(
@@ -1426,6 +1612,7 @@ pub(super) fn deploy_command_with_existing_container(
         request,
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
@@ -1496,6 +1683,7 @@ pub(super) fn deploy_command_replacing_old_container_with_keep(
         request,
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
@@ -1569,6 +1757,7 @@ fn prepared_deploy_command(
         target_deploy_request(replicas),
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
@@ -1611,6 +1800,7 @@ pub(super) fn empty_deploy_command_with_running_container(
         },
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: vec![RouteBindingState {

@@ -1,4 +1,6 @@
-use ployz_core::build::GitSource;
+use std::time::Duration;
+
+use ployz_core::build::{BUILD_MAX_ATTACHED_WATCH_TIMEOUT, GitSource};
 use ployz_sdk_types::{BuildCancelRequest, BuildSubmitRequest};
 
 use crate::build::command::{BuildCancelCommand, BuildSubmitCommand};
@@ -50,7 +52,13 @@ pub(crate) async fn submit(
             crate::operation::command::AcceptedOperationOutput::from_accepted(accepted).render(),
         ));
     }
-    crate::operation::runtime::watch_accepted(&api, accepted.operation_id, config).await
+    crate::operation::runtime::watch_accepted_with_timeout(
+        &api,
+        accepted.operation_id,
+        attached_build_watch_timeout(config),
+        config,
+    )
+    .await
 }
 
 pub(crate) async fn cancel(
@@ -66,4 +74,42 @@ pub(crate) async fn cancel(
         .await
         .map_err(api_error)?;
     crate::operation::runtime::watch_accepted(&api, accepted.operation_id, config).await
+}
+
+fn attached_build_watch_timeout(config: &PloyzctlRuntimeConfig) -> Duration {
+    config
+        .ops_watch_timeout
+        .unwrap_or(BUILD_MAX_ATTACHED_WATCH_TIMEOUT)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::execution_support::DEFAULT_OPS_WATCH_TIMEOUT;
+
+    #[test]
+    fn attached_build_uses_build_budget_without_changing_generic_watch_default() {
+        let config = PloyzctlRuntimeConfig::default();
+
+        assert_eq!(
+            attached_build_watch_timeout(&config),
+            Duration::from_secs(35 * 60)
+        );
+        assert_eq!(config.ops_watch_timeout(), DEFAULT_OPS_WATCH_TIMEOUT);
+        assert_eq!(DEFAULT_OPS_WATCH_TIMEOUT, Duration::from_secs(10 * 60));
+        assert!(BUILD_MAX_ATTACHED_WATCH_TIMEOUT == Duration::from_secs(35 * 60));
+    }
+
+    #[test]
+    fn attached_build_honors_explicit_watch_timeout() {
+        let explicit = Duration::from_secs(47);
+        let config = PloyzctlRuntimeConfig {
+            ops_watch_timeout: Some(explicit),
+            ..PloyzctlRuntimeConfig::default()
+        };
+
+        assert_eq!(attached_build_watch_timeout(&config), explicit);
+    }
 }

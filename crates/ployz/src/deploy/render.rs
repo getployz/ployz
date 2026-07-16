@@ -342,6 +342,7 @@ impl DeployTree {
                 | OperationKind::NetworkRepair
                 | OperationKind::ServiceRestart
                 | OperationKind::NamespaceRemove
+                | OperationKind::VolumeCreate
                 | OperationKind::VolumeRemove => {}
             },
             OperationEvent::OperationInterrupted {
@@ -430,6 +431,11 @@ impl DeployTree {
             | OperationEvent::VolumeRemoveRunning { .. }
             | OperationEvent::VolumeRemoveCompleted { .. }
             | OperationEvent::VolumeRemoveFailed { .. }
+            | OperationEvent::VolumeCreateSubmitted { .. }
+            | OperationEvent::VolumeCreatePlanningStarted { .. }
+            | OperationEvent::VolumeCreateRunning { .. }
+            | OperationEvent::VolumeCreateCompleted { .. }
+            | OperationEvent::VolumeCreateFailed { .. }
             | OperationEvent::OperationInterrupted { .. } => {}
         }
     }
@@ -868,12 +874,14 @@ fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine
                         | DeployOperationFailure::ImageDigestMismatch { .. }
                         | DeployOperationFailure::SeedUnavailable { .. }
                         | DeployOperationFailure::PlatformImageUnavailable { .. }
+                        | DeployOperationFailure::PlatformImageExpired { .. }
                         | DeployOperationFailure::UnsupportedTargetPlatform { .. } => {
                             failure_cause(target, failure)
                         }
                         DeployOperationFailure::NoUsableMachines { .. }
                         | DeployOperationFailure::PlanningFailed { .. }
                         | DeployOperationFailure::RuntimeUnavailable { .. }
+                        | DeployOperationFailure::VolumeEnsureFailed { .. }
                         | DeployOperationFailure::ContainerStartFailed { .. }
                         | DeployOperationFailure::PreStartHookFailed { .. }
                         | DeployOperationFailure::HealthCheckFailed { .. }
@@ -965,6 +973,7 @@ fn render_service_step(
             }
             let step_text = match tree.stage() {
                 Some(DeployRunningStage::EnsuringImages) => "ensuring images",
+                Some(DeployRunningStage::EnsuringVolumes) => "ensuring volumes",
                 Some(DeployRunningStage::StartingContainers)
                 | Some(DeployRunningStage::WaitingForHealth)
                 | Some(DeployRunningStage::EnsuringCertificates)
@@ -1009,6 +1018,7 @@ fn render_route_line(
         Some(DeployRunningStage::ServingTargetCommit)
         | Some(DeployRunningStage::RemovingSupersededContainers) => "committing",
         Some(DeployRunningStage::EnsuringImages)
+        | Some(DeployRunningStage::EnsuringVolumes)
         | Some(DeployRunningStage::StartingContainers)
         | Some(DeployRunningStage::WaitingForHealth)
         | None => "queued",
@@ -1139,12 +1149,13 @@ impl DeployTree {
 const fn stage_rank(stage: DeployRunningStage) -> u8 {
     match stage {
         DeployRunningStage::EnsuringImages => 0,
-        DeployRunningStage::StartingContainers => 1,
-        DeployRunningStage::WaitingForHealth => 2,
-        DeployRunningStage::EnsuringCertificates => 3,
-        DeployRunningStage::RouteCutover => 4,
-        DeployRunningStage::ServingTargetCommit => 5,
-        DeployRunningStage::RemovingSupersededContainers => 6,
+        DeployRunningStage::EnsuringVolumes => 1,
+        DeployRunningStage::StartingContainers => 2,
+        DeployRunningStage::WaitingForHealth => 3,
+        DeployRunningStage::EnsuringCertificates => 4,
+        DeployRunningStage::RouteCutover => 5,
+        DeployRunningStage::ServingTargetCommit => 6,
+        DeployRunningStage::RemovingSupersededContainers => 7,
     }
 }
 

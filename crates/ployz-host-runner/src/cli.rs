@@ -39,8 +39,7 @@ pub enum HostRunnerCommand {
     StoragePrepare(HostRunnerStoragePrepare),
     StorageCapability,
     StoragePoolFacts,
-    StorageDatasetCreate(HostRunnerDatasetQuota),
-    StorageDatasetGrow(HostRunnerDatasetQuota),
+    StorageDatasetEnsure(HostRunnerDatasetQuota),
     StorageDatasetFacts(DatasetName),
     StorageDatasetDestroy(DatasetName),
 }
@@ -255,11 +254,8 @@ pub fn load_command(
         ),
         Some(HostRunnerSubcommand::StorageCapability) => Ok(HostRunnerCommand::StorageCapability),
         Some(HostRunnerSubcommand::StoragePoolFacts) => Ok(HostRunnerCommand::StoragePoolFacts),
-        Some(HostRunnerSubcommand::StorageDatasetCreate { dataset, quota }) => Ok(
-            HostRunnerCommand::StorageDatasetCreate(HostRunnerDatasetQuota { dataset, quota }),
-        ),
-        Some(HostRunnerSubcommand::StorageDatasetGrow { dataset, quota }) => Ok(
-            HostRunnerCommand::StorageDatasetGrow(HostRunnerDatasetQuota { dataset, quota }),
+        Some(HostRunnerSubcommand::StorageDatasetEnsure { dataset, quota }) => Ok(
+            HostRunnerCommand::StorageDatasetEnsure(HostRunnerDatasetQuota { dataset, quota }),
         ),
         Some(HostRunnerSubcommand::StorageDatasetFacts { dataset }) => {
             Ok(HostRunnerCommand::StorageDatasetFacts(dataset))
@@ -341,15 +337,8 @@ enum HostRunnerSubcommand {
     StorageCapability,
     #[command(name = "internal-storage-pool-facts", hide = true)]
     StoragePoolFacts,
-    #[command(name = "internal-storage-dataset-create", hide = true)]
-    StorageDatasetCreate {
-        #[arg(long, value_parser = parse_dataset_name)]
-        dataset: DatasetName,
-        #[arg(long, value_parser = parse_volume_size)]
-        quota: VolumeMaxSizeBytes,
-    },
-    #[command(name = "internal-storage-dataset-grow", hide = true)]
-    StorageDatasetGrow {
+    #[command(name = "internal-storage-dataset-ensure", hide = true)]
+    StorageDatasetEnsure {
         #[arg(long, value_parser = parse_dataset_name)]
         dataset: DatasetName,
         #[arg(long, value_parser = parse_volume_size)]

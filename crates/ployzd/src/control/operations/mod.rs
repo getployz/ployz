@@ -16,6 +16,7 @@ pub mod machine_update;
 pub mod namespace_remove;
 pub mod network_repair;
 pub mod service_restart;
+pub mod volume_create;
 pub mod volume_remove;
 
 pub(super) async fn finish_rejected_task_admission(

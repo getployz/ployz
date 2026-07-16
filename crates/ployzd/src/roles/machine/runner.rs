@@ -3,6 +3,8 @@ use std::future::Future;
 use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredential, VolumeName};
 use ployz_core::ids::ContainerId;
 use ployz_core::image::OciDigest;
+use ployz_core::intent::VolumePinState;
+use ployz_core::machine::VolumeEnsureFailure;
 use ployz_core::machine::runtime::ContainerHealth;
 use std::net::IpAddr;
 
@@ -116,6 +118,11 @@ pub enum MachineLogTimestamps {
 }
 
 pub trait MachineContainerRunner {
+    fn ensure_volume(
+        &self,
+        volume: &VolumePinState,
+    ) -> impl Future<Output = Result<(), VolumeEnsureFailure>> + Send;
+
     fn existing_managed_containers(
         &self,
     ) -> impl Future<Output = Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError>> + Send;

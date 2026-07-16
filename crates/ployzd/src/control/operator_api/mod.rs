@@ -27,7 +27,7 @@ pub use submit::owned_operation;
 pub use submit::{
     build_cancel, build_submit, core_replace, credential_add, credential_remove, deploy_reserve,
     deploy_submit, ingress_configure, machine_add, machine_drain, machine_resume, machine_update,
-    namespace_remove, network_repair, service_restart, volume_remove,
+    namespace_remove, network_repair, service_restart, submit_volume_create, volume_remove,
 };
 
 use crate::control::authorization::MachineCredentialMint;
@@ -45,6 +45,7 @@ use crate::control::operations::machine_update::MachineUpdateOperation;
 use crate::control::operations::namespace_remove::NamespaceRemoveOperation;
 use crate::control::operations::network_repair::NetworkRepairOperation;
 use crate::control::operations::service_restart::ServiceRestartOperation;
+use crate::control::operations::volume_create::VolumeCreateOperation;
 use crate::control::operations::volume_remove::VolumeRemoveOperation;
 use crate::control::role_client::machine::{NatsMachineFactsReader, NatsMachineLogsTailer};
 use crate::control::sequencer::OperationControllers;
@@ -64,6 +65,7 @@ pub struct OperationWorkers {
     pub service_restart: ServiceRestartOperation,
     pub namespace_remove: NamespaceRemoveOperation,
     pub network_repair: NetworkRepairOperation,
+    pub volume_create: VolumeCreateOperation,
     pub volume_remove: VolumeRemoveOperation,
     pub machine_update: MachineUpdateOperation,
     pub machine_storage_prepare: MachineStoragePrepareOperation,
@@ -79,6 +81,7 @@ pub struct OperationApiHandlers {
     service_restart: Arc<ServiceRestartOperation>,
     namespace_remove: Arc<NamespaceRemoveOperation>,
     network_repair: Arc<NetworkRepairOperation>,
+    volume_create: Arc<VolumeCreateOperation>,
     volume_remove: Arc<VolumeRemoveOperation>,
     machine_update: Arc<MachineUpdateOperation>,
     machine_storage_prepare: Arc<MachineStoragePrepareOperation>,
@@ -127,6 +130,7 @@ impl OperationApiHandlers {
             service_restart,
             namespace_remove,
             network_repair,
+            volume_create,
             volume_remove,
             machine_update,
             machine_storage_prepare,
@@ -160,6 +164,7 @@ impl OperationApiHandlers {
             service_restart: Arc::new(service_restart),
             namespace_remove: Arc::new(namespace_remove),
             network_repair: Arc::new(network_repair),
+            volume_create: Arc::new(volume_create),
             volume_remove: Arc::new(volume_remove),
             machine_update: Arc::new(machine_update),
             machine_storage_prepare: Arc::new(machine_storage_prepare),
@@ -251,6 +256,10 @@ impl OperationApiHandlers {
 
     pub(crate) fn volume_remove(&self) -> &VolumeRemoveOperation {
         &self.volume_remove
+    }
+
+    pub(crate) fn volume_create(&self) -> &VolumeCreateOperation {
+        &self.volume_create
     }
 
     pub(crate) fn machine_lifecycle(&self) -> &MachineLifecycleOperation {

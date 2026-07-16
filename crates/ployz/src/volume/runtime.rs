@@ -4,7 +4,8 @@ use crate::execution_support::{
     PloyzctlExecutionOutput, api_error, operation_api_client, render_api_call,
 };
 use crate::volume::command::{
-    VolumeListCommand, VolumeListOutput, VolumeRemoveCommand, VolumeRemoveConfirmation,
+    VolumeCreateCommand, VolumeListCommand, VolumeListOutput, VolumeRemoveCommand,
+    VolumeRemoveConfirmation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -77,5 +78,17 @@ pub(crate) async fn remove(
             crate::operation::command::AcceptedOperationOutput::from_accepted(accepted).render(),
         ));
     }
+    crate::operation::runtime::watch_accepted(&api, accepted.operation_id, config).await
+}
+
+pub(crate) async fn create(
+    command: VolumeCreateCommand,
+    config: &PloyzctlRuntimeConfig,
+) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
+    let api = operation_api_client(config).await?;
+    let accepted = api
+        .volume_create(&command.into_request())
+        .await
+        .map_err(api_error)?;
     crate::operation::runtime::watch_accepted(&api, accepted.operation_id, config).await
 }
