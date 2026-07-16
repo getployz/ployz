@@ -491,15 +491,35 @@ fn ssh_timeout() -> std::time::Duration {
 }
 
 #[cfg(unix)]
+fn read_fake_remote_hostname(
+    client: &SshClient,
+    target: &SshTarget,
+) -> Result<String, Box<SshCommandError>> {
+    for _ in 0..9 {
+        match client.read_remote_hostname(target) {
+            Err(error)
+                if matches!(
+                    error.as_ref(),
+                    SshCommandError::Spawn { message, .. }
+                        if message.contains("Text file busy")
+                ) =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
+    client.read_remote_hostname(target)
+}
+
+#[cfg(unix)]
 #[test]
 fn read_remote_hostname_returns_trimmed_first_line() {
     let (_dir, script) = fake_ssh("echo 'sg-core-1'\n");
     let client = SshClient::with_program(script, ssh_timeout());
     let target = SshTarget::parse("root@203.0.113.10").expect("target parses");
 
-    let hostname = client
-        .read_remote_hostname(&target)
-        .expect("hostname reads");
+    let hostname = read_fake_remote_hostname(&client, &target).expect("hostname reads");
 
     assert_eq!(hostname, "sg-core-1");
 }
@@ -520,9 +540,7 @@ fn ssh_commands_pass_destination_and_remote_command() {
     let client = SshClient::with_program(script, ssh_timeout());
     let target = SshTarget::parse("root@203.0.113.10").expect("target parses");
 
-    client
-        .read_remote_hostname(&target)
-        .expect("hostname reads");
+    read_fake_remote_hostname(&client, &target).expect("hostname reads");
 
     let args = fs::read_to_string(&args_file).expect("args file reads");
     let lines: Vec<&str> = args.lines().collect();
@@ -549,26 +567,7 @@ fn ssh_failures_carry_phase_and_stderr() {
     let client = SshClient::with_program(script, ssh_timeout());
     let target = SshTarget::parse("root@203.0.113.10").expect("target parses");
 
-    let error = (0..10)
-        .find_map(|_| {
-            let error = client
-                .read_remote_hostname(&target)
-                .expect_err("refused connection fails");
-            match error.as_ref() {
-                SshCommandError::Spawn { message, .. } if message.contains("Text file busy") => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                    None
-                }
-                SshCommandError::Spawn { .. }
-                | SshCommandError::CaptureSetup { .. }
-                | SshCommandError::Wait { .. }
-                | SshCommandError::StdinWrite { .. }
-                | SshCommandError::Timeout { .. }
-                | SshCommandError::Failed { .. }
-                | SshCommandError::EmptyRemoteHostname { .. } => Some(error),
-            }
-        })
-        .expect("fake ssh becomes executable");
+    let error = read_fake_remote_hostname(&client, &target).expect_err("refused connection fails");
 
     let SshCommandError::Failed { phase, .. } = error.as_ref() else {
         panic!("expected failed command error, got {error:?}");
@@ -593,11 +592,7 @@ fn ssh_commands_time_out_with_phase_evidence() {
     // this test is not about; retry past them, bounded, so it asserts timeout
     // classification rather than the runner's fork headroom.
     let error = (0..50)
-        .map(|_| {
-            client
-                .read_remote_hostname(&target)
-                .expect_err("slow command times out")
-        })
+        .map(|_| read_fake_remote_hostname(&client, &target).expect_err("slow command times out"))
         .find(|error| matches!(error.as_ref(), SshCommandError::Timeout { .. }))
         .expect("a 5s command must time out against a 200ms bound within 50 attempts");
     let rendered = error.to_string();
@@ -1124,9 +1119,7 @@ fn empty_remote_hostname_is_an_explicit_error() {
     let client = SshClient::with_program(script, ssh_timeout());
     let target = SshTarget::parse("root@203.0.113.10").expect("target parses");
 
-    let error = client
-        .read_remote_hostname(&target)
-        .expect_err("empty hostname fails");
+    let error = read_fake_remote_hostname(&client, &target).expect_err("empty hostname fails");
 
     assert!(matches!(
         error.as_ref(),
