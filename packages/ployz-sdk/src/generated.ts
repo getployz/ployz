@@ -612,7 +612,12 @@ last_observed_at_unix_seconds: number, } | { "status": "no_answer" };
 
 export type DatasetQuotaFact = { dataset: DatasetName, quota_bytes: number, };
 
-export type PoolCapacityFacts = { available_bytes: number, child_quotas: Array<DatasetQuotaFact>, };
+export type PoolCapacityFacts = { total_bytes: number,
+/**
+ * Physical bytes consumed beneath the Ployz provisioned dataset root.
+ * Unrelated pool or backing-filesystem allocations are excluded.
+ */
+provisioned_used_bytes: number, free_bytes: number, child_quotas: Array<DatasetQuotaFact>, };
 
 export type StorageCapability = { "state": "unprepared" } | { "state": "ready", pool: ZfsPoolName, capacity: PoolCapacityFacts, } | { "state": "unavailable", reason: StorageUnavailableReason, };
 

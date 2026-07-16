@@ -2184,13 +2184,15 @@ fn ready_storage() -> ployz_core::machine::StorageCapability {
 }
 
 fn ready_storage_with_capacity(
-    available_bytes: u64,
+    free_bytes: u64,
     child_quotas: Vec<ployz_core::machine::DatasetQuotaFact>,
 ) -> ployz_core::machine::StorageCapability {
     ployz_core::machine::StorageCapability::Ready {
         pool: ZfsPoolName::try_new("tank").expect("pool name"),
         capacity: ployz_core::machine::PoolCapacityFacts {
-            available_bytes,
+            total_bytes: free_bytes,
+            provisioned_used_bytes: 0,
+            free_bytes,
             child_quotas,
         },
     }
@@ -2205,7 +2207,9 @@ fn ready_storage_with_quota(
     ployz_core::machine::StorageCapability::Ready {
         pool: pool.clone(),
         capacity: ployz_core::machine::PoolCapacityFacts {
-            available_bytes: 1024 * 1024,
+            total_bytes: 1024 * 1024,
+            provisioned_used_bytes: 0,
+            free_bytes: 1024 * 1024,
             child_quotas: vec![ployz_core::machine::DatasetQuotaFact {
                 dataset: DatasetName::for_volume(&pool, &namespace_id("default"), &volume_name)
                     .expect("dataset name"),

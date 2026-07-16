@@ -8,7 +8,8 @@ use crate::deploy::{
 use crate::ids::{MachineId, NamespaceId};
 use crate::intent::{VolumeKind, VolumePinState};
 use crate::machine::{
-    PoolCapacityFacts, StorageCapability, StorageTestimony, StorageUnavailableReason,
+    PoolCapacityAdmissionFailure, PoolCapacityFacts, StorageCapability, StorageTestimony,
+    StorageUnavailableReason, admit_pool_quota_total,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -115,6 +116,14 @@ pub enum VolumeAdmissionFailure {
         available_bytes: u64,
         requested_total_bytes: u64,
     },
+    #[error(
+        "storage capacity facts are inconsistent: total={total_bytes} provisioned_used={provisioned_used_bytes} free={free_bytes}"
+    )]
+    InconsistentCapacityFacts {
+        total_bytes: u64,
+        provisioned_used_bytes: u64,
+        free_bytes: u64,
+    },
 }
 
 #[must_use = "volume admission decisions must be executed or rejected"]
@@ -125,8 +134,17 @@ pub fn admit_mounted_volumes(
     classify_mounted_volumes(input)?.complete(testimony)
 }
 
+/// Validates durable birth-kind and quota monotonicity without consulting
+/// live machine testimony. Namespace planning uses this before eligibility so
+/// a structural intent error cannot be hidden by a liveness failure.
+pub fn validate_mounted_volume_structure(
+    input: VolumeAdmissionInput<'_>,
+) -> Result<(), VolumeAdmissionFailure> {
+    classify_mounted_volumes(input).map(|_| ())
+}
+
 #[derive(Debug)]
-pub(super) struct ClassifiedVolumeAdmission {
+struct ClassifiedVolumeAdmission {
     namespace_id: NamespaceId,
     selected_machine_id: MachineId,
     decisions: Vec<VolumeAdmissionDecision>,
@@ -134,7 +152,7 @@ pub(super) struct ClassifiedVolumeAdmission {
 }
 
 impl ClassifiedVolumeAdmission {
-    pub(super) fn complete(
+    fn complete(
         mut self,
         storage_testimony: StorageTestimony<'_>,
     ) -> Result<Vec<VolumeAdmissionDecision>, VolumeAdmissionFailure> {
@@ -158,7 +176,7 @@ impl ClassifiedVolumeAdmission {
     }
 }
 
-pub(super) fn classify_mounted_volumes(
+fn classify_mounted_volumes(
     input: VolumeAdmissionInput<'_>,
 ) -> Result<ClassifiedVolumeAdmission, VolumeAdmissionFailure> {
     let mounted_volume_names = input
@@ -414,12 +432,26 @@ fn admit_provisioned_capacity(
             }
         }
     }
-    if requested_total > capacity.available_bytes {
-        return Err(VolumeAdmissionFailure::CapacityExceeded {
-            available_bytes: capacity.available_bytes,
-            requested_total_bytes: requested_total,
-        });
-    }
+    admit_pool_quota_total(capacity, requested_total).map_err(|failure| match failure {
+        PoolCapacityAdmissionFailure::InconsistentFacts {
+            total_bytes,
+            provisioned_used_bytes,
+            free_bytes,
+        } => VolumeAdmissionFailure::InconsistentCapacityFacts {
+            total_bytes,
+            provisioned_used_bytes,
+            free_bytes,
+        },
+        PoolCapacityAdmissionFailure::Overflow => VolumeAdmissionFailure::CapacityOverflow,
+        PoolCapacityAdmissionFailure::Exceeded {
+            free_bytes,
+            requested_total_bytes,
+            ..
+        } => VolumeAdmissionFailure::CapacityExceeded {
+            available_bytes: free_bytes,
+            requested_total_bytes,
+        },
+    })?;
     Ok(decisions)
 }
 
@@ -446,13 +478,15 @@ mod tests {
 
     fn ready(
         pool: &ZfsPoolName,
-        available_bytes: u64,
+        free_bytes: u64,
         child_quotas: Vec<DatasetQuotaFact>,
     ) -> StorageCapability {
         StorageCapability::Ready {
             pool: pool.clone(),
             capacity: PoolCapacityFacts {
-                available_bytes,
+                total_bytes: free_bytes,
+                provisioned_used_bytes: 0,
+                free_bytes,
                 child_quotas,
             },
         }
@@ -748,15 +782,17 @@ mod tests {
         })
         .expect("200 replacement + 100 creation + 50 orphan exactly fits");
 
-        assert_eq!(decisions.len(), 2);
-        assert_eq!(decisions[0].desired_pin().volume_name(), &fresh);
-        assert_eq!(decisions[1].desired_pin().volume_name(), &growing);
+        let [fresh_decision, growing_decision] = decisions.as_slice() else {
+            panic!("expected creation and growth decisions, got {decisions:?}");
+        };
+        assert_eq!(fresh_decision.desired_pin().volume_name(), &fresh);
+        assert_eq!(growing_decision.desired_pin().volume_name(), &growing);
         assert!(matches!(
-            decisions[0],
+            fresh_decision,
             VolumeAdmissionDecision::NeedsCreation { .. }
         ));
         assert!(matches!(
-            decisions[1],
+            growing_decision,
             VolumeAdmissionDecision::NeedsQuotaGrowth { .. }
         ));
     }

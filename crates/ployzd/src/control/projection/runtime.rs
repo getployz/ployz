@@ -568,7 +568,9 @@ mod tests {
             Some(StorageCapability::Ready {
                 pool: ZfsPoolName::try_new("tank").expect("valid pool"),
                 capacity: ployz_core::machine::PoolCapacityFacts {
-                    available_bytes: 1024 * 1024,
+                    total_bytes: 1024 * 1024,
+                    provisioned_used_bytes: 0,
+                    free_bytes: 1024 * 1024,
                     child_quotas: Vec::new(),
                 },
             }),
@@ -584,7 +586,9 @@ mod tests {
                 Some(StorageCapability::Ready {
                     pool: ZfsPoolName::try_new("tank").expect("valid pool"),
                     capacity: ployz_core::machine::PoolCapacityFacts {
-                        available_bytes: 1024 * 1024,
+                        total_bytes: 1024 * 1024,
+                        provisioned_used_bytes: 0,
+                        free_bytes: 1024 * 1024,
                         child_quotas: Vec::new(),
                     },
                 }),

@@ -85,7 +85,7 @@ mod tests {
         let mut answer = tokio::process::Command::new("sh");
         answer.args([
             "-c",
-            "printf '%s' '{\"state\":\"ready\",\"pool\":\"tank\",\"capacity\":{\"available_bytes\":8192,\"child_quotas\":[]}}'",
+            "printf '%s' '{\"state\":\"ready\",\"pool\":\"tank\",\"capacity\":{\"total_bytes\":16384,\"provisioned_used_bytes\":0,\"free_bytes\":8192,\"child_quotas\":[]}}'",
         ]);
 
         assert_eq!(
@@ -93,7 +93,9 @@ mod tests {
             Some(StorageCapability::Ready {
                 pool: ZfsPoolName::try_new("tank").expect("valid pool"),
                 capacity: PoolCapacityFacts {
-                    available_bytes: 8192,
+                    total_bytes: 16_384,
+                    provisioned_used_bytes: 0,
+                    free_bytes: 8192,
                     child_quotas: Vec::new(),
                 },
             })

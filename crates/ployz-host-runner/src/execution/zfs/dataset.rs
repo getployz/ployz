@@ -3,13 +3,15 @@
 use std::path::Path;
 
 use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes};
-use ployz_core::machine::{DatasetQuotaFact, PoolCapacityFacts};
+use ployz_core::machine::{
+    DatasetQuotaFact, PoolCapacityAdmissionFailure, PoolCapacityFacts, admit_pool_quota_total,
+};
 use ployz_core::storage::{
     PROVISIONED_VOLUME_MOUNTPOINT, PreparedStorageOrigin, PreparedStorageState,
     StorageEffectFailure as ZfsEffectError,
 };
 
-use super::command::{COMMAND_TIMEOUT, EffectClass, checked, parse_last_u64, parse_u64};
+use super::command::{COMMAND_TIMEOUT, EffectClass, checked, parse_u64};
 use super::state::{load_and_verify, verify_child};
 use crate::execution::HostRunnerCommandRunner;
 
@@ -153,29 +155,48 @@ pub(super) fn gather_pool_capacity_for_state(
     runner: &mut impl HostRunnerCommandRunner,
     state: &PreparedStorageState,
 ) -> Result<PoolCapacityFacts, ZfsEffectError> {
-    let available = match state.origin() {
+    let (total_bytes, free_bytes) = match state.origin() {
         PreparedStorageOrigin::OwnedImage { backing_file } => {
             let path = backing_file.to_string_lossy();
             let output = checked(
                 runner,
                 "df",
-                &["-B1", "--output=avail", &path],
+                &["-B1", "--output=size,avail", &path],
                 COMMAND_TIMEOUT,
                 EffectClass::Dataset,
             )?;
-            parse_last_u64("backing filesystem available bytes", &output.stdout)?
+            parse_capacity_row("backing filesystem capacity", &output.stdout)?
         }
         PreparedStorageOrigin::Adopted => {
             let output = checked(
                 runner,
                 "zpool",
-                &["list", "-H", "-p", "-o", "free", state.pool().as_str()],
+                &["list", "-H", "-p", "-o", "size,free", state.pool().as_str()],
                 COMMAND_TIMEOUT,
                 EffectClass::Dataset,
             )?;
-            parse_u64("pool available bytes", output.stdout.trim())?
+            parse_capacity_row("pool capacity", &output.stdout)?
         }
     };
+    let provisioned_used = checked(
+        runner,
+        "zfs",
+        &[
+            "get",
+            "-H",
+            "-p",
+            "-o",
+            "value",
+            "used",
+            state.dataset_root().as_str(),
+        ],
+        COMMAND_TIMEOUT,
+        EffectClass::Dataset,
+    )?;
+    let provisioned_used_bytes = parse_u64(
+        "provisioned dataset-root used bytes",
+        provisioned_used.stdout.trim(),
+    )?;
     let output = checked(
         runner,
         "zfs",
@@ -216,9 +237,29 @@ pub(super) fn gather_pool_capacity_for_state(
     }
     child_quotas.sort_by(|left, right| left.dataset.cmp(&right.dataset));
     Ok(PoolCapacityFacts {
-        available_bytes: available,
+        total_bytes,
+        provisioned_used_bytes,
+        free_bytes,
         child_quotas,
     })
+}
+
+fn parse_capacity_row(label: &str, output: &str) -> Result<(u64, u64), ZfsEffectError> {
+    let Some(line) = output.lines().rev().find(|line| !line.trim().is_empty()) else {
+        return Err(ZfsEffectError::GatherParse {
+            message: format!("missing {label}"),
+        });
+    };
+    let values = line.split_whitespace().collect::<Vec<_>>();
+    let [total, free] = values.as_slice() else {
+        return Err(ZfsEffectError::GatherParse {
+            message: format!("invalid {label} row {line:?}"),
+        });
+    };
+    Ok((
+        parse_u64(&format!("{label} total bytes"), total)?,
+        parse_u64(&format!("{label} free bytes"), free)?,
+    ))
 }
 
 fn admit_quota(
@@ -234,14 +275,19 @@ fn admit_quota(
         .filter(|fact| fact.dataset != *dataset)
         .try_fold(requested, |total, fact| total.checked_add(fact.quota_bytes))
         .ok_or(ZfsEffectError::QuotaCapacityExceeded {
-            available: facts.available_bytes,
+            available: facts.free_bytes,
             requested_total: u64::MAX,
         })?;
-    if requested_total > facts.available_bytes {
-        return Err(ZfsEffectError::QuotaCapacityExceeded {
-            available: facts.available_bytes,
-            requested_total,
-        });
-    }
-    Ok(())
+    admit_pool_quota_total(&facts, requested_total).map_err(|failure| match failure {
+        PoolCapacityAdmissionFailure::Exceeded { free_bytes, .. } => {
+            ZfsEffectError::QuotaCapacityExceeded {
+                available: free_bytes,
+                requested_total,
+            }
+        }
+        PoolCapacityAdmissionFailure::Overflow
+        | PoolCapacityAdmissionFailure::InconsistentFacts { .. } => ZfsEffectError::GatherParse {
+            message: failure.to_string(),
+        },
+    })
 }

@@ -1,8 +1,6 @@
 //! Pure deploy preparation and placement planning.
 
-use super::volume_planning::{
-    canonical_volume_pins, preflight_namespace_volume_admission, volume_placement,
-};
+use super::volume_planning::{VolumePlan, build_namespace_volume_plan};
 use super::*;
 use crate::ids::OperationId;
 
@@ -581,17 +579,13 @@ pub fn plan_namespace_deploy(
 ) -> Result<DeployPlan, DeployPlanError> {
     let phases = dependency_ordered_phases(request, services)?;
     let mut phase_plans = Vec::new();
-    let mut volume_pin_commits = Vec::new();
+    let volume_plan = build_namespace_volume_plan(request, &phases, context)?;
+    let volume_pin_commits = volume_plan.commits().to_vec();
     let mut cleanup_actions = Vec::new();
-    let mut working_volume_pins = canonical_volume_pins(&phases);
-    preflight_namespace_volume_admission(request, &phases, &working_volume_pins, context)?;
     for phase in phases {
         let mut services = Vec::new();
-        for mut input in phase {
-            input.volume_pins = working_volume_pins.clone();
-            let plan = plan_deploy_service(request, input, context)?;
-            working_volume_pins.extend(plan.volume_pin_commits.clone());
-            volume_pin_commits.extend(plan.volume_pin_commits);
+        for input in phase {
+            let plan = plan_deploy_service(request, input, &volume_plan)?;
             cleanup_actions.extend(plan.cleanup_actions);
             services.push(DeployServicePlan {
                 service_id: plan.service_id,
@@ -730,23 +724,16 @@ pub struct DeploySingleServicePlan {
     pub namespace_revision_id: NamespaceRevisionId,
     pub steps: Vec<DeployPlanStep>,
     pub pre_start: Option<PreStartHookStep>,
-    pub volume_pin_commits: Vec<VolumePinState>,
     pub cleanup_actions: Vec<DeployCleanupAction>,
 }
 
 fn plan_deploy_service(
     request: &VolumeDeclaredDeployRequest,
     input: DeployPlanningInput,
-    context: DeployPlanningContext<'_>,
+    volume_plan: &VolumePlan,
 ) -> Result<DeploySingleServicePlan, DeployPlanError> {
     let service = deploy_service(request, &input.service_id)?;
-    let volume_placement = volume_placement(
-        request,
-        service,
-        &input.eligible_machines,
-        &input.volume_pins,
-        context.storage_testimony,
-    )?;
+    let volume_placement = volume_plan.placement(&input.service_id)?;
     let target_replicas = usize::from(service.replicas.get());
     let mut existing_replicas = input.existing_replicas;
     if let Some(machine_id) = &volume_placement.machine_id {
@@ -831,7 +818,6 @@ fn plan_deploy_service(
         namespace_revision_id: request.namespace_revision_id(),
         steps,
         pre_start,
-        volume_pin_commits: volume_placement.commits,
         cleanup_actions,
     })
 }
