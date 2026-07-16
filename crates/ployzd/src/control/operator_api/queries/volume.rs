@@ -96,14 +96,9 @@ where
         .buffer_unordered(MAX_CONCURRENT_MACHINE_READS);
 
     let mut answers = Vec::new();
-    loop {
-        match tokio::time::timeout_at(deadline, reads.next()).await {
-            Ok(Some(answer)) => {
-                pending.remove(&answer.0);
-                answers.push(answer);
-            }
-            Ok(None) | Err(_) => break,
-        }
+    while let Ok(Some(answer)) = tokio::time::timeout_at(deadline, reads.next()).await {
+        pending.remove(&answer.0);
+        answers.push(answer);
     }
     answers.extend(pending.into_iter().map(|machine_id| {
         (
