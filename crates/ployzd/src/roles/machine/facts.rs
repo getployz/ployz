@@ -2,9 +2,9 @@ use super::current_unix_ms;
 use super::response::{failure_message, machine_domain_error, machine_success};
 use crate::roles::machine::endpoints::{observe_interface_endpoints, observe_machine_endpoints};
 use crate::roles::machine::protocol::{
-    MachineFactsGetDomainError, MachineFactsGetRpcOk, MachineFactsGetRpcRequest,
-    MachineFactsGetRpcResponse, MachineFactsRefreshDomainError, MachineFactsRefreshRpcOk,
-    MachineFactsRefreshRpcRequest, MachineFactsRefreshRpcResponse,
+    MachineBuildCapability, MachineFactsGetDomainError, MachineFactsGetRpcOk,
+    MachineFactsGetRpcRequest, MachineFactsGetRpcResponse, MachineFactsRefreshDomainError,
+    MachineFactsRefreshRpcOk, MachineFactsRefreshRpcRequest, MachineFactsRefreshRpcResponse,
 };
 use crate::roles::machine::runner::{
     ExistingManagedContainerState, MachineContainerRunner, MachineContainerRunnerError,
@@ -31,6 +31,12 @@ pub(crate) struct MachineFactsState<R> {
     pub(crate) runner: R,
     pub(crate) endpoint_cache: MachineEndpointCache,
     pub(crate) client: async_nats::Client,
+}
+
+#[derive(Clone)]
+pub(crate) struct MachineFactsGetState<R> {
+    pub(crate) facts: MachineFactsState<R>,
+    pub(crate) build: MachineBuildCapability,
 }
 
 pub(crate) async fn handle_facts_refresh<R>(
@@ -132,7 +138,7 @@ pub(crate) enum MachineFactsPublishError {
 
 pub(crate) async fn handle_facts_get<R>(
     machine_id: MachineId,
-    state: MachineFactsState<R>,
+    state: MachineFactsGetState<R>,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse
 where
@@ -146,14 +152,16 @@ where
     // (process startup, or a test with no observer), fall back to interface-only
     // discovery — a syscall, no network — so mesh peer discovery never sees missing
     // endpoints and the public-IP echo stays off the per-RPC path.
-    let endpoints = match state.endpoint_cache.latest() {
+    let endpoints = match state.facts.endpoint_cache.latest() {
         Some(observation) => Some(observation),
-        None => observe_interface_endpoints(&machine_id, state.endpoint_cache.wg_ifname()).await,
+        None => {
+            observe_interface_endpoints(&machine_id, state.facts.endpoint_cache.wg_ifname()).await
+        }
     };
     let storage = observe_storage_capability().await;
     match read_machine_facts_snapshot(
         &machine_id,
-        &state.runner,
+        &state.facts.runner,
         endpoints,
         storage,
         current_unix_ms(),
@@ -162,6 +170,7 @@ where
     {
         Ok(facts) => machine_success(MachineFactsGetRpcResponse::Ok(MachineFactsGetRpcOk {
             facts,
+            build: state.build,
         })),
         Err(error) => machine_domain_error(MachineFactsGetRpcResponse::DomainError {
             machine_id,

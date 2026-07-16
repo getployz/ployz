@@ -22,6 +22,7 @@ use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod action;
+mod build;
 mod cert;
 mod core_replace;
 mod credential_grant;

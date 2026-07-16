@@ -702,6 +702,20 @@ fn machine_join_bundle() -> MachineJoinBundle {
                 )
                 .expect("valid install path"),
             },
+            railpack: InstallArtifactSpec {
+                version: ployz_core::install::InstallArtifactVersion::try_new("v0.31.0")
+                    .expect("valid version"),
+                source: ployz_core::install::InstallArtifactSource::try_new("/tmp/railpack")
+                    .expect("valid source"),
+                sha256: ployz_core::install::InstallSha256Digest::try_new(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                )
+                .expect("valid digest"),
+                install_path: ployz_core::install::AbsoluteInstallPath::try_new(
+                    "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
+                )
+                .expect("valid install path"),
+            },
         },
     }
 }

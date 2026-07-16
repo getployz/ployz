@@ -12,6 +12,25 @@ use crate::subjects::{
 #[must_use]
 pub fn operation_event_subject_suffix(event: &OperationEvent) -> String {
     match event {
+        OperationEvent::BuildSubmitted { .. } => "build.submitted".to_owned(),
+        OperationEvent::BuildPlacementStarted { .. } => "build.placement.started".to_owned(),
+        OperationEvent::BuildPlatformPlaced { .. } => "build.platform.placed".to_owned(),
+        OperationEvent::BuildCommitVerified { .. } => "build.platform.commit_verified".to_owned(),
+        OperationEvent::BuildPlatformToolchainVerified { .. } => {
+            "build.platform.toolchain_verified".to_owned()
+        }
+        OperationEvent::BuildRunning { .. } => "build.running".to_owned(),
+        OperationEvent::BuildPlatformLog { .. } => "build.platform.log".to_owned(),
+        OperationEvent::BuildPlatformLogTruncated { .. } => {
+            "build.platform.log_truncated".to_owned()
+        }
+        OperationEvent::BuildPlatformLogGap { .. } => "build.platform.log_gap".to_owned(),
+        OperationEvent::BuildPlatformCompleted { .. } => "build.platform.completed".to_owned(),
+        OperationEvent::BuildPlatformFailed { .. } => "build.platform.failed".to_owned(),
+        OperationEvent::BuildCompleted { .. } => "build.completed".to_owned(),
+        OperationEvent::BuildFailed { .. } => "build.failed".to_owned(),
+        OperationEvent::BuildCancelled { .. } => "build.cancelled".to_owned(),
+        OperationEvent::BuildTimedOut { .. } => "build.timed_out".to_owned(),
         OperationEvent::DeploySubmitted { .. } => "deploy.submitted".to_owned(),
         OperationEvent::DeployPlanningStarted { .. } => "deploy.planning.started".to_owned(),
         OperationEvent::DeployImageResolved { service_id, .. } => {
@@ -211,5 +230,37 @@ pub const fn machine_credential_provisioning_step_token(
         MachineCredentialProvisioningStep::Reloaded => "reloaded",
         MachineCredentialProvisioningStep::Verified => "verified",
         MachineCredentialProvisioningStep::MaterialReady => "material_ready",
+    }
+}
+
+#[cfg(test)]
+mod build_subject_tests {
+    use ployz_core::ids::{MachineId, OperationId};
+    use ployz_core::image::OciPlatform;
+    use ployz_core::operation::{BuildLogChunk, OperationEvent};
+
+    use super::operation_event_subject_suffix;
+
+    #[test]
+    fn build_event_subjects_are_stable() {
+        let operation_id = OperationId::try_new("build-subject-test").expect("operation id");
+        let machine_id = MachineId::try_new("machine-a").expect("machine id");
+        let platform = OciPlatform::try_new("linux", "arm64").expect("platform");
+
+        assert_eq!(
+            operation_event_subject_suffix(&OperationEvent::BuildPlacementStarted {
+                operation_id: operation_id.clone(),
+            }),
+            "build.placement.started"
+        );
+        assert_eq!(
+            operation_event_subject_suffix(&OperationEvent::BuildPlatformLog {
+                operation_id,
+                platform,
+                machine_id,
+                chunk: BuildLogChunk::try_new("step 1").expect("chunk"),
+            }),
+            "build.platform.log"
+        );
     }
 }

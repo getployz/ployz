@@ -5,6 +5,7 @@ use std::fmt;
 use clap::{Args, Parser, Subcommand};
 use ployz_core::machine::MachineLifecycle;
 
+use crate::build::command as build;
 use crate::core::command as core;
 use crate::deploy::{command as deploy, compose_command as compose};
 use crate::ingress::command as ingress;
@@ -26,6 +27,8 @@ pub struct PloyzctlInvocation {
 pub enum PloyzctlCommand {
     Login,
     Telemetry(TelemetryCommand),
+    BuildSubmit(build::BuildSubmitCommand),
+    BuildCancel(build::BuildCancelCommand),
     CorePromote(core::CorePromoteCommand),
     CoreReplace(core::CoreReplaceCommand),
     ComposeCheck(compose::ComposeCheckCommand),
@@ -34,7 +37,7 @@ pub enum PloyzctlCommand {
     DeployRollback(deploy::DeployRollbackCommand),
     InternalInit(Box<init::FirstMachineInitCommand>),
     InitFirstMachineActivate(init::FirstMachineActivateCommand),
-    InitJoinTemplate(init::join_template::MachineJoinTemplateCommand),
+    InitJoinTemplate(Box<init::join_template::MachineJoinTemplateCommand>),
     IngressConfigure(ingress::IngressConfigureCommand),
     MachineInit(machine::MachineInitCommand),
     MachineAdd(machine::MachineAddCommand),
@@ -72,6 +75,8 @@ impl PloyzctlCommand {
         match self {
             Self::Login => Some("login"),
             Self::Telemetry(_) => None,
+            Self::BuildSubmit(_) => Some("build submit"),
+            Self::BuildCancel(_) => Some("build cancel"),
             Self::CorePromote(_) => Some("core promote"),
             Self::CoreReplace(_) => Some("core demote"),
             Self::ComposeCheck(_) => Some("compose check"),
@@ -157,6 +162,10 @@ enum CommandCli {
         #[command(subcommand)]
         command: TelemetryCli,
     },
+    Build {
+        #[command(subcommand)]
+        command: BuildCli,
+    },
     Init(machine::MachineInitCli),
     Deploy(deploy::DeployRootCli),
     Compose(compose::ComposeRootCli),
@@ -211,6 +220,12 @@ struct EmptyCli {}
 enum TelemetryCli {
     Enable,
     Disable,
+}
+
+#[derive(Debug, Subcommand)]
+enum BuildCli {
+    Submit(build::BuildSubmitCli),
+    Cancel(build::BuildCancelCli),
 }
 
 #[derive(Debug, Args)]
@@ -300,6 +315,14 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
             TelemetryCli::Enable => TelemetryCommand::Enable,
             TelemetryCli::Disable => TelemetryCommand::Disable,
         })),
+        CommandCli::Build { command } => match command {
+            BuildCli::Submit(command) => {
+                build::build_submit_command(command).map(PloyzctlCommand::BuildSubmit)
+            }
+            BuildCli::Cancel(command) => {
+                build::build_cancel_command(command).map(PloyzctlCommand::BuildCancel)
+            }
+        },
         CommandCli::Init(command) => {
             machine::machine_init_command(command).map(PloyzctlCommand::MachineInit)
         }
@@ -440,6 +463,7 @@ fn init_command_from_cli(command: InitRootCli) -> Result<PloyzctlCommand, Ployzc
         }
         Some(InitCli::JoinTemplate(subcommand)) => {
             init::join_template::machine_join_template_command(subcommand)
+                .map(Box::new)
                 .map(PloyzctlCommand::InitJoinTemplate)
         }
         None => init::init_command(command.init)

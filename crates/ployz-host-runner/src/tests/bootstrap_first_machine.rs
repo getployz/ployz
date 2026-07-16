@@ -11,7 +11,7 @@ use ployz_core::nats_config::{CredentialGrant, CredentialName, CredentialRole, N
 use ployz_core::network::MachineEndpointSupernet;
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_test_support::ids::machine_id;
-use support::artifacts::{nats_server_artifact, ployzd_artifact};
+use support::artifacts::{nats_server_artifact, ployzd_artifact, railpack_artifact};
 use support::bootstrap::*;
 
 #[test]
@@ -21,6 +21,7 @@ fn first_machine_install_starts_nats_and_core_roles_without_join_token() {
         machine_id.clone(),
         ployzd_artifact(),
         dataplane_artifacts(),
+        railpack_artifact(),
         nats_server_artifact(),
         InstallRolePolicy::install_all().without_gateway(),
         ployz_core::install::HostPortAssurance::Keeper,
@@ -35,6 +36,7 @@ fn first_machine_install_starts_nats_and_core_roles_without_join_token() {
     assert!(installs_artifact_kind(&plan, ArtifactKind::EbpfBytecode));
     assert!(installs_artifact_kind(&plan, ArtifactKind::EbpfCtl));
     assert!(installs_artifact_kind(&plan, ArtifactKind::NatsServer));
+    assert!(installs_artifact_kind(&plan, ArtifactKind::Railpack));
     assert!(writes_nats_server_unit(&plan));
     assert!(writes_ployzd_role_units(&plan));
     assert!(
@@ -103,6 +105,7 @@ fn first_machine_names_founder_and_cloud_credentials() {
         machine_id("machine_1"),
         ployzd_artifact(),
         dataplane_artifacts(),
+        railpack_artifact(),
         nats_server_artifact(),
         InstallRolePolicy::install_all().without_gateway(),
         ployz_core::install::HostPortAssurance::Keeper,
@@ -156,6 +159,7 @@ fn first_machine_role_envs_carry_tls_url_and_role_scoped_seed_paths() {
         machine_id("machine_1"),
         ployzd_artifact(),
         dataplane_artifacts(),
+        railpack_artifact(),
         nats_server_artifact(),
         InstallRolePolicy::install_all(),
         ployz_core::install::HostPortAssurance::Keeper,
@@ -212,6 +216,7 @@ fn first_machine_public_ip_flips_the_listener_external_in_the_secured_config() {
         machine_id("machine_1"),
         ployzd_artifact(),
         dataplane_artifacts(),
+        railpack_artifact(),
         nats_server_artifact(),
         InstallRolePolicy::install_all().without_gateway(),
         ployz_core::install::HostPortAssurance::Keeper,
@@ -260,6 +265,7 @@ fn first_machine_default_install_includes_gateway_and_dns_roles() {
         machine_id("machine_1"),
         ployzd_artifact(),
         dataplane_artifacts(),
+        railpack_artifact(),
         nats_server_artifact(),
         InstallRolePolicy::install_all(),
         ployz_core::install::HostPortAssurance::Keeper,
@@ -286,6 +292,7 @@ fn first_machine_plan_derives_role_supernet_after_environment_overrides() {
             machine_id("machine_1"),
             ployzd_artifact(),
             dataplane_artifacts(),
+            railpack_artifact(),
             nats_server_artifact(),
             InstallRolePolicy::install_all(),
             ployz_core::install::HostPortAssurance::Keeper,
@@ -335,6 +342,7 @@ fn first_machine_gateway_opt_out_skips_only_the_gateway_role() {
         machine_id("machine_1"),
         ployzd_artifact(),
         dataplane_artifacts(),
+        railpack_artifact(),
         nats_server_artifact(),
         InstallRolePolicy::install_all().without_gateway(),
         ployz_core::install::HostPortAssurance::Keeper,

@@ -155,6 +155,7 @@ fn local_effects_install_first_machine_process_units() {
             machine_id("machine_1"),
             ployzd_artifact,
             dataplane_artifacts(&root),
+            railpack_artifact(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
             InstallRolePolicy::install_all().without_gateway(),
             HostPortAssurance::Keeper,
@@ -277,6 +278,7 @@ fn first_machine_install_writes_machine_bootstrap_url_when_configured() {
         machine_id("machine_1"),
         ployzd_artifact(&ployzd_source, &root.join("bin/ployzd")),
         dataplane_artifacts(&root),
+        railpack_artifact(&root),
         nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
         InstallRolePolicy::install_all().without_gateway(),
         HostPortAssurance::Keeper,
@@ -327,6 +329,7 @@ fn first_machine_install_writes_machine_join_template_file_when_configured() {
         machine_id("machine_1"),
         ployzd_artifact(&ployzd_source, &root.join("bin/ployzd")),
         dataplane_artifacts(&root),
+        railpack_artifact(&root),
         nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
         InstallRolePolicy::install_all().without_gateway(),
         HostPortAssurance::Keeper,
@@ -1360,6 +1363,7 @@ fn local_effects_write_nats_config_before_nats_unit() {
             machine_id("machine_1"),
             ployzd_artifact,
             dataplane_artifacts(&root),
+            railpack_artifact(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
             InstallRolePolicy::install_all().without_gateway(),
             HostPortAssurance::Keeper,
@@ -1432,6 +1436,7 @@ fn local_effects_render_role_units_from_the_artifact_installed_by_the_plan() {
             machine_id("machine_1"),
             ployzd_artifact(&source, &install_path),
             dataplane_artifacts(&root),
+            railpack_artifact(&root),
             nats_server_artifact(&nats_source, &nats_install_path),
             InstallRolePolicy::install_all().without_gateway(),
             HostPortAssurance::Keeper,
@@ -1477,6 +1482,7 @@ fn local_join_redeems_token_then_installs_assigned_roles() {
         .expect("valid join material"),
         ployzd_artifact(&source, &root.join("join/bin/ployzd")),
         dataplane_artifacts(&root),
+        railpack_artifact(&root),
         NonEmptyRoleSet::try_new(vec![
             DaemonProcessRole::Machine(machine_id("machine_2")),
             DaemonProcessRole::Gateway,
@@ -2080,6 +2086,7 @@ fn first_machine_plan_with_ployzd(
             machine_id("machine_1"),
             ployzd,
             dataplane_artifacts(root),
+            railpack_artifact(root),
             nats_server_artifact(&nats_source, &root.join("bin/nats-server")),
             InstallRolePolicy::install_all().without_gateway(),
             HostPortAssurance::Keeper,
@@ -2113,6 +2120,19 @@ fn ployzd_artifact(source: &Path, install_path: &Path) -> ArtifactTarget {
         install_path.to_path_buf(),
     )
     .expect("valid ployzd artifact")
+}
+
+fn railpack_artifact(root: &Path) -> ArtifactTarget {
+    let source = root.join("railpack-source");
+    fs::write(&source, "ployz\n").expect("Railpack source can be written");
+    ArtifactTarget::new(
+        ArtifactKind::Railpack,
+        version("v0.31.0"),
+        artifact_source(&source),
+        digest(PLOYZ_NEWLINE_SHA256),
+        root.join("lib/ployz/railpack/v0.31.0/railpack"),
+    )
+    .expect("valid Railpack artifact")
 }
 
 fn nats_server_artifact(source: &Path, install_path: &Path) -> ArtifactTarget {

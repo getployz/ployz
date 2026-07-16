@@ -575,6 +575,10 @@ mod tests {
                     "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
                 ),
                 ebpf_ctl: join_artifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
+                railpack: join_artifact(
+                    "/tmp/railpack",
+                    "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
+                ),
             },
         }
     }

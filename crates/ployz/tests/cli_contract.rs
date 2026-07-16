@@ -1638,6 +1638,12 @@ fn first_machine_install_spec_json(ployzd_source: &str, machine_public_ip: Optio
                     "sha256": "{PLOYZ_NEWLINE_SHA256}",
                     "install_path": "/usr/local/bin/ployz-ebpf-ctl"
                 }},
+                "railpack": {{
+                    "version": "0.31.0",
+                    "source": "/tmp/railpack",
+                    "sha256": "{PLOYZ_NEWLINE_SHA256}",
+                    "install_path": "/usr/local/bin/railpack"
+                }},
                 "nats_server": {{
                     "version": "2.12.0",
                     "source": "/tmp/nats-server",

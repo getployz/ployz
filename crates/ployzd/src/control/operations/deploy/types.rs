@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use crate::certificate::GatewayCertificateTarget;
+use crate::control::role_client::machine::MachineClockTestimony;
 
 const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(180);
 
@@ -33,6 +34,7 @@ pub struct DeployExecutionCommand {
     pub(super) storage_testimony:
         BTreeMap<MachineId, Option<ployz_core::machine::StorageCapability>>,
     pub(super) machine_platforms: BTreeMap<MachineId, OciPlatform>,
+    pub(super) seed_clock_testimony: BTreeMap<MachineId, MachineClockTestimony>,
     pub(super) dataplane_members: Vec<DataplaneMember>,
     pub(super) exact_certificate_routes: Vec<RouteBindingState>,
     pub(super) ployz_automatic_hostnames: bool,

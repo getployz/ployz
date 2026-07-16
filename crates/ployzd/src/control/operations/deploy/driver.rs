@@ -393,7 +393,8 @@ async fn reusable_interrupted_deploy_operation_ids(
             } if status_namespace_id == *namespace_id => {
                 reusable.insert(id);
             }
-            OperationStatus::Deploy { .. }
+            OperationStatus::Build { .. }
+            | OperationStatus::Deploy { .. }
             | OperationStatus::VolumeCreate { .. }
             | OperationStatus::Cert { .. }
             | OperationStatus::MachineAdd { .. }

@@ -139,6 +139,7 @@ pub struct MachineJoinMaterial {
     pub ployzd: InstallArtifactSpec,
     pub ebpf_bytecode: InstallArtifactSpec,
     pub ebpf_ctl: InstallArtifactSpec,
+    pub railpack: InstallArtifactSpec,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

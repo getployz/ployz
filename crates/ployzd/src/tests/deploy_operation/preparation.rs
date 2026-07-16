@@ -27,6 +27,7 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
     let request = deploy_request();
     let facts = DeployExecutionFacts {
         machine_platforms: std::collections::BTreeMap::new(),
+        seed_clock_testimony: std::collections::BTreeMap::new(),
         machine_storage_testimony: std::collections::BTreeMap::new(),
         unusable_machines: Vec::new(),
         namespace_route_bindings: Vec::new(),
@@ -75,6 +76,7 @@ async fn does_not_reuse_an_unpromoted_running_target_entry() {
     let request = deploy_request();
     let facts = DeployExecutionFacts {
         machine_platforms: std::collections::BTreeMap::new(),
+        seed_clock_testimony: std::collections::BTreeMap::new(),
         machine_storage_testimony: std::collections::BTreeMap::new(),
         unusable_machines: Vec::new(),
         namespace_route_bindings: Vec::new(),
@@ -121,6 +123,7 @@ async fn reuses_a_matching_running_promoted_target_entry() {
     promoted.namespace_revision_entry_id = target_namespace_revision_entry_id();
     let facts = DeployExecutionFacts {
         machine_platforms: std::collections::BTreeMap::new(),
+        seed_clock_testimony: std::collections::BTreeMap::new(),
         machine_storage_testimony: std::collections::BTreeMap::new(),
         unusable_machines: Vec::new(),
         namespace_route_bindings: Vec::new(),
@@ -176,6 +179,7 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
     .expect("valid machine observation snapshot");
     let facts = DeployExecutionFacts {
         machine_platforms: std::collections::BTreeMap::new(),
+        seed_clock_testimony: std::collections::BTreeMap::new(),
         machine_storage_testimony: std::collections::BTreeMap::new(),
         unusable_machines: Vec::new(),
         namespace_route_bindings: vec![RouteBindingState {
@@ -229,6 +233,7 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
 async fn empty_manifest_prepares_no_services() {
     let facts = DeployExecutionFacts {
         machine_platforms: std::collections::BTreeMap::new(),
+        seed_clock_testimony: std::collections::BTreeMap::new(),
         machine_storage_testimony: std::collections::BTreeMap::new(),
         unusable_machines: vec![ployz_core::operation::UnusableMachine {
             machine_id: machine_id("machine_silent"),
@@ -287,6 +292,7 @@ fn provisioned_mount_requires_fresh_ready_storage_without_filtering_plain_work()
     ]);
     let facts = |storage| DeployExecutionFacts {
         machine_platforms: std::collections::BTreeMap::new(),
+        seed_clock_testimony: std::collections::BTreeMap::new(),
         machine_storage_testimony: storage,
         unusable_machines: Vec::new(),
         namespace_route_bindings: Vec::new(),
@@ -385,6 +391,7 @@ fn pinned_provisioned_mount_rejects_ready_testimony_from_the_wrong_pool() {
         request,
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::from([(
                 machine_id("machine_a"),
                 Some(StorageCapability::Ready {
@@ -462,6 +469,7 @@ fn auto_hostname_is_stable_and_collision_safe() {
         namespace_serving_entries: Vec::new(),
         namespace_volume_pins: Vec::new(),
         eligible_machines: Vec::new(),
+        seed_clock_testimony: std::collections::BTreeMap::new(),
         machine_storage_testimony: std::collections::BTreeMap::new(),
         unusable_machines: Vec::new(),
         dataplane_members: Vec::new(),
@@ -499,6 +507,7 @@ fn detached_hostname_recreation_mints_a_fresh_binding_identity() {
         namespace_serving_entries: Vec::new(),
         namespace_volume_pins: Vec::new(),
         eligible_machines: Vec::new(),
+        seed_clock_testimony: std::collections::BTreeMap::new(),
         machine_storage_testimony: std::collections::BTreeMap::new(),
         unusable_machines: Vec::new(),
         dataplane_members: Vec::new(),

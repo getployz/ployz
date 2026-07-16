@@ -25,8 +25,8 @@ pub use queries::{
 #[cfg(test)]
 pub use submit::owned_operation;
 pub use submit::{
-    core_replace, credential_add, credential_remove, deploy_reserve, deploy_submit,
-    ingress_configure, machine_add, machine_drain, machine_resume, machine_update,
+    build_cancel, build_submit, core_replace, credential_add, credential_remove, deploy_reserve,
+    deploy_submit, ingress_configure, machine_add, machine_drain, machine_resume, machine_update,
     namespace_remove, network_repair, service_restart, submit_volume_create, volume_remove,
 };
 
@@ -34,6 +34,7 @@ use crate::control::authorization::MachineCredentialMint;
 use crate::control::intent::ingress_intent::IngressIntentStore;
 use crate::control::intent::machine_roster::MachineRosterStore;
 use crate::control::intent::service::{NatsIntentReader, publish_pending_machine_joins};
+use crate::control::operations::build::BuildOperationDriver;
 use crate::control::operations::credential_grant::CredentialGrantOperation;
 use crate::control::operations::dataplane_projection_admission::DataplaneProjectionAdmissionOperation;
 use crate::control::operations::deploy::driver::DeployOperationDriver;
@@ -57,6 +58,7 @@ use std::sync::Arc;
 /// The operation drivers, bundled so a new kind adds a field here instead of
 /// another positional parameter threaded through `execute_operations`.
 pub struct OperationWorkers {
+    pub build: BuildOperationDriver,
     pub credential_grant: CredentialGrantOperation,
     pub ingress_configure: IngressConfigureOperation,
     pub deploy: DeployOperationDriver,
@@ -75,6 +77,7 @@ pub struct OperationWorkers {
 pub struct OperationApiHandlers {
     controllers: OperationControllers,
     deploy_driver: Arc<DeployOperationDriver>,
+    build_driver: Arc<BuildOperationDriver>,
     service_restart: Arc<ServiceRestartOperation>,
     namespace_remove: Arc<NamespaceRemoveOperation>,
     network_repair: Arc<NetworkRepairOperation>,
@@ -120,6 +123,7 @@ impl OperationApiHandlers {
         control_health: queries::ControlHealthReaders,
     ) -> Self {
         let OperationWorkers {
+            build: build_driver,
             credential_grant,
             ingress_configure,
             deploy: deploy_driver,
@@ -156,6 +160,7 @@ impl OperationApiHandlers {
         Self {
             controllers,
             deploy_driver: Arc::new(deploy_driver),
+            build_driver: Arc::new(build_driver),
             service_restart: Arc::new(service_restart),
             namespace_remove: Arc::new(namespace_remove),
             network_repair: Arc::new(network_repair),
@@ -187,6 +192,10 @@ impl OperationApiHandlers {
     #[must_use]
     pub const fn controllers(&self) -> &OperationControllers {
         &self.controllers
+    }
+
+    pub(crate) fn build_driver(&self) -> &BuildOperationDriver {
+        &self.build_driver
     }
 
     pub(crate) fn machine_query(&self) -> &MachineQueryService {

@@ -18,6 +18,7 @@ use crate::control::intent::service::{
     NatsIntentReader, RunningIntentService, start_intent_service,
 };
 use crate::control::operation_evidence::{OperationRepository, OperationStatusStoreError};
+use crate::control::operations::build::BuildOperationDriver;
 use crate::control::operations::credential_grant::CredentialGrantOperation;
 use crate::control::operations::deploy::driver::{DeployOperationDriver, DeployOperationStores};
 use crate::control::operations::ingress_configure::IngressConfigureOperation;
@@ -53,6 +54,7 @@ use crate::role_testimony::{
 };
 use crate::seed::{SeedCoreError, seed_core_from_snapshot};
 use crate::tasks::{TaskRegistry, TaskRegistryQuiesceError};
+use ployz_core::build::BUILD_MAX_EXECUTION_TIMEOUT;
 use ployz_core::intent::recovery::ControlPlaneEpoch;
 use ployz_core::intent::recovery::PendingMachineJoinRecovery;
 use ployz_core::operation::OperationInterruptionCause;
@@ -479,6 +481,14 @@ async fn start_control_process_with_client_reload_and_issuer(
         client.clone(),
         controllers.clone(),
         machine_roster.clone(),
+        task_spawner.clone(),
+    );
+    let build_driver = BuildOperationDriver::new(
+        client.clone(),
+        facts_reader.clone(),
+        intent_reader.clone(),
+        controllers.clone(),
+        BUILD_MAX_EXECUTION_TIMEOUT,
         task_spawner,
     );
     let operation_api = start_operation_api_service_with_handlers(
@@ -486,6 +496,7 @@ async fn start_control_process_with_client_reload_and_issuer(
         OperationApiHandlers::execute_operations(
             controllers,
             OperationWorkers {
+                build: build_driver,
                 credential_grant,
                 ingress_configure,
                 deploy: deploy_driver,

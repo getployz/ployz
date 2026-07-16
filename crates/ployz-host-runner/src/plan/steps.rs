@@ -80,7 +80,7 @@ pub enum HostRunnerStep {
     WriteNatsAuthorizedUsers(NatsAuthorizedUsersTarget),
     WriteNatsClientCredentials(NatsClientCredentialsTarget),
     WriteNatsServerConfig(NatsServerConfigTarget),
-    WriteMachineJoinTemplate(MachineJoinTemplateTarget),
+    WriteMachineJoinTemplate(Box<MachineJoinTemplateTarget>),
     WriteSupervisorUnit(SupervisorUnitSpec),
     StartSupervisorUnit(SupervisorUnitTarget),
     StoreJoinMaterial(HostRunnerJoinMaterial),
@@ -417,6 +417,7 @@ pub struct HostRunnerJoinTarget {
     pub material: HostRunnerJoinMaterial,
     pub ployzd_artifact: ArtifactTarget,
     pub dataplane_artifacts: DataplaneArtifactTargets,
+    pub railpack_artifact: ArtifactTarget,
     pub roles: NonEmptyRoleSet,
     pub role_environment: PloyzdRoleEnvironmentTarget,
     pub host_port_assurance: HostPortAssurance,
@@ -428,6 +429,7 @@ impl HostRunnerJoinTarget {
         material: HostRunnerJoinMaterial,
         ployzd_artifact: ArtifactTarget,
         dataplane_artifacts: DataplaneArtifactTargets,
+        railpack_artifact: ArtifactTarget,
         roles: NonEmptyRoleSet,
         role_environment: PloyzdRoleEnvironmentTarget,
         host_port_assurance: HostPortAssurance,
@@ -444,6 +446,7 @@ impl HostRunnerJoinTarget {
             material,
             ployzd_artifact,
             dataplane_artifacts,
+            railpack_artifact,
             roles,
             role_environment,
             host_port_assurance,
@@ -457,6 +460,7 @@ pub struct FirstMachineInstallTarget {
     pub dataplane_endpoint_supernet: MachineEndpointSupernet,
     pub ployzd_artifact: ArtifactTarget,
     pub dataplane_artifacts: DataplaneArtifactTargets,
+    pub railpack_artifact: ArtifactTarget,
     pub nats_server_artifact: ArtifactTarget,
     pub roles: InstallRolePolicy,
     pub host_port_assurance: HostPortAssurance,
@@ -487,6 +491,7 @@ impl FirstMachineInstallTarget {
         machine_id: MachineId,
         ployzd_artifact: ArtifactTarget,
         dataplane_artifacts: DataplaneArtifactTargets,
+        railpack_artifact: ArtifactTarget,
         nats_server_artifact: ArtifactTarget,
         roles: InstallRolePolicy,
         host_port_assurance: HostPortAssurance,
@@ -525,6 +530,7 @@ impl FirstMachineInstallTarget {
             dataplane_endpoint_supernet,
             ployzd_artifact,
             dataplane_artifacts,
+            railpack_artifact,
             nats_server_artifact,
             roles,
             host_port_assurance,
@@ -977,6 +983,7 @@ fn host_runner_join_install_steps(target: HostRunnerJoinTarget) -> Vec<HostRunne
         ),
         HostRunnerStep::VerifyContainerRuntime(ContainerRuntime::Docker),
         HostRunnerStep::InstallArtifact(target.ployzd_artifact.clone()),
+        HostRunnerStep::InstallArtifact(target.railpack_artifact.clone()),
     ];
     steps.push(HostRunnerStep::InstallArtifact(
         target.dataplane_artifacts.ebpf_bytecode.clone(),
@@ -1053,6 +1060,7 @@ pub struct CorePromoteTarget {
     pub nats_server_artifact: ArtifactTarget,
     pub ployzd_artifact: ArtifactTarget,
     pub dataplane_artifacts: DataplaneArtifactTargets,
+    pub railpack_artifact: ArtifactTarget,
     pub nats_identity: ClusterNatsIdentity,
     pub recovery_key_wrapped: WrappedCaKey,
     pub core_seeds_wrapped: WrappedCoreSeeds,
@@ -1078,6 +1086,7 @@ impl CorePromoteTarget {
         nats_server_artifact: ArtifactTarget,
         ployzd_artifact: ArtifactTarget,
         dataplane_artifacts: DataplaneArtifactTargets,
+        railpack_artifact: ArtifactTarget,
         nats_identity: ClusterNatsIdentity,
         recovery_key_wrapped: WrappedCaKey,
         core_seeds_wrapped: WrappedCoreSeeds,
@@ -1112,6 +1121,7 @@ impl CorePromoteTarget {
             nats_server_artifact,
             ployzd_artifact,
             dataplane_artifacts,
+            railpack_artifact,
             nats_identity,
             recovery_key_wrapped,
             core_seeds_wrapped,
@@ -1176,7 +1186,7 @@ pub fn core_promote_plan(target: CorePromoteTarget) -> HostRunnerStepPlan {
             target.nats_server_unit,
         )),
         HostRunnerStep::StartSupervisorUnit(SupervisorUnitTarget::NatsServer),
-        HostRunnerStep::WriteMachineJoinTemplate(MachineJoinTemplateTarget::new(
+        HostRunnerStep::WriteMachineJoinTemplate(Box::new(MachineJoinTemplateTarget::new(
             target.machine_join_template_file,
             MachineJoinTemplate {
                 join_bundle: MachineJoinBundle {
@@ -1192,10 +1202,11 @@ pub fn core_promote_plan(target: CorePromoteTarget) -> HostRunnerStepPlan {
                         ployzd: target.ployzd_artifact.install_spec(),
                         ebpf_bytecode: target.dataplane_artifacts.ebpf_bytecode.install_spec(),
                         ebpf_ctl: target.dataplane_artifacts.ebpf_ctl.install_spec(),
+                        railpack: target.railpack_artifact.install_spec(),
                     },
                 },
             },
-        )),
+        ))),
         HostRunnerStep::WritePloyzdRoleEnvironment(PloyzdRoleEnvironmentStep {
             role: control.clone(),
             target: target.role_environment.clone(),
@@ -1238,6 +1249,7 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> HostRunn
         HostRunnerStep::InstallArtifact(target.dataplane_artifacts.ebpf_bytecode.clone()),
         HostRunnerStep::InstallArtifact(target.dataplane_artifacts.ebpf_ctl.clone()),
         HostRunnerStep::InstallArtifact(target.nats_server_artifact.clone()),
+        HostRunnerStep::InstallArtifact(target.railpack_artifact.clone()),
         HostRunnerStep::WriteNatsTlsMaterial(NatsTlsMaterialTarget::new(
             target.nats_material.clone(),
             &target.nats_identity,
@@ -1278,12 +1290,13 @@ pub fn first_machine_install_plan(target: FirstMachineInstallTarget) -> HostRunn
                     ployzd: target.ployzd_artifact.install_spec(),
                     ebpf_bytecode: target.dataplane_artifacts.ebpf_bytecode.install_spec(),
                     ebpf_ctl: target.dataplane_artifacts.ebpf_ctl.install_spec(),
+                    railpack: target.railpack_artifact.install_spec(),
                 },
             },
         };
-        steps.push(HostRunnerStep::WriteMachineJoinTemplate(
+        steps.push(HostRunnerStep::WriteMachineJoinTemplate(Box::new(
             MachineJoinTemplateTarget::new(template_file, template),
-        ));
+        )));
     }
 
     for role in process_set.roles() {

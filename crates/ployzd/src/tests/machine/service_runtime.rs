@@ -3,7 +3,7 @@ use crate::control::operations::deploy::{
 };
 use crate::control::role_client::machine::{NatsMachineContainerRuntime, NatsMachineFactsReader};
 use crate::roles::machine::protocol::{
-    MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,
+    MachineBuildCapability, MachineContainerInspectRpcRequest, MachineContainerRemoveDomainError,
     MachineContainerRemoveRpcRequest, MachineContainerRemoveRpcResponse,
     MachineContainerRestartDomainError, MachineContainerRestartRpcRequest,
     MachineContainerRestartRpcResponse, MachineContainerRpcOk, MachineContainerRunHookRpcOk,
@@ -110,8 +110,15 @@ async fn machine_role_service_gets_fresh_facts_without_observation_tick() {
         .await
         .expect("flush machine service subscription");
 
-    let facts = NatsMachineFactsReader::new(nats.client)
-        .with_request_timeout(Duration::from_secs(1))
+    let facts_reader =
+        NatsMachineFactsReader::new(nats.client).with_request_timeout(Duration::from_secs(1));
+    let response = facts_reader
+        .machine_facts_response(&machine_id("machine_a"))
+        .await
+        .expect("facts response succeeds");
+    assert_eq!(response.build, MachineBuildCapability::Unavailable);
+
+    let facts = facts_reader
         .machine_facts(&machine_id("machine_a"))
         .await
         .expect("facts get succeeds");

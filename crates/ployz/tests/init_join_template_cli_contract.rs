@@ -95,6 +95,10 @@ fn assert_join_template(template: MachineJoinTemplate) {
         template.join_bundle.material.ebpf_ctl.install_path.as_str(),
         "/usr/local/bin/ployz-ebpf-ctl"
     );
+    assert_eq!(
+        template.join_bundle.material.railpack.install_path.as_str(),
+        "/usr/local/bin/railpack"
+    );
 }
 
 fn init_join_template_args(
@@ -174,6 +178,12 @@ fn write_artifact_spec_file(dir: &Path) -> PathBuf {
                     "source": "/tmp/ployz-ebpf-ctl",
                     "sha256": "{PLOYZ_NEWLINE_SHA256}",
                     "install_path": "/usr/local/bin/ployz-ebpf-ctl"
+                }},
+                "railpack": {{
+                    "version": "0.31.0",
+                    "source": "/tmp/railpack",
+                    "sha256": "{PLOYZ_NEWLINE_SHA256}",
+                    "install_path": "/usr/local/bin/railpack"
                 }}
             }}"#
         ),

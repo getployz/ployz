@@ -16,6 +16,8 @@
 
 #[path = "dind_cluster/acceptance.rs"]
 mod acceptance;
+#[path = "dind_cluster/build.rs"]
+mod build;
 #[path = "dind_cluster/network.rs"]
 mod network;
 #[path = "dind_cluster/placement.rs"]
@@ -246,6 +248,11 @@ async fn group_core_deploy_semantics() {
     timed(
         "repush_new_layers",
         assert_repush_transfers_only_new_layers(&core),
+    )
+    .await;
+    timed(
+        "authenticated_source_builds",
+        build::assert_authenticated_build_journeys(&core),
     )
     .await;
 
@@ -2004,6 +2011,7 @@ async fn scenario_runtime_fields_deploy(core: &CoreContext, workload_image: &Ima
 }
 
 async fn scenario_failing_healthcheck_deploy(core: &CoreContext, workload_image: &ImageReference) {
+    wait_for_fresh_peer_handshakes(core).await;
     let accepted = core
         .api
         .deploy_submit(
@@ -2020,16 +2028,16 @@ async fn scenario_failing_healthcheck_deploy(core: &CoreContext, workload_image:
 
     let status =
         wait_for_terminal_deploy_status(core, &deploy_operation, DEPLOY_TERMINAL_BUDGET).await;
-    assert!(
-        matches!(
-            &status,
-            OperationStatus::Deploy {
-                state: DeployOperationState::Failed { .. },
-                ..
-            }
-        ),
-        "failing healthcheck deploy did not fail: {status:?}"
-    );
+    let OperationStatus::Deploy {
+        state:
+            DeployOperationState::Failed {
+                failure: DeployOperationFailure::HealthCheckFailed { .. },
+            },
+        ..
+    } = &status
+    else {
+        panic!("failing healthcheck deploy had an unexpected terminal status: {status:?}");
+    };
 
     let filter = format!("label={SERVICE_ID_LABEL}=svc_bad_health");
     let mut retained = Vec::new();

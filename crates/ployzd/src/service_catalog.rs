@@ -34,6 +34,8 @@ pub const RUNTIME_PROJECTION_SERVICE_ID: &str = "plz-runtime-projection.core";
 pub const RUNTIME_PROJECTION_SERVICE_DESCRIPTION: &str = "Ployz passive runtime projection";
 pub const SERVICE_VERSION: ServiceVersion = ServiceVersion::new(0, 1, 0);
 pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: &[OperationApiEndpoint] = &[
+    OperationApiEndpoint::BuildSubmit,
+    OperationApiEndpoint::BuildCancel,
     OperationApiEndpoint::CredentialAdd,
     OperationApiEndpoint::CredentialList,
     OperationApiEndpoint::CredentialRemove,
@@ -247,6 +249,8 @@ pub fn machine_role_service(machine_id: &MachineId) -> NatsServiceSpec {
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ImageManifestPush),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ImageEnsure),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ImageRemove),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::BuildStart),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::BuildCancel),
         ],
     )
 }
@@ -350,6 +354,8 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         MachineServiceEndpoint::ImageManifestPush => "machine.image.manifest.push",
         MachineServiceEndpoint::ImageEnsure => "machine.image.ensure",
         MachineServiceEndpoint::ImageRemove => "machine.image.remove",
+        MachineServiceEndpoint::BuildStart => "machine.build.start",
+        MachineServiceEndpoint::BuildCancel => "machine.build.cancel",
         MachineServiceEndpoint::CertificateArtifactStatus => "machine.certificate.artifact.status",
         MachineServiceEndpoint::CertificateArtifactPush => "machine.certificate.artifact.push",
         MachineServiceEndpoint::CertificateArtifactRemove => "machine.certificate.artifact.remove",

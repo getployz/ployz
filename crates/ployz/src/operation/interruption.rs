@@ -1,7 +1,7 @@
 use ployz_core::operation::{
-    DeployInterruptionStage, DeployRunningStage, NamespaceRemoveRunningStage,
-    NetworkRepairRunningStage, OperationInterruptionCause, OperationInterruptionEvidence,
-    OperationInterruptionNextAction, OperationInterruptionStage,
+    BuildInterruptionStage, DeployInterruptionStage, DeployRunningStage,
+    NamespaceRemoveRunningStage, NetworkRepairRunningStage, OperationInterruptionCause,
+    OperationInterruptionEvidence, OperationInterruptionNextAction, OperationInterruptionStage,
     OperationInterruptionUncertainWork, ServiceRestartRunningStage, VolumeCreateRunningStage,
     VolumeRemoveRunningStage,
 };
@@ -25,6 +25,11 @@ const fn cause(cause: OperationInterruptionCause) -> &'static str {
 
 fn stage(stage: OperationInterruptionStage) -> String {
     match stage {
+        OperationInterruptionStage::Build { stage } => match stage {
+            BuildInterruptionStage::Accepted => "build accepted".to_owned(),
+            BuildInterruptionStage::Placing => "build placing".to_owned(),
+            BuildInterruptionStage::Building => "build running".to_owned(),
+        },
         OperationInterruptionStage::Deploy { stage } => match stage {
             DeployInterruptionStage::Accepted => "deploy accepted".to_owned(),
             DeployInterruptionStage::Planning => "deploy planning".to_owned(),

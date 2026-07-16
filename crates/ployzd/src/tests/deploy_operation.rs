@@ -10,7 +10,7 @@ use crate::control::operations::deploy::{
     MachineContainerRuntimeError, MachineImageRemovalRuntime, NamespaceStateCommitter,
     execute_deploy_operation,
 };
-use crate::control::role_client::machine::MachineVolumeEnsureError;
+use crate::control::role_client::machine::{MachineClockTestimony, MachineVolumeEnsureError};
 use fixtures::*;
 use ployz_core::deploy::{ContainerCommand, ContainerRestartPolicy, ReplicaCount};
 use ployz_core::intent::{ServingTargetEntry, VolumePinState};
@@ -478,6 +478,44 @@ async fn mixed_platform_pushed_deploy_selects_each_platform_image_and_keeps_one_
             .count(),
         2
     );
+}
+
+#[tokio::test]
+async fn seed_clock_ahead_of_control_fails_before_image_ensure_rpc() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+    let command = route_less_pushed_deploy_command(1).with_seed_clock_testimony(
+        machine_id("machine_seed"),
+        MachineClockTestimony {
+            control_request_started_at_unix_ms: 1_000_000,
+            machine_observed_at_unix_ms: 1_300_001,
+        },
+    );
+
+    let error = execute_deploy(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect_err("future seed clock rejects pushed-image deploy");
+
+    let DeployExecutionError::Failed { failure, .. } = error else {
+        panic!("expected recorded deploy failure");
+    };
+    assert!(matches!(
+        *failure,
+        DeployOperationFailure::SeedUnavailable { message, .. }
+            if message.as_str() == "image seed clock is more than 300 seconds ahead of Control"
+    ));
+    assert!(runtime.image_ensures.is_empty());
 }
 
 #[tokio::test]

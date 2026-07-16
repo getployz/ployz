@@ -86,6 +86,11 @@ fn pushed_image_digest_must_match_the_index_digest() {
                             seed: MachineId::try_new("machine_a").expect("valid machine id"),
                             manifest_digest: OciDigest::sha256(b"manifest"),
                             image_id: OciDigest::sha256(b"image"),
+                            availability_expires_at:
+                                ployz_core::deploy::ImageAvailabilityExpiresAt::try_new(
+                                    4_102_444_800,
+                                )
+                                .expect("expiry"),
                         },
                     )])
                     .expect("pushed receipt"),

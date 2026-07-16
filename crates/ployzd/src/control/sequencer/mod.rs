@@ -8,14 +8,15 @@ pub use ingress::{IngressConfigureSubmitCommand, IngressConfigureSubmitError};
 pub use machine_substrate::{MachineStoragePrepareSubmitCommand, MachineUpdateSubmitCommand};
 
 use crate::control::operation_evidence::{
-    AcceptedDeploySubmission, AcceptedMachineAddSubmission, CoreReplaceOperationSubmission,
-    CredentialGrantOperationSubmission, DeployOperationSubmission, MachineAddOperationSubmission,
-    MachineJoinIdentity, MachineJoinRedemption, MachineLifecycleOperationSubmission,
-    NamespaceRemoveOperationSubmission, NetworkRepairOperationSubmission, OperationRepository,
-    OperationStatusStoreError, RedeemMachineJoinTokenError, ServiceRestartOperationSubmission,
-    SubmitMachineAddError, SubmitOperationError, VolumeCreateOperationSubmission,
-    VolumeRemoveOperationSubmission,
+    AcceptedBuildSubmission, AcceptedDeploySubmission, AcceptedMachineAddSubmission,
+    BuildOperationSubmission, CoreReplaceOperationSubmission, CredentialGrantOperationSubmission,
+    DeployOperationSubmission, MachineAddOperationSubmission, MachineJoinIdentity,
+    MachineJoinRedemption, MachineLifecycleOperationSubmission, NamespaceRemoveOperationSubmission,
+    NetworkRepairOperationSubmission, OperationRepository, OperationStatusStoreError,
+    RedeemMachineJoinTokenError, ServiceRestartOperationSubmission, SubmitMachineAddError,
+    SubmitOperationError, VolumeCreateOperationSubmission, VolumeRemoveOperationSubmission,
 };
+use ployz_core::build::{BuildAdapter, BuildPlatforms, GitSource};
 use ployz_core::deploy::{
     DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS, DeployReservationExpiresAt, DeployReservationId,
     RegistryCredential, VolumeDeclaredDeployRequest, VolumeName,
@@ -52,6 +53,20 @@ pub struct DeploySubmitCommand {
     pub reservation_id: DeployReservationId,
     pub target: VolumeDeclaredDeployRequest,
     pub registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildSubmitCommand {
+    pub operation_id: OperationId,
+    pub source: GitSource,
+    pub adapter: BuildAdapter,
+    pub platforms: BuildPlatforms,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedBuildExecution {
+    pub submission: AcceptedBuildSubmission,
+    pub source: GitSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -289,6 +304,29 @@ impl OperationControllers {
             }
         }
         result
+    }
+
+    pub async fn submit_build(
+        &self,
+        command: BuildSubmitCommand,
+    ) -> Result<AcceptedBuildExecution, SubmitCommandError> {
+        let BuildSubmitCommand {
+            operation_id,
+            source,
+            adapter,
+            platforms,
+        } = command;
+        let submission = self
+            .repository
+            .submit_build(BuildOperationSubmission {
+                operation_id,
+                source: source.evidence(),
+                adapter,
+                platforms,
+            })
+            .await
+            .map_err(SubmitCommandError::Submit)?;
+        Ok(AcceptedBuildExecution { submission, source })
     }
 
     async fn submit_deploy_inner(

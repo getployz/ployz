@@ -2,8 +2,9 @@ use ployz_sdk_types::operation_api::OperationApiEndpoint;
 use ployz_sdk_types::{
     AcceptedOperation, AcmeChallengeToken, AcmeChallengeTtlSeconds, AcmeChallengeValue,
     AcmeHttp01Challenge, ActiveCertState, ActiveCertificateMetadata,
-    AutomaticHostnameConfiguration, CertBundleRef, CertId, CertOperationState, CertRunningStage,
-    CertTextError, CertValidAt, CertValidityWindow, CertificateOwner, CloudBootstrapAttemptId,
+    AutomaticHostnameConfiguration, BuildCancelError, BuildCancelRequest, BuildSubmitError,
+    BuildSubmitRequest, CertBundleRef, CertId, CertOperationState, CertRunningStage, CertTextError,
+    CertValidAt, CertValidityWindow, CertificateOwner, CloudBootstrapAttemptId,
     CloudBootstrapCallbackAccepted, CloudBootstrapCallbackRequest, CloudBootstrapCallbackToken,
     CloudBootstrapDecision, CloudBootstrapEnvelope, CloudBootstrapIntent, CloudBootstrapOutcome,
     CloudBootstrapRedemptionId, CloudBootstrapSessionCreateRequest, CloudBootstrapSessionCreated,
@@ -21,7 +22,7 @@ use ployz_sdk_types::{
     DeployReserveError, DeployReserveRequest, DeployReserved, DeployRunningStage,
     DeployServiceSpec, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse, EventSequence,
     EventSequenceError, GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessHealth,
-    GatewayStatusPublishFailure, GatewayWatchFailure, HostPortAssurance, ImageReference,
+    GatewayStatusPublishFailure, GatewayWatchFailure, GitSource, HostPortAssurance, ImageReference,
     ImageReferenceError, IngressConfiguration, IngressConfigureError, IngressConfigureRequest,
     IngressEndpointProjectionIdentity, InitFirstMachineActivateError,
     InitFirstMachineActivateRequest, InitFirstMachineActivated, InstallContractError,
@@ -50,17 +51,27 @@ use ployz_sdk_types::{
     SubjectTokenError, VolumeCreateError, VolumeCreateRequest, VolumeListError, VolumeListRequest,
     VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
     operation_api::{
-        CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi, CredentialListApi,
-        CredentialRemoveApi, DeployReserveApi, DeploySubmitApi, IngressConfigureApi,
-        InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineInspectApi,
-        MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi, MachineStoragePrepareApi,
-        MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi,
-        NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi,
-        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeCreateApi,
-        VolumeListApi, VolumeRemoveApi,
+        BuildCancelApi, BuildSubmitApi, CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi,
+        CredentialListApi, CredentialRemoveApi, DeployReserveApi, DeploySubmitApi,
+        IngressConfigureApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
+        MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
+        MachineStoragePrepareApi, MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi,
+        NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi,
+        OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi,
+        VolumeCreateApi, VolumeListApi, VolumeRemoveApi,
     },
 };
-use ts_rs::TS;
+use ts_rs::{Config, TS};
+
+#[test]
+fn git_source_typescript_subdir_is_optional() {
+    let declaration = GitSource::decl(&Config::default());
+    assert!(
+        declaration.contains("subdir?: BuildContextPath"),
+        "{declaration}"
+    );
+    assert!(!declaration.contains("subdir: BuildContextPath | null"));
+}
 
 #[test]
 fn sdk_exports_core_wire_types() {
@@ -297,7 +308,7 @@ fn sdk_exports_operation_api_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&machine_response).expect("response serializes"),
-        r#"{"status":"ok","value":{"accepted":{"operation_id":"op_machine","watch_subject":"plz.v1.progress.machine.machine_2.operation.op_machine.>","start_sequence":"7"},"machine_id":"machine_2","bootstrap_url":"https://get.ployz.sh","join_bundle":{"material":{"cluster_name":"prod","dataplane_endpoint_supernet":"10.198.0.0/16","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"recovery_key_wrapped":[1,2,3],"core_seeds_wrapped":[4,5,6],"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"}}},"join_token":"join_once_123","join_secret_delivery":{"nats_credentials":"SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ"}}}"#
+        r#"{"status":"ok","value":{"accepted":{"operation_id":"op_machine","watch_subject":"plz.v1.progress.machine.machine_2.operation.op_machine.>","start_sequence":"7"},"machine_id":"machine_2","bootstrap_url":"https://get.ployz.sh","join_bundle":{"material":{"cluster_name":"prod","dataplane_endpoint_supernet":"10.198.0.0/16","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"recovery_key_wrapped":[1,2,3],"core_seeds_wrapped":[4,5,6],"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"},"railpack":{"version":"0.1.0","source":"/tmp/ployz-railpack","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/railpack/v0.31.0/railpack"}}},"join_token":"join_once_123","join_secret_delivery":{"nats_credentials":"SUAIZ5LKGG2Y4WC7ZPKS46LSLLJQIFTO6KMSWSU2VN3TC7YRRIKH5WRXJQ"}}}"#
     );
 
     let redeem_request = MachineJoinRedeemRequest {
@@ -337,7 +348,7 @@ fn sdk_exports_operation_api_wire_types() {
     );
     assert_eq!(
         serde_json::to_string(&join_template).expect("join template serializes"),
-        r#"{"join_bundle":{"material":{"cluster_name":"prod","dataplane_endpoint_supernet":"10.198.0.0/16","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"recovery_key_wrapped":[1,2,3],"core_seeds_wrapped":[4,5,6],"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"}}}}"#
+        r#"{"join_bundle":{"material":{"cluster_name":"prod","dataplane_endpoint_supernet":"10.198.0.0/16","runtime_nats_url":"nats://127.0.0.1:7422","trusted_nats":{"ca_pem":"-----BEGIN CERTIFICATE-----\nTUlJQg==\n-----END CERTIFICATE-----\n"},"recovery_key_wrapped":[1,2,3],"core_seeds_wrapped":[4,5,6],"ployzd":{"version":"0.1.0","source":"/tmp/ployzd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployzd"},"ebpf_bytecode":{"version":"0.1.0","source":"/tmp/ployz-ebpf-tc","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/ebpf/ployz-ebpf-tc"},"ebpf_ctl":{"version":"0.1.0","source":"/tmp/ployz-ebpf-ctl","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/bin/ployz-ebpf-ctl"},"railpack":{"version":"0.1.0","source":"/tmp/ployz-railpack","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","install_path":"/usr/local/lib/ployz/railpack/v0.31.0/railpack"}}}}"#
     );
 }
 
@@ -468,6 +479,8 @@ fn typescript_contract_fixture_matches_rust_wire_types() {
 
 #[test]
 fn operation_api_contract_registry_owns_endpoint_shapes() {
+    assert_contract::<BuildSubmitApi, BuildSubmitRequest, AcceptedOperation, BuildSubmitError>();
+    assert_contract::<BuildCancelApi, BuildCancelRequest, AcceptedOperation, BuildCancelError>();
     assert_contract::<DeployReserveApi, DeployReserveRequest, DeployReserved, DeployReserveError>();
     assert_contract::<DeploySubmitApi, DeploySubmitRequest, AcceptedOperation, DeploySubmitError>();
     assert_contract::<
@@ -589,6 +602,8 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
     assert_eq!(
         operation_api_contract_endpoints(),
         [
+            OperationApiEndpoint::BuildSubmit,
+            OperationApiEndpoint::BuildCancel,
             OperationApiEndpoint::DeployReserve,
             OperationApiEndpoint::DeploySubmit,
             OperationApiEndpoint::InitFirstMachineActivate,
@@ -676,6 +691,10 @@ fn machine_join_bundle() -> MachineJoinBundle {
             recovery_key_wrapped: ployz_core::install::WrappedCaKey::new(vec![1, 2, 3]),
             core_seeds_wrapped: ployz_core::install::WrappedCoreSeeds::new(vec![4, 5, 6]),
             ployzd: machine_join_artifact("/tmp/ployzd", "/usr/local/bin/ployzd"),
+            railpack: machine_join_artifact(
+                "/tmp/ployz-railpack",
+                "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
+            ),
             ebpf_bytecode: machine_join_artifact(
                 "/tmp/ployz-ebpf-tc",
                 "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",

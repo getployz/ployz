@@ -120,6 +120,7 @@ fn render_artifact_target(target: &ArtifactTarget) -> String {
         ArtifactKind::EbpfCtl => "ebpf-ctl",
         ArtifactKind::NatsServer => "nats-server",
         ArtifactKind::Ployzd => "ployzd",
+        ArtifactKind::Railpack => "railpack",
     };
     format!("{kind} {}", target.install_path().display())
 }
