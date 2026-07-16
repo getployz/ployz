@@ -4,6 +4,7 @@ use ployz_core::ids::OperationId;
 
 use crate::tasks::TaskAdmissionError;
 
+pub mod build;
 pub mod credential_grant;
 pub mod dataplane_projection_admission;
 pub mod deploy;

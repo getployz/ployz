@@ -662,6 +662,7 @@ impl FakeDocker {
         let root = temp_dir(prefix);
         fs::create_dir(root.join("bin")).expect("fake bin can be created");
         fs::create_dir(root.join("context")).expect("fake context can be created");
+        fs::create_dir_all(root.join("target/release")).expect("fake target can be created");
         for file in ["Dockerfile", "daemon.json", "ployz-dind-images.service"] {
             fs::copy(
                 repo_path(&format!("docker/dind-machine/{file}")),
@@ -692,6 +693,15 @@ esac
         .expect("fake docker can be written");
         fs::set_permissions(&docker, fs::Permissions::from_mode(0o755))
             .expect("fake docker can be executable");
+        let railpack = root.join("target/release/railpack");
+        fs::write(&railpack, "fake railpack\n").expect("fake Railpack can be written");
+        fs::set_permissions(&railpack, fs::Permissions::from_mode(0o755))
+            .expect("fake Railpack can be executable");
+        fs::write(
+            root.join("target/release/railpack.source"),
+            "linux/amd64 v0.31.0 f75416cf4c452db2841d864f54dbfd8e4d77f2d4a02b23b87561e7760fa278fd\n",
+        )
+        .expect("fake Railpack stamp can be written");
         fs::hard_link(&docker, root.join("bin/cargo")).expect("fake cargo can be linked");
         Self(root)
     }

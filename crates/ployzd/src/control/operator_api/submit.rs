@@ -6,28 +6,107 @@ use crate::control::intent::ingress_intent::PloyzDnsTargetStore;
 use crate::control::intent::namespace_intent::NamespaceIntentStore;
 use crate::control::operations::deploy::validate_deploy_route_admission;
 use crate::control::sequencer::{
-    CoreReplaceSubmitCommand, CredentialGrantSubmitCommand, DeploySubmitCommand,
-    IngressConfigureSubmitCommand, IngressConfigureSubmitError, MachineAddBootstrapMaterial,
-    MachineAddBootstrapMaterialError, MachineAddSubmitCommand, MachineLifecycleSubmitCommand,
-    MachineUpdateSubmitCommand, NamespaceRemoveSubmitCommand, NetworkRepairSubmitCommand,
-    OperationControllers, ServiceRestartSubmitCommand, VolumeRemoveSubmitCommand,
+    BuildSubmitCommand, CoreReplaceSubmitCommand, CredentialGrantSubmitCommand,
+    DeploySubmitCommand, IngressConfigureSubmitCommand, IngressConfigureSubmitError,
+    MachineAddBootstrapMaterial, MachineAddBootstrapMaterialError, MachineAddSubmitCommand,
+    MachineLifecycleSubmitCommand, MachineUpdateSubmitCommand, NamespaceRemoveSubmitCommand,
+    NetworkRepairSubmitCommand, OperationControllers, ServiceRestartSubmitCommand,
+    VolumeRemoveSubmitCommand,
 };
 use ployz_core::deploy::ImageSource;
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::machine::MachineLifecycle;
 use ployz_core::network::internal_dns::InternalServiceName;
-use ployz_core::operation::{CredentialGrantAction, EventSequence};
+use ployz_core::operation::{CredentialGrantAction, EventSequence, OperationStatus};
 use ployz_nats::subjects::{OperationProgressScope, operation_progress_watch};
 use ployz_sdk_types::{
-    AcceptedOperation, CoreReplaceError, CoreReplaceRequest, CredentialAddError,
-    CredentialAddRequest, CredentialRemoveError, CredentialRemoveRequest, DeployReserveError,
-    DeployReserveRequest, DeployReserved, DeploySubmitError, DeploySubmitRequest,
-    IngressConfigureError, IngressConfigureRequest, MachineAddAccepted, MachineAddError,
-    MachineAddRequest, MachineJoinToken, MachineLifecycleError, MachineLifecycleRequest,
-    MachineUpdateError, MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest,
-    NetworkRepairError, NetworkRepairRequest, ServiceRestartError, ServiceRestartRequest,
-    VolumeRemoveError, VolumeRemoveRequest,
+    AcceptedOperation, BuildCancelError, BuildCancelRequest, BuildSubmitError, BuildSubmitRequest,
+    CoreReplaceError, CoreReplaceRequest, CredentialAddError, CredentialAddRequest,
+    CredentialRemoveError, CredentialRemoveRequest, DeployReserveError, DeployReserveRequest,
+    DeployReserved, DeploySubmitError, DeploySubmitRequest, IngressConfigureError,
+    IngressConfigureRequest, MachineAddAccepted, MachineAddError, MachineAddRequest,
+    MachineJoinToken, MachineLifecycleError, MachineLifecycleRequest, MachineUpdateError,
+    MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest, NetworkRepairError,
+    NetworkRepairRequest, ServiceRestartError, ServiceRestartRequest, VolumeRemoveError,
+    VolumeRemoveRequest,
 };
+
+pub async fn build_submit(
+    handlers: &OperationApiHandlers,
+    request: BuildSubmitRequest,
+) -> Result<AcceptedOperation, BuildSubmitError> {
+    let operation_id = request.operation_id.clone();
+    let accepted = handlers.controllers().submit_build(BuildSubmitCommand {
+        operation_id: request.operation_id,
+        source: request.source,
+        adapter: request.adapter,
+        platforms: request.platforms,
+    }).await.map_err(|error| match error {
+        crate::control::sequencer::SubmitCommandError::Submit(
+            crate::control::operation_evidence::SubmitOperationError::DuplicateSequenceMismatch { .. }
+        ) => BuildSubmitError::OperationConflict { operation_id: operation_id.clone() },
+        error @ (crate::control::sequencer::SubmitCommandError::Clock { .. }
+        | crate::control::sequencer::SubmitCommandError::NamespaceBusy { .. }
+        | crate::control::sequencer::SubmitCommandError::MachineSubstrateBusy { .. }
+        | crate::control::sequencer::SubmitCommandError::IngressBusy { .. }
+        | crate::control::sequencer::SubmitCommandError::ReservationNotFound { .. }
+        | crate::control::sequencer::SubmitCommandError::ReservationExpired { .. }
+        | crate::control::sequencer::SubmitCommandError::Submit(_)) => BuildSubmitError::Unavailable {
+            operation_id: operation_id.clone(),
+            message: format!("{error:?}"),
+        },
+    })?;
+    let operation = owned_operation(
+        accepted.submission.operation_id.clone(),
+        OperationProgressScope::Cluster,
+        accepted.submission.start_sequence,
+    );
+    handlers.build_driver().start(accepted).await;
+    Ok(operation)
+}
+
+pub async fn build_cancel(
+    handlers: &OperationApiHandlers,
+    request: BuildCancelRequest,
+) -> Result<AcceptedOperation, BuildCancelError> {
+    let operation_id = request.operation_id;
+    let status = handlers
+        .controllers()
+        .repository()
+        .get(&operation_id)
+        .await
+        .map_err(|error| BuildCancelError::Unavailable {
+            operation_id: operation_id.clone(),
+            message: error.to_string(),
+        })?
+        .ok_or_else(|| BuildCancelError::NoSuchOperation {
+            operation_id: operation_id.clone(),
+        })?;
+    let OperationStatus::Build {
+        state,
+        last_event_sequence,
+        ..
+    } = status
+    else {
+        return Err(BuildCancelError::NoSuchOperation { operation_id });
+    };
+    if state.is_terminal() {
+        return Err(BuildCancelError::AlreadyTerminal { operation_id });
+    }
+    handlers
+        .build_driver()
+        .cancel(&operation_id, request.reason)
+        .await
+        .map_err(|message| BuildCancelError::Unavailable {
+            operation_id: operation_id.clone(),
+            message,
+        })?;
+    Ok(owned_operation(
+        operation_id,
+        OperationProgressScope::Cluster,
+        last_event_sequence,
+    ))
+}
 
 use super::OperationApiHandlers;
 use super::error_map::{
