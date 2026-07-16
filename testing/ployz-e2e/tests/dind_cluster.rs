@@ -40,8 +40,10 @@ use ployz_core::machine::{
     DataplaneProjectionAdmissionFailure, MachineAddFailure, MachineCredentialProvisioningStep,
 };
 use ployz_core::network::{
-    DEFAULT_WIREGUARD_LISTEN_PORT, MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS,
-    WireGuardHandshakeStatus,
+    DEFAULT_WIREGUARD_LISTEN_PORT, DataplaneProjection, DataplaneProjectionTestimony,
+    EbpfAttachmentStatus, EndpointBridgeStatus, MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS,
+    WireGuardDetectedMtu, WireGuardHandshakeStatus, WireGuardInterfaceMtu,
+    WireGuardPeerEndpointSubnet,
 };
 use ployz_core::operation::{
     ArtifactUnavailableReason, DeployCompletionOutcome, DeployOperationFailure,
@@ -61,7 +63,8 @@ use ployz_nats::permissions::inbox_subscribe_scope;
 use ployz_nats::subjects::{MachineServiceEndpoint, OPERATOR_RUNTIME_SNAPSHOT, machine_service};
 use ployz_sdk_types::{
     DeployReserveRequest, DeploySubmitRequest, MachineJoinRedeemError, MachineJoinRedeemRequest,
-    MachineListRequest, MachineSnapshot, MachineTestimony, NamespaceRemoveRequest, OpsListRequest,
+    MachineListRequest, MachineSnapshot, MachineTestimony, NamespaceRemoveRequest,
+    NetworkDataplaneTestimony, NetworkStatusMachine, NetworkStatusRequest, OpsListRequest,
     ServiceInspectRequest, VolumeListRequest, VolumeRemoveRequest, VolumeStatus,
 };
 use ployz_test_support::ids::{
@@ -101,6 +104,99 @@ const WORKLOAD_ENDPOINT_PORT: u16 = 80;
 /// Budget for the routed two-machine deploy to reach a terminal state
 /// (includes the image pull check and WireGuard/eBPF preparation).
 const DEPLOY_TERMINAL_BUDGET: Duration = Duration::from_secs(300);
+
+async fn wait_for_ready_dataplane(core: &CoreContext, projection: &DataplaneProjection) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let machines = core
+            .api
+            .network_status(&NetworkStatusRequest::First {
+                mode: ployz_sdk_types::NetworkStatusMode::Snapshot,
+            })
+            .await
+            .expect("network status succeeds")
+            .machines;
+        if machines.len() == projection.declared_members().len()
+            && projection.declared_members().iter().all(|member| {
+                machines
+                    .iter()
+                    .filter(|machine| machine.active.machine_id == member.machine_id)
+                    .count()
+                    == 1
+            })
+            && machines.iter().all(|machine| {
+                locally_ready(machine, projection) && peer_handshakes_fresh(machine, projection)
+            })
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "declared dataplane did not become ready: {machines:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+fn locally_ready(machine: &NetworkStatusMachine, projection: &DataplaneProjection) -> bool {
+    let Some(member) = projection
+        .declared_members()
+        .iter()
+        .find(|member| member.machine_id == machine.active.machine_id)
+    else {
+        return false;
+    };
+    let NetworkDataplaneTestimony::Answered { value } = &machine.dataplane else {
+        return false;
+    };
+    matches!(
+        &value.projection.endpoint_bridge,
+        EndpointBridgeStatus::Ready { subnet } if subnet == &member.endpoint_subnet
+    ) && matches!(
+        &value.projection.testimony,
+        DataplaneProjectionTestimony::Applied { revisions }
+            if revisions.declared_revision == *projection.declared_revision()
+                && revisions.target_revision == *projection.target_revision()
+    ) && matches!(value.ebpf_attachment, EbpfAttachmentStatus::Attached)
+        && matches!(
+            value.wireguard.detected_mtu,
+            WireGuardDetectedMtu::Detected { .. }
+        )
+        && matches!(
+            value.wireguard.interface_mtu,
+            WireGuardInterfaceMtu::Detected { .. }
+        )
+}
+
+fn peer_handshakes_fresh(machine: &NetworkStatusMachine, projection: &DataplaneProjection) -> bool {
+    let NetworkDataplaneTestimony::Answered { value } = &machine.dataplane else {
+        return false;
+    };
+    let expected_peer_count = projection
+        .declared_members()
+        .iter()
+        .filter(|member| member.machine_id != machine.active.machine_id)
+        .count();
+    value.wireguard.peers.len() == expected_peer_count
+        && projection
+            .declared_members()
+            .iter()
+            .filter(|member| member.machine_id != machine.active.machine_id)
+            .all(|member| {
+                value.wireguard.peers.iter().any(|peer| {
+                    peer.public_key == member.wireguard_public_key
+                        && peer.endpoint_subnet
+                            == WireGuardPeerEndpointSubnet::Valid {
+                                subnet: member.endpoint_subnet.clone(),
+                            }
+                        && matches!(
+                            peer.handshake,
+                            WireGuardHandshakeStatus::Ago { seconds }
+                                if seconds <= MAX_HEALTHY_WIREGUARD_HANDSHAKE_AGE_SECONDS
+                        )
+                })
+            })
+}
 
 #[tokio::test]
 async fn group_core_deploy_semantics() {
@@ -483,6 +579,7 @@ async fn assert_namespace_manifest_convergence_sweeps_failed_retry(core: &CoreCo
         let retry_target = DeployRequest {
             namespace_id: namespace_id("converge"),
             origin: None,
+            volumes: BTreeMap::new(),
             services: vec![retry_service],
         };
         let retry = core
@@ -1089,6 +1186,7 @@ async fn assert_direct_push_multi_machine_deploy(core: &CoreContext) {
 
         let namespace = namespace_id("direct_push");
         let mut services = vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_direct_push"),
             image: ImageReference::try_new(&tag).expect("valid pushed image reference"),
             image_source: ployz_core::deploy::ImageSource::Registry,
@@ -1111,7 +1209,10 @@ async fn assert_direct_push_multi_machine_deploy(core: &CoreContext) {
         let [receipt] = receipts.as_slice() else {
             panic!("one local image must produce one push receipt: {receipts:?}");
         };
-        assert_eq!(receipt.seed, machine_id("core_1"));
+        let Some((_, pushed_image)) = receipt.receipt().platforms().next() else {
+            panic!("validated pushed receipt must contain one platform");
+        };
+        assert_eq!(pushed_image.seed, machine_id("core_1"));
 
         let accepted = core
             .api
@@ -1122,6 +1223,7 @@ async fn assert_direct_push_multi_machine_deploy(core: &CoreContext) {
                 target: DeployRequest {
                     namespace_id: namespace,
                     origin: None,
+                    volumes: BTreeMap::new(),
                     services,
                 },
             })
@@ -1149,7 +1251,7 @@ async fn assert_direct_push_multi_machine_deploy(core: &CoreContext) {
                 seed,
                 manifest_digest,
                 ..
-            } if seed == &receipt.seed && manifest_digest == &receipt.manifest_digest
+            } if seed == &pushed_image.seed && manifest_digest == &pushed_image.manifest_digest
         )));
 
         let mut running = 0_usize;
@@ -1193,9 +1295,9 @@ async fn assert_direct_push_multi_machine_deploy(core: &CoreContext) {
         assert!(
             running_machines
                 .iter()
-                .any(|machine| machine != receipt.seed.as_str()),
+                .any(|machine| machine != pushed_image.seed.as_str()),
             "at least one pushed-image replica must run away from seed {}: {running_machines:?}",
-            receipt.seed.as_str()
+            pushed_image.seed.as_str()
         );
     })
     .await;
@@ -1259,7 +1361,9 @@ exit 1",
                 target: DeployRequest {
                     namespace_id: namespace.clone(),
                     origin: None,
+                    volumes: BTreeMap::new(),
                     services: vec![DeployServiceSpec {
+                        keep: None,
                         service_id: service.clone(),
                         image: requested.clone(),
                         image_source: ployz_core::deploy::ImageSource::Registry,
@@ -2256,7 +2360,9 @@ fn smoke_deploy_target() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("smoke"),
         origin: None,
+        volumes: BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_smoke"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
             image_source: ployz_core::deploy::ImageSource::Registry,
@@ -2279,7 +2385,9 @@ fn auto_hostname_deploy_target() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("auto_https"),
         origin: None,
+        volumes: BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_auto"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
             image_source: ployz_core::deploy::ImageSource::Registry,
@@ -2302,8 +2410,10 @@ fn internal_dns_deploy_target() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("internal_dns"),
         origin: None,
+        volumes: BTreeMap::new(),
         services: vec![
             DeployServiceSpec {
+                keep: None,
                 service_id: service_id("server"),
                 image: ImageReference::try_new(WORKLOAD_IMAGE)
                     .expect("valid workload image reference"),
@@ -2315,6 +2425,7 @@ fn internal_dns_deploy_target() -> DeployRequest {
                 routes: Vec::new(),
             },
             DeployServiceSpec {
+                keep: None,
                 service_id: service_id("client"),
                 image: ImageReference::try_new(WORKLOAD_IMAGE)
                     .expect("valid workload image reference"),
@@ -2333,7 +2444,9 @@ fn runtime_fields_deploy_target(workload_image: &ImageReference) -> DeployReques
     DeployRequest {
         namespace_id: namespace_id("runtime"),
         origin: None,
+        volumes: BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_runtime"),
             image: workload_image.clone(),
             image_source: ployz_core::deploy::ImageSource::Registry,
@@ -2372,6 +2485,7 @@ volumes:
     DeployRequest {
         namespace_id: parsed.namespace_id,
         origin: None,
+        volumes: parsed.volumes,
         services: parsed.services,
     }
 }
@@ -2399,7 +2513,9 @@ fn failing_healthcheck_deploy_target(workload_image: &ImageReference) -> DeployR
     DeployRequest {
         namespace_id: namespace_id("bad_health"),
         origin: None,
+        volumes: BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_bad_health"),
             image: workload_image.clone(),
             image_source: ployz_core::deploy::ImageSource::Registry,
@@ -2441,7 +2557,12 @@ fn pre_start_deploy_target(namespace: &str, hook_command: &str) -> DeployRequest
     DeployRequest {
         namespace_id: namespace_id(namespace),
         origin: None,
+        volumes: BTreeMap::from([(
+            VolumeName::try_new("data").expect("valid volume name"),
+            ployz_core::deploy::VolumeSpec::Plain,
+        )]),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_hooked"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image"),
             image_source: ployz_core::deploy::ImageSource::Registry,
@@ -2504,8 +2625,10 @@ fn depends_on_deploy_target() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("depends_on_order"),
         origin: None,
+        volumes: BTreeMap::new(),
         services: vec![
             DeployServiceSpec {
+                keep: None,
                 service_id: service_id("b"),
                 image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image"),
                 image_source: ployz_core::deploy::ImageSource::Registry,
@@ -2519,6 +2642,7 @@ fn depends_on_deploy_target() -> DeployRequest {
                 routes: Vec::new(),
             },
             DeployServiceSpec {
+                keep: None,
                 service_id: service_id("a"),
                 image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image"),
                 image_source: ployz_core::deploy::ImageSource::Registry,
@@ -2577,7 +2701,9 @@ fn convergence_deploy_target(command: &str) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("converge"),
         origin: None,
+        volumes: BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_converge"),
             image: ImageReference::try_new(WORKLOAD_IMAGE).expect("valid workload image reference"),
             image_source: ployz_core::deploy::ImageSource::Registry,

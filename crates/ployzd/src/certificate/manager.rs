@@ -22,12 +22,36 @@ use super::material::{
 use crate::control::intent::certificate_intent::CertificateIntentStore;
 use crate::control::operation_evidence::{CertOperationSubmission, OperationRepository};
 use crate::control::store::CoreStore;
-use crate::tasks::TaskRegistry;
+use crate::tasks::TaskSpawner;
 
 pub const DEFAULT_ACME_DIRECTORY_URL: &str = "https://acme-v02.api.letsencrypt.org/directory";
 const DNS_TIMEOUT: Duration = Duration::from_secs(10);
 const ISSUE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const CHALLENGE_READINESS_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Clone)]
+enum CertificateTaskOwner {
+    /// Standalone managers leave bounded issuance owned by the current runtime.
+    Runtime,
+    /// The control process admits issuance to its bounded shutdown lifecycle.
+    Control(TaskSpawner),
+}
+
+impl CertificateTaskOwner {
+    fn spawn<Build, Future>(&self, build: Build) -> Result<(), crate::tasks::TaskAdmissionError>
+    where
+        Build: FnOnce() -> Future,
+        Future: std::future::Future<Output = ()> + Send + 'static,
+    {
+        match self {
+            Self::Runtime => {
+                tokio::spawn(build());
+                Ok(())
+            }
+            Self::Control(tasks) => tasks.spawn(build),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CertificateManagerConfig {
@@ -61,7 +85,7 @@ pub struct CertificateManager {
     issuer: Arc<dyn AcmeIssuer>,
     issuance_lock: Arc<tokio::sync::Mutex<()>>,
     now_seconds: Arc<dyn Fn() -> u64 + Send + Sync>,
-    issuance_tasks: TaskRegistry,
+    issuance_tasks: CertificateTaskOwner,
 }
 
 impl std::fmt::Debug for CertificateManager {
@@ -139,13 +163,13 @@ impl CertificateManager {
             // ponytail: global issuance lock; use per-hostname locks if issuance throughput matters.
             issuance_lock: Arc::new(tokio::sync::Mutex::new(())),
             now_seconds,
-            issuance_tasks: TaskRegistry::default(),
+            issuance_tasks: CertificateTaskOwner::Runtime,
         }
     }
 
     #[must_use]
-    pub fn with_task_registry(mut self, tasks: TaskRegistry) -> Self {
-        self.issuance_tasks = tasks;
+    pub fn with_task_spawner(mut self, tasks: TaskSpawner) -> Self {
+        self.issuance_tasks = CertificateTaskOwner::Control(tasks);
         self
     }
 
@@ -304,54 +328,56 @@ impl CertificateManager {
     ) -> Result<ActiveCertState, CertificateProvisionFailure> {
         let manager = self.clone();
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-        self.issuance_tasks.spawn(async move {
-            let _guard = manager.issuance_lock.lock().await;
-            let current = manager
-                .store
-                .active_for_owner(&owner)
-                .await
-                .map_err(active_commit_without_attempt);
-            let result = match (current, request) {
-                (Err(error), _) => Err(error),
-                (Ok(current), IssueRequest::Ensure { owner_operation_id }) => {
-                    let reusable = current.as_ref().and_then(|metadata| {
-                        let active = &metadata.active;
-                        if !active.is_usable_at((manager.now_seconds)()) {
-                            return None;
-                        }
-                        load_custom_certificate(&manager.state_dir, active)
-                            .ok()
-                            .map(|bundle| (active.clone(), bundle))
-                    });
-                    match reusable {
-                        Some((active, bundle)) => manager
-                            .push_bundle(&owner_operation_id, &targets, &bundle)
-                            .await
-                            .map(|()| active),
-                        None => {
-                            manager
-                                .issue_inner(owner, &hostname, &targets, preflight, current)
+        self.issuance_tasks
+            .spawn(|| async move {
+                let _guard = manager.issuance_lock.lock().await;
+                let current = manager
+                    .store
+                    .active_for_owner(&owner)
+                    .await
+                    .map_err(active_commit_without_attempt);
+                let result = match (current, request) {
+                    (Err(error), _) => Err(error),
+                    (Ok(current), IssueRequest::Ensure { owner_operation_id }) => {
+                        let reusable = current.as_ref().and_then(|metadata| {
+                            let active = &metadata.active;
+                            if !active.is_usable_at((manager.now_seconds)()) {
+                                return None;
+                            }
+                            load_custom_certificate(&manager.state_dir, active)
+                                .ok()
+                                .map(|bundle| (active.clone(), bundle))
+                        });
+                        match reusable {
+                            Some((active, bundle)) => manager
+                                .push_bundle(&owner_operation_id, &targets, &bundle)
                                 .await
+                                .map(|()| active),
+                            None => {
+                                manager
+                                    .issue_inner(owner, &hostname, &targets, preflight, current)
+                                    .await
+                            }
                         }
                     }
-                }
-                (Ok(Some(current)), IssueRequest::Renew(expected)) if current != expected => {
-                    Ok(current.active)
-                }
-                (Ok(current), IssueRequest::Renew(expected)) => {
-                    manager
-                        .issue_inner(
-                            owner,
-                            &hostname,
-                            &targets,
-                            preflight,
-                            current.or(Some(expected)),
-                        )
-                        .await
-                }
-            };
-            let _ = result_tx.send(result);
-        });
+                    (Ok(Some(current)), IssueRequest::Renew(expected)) if current != expected => {
+                        Ok(current.active)
+                    }
+                    (Ok(current), IssueRequest::Renew(expected)) => {
+                        manager
+                            .issue_inner(
+                                owner,
+                                &hostname,
+                                &targets,
+                                preflight,
+                                current.or(Some(expected)),
+                            )
+                            .await
+                    }
+                };
+                let _ = result_tx.send(result);
+            })
+            .map_err(active_commit_without_attempt)?;
         result_rx.await.map_err(active_commit_without_attempt)?
     }
 

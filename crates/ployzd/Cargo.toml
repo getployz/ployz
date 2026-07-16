@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 async-nats = { version = "0.49.0", default-features = false, features = ["service"] }
+atomic-write-file.workspace = true
 bollard = { version = "0.21.0", default-features = false, features = ["pipe"] }
 clap.workspace = true
 defguard_wireguard_rs.workspace = true

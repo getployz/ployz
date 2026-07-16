@@ -26,6 +26,7 @@ use super::deploy::{DeployEvent, DeployEvidence, DeployTransition};
 use super::ingress_configure::{IngressConfigureEvent, IngressConfigureTransition};
 use super::machine_add::MachineAddEvent;
 use super::machine_lifecycle::{MachineLifecycleEvent, MachineLifecycleTransition};
+use super::machine_storage_prepare::{MachineStoragePrepareEvent, MachineStoragePrepareTransition};
 use super::machine_update::{MachineUpdateEvent, MachineUpdateTransition};
 use super::managed_dns_reconcile::{ManagedDnsReconcileEvent, ManagedDnsReconcileTransition};
 use super::namespace_remove::{NamespaceRemoveEvent, NamespaceRemoveTransition};
@@ -36,10 +37,10 @@ use super::volume_remove::{VolumeRemoveEvent, VolumeRemoveTransition};
 use super::{
     CertOperationFailure, CertRunningStage, DeployCleanupFailure, DeployCompletionOutcome,
     DeployOperationFailure, DeployPhaseOutcome, DeployRunningStage, DeployServiceResult,
-    MachineAddOperationState, MachineLifecycleFailure, MachineSubstrateVersions,
-    MachineUpdateFailure, NamespaceRemoveFailure, NamespaceRemoveRunningStage,
-    NetworkRepairFailure, NetworkRepairRunningStage, OperationKind, RouteTarget,
-    ServiceRestartFailure, ServiceRestartRunningStage, VolumeRemoveFailure,
+    MachineAddOperationState, MachineLifecycleFailure, MachineStoragePrepareFailure,
+    MachineSubstrateVersions, MachineUpdateFailure, NamespaceRemoveFailure,
+    NamespaceRemoveRunningStage, NetworkRepairFailure, NetworkRepairRunningStage, OperationKind,
+    RouteTarget, ServiceRestartFailure, ServiceRestartRunningStage, VolumeRemoveFailure,
     VolumeRemoveRunningStage,
 };
 
@@ -57,6 +58,9 @@ pub enum OperationSubject {
         machine_id: MachineId,
     },
     MachineUpdate {
+        machine_id: MachineId,
+    },
+    MachineStoragePrepare {
         machine_id: MachineId,
     },
     CoreReplace {
@@ -117,6 +121,7 @@ pub enum OperationEvent {
         operation_id: OperationId,
         service_id: ServiceId,
         seed: MachineId,
+        platform: crate::image::OciPlatform,
         manifest_digest: OciDigest,
     },
     DeployContainerStarted {
@@ -142,6 +147,8 @@ pub enum OperationEvent {
         operation_id: OperationId,
         removed: Vec<DeployCleanupContainer>,
         failed: Vec<DeployCleanupFailure>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<super::deploy::DeployImageCleanup>,
     },
     DeployCompleted {
         operation_id: OperationId,
@@ -223,6 +230,26 @@ pub enum OperationEvent {
         operation_id: OperationId,
         machine_id: MachineId,
         failure: MachineUpdateFailure,
+    },
+    MachineStoragePrepareSubmitted {
+        operation_id: OperationId,
+        machine_id: MachineId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        requested_pool: Option<crate::deploy::ZfsPoolName>,
+    },
+    MachineStoragePreparePreparing {
+        operation_id: OperationId,
+        machine_id: MachineId,
+    },
+    MachineStoragePrepareCompleted {
+        operation_id: OperationId,
+        machine_id: MachineId,
+        pool: crate::deploy::ZfsPoolName,
+    },
+    MachineStoragePrepareFailed {
+        operation_id: OperationId,
+        machine_id: MachineId,
+        failure: MachineStoragePrepareFailure,
     },
     MachineLifecycleSubmitted {
         operation_id: OperationId,
@@ -377,6 +404,10 @@ pub enum OperationEvent {
         operation_id: OperationId,
         failure: VolumeRemoveFailure,
     },
+    OperationInterrupted {
+        operation_id: OperationId,
+        evidence: super::OperationInterruptionEvidence,
+    },
     Cancelled {
         operation_id: OperationId,
         kind: OperationKind,
@@ -416,6 +447,10 @@ impl OperationEvent {
             | Self::MachineUpdateRunning { operation_id, .. }
             | Self::MachineUpdateCompleted { operation_id, .. }
             | Self::MachineUpdateFailed { operation_id, .. }
+            | Self::MachineStoragePrepareSubmitted { operation_id, .. }
+            | Self::MachineStoragePreparePreparing { operation_id, .. }
+            | Self::MachineStoragePrepareCompleted { operation_id, .. }
+            | Self::MachineStoragePrepareFailed { operation_id, .. }
             | Self::MachineLifecycleSubmitted { operation_id, .. }
             | Self::MachineLifecycleCompleted { operation_id, .. }
             | Self::MachineLifecycleFailed { operation_id, .. }
@@ -453,6 +488,7 @@ impl OperationEvent {
             | Self::VolumeRemoveRunning { operation_id, .. }
             | Self::VolumeRemoveCompleted { operation_id }
             | Self::VolumeRemoveFailed { operation_id, .. }
+            | Self::OperationInterrupted { operation_id, .. }
             | Self::Cancelled { operation_id, .. } => operation_id,
         }
     }
@@ -501,6 +537,10 @@ impl OperationEvent {
             | Self::MachineUpdateRunning { .. }
             | Self::MachineUpdateCompleted { .. }
             | Self::MachineUpdateFailed { .. }
+            | Self::MachineStoragePrepareSubmitted { .. }
+            | Self::MachineStoragePreparePreparing { .. }
+            | Self::MachineStoragePrepareCompleted { .. }
+            | Self::MachineStoragePrepareFailed { .. }
             | Self::MachineLifecycleSubmitted { .. }
             | Self::MachineLifecycleCompleted { .. }
             | Self::MachineLifecycleFailed { .. }
@@ -535,6 +575,7 @@ impl OperationEvent {
             | Self::VolumeRemoveRunning { .. }
             | Self::VolumeRemoveCompleted { .. }
             | Self::VolumeRemoveFailed { .. }
+            | Self::OperationInterrupted { .. }
             | Self::Cancelled { .. } => None,
         }
     }
@@ -564,11 +605,13 @@ impl OperationEvent {
             Self::DeployImageAvailabilityVerified {
                 service_id,
                 seed,
+                platform,
                 manifest_digest,
                 ..
             } => Some(DeployEvidence::ImageAvailabilityVerified {
                 service_id: service_id.clone(),
                 seed: seed.clone(),
+                platform: platform.clone(),
                 manifest_digest: manifest_digest.clone(),
             }),
             Self::DeployContainerStarted {
@@ -597,10 +640,14 @@ impl OperationEvent {
                 services: services.clone(),
             }),
             Self::DeployCleanupFinished {
-                removed, failed, ..
+                removed,
+                failed,
+                images,
+                ..
             } => Some(DeployEvidence::CleanupFinished {
                 removed: removed.clone(),
                 failed: failed.clone(),
+                images: images.clone(),
             }),
             Self::DeploySubmitted { .. }
             | Self::DeployPlanningStarted { .. }
@@ -622,6 +669,10 @@ impl OperationEvent {
             | Self::MachineUpdateRunning { .. }
             | Self::MachineUpdateCompleted { .. }
             | Self::MachineUpdateFailed { .. }
+            | Self::MachineStoragePrepareSubmitted { .. }
+            | Self::MachineStoragePreparePreparing { .. }
+            | Self::MachineStoragePrepareCompleted { .. }
+            | Self::MachineStoragePrepareFailed { .. }
             | Self::MachineLifecycleSubmitted { .. }
             | Self::MachineLifecycleCompleted { .. }
             | Self::MachineLifecycleFailed { .. }
@@ -659,6 +710,7 @@ impl OperationEvent {
             | Self::VolumeRemoveRunning { .. }
             | Self::VolumeRemoveCompleted { .. }
             | Self::VolumeRemoveFailed { .. }
+            | Self::OperationInterrupted { .. }
             | Self::Cancelled { .. } => None,
         }
     }
@@ -672,6 +724,7 @@ pub enum OperationSubjectRef {
     Cert(CertId),
     MachineAdd(MachineId),
     MachineUpdate(MachineId),
+    MachineStoragePrepare(MachineId),
     MachineLifecycle(MachineId),
     CoreReplace(MachineId),
     CredentialGrant,
@@ -695,6 +748,10 @@ pub(super) enum ClassifiedOperationEvent {
     MachineUpdate {
         operation_id: OperationId,
         event: MachineUpdateEvent,
+    },
+    MachineStoragePrepare {
+        operation_id: OperationId,
+        event: MachineStoragePrepareEvent,
     },
     MachineLifecycle {
         operation_id: OperationId,
@@ -732,6 +789,10 @@ pub(super) enum ClassifiedOperationEvent {
         operation_id: OperationId,
         event: VolumeRemoveEvent,
     },
+    OperationInterrupted {
+        operation_id: OperationId,
+        evidence: super::OperationInterruptionEvidence,
+    },
 }
 
 impl ClassifiedOperationEvent {
@@ -741,6 +802,7 @@ impl ClassifiedOperationEvent {
             | Self::Cert { operation_id, .. }
             | Self::MachineAdd { operation_id, .. }
             | Self::MachineUpdate { operation_id, .. }
+            | Self::MachineStoragePrepare { operation_id, .. }
             | Self::MachineLifecycle { operation_id, .. }
             | Self::CoreReplace { operation_id, .. }
             | Self::CredentialGrant { operation_id, .. }
@@ -749,7 +811,8 @@ impl ClassifiedOperationEvent {
             | Self::ManagedDnsReconcile { operation_id, .. }
             | Self::IngressConfigure { operation_id, .. }
             | Self::NamespaceRemove { operation_id, .. } => operation_id,
-            Self::VolumeRemove { operation_id, .. } => operation_id,
+            Self::VolumeRemove { operation_id, .. }
+            | Self::OperationInterrupted { operation_id, .. } => operation_id,
         }
     }
 }
@@ -799,12 +862,14 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 service_id,
                 seed,
+                platform,
                 manifest_digest,
             } => Self::Deploy {
                 operation_id,
                 event: DeployEvent::Evidence(DeployEvidence::ImageAvailabilityVerified {
                     service_id,
                     seed,
+                    platform,
                     manifest_digest,
                 }),
             },
@@ -848,9 +913,14 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 removed,
                 failed,
+                images,
             } => Self::Deploy {
                 operation_id,
-                event: DeployEvent::Evidence(DeployEvidence::CleanupFinished { removed, failed }),
+                event: DeployEvent::Evidence(DeployEvidence::CleanupFinished {
+                    removed,
+                    failed,
+                    images,
+                }),
             },
             OperationEvent::DeployCompleted {
                 operation_id,
@@ -1012,6 +1082,46 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 event: MachineUpdateEvent::Transition {
                     machine_id,
                     transition: MachineUpdateTransition::Failed { failure },
+                },
+            },
+            OperationEvent::MachineStoragePrepareSubmitted {
+                operation_id,
+                machine_id,
+                ..
+            } => Self::MachineStoragePrepare {
+                operation_id,
+                event: MachineStoragePrepareEvent::Submitted { machine_id },
+            },
+            OperationEvent::MachineStoragePreparePreparing {
+                operation_id,
+                machine_id,
+            } => Self::MachineStoragePrepare {
+                operation_id,
+                event: MachineStoragePrepareEvent::Transition {
+                    machine_id,
+                    transition: MachineStoragePrepareTransition::Preparing,
+                },
+            },
+            OperationEvent::MachineStoragePrepareCompleted {
+                operation_id,
+                machine_id,
+                pool,
+            } => Self::MachineStoragePrepare {
+                operation_id,
+                event: MachineStoragePrepareEvent::Transition {
+                    machine_id,
+                    transition: MachineStoragePrepareTransition::Completed { pool },
+                },
+            },
+            OperationEvent::MachineStoragePrepareFailed {
+                operation_id,
+                machine_id,
+                failure,
+            } => Self::MachineStoragePrepare {
+                operation_id,
+                event: MachineStoragePrepareEvent::Transition {
+                    machine_id,
+                    transition: MachineStoragePrepareTransition::Failed { failure },
                 },
             },
             OperationEvent::MachineLifecycleSubmitted {
@@ -1312,6 +1422,13 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 operation_id,
                 event: VolumeRemoveEvent::Transition(VolumeRemoveTransition::Failed { failure }),
             },
+            OperationEvent::OperationInterrupted {
+                operation_id,
+                evidence,
+            } => Self::OperationInterrupted {
+                operation_id,
+                evidence,
+            },
             OperationEvent::Cancelled {
                 operation_id,
                 kind,
@@ -1332,6 +1449,10 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 OperationKind::MachineUpdate => Self::MachineUpdate {
                     operation_id,
                     event: MachineUpdateEvent::Cancelled(reason),
+                },
+                OperationKind::MachineStoragePrepare => Self::MachineStoragePrepare {
+                    operation_id,
+                    event: MachineStoragePrepareEvent::Cancelled(reason),
                 },
                 OperationKind::MachineLifecycle => Self::MachineLifecycle {
                     operation_id,

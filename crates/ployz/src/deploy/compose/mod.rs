@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
-use ployz_core::deploy::{DependencyCondition, DeployServiceSpec};
+use ployz_core::deploy::{DependencyCondition, DeployRequest};
 use ployz_core::ids::NamespaceId;
 use serde_yaml::Value;
 
@@ -19,7 +19,7 @@ use self::diagnostics::{ComposeDiagnostics, ComposeFinding, ComposePath, KnownUn
 use self::interpolate::{InterpolationFindingKind, apply_merge, interpolate_value};
 use self::model::{ComposeDocument, ComposeService};
 use self::translate::{ServiceTranslateInput, classify_service};
-use self::volumes::validate_top_level_volumes;
+use self::volumes::parse_top_level_volumes;
 use crate::commands::{PloyzctlCliError, cli_error};
 
 pub struct ComposeInput<'a> {
@@ -34,7 +34,7 @@ pub fn parse_compose_file(
     file: &Path,
     namespace_override: Option<NamespaceId>,
     mode: UnsupportedFieldMode,
-) -> Result<(ParsedComposeDeploy, Vec<RenderedWarning>), PloyzctlCliError> {
+) -> Result<(DeployRequest, Vec<RenderedWarning>), PloyzctlCliError> {
     let source = fs::read_to_string(file)
         .map_err(|error| cli_error(format!("could not read {}: {error}", file.display())))?;
     let base_dir = file.parent().unwrap_or_else(|| Path::new("."));
@@ -49,7 +49,7 @@ pub fn parse_compose_file(
 
 pub fn parse_deploy_file(
     input: ComposeInput<'_>,
-) -> Result<(ParsedComposeDeploy, Vec<RenderedWarning>), PloyzctlCliError> {
+) -> Result<(DeployRequest, Vec<RenderedWarning>), PloyzctlCliError> {
     let ComposeInput {
         source,
         base_dir,
@@ -91,7 +91,7 @@ pub fn parse_deploy_file(
             "version is obsolete compose metadata; ignored",
         ));
     }
-    validate_top_level_volumes(volumes, &mut findings);
+    let declared_volumes = parse_top_level_volumes(volumes, &mut findings);
     let top_level_unsupported = [
         ("networks", networks, KnownUnsupported::TopLevelNetworks),
         ("secrets", secrets, KnownUnsupported::Secrets),
@@ -210,6 +210,22 @@ pub fn parse_deploy_file(
         }
     }
 
+    let mounted_volume_names = deploy_services
+        .iter()
+        .flat_map(|service| &service.runtime.volume_mounts)
+        .map(|mount| mount.volume_name.clone())
+        .collect::<BTreeSet<_>>();
+    for volume_name in declared_volumes.keys() {
+        if !mounted_volume_names.contains(volume_name) {
+            findings.push(ComposeFinding::advisory(
+                ComposePath::root()
+                    .field("volumes")
+                    .field(volume_name.as_str()),
+                "declared volume is not mounted and will not be created",
+            ));
+        }
+    }
+
     let diagnostics = ComposeDiagnostics::new(findings);
     let warnings =
         diagnostics
@@ -227,13 +243,14 @@ pub fn parse_deploy_file(
             "compose file must define at least one valid service",
         ));
     }
-    Ok((
-        ParsedComposeDeploy {
-            namespace_id,
-            services: deploy_services,
-        },
-        warnings,
-    ))
+    let mut request = DeployRequest {
+        namespace_id,
+        origin: None,
+        volumes: declared_volumes,
+        services: deploy_services,
+    };
+    request.synthesize_plain_volume_declarations();
+    Ok((request, warnings))
 }
 
 fn interpolation_findings(
@@ -268,12 +285,6 @@ fn path_from_interpolation(path: &str) -> ComposePath {
     }
     path.split('.')
         .fold(ComposePath::root(), |path, field| path.field(field))
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParsedComposeDeploy {
-    pub namespace_id: NamespaceId,
-    pub services: Vec<DeployServiceSpec>,
 }
 
 pub(crate) fn interpolation_env(
@@ -345,6 +356,32 @@ mod tests {
 
         assert_eq!(parsed.services.len(), 1);
         assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn provisioned_volume_rejects_a_zero_max_size() {
+        let error = parse_deploy_file(ComposeInput {
+            source: r#"
+            name: default
+            volumes:
+              data:
+                x-ployz:
+                  max-size: 0
+            services:
+              web:
+                image: nginx
+                volumes: [data:/data]
+            "#,
+            base_dir: Path::new("."),
+            interpolation_env: BTreeMap::new(),
+            namespace_override: None,
+            mode: UnsupportedFieldMode::Strict,
+        })
+        .expect_err("zero volume size rejects");
+
+        let rendered = error.to_string();
+        assert!(rendered.contains("volumes.data.x-ployz.max-size"));
+        assert!(rendered.contains("greater than zero"));
     }
 
     #[test]

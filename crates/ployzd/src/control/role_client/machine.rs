@@ -15,7 +15,9 @@ use crate::roles::machine::protocol::{
     MachineFactsGetRpcRequest, MachineFactsRefreshDomainError, MachineFactsRefreshRpcOk,
     MachineFactsRefreshRpcRequest, MachineLogsTailDomainError, MachineLogsTailResult,
     MachineLogsTailRpcOk, MachineLogsTailRpcRequest, MachineRpcResponder, MachineRpcResponse,
-    MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
+    MachineStoragePrepareDomainError, MachineStoragePrepareReportRpcOk,
+    MachineStoragePrepareReportRpcRequest, MachineStoragePrepareRpcOk,
+    MachineStoragePrepareRpcRequest, MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
     MachineSubstrateUpdateDomainError, MachineSubstrateUpdateRpcOk,
     MachineSubstrateUpdateRpcRequest, MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk,
     MachineVolumeRemoveRpcRequest,
@@ -23,7 +25,9 @@ use crate::roles::machine::protocol::{
 use futures_util::{StreamExt, stream};
 use ployz_core::deploy::VolumeName;
 use ployz_core::ids::{MachineId, NamespaceId, OperationId};
-use ployz_core::image::{ImageEnsureOk, ImageEnsureRequest, ImageRpcDomainError};
+use ployz_core::image::{
+    ImageEnsureOk, ImageEnsureRequest, ImageRemoveOk, ImageRemoveRequest, ImageRpcDomainError,
+};
 use ployz_core::machine::MachineLifecycle;
 use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::network::{MachineDataplaneStatus, NetworkStatusMode};
@@ -78,6 +82,18 @@ pub enum MachineImageEnsureError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineImageRemoveError {
+    Domain {
+        machine_id: MachineId,
+        error: ployz_core::image::ImageRemoveDomainError,
+    },
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MachineImageResolveError {
     Rejected {
         machine_id: MachineId,
@@ -98,6 +114,18 @@ pub enum MachineSubstrateUpdateError {
     UpdateFailed {
         machine_id: MachineId,
         message: ployz_core::operation::FailureMessage,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineStoragePrepareError {
+    Unavailable {
+        machine_id: MachineId,
+        reason: MachineRuntimeUnavailableReason,
+    },
+    PreparationFailed {
+        machine_id: MachineId,
+        failure: ployz_core::storage::StorageEffectFailure,
     },
 }
 
@@ -183,6 +211,7 @@ pub enum MachineVolumeRemoveError {
 
 /// Outcome of one machine RPC round trip: either the machine answered with a typed
 /// domain error, or the call never produced a usable answer.
+#[derive(Debug)]
 pub(crate) enum MachineCallError<E> {
     Unavailable(MachineRuntimeUnavailableReason),
     Domain(E),
@@ -328,8 +357,12 @@ impl NatsMachineFactsReader {
 pub(crate) struct MachinePlacementFacts {
     pub machine_id: MachineId,
     pub lifecycle: MachineLifecycle,
-    pub containers: Option<MachineContainerObservationSnapshot>,
-    pub platform: Option<ployz_core::image::OciPlatform>,
+    pub answer: Option<MachinePlacementFactsAnswer>,
+}
+
+pub(crate) struct MachinePlacementFactsAnswer {
+    pub containers: MachineContainerObservationSnapshot,
+    pub platform: ployz_core::image::OciPlatform,
     pub endpoints: Option<ployz_core::machine::MachineEndpointObservation>,
 }
 
@@ -339,13 +372,19 @@ pub(crate) async fn read_machine_placement_facts(
 ) -> Vec<MachinePlacementFacts> {
     let mut reads = stream::iter(machine_lifecycles)
         .map(|(machine_id, lifecycle)| async move {
-            let facts = facts_reader.machine_facts(&machine_id).await.ok();
+            let answer = facts_reader
+                .machine_facts(&machine_id)
+                .await
+                .ok()
+                .map(|facts| MachinePlacementFactsAnswer {
+                    containers: facts.containers().clone(),
+                    platform: facts.platform().clone(),
+                    endpoints: facts.endpoints().cloned(),
+                });
             MachinePlacementFacts {
                 machine_id,
                 lifecycle,
-                containers: facts.as_ref().map(|facts| facts.containers().clone()),
-                platform: facts.as_ref().map(|facts| facts.platform().clone()),
-                endpoints: facts.and_then(|facts| facts.endpoints().cloned()),
+                answer,
             }
         })
         .buffer_unordered(MAX_CONCURRENT_MACHINE_READS);
@@ -445,6 +484,60 @@ impl NatsMachineSubstrateUpdater {
             },
             MachineCallError::Domain(error) => error.into_runtime_error(machine_id.clone()),
         })
+    }
+
+    pub async fn prepare_storage(
+        &self,
+        machine_id: &MachineId,
+        request: MachineStoragePrepareRpcRequest,
+    ) -> Result<ployz_core::deploy::ZfsPoolName, MachineStoragePrepareError> {
+        call_machine::<MachineStoragePrepareRpcOk, MachineStoragePrepareDomainError>(
+            &self.client,
+            ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT,
+            machine_id,
+            MachineServiceEndpoint::StoragePrepare,
+            &request,
+        )
+        .await
+        .map(|response| response.pool)
+        .map_err(|error| storage_prepare_error(machine_id, error))
+    }
+
+    pub async fn report_storage_prepare(
+        &self,
+        machine_id: &MachineId,
+        operation_id: &OperationId,
+    ) -> Result<Option<ployz_core::deploy::ZfsPoolName>, MachineStoragePrepareError> {
+        call_machine::<MachineStoragePrepareReportRpcOk, MachineStoragePrepareDomainError>(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::StoragePrepareReport,
+            &MachineStoragePrepareReportRpcRequest {
+                operation_id: operation_id.clone(),
+            },
+        )
+        .await
+        .map(|response| response.pool)
+        .map_err(|error| storage_prepare_error(machine_id, error))
+    }
+}
+
+fn storage_prepare_error(
+    machine_id: &MachineId,
+    error: MachineCallError<MachineStoragePrepareDomainError>,
+) -> MachineStoragePrepareError {
+    match error {
+        MachineCallError::Unavailable(reason) => MachineStoragePrepareError::Unavailable {
+            machine_id: machine_id.clone(),
+            reason,
+        },
+        MachineCallError::Domain(MachineStoragePrepareDomainError::PreparationFailed {
+            failure,
+        }) => MachineStoragePrepareError::PreparationFailed {
+            machine_id: machine_id.clone(),
+            failure,
+        },
     }
 }
 
@@ -593,6 +686,21 @@ impl NatsMachineContainerRuntime {
             self.request_timeout,
             machine_id,
             MachineServiceEndpoint::ImageEnsure,
+            request,
+        )
+        .await
+    }
+
+    pub(crate) async fn request_remove_image(
+        &self,
+        machine_id: &MachineId,
+        request: &ImageRemoveRequest,
+    ) -> Result<ImageRemoveOk, MachineCallError<ployz_core::image::ImageRemoveDomainError>> {
+        call_machine(
+            &self.client,
+            self.request_timeout,
+            machine_id,
+            MachineServiceEndpoint::ImageRemove,
             request,
         )
         .await

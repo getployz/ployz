@@ -29,17 +29,17 @@ pub(crate) async fn execute_deploy(
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
     let config = with_cluster_context_from_disk(config.clone())?;
     let detach = command.detach;
-    let namespace_id = command.namespace_id.clone();
+    let namespace_id = command.target.namespace_id.clone();
     let warnings = command.warnings.join("\n");
     if !warnings.is_empty() {
         eprintln!("{warnings}");
     }
     let connect = nats_connect_config(&config)?;
     let api = operation_api_client_with_connect(&config, connect).await?;
-    let reservation_id = reserve_deploy(&api, command.namespace_id.clone()).await?;
+    let reservation_id = reserve_deploy(&api, command.target.namespace_id.clone()).await?;
     let receipts = crate::deploy::image_push::prepare_deploy_images(
         &api,
-        &mut command.services,
+        &mut command.target.services,
         command.from_registry,
     )
     .await

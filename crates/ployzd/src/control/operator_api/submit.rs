@@ -48,22 +48,31 @@ pub fn owned_operation(
     }
 }
 
-impl From<DeploySubmitRequest> for DeploySubmitCommand {
-    fn from(value: DeploySubmitRequest) -> Self {
-        let DeploySubmitRequest {
-            idempotency_key,
-            reservation_id,
-            target,
-            registry_credentials,
-        } = value;
-        Self {
-            operation_id: mint_deploy_operation_id(),
-            idempotency_key,
-            reservation_id,
-            target,
-            registry_credentials,
-        }
-    }
+fn normalize_deploy_submit(
+    value: DeploySubmitRequest,
+) -> Result<DeploySubmitCommand, DeploySubmitError> {
+    let operation_id = mint_deploy_operation_id();
+    let DeploySubmitRequest {
+        idempotency_key,
+        reservation_id,
+        target,
+        registry_credentials,
+    } = value;
+    let target =
+        ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(target).map_err(|error| {
+            DeploySubmitError::InvalidTarget {
+                operation_id: operation_id.clone(),
+                message: ployz_core::operation::FailureMessage::try_new(error.to_string())
+                    .expect("volume declaration validation error is non-empty"),
+            }
+        })?;
+    Ok(DeploySubmitCommand {
+        operation_id,
+        idempotency_key,
+        reservation_id,
+        target,
+        registry_credentials,
+    })
 }
 
 pub async fn deploy_reserve(
@@ -103,7 +112,7 @@ pub async fn credential_add(
         OperationProgressScope::Cluster,
         accepted.start_sequence,
     );
-    handlers.credential_grant().start(accepted);
+    handlers.credential_grant().start(accepted).await;
     Ok(operation)
 }
 
@@ -127,7 +136,7 @@ pub async fn credential_remove(
         OperationProgressScope::Cluster,
         accepted.start_sequence,
     );
-    handlers.credential_grant().start(accepted);
+    handlers.credential_grant().start(accepted).await;
     Ok(operation)
 }
 
@@ -152,7 +161,7 @@ pub async fn ingress_configure(
         OperationProgressScope::Cluster,
         accepted.start_sequence,
     );
-    handlers.ingress_configure().start(accepted);
+    handlers.ingress_configure().start(accepted).await;
     Ok(operation)
 }
 
@@ -258,11 +267,12 @@ impl From<MachineUpdateRequest> for MachineUpdateSubmitCommand {
 
 pub async fn deploy_submit(
     handlers: &OperationApiHandlers,
-    command: DeploySubmitCommand,
+    request: DeploySubmitRequest,
 ) -> Result<AcceptedOperation, DeploySubmitError> {
+    let command = normalize_deploy_submit(request)?;
     let operation_id = command.operation_id.clone();
-    for service in &command.target.services {
-        validate_internal_dns_name(&command.target.namespace_id, &service.service_id).map_err(
+    for service in command.target.services() {
+        validate_internal_dns_name(command.target.namespace_id(), &service.service_id).map_err(
             |message| DeploySubmitError::InvalidTarget {
                 operation_id: operation_id.clone(),
                 message,
@@ -297,7 +307,7 @@ pub async fn deploy_submit(
         scope,
         accepted.start_sequence,
     );
-    handlers.deploy_driver.start(accepted_execution);
+    handlers.deploy_driver.start(accepted_execution).await;
 
     Ok(operation)
 }
@@ -319,10 +329,9 @@ fn validate_internal_dns_name(
 }
 
 fn validate_registry_credentials(command: &DeploySubmitCommand) -> Result<(), DeploySubmitError> {
+    let services = command.target.services();
     for service_id in command.registry_credentials.keys() {
-        let Some(service) = command
-            .target
-            .services
+        let Some(service) = services
             .iter()
             .find(|service| service.service_id == *service_id)
         else {
@@ -341,11 +350,8 @@ fn validate_registry_credentials(command: &DeploySubmitCommand) -> Result<(), De
         }
     }
 
-    for service in &command.target.services {
-        let ImageSource::PushedToSeed {
-            manifest_digest, ..
-        } = &service.image_source
-        else {
+    for service in command.target.services() {
+        let ImageSource::PushedToSeed(receipt) = &service.image_source else {
             continue;
         };
         let Some(pinned_digest) = service.image.pinned_digest() else {
@@ -355,11 +361,11 @@ fn validate_registry_credentials(command: &DeploySubmitCommand) -> Result<(), De
                 "must be digest-pinned",
             ));
         };
-        if &pinned_digest != manifest_digest {
+        if &pinned_digest != receipt.index_digest() {
             return Err(invalid_pushed_image(
                 command,
                 service,
-                "digest must match its pushed manifest digest",
+                "digest must match its pushed index digest",
             ));
         }
     }
@@ -400,14 +406,16 @@ async fn validate_pushed_image_seeds(
     handlers: &OperationApiHandlers,
     command: &DeploySubmitCommand,
 ) -> Result<(), DeploySubmitError> {
-    let seeds = command.target.services.iter().filter_map(|service| {
-        let ImageSource::PushedToSeed { seed, .. } = &service.image_source else {
-            return None;
+    let services = command.target.services();
+    let mut seeds = std::collections::BTreeSet::new();
+    for service in services {
+        let ImageSource::PushedToSeed(receipt) = &service.image_source else {
+            continue;
         };
-        Some(seed)
-    });
+        seeds.extend(receipt.platforms().map(|(_, image)| image.seed.clone()));
+    }
 
-    for seed in seeds {
+    for seed in &seeds {
         let active = handlers
             .machine_roster
             .active_machine(seed)
@@ -492,7 +500,7 @@ pub async fn service_restart(
         },
         accepted.start_sequence,
     );
-    handlers.service_restart().start(accepted);
+    handlers.service_restart().start(accepted).await;
     Ok(operation)
 }
 
@@ -557,7 +565,7 @@ pub async fn network_repair(
         OperationProgressScope::Cluster,
         accepted.start_sequence,
     );
-    handlers.network_repair().start(accepted);
+    handlers.network_repair().start(accepted).await;
     Ok(operation)
 }
 
@@ -623,7 +631,7 @@ pub async fn namespace_remove(
         },
         accepted.start_sequence,
     );
-    handlers.namespace_remove().start(accepted);
+    handlers.namespace_remove().start(accepted).await;
     Ok(operation)
 }
 
@@ -669,7 +677,7 @@ pub async fn volume_remove(
         },
         accepted.start_sequence,
     );
-    handlers.volume_remove().start(accepted);
+    handlers.volume_remove().start(accepted).await;
     Ok(operation)
 }
 
@@ -718,11 +726,14 @@ pub async fn machine_add(
                 message: "machine-add accepted raw join token is invalid".to_owned(),
             }
         })?;
-    handlers.machine_mint.start(MintRequest {
-        operation_id: accepted.operation_id.clone(),
-        machine_id: accepted.identity.machine_id.clone(),
-        idempotency_key,
-    });
+    handlers
+        .machine_mint
+        .start(MintRequest {
+            operation_id: accepted.operation_id.clone(),
+            machine_id: accepted.identity.machine_id.clone(),
+            idempotency_key,
+        })
+        .await;
     tokio::spawn({
         let handlers = handlers.clone();
         async move {
@@ -776,6 +787,28 @@ pub async fn machine_update(
         .submit_machine_update(request.into())
         .await
         .map_err(|error| {
+            let error = match error {
+                crate::control::sequencer::SubmitCommandError::MachineSubstrateBusy {
+                    machine_id,
+                    owner,
+                } => {
+                    return MachineUpdateError::MachineSubstrateBusy {
+                        operation_id: operation_id.clone(),
+                        machine_id,
+                        owner_operation_id: owner,
+                    };
+                }
+                error @ crate::control::sequencer::SubmitCommandError::Clock { .. }
+                | error @ crate::control::sequencer::SubmitCommandError::NamespaceBusy { .. }
+                | error @ crate::control::sequencer::SubmitCommandError::IngressBusy { .. }
+                | error @ crate::control::sequencer::SubmitCommandError::ReservationNotFound {
+                    ..
+                }
+                | error @ crate::control::sequencer::SubmitCommandError::ReservationExpired {
+                    ..
+                }
+                | error @ crate::control::sequencer::SubmitCommandError::Submit(_) => error,
+            };
             match super::error_map::unfenced_submit_failure("machine-update", error) {
                 super::error_map::UnfencedSubmitFailure::Unavailable { message } => {
                     MachineUpdateError::Unavailable {
@@ -796,7 +829,7 @@ pub async fn machine_update(
         &accepted.machine_id,
         accepted.start_sequence,
     );
-    handlers.machine_update().start(accepted);
+    handlers.machine_update().start(accepted).await;
 
     Ok(operation)
 }
@@ -876,7 +909,7 @@ async fn machine_lifecycle(
         &accepted.machine_id,
         accepted.start_sequence,
     );
-    handlers.machine_lifecycle().start(accepted);
+    handlers.machine_lifecycle().start(accepted).await;
 
     Ok(operation)
 }
@@ -934,7 +967,7 @@ pub async fn core_replace(
 }
 
 #[must_use]
-fn owned_machine_operation(
+pub(super) fn owned_machine_operation(
     operation_id: OperationId,
     machine_id: &MachineId,
     start_sequence: EventSequence,

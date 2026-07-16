@@ -116,8 +116,12 @@ pub fn namespace_revision_entry_id_for(
     hash_frame(&mut hasher, "image", image.as_str().as_bytes());
     match image_source {
         ImageSource::Registry => {}
-        ImageSource::PushedToSeed { image_id, .. } => {
-            hash_frame(&mut hasher, "image_id", image_id.as_str().as_bytes());
+        ImageSource::PushedToSeed(receipt) => {
+            hash_frame(
+                &mut hasher,
+                "index_digest",
+                receipt.index_digest().as_str().as_bytes(),
+            );
         }
     }
     hash_runtime_spec(&mut hasher, runtime);

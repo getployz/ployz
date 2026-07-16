@@ -12,7 +12,10 @@ use super::projection::{
 };
 use super::text::CancellationReason;
 use super::text::FailureMessage;
-use super::{EventSequence, OperationKind, OperationStatus};
+use super::{
+    EventSequence, OperationInterruptionCause, OperationInterruptionEvidence,
+    OperationInterruptionStage, OperationKind, OperationStatus,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -26,18 +29,46 @@ pub enum VolumeRemoveRunningStage {
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VolumeRemoveOperationState {
     Accepted,
-    Running { stage: VolumeRemoveRunningStage },
+    Running {
+        stage: VolumeRemoveRunningStage,
+    },
     Completed,
-    Failed { failure: VolumeRemoveFailure },
+    Failed {
+        failure: VolumeRemoveFailure,
+    },
+    Interrupted {
+        evidence: OperationInterruptionEvidence,
+    },
 }
 
 impl VolumeRemoveOperationState {
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
-            Self::Completed | Self::Failed { .. } => true,
+            Self::Completed | Self::Failed { .. } | Self::Interrupted { .. } => true,
             Self::Accepted | Self::Running { .. } => false,
         }
+    }
+
+    pub(super) fn interruption_evidence(
+        &self,
+        cause: OperationInterruptionCause,
+    ) -> Option<OperationInterruptionEvidence> {
+        let last_durable_stage = match self {
+            Self::Accepted => OperationInterruptionStage::VolumeRemoveAccepted,
+            Self::Running { stage } => {
+                OperationInterruptionStage::VolumeRemoveRunning { stage: *stage }
+            }
+            Self::Completed | Self::Failed { .. } | Self::Interrupted { .. } => return None,
+        };
+        Some(OperationInterruptionEvidence::new(
+            cause,
+            last_durable_stage,
+        ))
+    }
+
+    pub(super) const fn interrupted(evidence: OperationInterruptionEvidence) -> Self {
+        Self::Interrupted { evidence }
     }
 }
 
@@ -200,17 +231,21 @@ fn transition_allowed(
             VolumeRemoveOperationState::Accepted | VolumeRemoveOperationState::Running { .. },
             VolumeRemoveOperationState::Failed { .. },
         ) => true,
-        (
+        (_, VolumeRemoveOperationState::Interrupted { .. })
+        | (
             VolumeRemoveOperationState::Accepted
             | VolumeRemoveOperationState::Running { .. }
             | VolumeRemoveOperationState::Completed
-            | VolumeRemoveOperationState::Failed { .. },
+            | VolumeRemoveOperationState::Failed { .. }
+            | VolumeRemoveOperationState::Interrupted { .. },
             VolumeRemoveOperationState::Accepted
             | VolumeRemoveOperationState::Running { .. }
             | VolumeRemoveOperationState::Completed,
         )
         | (
-            VolumeRemoveOperationState::Completed | VolumeRemoveOperationState::Failed { .. },
+            VolumeRemoveOperationState::Completed
+            | VolumeRemoveOperationState::Failed { .. }
+            | VolumeRemoveOperationState::Interrupted { .. },
             VolumeRemoveOperationState::Failed { .. },
         ) => false,
     }

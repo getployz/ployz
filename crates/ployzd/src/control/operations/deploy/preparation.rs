@@ -1,9 +1,9 @@
 //! Convert current cluster facts into a deploy execution command.
 
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployPreparationInput, DeployRequest, RegistryCredential,
-    auto_hostname_route_binding_commits, namespace_route_binding_removals,
-    namespace_serving_target_removals, prepare_deploy,
+    DeployCleanupContainer, DeployPreparationInput, ExistingReplicaPolicy, RegistryCredential,
+    VolumeDeclaredDeployRequest, auto_hostname_route_binding_commits,
+    namespace_route_binding_removals, namespace_serving_target_removals, prepare_deploy,
 };
 use ployz_core::ids::{MachineId, OperationId, RouteBindingId, ServiceId};
 use ployz_core::image::OciPlatform;
@@ -14,7 +14,7 @@ use ployz_core::machine::runtime::MachineContainerObservationSnapshot;
 use ployz_core::network::DataplaneMember;
 use ployz_core::operation::{RouteHostname, RouteTarget};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use crate::certificate::GatewayCertificateTarget;
@@ -63,24 +63,28 @@ pub struct DeployExecutionFacts {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployExecutionInput {
     pub(super) operation_id: OperationId,
-    pub(super) request: DeployRequest,
+    pub(super) request: VolumeDeclaredDeployRequest,
     pub(super) facts: DeployExecutionFacts,
     pub(super) registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
+    /// Provenance allowed to recover matching unpromoted containers.
+    pub(super) reusable_interrupted_operation_ids: BTreeSet<OperationId>,
 }
 
 impl DeployExecutionInput {
     #[must_use]
     pub fn new(
         operation_id: OperationId,
-        request: DeployRequest,
+        request: VolumeDeclaredDeployRequest,
         facts: DeployExecutionFacts,
         registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
+        reusable_interrupted_operation_ids: BTreeSet<OperationId>,
     ) -> Self {
         Self {
             operation_id,
             request,
             facts,
             registry_credentials,
+            reusable_interrupted_operation_ids,
         }
     }
 
@@ -96,31 +100,35 @@ impl DeployExecutionInput {
 #[cfg(test)]
 pub fn prepare_deploy_execution_command(
     operation_id: OperationId,
-    request: DeployRequest,
+    request: ployz_core::deploy::DeployRequest,
     facts: DeployExecutionFacts,
 ) -> DeployExecutionCommand {
+    let request =
+        VolumeDeclaredDeployRequest::try_new(request).expect("test deploy request validates");
     prepare_deploy_execution_command_with_credentials(
         operation_id,
         request,
         facts,
         &BTreeMap::new(),
+        &BTreeSet::new(),
     )
 }
 
 #[must_use]
 pub(super) fn prepare_deploy_execution_command_with_credentials(
     operation_id: OperationId,
-    request: DeployRequest,
+    request: VolumeDeclaredDeployRequest,
     facts: DeployExecutionFacts,
     registry_credentials: &BTreeMap<ServiceId, RegistryCredential>,
+    reusable_interrupted_operation_ids: &BTreeSet<OperationId>,
 ) -> DeployExecutionCommand {
-    let service_requests = request.service_requests();
-    let mut mint_requests = service_requests.iter().collect::<Vec<_>>();
+    let mut mint_requests = request.services().iter().collect::<Vec<_>>();
     mint_requests.sort_by(|left, right| left.service_id.cmp(&right.service_id));
     let mut declared_auto_bindings = Vec::new();
     let mut occupied_bindings = facts.namespace_route_bindings.clone();
     for service_request in mint_requests {
         let commits = auto_hostname_route_binding_commits(
+            request.namespace_id(),
             service_request,
             facts.automatic_hostname_mode.suffix(),
             &occupied_bindings,
@@ -131,7 +139,7 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         declared_auto_bindings.extend(commits);
     }
     let namespace_declared_targets = request
-        .services
+        .services()
         .iter()
         .flat_map(|service| service.routes.iter())
         .filter_map(|route| route.target.concrete_target())
@@ -142,12 +150,12 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         )
         .collect::<Vec<_>>();
     let declared_services = request
-        .services
+        .services()
         .iter()
         .map(|service| service.service_id.clone())
         .collect::<Vec<_>>();
     let route_binding_removal_targets = namespace_route_binding_removals(
-        &request.namespace_id,
+        request.namespace_id(),
         &namespace_declared_targets,
         &facts.namespace_route_bindings,
     );
@@ -158,7 +166,7 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         .cloned()
         .collect();
     let serving_target_removals = namespace_serving_target_removals(
-        &request.namespace_id,
+        request.namespace_id(),
         &declared_services,
         &facts.namespace_serving_entries,
     );
@@ -173,39 +181,49 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         .map(|unusable| unusable.machine_id.clone())
         .collect::<Vec<_>>();
     let mut services = Vec::new();
-    for service_request in service_requests {
-        let mut prepared = prepare_deploy(
+    for service in request.services() {
+        let is_promoted = facts.namespace_serving_entries.iter().any(|entry| {
+            entry.namespace_id == *request.namespace_id()
+                && entry.service_id == service.service_id
+                && entry.namespace_revision_entry_id
+                    == service.namespace_revision_entry_id(request.namespace_id())
+        });
+        let prepared = prepare_deploy(
             DeployPreparationInput {
-                request: service_request,
+                request: &request,
+                service_id: service.service_id.clone(),
                 occupied_route_bindings: occupied_bindings.clone(),
                 eligible_machines: facts.eligible_machines.clone(),
                 draining_machines: draining_machines.clone(),
                 observed_machines: facts.observed_machines.clone(),
+                existing_replica_policy: if is_promoted {
+                    ExistingReplicaPolicy::Promoted {
+                        interrupted_operation_ids: reusable_interrupted_operation_ids.clone(),
+                    }
+                } else if reusable_interrupted_operation_ids.is_empty() {
+                    ExistingReplicaPolicy::ExcludeUnpromoted
+                } else {
+                    ExistingReplicaPolicy::RecoverInterrupted {
+                        operation_ids: reusable_interrupted_operation_ids.clone(),
+                    }
+                },
             },
             mint_route_binding_id,
         )
         .expect("route bindings were validated while loading deploy facts");
         occupied_bindings.extend(prepared.route_commits.iter().cloned());
-        let is_promoted = facts.namespace_serving_entries.iter().any(|entry| {
-            entry.namespace_id == prepared.request.namespace_id
-                && entry.service_id == prepared.request.service_id
-                && entry.namespace_revision_entry_id == prepared.request.namespace_revision_entry_id
-        });
-        if !is_promoted {
-            prepared.existing_replicas.clear();
-        }
         let mut route_commits = prepared.route_commits;
         route_commits.extend(
             declared_auto_bindings
                 .iter()
-                .filter(|binding| binding.service_id == prepared.request.service_id)
+                .filter(|binding| binding.service_id == prepared.service.service_id)
                 .cloned(),
         );
         services.push(DeployServiceExecutionCommand {
             registry_credential: registry_credentials
-                .get(&prepared.request.service_id)
+                .get(&prepared.service.service_id)
                 .cloned(),
-            request: prepared.request,
+            service: prepared.service,
             route_commits,
             volume_pins: facts.namespace_volume_pins.clone(),
             eligible_machines: prepared.eligible_machines,

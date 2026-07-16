@@ -13,7 +13,10 @@ use super::projection::{
     verify_subject,
 };
 use super::text::{CancellationReason, FailureMessage};
-use super::{EventSequence, OperationStatus};
+use super::{
+    EventSequence, OperationInterruptionCause, OperationInterruptionEvidence,
+    OperationInterruptionStage, OperationStatus,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -21,17 +24,47 @@ use super::{EventSequence, OperationStatus};
 pub enum MachineLifecycleOperationState {
     Accepted,
     Completed,
-    Failed { failure: MachineLifecycleFailure },
-    Cancelled { reason: CancellationReason },
+    Failed {
+        failure: MachineLifecycleFailure,
+    },
+    Cancelled {
+        reason: CancellationReason,
+    },
+    Interrupted {
+        evidence: OperationInterruptionEvidence,
+    },
 }
 
 impl MachineLifecycleOperationState {
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
-            Self::Completed | Self::Failed { .. } | Self::Cancelled { .. } => true,
+            Self::Completed
+            | Self::Failed { .. }
+            | Self::Cancelled { .. }
+            | Self::Interrupted { .. } => true,
             Self::Accepted => false,
         }
+    }
+
+    pub(super) fn interruption_evidence(
+        &self,
+        cause: OperationInterruptionCause,
+    ) -> Option<OperationInterruptionEvidence> {
+        match self {
+            Self::Accepted => Some(OperationInterruptionEvidence::new(
+                cause,
+                OperationInterruptionStage::MachineLifecycleAccepted,
+            )),
+            Self::Completed
+            | Self::Failed { .. }
+            | Self::Cancelled { .. }
+            | Self::Interrupted { .. } => None,
+        }
+    }
+
+    pub(super) const fn interrupted(evidence: OperationInterruptionEvidence) -> Self {
+        Self::Interrupted { evidence }
     }
 }
 
@@ -182,11 +215,13 @@ fn transition_allowed(
             | MachineLifecycleOperationState::Failed { .. }
             | MachineLifecycleOperationState::Cancelled { .. },
         ) => true,
-        (MachineLifecycleOperationState::Accepted, MachineLifecycleOperationState::Accepted)
+        (_, MachineLifecycleOperationState::Interrupted { .. })
+        | (MachineLifecycleOperationState::Accepted, MachineLifecycleOperationState::Accepted)
         | (
             MachineLifecycleOperationState::Completed
             | MachineLifecycleOperationState::Failed { .. }
-            | MachineLifecycleOperationState::Cancelled { .. },
+            | MachineLifecycleOperationState::Cancelled { .. }
+            | MachineLifecycleOperationState::Interrupted { .. },
             _,
         ) => false,
     }

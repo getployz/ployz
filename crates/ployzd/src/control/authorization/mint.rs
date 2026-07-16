@@ -5,12 +5,16 @@ use crate::control::operation_evidence::{
 };
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::MachineJoinSecretDelivery;
-use ployz_core::machine::{MachineAddFailure, MachineCredentialProvisioningStep};
+use ployz_core::machine::{
+    MachineAddFailure, MachineAddInterruptionEvidence, MachineAddInterruptionStage,
+    MachineCredentialProvisioningStep,
+};
 use ployz_core::nats_config::{
     MintedNatsUser, NatsAuthorizationGrant, NatsInternalAuthority, NatsUserSeed,
 };
 use ployz_core::operation::{
-    FailureMessage, MachineAddOperationState, OperationIdempotencyKey, OperationStatus,
+    FailureMessage, MachineAddOperationState, OperationIdempotencyKey, OperationInterruptionCause,
+    OperationStatus,
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::connect::{NatsClientAuth, NatsClientUrl, NatsConnectConfig, NatsTlsTrust};
@@ -18,7 +22,9 @@ use ployz_nats::connect::{NatsClientAuth, NatsClientUrl, NatsConnectConfig, Nats
 use crate::control::sequencer::OperationControllers;
 
 use super::writer::{NatsAuthorizationHandle, RenderFailure};
-use crate::tasks::TaskRegistry;
+use crate::tasks::TaskSpawner;
+
+const MINT_STARTUP_RECOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Where the mint worker test-connects with a freshly minted seed.
 #[derive(Debug, Clone)]
@@ -78,6 +84,18 @@ pub enum MintResumeError {
     ReadSecretDelivery(OperationStatusStoreError),
     #[error("failed to read machine-add status: {0:?}")]
     ReadStatus(OperationStatusStoreError),
+    #[error("failed to read machine-add provisioning stage: {0:?}")]
+    ReadProvisioningStage(OperationStatusStoreError),
+    #[error("failed to record interrupted machine-add mint {}: {message}", .operation_id.as_str())]
+    RecordInterruption {
+        operation_id: OperationId,
+        message: String,
+    },
+    #[error("resumed machine-add mint {} did not record terminal evidence: {message}", .operation_id.as_str())]
+    RecoveryRecordingFailed {
+        operation_id: OperationId,
+        message: String,
+    },
 }
 
 /// Bounded operation work that mints per-machine credentials after a
@@ -88,7 +106,7 @@ pub struct MachineCredentialMint {
     authorization: NatsAuthorizationHandle,
     verify: MintVerifyEndpoint,
     machine_seed_file: PathBuf,
-    tasks: TaskRegistry,
+    tasks: TaskSpawner,
 }
 
 impl MachineCredentialMint {
@@ -98,7 +116,7 @@ impl MachineCredentialMint {
         authorization: NatsAuthorizationHandle,
         verify: MintVerifyEndpoint,
         machine_seed_file: PathBuf,
-        tasks: TaskRegistry,
+        tasks: TaskSpawner,
     ) -> Self {
         Self {
             controllers,
@@ -114,19 +132,41 @@ impl MachineCredentialMint {
         &self.machine_seed_file
     }
 
-    pub fn start(&self, request: MintRequest) {
+    pub async fn start(&self, request: MintRequest) {
+        if self.admit(request.clone()).is_err() {
+            let outcome = self
+                .fail(
+                    &request,
+                    MachineAddFailure::ControlTaskInterrupted {
+                        evidence: MachineAddInterruptionEvidence::new(
+                            OperationInterruptionCause::CoreShutdown,
+                            MachineAddInterruptionStage::Accepted,
+                        ),
+                    },
+                )
+                .await;
+            if let MintOutcome::RecordingFailed { message } = outcome {
+                eprintln!(
+                    "machine-add operation {} task admission failed and terminal evidence could not be recorded: {message}",
+                    request.operation_id.as_str()
+                );
+            }
+        }
+    }
+
+    fn admit(&self, request: MintRequest) -> Result<(), crate::tasks::TaskAdmissionError> {
         let runtime = self.clone();
-        self.tasks.spawn(async move {
+        self.tasks.spawn(|| async move {
             let _outcome = runtime.run(request).await;
-        });
+        })
     }
 
     /// One bounded startup pass owned by control start: a control crash
     /// between machine-add acceptance and material-ready leaves the mint
     /// without a worker. Every accepted, still-pending machine-add that
-    /// lacks a minted-material record gets its mint resumed as owned
-    /// operation work; the per-key mint claim makes the resumed run
-    /// converge on any partially minted material.
+    /// lacks a minted-material record gets its mint completed before startup
+    /// proceeds; the per-key mint claim makes the resumed run converge on any
+    /// partially minted material.
     pub async fn resume_unfinished_mints(&self) -> Result<Vec<MintRequest>, MintResumeError> {
         let submissions = self
             .controllers
@@ -169,10 +209,111 @@ impl MachineCredentialMint {
                 machine_id: submission.identity.machine_id,
                 idempotency_key: submission.idempotency_key,
             };
-            self.start(request.clone());
+            let recovery =
+                tokio::time::timeout(MINT_STARTUP_RECOVERY_TIMEOUT, self.run(request.clone()))
+                    .await;
+            let outcome = match recovery {
+                Ok(outcome) => outcome,
+                Err(_) => {
+                    let last_durable_stage = self
+                        .last_durable_stage(&request.operation_id)
+                        .await
+                        .map_err(MintResumeError::ReadProvisioningStage)?;
+                    self.fail(
+                        &request,
+                        MachineAddFailure::ControlTaskInterrupted {
+                            evidence: MachineAddInterruptionEvidence::new(
+                                OperationInterruptionCause::PriorCoreProcessLoss,
+                                last_durable_stage,
+                            ),
+                        },
+                    )
+                    .await
+                }
+            };
+            if let MintOutcome::RecordingFailed { message } = outcome {
+                return Err(MintResumeError::RecoveryRecordingFailed {
+                    operation_id: request.operation_id,
+                    message,
+                });
+            }
             resumed.push(request);
         }
         Ok(resumed)
+    }
+
+    pub async fn fail_unfinished_mints(&self) -> Result<usize, MintResumeError> {
+        let submissions = self
+            .controllers
+            .repository()
+            .machine_add_submissions()
+            .await
+            .map_err(MintResumeError::ListSubmissions)?;
+        let mut failed = 0;
+        for submission in submissions {
+            let delivered = self
+                .controllers
+                .repository()
+                .machine_add_secret_delivery(&submission.idempotency_key)
+                .await
+                .map_err(MintResumeError::ReadSecretDelivery)?;
+            if delivered.is_some() {
+                continue;
+            }
+            let Some(status) = self
+                .controllers
+                .repository()
+                .get(&submission.operation_id)
+                .await
+                .map_err(MintResumeError::ReadStatus)?
+            else {
+                continue;
+            };
+            let OperationStatus::MachineAdd {
+                state: MachineAddOperationState::Pending { .. },
+                ..
+            } = status
+            else {
+                continue;
+            };
+            let last_durable_stage = self
+                .last_durable_stage(&submission.operation_id)
+                .await
+                .map_err(MintResumeError::ReadProvisioningStage)?;
+            self.controllers
+                .repository()
+                .record_machine_add_failed(
+                    &submission.operation_id,
+                    &submission.identity.machine_id,
+                    MachineAddFailure::ControlTaskInterrupted {
+                        evidence: MachineAddInterruptionEvidence::new(
+                            OperationInterruptionCause::CoreShutdown,
+                            last_durable_stage,
+                        ),
+                    },
+                )
+                .await
+                .map_err(|error| MintResumeError::RecordInterruption {
+                    operation_id: submission.operation_id.clone(),
+                    message: error.to_string(),
+                })?;
+            failed += 1;
+        }
+        Ok(failed)
+    }
+
+    async fn last_durable_stage(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<MachineAddInterruptionStage, OperationStatusStoreError> {
+        Ok(self
+            .controllers
+            .repository()
+            .last_machine_add_provisioning_step(operation_id)
+            .await?
+            .map_or(MachineAddInterruptionStage::Accepted, |step| {
+                MachineAddInterruptionStage::CredentialProvisioning { step }
+            }))
     }
 
     pub async fn run(&self, request: MintRequest) -> MintOutcome {

@@ -96,10 +96,21 @@ pub enum DeployPhaseOutcome {
 pub enum DeployOperationState {
     Accepted,
     Planning,
-    Running { stage: DeployRunningStage },
-    Completed { outcome: DeployCompletionOutcome },
-    Failed { failure: DeployOperationFailure },
-    Cancelled { reason: CancellationReason },
+    Running {
+        stage: DeployRunningStage,
+    },
+    Completed {
+        outcome: DeployCompletionOutcome,
+    },
+    Failed {
+        failure: DeployOperationFailure,
+    },
+    Cancelled {
+        reason: CancellationReason,
+    },
+    Interrupted {
+        evidence: super::OperationInterruptionEvidence,
+    },
 }
 
 impl DeployOperationState {
@@ -113,9 +124,35 @@ impl DeployOperationState {
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
-            Self::Completed { .. } | Self::Failed { .. } | Self::Cancelled { .. } => true,
+            Self::Completed { .. }
+            | Self::Failed { .. }
+            | Self::Cancelled { .. }
+            | Self::Interrupted { .. } => true,
             Self::Accepted | Self::Planning | Self::Running { .. } => false,
         }
+    }
+
+    pub(super) fn interruption_evidence(
+        &self,
+        cause: super::OperationInterruptionCause,
+    ) -> Option<super::OperationInterruptionEvidence> {
+        let stage = match self {
+            Self::Accepted => super::DeployInterruptionStage::Accepted,
+            Self::Planning => super::DeployInterruptionStage::Planning,
+            Self::Running { stage } => super::DeployInterruptionStage::Running { stage: *stage },
+            Self::Completed { .. }
+            | Self::Failed { .. }
+            | Self::Cancelled { .. }
+            | Self::Interrupted { .. } => return None,
+        };
+        Some(super::OperationInterruptionEvidence::new(
+            cause,
+            super::OperationInterruptionStage::Deploy { stage },
+        ))
+    }
+
+    pub(super) const fn interrupted(evidence: super::OperationInterruptionEvidence) -> Self {
+        Self::Interrupted { evidence }
     }
 }
 
@@ -275,6 +312,11 @@ pub enum DeployOperationFailure {
         seed: MachineId,
         message: FailureMessage,
     },
+    PlatformImageUnavailable {
+        service_id: ServiceId,
+        machine_id: MachineId,
+        target_platform: crate::image::OciPlatform,
+    },
     UnsupportedTargetPlatform {
         service_id: ServiceId,
         machine_id: MachineId,
@@ -389,6 +431,7 @@ impl DeployOperationFailure {
             | Self::ImageMissingOnSeed { .. }
             | Self::ImageDigestMismatch { .. }
             | Self::SeedUnavailable { .. }
+            | Self::PlatformImageUnavailable { .. }
             | Self::UnsupportedTargetPlatform { .. } => DeployFailureClass::ImageResolvePullFailed,
             Self::RuntimeUnavailable { .. } => DeployFailureClass::RuntimeUnavailable,
             Self::ContainerStartFailed { .. } => DeployFailureClass::ContainerStartFailed,
@@ -451,6 +494,7 @@ impl DeployOperationFailure {
             | Self::ImageMissingOnSeed { .. }
             | Self::ImageDigestMismatch { .. }
             | Self::SeedUnavailable { .. }
+            | Self::PlatformImageUnavailable { .. }
             | Self::UnsupportedTargetPlatform { .. } => &[],
         }
     }
@@ -552,6 +596,39 @@ pub struct DeployCleanupFailure {
     pub message: FailureMessage,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeployImageCleanup {
+    Removed {
+        machine_id: MachineId,
+        service_id: ServiceId,
+        image_identity: OciDigest,
+    },
+    AlreadyAbsent {
+        machine_id: MachineId,
+        service_id: ServiceId,
+        image_identity: OciDigest,
+    },
+    RetainedInUse {
+        machine_id: MachineId,
+        service_id: ServiceId,
+        image_identity: OciDigest,
+    },
+    MissingIdentity {
+        machine_id: MachineId,
+        service_id: ServiceId,
+        container_id: ContainerId,
+        observed_identity: Option<String>,
+    },
+    Failed {
+        machine_id: MachineId,
+        service_id: ServiceId,
+        image_identity: OciDigest,
+        message: FailureMessage,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeployTransition {
     Planning,
@@ -627,6 +704,7 @@ pub enum DeployEvidence {
     ImageAvailabilityVerified {
         service_id: ServiceId,
         seed: MachineId,
+        platform: crate::image::OciPlatform,
         manifest_digest: OciDigest,
     },
     ContainerStarted {
@@ -646,6 +724,7 @@ pub enum DeployEvidence {
     CleanupFinished {
         removed: Vec<DeployCleanupContainer>,
         failed: Vec<DeployCleanupFailure>,
+        images: Vec<DeployImageCleanup>,
     },
 }
 
@@ -674,11 +753,13 @@ impl DeployEvidence {
             Self::ImageAvailabilityVerified {
                 service_id,
                 seed,
+                platform,
                 manifest_digest,
             } => OperationEvent::DeployImageAvailabilityVerified {
                 operation_id: operation_id.clone(),
                 service_id: service_id.clone(),
                 seed: seed.clone(),
+                platform: platform.clone(),
                 manifest_digest: manifest_digest.clone(),
             },
             Self::ContainerStarted {
@@ -707,10 +788,15 @@ impl DeployEvidence {
                 outcome: *outcome,
                 services: services.clone(),
             },
-            Self::CleanupFinished { removed, failed } => OperationEvent::DeployCleanupFinished {
+            Self::CleanupFinished {
+                removed,
+                failed,
+                images,
+            } => OperationEvent::DeployCleanupFinished {
                 operation_id: operation_id.clone(),
                 removed: removed.clone(),
                 failed: failed.clone(),
+                images: images.clone(),
             },
         }
     }
@@ -957,7 +1043,8 @@ fn transition_satisfied(current: &DeployOperationState, attempted: &DeployOperat
             | DeployOperationState::Planning
             | DeployOperationState::Completed { .. }
             | DeployOperationState::Failed { .. }
-            | DeployOperationState::Cancelled { .. } => false,
+            | DeployOperationState::Cancelled { .. }
+            | DeployOperationState::Interrupted { .. } => false,
         },
         DeployOperationState::Completed { outcome: attempted } => {
             matches!(current, DeployOperationState::Completed { outcome } if outcome == attempted)
@@ -967,6 +1054,11 @@ fn transition_satisfied(current: &DeployOperationState, attempted: &DeployOperat
         }
         DeployOperationState::Cancelled { reason: attempted } => {
             matches!(current, DeployOperationState::Cancelled { reason } if reason == attempted)
+        }
+        DeployOperationState::Interrupted {
+            evidence: attempted,
+        } => {
+            matches!(current, DeployOperationState::Interrupted { evidence } if evidence == attempted)
         }
     }
 }
@@ -1032,10 +1124,12 @@ fn transition_allowed(current: &DeployOperationState, attempted: &DeployOperatio
             DeployOperationState::Running { stage: current },
             DeployOperationState::Running { stage: attempted },
         ) => stage_is_next(*current, *attempted),
-        (DeployOperationState::Accepted, _)
+        (_, DeployOperationState::Interrupted { .. })
+        | (DeployOperationState::Accepted, _)
         | (DeployOperationState::Completed { .. }, _)
         | (DeployOperationState::Failed { .. }, _)
         | (DeployOperationState::Cancelled { .. }, _)
+        | (DeployOperationState::Interrupted { .. }, _)
         | (DeployOperationState::Planning, _)
         | (DeployOperationState::Running { .. }, _) => false,
     }

@@ -6,21 +6,20 @@ use crate::control::operation_evidence::{
 use crate::control::role_client::machine::NatsMachineSubstrateUpdater;
 use crate::control::sequencer::OperationControllers;
 use crate::roles::machine::protocol::MachineSubstrateUpdateRpcRequest;
-use crate::tasks::TaskRegistry;
+use crate::tasks::TaskSpawner;
 use ployz_core::ids::MachineId;
 use ployz_core::install::InstallArtifactVersion;
-use ployz_core::operation::MachineSubstrateVersions;
 use ployz_core::operation::{FailureMessage, MachineUpdateFailure, MachineUpdateTransition};
+use ployz_core::operation::{MACHINE_UPDATE_REPORT_TIMEOUT, MachineSubstrateVersions};
 use std::time::{Duration, Instant};
 
-const UPDATE_REPORT_TIMEOUT: Duration = Duration::from_secs(120);
 const UPDATE_REPORT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone)]
 pub struct MachineUpdateOperation {
     controllers: OperationControllers,
     updater: NatsMachineSubstrateUpdater,
-    task_registry: TaskRegistry,
+    task_registry: TaskSpawner,
 }
 
 impl MachineUpdateOperation {
@@ -28,7 +27,7 @@ impl MachineUpdateOperation {
     pub const fn new(
         controllers: OperationControllers,
         updater: NatsMachineSubstrateUpdater,
-        task_registry: TaskRegistry,
+        task_registry: TaskSpawner,
     ) -> Self {
         Self {
             controllers,
@@ -37,18 +36,28 @@ impl MachineUpdateOperation {
         }
     }
 
-    pub fn start(&self, accepted: AcceptedMachineUpdateSubmission) {
+    pub async fn start(&self, accepted: AcceptedMachineUpdateSubmission) {
         if !accepted.should_start_execution {
             return;
         }
 
+        let operation_id = accepted.operation_id.clone();
+        let lease = self
+            .controllers
+            .machine_substrate_lease(accepted.machine_id.clone(), accepted.operation_id.clone());
         let runtime = self.clone();
-        self.task_registry.spawn(async move {
+        let admission = self.task_registry.spawn(move || async move {
+            let _lease = lease;
             runtime.run(accepted).await;
         });
+        super::finish_rejected_task_admission(&self.controllers, &operation_id, admission).await;
     }
 
     pub async fn run(self, accepted: AcceptedMachineUpdateSubmission) {
+        self.clone().run_inner(accepted).await;
+    }
+
+    async fn run_inner(self, accepted: AcceptedMachineUpdateSubmission) {
         let operation_id = accepted.operation_id;
         let machine_id = accepted.machine_id;
         let target_version = accepted.target_version;
@@ -159,7 +168,7 @@ impl MachineUpdateOperation {
         machine_id: &MachineId,
         target_version: &InstallArtifactVersion,
     ) -> Result<MachineSubstrateVersions, MachineUpdateFailure> {
-        let deadline = Instant::now() + UPDATE_REPORT_TIMEOUT;
+        let deadline = Instant::now() + MACHINE_UPDATE_REPORT_TIMEOUT;
         let mut last_reported = MachineSubstrateVersions::default();
         loop {
             match self

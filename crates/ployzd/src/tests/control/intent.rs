@@ -6,10 +6,10 @@ use crate::control::operation_evidence::{
 };
 use crate::control::store::CoreStore;
 use futures_util::StreamExt;
-use ployz_core::deploy::VolumeName;
+use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes, VolumeName};
 use ployz_core::intent::recovery::{ControlPlaneEpoch, PendingMachineJoinRecoverySnapshot};
 use ployz_core::intent::{
-    ActiveMachineState, IntentSnapshot, RouteBindingState, StagedMachineDataplaneState,
+    ActiveMachineState, IntentSnapshot, RouteBindingState, StagedMachineDataplaneState, VolumeKind,
     VolumePinState,
 };
 use ployz_core::machine::MachineLifecycle;
@@ -337,11 +337,11 @@ async fn intent_reader_gets_namespace_intent_from_file() {
         .await
         .expect("route binding stores");
     namespace_intent
-        .replace_volume_pin(VolumePinState {
-            namespace_id: ployz_test_support::ids::namespace_id("default"),
-            volume_name: volume_name("postgres_data"),
-            machine_id: machine_id("machine_a"),
-        })
+        .replace_volume_pin(VolumePinState::plain(
+            ployz_test_support::ids::namespace_id("default"),
+            volume_name("postgres_data"),
+            machine_id("machine_a"),
+        ))
         .await
         .expect("volume pin stores");
     let core_store = CoreStore::open_in_memory().await.expect("core store opens");
@@ -366,22 +366,29 @@ async fn intent_reader_gets_namespace_intent_from_file() {
     assert_eq!(intent.serving_target_entries.len(), 1);
     assert_eq!(
         intent.volume_pins,
-        vec![VolumePinState {
-            namespace_id: ployz_test_support::ids::namespace_id("default"),
-            volume_name: volume_name("postgres_data"),
-            machine_id: machine_id("machine_a"),
-        }]
+        vec![VolumePinState::plain(
+            ployz_test_support::ids::namespace_id("default"),
+            volume_name("postgres_data"),
+            machine_id("machine_a"),
+        )]
     );
 }
 
 #[tokio::test]
 async fn namespace_intent_store_persists_volume_pins() {
     let namespace_intent = temp_namespace_intent().await;
-    let state = VolumePinState {
-        namespace_id: ployz_test_support::ids::namespace_id("default"),
-        volume_name: volume_name("postgres_data"),
-        machine_id: machine_id("machine_a"),
-    };
+    let state = VolumePinState::try_new(
+        ployz_test_support::ids::namespace_id("default"),
+        volume_name("postgres_data"),
+        machine_id("machine_a"),
+        VolumeKind::Provisioned {
+            dataset: DatasetName::try_new("tank/ployz/volumes/ployz-n7-default-v13-postgres_data")
+                .expect("valid dataset"),
+            max_size_bytes: VolumeMaxSizeBytes::try_new(10 * 1024 * 1024 * 1024)
+                .expect("non-zero size"),
+        },
+    )
+    .expect("provisioned pin identity matches");
 
     namespace_intent
         .replace_volume_pin(state.clone())
@@ -396,6 +403,63 @@ async fn namespace_intent_store_persists_volume_pins() {
             .volume_pins,
         vec![state]
     );
+}
+
+#[tokio::test]
+async fn namespace_intent_store_reads_legacy_volume_pins_as_plain() {
+    let core_store = CoreStore::open_in_memory().await.expect("core store opens");
+    core_store
+        .call(|connection| {
+            connection.execute(
+                "INSERT INTO volume_pins (namespace_id, volume_name, json) VALUES (?1, ?2, ?3)",
+                rusqlite::params![
+                    "default",
+                    "postgres_data",
+                    r#"{"namespace_id":"default","volume_name":"postgres_data","machine_id":"machine_a"}"#,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("legacy pin inserts");
+
+    let snapshot = NamespaceIntentStore::new(core_store)
+        .load()
+        .await
+        .expect("legacy pin loads");
+
+    assert_eq!(
+        snapshot.volume_pins,
+        vec![VolumePinState::plain(
+            ployz_test_support::ids::namespace_id("default"),
+            volume_name("postgres_data"),
+            machine_id("machine_a"),
+        )]
+    );
+}
+
+#[tokio::test]
+async fn namespace_intent_store_rejects_a_mismatched_provisioned_dataset_row() {
+    let core_store = CoreStore::open_in_memory().await.expect("core store opens");
+    core_store
+        .call(|connection| {
+            connection.execute(
+                "INSERT INTO volume_pins (namespace_id, volume_name, json) VALUES (?1, ?2, ?3)",
+                rusqlite::params![
+                    "default",
+                    "postgres_data",
+                    r#"{"namespace_id":"default","volume_name":"postgres_data","machine_id":"machine_a","kind":{"kind":"provisioned","dataset":"tank/ployz/volumes/ployz-n5-other-v13-postgres_data","max_size_bytes":1024}}"#,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("mismatched pin inserts as raw durable evidence");
+
+    NamespaceIntentStore::new(core_store)
+        .load()
+        .await
+        .expect_err("mismatched durable provisioned pin is rejected");
 }
 
 #[tokio::test]

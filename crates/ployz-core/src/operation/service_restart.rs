@@ -10,7 +10,10 @@ use super::projection::{
     OperationProjection, ProjectionOperationState, StatusProjectionError, kind_mismatch,
 };
 use super::text::{CancellationReason, FailureMessage, OperatorHint};
-use super::{EventSequence, OperationKind, OperationStatus};
+use super::{
+    EventSequence, OperationInterruptionCause, OperationInterruptionEvidence,
+    OperationInterruptionStage, OperationKind, OperationStatus,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -25,19 +28,55 @@ pub enum ServiceRestartRunningStage {
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ServiceRestartOperationState {
     Accepted,
-    Running { stage: ServiceRestartRunningStage },
+    Running {
+        stage: ServiceRestartRunningStage,
+    },
     Completed,
-    Failed { failure: ServiceRestartFailure },
-    Cancelled { reason: CancellationReason },
+    Failed {
+        failure: ServiceRestartFailure,
+    },
+    Cancelled {
+        reason: CancellationReason,
+    },
+    Interrupted {
+        evidence: OperationInterruptionEvidence,
+    },
 }
 
 impl ServiceRestartOperationState {
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
-            Self::Completed | Self::Failed { .. } | Self::Cancelled { .. } => true,
+            Self::Completed
+            | Self::Failed { .. }
+            | Self::Cancelled { .. }
+            | Self::Interrupted { .. } => true,
             Self::Accepted | Self::Running { .. } => false,
         }
+    }
+
+    pub(super) fn interruption_evidence(
+        &self,
+        cause: OperationInterruptionCause,
+    ) -> Option<OperationInterruptionEvidence> {
+        let last_durable_stage = match self {
+            Self::Accepted => OperationInterruptionStage::ServiceRestartAccepted,
+            Self::Running { stage } => {
+                OperationInterruptionStage::ServiceRestartRunning { stage: *stage }
+            }
+            Self::Completed
+            | Self::Failed { .. }
+            | Self::Cancelled { .. }
+            | Self::Interrupted { .. } => return None,
+        };
+        Some(OperationInterruptionEvidence::new(
+            cause,
+            last_durable_stage,
+        ))
+    }
+
+    pub(super) const fn interrupted(evidence: OperationInterruptionEvidence) -> Self {
+        Self::Interrupted { evidence }
     }
 }
 
@@ -304,11 +343,13 @@ fn transition_allowed(
             ServiceRestartOperationState::Failed { .. }
             | ServiceRestartOperationState::Cancelled { .. },
         ) => true,
-        (
+        (_, ServiceRestartOperationState::Interrupted { .. })
+        | (
             ServiceRestartOperationState::Accepted
             | ServiceRestartOperationState::Completed
             | ServiceRestartOperationState::Failed { .. }
-            | ServiceRestartOperationState::Cancelled { .. },
+            | ServiceRestartOperationState::Cancelled { .. }
+            | ServiceRestartOperationState::Interrupted { .. },
             _,
         )
         | (

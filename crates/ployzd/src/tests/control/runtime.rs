@@ -83,13 +83,16 @@ async fn control_runtime_bootstraps_nats_and_serves_operation_api() {
     let runtime = nats.start_control(&config).await;
     let api = nats.api();
 
-    let renewal_health = api
+    let control_health = api
         .runtime_snapshot(&RuntimeSnapshotRequest {})
         .await
         .expect("runtime snapshot includes Control health")
         .control_health
-        .expect("Control health is present")
-        .certificate_renewal;
+        .expect("Control health is present");
+    assert!(control_health.task_supervisor.active_tasks > 0);
+    assert_eq!(control_health.task_supervisor.panicked_tasks, 0);
+    assert_eq!(control_health.task_supervisor.last_failure, None);
+    let renewal_health = control_health.certificate_renewal;
     assert_eq!(renewal_health.consecutive_failures, 0);
     assert!(matches!(
         renewal_health.last_attempt,
@@ -321,11 +324,11 @@ async fn control_runtime_serves_active_service_queries() {
         .await
         .expect("service state stores");
     namespace_intent
-        .replace_volume_pin(VolumePinState {
-            namespace_id: namespace_id("default"),
-            volume_name: VolumeName::try_new("data").expect("valid volume name"),
-            machine_id: machine_id("core_1"),
-        })
+        .replace_volume_pin(VolumePinState::plain(
+            namespace_id("default"),
+            VolumeName::try_new("data").expect("valid volume name"),
+            machine_id("core_1"),
+        ))
         .await
         .expect("volume pin stores");
     let api = nats.api();
@@ -1325,7 +1328,9 @@ fn deploy_target(service_id: &str) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
         origin: None,
+        volumes: std::collections::BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: self::service_id(service_id),
             image: image("ghcr.io/acme/api:rev-2"),
             image_source: ployz_core::deploy::ImageSource::Registry,

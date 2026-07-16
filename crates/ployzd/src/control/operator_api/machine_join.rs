@@ -58,11 +58,14 @@ pub async fn machine_join_redeem(
                 .map_err(|error| MachineJoinRedeemError::Unavailable {
                     message: format!("{error:?}"),
                 })?;
-            handlers.machine_mint.start(MintRequest {
-                operation_id: accepted.operation_id.clone(),
-                machine_id: accepted.identity.machine_id,
-                idempotency_key,
-            });
+            handlers
+                .machine_mint
+                .start(MintRequest {
+                    operation_id: accepted.operation_id.clone(),
+                    machine_id: accepted.identity.machine_id,
+                    idempotency_key,
+                })
+                .await;
             tokio::spawn({
                 let handlers = handlers.clone();
                 async move {

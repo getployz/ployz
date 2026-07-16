@@ -22,7 +22,9 @@ use crate::roles::machine::images::AvailableImageService;
 use crate::roles::machine::projection::{
     MachineProjectionState, RunningProjectionTask, start_projection_task,
 };
-use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
+use crate::roles::machine::runner::{
+    MachineContainerRunner, MachineImageRemovalRunner, MachineLogReader,
+};
 use crate::roles::machine::service::{
     MachineFactsReadError, MachineRoleProjectionServices, MachineServiceError,
     start_machine_role_service_with_endpoint_cache_and_image,
@@ -200,7 +202,7 @@ pub(crate) async fn start_machine_process_with_ports<R, P, L>(
     image_state: Option<AvailableImageService>,
 ) -> Result<RunningMachineProcess, MachineProcessError>
 where
-    R: Clone + MachineContainerRunner + Send + Sync + 'static,
+    R: Clone + MachineContainerRunner + MachineImageRemovalRunner + Send + Sync + 'static,
     P: Clone
         + crate::roles::machine::service::MachinePloyzNativeMeshPreparer
         + Send
@@ -493,8 +495,8 @@ mod tests {
     use crate::roles::machine::facts::observation_state;
     use crate::roles::machine::runner::{
         CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
-        MachineContainerRunner, MachineContainerRunnerError, MachineLogReader,
-        MachineLogReaderError, MachineLogTail,
+        MachineContainerRunner, MachineContainerRunnerError, MachineImageRemovalRunner,
+        MachineLogReader, MachineLogReaderError, MachineLogTail,
     };
     use futures_util::StreamExt;
     use ployz_core::ids::{ContainerId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
@@ -591,6 +593,15 @@ mod tests {
     impl Drop for NotifyOnDrop {
         fn drop(&mut self) {
             self.0.notify_one();
+        }
+    }
+
+    impl MachineImageRemovalRunner for StaticRunner {
+        async fn remove_image(
+            &self,
+            _image_identity: &ployz_core::image::OciDigest,
+        ) -> Result<ployz_core::image::ImageRemoveOutcome, String> {
+            Ok(ployz_core::image::ImageRemoveOutcome::AlreadyAbsent)
         }
     }
 
@@ -734,6 +745,15 @@ mod tests {
 
     #[derive(Debug, Clone)]
     struct FailingListRunner;
+
+    impl MachineImageRemovalRunner for FailingListRunner {
+        async fn remove_image(
+            &self,
+            _image_identity: &ployz_core::image::OciDigest,
+        ) -> Result<ployz_core::image::ImageRemoveOutcome, String> {
+            Ok(ployz_core::image::ImageRemoveOutcome::AlreadyAbsent)
+        }
+    }
 
     impl MachineContainerRunner for FailingListRunner {
         async fn existing_managed_containers(

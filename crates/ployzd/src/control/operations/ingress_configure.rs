@@ -3,7 +3,7 @@ use crate::control::intent::ingress_intent::{
 };
 use crate::control::operation_evidence::AcceptedIngressConfigureSubmission;
 use crate::control::sequencer::OperationControllers;
-use crate::tasks::TaskRegistry;
+use crate::tasks::TaskSpawner;
 use ployz_core::operation::{FailureMessage, IngressConfigureFailure, IngressConfigureTransition};
 use ployz_nats::subjects::INTENT_CHANGED;
 
@@ -12,7 +12,7 @@ pub struct IngressConfigureOperation {
     controllers: OperationControllers,
     intent: IngressIntentStore,
     client: async_nats::Client,
-    task_registry: TaskRegistry,
+    task_registry: TaskSpawner,
 }
 
 impl IngressConfigureOperation {
@@ -21,7 +21,7 @@ impl IngressConfigureOperation {
         controllers: OperationControllers,
         intent: IngressIntentStore,
         client: async_nats::Client,
-        task_registry: TaskRegistry,
+        task_registry: TaskSpawner,
     ) -> Self {
         Self {
             controllers,
@@ -31,14 +31,20 @@ impl IngressConfigureOperation {
         }
     }
 
-    pub fn start(&self, accepted: AcceptedIngressConfigureSubmission) {
+    pub async fn start(&self, accepted: AcceptedIngressConfigureSubmission) {
         if !accepted.should_start_execution {
             return;
         }
+        let operation_id = accepted.operation_id.clone();
         let worker = self.clone();
-        self.task_registry.spawn(async move {
-            worker.run(accepted).await;
-        });
+        super::finish_rejected_task_admission(
+            &self.controllers,
+            &operation_id,
+            self.task_registry.spawn(|| async move {
+                worker.run(accepted).await;
+            }),
+        )
+        .await;
     }
 
     async fn run(self, accepted: AcceptedIngressConfigureSubmission) {

@@ -29,7 +29,7 @@ fn cli_deploy_accepts_origin_caption() {
     );
 
     assert_eq!(
-        command.origin,
+        command.target.origin,
         Some(DeployOrigin::try_new("release 2026-07-10").expect("valid origin"))
     );
 }
@@ -333,7 +333,7 @@ fn cli_allows_unsupported_compose_when_flag_is_set() {
     let PloyzctlCommand::Deploy(command) = command else {
         panic!("expected deploy command");
     };
-    assert_eq!(command.services.len(), 1);
+    assert_eq!(command.target.services.len(), 1);
     assert!(
         command
             .warnings
@@ -596,13 +596,14 @@ fn assert_deploy_fixture(command: &DeployCommand) {
             .starts_with("idem_deploy_svc_api_")
     );
     assert_eq!(
-        command.namespace_id,
+        command.target.namespace_id,
         NamespaceId::try_new("default").expect("valid namespace id")
     );
-    assert_eq!(command.origin, None);
+    assert_eq!(command.target.origin, None);
     assert_eq!(
-        command.services,
+        command.target.services,
         vec![DeployServiceSpec {
+            keep: None,
             service_id: ServiceId::try_new("svc_api").expect("valid service id"),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
             image_source: ployz_core::deploy::ImageSource::Registry,

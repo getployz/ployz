@@ -3,14 +3,18 @@ use ployz_core::deploy::{
     DeployRouteTarget, ImageSource,
 };
 use ployz_core::ids::{OperationId, ServiceId};
+use ployz_core::image::OciPlatform;
 use ployz_core::operation::{
-    CancellationReason, DeployCleanupFailure, DeployCompletionOutcome, DeployOperationFailure,
-    DeployRunningStage, OperationEvent, OperationKind, ReplayedOperationEvent,
+    CancellationReason, DeployCleanupFailure, DeployCompletionOutcome, DeployImageCleanup,
+    DeployOperationFailure, DeployRunningStage, OperationEvent, OperationInterruptionEvidence,
+    OperationKind, ReplayedOperationEvent,
 };
+use std::collections::BTreeSet;
 
 use super::failure::{
     DeployFailureView, FailureSafety, artifact_unavailable_reason, failure_cause,
 };
+use crate::operation::interruption::render_interruption;
 
 const SPINNER_FRAMES: [char; 8] = ['⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽', '⣾'];
 
@@ -23,7 +27,7 @@ pub(crate) struct DeployTree {
 struct ObservedDeploy {
     operation_id: OperationId,
     target: DeployRequest,
-    verified_image_services: Vec<ServiceId>,
+    verified_image_platforms: BTreeSet<(ServiceId, OciPlatform)>,
     work: DeployWork,
     result: DeployResult,
 }
@@ -31,10 +35,14 @@ struct ObservedDeploy {
 enum DeployWork {
     Planning,
     Planned {
-        plan: DeployPlan,
+        plan: Box<DeployPlan>,
         stage: PlannedStage,
         started_containers: usize,
-        cleanup: Option<(Vec<DeployCleanupContainer>, Vec<DeployCleanupFailure>)>,
+        cleanup: Option<(
+            Vec<DeployCleanupContainer>,
+            Vec<DeployCleanupFailure>,
+            Vec<DeployImageCleanup>,
+        )>,
     },
 }
 
@@ -45,9 +53,18 @@ enum PlannedStage {
 
 enum DeployResult {
     Active,
-    Completed { outcome: DeployCompletionOutcome },
-    Failed { failure: DeployOperationFailure },
-    Cancelled { reason: CancellationReason },
+    Completed {
+        outcome: DeployCompletionOutcome,
+    },
+    Failed {
+        failure: DeployOperationFailure,
+    },
+    Cancelled {
+        reason: CancellationReason,
+    },
+    Interrupted {
+        evidence: OperationInterruptionEvidence,
+    },
 }
 
 impl DeployTree {
@@ -79,7 +96,7 @@ impl DeployTree {
                 self.deploy = Some(ObservedDeploy {
                     operation_id: operation_id.clone(),
                     target: target.clone(),
-                    verified_image_services: Vec::new(),
+                    verified_image_platforms: BTreeSet::new(),
                     work: DeployWork::Planning,
                     result: DeployResult::Active,
                 });
@@ -144,7 +161,7 @@ impl DeployTree {
                 }
                 if let Some(deploy) = &mut self.deploy {
                     deploy.work = DeployWork::Planned {
-                        plan: plan.clone(),
+                        plan: Box::new(plan.clone()),
                         stage: PlannedStage::Queued,
                         started_containers: 0,
                         cleanup: None,
@@ -170,13 +187,14 @@ impl DeployTree {
                 operation_id,
                 service_id,
                 seed,
+                platform,
                 manifest_digest: _,
             } => {
                 let image = self.requested_image(service_id).map(str::to_owned);
-                if let Some(deploy) = &mut self.deploy
-                    && !deploy.verified_image_services.contains(service_id)
-                {
-                    deploy.verified_image_services.push(service_id.clone());
+                if let Some(deploy) = &mut self.deploy {
+                    deploy
+                        .verified_image_platforms
+                        .insert((service_id.clone(), platform.clone()));
                 }
                 if let Some(image) = image {
                     self.plain_lines.push(format!(
@@ -226,6 +244,7 @@ impl DeployTree {
                 operation_id,
                 removed,
                 failed,
+                images,
             } => {
                 for container in removed {
                     self.plain_lines.push(format!(
@@ -244,12 +263,22 @@ impl DeployTree {
                         failure.message.as_str()
                     ));
                 }
+                for image in images {
+                    let (machine_id, image_identity, text, _) = image_cleanup_parts(image);
+                    self.plain_lines.push(format!(
+                        "deploy {}: image cleanup — {} on {}: {}",
+                        operation_id.as_str(),
+                        image_identity.map_or("unknown", ployz_core::image::OciDigest::as_str),
+                        machine_id.as_str(),
+                        text
+                    ));
+                }
                 if let Some(ObservedDeploy {
                     work: DeployWork::Planned { cleanup, .. },
                     ..
                 }) = &mut self.deploy
                 {
-                    *cleanup = Some((removed.clone(), failed.clone()));
+                    *cleanup = Some((removed.clone(), failed.clone(), images.clone()));
                 }
             }
             OperationEvent::DeployCompleted {
@@ -305,6 +334,7 @@ impl DeployTree {
                 | OperationKind::ManagedDnsReconcile
                 | OperationKind::MachineAdd
                 | OperationKind::MachineUpdate
+                | OperationKind::MachineStoragePrepare
                 | OperationKind::MachineLifecycle
                 | OperationKind::CoreReplace
                 | OperationKind::CredentialGrant
@@ -313,6 +343,25 @@ impl DeployTree {
                 | OperationKind::NamespaceRemove
                 | OperationKind::VolumeRemove => {}
             },
+            OperationEvent::OperationInterrupted {
+                operation_id,
+                evidence,
+            } if evidence.kind() == OperationKind::Deploy => {
+                self.plain_lines.push(format!(
+                    "deploy {}: interrupted — {}",
+                    operation_id.as_str(),
+                    render_interruption(evidence)
+                ));
+                if let Some(deploy) = &mut self.deploy {
+                    deploy.result = DeployResult::Interrupted {
+                        evidence: evidence.clone(),
+                    };
+                }
+            }
+            OperationEvent::MachineStoragePrepareSubmitted { .. }
+            | OperationEvent::MachineStoragePreparePreparing { .. }
+            | OperationEvent::MachineStoragePrepareCompleted { .. }
+            | OperationEvent::MachineStoragePrepareFailed { .. } => {}
             OperationEvent::ManagedDnsReconcileSubmitted { .. }
             | OperationEvent::ManagedDnsReconcileCompleted { .. }
             | OperationEvent::ManagedDnsReconcileFailed { .. }
@@ -364,7 +413,8 @@ impl DeployTree {
             | OperationEvent::VolumeRemoveSubmitted { .. }
             | OperationEvent::VolumeRemoveRunning { .. }
             | OperationEvent::VolumeRemoveCompleted { .. }
-            | OperationEvent::VolumeRemoveFailed { .. } => {}
+            | OperationEvent::VolumeRemoveFailed { .. }
+            | OperationEvent::OperationInterrupted { .. } => {}
         }
     }
 
@@ -438,7 +488,7 @@ impl DeployTree {
         let deploy = self.deploy.as_ref()?;
         match &deploy.work {
             DeployWork::Planning => None,
-            DeployWork::Planned { plan, .. } => Some(plan),
+            DeployWork::Planned { plan, .. } => Some(plan.as_ref()),
         }
     }
 
@@ -469,7 +519,13 @@ impl DeployTree {
         }
     }
 
-    fn cleanup(&self) -> Option<&(Vec<DeployCleanupContainer>, Vec<DeployCleanupFailure>)> {
+    fn cleanup(
+        &self,
+    ) -> Option<&(
+        Vec<DeployCleanupContainer>,
+        Vec<DeployCleanupFailure>,
+        Vec<DeployImageCleanup>,
+    )> {
         let deploy = self.deploy.as_ref()?;
         match &deploy.work {
             DeployWork::Planning => None,
@@ -504,8 +560,13 @@ impl DeployTree {
             .filter(|service| service.image.as_str() == image)
             .all(|service| match &service.image_source {
                 ImageSource::Registry => true,
-                ImageSource::PushedToSeed { .. } => {
-                    deploy.verified_image_services.contains(&service.service_id)
+                ImageSource::PushedToSeed(receipt) => {
+                    deploy
+                        .verified_image_platforms
+                        .iter()
+                        .filter(|(service_id, _)| service_id == &service.service_id)
+                        .count()
+                        >= receipt.platforms().len()
                 }
             })
     }
@@ -570,10 +631,13 @@ pub(crate) fn render_frame(tree: &DeployTree) -> String {
     if !routes.is_empty() {
         groups.push(("routes".to_owned(), routes));
     }
-    if let Some((removed, failed)) = tree.cleanup()
-        && (!removed.is_empty() || !failed.is_empty())
+    if let Some((removed, failed, images)) = tree.cleanup()
+        && (!removed.is_empty() || !failed.is_empty() || !images.is_empty())
     {
-        groups.push(("cleanup".to_owned(), render_cleanup_lines(removed, failed)));
+        groups.push((
+            "cleanup".to_owned(),
+            render_cleanup_lines(removed, failed, images),
+        ));
     }
 
     // The spinner belongs to the first pending line in display order, and
@@ -642,9 +706,10 @@ fn render_success(tree: &DeployTree) -> String {
         DeployResult::Completed { outcome } => {
             format!("Deploy {}.\n", completion_text(*outcome))
         }
-        DeployResult::Active | DeployResult::Failed { .. } | DeployResult::Cancelled { .. } => {
-            String::new()
-        }
+        DeployResult::Active
+        | DeployResult::Failed { .. }
+        | DeployResult::Cancelled { .. }
+        | DeployResult::Interrupted { .. } => String::new(),
     }
 }
 
@@ -658,6 +723,9 @@ pub(crate) fn render_terminal(tree: &DeployTree) -> String {
         DeployResult::Failed { .. } => render_failure_block(tree),
         DeployResult::Cancelled { reason } => {
             format!("Deploy cancelled — {}.\n", reason.as_str())
+        }
+        DeployResult::Interrupted { evidence } => {
+            format!("Deploy interrupted — {}.\n", render_interruption(evidence))
         }
     }
 }
@@ -783,6 +851,7 @@ fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine
                         DeployOperationFailure::ImageMissingOnSeed { .. }
                         | DeployOperationFailure::ImageDigestMismatch { .. }
                         | DeployOperationFailure::SeedUnavailable { .. }
+                        | DeployOperationFailure::PlatformImageUnavailable { .. }
                         | DeployOperationFailure::UnsupportedTargetPlatform { .. } => {
                             failure_cause(target, failure)
                         }
@@ -938,6 +1007,7 @@ fn render_route_line(
 fn render_cleanup_lines(
     removed: &[DeployCleanupContainer],
     failed: &[DeployCleanupFailure],
+    images: &[DeployImageCleanup],
 ) -> Vec<TreeLine> {
     removed
         .iter()
@@ -956,7 +1026,55 @@ fn render_cleanup_lines(
                 failure.message.as_str()
             ),
         }))
+        .chain(images.iter().map(|image| {
+            let (machine_id, image_identity, text, warning) = image_cleanup_parts(image);
+            TreeLine::Settled {
+                text: format!(
+                    "{} image {} on {} — {}",
+                    if warning { "✗" } else { "✓" },
+                    image_identity.map_or("unknown", ployz_core::image::OciDigest::as_str),
+                    machine_id.as_str(),
+                    text
+                ),
+            }
+        }))
         .collect()
+}
+
+fn image_cleanup_parts(
+    image: &DeployImageCleanup,
+) -> (
+    &ployz_core::ids::MachineId,
+    Option<&ployz_core::image::OciDigest>,
+    &str,
+    bool,
+) {
+    match image {
+        DeployImageCleanup::Removed {
+            machine_id,
+            image_identity,
+            ..
+        } => (machine_id, Some(image_identity), "removed", false),
+        DeployImageCleanup::AlreadyAbsent {
+            machine_id,
+            image_identity,
+            ..
+        } => (machine_id, Some(image_identity), "already absent", false),
+        DeployImageCleanup::RetainedInUse {
+            machine_id,
+            image_identity,
+            ..
+        } => (machine_id, Some(image_identity), "retained in use", false),
+        DeployImageCleanup::MissingIdentity { machine_id, .. } => {
+            (machine_id, None, "missing observed image identity", true)
+        }
+        DeployImageCleanup::Failed {
+            machine_id,
+            image_identity,
+            message,
+            ..
+        } => (machine_id, Some(image_identity), message.as_str(), true),
+    }
 }
 
 impl DeployTree {
@@ -973,7 +1091,8 @@ impl DeployTree {
             DeployResult::Failed { failure, .. } => Some(failure),
             DeployResult::Active
             | DeployResult::Completed { .. }
-            | DeployResult::Cancelled { .. } => None,
+            | DeployResult::Cancelled { .. }
+            | DeployResult::Interrupted { .. } => None,
         }
     }
 

@@ -32,11 +32,11 @@ fn volume_snapshots(intent: &IntentSnapshot) -> Vec<VolumeSnapshot> {
         .volume_pins
         .iter()
         .map(|pin| VolumeSnapshot {
-            namespace_id: pin.namespace_id.clone(),
-            volume_name: pin.volume_name.clone(),
-            machine_id: pin.machine_id.clone(),
+            namespace_id: pin.namespace_id().clone(),
+            volume_name: pin.volume_name().clone(),
+            machine_id: pin.machine_id().clone(),
             status: if intent
-                .services_referencing_volume(&pin.namespace_id, &pin.volume_name)
+                .services_referencing_volume(pin.namespace_id(), pin.volume_name())
                 .is_empty()
             {
                 VolumeStatus::Orphaned
@@ -82,16 +82,8 @@ mod tests {
             route_bindings: Vec::new(),
             serving_target_entries: vec![target],
             volume_pins: vec![
-                VolumePinState {
-                    namespace_id: namespace_id.clone(),
-                    volume_name: used.clone(),
-                    machine_id: machine_id("machine_a"),
-                },
-                VolumePinState {
-                    namespace_id,
-                    volume_name: orphaned,
-                    machine_id: machine_id("machine_a"),
-                },
+                VolumePinState::plain(namespace_id.clone(), used.clone(), machine_id("machine_a")),
+                VolumePinState::plain(namespace_id, orphaned, machine_id("machine_a")),
             ],
             nats_authorizations: Vec::new(),
             automatic_hostname_configuration:

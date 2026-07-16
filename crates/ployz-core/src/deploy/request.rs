@@ -83,10 +83,22 @@ pub struct DeployRequest {
     pub namespace_id: NamespaceId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<DeployOrigin>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub volumes: BTreeMap<VolumeName, VolumeSpec>,
     pub services: Vec<DeployServiceSpec>,
 }
 
 impl DeployRequest {
+    pub fn synthesize_plain_volume_declarations(&mut self) {
+        for service in &self.services {
+            for mount in &service.runtime.volume_mounts {
+                self.volumes
+                    .entry(mount.volume_name.clone())
+                    .or_insert(VolumeSpec::Plain);
+            }
+        }
+    }
+
     #[must_use]
     pub fn namespace_revision_id(&self) -> NamespaceRevisionId {
         namespace_revision_id_for(&self.namespace_id, &self.services)
@@ -109,28 +121,99 @@ impl DeployRequest {
                 .expect("namespace id is a valid service id fallback")
         })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeDeclaredDeployRequest(DeployRequest);
+
+impl VolumeDeclaredDeployRequest {
+    pub fn try_new(request: DeployRequest) -> Result<Self, DeployVolumeDeclarationError> {
+        for service in &request.services {
+            for mount in &service.runtime.volume_mounts {
+                if !request.volumes.contains_key(&mount.volume_name) {
+                    return Err(DeployVolumeDeclarationError {
+                        service_id: service.service_id.clone(),
+                        volume_name: mount.volume_name.clone(),
+                    });
+                }
+            }
+        }
+        Ok(Self(request))
+    }
 
     #[must_use]
-    pub fn service_requests(&self) -> Vec<DeployServiceRequest> {
-        let namespace_revision_id = self.namespace_revision_id();
-        self.services
-            .iter()
-            .map(|service| DeployServiceRequest {
-                namespace_id: self.namespace_id.clone(),
-                service_id: service.service_id.clone(),
-                namespace_revision_id: namespace_revision_id.clone(),
-                namespace_revision_entry_id: service
-                    .namespace_revision_entry_id(&self.namespace_id),
-                image: service.image.clone(),
-                image_source: service.image_source.clone(),
-                replicas: service.replicas,
-                runtime: service.runtime.clone(),
-                pre_start: service.pre_start.clone(),
-                depends_on: service.depends_on.clone(),
-                routes: service.routes.clone(),
-            })
-            .collect()
+    pub fn namespace_id(&self) -> &NamespaceId {
+        &self.0.namespace_id
     }
+
+    #[must_use]
+    pub fn namespace_revision_id(&self) -> NamespaceRevisionId {
+        self.0.namespace_revision_id()
+    }
+
+    #[must_use]
+    pub fn status_service_id(&self) -> ServiceId {
+        self.0.status_service_id()
+    }
+
+    #[must_use]
+    pub fn request(&self) -> &DeployRequest {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn services(&self) -> &[DeployServiceSpec] {
+        &self.0.services
+    }
+
+    #[must_use]
+    pub fn service(&self, service_id: &ServiceId) -> Option<&DeployServiceSpec> {
+        self.0
+            .services
+            .iter()
+            .find(|service| service.service_id == *service_id)
+    }
+
+    #[must_use]
+    pub fn into_request(self) -> DeployRequest {
+        self.0
+    }
+
+    pub fn replace_service_image(
+        &mut self,
+        service_id: &ServiceId,
+        image: ImageReference,
+    ) -> Result<(), DeployImageReplacementError> {
+        let Some(service) = self
+            .0
+            .services
+            .iter_mut()
+            .find(|service| service.service_id == *service_id)
+        else {
+            return Err(DeployImageReplacementError::UnknownService {
+                service_id: service_id.clone(),
+            });
+        };
+        service.image = image;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum DeployImageReplacementError {
+    #[error("volume-declared deploy does not contain service {}", .service_id.as_str())]
+    UnknownService { service_id: ServiceId },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "service {} mounts volume {} without a declaration",
+    .service_id.as_str(),
+    .volume_name.as_str()
+)]
+pub struct DeployVolumeDeclarationError {
+    pub service_id: ServiceId,
+    pub volume_name: VolumeName,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,6 +228,10 @@ pub struct DeployServiceSpec {
     )]
     pub image_source: ImageSource,
     pub replicas: ReplicaCount,
+    /// Number of newest stopped superseded containers retained for inspection.
+    /// Absence preserves full container cleanup and disables image reclamation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep: Option<ContainerRetentionCount>,
     pub runtime: ContainerRuntimeSpec,
     // Pre-start hooks and dependencies guide planning and execution, not container identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -153,6 +240,39 @@ pub struct DeployServiceSpec {
     pub depends_on: Vec<ServiceDependency>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<DeployRoute>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(type = "SafeInteger<\"ContainerRetentionCount\">")
+)]
+#[serde(transparent)]
+pub struct ContainerRetentionCount(u16);
+
+impl ContainerRetentionCount {
+    #[must_use]
+    pub const fn new(value: u16) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u16 {
+        self.0
+    }
+}
+
+impl From<u16> for ContainerRetentionCount {
+    fn from(value: u16) -> Self {
+        Self(value)
+    }
+}
+
+impl From<ContainerRetentionCount> for u16 {
+    fn from(value: ContainerRetentionCount) -> Self {
+        value.0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -180,7 +300,7 @@ pub struct PreStartHook {
 
 impl DeployServiceSpec {
     pub(super) const NAMESPACE_REVISION_ENTRY_ENCODING_VERSION: &'static str =
-        "ployz.namespace_revision_entry.v8";
+        "ployz.namespace_revision_entry.v9";
     pub(super) const NAMESPACE_REVISION_ENCODING_VERSION: &'static str =
         "ployz.namespace_revision.v6";
 
@@ -197,26 +317,6 @@ impl DeployServiceSpec {
             &self.runtime,
         )
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[serde(deny_unknown_fields)]
-pub struct DeployServiceRequest {
-    pub namespace_id: NamespaceId,
-    pub service_id: ServiceId,
-    pub namespace_revision_id: NamespaceRevisionId,
-    pub namespace_revision_entry_id: NamespaceRevisionEntryId,
-    pub image: ImageReference,
-    pub image_source: ImageSource,
-    pub replicas: ReplicaCount,
-    pub runtime: ContainerRuntimeSpec,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pre_start: Option<PreStartHook>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub depends_on: Vec<ServiceDependency>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub routes: Vec<DeployRoute>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,4 +1,7 @@
-use ployz_sdk_types::CertificateProvisionFailure;
+use ployz_sdk_types::{
+    CertInterruptionStage, CertificateInterruptionNextAction, CertificateProvisionFailure,
+    OperationInterruptionCause,
+};
 
 pub(crate) fn provision_failure_detail(
     failure: &CertificateProvisionFailure,
@@ -38,6 +41,16 @@ pub(crate) fn provision_failure_detail(
                 message.as_str()
             )
         }
+        CertificateProvisionFailure::CoreInterrupted {
+            cause,
+            last_durable_stage,
+            next_action,
+        } => format!(
+            "certificate work interrupted by {} at {}{scope}; {}",
+            interruption_cause(*cause),
+            cert_stage(*last_durable_stage),
+            interruption_action(*next_action),
+        ),
         CertificateProvisionFailure::GatewayArtifactPush {
             machine_id,
             message,
@@ -54,5 +67,30 @@ pub(crate) fn provision_failure_detail(
             attempted_active_cert.cert_id.as_str(),
             message.as_str()
         ),
+    }
+}
+
+const fn interruption_cause(cause: OperationInterruptionCause) -> &'static str {
+    match cause {
+        OperationInterruptionCause::CoreShutdown => "core shutdown",
+        OperationInterruptionCause::PriorCoreProcessLoss => "prior core process loss",
+    }
+}
+
+const fn cert_stage(stage: CertInterruptionStage) -> &'static str {
+    match stage {
+        CertInterruptionStage::Accepted => "accepted",
+        CertInterruptionStage::Running {
+            stage: ployz_sdk_types::CertRunningStage::ChallengePublished,
+        } => "challenge published",
+        CertInterruptionStage::Running {
+            stage: ployz_sdk_types::CertRunningStage::ValidationStarted,
+        } => "validation started",
+    }
+}
+
+const fn interruption_action(action: CertificateInterruptionNextAction) -> &'static str {
+    match action {
+        CertificateInterruptionNextAction::RetryFromCurrentIntent => "retry from current intent",
     }
 }

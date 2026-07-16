@@ -6,7 +6,7 @@ use bollard::errors::Error as DockerError;
 use flate2::{Compression, GzBuilder, read::GzDecoder};
 use futures_util::{StreamExt, TryStreamExt, stream};
 use ployz_core::deploy::DeployServiceSpec;
-use ployz_core::deploy::{ImageReference, ImageSource};
+use ployz_core::deploy::{ImageReference, ImageSource, PlatformImage, PushedImageReceipt};
 use ployz_core::ids::MachineId;
 use ployz_core::image::{
     IMAGE_BLOB_CHUNK_MAX_BYTES, IMAGE_BLOB_PUSH_ACTION_CHUNK, IMAGE_BLOB_PUSH_ACTION_HEADER,
@@ -35,31 +35,33 @@ const LAYER_GZIP_LEVEL: u32 = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImagePushReceipt {
-    pub seed: MachineId,
-    pub manifest_digest: OciDigest,
-    pub config_digest: OciDigest,
+    receipt: PushedImageReceipt,
     pub uploaded: BlobTransferReceipt,
     pub reused: BlobTransferReceipt,
 }
 
 impl ImagePushReceipt {
     #[must_use]
+    pub const fn receipt(&self) -> &PushedImageReceipt {
+        &self.receipt
+    }
+
+    #[must_use]
     pub fn image_source(&self) -> ImageSource {
-        ImageSource::PushedToSeed {
-            seed: self.seed.clone(),
-            manifest_digest: self.manifest_digest.clone(),
-            image_id: self.config_digest.clone(),
-        }
+        ImageSource::PushedToSeed(self.receipt.clone())
     }
 
     #[must_use]
     pub fn render(&self) -> String {
+        let Some((_, image)) = self.receipt.platforms().next() else {
+            unreachable!("validated pushed image receipts contain a platform");
+        };
         format!(
             "pushed {} layers, {} bytes; {} layers already on {}\n",
             self.uploaded.count(),
             self.uploaded.bytes,
             self.reused.count(),
-            self.seed.as_str(),
+            image.seed.as_str(),
         )
     }
 }
@@ -223,10 +225,17 @@ pub async fn push_local_image(
             message: "seed reported a different image platform".to_owned(),
         });
     }
+    let receipt = PushedImageReceipt::try_new([(
+        pushed.platform.clone(),
+        PlatformImage {
+            seed: seed.clone(),
+            manifest_digest: pushed.manifest_digest.clone(),
+            image_id: pushed.image_id.clone(),
+        },
+    )])
+    .expect("a successful image push contains one platform");
     Ok(ImagePushReceipt {
-        seed: seed.clone(),
-        manifest_digest: pushed.manifest_digest,
-        config_digest: pushed.image_id,
+        receipt,
         uploaded: transfer_receipt(uploaded)?,
         reused: transfer_receipt(reused)?,
     })
@@ -259,7 +268,7 @@ pub async fn prepare_deploy_images(
             push_local_image(&api.nats_client(), &docker, seed, service.image.clone()).await?;
         service.image = service
             .image
-            .with_digest(&receipt.manifest_digest)
+            .with_digest(receipt.receipt.index_digest())
             .map_err(|error| ImagePushError::UnexpectedResponse {
                 message: error.to_string(),
             })?;
@@ -393,10 +402,11 @@ fn prepare_docker_save(bytes: &[u8]) -> Result<PreparedImage, ImagePushError> {
         manifest_digest: OciDigest::sha256(&manifest_bytes),
         manifest_bytes,
         config_digest,
-        platform: OciPlatform {
-            os: platform.os,
-            architecture: platform.architecture,
-        },
+        platform: OciPlatform::try_new(platform.os, platform.architecture).map_err(|error| {
+            ImagePushError::InvalidDockerExport {
+                message: format!("invalid image platform: {error}"),
+            }
+        })?,
         blobs,
     })
 }
@@ -681,7 +691,9 @@ pub enum ImagePushError {
 #[cfg(test)]
 mod tests {
     use super::{PreparedBlobKind, deterministic_gzip, prepare_docker_save};
-    use ployz_core::image::OciDigest;
+    use ployz_core::deploy::{PlatformImage, PushedImageReceipt};
+    use ployz_core::ids::MachineId;
+    use ployz_core::image::{OciDigest, OciPlatform};
     use std::io::Cursor;
 
     #[test]
@@ -691,6 +703,28 @@ mod tests {
         assert_eq!(
             OciDigest::sha256(&compressed).as_str(),
             "sha256:63402c3de330966758f6d9c95461b607e966b827cfd73783a5c538eb5e2c235c"
+        );
+    }
+
+    #[test]
+    fn single_platform_receipt_index_has_a_stable_digest() {
+        let manifest =
+            OciDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("manifest digest");
+        let platform = OciPlatform::try_new("linux", "amd64").expect("platform");
+
+        assert_eq!(
+            PushedImageReceipt::try_new([(
+                platform,
+                PlatformImage {
+                    seed: MachineId::try_new("machine_seed").expect("machine id"),
+                    manifest_digest: manifest.clone(),
+                    image_id: manifest,
+                },
+            )])
+            .expect("receipt")
+            .index_digest()
+            .as_str(),
+            "sha256:d5a3f65cf1cb1fc648fc9a13993161ff70a76ad60198da84fba7c17c3a8f6a1f"
         );
     }
 

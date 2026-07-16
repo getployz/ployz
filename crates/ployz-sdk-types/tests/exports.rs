@@ -12,7 +12,8 @@ use ployz_sdk_types::{
     ControlCertificateRenewalFailure, ControlCertificateRenewalHealth,
     ControlCertificateRenewalOutcome, ControlHealth, ControlIngressEndpointProjectionHealth,
     ControlPlaneEpoch, ControlRuntimeProjectionHealth, ControlRuntimeProjectionLoopHealth,
-    ControlRuntimeProjectionServiceHealth, CoreReplaceError, CoreReplaceReportError,
+    ControlRuntimeProjectionServiceHealth, ControlTaskSupervisorFailure,
+    ControlTaskSupervisorHealth, CoreReplaceError, CoreReplaceReportError,
     CoreReplaceReportRequest, CoreReplaceReported, CoreReplaceRequest, CredentialAddError,
     CredentialAddRequest, CredentialListError, CredentialListRequest, CredentialListResult,
     CredentialRemoveError, CredentialRemoveRequest, DependencyCondition, DeployOperationState,
@@ -32,19 +33,19 @@ use ployz_sdk_types::{
     MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported,
     MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate, MachineJoinToken,
     MachineJoinTrustedNats, MachineListError, MachineListRequest, MachineListResult, MachineName,
-    MachineSnapshot, MachineUpdateError, MachineUpdateRequest, MachineUpdateResponse,
-    ManagedDnsReconcileSubject, ManagedLeaseName, NamespaceId, NamespaceRemoveError,
-    NamespaceRemoveRequest, NatsCaCertificatePem, NatsUserSeed, NetworkRepairError,
-    NetworkRepairRequest, NetworkResolveError, NetworkResolveRequest, NetworkResolveResult,
-    NetworkStatusError, NetworkStatusRequest, NetworkStatusResult, NonEmptyTextError,
-    OperationApiResponse, OperationEvent, OperationEventReplayCursor, OperationEventReplayLimit,
-    OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
-    OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot, OperationSubject,
-    OpsListError, OpsListRequest, OpsListResult, OpsStatusError, OpsStatusRequest,
-    OpsStatusResponse, OpsWatchResponse, PloyzDnsTargetIntent, ReplicaCount, ReplicaCountError,
-    RouteHostname, RouteHostnameError, RoutePort, RoutePortError, RuntimeSnapshotError,
-    RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceDependency, ServiceId,
-    ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
+    MachineSnapshot, MachineStoragePrepareError, MachineStoragePrepareRequest, MachineUpdateError,
+    MachineUpdateRequest, MachineUpdateResponse, ManagedDnsReconcileSubject, ManagedLeaseName,
+    NamespaceId, NamespaceRemoveError, NamespaceRemoveRequest, NatsCaCertificatePem, NatsUserSeed,
+    NetworkRepairError, NetworkRepairRequest, NetworkResolveError, NetworkResolveRequest,
+    NetworkResolveResult, NetworkStatusError, NetworkStatusRequest, NetworkStatusResult,
+    NonEmptyTextError, OperationApiResponse, OperationEvent, OperationEventReplayCursor,
+    OperationEventReplayLimit, OperationEventReplayLimitError, OperationEventReplayPage,
+    OperationEventReplayRequest, OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot,
+    OperationSubject, OpsListError, OpsListRequest, OpsListResult, OpsStatusError,
+    OpsStatusRequest, OpsStatusResponse, OpsWatchResponse, PloyzDnsTargetIntent, ReplicaCount,
+    ReplicaCountError, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
+    RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceDependency,
+    ServiceId, ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
     ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
     SubjectTokenError, VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError,
     VolumeRemoveRequest,
@@ -52,10 +53,11 @@ use ployz_sdk_types::{
         CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi, CredentialListApi,
         CredentialRemoveApi, DeployReserveApi, DeploySubmitApi, IngressConfigureApi,
         InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineInspectApi,
-        MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi, MachineUpdateApi,
-        NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, NetworkStatusApi,
-        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
-        ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
+        MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi, MachineStoragePrepareApi,
+        MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi,
+        NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi,
+        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeListApi,
+        VolumeRemoveApi,
     },
 };
 use ts_rs::TS;
@@ -71,7 +73,9 @@ fn sdk_exports_core_wire_types() {
     let deploy = DeployRequest {
         namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
         origin: None,
+        volumes: std::collections::BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id.clone(),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
             image_source: ployz_core::deploy::ImageSource::Registry,
@@ -217,7 +221,9 @@ fn sdk_exports_operation_api_wire_types() {
         target: DeployRequest {
             namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
             origin: None,
+            volumes: std::collections::BTreeMap::new(),
             services: vec![DeployServiceSpec {
+                keep: None,
                 service_id: ServiceId::try_new("svc_api").expect("valid service id"),
                 image: ImageReference::try_new("ghcr.io/acme/api:rev-1").expect("valid image"),
                 image_source: ployz_core::deploy::ImageSource::Registry,
@@ -474,6 +480,12 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
     assert_contract::<MachineUpdateApi, MachineUpdateRequest, AcceptedOperation, MachineUpdateError>(
     );
     assert_contract::<
+        MachineStoragePrepareApi,
+        MachineStoragePrepareRequest,
+        AcceptedOperation,
+        MachineStoragePrepareError,
+    >();
+    assert_contract::<
         ServiceRestartApi,
         ServiceRestartRequest,
         AcceptedOperation,
@@ -581,6 +593,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             OperationApiEndpoint::InitFirstMachineActivate,
             OperationApiEndpoint::MachineAdd,
             OperationApiEndpoint::MachineUpdate,
+            OperationApiEndpoint::MachineStoragePrepare,
             OperationApiEndpoint::MachineDrain,
             OperationApiEndpoint::MachineResume,
             OperationApiEndpoint::ServiceRestart,
@@ -700,6 +713,14 @@ fn machine_join_secret_delivery() -> MachineJoinSecretDelivery {
 #[test]
 fn sdk_exports_constructor_error_types() {
     assert!(matches!(
+        ployz_sdk_types::PushedImageReceipt::try_new([]),
+        Err(ployz_sdk_types::PushedImageReceiptError::Empty)
+    ));
+    assert!(matches!(
+        ployz_sdk_types::OciPlatform::try_new("linux", "amd 64"),
+        Err(ployz_sdk_types::OciPlatformError::InvalidCharacter { .. })
+    ));
+    assert!(matches!(
         ImageReference::try_new(""),
         Err(ImageReferenceError::Empty)
     ));
@@ -762,6 +783,8 @@ fn sdk_exports_operational_health_wire_types() {
     assert_wire_type::<GatewayWatchFailure>();
     assert_wire_type::<GatewayStatusPublishFailure>();
     assert_wire_type::<ControlHealth>();
+    assert_wire_type::<ControlTaskSupervisorHealth>();
+    assert_wire_type::<ControlTaskSupervisorFailure>();
     assert_wire_type::<ControlRuntimeProjectionHealth>();
     assert_wire_type::<ControlRuntimeProjectionLoopHealth>();
     assert_wire_type::<ControlRuntimeProjectionServiceHealth>();
@@ -770,6 +793,18 @@ fn sdk_exports_operational_health_wire_types() {
     assert_wire_type::<ControlCertificateRenewalAttempt>();
     assert_wire_type::<ControlCertificateRenewalFailure>();
     assert_wire_type::<ControlCertificateRenewalOutcome>();
+}
+
+#[test]
+fn sdk_exports_interruption_wire_types() {
+    assert_wire_type::<ployz_sdk_types::OperationInterruptionCause>();
+    assert_wire_type::<ployz_sdk_types::OperationInterruptionEvidence>();
+    assert_wire_type::<ployz_sdk_types::OperationInterruptionStage>();
+    assert_wire_type::<ployz_sdk_types::DeployInterruptionStage>();
+    assert_wire_type::<ployz_sdk_types::OperationInterruptionUncertainWork>();
+    assert_wire_type::<ployz_sdk_types::OperationInterruptionNextAction>();
+    assert_wire_type::<ployz_sdk_types::CertInterruptionStage>();
+    assert_wire_type::<ployz_sdk_types::CertificateInterruptionNextAction>();
 }
 
 fn assert_wire_type<T>()

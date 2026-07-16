@@ -109,6 +109,8 @@ pub enum MachineContainerInspectDomainError {
 pub struct MachineContainerRunRpcRequest {
     pub pull: MachineImagePull,
     pub runtime: ContainerRuntimeSpec,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provisioned_volumes: Vec<ployz_core::deploy::VolumeName>,
     /// The identity the machine stamps onto the created container; the
     /// wire shape is identical to the dissolved per-RPC run spec.
     pub container: ManagedContainerIdentity,
@@ -168,6 +170,8 @@ pub type MachineContainerRunRpcResponse =
 pub struct MachineContainerRunHookRpcRequest {
     pub pull: MachineImagePull,
     pub runtime: ContainerRuntimeSpec,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provisioned_volumes: Vec<ployz_core::deploy::VolumeName>,
     pub container: ManagedContainerIdentity,
     pub timeout_millis: u64,
 }
@@ -464,6 +468,59 @@ pub type MachineSubstrateReportRpcResponse =
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct MachineStoragePrepareRpcRequest {
+    pub operation_id: OperationId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<ployz_core::deploy::ZfsPoolName>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineStoragePrepareReportRpcRequest {
+    pub operation_id: OperationId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineStoragePrepareRpcOk {
+    pub machine_id: MachineId,
+    pub pool: ployz_core::deploy::ZfsPoolName,
+}
+
+impl MachineRpcResponder for MachineStoragePrepareRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        &self.machine_id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineStoragePrepareReportRpcOk {
+    pub machine_id: MachineId,
+    pub pool: Option<ployz_core::deploy::ZfsPoolName>,
+}
+
+impl MachineRpcResponder for MachineStoragePrepareReportRpcOk {
+    fn responder_machine_id(&self) -> &MachineId {
+        &self.machine_id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MachineStoragePrepareDomainError {
+    PreparationFailed {
+        failure: ployz_core::storage::StorageEffectFailure,
+    },
+}
+
+pub type MachineStoragePrepareRpcResponse =
+    MachineRpcResponse<MachineStoragePrepareRpcOk, MachineStoragePrepareDomainError>;
+pub type MachineStoragePrepareReportRpcResponse =
+    MachineRpcResponse<MachineStoragePrepareReportRpcOk, MachineStoragePrepareDomainError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MachineDataplanePublicKeyRpcRequest {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -598,6 +655,7 @@ mod tests {
                     .expect("valid image"),
             },
             runtime: ContainerRuntimeSpec::image_defaults(),
+            provisioned_volumes: Vec::new(),
             container: ManagedContainerIdentity {
                 namespace_id: ployz_core::ids::NamespaceId::try_new("default")
                     .expect("valid namespace id"),

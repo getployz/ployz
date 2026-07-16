@@ -12,8 +12,8 @@ use crate::control::store::{CoreStoreError, query_json, query_json_list, to_json
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::intent::recovery::PendingMachineJoinRecovery;
 use ployz_core::machine::{
-    IssuedJoinToken, JoinTokenFingerprint, JoinTokenRedeemedAt, MachineAddFailure, RawJoinToken,
-    redeem_pending_join_token,
+    IssuedJoinToken, JoinTokenFingerprint, JoinTokenRedeemedAt, MachineAddFailure,
+    MachineCredentialProvisioningStep, RawJoinToken, redeem_pending_join_token,
 };
 use ployz_core::operation::{
     EventSequence, MachineAddOperationState, OperationEvent, OperationIdempotencyKey,
@@ -22,6 +22,17 @@ use ployz_core::operation::{
 use rusqlite::{Connection, OptionalExtension, params};
 
 impl OperationRepository {
+    pub(crate) async fn last_machine_add_provisioning_step(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<MachineCredentialProvisioningStep>, OperationStatusStoreError> {
+        let operation_id = operation_id.clone();
+        self.store
+            .call(move |conn| last_machine_add_provisioning_step(conn, &operation_id))
+            .await
+            .map_err(|error| index_error(&error))
+    }
+
     pub async fn submit_machine_add(
         &self,
         submission: MachineAddOperationSubmission,
@@ -466,6 +477,24 @@ impl OperationRepository {
             .map_err(|error| index_error(&error))?;
         outcome.into_result()
     }
+}
+
+fn last_machine_add_provisioning_step(
+    conn: &Connection,
+    operation_id: &OperationId,
+) -> Result<Option<MachineCredentialProvisioningStep>, rusqlite::Error> {
+    let mut statement = conn.prepare(
+        "SELECT event_json FROM operation_events
+         WHERE operation_id = ?1 ORDER BY sequence DESC",
+    )?;
+    let rows = statement.query_map([operation_id.as_str()], |row| row.get::<_, String>(0))?;
+    for row in rows {
+        let event: OperationEvent = crate::control::store::from_json(&row?)?;
+        if let OperationEvent::MachineAddCredentialProvisioned { step, .. } = event {
+            return Ok(Some(step));
+        }
+    }
+    Ok(None)
 }
 
 // -------- machine-add transaction and row helpers --------

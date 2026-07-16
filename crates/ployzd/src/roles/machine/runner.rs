@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredential};
+use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredential, VolumeName};
 use ployz_core::ids::ContainerId;
 use ployz_core::image::OciDigest;
 use ployz_core::machine::runtime::ContainerHealth;
@@ -37,6 +37,7 @@ pub enum ExistingManagedContainerState {
 pub struct CreateManagedContainer {
     pub pull: MachineImagePull,
     pub runtime: ContainerRuntimeSpec,
+    pub provisioned_volumes: Vec<VolumeName>,
     pub identity: ManagedContainerIdentity,
 }
 
@@ -173,6 +174,13 @@ pub trait MachineContainerRunner {
         &self,
         docker_volume_name: &str,
     ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
+}
+
+pub trait MachineImageRemovalRunner {
+    fn remove_image(
+        &self,
+        image_identity: &OciDigest,
+    ) -> impl Future<Output = Result<ployz_core::image::ImageRemoveOutcome, String>> + Send;
 }
 
 pub trait MachineLogReader {

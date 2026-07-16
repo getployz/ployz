@@ -125,15 +125,13 @@ pub async fn start_dns_process_with_client(
     let mut tasks = Vec::new();
     let intent_health = Arc::new(Mutex::new(InternalDnsIntentHealth::pending()));
     let internal_resolver_health = internal_resolver_bind.map(|bind| {
-        let health = Arc::new(Mutex::new(InternalResolverHealth::AwaitingBind {
-            attempts: 0,
-        }));
+        let health = InternalResolverHealth::awaiting_bind();
         tasks.push(spawn_internal_resolver(
             testimony_cache.cache(),
             internal_dns_intent.clone(),
             bind,
             shutdown.subscribe(),
-            Arc::clone(&health),
+            health.clone(),
         ));
         health
     });

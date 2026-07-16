@@ -147,5 +147,11 @@ fn host_command_name(command: &ployz_host_runner::cli::HostRunnerCommand) -> &'s
         HostRunnerCommand::CorePromote(_) => "host core-promote",
         HostRunnerCommand::CoreDemote(_) => "host core-demote",
         HostRunnerCommand::SubstrateUpdate(_) => "host substrate-update",
+        HostRunnerCommand::StoragePrepare(_) => "host storage-prepare",
+        HostRunnerCommand::StoragePoolFacts => "host internal-storage-pool-facts",
+        HostRunnerCommand::StorageDatasetCreate(_) => "host internal-storage-dataset-create",
+        HostRunnerCommand::StorageDatasetGrow(_) => "host internal-storage-dataset-grow",
+        HostRunnerCommand::StorageDatasetFacts(_) => "host internal-storage-dataset-facts",
+        HostRunnerCommand::StorageDatasetDestroy(_) => "host internal-storage-dataset-destroy",
     }
 }

@@ -20,18 +20,22 @@ pub(crate) fn gateway_certificate_targets(
     let fresh_public_ips = placement_facts
         .iter()
         .filter_map(|facts| {
-            facts.endpoints.as_ref().map(|endpoints| {
-                (
-                    facts.machine_id.clone(),
-                    endpoints
-                        .control_endpoints
-                        .iter()
-                        .copied()
-                        .collect::<BTreeSet<_>>()
-                        .into_iter()
-                        .collect::<Vec<_>>(),
-                )
-            })
+            facts
+                .answer
+                .as_ref()
+                .and_then(|answer| answer.endpoints.as_ref())
+                .map(|endpoints| {
+                    (
+                        facts.machine_id.clone(),
+                        endpoints
+                            .control_endpoints
+                            .iter()
+                            .copied()
+                            .collect::<BTreeSet<_>>()
+                            .into_iter()
+                            .collect::<Vec<_>>(),
+                    )
+                })
         })
         .collect::<BTreeMap<_, _>>();
 
@@ -70,16 +74,22 @@ mod tests {
         let foreign_facts = MachinePlacementFacts {
             machine_id: foreign_id.clone(),
             lifecycle: MachineLifecycle::Active,
-            containers: Some(
-                MachineContainerObservationSnapshot::try_new(foreign_id.clone(), [])
+            answer: Some(
+                crate::control::role_client::machine::MachinePlacementFactsAnswer {
+                    containers: MachineContainerObservationSnapshot::try_new(
+                        foreign_id.clone(),
+                        [],
+                    )
                     .expect("valid empty snapshot"),
+                    platform: ployz_core::image::OciPlatform::try_new("linux", "amd64")
+                        .expect("platform"),
+                    endpoints: Some(MachineEndpointObservation {
+                        machine_id: foreign_id,
+                        control_endpoints: vec!["203.0.113.50".parse().expect("valid IP")],
+                        mesh_endpoints: Vec::new(),
+                    }),
+                },
             ),
-            platform: None,
-            endpoints: Some(MachineEndpointObservation {
-                machine_id: foreign_id,
-                control_endpoints: vec!["203.0.113.50".parse().expect("valid IP")],
-                mesh_endpoints: Vec::new(),
-            }),
         };
 
         assert_eq!(

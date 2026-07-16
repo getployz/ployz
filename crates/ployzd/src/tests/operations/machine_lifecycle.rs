@@ -12,10 +12,12 @@ use ployz_core::install::{DEFAULT_MACHINE_BOOTSTRAP_URL, MachineBootstrapUrl};
 use ployz_core::machine::MachineLifecycle;
 use ployz_core::machine::active_machine_from_completed_add;
 use ployz_core::operation::{
-    MachineLifecycleFailure, MachineLifecycleOperationState, OperationStatus,
+    MachineLifecycleFailure, MachineLifecycleOperationState, OperationEvent,
+    OperationEventReplayRequest, OperationInterruptionCause, OperationStatus,
 };
+use std::time::Duration;
 
-use ployz_test_support::ids::{machine_id, operation_id};
+use ployz_test_support::ids::{event_replay_limit, event_sequence, machine_id, operation_id};
 
 #[tokio::test]
 async fn drain_records_lifecycle_evidence_and_resume_reverts() {
@@ -27,12 +29,13 @@ async fn drain_records_lifecycle_evidence_and_resume_reverts() {
             .expect("open core store"),
     );
     seed_active_machine(&machine_roster, "machine_a").await;
+    let tasks = TaskRegistry::default();
 
     let runtime = MachineLifecycleOperation::new(
         nats.controller.clone(),
         controllers.clone(),
         machine_roster.clone(),
-        TaskRegistry::default(),
+        tasks.spawner(),
     );
 
     let accepted = controllers
@@ -86,12 +89,13 @@ async fn drain_of_unknown_machine_fails_without_writing_evidence() {
             .await
             .expect("open core store"),
     );
+    let tasks = TaskRegistry::default();
 
     let runtime = MachineLifecycleOperation::new(
         nats.controller.clone(),
         controllers.clone(),
         machine_roster.clone(),
-        TaskRegistry::default(),
+        tasks.spawner(),
     );
 
     let accepted = controllers
@@ -130,6 +134,68 @@ async fn drain_of_unknown_machine_fails_without_writing_evidence() {
         ),
         "expected NoSuchMachine failure, got {state:?}"
     );
+}
+
+#[tokio::test]
+async fn rejected_worker_admission_records_terminal_interruption_evidence() {
+    let nats = ployz_test_support::nats::TestNats::start().await;
+    let controllers = operation_controllers(nats.controller.clone()).await;
+    let machine_roster = MachineRosterStore::new(
+        crate::control::store::CoreStore::open_in_memory()
+            .await
+            .expect("open core store"),
+    );
+    seed_active_machine(&machine_roster, "machine_a").await;
+    let tasks = TaskRegistry::default();
+    let runtime = MachineLifecycleOperation::new(
+        nats.controller.clone(),
+        controllers.clone(),
+        machine_roster,
+        tasks.spawner(),
+    );
+    tasks
+        .abort_and_join(Duration::from_secs(1))
+        .await
+        .expect("task supervisor closes");
+    let accepted = controllers
+        .submit_machine_lifecycle(MachineLifecycleSubmitCommand {
+            operation_id: operation_id("op_rejected_worker"),
+            machine_id: machine_id("machine_a"),
+            target: MachineLifecycle::Draining,
+        })
+        .await
+        .expect("operation accepts before worker admission");
+
+    runtime.start(accepted).await;
+
+    let status = controllers
+        .repository()
+        .get(&operation_id("op_rejected_worker"))
+        .await
+        .expect("status reads")
+        .expect("status exists");
+    let OperationStatus::MachineLifecycle {
+        state: MachineLifecycleOperationState::Interrupted { evidence },
+        ..
+    } = status
+    else {
+        panic!("rejected worker admission must be terminal: {status:?}");
+    };
+    assert_eq!(evidence.cause(), OperationInterruptionCause::CoreShutdown);
+    let events = controllers
+        .repository()
+        .replay_operation_events(OperationEventReplayRequest {
+            operation_id: operation_id("op_rejected_worker"),
+            start_sequence: event_sequence(1),
+            limit: event_replay_limit(10),
+        })
+        .await
+        .expect("operation events replay");
+    assert!(matches!(
+        events.events.last().map(|event| &event.event),
+        Some(OperationEvent::OperationInterrupted { evidence, .. })
+            if evidence.cause() == OperationInterruptionCause::CoreShutdown
+    ));
 }
 
 async fn seed_active_machine(machine_roster: &MachineRosterStore, machine: &str) {

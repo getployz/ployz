@@ -100,7 +100,8 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
         service.existing_replicas(),
         [ployz_core::deploy::ExistingServiceReplica {
             machine_id: machine_id("machine_a"),
-            container_id: container_id("ctr_target")
+            container_id: container_id("ctr_target"),
+            creation_gate: ployz_core::deploy::ExistingReplicaCreationGate::AlreadyPassed,
         }]
     );
     assert_eq!(
@@ -112,7 +113,7 @@ async fn nats_preparation_loads_active_state_and_observed_target_replicas() {
                 target_namespace_revision_entry_id()
             ),
             cleanup_container("machine_b", "ctr_old", "entry_old"),
-            cleanup_container("machine_b", "ctr_stopped", "entry_target"),
+            stopped_cleanup_container("machine_b", "ctr_stopped", "entry_target"),
         ]
     );
     assert_eq!(
@@ -164,7 +165,8 @@ async fn nats_preparation_uses_active_machines_as_deploy_scope() {
         service.existing_replicas(),
         [ployz_core::deploy::ExistingServiceReplica {
             machine_id: machine_id("edge_2"),
-            container_id: container_id("ctr_target")
+            container_id: container_id("ctr_target"),
+            creation_gate: ployz_core::deploy::ExistingReplicaCreationGate::AlreadyPassed,
         }]
     );
     assert!(command.dataplane_machines().is_empty());
@@ -331,6 +333,8 @@ async fn prepare_command_from_nats(
     facts_reader: &NatsMachineFactsReader,
     step_timeout: Duration,
 ) -> crate::control::operations::deploy::DeployExecutionCommand {
+    let request = ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(request)
+        .expect("test deploy request normalizes");
     let store = crate::control::store::CoreStore::open_in_memory()
         .await
         .expect("open ingress store");
@@ -348,7 +352,7 @@ async fn prepare_command_from_nats(
     )
     .await
     .expect("deploy facts load from nats");
-    prepare_deploy_execution_command(operation_id, request, facts)
+    prepare_deploy_execution_command(operation_id, request.into_request(), facts)
 }
 
 struct TestNats {
@@ -469,6 +473,15 @@ impl StaticRunner {
             existing,
             endpoint_subnet: Arc::new(Mutex::new(None)),
         }
+    }
+}
+
+impl crate::roles::machine::runner::MachineImageRemovalRunner for StaticRunner {
+    async fn remove_image(
+        &self,
+        _image_identity: &ployz_core::image::OciDigest,
+    ) -> Result<ployz_core::image::ImageRemoveOutcome, String> {
+        Ok(ployz_core::image::ImageRemoveOutcome::AlreadyAbsent)
     }
 }
 
@@ -656,7 +669,9 @@ fn deploy_request() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
         origin: None,
+        volumes: std::collections::BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_api"),
             image: ImageReference::try_new("registry.example/api:rev_2")
                 .expect("valid image reference"),
@@ -770,7 +785,7 @@ fn cleanup_container(
     machine_id: &str,
     container_id: &str,
     namespace_revision_entry_id: &str,
-) -> DeployCleanupContainer {
+) -> ployz_core::deploy::ObservedCleanupCandidate {
     cleanup_container_with_entry(
         machine_id,
         container_id,
@@ -782,14 +797,29 @@ fn cleanup_container_with_entry(
     machine_id: &str,
     container_id: &str,
     namespace_revision_entry_id: NamespaceRevisionEntryId,
-) -> DeployCleanupContainer {
-    DeployCleanupContainer {
-        machine_id: self::machine_id(machine_id),
-        container_id: self::container_id(container_id),
-        identity: containers::identity("svc_api")
-            .entry(namespace_revision_entry_id.as_str())
-            .operation("op_existing")
-            .step(&format!("existing_{container_id}"))
-            .build(),
+) -> ployz_core::deploy::ObservedCleanupCandidate {
+    ployz_core::deploy::ObservedCleanupCandidate {
+        target: DeployCleanupContainer {
+            machine_id: self::machine_id(machine_id),
+            container_id: self::container_id(container_id),
+            identity: containers::identity("svc_api")
+                .entry(namespace_revision_entry_id.as_str())
+                .operation("op_existing")
+                .step(&format!("existing_{container_id}"))
+                .build(),
+        },
+        state: ployz_core::machine::runtime::ContainerRuntimeState::running_unroutable(),
+        created_at_unix_seconds: None,
+        observed_image_identity: None,
     }
+}
+
+fn stopped_cleanup_container(
+    machine_id: &str,
+    container_id: &str,
+    namespace_revision_entry_id: &str,
+) -> ployz_core::deploy::ObservedCleanupCandidate {
+    let mut target = cleanup_container(machine_id, container_id, namespace_revision_entry_id);
+    target.state = ployz_core::machine::runtime::ContainerRuntimeState::Exited;
+    target
 }

@@ -19,6 +19,7 @@ use crate::recovery::{
 use crate::recovery::{RecoverySecretError, wrap};
 use crate::release_manifest::{ExactPloyzVersion, ExactPloyzVersionError};
 use clap::{Parser, Subcommand};
+use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes, ZfsPoolName};
 use ployz_core::ids::OperationId;
 use ployz_core::install::{
     FirstMachineInstallArtifacts, FirstMachineInstallSpec, InstallArtifactSpec,
@@ -35,6 +36,12 @@ pub enum HostRunnerCommand {
     CorePromote(HostRunnerCorePromote),
     CoreDemote(HostRunnerCoreDemote),
     SubstrateUpdate(HostRunnerSubstrateUpdate),
+    StoragePrepare(HostRunnerStoragePrepare),
+    StoragePoolFacts,
+    StorageDatasetCreate(HostRunnerDatasetQuota),
+    StorageDatasetGrow(HostRunnerDatasetQuota),
+    StorageDatasetFacts(DatasetName),
+    StorageDatasetDestroy(DatasetName),
 }
 
 pub const DEFAULT_CLOUD_HOST: &str = "https://ployz.dev";
@@ -149,6 +156,18 @@ pub struct HostRunnerSubstrateUpdate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostRunnerStoragePrepare {
+    pub operation_id: OperationId,
+    pub pool: Option<ZfsPoolName>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostRunnerDatasetQuota {
+    pub dataset: DatasetName,
+    pub quota: VolumeMaxSizeBytes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HostRunnerSubstrateUpdateSource {
     Version(ExactPloyzVersion),
     ManifestFile(PathBuf),
@@ -230,6 +249,22 @@ pub fn load_command(
                 },
             },
         )),
+        Some(HostRunnerSubcommand::StoragePrepare { operation_id, pool }) => Ok(
+            HostRunnerCommand::StoragePrepare(HostRunnerStoragePrepare { operation_id, pool }),
+        ),
+        Some(HostRunnerSubcommand::StoragePoolFacts) => Ok(HostRunnerCommand::StoragePoolFacts),
+        Some(HostRunnerSubcommand::StorageDatasetCreate { dataset, quota }) => Ok(
+            HostRunnerCommand::StorageDatasetCreate(HostRunnerDatasetQuota { dataset, quota }),
+        ),
+        Some(HostRunnerSubcommand::StorageDatasetGrow { dataset, quota }) => Ok(
+            HostRunnerCommand::StorageDatasetGrow(HostRunnerDatasetQuota { dataset, quota }),
+        ),
+        Some(HostRunnerSubcommand::StorageDatasetFacts { dataset }) => {
+            Ok(HostRunnerCommand::StorageDatasetFacts(dataset))
+        }
+        Some(HostRunnerSubcommand::StorageDatasetDestroy { dataset }) => {
+            Ok(HostRunnerCommand::StorageDatasetDestroy(dataset))
+        }
     }
 }
 
@@ -294,6 +329,38 @@ enum HostRunnerSubcommand {
         #[arg(long, value_name = "path", conflicts_with = "version")]
         manifest_file: Option<PathBuf>,
     },
+    StoragePrepare {
+        #[arg(long, value_name = "operation-id", value_parser = parse_operation_id)]
+        operation_id: OperationId,
+        #[arg(long, value_name = "pool", value_parser = parse_zfs_pool)]
+        pool: Option<ZfsPoolName>,
+    },
+    #[command(name = "internal-storage-pool-facts", hide = true)]
+    StoragePoolFacts,
+    #[command(name = "internal-storage-dataset-create", hide = true)]
+    StorageDatasetCreate {
+        #[arg(long, value_parser = parse_dataset_name)]
+        dataset: DatasetName,
+        #[arg(long, value_parser = parse_volume_size)]
+        quota: VolumeMaxSizeBytes,
+    },
+    #[command(name = "internal-storage-dataset-grow", hide = true)]
+    StorageDatasetGrow {
+        #[arg(long, value_parser = parse_dataset_name)]
+        dataset: DatasetName,
+        #[arg(long, value_parser = parse_volume_size)]
+        quota: VolumeMaxSizeBytes,
+    },
+    #[command(name = "internal-storage-dataset-facts", hide = true)]
+    StorageDatasetFacts {
+        #[arg(long, value_parser = parse_dataset_name)]
+        dataset: DatasetName,
+    },
+    #[command(name = "internal-storage-dataset-destroy", hide = true)]
+    StorageDatasetDestroy {
+        #[arg(long, value_parser = parse_dataset_name)]
+        dataset: DatasetName,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -335,6 +402,21 @@ impl std::str::FromStr for CliJoinToken {
 
 fn parse_operation_id(value: &str) -> Result<OperationId, String> {
     OperationId::try_new(value).map_err(|error| error.to_string())
+}
+
+fn parse_zfs_pool(value: &str) -> Result<ZfsPoolName, String> {
+    ZfsPoolName::try_new(value).map_err(|error| error.to_string())
+}
+
+fn parse_dataset_name(value: &str) -> Result<DatasetName, String> {
+    DatasetName::try_new(value).map_err(|error| error.to_string())
+}
+
+fn parse_volume_size(value: &str) -> Result<VolumeMaxSizeBytes, String> {
+    value
+        .parse::<u64>()
+        .map_err(|error| error.to_string())
+        .and_then(|value| VolumeMaxSizeBytes::try_new(value).map_err(|error| error.to_string()))
 }
 
 fn parse_cloud_bootstrap_token(value: &str) -> Result<CloudBootstrapToken, String> {

@@ -96,55 +96,6 @@ pub enum EnvValueError {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
-#[cfg_attr(feature = "typescript", ts(type = "Brand<string, \"VolumeName\">"))]
-#[serde(try_from = "String", into = "String")]
-pub struct VolumeName(String);
-
-impl VolumeName {
-    pub fn try_new(value: impl Into<String>) -> Result<Self, VolumeNameError> {
-        let value = value.into();
-        if value.is_empty() {
-            return Err(VolumeNameError::Empty);
-        }
-        if !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-        {
-            return Err(VolumeNameError::InvalidCharacter { value });
-        }
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for VolumeName {
-    type Error = VolumeNameError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::try_new(value)
-    }
-}
-
-impl From<VolumeName> for String {
-    fn from(value: VolumeName) -> Self {
-        value.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum VolumeNameError {
-    #[error("volume name is empty")]
-    Empty,
-    #[error("volume name contains invalid characters: {value}")]
-    InvalidCharacter { value: String },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[cfg_attr(
     feature = "typescript",
     ts(type = "Brand<string, \"ContainerMountPath\">")

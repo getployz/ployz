@@ -21,6 +21,7 @@ export {
   certValidAt,
   containerId,
   containerMountPath,
+  containerRetentionCount,
   deployReservationId,
   eventSequence,
   failureMessage,
@@ -47,6 +48,7 @@ export {
 
 import {
   containerId,
+  containerRetentionCount,
   imageReference,
   installArtifactVersion,
   logsTailLines,
@@ -146,6 +148,7 @@ export interface PloyzDeployInput {
   serviceId: string;
   image: string;
   replicas: number;
+  keep?: number;
   routes?: Array<{
     hostname: string;
     port: number;
@@ -376,6 +379,7 @@ export function deploySubmitRequest(
           service_id: serviceId(input.serviceId),
           image: imageReference(input.image),
           replicas: replicaCount(input.replicas),
+          keep: input.keep === undefined ? undefined : containerRetentionCount(input.keep),
           runtime: imageDefaultRuntime(),
           routes: (input.routes ?? []).map((route) => ({
             target: {

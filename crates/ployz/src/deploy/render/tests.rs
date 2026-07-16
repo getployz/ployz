@@ -3,13 +3,13 @@ use ployz_core::certificate::{ActiveCertState, CertBundleRef, CertValidAt, CertV
 use ployz_core::deploy::{
     ContainerRuntimeSpec, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployRequest, DeployRoute,
     DeployRouteTarget, DeployServicePlan, DeployServiceSpec, ImageReference, ImageSource,
-    ReplicaCount, ReplicaSlot,
+    PlatformImage, PushedImageReceipt, ReplicaCount, ReplicaSlot,
 };
 use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
     OperationId, ServiceId,
 };
-use ployz_core::image::OciDigest;
+use ployz_core::image::{OciDigest, OciPlatform};
 use ployz_core::ingress::AutomaticHostnameLabel;
 use ployz_core::operation::{
     ArtifactUnavailableReason, CertificateProvisionFailure, DeployCompletionOutcome,
@@ -44,6 +44,7 @@ fn route_port(value: u16) -> RoutePort {
 
 fn service(name: &str, image: &str, replicas: u16, routes: Vec<DeployRoute>) -> DeployServiceSpec {
     DeployServiceSpec {
+        keep: None,
         service_id: service_id(name),
         image: ImageReference::try_new(image).expect("valid image reference"),
         image_source: ImageSource::Registry,
@@ -59,6 +60,7 @@ fn target() -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id(),
         origin: None,
+        volumes: std::collections::BTreeMap::new(),
         services: vec![
             service(
                 "web",
@@ -98,11 +100,17 @@ fn direct_image_target() -> DeployRequest {
     let [service] = target.services.as_mut_slice() else {
         panic!("single-service target must contain one service");
     };
-    service.image_source = ImageSource::PushedToSeed {
-        seed: machine_id("hetzner-1"),
-        manifest_digest: OciDigest::sha256(b"manifest"),
-        image_id: OciDigest::sha256(b"image-config"),
-    };
+    service.image_source = ImageSource::PushedToSeed(
+        PushedImageReceipt::try_new([(
+            platform(),
+            PlatformImage {
+                seed: machine_id("hetzner-1"),
+                manifest_digest: OciDigest::sha256(b"manifest"),
+                image_id: OciDigest::sha256(b"image-config"),
+            },
+        )])
+        .expect("pushed receipt"),
+    );
     target
 }
 
@@ -139,7 +147,7 @@ fn plan() -> DeployPlan {
             ],
         }],
         volume_pin_commits: Vec::new(),
-        cleanup_containers: Vec::new(),
+        cleanup_actions: Vec::new(),
     }
 }
 
@@ -367,6 +375,31 @@ fn certificate_stage_marks_containers_healthy_and_routes_as_provisioning() {
 #[test]
 fn pushed_image_stays_pending_until_availability_is_verified() {
     let operation_id = operation_id();
+    let mut target = direct_image_target();
+    let [service] = target.services.as_mut_slice() else {
+        panic!("direct-image target must contain one service");
+    };
+    service.image_source = ImageSource::PushedToSeed(
+        PushedImageReceipt::try_new([
+            (
+                platform(),
+                PlatformImage {
+                    seed: machine_id("hetzner-1"),
+                    manifest_digest: OciDigest::sha256(b"manifest"),
+                    image_id: OciDigest::sha256(b"image-config"),
+                },
+            ),
+            (
+                OciPlatform::try_new("linux", "arm64").expect("platform"),
+                PlatformImage {
+                    seed: machine_id("hetzner-2"),
+                    manifest_digest: OciDigest::sha256(b"arm-manifest"),
+                    image_id: OciDigest::sha256(b"arm-image-config"),
+                },
+            ),
+        ])
+        .expect("multi-platform pushed receipt"),
+    );
     let mut direct_plan = plan();
     let [phase] = direct_plan.phases.as_mut_slice() else {
         panic!("direct-image plan must contain one phase");
@@ -379,7 +412,7 @@ fn pushed_image_stays_pending_until_availability_is_verified() {
             OperationEvent::DeploySubmitted {
                 operation_id: operation_id.clone(),
                 reservation_id: Some(ployz_core::deploy::DeployReservationId::first()),
-                target: direct_image_target(),
+                target,
             },
         ),
         replay(
@@ -404,11 +437,35 @@ fn pushed_image_stays_pending_until_availability_is_verified() {
 
     tree.ingest_page(&[replay(
         4,
+        OperationEvent::DeployRunning {
+            operation_id: operation_id.clone(),
+            stage: DeployRunningStage::StartingContainers,
+        },
+    )]);
+
+    assert!(!render_frame(&tree).contains("✓ ghcr.io/acme/web:1"));
+
+    tree.ingest_page(&[replay(
+        5,
+        OperationEvent::DeployImageAvailabilityVerified {
+            operation_id: operation_id.clone(),
+            service_id: service_id("web"),
+            seed: machine_id("hetzner-1"),
+            platform: platform(),
+            manifest_digest: OciDigest::sha256(b"manifest"),
+        },
+    )]);
+
+    assert!(!render_frame(&tree).contains("✓ ghcr.io/acme/web:1"));
+
+    tree.ingest_page(&[replay(
+        6,
         OperationEvent::DeployImageAvailabilityVerified {
             operation_id,
             service_id: service_id("web"),
-            seed: machine_id("hetzner-1"),
-            manifest_digest: OciDigest::sha256(b"manifest"),
+            seed: machine_id("hetzner-2"),
+            platform: OciPlatform::try_new("linux", "arm64").expect("platform"),
+            manifest_digest: OciDigest::sha256(b"arm-manifest"),
         },
     )]);
 
@@ -417,6 +474,10 @@ fn pushed_image_stays_pending_until_availability_is_verified() {
         render_plain_lines(&tree)
             .contains("deploy op_317: images — ghcr.io/acme/web:1 available from hetzner-1\n")
     );
+}
+
+fn platform() -> OciPlatform {
+    OciPlatform::try_new("linux", "amd64").expect("platform")
 }
 
 #[test]

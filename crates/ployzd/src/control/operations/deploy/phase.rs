@@ -1,4 +1,6 @@
-use ployz_core::deploy::{DeployPhasePlan, DeployPlanStep, ImageSource};
+use ployz_core::deploy::{
+    DeployPhasePlan, DeployPlanStep, ExistingReplicaCreationGate, ImageSource,
+};
 use ployz_core::ids::ServiceId;
 use ployz_core::operation::{
     ControlPlaneCommitScope, DeployEvidence, DeployPhaseNumber, DeployPhaseOutcome,
@@ -12,7 +14,8 @@ use super::{
     DeployExecutionStep, DeployHealthCheckError, DeployHealthChecker, DeployOperationRecorder,
     DeployPhasePromotion, DeployServiceExecutionCommand, MachineContainerRuntime,
     NamespaceStateCommitter, RunContainerDisposition, deploy_step_id, record_evidence,
-    record_running_stage, run_deploy_step, run_pre_start_hook, service_result, with_step_timeout,
+    record_running_stage, requires_docker_healthcheck, run_deploy_step, run_pre_start_hook,
+    service_result, with_step_timeout,
 };
 
 #[derive(Debug, Clone)]
@@ -121,6 +124,19 @@ impl<'a> DeployRun<'a> {
         }
     }
 
+    fn existing_container(
+        &mut self,
+        container: DeployContainer,
+        creation_gate: ExistingReplicaCreationGate,
+    ) {
+        if creation_gate == ExistingReplicaCreationGate::RequiredAfterInterruption {
+            let DeployRunPhase::During(phase) = &mut self.phase else {
+                unreachable!("container work requires an active deploy phase");
+            };
+            phase.health_check_containers.push(container);
+        }
+    }
+
     fn service_completed(&mut self, result: DeployServiceResult) {
         let DeployRunPhase::During(phase) = &mut self.phase else {
             unreachable!("service work requires an active deploy phase");
@@ -152,7 +168,7 @@ impl<'a> DeployRun<'a> {
             return None;
         };
         phase
-            .phase_created_containers
+            .health_check_containers
             .iter()
             .find(|container| container.container_id == *container_id)
     }
@@ -207,7 +223,7 @@ impl<'a> DeployRun<'a> {
             DeployRunPhase::During(phase) => phase.phase_created_containers.as_slice(),
         };
         let failure = DeployExecutionFailure::with_stop_targets(self.command, source, &[], cleanup);
-        self.with_phase_context(failure, Some(service.request.service_id.clone()))
+        self.with_phase_context(failure, Some(service.service.service_id.clone()))
     }
 
     fn with_phase_context(
@@ -246,11 +262,8 @@ where
 {
     if phase.services.iter().any(|planned| {
         command.services().iter().any(|service| {
-            service.request.service_id == planned.service_id
-                && matches!(
-                    service.request.image_source,
-                    ImageSource::PushedToSeed { .. }
-                )
+            service.service.service_id == planned.service_id
+                && matches!(service.service.image_source, ImageSource::PushedToSeed(_))
         })
     }) {
         ensure_images(command, &phase.services, recorder, machine_runtime)
@@ -262,7 +275,7 @@ where
         let Some(service) = command
             .services()
             .iter()
-            .find(|service| service.request.service_id == service_plan.service_id)
+            .find(|service| service.service.service_id == service_plan.service_id)
         else {
             return Err(run.fail(DeployExecutionError::PlanInconsistent {
                 service_id: service_plan.service_id.clone(),
@@ -277,7 +290,7 @@ where
                 machine_runtime,
             )
             .await
-            .map_err(|source| run.fail_service(source, service.request.service_id.clone()))?;
+            .map_err(|source| run.fail_service(source, service.service.service_id.clone()))?;
         }
         for step in &service_plan.steps {
             match step {
@@ -285,22 +298,37 @@ where
                     machine_id,
                     container_id,
                     slot,
-                } => containers.push(DeployContainer {
-                    service_id: service.request.service_id.clone(),
-                    namespace_revision_entry_id: service
-                        .request
-                        .namespace_revision_entry_id
-                        .clone(),
-                    machine_id: machine_id.clone(),
-                    container_id: container_id.clone(),
-                    step_id: deploy_step_id(*slot).map_err(|source| {
-                        run.fail_service(
-                            DeployExecutionError::StepId(source),
-                            service.request.service_id.clone(),
-                        )
-                    })?,
-                    requires_docker_healthcheck: false,
-                }),
+                } => {
+                    let Some(existing) = service.existing_replicas.iter().find(|existing| {
+                        existing.machine_id == *machine_id && existing.container_id == *container_id
+                    }) else {
+                        return Err(run.fail_service(
+                            DeployExecutionError::PlanInconsistent {
+                                service_id: service.service.service_id.clone(),
+                            },
+                            service.service.service_id.clone(),
+                        ));
+                    };
+                    let container = DeployContainer {
+                        service_id: service.service.service_id.clone(),
+                        namespace_revision_entry_id: service
+                            .service
+                            .namespace_revision_entry_id(command.request.namespace_id()),
+                        machine_id: machine_id.clone(),
+                        container_id: container_id.clone(),
+                        step_id: deploy_step_id(*slot).map_err(|source| {
+                            run.fail_service(
+                                DeployExecutionError::StepId(source),
+                                service.service.service_id.clone(),
+                            )
+                        })?,
+                        requires_docker_healthcheck: existing.creation_gate
+                            == ExistingReplicaCreationGate::RequiredAfterInterruption
+                            && requires_docker_healthcheck(service),
+                    };
+                    containers.push(container.clone());
+                    run.existing_container(container, existing.creation_gate);
+                }
                 DeployPlanStep::RunContainer { machine_id, slot } => {
                     let run_result = with_step_timeout(
                         command,
@@ -333,7 +361,7 @@ where
                     )
                     .await
                     .map_err(|source| {
-                        run.fail_service(source, service.request.service_id.clone())
+                        run.fail_service(source, service.service.service_id.clone())
                     })?;
                 }
             }
@@ -390,7 +418,7 @@ where
             phase
                 .services
                 .iter()
-                .any(|planned| planned.service_id == service.request.service_id)
+                .any(|planned| planned.service_id == service.service.service_id)
         })
         .collect::<Vec<_>>();
     let ployz_automatic_route = command
@@ -486,7 +514,7 @@ where
         .filter(|binding| {
             phase_services
                 .iter()
-                .any(|service| service.request.service_id == binding.service_id)
+                .any(|service| service.service.service_id == binding.service_id)
         })
         .map(|binding| binding.target.clone())
         .collect();
@@ -521,10 +549,11 @@ where
         scope: scope.clone(),
         route_bindings,
         route_binding_removals,
-        first_serving_target_entry: first_service.serving_target_entry_state(),
+        first_serving_target_entry: first_service
+            .serving_target_entry_state(command.request.namespace_id()),
         remaining_serving_target_entries: remaining_services
             .iter()
-            .map(|service| service.serving_target_entry_state())
+            .map(|service| service.serving_target_entry_state(command.request.namespace_id()))
             .collect(),
     };
     with_step_timeout(

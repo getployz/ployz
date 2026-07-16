@@ -7,6 +7,12 @@ use std::time::Duration;
 use crate::certificate::{AcmeIssueContext, AcmeIssuer, AcmeIssuerError, IssuedCertificate};
 use crate::config::ControlProcessConfig;
 use crate::control::intent::machine_roster::MachineRosterStore;
+use crate::control::intent::namespace_intent::NamespaceIntentStore;
+use crate::control::operation_evidence::{
+    CertOperationSubmission, MachineAddOperationSubmission, MachineJoinIdentity,
+    ManagedDnsReconcileOperationSubmission, NamespaceRemoveOperationSubmission,
+    OperationRepository,
+};
 use crate::control::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
 };
@@ -26,19 +32,27 @@ use async_trait::async_trait;
 use ployz::api_client::OperationApiClient;
 use ployz_core::deploy::{
     DeployPlanningInput, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec,
-    ImageReference, ReplicaCount, plan_namespace_deploy,
+    ImageReference, ReplicaCount, VolumeName, plan_namespace_deploy,
 };
-use ployz_core::ids::OperationId;
-use ployz_core::install::MachineBootstrapUrl;
-use ployz_core::intent::ActiveMachineState;
+use ployz_core::ids::{CertId, OperationId};
+use ployz_core::install::{HostPortAssurance, MachineBootstrapUrl};
+use ployz_core::intent::{ActiveMachineState, VolumePinState};
 use ployz_core::machine::MachineName;
 use ployz_core::machine::roles::InstallRolePolicy;
 use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
-use ployz_core::machine::{MachineEndpointObservation, MachineLifecycle};
+use ployz_core::machine::{
+    IssuedJoinToken, JoinTokenExpiresAt, MachineAddFailure, MachineAddInterruptionNextAction,
+    MachineAddInterruptionStage, MachineAddInterruptionUncertainWork,
+    MachineCredentialProvisioningStep, MachineEndpointObservation, MachineLifecycle, RawJoinToken,
+};
+use ployz_core::network::MachineEndpointSubnet;
 use ployz_core::operation::{
-    DeployCompletionOutcome, DeployOperationState, DeployPhaseNumber, DeployPhaseOutcome,
-    DeployRunningStage, DeployServiceResult, EventSequence, OperationEvent,
-    OperationEventReplayCursor, OperationEventReplayRequest, OperationStatus,
+    CertInterruptionStage, CertOperationState, CertificateInterruptionNextAction,
+    CertificateProvisionFailure, DeployCompletionOutcome, DeployOperationState, DeployPhaseNumber,
+    DeployPhaseOutcome, DeployRunningStage, DeployServiceResult, EventSequence,
+    MachineAddOperationState, ManagedDnsReconcileFailureClass, ManagedDnsReconcileOperationState,
+    ManagedDnsReconcileSubject, OperationEvent, OperationEventReplayCursor,
+    OperationEventReplayRequest, OperationInterruptionCause, OperationStatus,
 };
 use ployz_nats::operation_api_client::OperationApiClientError;
 use ployz_nats::service_runtime::request_json;
@@ -63,10 +77,200 @@ use crate::tests::support::http::{
 };
 use crate::tests::support::nats::TestNats;
 use ployz_test_support::containers;
+use ployz_test_support::fixtures::machine_join_bundle;
 use ployz_test_support::ids::{
     event_replay_limit, event_sequence, idempotency_key, machine_id, namespace_id, route_hostname,
     route_port, service_id,
 };
+
+#[tokio::test]
+async fn graceful_shutdown_records_owned_operation_interruption() {
+    let nats = TestNats::start_with_machines(&[]).await;
+    let config = nats
+        .control_config(machine_id("core_1"))
+        .with_machine_bootstrap(machine_bootstrap_config());
+    let runtime = nats.start_control(&config).await.expect("control starts");
+    let store = CoreStore::open(config.core_db_path.clone())
+        .await
+        .expect("core store opens");
+    let repository = OperationRepository::open(store, nats.controller_client());
+    let operation_id =
+        OperationId::try_new("op_shutdown_interruption").expect("valid operation id");
+    repository
+        .submit_namespace_remove(NamespaceRemoveOperationSubmission {
+            operation_id: operation_id.clone(),
+            namespace_id: namespace_id("team-a"),
+        })
+        .await
+        .expect("operation is accepted");
+    let cert_operation_id = OperationId::try_new("op_shutdown_cert").expect("operation id");
+    repository
+        .submit_cert(CertOperationSubmission {
+            operation_id: cert_operation_id.clone(),
+            cert_id: CertId::try_new("cert_shutdown").expect("certificate id"),
+        })
+        .await
+        .expect("certificate operation accepts");
+    let managed_dns_operation_id =
+        OperationId::try_new("op_shutdown_managed_dns").expect("operation id");
+    repository
+        .submit_managed_dns_reconcile(ManagedDnsReconcileOperationSubmission {
+            operation_id: managed_dns_operation_id.clone(),
+            subject: ManagedDnsReconcileSubject::Acquire,
+        })
+        .await
+        .expect("managed DNS operation accepts");
+    let machine_add_operation_id =
+        OperationId::try_new("op_shutdown_machine_add").expect("operation id");
+    let raw_join_token = RawJoinToken::try_new("shutdown-machine-token").expect("join token");
+    repository
+        .submit_machine_add(MachineAddOperationSubmission {
+            operation_id: machine_add_operation_id.clone(),
+            idempotency_key: idempotency_key("idem_shutdown_machine_add"),
+            identity: MachineJoinIdentity {
+                machine_id: machine_id("shutdown_machine"),
+                name: MachineName::try_new("shutdown-machine").expect("machine name"),
+                roles: InstallRolePolicy::install_all(),
+                host_port_assurance: HostPortAssurance::Keeper,
+                endpoint_subnet: MachineEndpointSubnet::try_new("10.198.90.0/24")
+                    .expect("endpoint subnet"),
+                join_bundle: machine_join_bundle(),
+                join_token: IssuedJoinToken::new(
+                    raw_join_token.fingerprint().expect("join fingerprint"),
+                    JoinTokenExpiresAt::try_new(4_102_444_800).expect("join expiry"),
+                ),
+                raw_join_token,
+            },
+        })
+        .await
+        .expect("machine-add operation accepts");
+    repository
+        .record_machine_add_credential_provisioned(
+            &machine_add_operation_id,
+            &machine_id("shutdown_machine"),
+            MachineCredentialProvisioningStep::Rendered,
+        )
+        .await
+        .expect("machine-add credential stage records");
+
+    runtime.shutdown().await.expect("control shuts down");
+
+    let status = repository
+        .get(&operation_id)
+        .await
+        .expect("status reads")
+        .expect("status exists");
+    assert!(matches!(
+        status,
+        OperationStatus::NamespaceRemove {
+            state: ployz_core::operation::NamespaceRemoveOperationState::Interrupted {
+                evidence,
+            },
+            ..
+        } if evidence.cause() == OperationInterruptionCause::CoreShutdown
+    ));
+    assert!(matches!(
+        repository
+            .get(&cert_operation_id)
+            .await
+            .expect("certificate status reads")
+            .expect("certificate status exists"),
+        OperationStatus::Cert {
+            state: CertOperationState::Failed { failure },
+            ..
+        } if matches!(
+            failure.failure(),
+            CertificateProvisionFailure::CoreInterrupted {
+                cause: OperationInterruptionCause::CoreShutdown,
+                last_durable_stage: CertInterruptionStage::Accepted,
+                next_action: CertificateInterruptionNextAction::RetryFromCurrentIntent,
+            }
+        )
+    ));
+    assert!(matches!(
+        repository
+            .get(&managed_dns_operation_id)
+            .await
+            .expect("managed DNS status reads")
+            .expect("managed DNS status exists"),
+        OperationStatus::ManagedDnsReconcile {
+            state: ManagedDnsReconcileOperationState::Failed { failure },
+            ..
+        } if failure.class == ManagedDnsReconcileFailureClass::Interrupted
+    ));
+    assert!(matches!(
+        repository
+            .get(&machine_add_operation_id)
+            .await
+            .expect("machine-add status reads")
+            .expect("machine-add status exists"),
+        OperationStatus::MachineAdd {
+            state: MachineAddOperationState::Failed {
+                failure: MachineAddFailure::ControlTaskInterrupted { evidence },
+            },
+            ..
+        } if evidence.cause() == OperationInterruptionCause::CoreShutdown
+            && evidence.last_durable_stage()
+                == MachineAddInterruptionStage::CredentialProvisioning {
+                    step: MachineCredentialProvisioningStep::Rendered,
+                }
+            && evidence.uncertain_work()
+                == MachineAddInterruptionUncertainWork::CredentialAuthorityAndDelivery
+            && evidence.next_action() == MachineAddInterruptionNextAction::InspectThenResubmit
+    ));
+}
+
+#[tokio::test]
+async fn startup_recovers_process_loss_without_mutating_committed_intent() {
+    let nats = TestNats::start_with_machines(&[]).await;
+    let config = nats
+        .control_config(machine_id("core_1"))
+        .with_machine_bootstrap(machine_bootstrap_config());
+    let store = CoreStore::open(config.core_db_path.clone())
+        .await
+        .expect("core store opens");
+    let repository = OperationRepository::open(store.clone(), nats.controller_client());
+    let operation_id = OperationId::try_new("op_process_loss").expect("valid operation id");
+    repository
+        .submit_namespace_remove(NamespaceRemoveOperationSubmission {
+            operation_id: operation_id.clone(),
+            namespace_id: namespace_id("team-a"),
+        })
+        .await
+        .expect("operation is accepted");
+    let volume_pin = VolumePinState::plain(
+        namespace_id("team-a"),
+        VolumeName::try_new("uploads").expect("volume name"),
+        machine_id("edge_1"),
+    );
+    let intent = NamespaceIntentStore::new(store);
+    intent
+        .replace_volume_pin(volume_pin.clone())
+        .await
+        .expect("intent commits");
+
+    let runtime = nats.start_control(&config).await.expect("control restarts");
+
+    let status = repository
+        .get(&operation_id)
+        .await
+        .expect("status reads")
+        .expect("status exists");
+    assert!(matches!(
+        status,
+        OperationStatus::NamespaceRemove {
+            state: ployz_core::operation::NamespaceRemoveOperationState::Interrupted {
+                evidence,
+            },
+            ..
+        } if evidence.cause() == OperationInterruptionCause::PriorCoreProcessLoss
+    ));
+    assert_eq!(
+        intent.load().await.expect("intent loads").volume_pins,
+        [volume_pin]
+    );
+    runtime.shutdown().await.expect("control shuts down");
+}
 
 #[tokio::test]
 async fn e2e_operations_over_real_nats() -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -247,11 +451,14 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
         panic!("deploy target has one service");
     };
     resolved_service.image = resolved_image.clone();
-    let resolved_service_target = resolved_target
-        .service_requests()
-        .into_iter()
-        .next()
-        .expect("resolved deploy target has one service");
+    let normalized_resolved_target =
+        ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(resolved_target.clone())
+            .expect("request normalizes");
+    let resolved_service_target = normalized_resolved_target
+        .services()
+        .first()
+        .expect("resolved deploy target has one service")
+        .clone();
     assert_eq!(
         api.service_inspect(&ServiceInspectRequest {
             namespace_id: namespace_id("default"),
@@ -260,7 +467,7 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
         .await?
         .active
         .namespace_revision_entry_id,
-        resolved_service_target.namespace_revision_entry_id.clone()
+        resolved_service_target.namespace_revision_entry_id(&namespace_id("default"))
     );
     assert_eq!(
         operation_events(&api, deploy_operation.clone(), accepted.start_sequence).await?,
@@ -284,10 +491,9 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
             OperationEvent::DeployPlanCreated {
                 operation_id: deploy_operation.clone(),
                 plan: plan_namespace_deploy(
-                    namespace_id("default"),
-                    resolved_target.namespace_revision_id(),
+                    &normalized_resolved_target,
                     vec![DeployPlanningInput {
-                        request: resolved_service_target,
+                        service_id: resolved_service_target.service_id,
                         eligible_machines: vec![machine_id("machine_a")],
                         existing_replicas: Vec::new(),
                         cleanup_candidates: Vec::new(),
@@ -811,7 +1017,9 @@ fn deploy_target(service_id: &str) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
         origin: None,
+        volumes: std::collections::BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: self::service_id(service_id),
             image: image("ghcr.io/acme/api:rev-2"),
             image_source: ployz_core::deploy::ImageSource::Registry,
@@ -845,6 +1053,7 @@ fn machine_rpc_probe_request() -> MachineContainerRunRpcRequest {
             reference: image("ghcr.io/acme/api:probe"),
         },
         runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+        provisioned_volumes: Vec::new(),
         container: containers::identity("svc_probe")
             .entry("rev_probe")
             .operation("op_probe")

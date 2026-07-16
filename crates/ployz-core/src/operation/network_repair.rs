@@ -19,7 +19,10 @@ use super::projection::{
     project_transition,
 };
 use super::text::{CancellationReason, FailureMessage};
-use super::{EventSequence, OperationKind, OperationStatus};
+use super::{
+    EventSequence, OperationInterruptionCause, OperationInterruptionEvidence,
+    OperationInterruptionStage, OperationKind, OperationStatus,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -35,19 +38,55 @@ pub enum NetworkRepairRunningStage {
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum NetworkRepairOperationState {
     Accepted,
-    Running { stage: NetworkRepairRunningStage },
+    Running {
+        stage: NetworkRepairRunningStage,
+    },
     Completed,
-    Failed { failure: NetworkRepairFailure },
-    Cancelled { reason: CancellationReason },
+    Failed {
+        failure: NetworkRepairFailure,
+    },
+    Cancelled {
+        reason: CancellationReason,
+    },
+    Interrupted {
+        evidence: OperationInterruptionEvidence,
+    },
 }
 
 impl NetworkRepairOperationState {
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
-            Self::Completed | Self::Failed { .. } | Self::Cancelled { .. } => true,
+            Self::Completed
+            | Self::Failed { .. }
+            | Self::Cancelled { .. }
+            | Self::Interrupted { .. } => true,
             Self::Accepted | Self::Running { .. } => false,
         }
+    }
+
+    pub(super) fn interruption_evidence(
+        &self,
+        cause: OperationInterruptionCause,
+    ) -> Option<OperationInterruptionEvidence> {
+        let last_durable_stage = match self {
+            Self::Accepted => OperationInterruptionStage::NetworkRepairAccepted,
+            Self::Running { stage } => {
+                OperationInterruptionStage::NetworkRepairRunning { stage: *stage }
+            }
+            Self::Completed
+            | Self::Failed { .. }
+            | Self::Cancelled { .. }
+            | Self::Interrupted { .. } => return None,
+        };
+        Some(OperationInterruptionEvidence::new(
+            cause,
+            last_durable_stage,
+        ))
+    }
+
+    pub(super) const fn interrupted(evidence: OperationInterruptionEvidence) -> Self {
+        Self::Interrupted { evidence }
     }
 }
 
@@ -320,11 +359,13 @@ fn transition_allowed(
             | NetworkRepairOperationState::Failed { .. }
             | NetworkRepairOperationState::Cancelled { .. },
         ) => true,
-        (
+        (_, NetworkRepairOperationState::Interrupted { .. })
+        | (
             NetworkRepairOperationState::Accepted
             | NetworkRepairOperationState::Completed
             | NetworkRepairOperationState::Failed { .. }
-            | NetworkRepairOperationState::Cancelled { .. },
+            | NetworkRepairOperationState::Cancelled { .. }
+            | NetworkRepairOperationState::Interrupted { .. },
             _,
         )
         | (

@@ -779,9 +779,7 @@ mod tests {
             nats.machine_client(&machine_id("dns_a")).await,
             machine_id("dns_a"),
             cache,
-            Some(Arc::new(Mutex::new(InternalResolverHealth::Serving {
-                bound,
-            }))),
+            Some(InternalResolverHealth::serving(bound)),
             Arc::new(Mutex::new(InternalDnsIntentHealth::pending())),
         )
         .await

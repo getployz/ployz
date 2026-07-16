@@ -10,6 +10,7 @@ import {
   type CertValidAt,
   type ContainerId,
   type ContainerMountPath,
+  type ContainerRetentionCount,
   type DeployReservationId,
   type EventSequence,
   type FailureMessage,
@@ -146,6 +147,10 @@ export function replicaCount(value: number): ReplicaCount {
   return positiveU16(value, "replica count") as ReplicaCount;
 }
 
+export function containerRetentionCount(value: number): ContainerRetentionCount {
+  return nonNegativeU16(value, "container retention count") as ContainerRetentionCount;
+}
+
 export function eventSequence(value: U64WireInput): EventSequence {
   return positiveU64String(value, "event sequence") as EventSequence;
 }
@@ -269,6 +274,14 @@ function visibleAscii(value: string, label: string): string {
 function positiveU16(value: number, label: string): number {
   if (!Number.isSafeInteger(value) || value < 1 || value > 65_535) {
     throw new RangeError(`${label} must be an integer from 1 to 65535`);
+  }
+
+  return value;
+}
+
+function nonNegativeU16(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value < 0 || value > 65_535) {
+    throw new RangeError(`${label} must be an integer from 0 to 65535`);
   }
 
   return value;

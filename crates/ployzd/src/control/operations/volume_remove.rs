@@ -9,7 +9,7 @@ use crate::control::role_client::machine::{
     NatsMachineContainerRuntime, NatsMachineFactsReader, read_available_machine_facts_by_id,
 };
 use crate::control::sequencer::OperationControllers;
-use crate::tasks::TaskRegistry;
+use crate::tasks::TaskSpawner;
 use ployz_core::deploy::VolumeName;
 use ployz_core::ids::{NamespaceId, OperationId};
 use ployz_core::intent::IntentSnapshot;
@@ -27,7 +27,7 @@ pub struct VolumeRemoveOperation {
     namespace_intent: NamespaceIntentStore,
     controllers: OperationControllers,
     step_timeout: Duration,
-    task_registry: TaskRegistry,
+    task_registry: TaskSpawner,
 }
 
 impl VolumeRemoveOperation {
@@ -37,7 +37,7 @@ impl VolumeRemoveOperation {
         namespace_intent: NamespaceIntentStore,
         controllers: OperationControllers,
         step_timeout: Duration,
-        task_registry: TaskRegistry,
+        task_registry: TaskSpawner,
     ) -> Self {
         Self {
             client,
@@ -48,14 +48,20 @@ impl VolumeRemoveOperation {
         }
     }
 
-    pub fn start(&self, accepted: AcceptedVolumeRemoveSubmission) {
+    pub async fn start(&self, accepted: AcceptedVolumeRemoveSubmission) {
         if !accepted.should_start_execution {
             return;
         }
+        let operation_id = accepted.operation_id.clone();
         let runtime = self.clone();
-        self.task_registry.spawn(async move {
-            runtime.run(accepted).await;
-        });
+        super::finish_rejected_task_admission(
+            &self.controllers,
+            &operation_id,
+            self.task_registry.spawn(|| async move {
+                runtime.run(accepted).await;
+            }),
+        )
+        .await;
     }
 
     pub async fn run(self, accepted: AcceptedVolumeRemoveSubmission) {
@@ -110,12 +116,12 @@ impl VolumeRemoveOperation {
         }
 
         let facts =
-            read_available_machine_facts_by_id(facts_reader, [pin.machine_id.clone()]).await;
-        if !facts.contains_key(&pin.machine_id) {
+            read_available_machine_facts_by_id(facts_reader, [pin.machine_id().clone()]).await;
+        if !facts.contains_key(pin.machine_id()) {
             self.record_failed(
                 &accepted.operation_id,
                 VolumeRemoveFailure::MachineUnavailable {
-                    machine_id: pin.machine_id,
+                    machine_id: pin.machine_id().clone(),
                     message: failure_message("machine did not answer runtime fact request"),
                 },
             )
@@ -125,18 +131,18 @@ impl VolumeRemoveOperation {
 
         if let Err(error) = machine_runtime
             .remove_volume(
-                &pin.machine_id,
+                pin.machine_id(),
                 accepted.operation_id.clone(),
-                &pin.namespace_id,
-                &pin.volume_name,
+                pin.namespace_id(),
+                pin.volume_name(),
             )
             .await
         {
             self.record_failed(
                 &accepted.operation_id,
                 VolumeRemoveFailure::VolumeRemoveFailed {
-                    machine_id: pin.machine_id,
-                    volume: pin.volume_name,
+                    machine_id: pin.machine_id().clone(),
+                    volume: pin.volume_name().clone(),
                     message: failure_message(error.to_string()),
                 },
             )
@@ -207,7 +213,7 @@ fn removable_volume_pin(
     let Some(pin) = intent
         .volume_pins
         .iter()
-        .find(|pin| &pin.namespace_id == namespace_id && &pin.volume_name == volume_name)
+        .find(|pin| pin.namespace_id() == namespace_id && pin.volume_name() == volume_name)
     else {
         return Err(VolumeRemoveFailure::VolumeNotFound {
             namespace_id: namespace_id.clone(),
@@ -258,11 +264,11 @@ mod tests {
             .expect("empty projection"),
             route_bindings: Vec::new(),
             serving_target_entries: vec![target],
-            volume_pins: vec![VolumePinState {
-                namespace_id: namespace_id.clone(),
-                volume_name: volume_name.clone(),
-                machine_id: machine_id("machine_a"),
-            }],
+            volume_pins: vec![VolumePinState::plain(
+                namespace_id.clone(),
+                volume_name.clone(),
+                machine_id("machine_a"),
+            )],
             nats_authorizations: Vec::new(),
             automatic_hostname_configuration:
                 ployz_core::ingress::AutomaticHostnameConfiguration::Ployz,

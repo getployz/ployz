@@ -40,6 +40,7 @@ pub enum PloyzctlCommand {
     MachineAdd(machine::MachineAddCommand),
     MachineAddRemote(machine::MachineAddRemoteCommand),
     MachineUpdate(machine::MachineUpdateCommand),
+    MachineStoragePrepare(machine::MachineStoragePrepareCommand),
     MachineLifecycle(machine::MachineLifecycleCommand),
     MachineList(machine::MachineListCommand),
     MachineInspect(machine::MachineInspectCommand),
@@ -84,6 +85,7 @@ impl PloyzctlCommand {
             Self::MachineAdd(_) => Some("internal machine-add"),
             Self::MachineAddRemote(_) => Some("machine add"),
             Self::MachineUpdate(_) => Some("machine update"),
+            Self::MachineStoragePrepare(_) => Some("machine storage-prepare"),
             Self::MachineLifecycle(command) => match command.target {
                 MachineLifecycle::Draining => Some("machine drain"),
                 MachineLifecycle::Active => Some("machine resume"),
@@ -229,6 +231,7 @@ enum MachineCli {
     Init(machine::MachineInitCli),
     Add(machine::MachineAddRemoteCli),
     Update(machine::MachineUpdateCli),
+    StoragePrepare(machine::MachineStoragePrepareCli),
     Drain(machine::MachineLifecycleCli),
     Resume(machine::MachineLifecycleCli),
     #[command(alias = "ls")]
@@ -334,6 +337,10 @@ fn command_from_cli(command: CommandCli) -> Result<PloyzctlCommand, PloyzctlCliE
             }
             MachineCli::Update(command) => {
                 machine::machine_update_command(command).map(PloyzctlCommand::MachineUpdate)
+            }
+            MachineCli::StoragePrepare(command) => {
+                machine::machine_storage_prepare_command(command)
+                    .map(PloyzctlCommand::MachineStoragePrepare)
             }
             MachineCli::Drain(command) => {
                 machine::machine_lifecycle_command(MachineLifecycle::Draining, command)

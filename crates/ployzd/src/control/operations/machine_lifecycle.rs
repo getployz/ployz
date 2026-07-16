@@ -7,7 +7,7 @@
 use crate::control::intent::machine_roster::{MachineLifecycleUpdate, MachineRosterStore};
 use crate::control::operation_evidence::AcceptedMachineLifecycleSubmission;
 use crate::control::sequencer::OperationControllers;
-use crate::tasks::TaskRegistry;
+use crate::tasks::TaskSpawner;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::operation::{FailureMessage, MachineLifecycleFailure, MachineLifecycleTransition};
 use ployz_nats::subjects::INTENT_CHANGED;
@@ -17,7 +17,7 @@ pub struct MachineLifecycleOperation {
     intent_change_client: async_nats::Client,
     controllers: OperationControllers,
     machine_roster: MachineRosterStore,
-    task_registry: TaskRegistry,
+    task_registry: TaskSpawner,
 }
 
 impl MachineLifecycleOperation {
@@ -26,7 +26,7 @@ impl MachineLifecycleOperation {
         intent_change_client: async_nats::Client,
         controllers: OperationControllers,
         machine_roster: MachineRosterStore,
-        task_registry: TaskRegistry,
+        task_registry: TaskSpawner,
     ) -> Self {
         Self {
             intent_change_client,
@@ -36,15 +36,21 @@ impl MachineLifecycleOperation {
         }
     }
 
-    pub fn start(&self, accepted: AcceptedMachineLifecycleSubmission) {
+    pub async fn start(&self, accepted: AcceptedMachineLifecycleSubmission) {
         if !accepted.should_start_execution {
             return;
         }
 
+        let operation_id = accepted.operation_id.clone();
         let runtime = self.clone();
-        self.task_registry.spawn(async move {
-            runtime.run(accepted).await;
-        });
+        super::finish_rejected_task_admission(
+            &self.controllers,
+            &operation_id,
+            self.task_registry.spawn(|| async move {
+                runtime.run(accepted).await;
+            }),
+        )
+        .await;
     }
 
     pub async fn run(self, accepted: AcceptedMachineLifecycleSubmission) {

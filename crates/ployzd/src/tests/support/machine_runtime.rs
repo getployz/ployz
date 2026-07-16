@@ -89,6 +89,15 @@ impl ObservingContainerRunner {
     }
 }
 
+impl crate::roles::machine::runner::MachineImageRemovalRunner for ObservingContainerRunner {
+    async fn remove_image(
+        &self,
+        _image_identity: &ployz_core::image::OciDigest,
+    ) -> Result<ployz_core::image::ImageRemoveOutcome, String> {
+        Ok(ployz_core::image::ImageRemoveOutcome::AlreadyAbsent)
+    }
+}
+
 impl MachineContainerRunner for ObservingContainerRunner {
     async fn existing_managed_containers(
         &self,

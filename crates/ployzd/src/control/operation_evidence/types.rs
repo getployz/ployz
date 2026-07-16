@@ -133,6 +133,19 @@ pub(super) struct MachineUpdatePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineStoragePrepareOperationSubmission {
+    pub operation_id: OperationId,
+    pub machine_id: MachineId,
+    pub requested_pool: Option<ployz_core::deploy::ZfsPoolName>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct MachineStoragePreparePayload {
+    pub(super) machine_id: MachineId,
+    pub(super) requested_pool: Option<ployz_core::deploy::ZfsPoolName>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineLifecycleOperationSubmission {
     pub operation_id: OperationId,
     pub machine_id: MachineId,
@@ -254,6 +267,15 @@ pub struct AcceptedMachineUpdateSubmission {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedMachineStoragePrepareSubmission {
+    pub operation_id: OperationId,
+    pub start_sequence: EventSequence,
+    pub machine_id: MachineId,
+    pub requested_pool: Option<ployz_core::deploy::ZfsPoolName>,
+    pub should_start_execution: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptedMachineLifecycleSubmission {
     pub operation_id: OperationId,
     pub start_sequence: EventSequence,
@@ -330,6 +352,11 @@ pub struct AcceptedManagedDnsReconcileSubmission {
 pub enum OperationStatusWrite {
     Stored,
     AlreadySatisfied { current_sequence: EventSequence },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InterruptedOperationsSummary {
+    pub recorded: usize,
 }
 
 pub(super) enum RecordOperationEventOutcome {

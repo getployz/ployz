@@ -7,22 +7,24 @@ pub use ployz_core::certificate::{
 pub use ployz_core::deploy::{
     ContainerCommand, ContainerCommandError, ContainerEntrypoint, ContainerHealthcheck,
     ContainerHealthcheckTest, ContainerMountPath, ContainerMountPathError, ContainerResourceLimits,
-    ContainerRestartPolicy, ContainerRuntimeSpec, DependencyCondition, DeployCleanupContainer,
+    ContainerRestartPolicy, ContainerRetentionCount, ContainerRuntimeSpec, DatasetName,
+    DatasetNameError, DependencyCondition, DeployCleanupAction, DeployCleanupContainer,
     DeployOrigin, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployRequest,
     DeployReservationExpiresAt, DeployReservationId, DeployReservationNumberError, DeployRoute,
     DeployRouteTarget, DeployServicePlan, DeployServiceSpec, EnvName, EnvNameError, EnvValue,
     EnvValueError, HealthcheckDurationNanos, HealthcheckRetries, HealthcheckShellCommand,
     ImageReference, ImageReferenceError, ImageSource, LinuxCapability, MemoryBytes, NanoCpus,
-    PidsLimit, PreStartHook, PreStartHookStep, RegistryCredential, RegistryCredentialError,
-    RegistryCredentialSecret, RegistryCredentialUsername, ReplicaCount, ReplicaCountError,
-    ReplicaSlot, ServiceDependency, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod,
-    VolumeName, VolumeNameError,
+    PidsLimit, PlatformImage, PreStartHook, PreStartHookStep, PushedImageReceipt,
+    PushedImageReceiptError, RegistryCredential, RegistryCredentialError, RegistryCredentialSecret,
+    RegistryCredentialUsername, ReplicaCount, ReplicaCountError, ReplicaSlot, ServiceDependency,
+    ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeMaxSizeBytes,
+    VolumeMaxSizeError, VolumeName, VolumeNameError, VolumeSpec, ZfsPoolName, ZfsPoolNameError,
 };
 pub use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
     OperationId, RouteBindingId, ServiceId, StepId, SubjectTokenError,
 };
-pub use ployz_core::image::{OciDigest, OciPlatform};
+pub use ployz_core::image::{OciDigest, OciPlatform, OciPlatformError};
 pub use ployz_core::ingress::{
     ActiveCertificateMetadata, AutomaticHostnameConfiguration, AutomaticHostnameLabel,
     AutomaticHostnameLabelError, AutomaticHostnameSuffix, CertificateOwner, IngressConfiguration,
@@ -38,7 +40,7 @@ pub use ployz_core::install::{
 };
 pub use ployz_core::intent::recovery::ControlPlaneEpoch;
 pub use ployz_core::intent::{
-    ActiveMachineState, RouteBindingState, ServingTargetEntry, VolumePinState,
+    ActiveMachineState, RouteBindingState, ServingTargetEntry, VolumeKind, VolumePinState,
 };
 pub use ployz_core::machine::roles::{GatewayRole, InstallRolePolicy};
 pub use ployz_core::machine::runtime::{
@@ -49,7 +51,9 @@ pub use ployz_core::machine::runtime::{
 pub use ployz_core::machine::{
     DataplaneAdmissionPeer, DataplaneProjectionAdmissionEvidence,
     DataplaneProjectionAdmissionFailure, IssuedJoinToken, JoinTokenExpiresAt, JoinTokenFingerprint,
-    JoinTokenRedeemedAt, MachineAddFailure, MachineCredentialProvisioningStep, MachineName,
+    JoinTokenRedeemedAt, MachineAddFailure, MachineAddInterruptionEvidence,
+    MachineAddInterruptionNextAction, MachineAddInterruptionStage,
+    MachineAddInterruptionUncertainWork, MachineCredentialProvisioningStep, MachineName,
     MachineReadinessCheck, MachineReadinessEvidence, WireGuardReadinessFailure,
 };
 pub use ployz_core::machine::{
@@ -84,26 +88,31 @@ pub use ployz_core::operation::{
     EventSequenceError, FailureMessage, HealthCheckFailure, IngressConfigureFailure,
     IngressConfigureOperationState, MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddOperationState,
     MachineAddOperationStateName, MachineLifecycleFailure, MachineLifecycleOperationState,
-    MachineSubstrateVersions, MachineUpdateFailure, MachineUpdateOperationState,
-    ManagedDnsReconcileFailure, ManagedDnsReconcileFailureClass, ManagedDnsReconcileOperationState,
-    ManagedDnsReconcileSubject, ManagedDnsWithdrawAuthorization, NamespaceRemoveFailure,
-    NamespaceRemoveOperationState, NamespaceRemoveRunningStage, NetworkRepairDnsRefreshProblem,
-    NetworkRepairFailure, NetworkRepairMachineFactsRefreshOutcome, NetworkRepairOperationState,
+    MachineStoragePrepareFailure, MachineStoragePrepareOperationState, MachineSubstrateVersions,
+    MachineUpdateFailure, MachineUpdateOperationState, ManagedDnsReconcileFailure,
+    ManagedDnsReconcileFailureClass, ManagedDnsReconcileOperationState, ManagedDnsReconcileSubject,
+    ManagedDnsWithdrawAuthorization, NamespaceRemoveFailure, NamespaceRemoveOperationState,
+    NamespaceRemoveRunningStage, NetworkRepairDnsRefreshProblem, NetworkRepairFailure,
+    NetworkRepairMachineFactsRefreshOutcome, NetworkRepairOperationState,
     NetworkRepairProgressPhase, NetworkRepairRequestFailure, NetworkRepairRunningStage,
     NonEmptyTextError, OperationEvent, OperationEventRecordedAtUnixMs,
     OperationEventRecordedAtUnixMsError, OperationEventReplayCursor, OperationEventReplayLimit,
     OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
-    OperationIdempotencyKey, OperationKind, OperationStatus, OperationStatusSnapshot,
+    OperationIdempotencyKey, OperationInterruptionCause, OperationInterruptionEvidence,
+    OperationInterruptionNextAction, OperationInterruptionStage,
+    OperationInterruptionUncertainWork, OperationKind, OperationStatus, OperationStatusSnapshot,
     OperationSubject, OperatorHint, ReplayedOperationEvent, RetainedArtifact,
     RouteCutoverFailureReason, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
     RouteTarget, ServiceRestartFailure, ServiceRestartOperationState, ServiceRestartRunningStage,
     UnusableMachine, VolumeRemoveFailure, VolumeRemoveOperationState, VolumeRemoveRunningStage,
 };
 pub use ployz_core::operation::{
-    CertOperationFailure, CertOperationFailureError, CertOperationState, CertRunningStage,
-    ControlPlaneCommitScope, CoreReplaceFailure, CoreReplaceOperationState, DeployCleanupFailure,
-    DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, DeployPhaseNumber,
-    DeployPhaseNumberError, DeployPhaseOutcome, DeployRunningStage, DeployServiceResult,
-    PreStartHookFailure,
+    CertInterruptionStage, CertOperationFailure, CertOperationFailureError, CertOperationState,
+    CertRunningStage, CertificateInterruptionNextAction, ControlPlaneCommitScope,
+    CoreReplaceFailure, CoreReplaceOperationState, DeployCleanupFailure, DeployCompletionOutcome,
+    DeployImageCleanup, DeployInterruptionStage, DeployOperationFailure, DeployOperationState,
+    DeployPhaseNumber, DeployPhaseNumberError, DeployPhaseOutcome, DeployRunningStage,
+    DeployServiceResult, PreStartHookFailure,
 };
 pub use ployz_core::security::NatsPrincipal;
+pub use ployz_core::storage::StorageEffectFailure;

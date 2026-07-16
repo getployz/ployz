@@ -1,27 +1,28 @@
 //! Operation admission, idempotency, resource fences, transitions, and evidence.
 
 mod ingress;
+mod machine_substrate;
 
 use ingress::{IngressClaim, deploy_requires_ingress};
 pub use ingress::{IngressConfigureSubmitCommand, IngressConfigureSubmitError};
+pub use machine_substrate::{MachineStoragePrepareSubmitCommand, MachineUpdateSubmitCommand};
 
 use crate::control::operation_evidence::{
     AcceptedDeploySubmission, AcceptedMachineAddSubmission, CoreReplaceOperationSubmission,
     CredentialGrantOperationSubmission, DeployOperationSubmission, MachineAddOperationSubmission,
     MachineJoinIdentity, MachineJoinRedemption, MachineLifecycleOperationSubmission,
-    MachineUpdateOperationSubmission, NamespaceRemoveOperationSubmission,
-    NetworkRepairOperationSubmission, OperationRepository, OperationStatusStoreError,
-    RedeemMachineJoinTokenError, ServiceRestartOperationSubmission, SubmitMachineAddError,
-    SubmitOperationError, VolumeRemoveOperationSubmission,
+    NamespaceRemoveOperationSubmission, NetworkRepairOperationSubmission, OperationRepository,
+    OperationStatusStoreError, RedeemMachineJoinTokenError, ServiceRestartOperationSubmission,
+    SubmitMachineAddError, SubmitOperationError, VolumeRemoveOperationSubmission,
 };
 use ployz_core::deploy::{
-    DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS, DeployRequest, DeployReservationExpiresAt,
-    DeployReservationId, RegistryCredential, VolumeName,
+    DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS, DeployReservationExpiresAt, DeployReservationId,
+    RegistryCredential, VolumeDeclaredDeployRequest, VolumeName,
 };
 use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
 use ployz_core::install::{
-    HostPortAssurance, InstallArtifactVersion, MachineBootstrapUrl, MachineJoinBundle,
-    MachineJoinRuntimeNatsUrl, MachineJoinSecretDelivery, MachineJoinTemplate,
+    HostPortAssurance, MachineBootstrapUrl, MachineJoinBundle, MachineJoinRuntimeNatsUrl,
+    MachineJoinSecretDelivery, MachineJoinTemplate,
 };
 use ployz_core::intent::recovery::PendingMachineJoinRecovery;
 use ployz_core::machine::{
@@ -48,7 +49,7 @@ pub struct DeploySubmitCommand {
     pub operation_id: OperationId,
     pub idempotency_key: IdempotencyKey,
     pub reservation_id: DeployReservationId,
-    pub target: DeployRequest,
+    pub target: VolumeDeclaredDeployRequest,
     pub registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
 }
 
@@ -83,13 +84,6 @@ pub struct MachineAddSubmitCommand {
 pub enum MachineAddEndpointSubnet {
     Allocate,
     Preserve(ployz_core::network::MachineEndpointSubnet),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MachineUpdateSubmitCommand {
-    pub operation_id: OperationId,
-    pub machine_id: ployz_core::ids::MachineId,
-    pub target_version: InstallArtifactVersion,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,6 +204,7 @@ pub struct OperationControllers {
     deploy_reservations: Arc<Mutex<DeployReservations>>,
     mesh_lock: Arc<Mutex<()>>,
     ingress_lock: Arc<Mutex<Option<OperationId>>>,
+    machine_substrate_locks: machine_substrate::MachineSubstrateLocks,
     machine_bootstrap: MachineAddBootstrapConfig,
     pending_join_recovery: Arc<Mutex<Vec<PendingMachineJoinRecovery>>>,
 }
@@ -226,6 +221,7 @@ impl OperationControllers {
             deploy_reservations: Arc::default(),
             mesh_lock: Arc::default(),
             ingress_lock: Arc::default(),
+            machine_substrate_locks: machine_substrate::MachineSubstrateLocks::default(),
             machine_bootstrap,
             pending_join_recovery: Arc::default(),
         }
@@ -243,6 +239,7 @@ impl OperationControllers {
             deploy_reservations: Arc::default(),
             mesh_lock: Arc::default(),
             ingress_lock: Arc::default(),
+            machine_substrate_locks: machine_substrate::MachineSubstrateLocks::default(),
             machine_bootstrap,
             pending_join_recovery: Arc::new(Mutex::new(pending_join_recovery)),
         }
@@ -267,7 +264,7 @@ impl OperationControllers {
         let acquired_ingress = matches!(ingress_claim, Some(IngressClaim::Acquired));
         if let Some(IngressClaim::Busy { owner }) = &ingress_claim {
             return Err(SubmitCommandError::IngressBusy {
-                namespace_id: command.target.namespace_id.clone(),
+                namespace_id: command.target.namespace_id().clone(),
                 owner: owner.clone(),
             });
         }
@@ -296,7 +293,7 @@ impl OperationControllers {
         let operation_id = command.operation_id;
         let idempotency_key = command.idempotency_key;
         let reservation_id = command.reservation_id;
-        let target = command.target;
+        let target = command.target.into_request();
         let registry_credentials = command.registry_credentials;
         let claimed = self
             .repository
@@ -489,23 +486,6 @@ impl OperationControllers {
                     raw_join_token: command.raw_join_token,
                 },
                 idempotency_key: command.idempotency_key,
-            })
-            .await?)
-    }
-
-    pub async fn submit_machine_update(
-        &self,
-        command: MachineUpdateSubmitCommand,
-    ) -> Result<
-        crate::control::operation_evidence::AcceptedMachineUpdateSubmission,
-        SubmitCommandError,
-    > {
-        Ok(self
-            .repository
-            .submit_machine_update(MachineUpdateOperationSubmission {
-                operation_id: command.operation_id,
-                machine_id: command.machine_id,
-                target_version: command.target_version,
             })
             .await?)
     }
@@ -845,6 +825,10 @@ pub enum SubmitCommandError {
     },
     NamespaceBusy {
         namespace_id: NamespaceId,
+        owner: OperationId,
+    },
+    MachineSubstrateBusy {
+        machine_id: ployz_core::ids::MachineId,
         owner: OperationId,
     },
     IngressBusy {

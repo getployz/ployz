@@ -7,16 +7,18 @@ use crate::control::operations::deploy::{
     CertificateProvisioner, DeployCleanupResult, DeployExecutionError, DeployExecutionInput,
     DeployExecutionOutcome, DeployExecutionPorts, DeployExecutionStep, DeployHealthCheckError,
     DeployHealthChecker, DeployOperationRecorder, DeployTerminalEvent, MachineContainerRuntime,
-    MachineContainerRuntimeError, NamespaceStateCommitter, execute_deploy_operation,
+    MachineContainerRuntimeError, MachineImageRemovalRuntime, NamespaceStateCommitter,
+    execute_deploy_operation,
 };
 use fixtures::*;
 use ployz_core::deploy::{ContainerCommand, ContainerRestartPolicy, ReplicaCount};
 use ployz_core::intent::{ServingTargetEntry, VolumePinState};
 use ployz_core::machine::runtime::ManagedContainerKind;
 use ployz_core::operation::{
-    CertificateProvisionFailure, DeployCompletionOutcome, DeployEvidence, DeployOperationFailure,
-    DeployPhaseOutcome, DeployRunningStage, DeployServiceResult, DeployTransition, FailureMessage,
-    PreStartHookFailure, RouteHostname, RouteTarget,
+    CertInterruptionStage, CertificateInterruptionNextAction, CertificateProvisionFailure,
+    DeployCompletionOutcome, DeployEvidence, DeployOperationFailure, DeployPhaseOutcome,
+    DeployRunningStage, DeployServiceResult, DeployTransition, FailureMessage,
+    OperationInterruptionCause, PreStartHookFailure, RouteHostname, RouteTarget,
 };
 use ployz_test_support::ids::{failure_message, namespace_id};
 use std::time::Duration;
@@ -51,7 +53,7 @@ async fn execute_deploy<R, N, H, C, S>(
 ) -> Result<DeployExecutionOutcome, DeployExecutionError>
 where
     R: DeployOperationRecorder,
-    N: MachineContainerRuntime,
+    N: MachineContainerRuntime + MachineImageRemovalRuntime,
     H: DeployHealthChecker,
     C: CertificateProvisioner,
     S: NamespaceStateCommitter,
@@ -413,7 +415,7 @@ async fn digest_pinned_registry_image_skips_resolution() {
 }
 
 #[tokio::test]
-async fn route_less_pushed_deploy_uses_one_membership_for_prepare_and_seed_pull() {
+async fn mixed_platform_pushed_deploy_selects_each_platform_image_and_keeps_one_service_identity() {
     let mut recorder = RecordingOperations::default();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1", "ctr_2"]);
     let mut health = RecordingHealth::healthy();
@@ -432,12 +434,41 @@ async fn route_less_pushed_deploy_uses_one_membership_for_prepare_and_seed_pull(
     .await
     .expect("route-less pushed deploy succeeds");
 
-    assert!(runtime.requests.iter().all(|(_, request)| matches!(
-        &request.pull,
-        crate::roles::machine::protocol::MachineImagePull::MeshSeed { seed_host, .. }
-            if *seed_host
-                == "10.198.99.254".parse::<std::net::Ipv4Addr>().expect("valid seed host")
-    )));
+    let [amd64_request, arm64_request] = runtime.requests.as_slice() else {
+        panic!("mixed-platform fixture must run two containers");
+    };
+    assert_eq!(amd64_request.0, machine_id("machine_a"));
+    assert!(matches!(
+        &amd64_request.1.pull,
+        crate::roles::machine::protocol::MachineImagePull::MeshSeed {
+            seed_host,
+            manifest_digest,
+            ..
+        } if *seed_host == "10.198.99.254".parse::<std::net::Ipv4Addr>().expect("valid seed host")
+            && manifest_digest == &ployz_core::image::OciDigest::try_new(format!("sha256:{}", "a".repeat(64))).expect("manifest digest")
+    ));
+    assert_eq!(arm64_request.0, machine_id("machine_b"));
+    assert!(matches!(
+        &arm64_request.1.pull,
+        crate::roles::machine::protocol::MachineImagePull::MeshSeed {
+            seed_host,
+            manifest_digest,
+            ..
+        } if *seed_host == "10.198.98.254".parse::<std::net::Ipv4Addr>().expect("valid seed host")
+            && manifest_digest == &ployz_core::image::OciDigest::try_new(format!("sha256:{}", "d".repeat(64))).expect("manifest digest")
+    ));
+    assert_eq!(
+        amd64_request.1.container.namespace_revision_entry_id,
+        arm64_request.1.container.namespace_revision_entry_id
+    );
+    assert_eq!(
+        recorder
+            .records
+            .iter()
+            .filter(|record| **record == RecordedOperation::ImageAvailabilityVerified)
+            .count(),
+        2
+    );
 }
 
 #[tokio::test]
@@ -595,11 +626,11 @@ async fn deploy_worker_commits_volume_pin_and_mounts_volume() {
 
     assert_eq!(
         namespace_state.volume_pin_requests,
-        vec![VolumePinState {
-            namespace_id: namespace_id("default"),
-            volume_name: volume_name("postgres_data"),
-            machine_id: machine_id("machine_a"),
-        }]
+        vec![VolumePinState::plain(
+            namespace_id("default"),
+            volume_name("postgres_data"),
+            machine_id("machine_a"),
+        )]
     );
     let [(request_machine_id, request)] = runtime.requests.as_slice() else {
         panic!("expected one runtime request");
@@ -727,6 +758,7 @@ async fn deploy_worker_removes_superseded_containers_after_active_commit() {
             .contains(&RecordedOperation::CleanupFinished {
                 removed: vec![cleanup_target],
                 failed: Vec::new(),
+                images: Vec::new(),
             })
     );
 }
@@ -774,6 +806,7 @@ async fn deploy_worker_reports_cleanup_failure_without_failing_successful_deploy
                     target: cleanup_target,
                     message: failure_message("container remove failed: busy"),
                 }],
+                images: Vec::new(),
             })
     );
     assert_eq!(
@@ -784,6 +817,104 @@ async fn deploy_worker_reports_cleanup_failure_without_failing_successful_deploy
             }
         ))
     );
+}
+
+#[tokio::test]
+async fn deploy_worker_reclaims_only_the_image_of_successfully_removed_superseded_container() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_new"]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+    let command = deploy_command_replacing_old_container_with_keep("machine_b", "ctr_old");
+
+    let outcome = execute_deploy(
+        command,
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("deploy succeeds");
+
+    assert_eq!(
+        outcome.completion_outcome(),
+        DeployCompletionOutcome::Completed
+    );
+    let expected = ployz_core::operation::DeployImageCleanup::RetainedInUse {
+        machine_id: machine_id("machine_b"),
+        service_id: service_id("svc_api"),
+        image_identity: ployz_core::image::OciDigest::sha256(b"old image"),
+    };
+    assert!(recorder.records.iter().any(|record| matches!(
+        record,
+        RecordedOperation::CleanupFinished { images, .. }
+            if images.as_slice() == std::slice::from_ref(&expected)
+    )));
+}
+
+#[tokio::test]
+async fn cleanup_dedupes_shared_image_removal_and_preserves_service_and_identity_evidence() {
+    let image_identity = ployz_core::image::OciDigest::sha256(b"shared image");
+    let api = cleanup_container("machine_b", "ctr_api", "entry_old");
+    let mut worker = cleanup_container("machine_b", "ctr_worker", "entry_old");
+    worker.identity.service_id = service_id("svc_worker");
+    let invalid = cleanup_container("machine_b", "ctr_invalid", "entry_old");
+    let actions = vec![
+        ployz_core::deploy::DeployCleanupAction::RemoveContainerAndReclaimImage {
+            target: api.clone(),
+            image_identity: image_identity.clone(),
+        },
+        ployz_core::deploy::DeployCleanupAction::RemoveContainerAndReclaimImage {
+            target: worker.clone(),
+            image_identity: image_identity.clone(),
+        },
+        ployz_core::deploy::DeployCleanupAction::RemoveContainerWithInvalidImageIdentity {
+            target: invalid.clone(),
+            observed_identity: Some("not-a-digest".to_owned()),
+        },
+    ];
+    let mut runtime = RecordingRuntime::with_containers([]);
+
+    let (cleanup, evidence) = crate::control::operations::deploy::execute_cleanup_actions(
+        &operation_id("op_123"),
+        std::time::Duration::from_secs(5),
+        &mut runtime,
+        &actions,
+    )
+    .await;
+
+    assert_eq!(cleanup.len(), 3);
+    let [removal] = runtime.image_removals.as_slice() else {
+        panic!("one shared image removal must be executed");
+    };
+    assert_eq!(removal.0, machine_id("machine_b"));
+    assert_eq!(removal.1.image_identity, image_identity);
+    assert!(
+        evidence.contains(&ployz_core::operation::DeployImageCleanup::RetainedInUse {
+            machine_id: machine_id("machine_b"),
+            service_id: service_id("svc_api"),
+            image_identity: image_identity.clone(),
+        })
+    );
+    assert!(
+        evidence.contains(&ployz_core::operation::DeployImageCleanup::RetainedInUse {
+            machine_id: machine_id("machine_b"),
+            service_id: service_id("svc_worker"),
+            image_identity,
+        })
+    );
+    assert!(evidence.contains(
+        &ployz_core::operation::DeployImageCleanup::MissingIdentity {
+            machine_id: machine_id("machine_b"),
+            service_id: service_id("svc_api"),
+            container_id: container_id("ctr_invalid"),
+            observed_identity: Some("not-a-digest".to_owned()),
+        }
+    ));
 }
 
 #[tokio::test]
@@ -843,6 +974,7 @@ async fn empty_deploy_removes_running_namespace_containers() {
             .contains(&RecordedOperation::CleanupFinished {
                 removed: vec![cleanup_target],
                 failed: Vec::new(),
+                images: Vec::new(),
             })
     );
 }
@@ -1057,7 +1189,7 @@ async fn deploy_worker_records_failure_when_container_run_fails() {
     assert_eq!(runtime.removals.len(), 1);
     assert!(recorder.records.iter().any(|record| matches!(
         record,
-        RecordedOperation::CleanupFinished { removed, failed }
+        RecordedOperation::CleanupFinished { removed, failed, .. }
             if removed.len() == 1 && failed.is_empty()
     )));
     assert!(matches!(
@@ -1369,6 +1501,11 @@ async fn custom_https_certificate_failure_leaves_route_uncommitted() {
             missing_machine_ids: vec![machine_id("gateway_a")],
         },
         CertificateProvisionFailure::AcmeValidation { message: message() },
+        CertificateProvisionFailure::CoreInterrupted {
+            cause: OperationInterruptionCause::PriorCoreProcessLoss,
+            last_durable_stage: CertInterruptionStage::Accepted,
+            next_action: CertificateInterruptionNextAction::RetryFromCurrentIntent,
+        },
         CertificateProvisionFailure::GatewayArtifactPush {
             machine_id: machine_id("gateway_a"),
             message: message(),
@@ -1653,9 +1790,11 @@ async fn deploy_worker_records_retained_artifacts_when_namespace_lock_is_lost_be
     ));
     assert!(matches!(
         *source,
-        DeployExecutionError::CommitNamespaceState(
-            crate::control::operations::deploy::NamespaceCommitError::ServingTargetLockLost { .. }
-        )
+        DeployExecutionError::CommitNamespaceState(error)
+            if matches!(
+                *error,
+                crate::control::operations::deploy::NamespaceCommitError::ServingTargetLockLost { .. }
+            )
     ));
     assert_eq!(
         recorder.records.last(),

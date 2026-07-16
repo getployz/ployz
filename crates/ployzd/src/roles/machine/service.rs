@@ -13,15 +13,20 @@ use super::facts::{
 };
 use super::images::{
     AvailableImageService, handle_image_blob_check, handle_image_blob_push, handle_image_ensure,
-    handle_image_manifest_push,
+    handle_image_manifest_push, handle_image_remove,
 };
 use super::logs::handle_logs_tail;
-use super::substrate::{handle_substrate_report, handle_substrate_update};
+use super::substrate::{
+    handle_storage_prepare, handle_storage_prepare_report, handle_substrate_report,
+    handle_substrate_update,
+};
 use crate::roles::machine::execution::host_dataplane::dataplane_status_budget;
 use crate::roles::machine::projection::MachineProjectionState;
 #[cfg(test)]
 use crate::roles::machine::projection::{RunningProjectionTask, start_projection_task};
-use crate::roles::machine::runner::{MachineContainerRunner, MachineLogReader};
+use crate::roles::machine::runner::{
+    MachineContainerRunner, MachineImageRemovalRunner, MachineLogReader,
+};
 use crate::service_catalog::{machine_endpoint_spec, machine_role_service_base};
 use ployz_core::ids::MachineId;
 #[cfg(test)]
@@ -74,7 +79,7 @@ pub async fn start_machine_role_runtime<R, P, L>(
     log_reader: L,
 ) -> Result<RunningMachineRoleRuntime, MachineServiceError>
 where
-    R: Clone + MachineContainerRunner + Send + Sync + 'static,
+    R: Clone + MachineContainerRunner + MachineImageRemovalRunner + Send + Sync + 'static,
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
@@ -99,7 +104,7 @@ pub async fn start_machine_role_runtime_with_endpoint_observation<R, P, L>(
     endpoint_observation: MachineEndpointObservation,
 ) -> Result<RunningMachineRoleRuntime, MachineServiceError>
 where
-    R: Clone + MachineContainerRunner + Send + Sync + 'static,
+    R: Clone + MachineContainerRunner + MachineImageRemovalRunner + Send + Sync + 'static,
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
@@ -124,7 +129,7 @@ async fn start_machine_role_runtime_with_endpoint_cache<R, P, L>(
     endpoint_cache: MachineEndpointCache,
 ) -> Result<RunningMachineRoleRuntime, MachineServiceError>
 where
-    R: Clone + MachineContainerRunner + Send + Sync + 'static,
+    R: Clone + MachineContainerRunner + MachineImageRemovalRunner + Send + Sync + 'static,
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
@@ -158,7 +163,7 @@ pub async fn start_machine_role_service<R, P, L>(
     log_reader: L,
 ) -> Result<RunningNatsService, MachineServiceError>
 where
-    R: Clone + MachineContainerRunner + Send + Sync + 'static,
+    R: Clone + MachineContainerRunner + MachineImageRemovalRunner + Send + Sync + 'static,
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
@@ -183,7 +188,7 @@ pub(crate) async fn start_machine_role_service_with_endpoint_cache<R, P, L>(
     endpoint_cache: MachineEndpointCache,
 ) -> Result<RunningNatsService, MachineServiceError>
 where
-    R: Clone + MachineContainerRunner + Send + Sync + 'static,
+    R: Clone + MachineContainerRunner + MachineImageRemovalRunner + Send + Sync + 'static,
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
@@ -212,7 +217,7 @@ pub(crate) async fn start_machine_role_service_with_endpoint_cache_and_image<R, 
     projection_services: MachineRoleProjectionServices,
 ) -> Result<RunningNatsService, MachineServiceError>
 where
-    R: Clone + MachineContainerRunner + Send + Sync + 'static,
+    R: Clone + MachineContainerRunner + MachineImageRemovalRunner + Send + Sync + 'static,
     P: Clone + MachinePloyzNativeMeshPreparer + Send + Sync + 'static,
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
@@ -361,9 +366,33 @@ where
     bind_machine_endpoint(
         &mut runtime,
         &machine_id,
+        MachineServiceEndpoint::StoragePrepare,
+        (),
+        handle_storage_prepare,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::StoragePrepareReport,
+        (),
+        handle_storage_prepare_report,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
         MachineServiceEndpoint::LogsTail,
-        (runner, log_reader),
+        (runner.clone(), log_reader),
         handle_logs_tail,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::ImageRemove,
+        runner,
+        handle_image_remove,
     )
     .await?;
     bind_machine_endpoint(
@@ -429,8 +458,43 @@ where
 
 fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutionPolicy {
     let mut policy = EndpointExecutionPolicy::default();
-    if endpoint == MachineServiceEndpoint::DataplaneStatus {
-        policy.request_timeout = DATAPLANE_STATUS_ENDPOINT_TIMEOUT;
+    match endpoint {
+        MachineServiceEndpoint::DataplaneStatus => {
+            policy.request_timeout = DATAPLANE_STATUS_ENDPOINT_TIMEOUT;
+        }
+        MachineServiceEndpoint::StoragePrepare => {
+            policy.request_timeout = ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT;
+        }
+        MachineServiceEndpoint::Inspect
+        | MachineServiceEndpoint::FactsGet
+        | MachineServiceEndpoint::FactsRefresh
+        | MachineServiceEndpoint::DnsResolve
+        | MachineServiceEndpoint::DnsStatus
+        | MachineServiceEndpoint::ContainerInspect
+        | MachineServiceEndpoint::ContainerResolveImage
+        | MachineServiceEndpoint::ContainerRun
+        | MachineServiceEndpoint::ContainerRunHook
+        | MachineServiceEndpoint::ContainerRestart
+        | MachineServiceEndpoint::ContainerStop
+        | MachineServiceEndpoint::ContainerRemove
+        | MachineServiceEndpoint::VolumeRemove
+        | MachineServiceEndpoint::DataplanePublicKey
+        | MachineServiceEndpoint::SubstrateUpdate
+        | MachineServiceEndpoint::SubstrateReport
+        | MachineServiceEndpoint::StoragePrepareReport
+        | MachineServiceEndpoint::LogsTail
+        | MachineServiceEndpoint::ImageBlobCheck
+        | MachineServiceEndpoint::ImageBlobPush
+        | MachineServiceEndpoint::ImageManifestPush
+        | MachineServiceEndpoint::ImageEnsure
+        | MachineServiceEndpoint::ImageRemove
+        | MachineServiceEndpoint::CertificateArtifactStatus
+        | MachineServiceEndpoint::CertificateArtifactPush
+        | MachineServiceEndpoint::CertificateArtifactRemove
+        | MachineServiceEndpoint::CertificateChallengeApply
+        | MachineServiceEndpoint::CertificateChallengeRemove
+        | MachineServiceEndpoint::CertificateChallengeStatus
+        | MachineServiceEndpoint::GatewayStatusGet => {}
     }
     policy
 }
@@ -482,6 +546,16 @@ mod tests {
                 > dataplane_status_budget(ployz_core::network::NetworkStatusMode::Snapshot)
                 && policy.request_timeout
                     > dataplane_status_budget(ployz_core::network::NetworkStatusMode::ProbePathMtu,)
+        );
+    }
+
+    #[test]
+    fn storage_prepare_endpoint_covers_the_supervised_child_budget() {
+        let policy = machine_endpoint_policy(MachineServiceEndpoint::StoragePrepare);
+
+        assert_eq!(
+            policy.request_timeout,
+            ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT
         );
     }
 }

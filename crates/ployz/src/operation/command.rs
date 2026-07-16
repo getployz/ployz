@@ -12,6 +12,7 @@ use ployz_core::operation::{
 use ployz_core::roles::GatewayRole;
 use ployz_sdk_types::{AcceptedOperation, OpsListRequest, OpsListResult, OpsStatusRequest};
 
+use super::interruption::render_interruption;
 use crate::certificate::presentation::provision_failure_detail;
 use crate::commands::PloyzctlCliError;
 use crate::deploy::failure::DeployFailureView;
@@ -300,6 +301,7 @@ const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::Cert => "cert",
         OperationKind::MachineAdd => "machine-add",
         OperationKind::MachineUpdate => "machine-update",
+        OperationKind::MachineStoragePrepare => "machine-storage-prepare",
         OperationKind::MachineLifecycle => "machine-lifecycle",
         OperationKind::CoreReplace => "core-replace",
         OperationKind::CredentialGrant => "credential-grant",
@@ -339,6 +341,14 @@ fn operation_subject(status: &OperationStatus) -> String {
             "machine {} target-version {}",
             machine_id.as_str(),
             target_version.as_str()
+        ),
+        OperationStatus::MachineStoragePrepare {
+            machine_id,
+            requested_pool,
+            ..
+        } => requested_pool.as_ref().map_or_else(
+            || format!("machine {} pool automatic", machine_id.as_str()),
+            |pool| format!("machine {} pool {}", machine_id.as_str(), pool.as_str()),
         ),
         OperationStatus::MachineLifecycle {
             machine_id, target, ..
@@ -426,6 +436,7 @@ const fn machine_lifecycle_state(
         ployz_sdk_types::MachineLifecycleOperationState::Completed => "completed",
         ployz_sdk_types::MachineLifecycleOperationState::Failed { .. } => "failed",
         ployz_sdk_types::MachineLifecycleOperationState::Cancelled { .. } => "cancelled",
+        ployz_sdk_types::MachineLifecycleOperationState::Interrupted { .. } => "interrupted",
     }
 }
 
@@ -435,6 +446,9 @@ fn operation_state(status: &OperationStatus) -> String {
         OperationStatus::Cert { state, .. } => cert_state(state).to_owned(),
         OperationStatus::MachineAdd { state, .. } => machine_add_state(state).to_owned(),
         OperationStatus::MachineUpdate { state, .. } => machine_update_state(state).to_owned(),
+        OperationStatus::MachineStoragePrepare { state, .. } => {
+            machine_storage_prepare_state(state).to_owned()
+        }
         OperationStatus::MachineLifecycle { state, .. } => {
             machine_lifecycle_state(state).to_owned()
         }
@@ -460,6 +474,7 @@ const fn ingress_configure_state(
         ployz_sdk_types::IngressConfigureOperationState::Accepted => "accepted",
         ployz_sdk_types::IngressConfigureOperationState::Completed => "completed",
         ployz_sdk_types::IngressConfigureOperationState::Failed { .. } => "failed",
+        ployz_sdk_types::IngressConfigureOperationState::Interrupted { .. } => "interrupted",
     }
 }
 
@@ -484,6 +499,7 @@ const fn service_restart_state(
         ployz_sdk_types::ServiceRestartOperationState::Completed => "completed",
         ployz_sdk_types::ServiceRestartOperationState::Failed { .. } => "failed",
         ployz_sdk_types::ServiceRestartOperationState::Cancelled { .. } => "cancelled",
+        ployz_sdk_types::ServiceRestartOperationState::Interrupted { .. } => "interrupted",
     }
 }
 
@@ -511,6 +527,7 @@ const fn namespace_remove_state(
         ployz_sdk_types::NamespaceRemoveOperationState::Completed => "completed",
         ployz_sdk_types::NamespaceRemoveOperationState::Failed { .. } => "failed",
         ployz_sdk_types::NamespaceRemoveOperationState::Cancelled { .. } => "cancelled",
+        ployz_sdk_types::NamespaceRemoveOperationState::Interrupted { .. } => "interrupted",
     }
 }
 
@@ -540,10 +557,14 @@ const fn volume_remove_state(state: &ployz_sdk_types::VolumeRemoveOperationState
         },
         ployz_sdk_types::VolumeRemoveOperationState::Completed => "completed",
         ployz_sdk_types::VolumeRemoveOperationState::Failed { .. } => "failed",
+        ployz_sdk_types::VolumeRemoveOperationState::Interrupted { .. } => "interrupted",
     }
 }
 
 fn status_failure_detail(status: &OperationStatus) -> Option<String> {
+    if let Some(evidence) = status.terminal_interruption_evidence() {
+        return Some(format!("interruption {}", render_interruption(evidence)));
+    }
     match status {
         OperationStatus::Deploy {
             service_id,
@@ -579,10 +600,18 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
             state: ployz_sdk_types::IngressConfigureOperationState::Failed { failure },
             ..
         } => Some(format!("failure {}", ingress_configure_failure(failure))),
+        OperationStatus::MachineStoragePrepare {
+            state: ployz_sdk_types::MachineStoragePrepareOperationState::Failed { failure },
+            ..
+        } => Some(format!(
+            "failure {}",
+            machine_storage_prepare_failure(failure)
+        )),
         OperationStatus::Deploy { .. }
         | OperationStatus::Cert { .. }
         | OperationStatus::MachineAdd { .. }
         | OperationStatus::MachineUpdate { .. }
+        | OperationStatus::MachineStoragePrepare { .. }
         | OperationStatus::MachineLifecycle { .. }
         | OperationStatus::CoreReplace { .. }
         | OperationStatus::CredentialGrant { .. }
@@ -610,6 +639,7 @@ const fn credential_grant_state(state: &CredentialGrantOperationState) -> &'stat
         CredentialGrantOperationState::Completed => "completed",
         CredentialGrantOperationState::Failed { .. } => "failed",
         CredentialGrantOperationState::Cancelled { .. } => "cancelled",
+        CredentialGrantOperationState::Interrupted { .. } => "interrupted",
     }
 }
 
@@ -676,6 +706,7 @@ const fn deploy_state(state: &DeployOperationState) -> &'static str {
         DeployOperationState::Completed { outcome } => deploy_completion_outcome(*outcome),
         DeployOperationState::Failed { .. } => "failed",
         DeployOperationState::Cancelled { .. } => "cancelled",
+        DeployOperationState::Interrupted { .. } => "interrupted",
     }
 }
 
@@ -742,6 +773,35 @@ const fn machine_update_state(state: &MachineUpdateOperationState) -> &'static s
         MachineUpdateOperationState::Completed { .. } => "completed",
         MachineUpdateOperationState::Failed { .. } => "failed",
         MachineUpdateOperationState::Cancelled { .. } => "cancelled",
+        MachineUpdateOperationState::Interrupted { .. } => "interrupted",
+    }
+}
+
+const fn machine_storage_prepare_state(
+    state: &ployz_sdk_types::MachineStoragePrepareOperationState,
+) -> &'static str {
+    match state {
+        ployz_sdk_types::MachineStoragePrepareOperationState::Accepted => "accepted",
+        ployz_sdk_types::MachineStoragePrepareOperationState::Preparing => "preparing",
+        ployz_sdk_types::MachineStoragePrepareOperationState::Completed { .. } => "completed",
+        ployz_sdk_types::MachineStoragePrepareOperationState::Failed { .. } => "failed",
+        ployz_sdk_types::MachineStoragePrepareOperationState::Cancelled { .. } => "cancelled",
+        ployz_sdk_types::MachineStoragePrepareOperationState::Interrupted { .. } => "interrupted",
+    }
+}
+
+fn machine_storage_prepare_failure(
+    failure: &ployz_sdk_types::MachineStoragePrepareFailure,
+) -> String {
+    match failure {
+        ployz_sdk_types::MachineStoragePrepareFailure::MachineUnavailable { message, .. }
+        | ployz_sdk_types::MachineStoragePrepareFailure::EvidenceUnavailable { message, .. }
+        | ployz_sdk_types::MachineStoragePrepareFailure::StateCommitFailed { message, .. } => {
+            message.as_str().to_owned()
+        }
+        ployz_sdk_types::MachineStoragePrepareFailure::PreparationRejected { failure, .. } => {
+            failure.to_string()
+        }
     }
 }
 
@@ -782,6 +842,10 @@ impl DeployEventRenderContext {
             | OperationEvent::MachineUpdateRunning { .. }
             | OperationEvent::MachineUpdateCompleted { .. }
             | OperationEvent::MachineUpdateFailed { .. }
+            | OperationEvent::MachineStoragePrepareSubmitted { .. }
+            | OperationEvent::MachineStoragePreparePreparing { .. }
+            | OperationEvent::MachineStoragePrepareCompleted { .. }
+            | OperationEvent::MachineStoragePrepareFailed { .. }
             | OperationEvent::MachineLifecycleSubmitted { .. }
             | OperationEvent::MachineLifecycleCompleted { .. }
             | OperationEvent::MachineLifecycleFailed { .. }
@@ -819,6 +883,7 @@ impl DeployEventRenderContext {
             | OperationEvent::VolumeRemoveRunning { .. }
             | OperationEvent::VolumeRemoveCompleted { .. }
             | OperationEvent::VolumeRemoveFailed { .. }
+            | OperationEvent::OperationInterrupted { .. }
             | OperationEvent::Cancelled { .. } => {}
         }
     }
@@ -852,6 +917,12 @@ fn render_replayed_event_text(
             event.sequence.get(),
             label,
             render_network_repair_failure(failure)
+        ),
+        OperationEvent::OperationInterrupted { evidence, .. } => format!(
+            "{} {} {}",
+            event.sequence.get(),
+            label,
+            render_interruption(evidence)
         ),
         OperationEvent::CredentialGrantFailed { failure, .. } => format!(
             "{} {} {}",
@@ -905,6 +976,10 @@ fn render_replayed_event_text(
         | OperationEvent::MachineUpdateRunning { .. }
         | OperationEvent::MachineUpdateCompleted { .. }
         | OperationEvent::MachineUpdateFailed { .. }
+        | OperationEvent::MachineStoragePrepareSubmitted { .. }
+        | OperationEvent::MachineStoragePreparePreparing { .. }
+        | OperationEvent::MachineStoragePrepareCompleted { .. }
+        | OperationEvent::MachineStoragePrepareFailed { .. }
         | OperationEvent::MachineLifecycleSubmitted { .. }
         | OperationEvent::MachineLifecycleCompleted { .. }
         | OperationEvent::MachineLifecycleFailed { .. }
@@ -998,6 +1073,16 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::MachineUpdateRunning { .. } => "machine.update.running",
         OperationEvent::MachineUpdateCompleted { .. } => "machine.update.completed",
         OperationEvent::MachineUpdateFailed { .. } => "machine.update.failed",
+        OperationEvent::MachineStoragePrepareSubmitted { .. } => {
+            "machine.storage_prepare.submitted"
+        }
+        OperationEvent::MachineStoragePreparePreparing { .. } => {
+            "machine.storage_prepare.preparing"
+        }
+        OperationEvent::MachineStoragePrepareCompleted { .. } => {
+            "machine.storage_prepare.completed"
+        }
+        OperationEvent::MachineStoragePrepareFailed { .. } => "machine.storage_prepare.failed",
         OperationEvent::MachineLifecycleSubmitted { .. } => "machine.lifecycle.submitted",
         OperationEvent::MachineLifecycleCompleted { .. } => "machine.lifecycle.completed",
         OperationEvent::MachineLifecycleFailed { .. } => "machine.lifecycle.failed",
@@ -1050,6 +1135,7 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::VolumeRemoveRunning { .. } => "volume.remove.running",
         OperationEvent::VolumeRemoveCompleted { .. } => "volume.remove.completed",
         OperationEvent::VolumeRemoveFailed { .. } => "volume.remove.failed",
+        OperationEvent::OperationInterrupted { .. } => "operation.interrupted",
         OperationEvent::Cancelled { .. } => "cancelled",
     }
 }

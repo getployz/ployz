@@ -5,8 +5,8 @@ use crate::control::intent::ingress_intent::{IngressProjectionStore, PloyzDnsTar
 use crate::control::intent::namespace_intent::NamespaceIntentStore;
 use crate::control::intent::service::NatsIntentReader;
 use crate::control::operation_evidence::{
-    AcceptedDeploySubmission, OperationStatusWrite, RecordDeployTransitionError,
-    RecordOperationEventError,
+    AcceptedDeploySubmission, OperationStatusStoreError, OperationStatusWrite,
+    RecordDeployTransitionError, RecordOperationEventError,
 };
 use crate::control::operations::deploy::{
     CertificateProvisioner, DeployContainer, DeployExecutionError, DeployExecutionInput,
@@ -21,15 +21,17 @@ use crate::control::sequencer::{AcceptedDeployExecution, OperationControllers};
 use crate::roles::machine::protocol::{
     MachineContainerInspectRpcOk, MachineContainerInspectRpcRequest,
 };
-use crate::tasks::TaskRegistry;
+use crate::tasks::TaskSpawner;
 use ployz_core::certificate::ActiveCertState;
+use ployz_core::deploy::VolumeDeclaredDeployRequest;
 use ployz_core::ingress::CertificateOwner;
 use ployz_core::machine::runtime::{ContainerHealth, ContainerRuntimeState};
 use ployz_core::operation::{
-    CertificateProvisionFailure, DeployOperationFailure, DeployTransition, FailureMessage,
-    OperatorHint, RouteHostname, StatusProjectionError,
+    CertificateProvisionFailure, DeployOperationFailure, DeployOperationState, DeployTransition,
+    FailureMessage, OperationStatus, OperatorHint, RouteHostname, StatusProjectionError,
 };
 use ployz_nats::subjects::INTENT_CHANGED;
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -65,7 +67,7 @@ pub async fn run_deploy_operation<N, H, C>(
     step_timeout: Duration,
 ) -> Result<DeployExecutionOutcome, DeployOperationRunError>
 where
-    N: MachineContainerRuntime,
+    N: MachineContainerRuntime + super::MachineImageRemovalRuntime,
     H: DeployHealthChecker,
     C: CertificateProvisioner,
 {
@@ -84,10 +86,25 @@ where
         health_checker,
         certificate_provisioner,
     } = ports;
-    let request = accepted.target.clone();
+    let normalized_request = match normalize_stored_deploy_target(accepted.target.clone()) {
+        Ok(request) => request,
+        Err(source) => {
+            let failure_record_error = record_operation_failure(
+                &stores.controllers,
+                &accepted,
+                fact_load_failure(&accepted.target, &source),
+            )
+            .await
+            .err();
+            return Err(DeployOperationRunError::LoadFacts {
+                source,
+                failure_record_error,
+            });
+        }
+    };
 
     let facts = match load_deploy_execution_facts_from_nats(
-        &request,
+        &normalized_request,
         intent_reader,
         facts_reader,
         &stores.ployz_dns_target,
@@ -101,11 +118,38 @@ where
             let failure_record_error = record_operation_failure(
                 &stores.controllers,
                 &accepted,
-                fact_load_failure(&request, &source),
+                fact_load_failure(&accepted.target, &source),
             )
             .await
             .err();
             return Err(DeployOperationRunError::LoadFacts {
+                source,
+                failure_record_error,
+            });
+        }
+    };
+    let reusable_interrupted_operation_ids = match reusable_interrupted_deploy_operation_ids(
+        stores.controllers.repository(),
+        normalized_request.namespace_id(),
+        &facts.observed_machines,
+    )
+    .await
+    {
+        Ok(operation_ids) => operation_ids,
+        Err(source) => {
+            let failure_record_error = record_operation_failure(
+                &stores.controllers,
+                &accepted,
+                DeployOperationFailure::PlanningFailed {
+                    service_id: normalized_request.status_service_id(),
+                    namespace_revision_id: normalized_request.namespace_revision_id(),
+                    message: FailureMessage::try_new(source.to_string())
+                        .expect("rendered recovery evidence failure is non-empty"),
+                },
+            )
+            .await
+            .err();
+            return Err(DeployOperationRunError::RecoveryEvidence {
                 source,
                 failure_record_error,
             });
@@ -120,9 +164,10 @@ where
     } = stores;
     let input = DeployExecutionInput::new(
         accepted.operation_id.clone(),
-        request,
+        normalized_request,
         facts,
         registry_credentials,
+        reusable_interrupted_operation_ids,
     );
     let mut recorder = controllers;
     let mut namespace_state = NamespaceIntentCommitter::new(intent_change_client, namespace_intent);
@@ -138,6 +183,16 @@ where
     )
     .await
     .map_err(DeployOperationRunError::Execute)
+}
+
+fn normalize_stored_deploy_target(
+    request: ployz_core::deploy::DeployRequest,
+) -> Result<VolumeDeclaredDeployRequest, DeployFactLoadError> {
+    VolumeDeclaredDeployRequest::try_new(request).map_err(|error| {
+        DeployFactLoadError::InvalidStoredTarget {
+            message: error.to_string(),
+        }
+    })
 }
 
 async fn record_operation_failure(
@@ -157,7 +212,8 @@ fn fact_load_failure(
     source: &DeployFactLoadError,
 ) -> DeployOperationFailure {
     match source {
-        DeployFactLoadError::IntentRead { .. }
+        DeployFactLoadError::InvalidStoredTarget { .. }
+        | DeployFactLoadError::IntentRead { .. }
         | DeployFactLoadError::InvalidRouteBindings { .. }
         | DeployFactLoadError::IngressState { .. }
         | DeployFactLoadError::IngressUnavailable { .. } => {
@@ -298,6 +354,13 @@ pub enum DeployOperationRunError {
     AlreadyStarted,
     #[error("deploy start could not be recorded: {0:?}")]
     ClaimStart(RecordDeployTransitionError),
+    #[error(
+        "interrupted deploy evidence could not be read: {source:?}; failure record: {failure_record_error:?}"
+    )]
+    RecoveryEvidence {
+        source: OperationStatusStoreError,
+        failure_record_error: Option<RecordDeployTransitionError>,
+    },
     #[error("deploy facts could not be loaded: {source}; failure record: {failure_record_error:?}")]
     LoadFacts {
         source: DeployFactLoadError,
@@ -307,12 +370,54 @@ pub enum DeployOperationRunError {
     Execute(DeployExecutionError),
 }
 
+async fn reusable_interrupted_deploy_operation_ids(
+    repository: &crate::control::operation_evidence::OperationRepository,
+    namespace_id: &ployz_core::ids::NamespaceId,
+    observed_machines: &[ployz_core::machine::runtime::MachineContainerObservationSnapshot],
+) -> Result<BTreeSet<ployz_core::ids::OperationId>, OperationStatusStoreError> {
+    let candidate_ids = observed_machines
+        .iter()
+        .flat_map(ployz_core::machine::runtime::MachineContainerObservationSnapshot::containers)
+        .filter(|container| container.identity.namespace_id == *namespace_id)
+        .map(|container| container.identity.operation_id.clone())
+        .collect::<BTreeSet<_>>();
+    let statuses = repository.operation_statuses_for(candidate_ids).await?;
+    let mut reusable = BTreeSet::new();
+    for status in statuses {
+        match status {
+            OperationStatus::Deploy {
+                id,
+                namespace_id: status_namespace_id,
+                state: DeployOperationState::Interrupted { .. },
+                ..
+            } if status_namespace_id == *namespace_id => {
+                reusable.insert(id);
+            }
+            OperationStatus::Deploy { .. }
+            | OperationStatus::Cert { .. }
+            | OperationStatus::MachineAdd { .. }
+            | OperationStatus::MachineUpdate { .. }
+            | OperationStatus::MachineStoragePrepare { .. }
+            | OperationStatus::MachineLifecycle { .. }
+            | OperationStatus::CoreReplace { .. }
+            | OperationStatus::CredentialGrant { .. }
+            | OperationStatus::NetworkRepair { .. }
+            | OperationStatus::ServiceRestart { .. }
+            | OperationStatus::ManagedDnsReconcile { .. }
+            | OperationStatus::IngressConfigure { .. }
+            | OperationStatus::NamespaceRemove { .. }
+            | OperationStatus::VolumeRemove { .. } => {}
+        }
+    }
+    Ok(reusable)
+}
+
 #[derive(Debug, Clone)]
 pub struct DeployOperationDriver {
     stores: DeployOperationStores,
     certificate_manager: CertificateManager,
     step_timeout: Duration,
-    task_registry: TaskRegistry,
+    task_registry: TaskSpawner,
 }
 
 impl DeployOperationDriver {
@@ -321,7 +426,7 @@ impl DeployOperationDriver {
         stores: DeployOperationStores,
         certificate_manager: CertificateManager,
         step_timeout: Duration,
-        task_registry: TaskRegistry,
+        task_registry: TaskSpawner,
     ) -> Self {
         Self {
             stores,
@@ -331,15 +436,21 @@ impl DeployOperationDriver {
         }
     }
 
-    pub fn start(&self, accepted: AcceptedDeployExecution) {
+    pub async fn start(&self, accepted: AcceptedDeployExecution) {
         if !accepted.submission.should_start_execution {
             return;
         }
 
+        let operation_id = accepted.submission.operation_id.clone();
         let runtime = self.clone();
-        self.task_registry.spawn(async move {
-            let _outcome = runtime.run(accepted).await;
-        });
+        super::super::finish_rejected_task_admission(
+            &self.stores.controllers,
+            &operation_id,
+            self.task_registry.spawn(|| async move {
+                let _outcome = runtime.run(accepted).await;
+            }),
+        )
+        .await;
     }
 
     pub async fn run(
@@ -546,6 +657,36 @@ mod tests {
         ContainerHealth, ContainerRuntimeState, ManagedContainerIdentity, ManagedContainerKind,
         ManagedContainerObservation,
     };
+
+    #[test]
+    fn invalid_persisted_volume_contract_has_a_dedicated_failure() {
+        let mut runtime = ployz_core::deploy::ContainerRuntimeSpec::image_defaults();
+        runtime.volume_mounts = vec![ployz_core::deploy::ServiceVolumeMount {
+            volume_name: ployz_core::deploy::VolumeName::try_new("data").expect("volume name"),
+            target: ployz_core::deploy::ContainerMountPath::try_new("/data").expect("mount path"),
+        }];
+        let request = ployz_core::deploy::DeployRequest {
+            namespace_id: namespace_id("default"),
+            origin: None,
+            volumes: std::collections::BTreeMap::new(),
+            services: vec![ployz_core::deploy::DeployServiceSpec {
+                keep: None,
+                service_id: service_id("svc_api"),
+                image: ployz_core::deploy::ImageReference::try_new("nginx:latest").expect("image"),
+                image_source: ployz_core::deploy::ImageSource::Registry,
+                replicas: ployz_core::deploy::ReplicaCount::try_new(1).expect("replicas"),
+                runtime,
+                pre_start: None,
+                depends_on: Vec::new(),
+                routes: Vec::new(),
+            }],
+        };
+
+        assert!(matches!(
+            normalize_stored_deploy_target(request),
+            Err(DeployFactLoadError::InvalidStoredTarget { .. })
+        ));
+    }
 
     #[test]
     fn running_confirmation_uses_observed_container_start_time() {

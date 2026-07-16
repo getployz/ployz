@@ -15,7 +15,7 @@ use crate::execution_support::{
 use crate::machine::command::{
     AcceptedOperationOutput, MachineAddCommand, MachineAddOutput, MachineInspectCommand,
     MachineInspectOutput, MachineLifecycleCommand, MachineListCommand, MachineListOutput,
-    MachineUpdateCommand,
+    MachineStoragePrepareCommand, MachineUpdateCommand,
 };
 use crate::machine::founder::join_template::MachineJoinTemplateCommand;
 use crate::machine::founder::{
@@ -208,6 +208,24 @@ pub(crate) async fn update(
     let api = operation_api_client(config).await?;
     let accepted = api
         .machine_update(&command.into_request())
+        .await
+        .map_err(api_error)?;
+    if detach {
+        return Ok(PloyzctlExecutionOutput::stdout(
+            AcceptedOperationOutput::from_accepted(accepted).render(),
+        ));
+    }
+    watch_accepted(&api, accepted.operation_id, config).await
+}
+
+pub(crate) async fn storage_prepare(
+    command: MachineStoragePrepareCommand,
+    config: &PloyzctlRuntimeConfig,
+) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
+    let detach = command.detach;
+    let api = operation_api_client(config).await?;
+    let accepted = api
+        .machine_storage_prepare(&command.into_request())
         .await
         .map_err(api_error)?;
     if detach {

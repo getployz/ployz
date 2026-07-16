@@ -9,7 +9,10 @@ use super::events::OperationEvent;
 use super::projection::{
     OperationProjection, ProjectionOperationState, StatusProjectionError, project_transition,
 };
-use super::{EventSequence, FailureMessage, OperationStatus};
+use super::{
+    EventSequence, FailureMessage, OperationInterruptionCause, OperationInterruptionEvidence,
+    OperationInterruptionStage, OperationStatus,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -17,13 +20,35 @@ use super::{EventSequence, FailureMessage, OperationStatus};
 pub enum IngressConfigureOperationState {
     Accepted,
     Completed,
-    Failed { failure: IngressConfigureFailure },
+    Failed {
+        failure: IngressConfigureFailure,
+    },
+    Interrupted {
+        evidence: OperationInterruptionEvidence,
+    },
 }
 
 impl IngressConfigureOperationState {
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
         !matches!(self, Self::Accepted)
+    }
+
+    pub(super) fn interruption_evidence(
+        &self,
+        cause: OperationInterruptionCause,
+    ) -> Option<OperationInterruptionEvidence> {
+        match self {
+            Self::Accepted => Some(OperationInterruptionEvidence::new(
+                cause,
+                OperationInterruptionStage::IngressConfigureAccepted,
+            )),
+            Self::Completed | Self::Failed { .. } | Self::Interrupted { .. } => None,
+        }
+    }
+
+    pub(super) const fn interrupted(evidence: OperationInterruptionEvidence) -> Self {
+        Self::Interrupted { evidence }
     }
 }
 

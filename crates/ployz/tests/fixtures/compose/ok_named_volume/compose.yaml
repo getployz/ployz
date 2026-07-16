@@ -13,6 +13,8 @@ services:
       - source: logs
         target: /logs
 volumes:
-  data: {}
+  data:
+    x-ployz:
+      max-size: 10G
   cache:
   logs: {}

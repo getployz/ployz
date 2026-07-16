@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use ployz_core::operation::{
     DeployCompletionOutcome, DeployOperationState, NetworkRepairOperationState, OperationStatus,
 };
+use ployz_core::security::NatsPrincipal;
 use ployz_e2e::dind::{self, exec_in_container};
 use ployz_sdk_types::{
     NetworkDataplaneTestimony, NetworkInternalDnsTestimony, NetworkRepairRequest,
@@ -13,9 +14,10 @@ use ployz_test_support::ids::{machine_id, operation_id};
 use ployz_test_support::ops::wait_for_terminal_status;
 
 use super::{
-    DEPLOY_TERMINAL_BUDGET, OVERLAY_FIRST_CONTACT_BUDGET, add_and_join_edge, assert_unit_active,
-    finish, init_core_cluster, internal_dns_deploy_target, reserved_deploy_request,
-    wait_for_machine_observations, wait_for_terminal_deploy_status, with_evidence,
+    CONNECT_TIMEOUT, DEPLOY_TERMINAL_BUDGET, OVERLAY_FIRST_CONTACT_BUDGET, add_and_join_edge,
+    assert_unit_active, connect_core_client, finish, init_core_cluster, internal_dns_deploy_target,
+    read_intent, reserved_deploy_request, wait_for_machine_observations, wait_for_ready_dataplane,
+    wait_for_terminal_deploy_status, with_evidence,
 };
 
 /// Network observability is driven by intended membership, resolver answers
@@ -38,6 +40,18 @@ async fn group_network_repair() {
         for machine in [core.cluster.core(), edge] {
             assert_unit_active(&core, machine, "ployzd-dns").await;
         }
+
+        let controller = connect_core_client(
+            &core,
+            NatsPrincipal::Controller,
+            &core.material.controller_seed,
+        )
+        .await
+        .expect("connect controller for network intent");
+        let intent = read_intent(&controller, CONNECT_TIMEOUT)
+            .await
+            .expect("read network intent");
+        wait_for_ready_dataplane(&core, &intent.dataplane_projection).await;
 
         let deadline = Instant::now() + Duration::from_secs(30);
         let status = loop {
@@ -216,6 +230,7 @@ async fn group_network_repair() {
             ),
             "network repair did not complete: {repaired:?}"
         );
+        wait_for_ready_dataplane(&core, &intent.dataplane_projection).await;
         super::timed(
             "internal_service_dns",
             super::assert_internal_service_dns_reaches_cross_machine_sibling(&core),

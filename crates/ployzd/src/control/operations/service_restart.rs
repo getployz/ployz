@@ -13,7 +13,7 @@ use crate::control::sequencer::OperationControllers;
 use crate::roles::machine::protocol::{
     MachineContainerInspectRpcRequest, MachineContainerRestartRpcRequest,
 };
-use crate::tasks::TaskRegistry;
+use crate::tasks::TaskSpawner;
 use ployz_core::ids::{ContainerId, MachineId, OperationId};
 use ployz_core::intent::IntentSnapshot;
 use ployz_core::machine::runtime::{
@@ -32,7 +32,7 @@ pub struct ServiceRestartOperation {
     client: async_nats::Client,
     controllers: OperationControllers,
     step_timeout: Duration,
-    task_registry: TaskRegistry,
+    task_registry: TaskSpawner,
 }
 
 impl ServiceRestartOperation {
@@ -41,7 +41,7 @@ impl ServiceRestartOperation {
         client: async_nats::Client,
         controllers: OperationControllers,
         step_timeout: Duration,
-        task_registry: TaskRegistry,
+        task_registry: TaskSpawner,
     ) -> Self {
         Self {
             client,
@@ -51,15 +51,21 @@ impl ServiceRestartOperation {
         }
     }
 
-    pub fn start(&self, accepted: AcceptedServiceRestartSubmission) {
+    pub async fn start(&self, accepted: AcceptedServiceRestartSubmission) {
         if !accepted.should_start_execution {
             return;
         }
 
+        let operation_id = accepted.operation_id.clone();
         let runtime = self.clone();
-        self.task_registry.spawn(async move {
-            runtime.run(accepted).await;
-        });
+        super::finish_rejected_task_admission(
+            &self.controllers,
+            &operation_id,
+            self.task_registry.spawn(|| async move {
+                runtime.run(accepted).await;
+            }),
+        )
+        .await;
     }
 
     pub async fn run(self, accepted: AcceptedServiceRestartSubmission) {

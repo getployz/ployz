@@ -11,13 +11,17 @@ use super::events::{ClassifiedOperationEvent, OperationSubjectRef};
 use super::ingress_configure::{self, IngressConfigureOperationState};
 use super::machine_add::{self, MachineAddFields, MachineAddOperationState};
 use super::machine_lifecycle::{self, MachineLifecycleOperationState};
+use super::machine_storage_prepare::{self, MachineStoragePrepareOperationState};
 use super::machine_update::{self, MachineUpdateOperationState};
 use super::managed_dns_reconcile::{self, ManagedDnsReconcileOperationState};
 use super::namespace_remove::{self, NamespaceRemoveOperationState};
 use super::network_repair::{self, NetworkRepairOperationState};
 use super::service_restart::{self, ServiceRestartOperationState};
 use super::volume_remove::{self, VolumeRemoveOperationState};
-use super::{EventSequence, OperationEvent, OperationId, OperationKind, OperationStatus};
+use super::{
+    EventSequence, OperationEvent, OperationId, OperationInterruptionEvidence, OperationKind,
+    OperationStatus,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperationProjection {
@@ -64,6 +68,8 @@ pub enum StatusProjectionError {
     CredentialGrantActionMismatch { operation_id: OperationId },
     #[error("ingress configuration operation {} does not match its submitted configuration", .operation_id.as_str())]
     IngressConfigurationMismatch { operation_id: OperationId },
+    #[error("operation {} interruption evidence does not match its last durable status", .operation_id.as_str())]
+    OperationInterruptionMismatch { operation_id: OperationId },
     #[error(
         "operation {} is terminal in its {} state; a {} transition was attempted",
         .operation_id.as_str(),
@@ -96,6 +102,7 @@ pub enum ProjectionOperationState {
     Cert(CertOperationState),
     MachineAdd(MachineAddOperationState),
     MachineUpdate(MachineUpdateOperationState),
+    MachineStoragePrepare(MachineStoragePrepareOperationState),
     MachineLifecycle(MachineLifecycleOperationState),
     CoreReplace(CoreReplaceOperationState),
     CredentialGrant(CredentialGrantOperationState),
@@ -115,6 +122,7 @@ impl ProjectionOperationState {
             Self::Cert(_) => OperationKind::Cert,
             Self::MachineAdd(_) => OperationKind::MachineAdd,
             Self::MachineUpdate(_) => OperationKind::MachineUpdate,
+            Self::MachineStoragePrepare(_) => OperationKind::MachineStoragePrepare,
             Self::MachineLifecycle(_) => OperationKind::MachineLifecycle,
             Self::CoreReplace(_) => OperationKind::CoreReplace,
             Self::CredentialGrant(_) => OperationKind::CredentialGrant,
@@ -134,6 +142,7 @@ pub(crate) const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::Cert => "cert",
         OperationKind::MachineAdd => "machine-add",
         OperationKind::MachineUpdate => "machine-update",
+        OperationKind::MachineStoragePrepare => "machine-storage-prepare",
         OperationKind::MachineLifecycle => "machine-lifecycle",
         OperationKind::CoreReplace => "core-replace",
         OperationKind::CredentialGrant => "credential-grant",
@@ -154,6 +163,9 @@ fn subject_ref_text(subject: &OperationSubjectRef) -> String {
         }
         OperationSubjectRef::MachineUpdate(machine_id) => {
             format!("machine-update {}", machine_id.as_str())
+        }
+        OperationSubjectRef::MachineStoragePrepare(machine_id) => {
+            format!("machine-storage-prepare {}", machine_id.as_str())
         }
         OperationSubjectRef::MachineLifecycle(machine_id) => {
             format!("machine-lifecycle {}", machine_id.as_str())
@@ -256,7 +268,6 @@ pub fn project_operation_event(
     if event_sequence <= last_event_sequence {
         return Ok(OperationProjection::AlreadySatisfied);
     }
-
     match event {
         ClassifiedOperationEvent::Deploy { event, .. } => {
             let OperationStatus::Deploy {
@@ -327,6 +338,26 @@ pub fn project_operation_event(
                 id,
                 machine_id,
                 target_version,
+                state,
+                event,
+                event_sequence,
+            )
+        }
+        ClassifiedOperationEvent::MachineStoragePrepare { event, .. } => {
+            let OperationStatus::MachineStoragePrepare {
+                id,
+                machine_id,
+                requested_pool,
+                state,
+                ..
+            } = current
+            else {
+                return Err(kind_mismatch(current, OperationKind::MachineStoragePrepare));
+            };
+            machine_storage_prepare::project_event(
+                id,
+                machine_id,
+                requested_pool,
                 state,
                 event,
                 event_sequence,
@@ -459,5 +490,115 @@ pub fn project_operation_event(
                 event_sequence,
             )
         }
+        ClassifiedOperationEvent::OperationInterrupted { evidence, .. } => {
+            project_operation_interruption(current, evidence, event_sequence)
+        }
     }
+}
+
+fn project_operation_interruption(
+    current: &OperationStatus,
+    evidence: OperationInterruptionEvidence,
+    event_sequence: EventSequence,
+) -> Result<OperationProjection, StatusProjectionError> {
+    if current.interruption_evidence(evidence.cause()).as_ref() != Some(&evidence) {
+        return Err(StatusProjectionError::OperationInterruptionMismatch {
+            operation_id: current.id().clone(),
+        });
+    }
+
+    let mut status = current.clone();
+    match &mut status {
+        OperationStatus::Deploy {
+            state,
+            last_event_sequence,
+            ..
+        } => {
+            *state = DeployOperationState::interrupted(evidence);
+            *last_event_sequence = event_sequence;
+        }
+        OperationStatus::CredentialGrant {
+            state,
+            last_event_sequence,
+            ..
+        } => {
+            *state = CredentialGrantOperationState::interrupted(evidence);
+            *last_event_sequence = event_sequence;
+        }
+        OperationStatus::IngressConfigure {
+            state,
+            last_event_sequence,
+            ..
+        } => {
+            *state = IngressConfigureOperationState::interrupted(evidence);
+            *last_event_sequence = event_sequence;
+        }
+        OperationStatus::MachineUpdate {
+            state,
+            last_event_sequence,
+            ..
+        } => {
+            *state = MachineUpdateOperationState::interrupted(evidence);
+            *last_event_sequence = event_sequence;
+        }
+        OperationStatus::MachineStoragePrepare {
+            state,
+            last_event_sequence,
+            ..
+        } => {
+            *state = MachineStoragePrepareOperationState::interrupted(evidence);
+            *last_event_sequence = event_sequence;
+        }
+        OperationStatus::MachineLifecycle {
+            state,
+            last_event_sequence,
+            ..
+        } => {
+            *state = MachineLifecycleOperationState::interrupted(evidence);
+            *last_event_sequence = event_sequence;
+        }
+        OperationStatus::NetworkRepair {
+            state,
+            last_event_sequence,
+            ..
+        } => {
+            *state = NetworkRepairOperationState::interrupted(evidence);
+            *last_event_sequence = event_sequence;
+        }
+        OperationStatus::ServiceRestart {
+            state,
+            last_event_sequence,
+            ..
+        } => {
+            *state = ServiceRestartOperationState::interrupted(evidence);
+            *last_event_sequence = event_sequence;
+        }
+        OperationStatus::NamespaceRemove {
+            state,
+            last_event_sequence,
+            ..
+        } => {
+            *state = NamespaceRemoveOperationState::interrupted(evidence);
+            *last_event_sequence = event_sequence;
+        }
+        OperationStatus::VolumeRemove {
+            state,
+            last_event_sequence,
+            ..
+        } => {
+            *state = VolumeRemoveOperationState::interrupted(evidence);
+            *last_event_sequence = event_sequence;
+        }
+        OperationStatus::Cert { .. }
+        | OperationStatus::MachineAdd { .. }
+        | OperationStatus::CoreReplace { .. }
+        | OperationStatus::ManagedDnsReconcile { .. } => {
+            return Err(StatusProjectionError::OperationInterruptionMismatch {
+                operation_id: current.id().clone(),
+            });
+        }
+    }
+    Ok(OperationProjection::StatusChanged {
+        status: Box::new(status),
+    })
 }

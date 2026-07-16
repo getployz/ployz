@@ -1,6 +1,12 @@
+use std::collections::BTreeMap;
+
 use ployz_core::deploy::{
-    DependencyCondition, DeployOrigin, DeployOriginError, DeployRequest, ServiceDependency,
+    ContainerMountPath, ContainerRuntimeSpec, DatasetName, DatasetNameError, DependencyCondition,
+    DeployOrigin, DeployOriginError, DeployRequest, DeployServiceSpec, ImageReference, ImageSource,
+    ReplicaCount, ServiceDependency, ServiceVolumeMount, VolumeDeclaredDeployRequest,
+    VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName, ZfsPoolNameError,
 };
+use ployz_core::intent::{VolumeKind, VolumePinState};
 use ployz_core::machine::MachineUsabilityReason;
 use ployz_core::operation::{
     ArtifactUnavailableReason, ControlPlaneCommitScope, DeployFailureClass, DeployOperationFailure,
@@ -447,6 +453,7 @@ fn deploy_origin_round_trips_on_request_and_status() {
     let request = DeployRequest {
         namespace_id: namespace_id("default"),
         origin: Some(origin.clone()),
+        volumes: std::collections::BTreeMap::new(),
         services: Vec::new(),
     };
     let status = OperationStatus::deploy_accepted(
@@ -468,6 +475,245 @@ fn deploy_origin_round_trips_on_request_and_status() {
         serde_json::from_str::<OperationStatus>(&status_json).expect("status deserializes"),
         status
     );
+}
+
+#[test]
+fn deploy_request_requires_a_declaration_for_every_mounted_volume() {
+    let request = request_with_volume_mount(std::collections::BTreeMap::new());
+
+    let error =
+        VolumeDeclaredDeployRequest::try_new(request).expect_err("undeclared mount is invalid");
+
+    assert_eq!(error.service_id, service_id("svc_api"));
+    assert_eq!(error.volume_name, volume_name("data"));
+}
+
+#[test]
+fn planner_service_constructor_rejects_an_undeclared_mount() {
+    let request = request_with_volume_mount(BTreeMap::new());
+    let error = VolumeDeclaredDeployRequest::try_new(request)
+        .expect_err("planner views are unavailable for an undeclared mount");
+
+    assert_eq!(error.service_id, service_id("svc_api"));
+    assert_eq!(error.volume_name, volume_name("data"));
+}
+
+#[test]
+fn deploy_request_synthesizes_plain_declarations_for_legacy_inputs() {
+    let mut request = request_with_volume_mount(std::collections::BTreeMap::new());
+
+    request.synthesize_plain_volume_declarations();
+
+    assert_eq!(
+        request.volumes.get(&volume_name("data")),
+        Some(&VolumeSpec::Plain)
+    );
+}
+
+#[test]
+fn normalized_service_requests_retain_mounted_volume_declarations() {
+    let provisioned = VolumeSpec::Provisioned {
+        max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("non-zero size"),
+    };
+    let request = request_with_volume_mount(BTreeMap::from([
+        (volume_name("data"), provisioned.clone()),
+        (volume_name("unused"), VolumeSpec::Plain),
+    ]));
+
+    let original = request.clone();
+    let request = VolumeDeclaredDeployRequest::try_new(request).expect("request validates");
+    assert_eq!(request.request(), &original);
+    let [service] = request.services() else {
+        panic!("request has one service");
+    };
+    let [mount] = service.runtime.volume_mounts.as_slice() else {
+        panic!("service has one volume mount");
+    };
+    assert_eq!(mount.volume_name, volume_name("data"));
+    assert_eq!(
+        request.request().volumes.get(&mount.volume_name),
+        Some(&provisioned)
+    );
+}
+
+#[test]
+fn normalized_image_replacement_preserves_volume_invariants_without_revalidation() {
+    let mut request =
+        request_with_volume_mount(BTreeMap::from([(volume_name("data"), VolumeSpec::Plain)]));
+    let mut normalized =
+        VolumeDeclaredDeployRequest::try_new(request.clone()).expect("request validates once");
+    let resolved = ImageReference::try_new(
+        "registry.example/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    )
+    .expect("resolved image");
+
+    normalized
+        .replace_service_image(&service_id("svc_api"), resolved.clone())
+        .expect("known service image changes invariant-preservingly");
+    let [service] = request.services.as_mut_slice() else {
+        panic!("request has one service");
+    };
+    service.image = resolved;
+
+    assert_eq!(normalized.request(), &request);
+    let [service] = normalized.services() else {
+        panic!("request has one service");
+    };
+    assert_eq!(service.runtime.volume_mounts.len(), 1);
+    assert_eq!(
+        normalized.request().namespace_revision_id(),
+        normalized.namespace_revision_id()
+    );
+}
+
+#[test]
+fn provisioned_volume_contract_round_trips_without_nullable_state() {
+    let spec = VolumeSpec::Provisioned {
+        max_size_bytes: VolumeMaxSizeBytes::try_new(10 * 1024 * 1024).expect("nonzero volume size"),
+    };
+
+    let json = serde_json::to_string(&spec).expect("volume spec serializes");
+
+    assert_eq!(json, r#"{"kind":"provisioned","max_size_bytes":10485760}"#);
+    assert_eq!(
+        serde_json::from_str::<VolumeSpec>(&json).expect("volume spec decodes"),
+        spec
+    );
+}
+
+#[test]
+fn volume_pin_legacy_json_defaults_to_plain_kind() {
+    let pin = serde_json::from_str::<VolumePinState>(
+        r#"{"namespace_id":"default","volume_name":"data","machine_id":"machine_a"}"#,
+    )
+    .expect("legacy pin decodes");
+
+    assert_eq!(pin.kind(), &VolumeKind::Plain);
+}
+
+#[test]
+fn provisioned_volume_pin_round_trips_with_dataset_and_size() {
+    let pin = VolumePinState::try_new(
+        namespace_id("default"),
+        volume_name("data"),
+        machine_id("machine_a"),
+        VolumeKind::Provisioned {
+            dataset: DatasetName::for_volume(
+                &ZfsPoolName::try_new("tank").expect("pool name"),
+                &namespace_id("default"),
+                &volume_name("data"),
+            )
+            .expect("dataset name fits"),
+            max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("nonzero volume size"),
+        },
+    )
+    .expect("dataset identity matches pin");
+
+    let json = serde_json::to_string(&pin).expect("pin serializes");
+
+    assert_eq!(
+        serde_json::from_str::<VolumePinState>(&json).expect("pin decodes"),
+        pin
+    );
+}
+
+#[test]
+fn provisioned_volume_pin_rejects_foreign_dataset_identity_on_load() {
+    let json = r#"{
+        "namespace_id":"default",
+        "volume_name":"data",
+        "machine_id":"machine_a",
+        "kind":{"kind":"provisioned","dataset":"tank/ployz/volumes/ployz-n5-other-v4-data","max_size_bytes":1024}
+    }"#;
+
+    assert!(serde_json::from_str::<VolumePinState>(json).is_err());
+}
+
+#[test]
+fn dataset_name_rejects_a_full_name_over_the_zfs_budget() {
+    let error = DatasetName::for_volume(
+        &ZfsPoolName::try_new("p".repeat(220)).expect("pool name"),
+        &namespace_id("default"),
+        &volume_name("postgres_data"),
+    )
+    .expect_err("full dataset name exceeds the budget");
+
+    assert!(matches!(
+        error,
+        DatasetNameError::NameBudgetExceeded { maximum: 255, .. }
+    ));
+}
+
+#[test]
+fn dataset_name_rejects_foreign_and_malformed_names() {
+    assert!(matches!(
+        DatasetName::try_new("foreign/arbitrary"),
+        Err(DatasetNameError::NonCanonical { .. })
+    ));
+    assert!(matches!(
+        DatasetName::try_new("tank/ployz/volumes/ployz-n07-default-v4-data"),
+        Err(DatasetNameError::NonCanonical { .. })
+    ));
+    assert!(matches!(
+        DatasetName::try_new("tank/ployz/volumes/ployz-n8-default-v4-data"),
+        Err(DatasetNameError::NonCanonical { .. })
+    ));
+    assert!(serde_json::from_str::<DatasetName>(r#""foreign/arbitrary""#).is_err());
+}
+
+#[test]
+fn zfs_pool_name_rejects_hierarchical_physical_roots() {
+    assert!(matches!(
+        ZfsPoolName::try_new("tank/foreign"),
+        Err(ZfsPoolNameError::Hierarchical { .. })
+    ));
+}
+
+#[test]
+fn volume_declaration_changes_do_not_change_the_namespace_revision() {
+    let plain =
+        request_with_volume_mount(BTreeMap::from([(volume_name("data"), VolumeSpec::Plain)]));
+    let provisioned = request_with_volume_mount(BTreeMap::from([(
+        volume_name("data"),
+        VolumeSpec::Provisioned {
+            max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("non-zero size"),
+        },
+    )]));
+
+    assert_eq!(
+        plain.namespace_revision_id(),
+        provisioned.namespace_revision_id()
+    );
+}
+
+fn request_with_volume_mount(
+    volumes: std::collections::BTreeMap<VolumeName, VolumeSpec>,
+) -> DeployRequest {
+    let mut runtime = ContainerRuntimeSpec::image_defaults();
+    runtime.volume_mounts = vec![ServiceVolumeMount {
+        volume_name: volume_name("data"),
+        target: ContainerMountPath::try_new("/data").expect("mount path"),
+    }];
+    DeployRequest {
+        namespace_id: namespace_id("default"),
+        origin: None,
+        volumes,
+        services: vec![DeployServiceSpec {
+            keep: None,
+            service_id: service_id("svc_api"),
+            image: ImageReference::try_new("nginx:latest").expect("image"),
+            image_source: ImageSource::Registry,
+            replicas: ReplicaCount::try_new(1).expect("replicas"),
+            runtime,
+            pre_start: None,
+            depends_on: Vec::new(),
+            routes: Vec::new(),
+        }],
+    }
+}
+
+fn volume_name(value: &str) -> VolumeName {
+    VolumeName::try_new(value).expect("volume name")
 }
 
 #[test]
@@ -747,5 +993,46 @@ fn deploy_cleanup_container_wire_shape_nests_identity() {
                 "kind": "service",
             },
         })
+    );
+    let legacy = serde_json::json!({
+        "machine_id": "machine_a",
+        "container_id": "ctr_old",
+        "identity": {
+            "namespace_id": "default",
+            "service_id": "svc_api",
+            "namespace_revision_entry_id": "entry_old",
+            "operation_id": "op_old",
+            "step_id": "step_old",
+            "kind": "service",
+        },
+    });
+    let legacy: ployz_core::deploy::DeployCleanupContainer =
+        serde_json::from_value(legacy).expect("legacy cleanup evidence deserializes");
+    assert_eq!(legacy, cleanup);
+}
+
+#[test]
+fn service_retention_count_accepts_zero_and_defaults_absent() {
+    let mut request = request_with_volume_mount(std::collections::BTreeMap::new());
+    let service = request
+        .services
+        .first_mut()
+        .expect("request has one service");
+    assert_eq!(service.keep, None);
+
+    service.keep = Some(ployz_core::deploy::ContainerRetentionCount::new(0));
+    let encoded = serde_json::to_value(&request).expect("request serializes");
+    assert_eq!(
+        encoded.pointer("/services/0/keep"),
+        Some(&serde_json::json!(0))
+    );
+
+    let decoded: DeployRequest = serde_json::from_value(encoded).expect("request deserializes");
+    let [service] = decoded.services.as_slice() else {
+        panic!("decoded request has one service");
+    };
+    assert_eq!(
+        service.keep,
+        Some(ployz_core::deploy::ContainerRetentionCount::new(0))
     );
 }

@@ -207,6 +207,7 @@ async fn machine_role_service_creates_missing_container() {
                 reference: image("registry.example/api:rev_2"),
             },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+            provisioned_volumes: Vec::new(),
             identity: managed_identity(),
         }]
     );
@@ -397,6 +398,7 @@ async fn machine_role_service_creates_when_sibling_service_uses_same_operation_s
                 reference: image("registry.example/api:rev_2"),
             },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+            provisioned_volumes: Vec::new(),
             identity: managed_identity(),
         }]
     );
@@ -1344,6 +1346,15 @@ impl RecordingRunner {
     }
 }
 
+impl crate::roles::machine::runner::MachineImageRemovalRunner for RecordingRunner {
+    async fn remove_image(
+        &self,
+        _image_identity: &ployz_core::image::OciDigest,
+    ) -> Result<ployz_core::image::ImageRemoveOutcome, String> {
+        Ok(ployz_core::image::ImageRemoveOutcome::AlreadyAbsent)
+    }
+}
+
 impl MachineContainerRunner for RecordingRunner {
     async fn existing_managed_containers(
         &self,
@@ -1714,6 +1725,7 @@ fn run_request() -> MachineContainerRunRpcRequest {
             reference: image("registry.example/api:rev_2"),
         },
         runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+        provisioned_volumes: Vec::new(),
         container: managed_container_spec(),
     }
 }
@@ -1728,6 +1740,7 @@ fn hook_request() -> MachineContainerRunHookRpcRequest {
             reference: image("registry.example/api:rev_2"),
         },
         runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+        provisioned_volumes: Vec::new(),
         container,
         timeout_millis: 1_000,
     }

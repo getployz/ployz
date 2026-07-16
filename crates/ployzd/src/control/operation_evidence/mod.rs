@@ -30,6 +30,7 @@ mod deploy;
 mod ingress_configure;
 mod machine_add;
 mod machine_lifecycle;
+mod machine_storage_prepare;
 mod machine_update;
 mod managed_dns_reconcile;
 mod namespace_remove;
@@ -419,6 +420,31 @@ fn select_status(
     )
 }
 
+fn select_owned_operation_statuses(
+    conn: &Connection,
+    submission_events: &[&str],
+) -> Result<Vec<OperationStatus>, rusqlite::Error> {
+    let mut statement = conn.prepare(
+        "SELECT operations.status_json
+         FROM operations
+         WHERE EXISTS (
+             SELECT 1 FROM operation_events
+             WHERE operation_events.operation_id = operations.operation_id
+               AND operation_events.sequence = 1
+               AND json_extract(operation_events.event_json, '$.event') = ?1
+         )
+         ORDER BY operations.operation_id",
+    )?;
+    let mut statuses = Vec::new();
+    for submission_event in submission_events {
+        let rows = statement.query_map([submission_event], |row| row.get::<_, String>(0))?;
+        for row in rows {
+            statuses.push(from_json(&row?)?);
+        }
+    }
+    Ok(statuses)
+}
+
 const OPS_LIST_READ_LIMIT: usize = 101;
 
 fn select_all_statuses_newest_first(
@@ -492,7 +518,7 @@ fn upsert_status(
     conn.execute(
         "INSERT INTO operations (operation_id, status_json) VALUES (?1, ?2)
          ON CONFLICT(operation_id) DO UPDATE SET status_json = excluded.status_json",
-        params![operation_id.as_str(), to_json(status)?],
+        params![operation_id.as_str(), to_durable_operation_json(status)?],
     )?;
     Ok(())
 }
@@ -519,10 +545,45 @@ fn insert_event(
             sequence.get(),
             recorded_at_unix_ms.unix_millis(),
             event.singleton_evidence_key(),
-            to_json(event)?
+            to_durable_operation_json(event)?
         ],
     )?;
     Ok(())
+}
+
+fn to_durable_operation_json(value: &impl serde::Serialize) -> Result<String, rusqlite::Error> {
+    let mut value = serde_json::to_value(value)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    remove_interruption_projections(&mut value);
+    to_json(&value)
+}
+
+fn remove_interruption_projections(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            if fields.contains_key("cause")
+                && fields.contains_key("last_durable_stage")
+                && fields.contains_key("uncertain_work")
+                && fields.contains_key("next_action")
+            {
+                fields.remove("kind");
+                fields.remove("uncertain_work");
+                fields.remove("next_action");
+            }
+            for field in fields.values_mut() {
+                remove_interruption_projections(field);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                remove_interruption_projections(value);
+            }
+        }
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => {}
+    }
 }
 
 fn singleton_event_exists(

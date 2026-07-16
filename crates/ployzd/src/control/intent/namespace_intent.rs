@@ -117,8 +117,8 @@ impl NamespaceIntentStore {
                     "INSERT INTO volume_pins (namespace_id, volume_name, json) VALUES (?1, ?2, ?3)
                      ON CONFLICT(namespace_id, volume_name) DO UPDATE SET json = excluded.json",
                     params![
-                        state.namespace_id.as_str(),
-                        state.volume_name.as_str(),
+                        state.namespace_id().as_str(),
+                        state.volume_name().as_str(),
                         to_json(&state)?
                     ],
                 )?;

@@ -392,6 +392,7 @@ pub(crate) fn classify_service(
 
     let spec = if service_valid && deploy_valid {
         Some(DeployServiceSpec {
+            keep: None,
             service_id,
             image,
             image_source: ployz_core::deploy::ImageSource::Registry,
@@ -1200,7 +1201,7 @@ fn parse_nano_cpus(value: &Value) -> Result<NanoCpus, String> {
 
 fn parse_memory_bytes(value: &Value) -> Result<MemoryBytes, String> {
     let text = scalar_to_string(value).ok_or_else(|| "memory must be scalar".to_owned())?;
-    let bytes = parse_byte_quantity(&text)?;
+    let bytes = parse_byte_quantity(&text, "memory")?;
     MemoryBytes::try_new(bytes).map_err(|error| error.to_string())
 }
 
@@ -1582,19 +1583,19 @@ fn parse_duration_micros(value: &str) -> Result<u64, String> {
     Ok(total_micros)
 }
 
-fn parse_byte_quantity(value: &str) -> Result<u64, String> {
+pub(super) fn parse_byte_quantity(value: &str, noun: &str) -> Result<u64, String> {
     let value = value.trim();
     if value.is_empty() {
-        return Err("memory is empty".to_owned());
+        return Err(format!("{noun} is empty"));
     }
     let digits_end = value
         .find(|ch: char| !(ch.is_ascii_digit() || ch == '.'))
         .unwrap_or(value.len());
     let amount = value[..digits_end]
         .parse::<f64>()
-        .map_err(|error| format!("memory must start with a number: {error}"))?;
+        .map_err(|error| format!("{noun} must start with a number: {error}"))?;
     if !amount.is_finite() || amount <= 0.0 {
-        return Err("memory must be greater than zero".to_owned());
+        return Err(format!("{noun} must be greater than zero"));
     }
     let unit = value[digits_end..].trim().to_ascii_lowercase();
     // Docker's RAMInBytes treats every suffix as a 1024 multiple, so `64m`
@@ -1605,11 +1606,11 @@ fn parse_byte_quantity(value: &str) -> Result<u64, String> {
         "m" | "mb" | "mi" | "mib" => 1024.0 * 1024.0,
         "g" | "gb" | "gi" | "gib" => 1024.0 * 1024.0 * 1024.0,
         "t" | "tb" | "ti" | "tib" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
-        other => return Err(format!("unsupported memory unit {other:?}")),
+        other => return Err(format!("unsupported {noun} unit {other:?}")),
     };
     let bytes = (amount * multiplier).round();
     if bytes > u64::MAX as f64 {
-        return Err("memory exceeds u64 bytes".to_owned());
+        return Err(format!("{noun} exceeds u64 bytes"));
     }
     Ok(bytes as u64)
 }

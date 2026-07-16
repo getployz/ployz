@@ -47,6 +47,7 @@ impl<'a> DeployFailureView<'a> {
             DeployOperationFailure::RuntimeUnavailable { machine_id, .. }
             | DeployOperationFailure::ContainerStartFailed { machine_id, .. }
             | DeployOperationFailure::ImageResolutionFailed { machine_id, .. }
+            | DeployOperationFailure::PlatformImageUnavailable { machine_id, .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { machine_id, .. }
             | DeployOperationFailure::PreStartHookFailed { machine_id, .. } => {
                 push_unique(&mut machines, machine_id);
@@ -81,6 +82,7 @@ impl<'a> DeployFailureView<'a> {
                 | CertificateProvisionFailure::DnsPreflight { .. }
                 | CertificateProvisionFailure::ChallengePublish { .. }
                 | CertificateProvisionFailure::AcmeValidation { .. }
+                | CertificateProvisionFailure::CoreInterrupted { .. }
                 | CertificateProvisionFailure::ActiveCertCommit { .. } => {}
             },
             DeployOperationFailure::RouteCutoverFailed { reason, .. } => match reason {
@@ -207,6 +209,7 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::ImageMissingOnSeed { .. }
             | DeployOperationFailure::ImageDigestMismatch { .. }
             | DeployOperationFailure::SeedUnavailable { .. }
+            | DeployOperationFailure::PlatformImageUnavailable { .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { .. } => {
                 FailureSafety::NothingChanged
             }
@@ -230,6 +233,7 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::ImageMissingOnSeed { service_id, .. }
             | DeployOperationFailure::ImageDigestMismatch { service_id, .. }
             | DeployOperationFailure::SeedUnavailable { service_id, .. }
+            | DeployOperationFailure::PlatformImageUnavailable { service_id, .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { service_id, .. } => {
                 Some(service_id)
             }
@@ -256,6 +260,7 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::ImageMissingOnSeed { .. }
             | DeployOperationFailure::ImageDigestMismatch { .. }
             | DeployOperationFailure::SeedUnavailable { .. }
+            | DeployOperationFailure::PlatformImageUnavailable { .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
@@ -296,6 +301,7 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::ImageMissingOnSeed { .. }
             | DeployOperationFailure::ImageDigestMismatch { .. }
             | DeployOperationFailure::SeedUnavailable { .. }
+            | DeployOperationFailure::PlatformImageUnavailable { .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
@@ -314,6 +320,7 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::ImageMissingOnSeed { service_id, .. }
             | DeployOperationFailure::ImageDigestMismatch { service_id, .. }
             | DeployOperationFailure::SeedUnavailable { service_id, .. }
+            | DeployOperationFailure::PlatformImageUnavailable { service_id, .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { service_id, .. } => {
                 Some(service_id)
             }
@@ -445,6 +452,17 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
             requested_image(target, service_id).unwrap_or("requested image"),
             message.as_str()
         ),
+        DeployOperationFailure::PlatformImageUnavailable {
+            service_id,
+            machine_id,
+            target_platform,
+        } => format!(
+            "image {} has no {}/{} image for {}",
+            requested_image(target, service_id).unwrap_or("requested image"),
+            target_platform.os(),
+            target_platform.architecture(),
+            machine_id.as_str()
+        ),
         DeployOperationFailure::UnsupportedTargetPlatform {
             service_id,
             machine_id,
@@ -453,11 +471,11 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
         } => format!(
             "image {} platform {}/{} is incompatible with {} platform {}/{}",
             requested_image(target, service_id).unwrap_or("requested image"),
-            image_platform.os,
-            image_platform.architecture,
+            image_platform.os(),
+            image_platform.architecture(),
             machine_id.as_str(),
-            target_platform.os,
-            target_platform.architecture
+            target_platform.os(),
+            target_platform.architecture()
         ),
         DeployOperationFailure::RuntimeUnavailable { message, .. } => {
             format!("container runtime unavailable: {}", message.as_str())

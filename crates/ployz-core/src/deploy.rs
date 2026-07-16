@@ -18,20 +18,25 @@ use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 pub mod images;
 pub mod planning;
 pub mod request;
+mod retention;
 pub mod revision;
 pub mod routes;
 pub mod runtime;
+pub mod volume;
 
 pub use images::*;
 pub use planning::*;
 pub use request::{
-    DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS, DependencyCondition, DeployOrigin, DeployOriginError,
-    DeployRequest, DeployReservationExpiresAt, DeployReservationId, DeployReservationNumberError,
-    DeployServiceRequest, DeployServiceSpec, PreStartHook, ReplicaCount, ReplicaCountError,
-    ServiceDependency,
+    ContainerRetentionCount, DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS, DependencyCondition,
+    DeployImageReplacementError, DeployOrigin, DeployOriginError, DeployRequest,
+    DeployReservationExpiresAt, DeployReservationId, DeployReservationNumberError,
+    DeployServiceSpec, DeployVolumeDeclarationError, PreStartHook, ReplicaCount, ReplicaCountError,
+    ServiceDependency, VolumeDeclaredDeployRequest,
 };
+pub use retention::{DeployCleanupAction, DeployCleanupContainer, ObservedCleanupCandidate};
 pub use revision::{
     canonical_capabilities, namespace_revision_entry_id_for, namespace_revision_id_for,
 };
 pub use routes::*;
 pub use runtime::*;
+pub use volume::*;

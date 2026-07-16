@@ -4,6 +4,7 @@ mod core_replace;
 mod error_map;
 mod first_machine;
 mod machine_join;
+mod machine_storage_prepare;
 mod network_query;
 mod queries;
 pub mod service;
@@ -12,7 +13,9 @@ mod submit;
 pub use core_replace::core_replace_report;
 pub use first_machine::init_first_machine_activate;
 pub use machine_join::{machine_join_redeem, machine_join_report};
+pub use machine_storage_prepare::machine_storage_prepare;
 pub use network_query::NetworkQueryService;
+pub(crate) use queries::ControlHealthReaders;
 #[cfg(test)]
 pub use queries::ops_status_missing;
 pub use queries::{
@@ -36,14 +39,12 @@ use crate::control::operations::dataplane_projection_admission::DataplaneProject
 use crate::control::operations::deploy::driver::DeployOperationDriver;
 use crate::control::operations::ingress_configure::IngressConfigureOperation;
 use crate::control::operations::machine_lifecycle::MachineLifecycleOperation;
+use crate::control::operations::machine_storage_prepare::MachineStoragePrepareOperation;
 use crate::control::operations::machine_update::MachineUpdateOperation;
 use crate::control::operations::namespace_remove::NamespaceRemoveOperation;
 use crate::control::operations::network_repair::NetworkRepairOperation;
 use crate::control::operations::service_restart::ServiceRestartOperation;
 use crate::control::operations::volume_remove::VolumeRemoveOperation;
-use crate::control::projection::ingress_endpoint::IngressEndpointProjectionHealth;
-use crate::control::projection::runtime::RuntimeProjectionHealthReader;
-use crate::control::reconciler::certificate::CertificateRenewalHealth;
 use crate::control::role_client::machine::{NatsMachineFactsReader, NatsMachineLogsTailer};
 use crate::control::sequencer::OperationControllers;
 use crate::control::store::CoreStore;
@@ -63,6 +64,7 @@ pub struct OperationWorkers {
     pub network_repair: NetworkRepairOperation,
     pub volume_remove: VolumeRemoveOperation,
     pub machine_update: MachineUpdateOperation,
+    pub machine_storage_prepare: MachineStoragePrepareOperation,
     pub machine_lifecycle: MachineLifecycleOperation,
     pub machine_mint: MachineCredentialMint,
 }
@@ -76,6 +78,7 @@ pub struct OperationApiHandlers {
     network_repair: Arc<NetworkRepairOperation>,
     volume_remove: Arc<VolumeRemoveOperation>,
     machine_update: Arc<MachineUpdateOperation>,
+    machine_storage_prepare: Arc<MachineStoragePrepareOperation>,
     machine_lifecycle: Arc<MachineLifecycleOperation>,
     dataplane_projection_admission: Arc<DataplaneProjectionAdmissionOperation>,
     machine_mint: Arc<MachineCredentialMint>,
@@ -111,9 +114,7 @@ impl OperationApiHandlers {
         facts_reader: NatsMachineFactsReader,
         intent_reader: NatsIntentReader,
         logs_tailer: NatsMachineLogsTailer,
-        runtime_projection_health: RuntimeProjectionHealthReader,
-        ingress_endpoint_projection_health: IngressEndpointProjectionHealth,
-        certificate_renewal_health: CertificateRenewalHealth,
+        control_health: queries::ControlHealthReaders,
     ) -> Self {
         let OperationWorkers {
             credential_grant,
@@ -124,6 +125,7 @@ impl OperationApiHandlers {
             network_repair,
             volume_remove,
             machine_update,
+            machine_storage_prepare,
             machine_lifecycle,
             machine_mint,
         } = workers;
@@ -138,9 +140,7 @@ impl OperationApiHandlers {
             facts.clone(),
             facts_reader.clone(),
             core_store.clone(),
-            runtime_projection_health,
-            ingress_endpoint_projection_health,
-            certificate_renewal_health,
+            control_health,
         );
         let logs_query = LogsQueryService::new(intent_reader.clone(), facts_reader, logs_tailer);
         let ingress_intent = IngressIntentStore::new(core_store.clone());
@@ -157,6 +157,7 @@ impl OperationApiHandlers {
             network_repair: Arc::new(network_repair),
             volume_remove: Arc::new(volume_remove),
             machine_update: Arc::new(machine_update),
+            machine_storage_prepare: Arc::new(machine_storage_prepare),
             machine_lifecycle: Arc::new(machine_lifecycle),
             dataplane_projection_admission,
             machine_mint: Arc::new(machine_mint),
@@ -213,6 +214,10 @@ impl OperationApiHandlers {
 
     pub(crate) fn machine_update(&self) -> &MachineUpdateOperation {
         &self.machine_update
+    }
+
+    pub(crate) fn machine_storage_prepare(&self) -> &MachineStoragePrepareOperation {
+        &self.machine_storage_prepare
     }
 
     pub(crate) fn credential_grant(&self) -> &CredentialGrantOperation {

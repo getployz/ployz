@@ -17,22 +17,27 @@ use crate::control::intent::nats_authorizations::{
 use crate::control::intent::service::{
     NatsIntentReader, RunningIntentService, start_intent_service,
 };
-use crate::control::operation_evidence::OperationRepository;
+use crate::control::operation_evidence::{OperationRepository, OperationStatusStoreError};
 use crate::control::operations::credential_grant::CredentialGrantOperation;
 use crate::control::operations::deploy::driver::{DeployOperationDriver, DeployOperationStores};
 use crate::control::operations::ingress_configure::IngressConfigureOperation;
 use crate::control::operations::machine_lifecycle::MachineLifecycleOperation;
+use crate::control::operations::machine_storage_prepare::MachineStoragePrepareOperation;
 use crate::control::operations::machine_update::MachineUpdateOperation;
 use crate::control::operator_api::service::{
     ApiServiceError, start_operation_api_service_with_handlers,
 };
-use crate::control::operator_api::{OperationApiHandlers, OperationWorkers};
+use crate::control::operator_api::{ControlHealthReaders, OperationApiHandlers, OperationWorkers};
 use crate::control::projection::ingress_endpoint::{
     IngressEndpointStartError, RunningIngressEndpointProjection, start_ingress_endpoint_projection,
 };
 use crate::control::projection::runtime::{RunningRuntimeProjection, start_runtime_projection};
-use crate::control::reconciler::certificate::CertificateRenewalTask;
-use crate::control::reconciler::managed_dns::start_managed_dns_task;
+use crate::control::reconciler::certificate::{
+    CertificateRenewalTask, recover_unfinished_operations,
+};
+use crate::control::reconciler::managed_dns::{
+    recover_accepted_operations, start_managed_dns_task,
+};
 use crate::control::role_client::machine::{
     NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineSubstrateUpdater,
 };
@@ -46,9 +51,10 @@ use crate::role_testimony::{
     start_role_testimony_cache,
 };
 use crate::seed::{SeedCoreError, seed_core_from_snapshot};
-use crate::tasks::TaskRegistry;
+use crate::tasks::{TaskRegistry, TaskRegistryQuiesceError};
 use ployz_core::intent::recovery::ControlPlaneEpoch;
 use ployz_core::intent::recovery::PendingMachineJoinRecovery;
+use ployz_core::operation::OperationInterruptionCause;
 
 use ployz_nats::connect::{NatsConnectError, connect_authenticated};
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
@@ -63,50 +69,117 @@ const REACHABILITY_RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
 pub struct RunningControlProcess {
     intent: RunningIntentService,
     operation_api: RunningNatsService,
-    credential_grant_tasks: TaskRegistry,
-    ingress_configure_tasks: TaskRegistry,
-    deploy_tasks: TaskRegistry,
-    service_restart_tasks: TaskRegistry,
-    namespace_remove_tasks: TaskRegistry,
-    network_repair_tasks: TaskRegistry,
-    volume_remove_tasks: TaskRegistry,
-    machine_update_tasks: TaskRegistry,
-    machine_lifecycle_tasks: TaskRegistry,
-    mint_tasks: TaskRegistry,
-    reachability_tasks: TaskRegistry,
-    managed_dns_tasks: TaskRegistry,
-    certificate_issuance_tasks: TaskRegistry,
-    certificate_renewal_tasks: TaskRegistry,
+    control_tasks: TaskRegistry,
     testimony_cache: RunningRoleTestimonyCache,
     runtime_projection: RunningRuntimeProjection,
     ingress_endpoint_projection: RunningIngressEndpointProjection,
     authorization: NatsAuthorizationWriter,
+    operation_repository: OperationRepository,
+    certificate_manager: CertificateManager,
+    machine_mint: MachineCredentialMint,
 }
 
+const CONTROL_TASK_QUIESCE_TIMEOUT: Duration = Duration::from_secs(5);
+
 impl RunningControlProcess {
-    pub async fn shutdown(self) -> Result<(), NatsServiceShutdownError> {
-        self.operation_api.shutdown().await?;
-        self.ingress_endpoint_projection.shutdown().await?;
-        self.runtime_projection.shutdown().await?;
-        self.intent.shutdown().await?;
-        self.credential_grant_tasks.abort_all();
-        self.ingress_configure_tasks.abort_all();
-        self.deploy_tasks.abort_all();
-        self.service_restart_tasks.abort_all();
-        self.namespace_remove_tasks.abort_all();
-        self.network_repair_tasks.abort_all();
-        self.volume_remove_tasks.abort_all();
-        self.machine_update_tasks.abort_all();
-        self.machine_lifecycle_tasks.abort_all();
-        self.mint_tasks.abort_all();
-        self.reachability_tasks.abort_all();
-        self.managed_dns_tasks.abort_all();
-        self.certificate_issuance_tasks.abort_all();
-        self.certificate_renewal_tasks.abort_all();
-        self.testimony_cache.shutdown().await;
-        self.authorization.shutdown();
+    pub async fn shutdown(self) -> Result<(), ControlProcessShutdownError> {
+        let Self {
+            intent,
+            operation_api,
+            control_tasks,
+            testimony_cache,
+            runtime_projection,
+            ingress_endpoint_projection,
+            authorization,
+            operation_repository,
+            certificate_manager,
+            machine_mint,
+        } = self;
+        let operation_api_shutdown = operation_api.shutdown().await;
+        let quiesce_result = control_tasks
+            .abort_and_join(CONTROL_TASK_QUIESCE_TIMEOUT)
+            .await;
+        let operation_seal_result = if quiesce_result.is_ok() {
+            seal_aborted_operations(&certificate_manager, &machine_mint, &operation_repository)
+                .await
+        } else {
+            Ok(())
+        };
+        let ingress_projection_shutdown = ingress_endpoint_projection.shutdown().await;
+        let runtime_projection_shutdown = runtime_projection.shutdown().await;
+        let intent_shutdown = intent.shutdown().await;
+        testimony_cache.shutdown().await;
+        authorization.shutdown();
+        quiesce_result.map_err(ControlProcessShutdownError::TaskQuiesce)?;
+        operation_seal_result?;
+        operation_api_shutdown.map_err(ControlProcessShutdownError::NatsService)?;
+        ingress_projection_shutdown.map_err(ControlProcessShutdownError::NatsService)?;
+        runtime_projection_shutdown.map_err(ControlProcessShutdownError::NatsService)?;
+        intent_shutdown.map_err(ControlProcessShutdownError::NatsService)?;
         Ok(())
     }
+}
+
+async fn seal_aborted_operations(
+    certificate_manager: &CertificateManager,
+    machine_mint: &MachineCredentialMint,
+    operation_repository: &OperationRepository,
+) -> Result<(), ControlProcessShutdownError> {
+    let owner_recovery =
+        finish_aborted_owner_operations(certificate_manager, machine_mint, operation_repository)
+            .await;
+    let interruption = operation_repository
+        .record_interrupted_operations(OperationInterruptionCause::CoreShutdown)
+        .await;
+    owner_recovery.map_err(ControlProcessShutdownError::OwnerOperationEvidence)?;
+    interruption.map_err(ControlProcessShutdownError::OperationEvidence)?;
+    Ok(())
+}
+
+async fn finish_aborted_owner_operations(
+    certificate_manager: &CertificateManager,
+    machine_mint: &MachineCredentialMint,
+    operation_repository: &OperationRepository,
+) -> Result<(), OwnerOperationRecoveryError> {
+    let certificate = recover_unfinished_operations(
+        certificate_manager,
+        OperationInterruptionCause::CoreShutdown,
+    )
+    .await;
+    let managed_dns = recover_accepted_operations(operation_repository).await;
+    let machine_add = machine_mint.fail_unfinished_mints().await;
+    certificate.map_err(|error| OwnerOperationRecoveryError::new("certificate", error))?;
+    managed_dns.map_err(|error| OwnerOperationRecoveryError::new("managed DNS", error))?;
+    machine_add.map_err(|error| OwnerOperationRecoveryError::new("machine-add mint", error))?;
+    Ok(())
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("failed to finish aborted {owner} operations: {message}")]
+pub struct OwnerOperationRecoveryError {
+    owner: &'static str,
+    message: String,
+}
+
+impl OwnerOperationRecoveryError {
+    fn new(owner: &'static str, error: impl std::fmt::Display) -> Self {
+        Self {
+            owner,
+            message: error.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ControlProcessShutdownError {
+    #[error("failed to stop control NATS service: {0}")]
+    NatsService(NatsServiceShutdownError),
+    #[error("failed to record interrupted operation evidence: {0}")]
+    OperationEvidence(OperationStatusStoreError),
+    #[error(transparent)]
+    OwnerOperationEvidence(OwnerOperationRecoveryError),
+    #[error("failed to quiesce control tasks: {0}")]
+    TaskQuiesce(TaskRegistryQuiesceError),
 }
 
 /// Record each machine's advertised endpoints onto the roster from the machine
@@ -177,6 +250,10 @@ async fn start_control_process_with_client_reload_and_issuer(
         .map_err(ControlProcessError::OpenCoreStore)?;
     reject_stale_core_epoch(&core_store, config.epoch_fence_mirror.as_deref()).await?;
     let repository = OperationRepository::open(core_store.clone(), client.clone());
+    repository
+        .record_interrupted_operations(OperationInterruptionCause::PriorCoreProcessLoss)
+        .await
+        .map_err(ControlProcessError::RecoverInterruptedOperations)?;
     let pending_join_recovery = if let Some(mirror_path) = &config.seed_from_mirror {
         seed_core_from_mirror(
             &core_store,
@@ -189,10 +266,10 @@ async fn start_control_process_with_client_reload_and_issuer(
         Vec::new()
     };
     let controllers = if pending_join_recovery.is_empty() {
-        OperationControllers::new(repository, config.machine_bootstrap.clone())
+        OperationControllers::new(repository.clone(), config.machine_bootstrap.clone())
     } else {
         OperationControllers::new_with_pending_join_recovery(
-            repository,
+            repository.clone(),
             config.machine_bootstrap.clone(),
             pending_join_recovery,
         )
@@ -224,22 +301,11 @@ async fn start_control_process_with_client_reload_and_issuer(
         .await
         .map_err(ControlProcessError::StartFactsCache)?;
     let facts = testimony_cache.cache();
-    let deploy_tasks = TaskRegistry::default();
-    let credential_grant_tasks = TaskRegistry::default();
-    let ingress_configure_tasks = TaskRegistry::default();
-    let service_restart_tasks = TaskRegistry::default();
-    let namespace_remove_tasks = TaskRegistry::default();
-    let network_repair_tasks = TaskRegistry::default();
-    let volume_remove_tasks = TaskRegistry::default();
-    let machine_update_tasks = TaskRegistry::default();
-    let machine_lifecycle_tasks = TaskRegistry::default();
-    let mint_tasks = TaskRegistry::default();
+    let control_tasks = TaskRegistry::default();
+    let task_spawner = control_tasks.spawner();
     let namespace_intent = NamespaceIntentStore::new(core_store.clone());
     let ployz_dns_target = PloyzDnsTargetStore::new(core_store.clone());
     let lease_client = LeaseClient::new(config.lease_worker_url.clone());
-    let managed_dns_tasks = TaskRegistry::default();
-    let certificate_issuance_tasks = TaskRegistry::default();
-    let certificate_renewal_tasks = TaskRegistry::default();
     let (certificate_wake, certificate_wake_rx) = tokio::sync::mpsc::channel(1);
     let certificate_manager = match certificate_issuer {
         Some(issuer) => CertificateManager::with_issuer(
@@ -254,13 +320,11 @@ async fn start_control_process_with_client_reload_and_issuer(
             config.certificate_manager.clone(),
         ),
     }
-    .with_task_registry(certificate_issuance_tasks.clone());
+    .with_task_spawner(task_spawner.clone());
     let machine_roster = MachineRosterStore::new(core_store.clone());
-    let reachability_tasks = TaskRegistry::default();
-    reachability_tasks.spawn(reconcile_reachability_loop(
-        facts.clone(),
-        machine_roster.clone(),
-    ));
+    control_tasks
+        .spawn(|| reconcile_reachability_loop(facts.clone(), machine_roster.clone()))
+        .map_err(ControlProcessError::StartControlTask)?;
     let deploy_driver = DeployOperationDriver::new(
         DeployOperationStores {
             intent_change_client: client.clone(),
@@ -271,13 +335,13 @@ async fn start_control_process_with_client_reload_and_issuer(
         },
         certificate_manager.clone(),
         config.deploy_step_timeout,
-        deploy_tasks.clone(),
+        task_spawner.clone(),
     );
     let service_restart = crate::control::operations::service_restart::ServiceRestartOperation::new(
         client.clone(),
         controllers.clone(),
         config.deploy_step_timeout,
-        service_restart_tasks.clone(),
+        task_spawner.clone(),
     );
     let namespace_remove =
         crate::control::operations::namespace_remove::NamespaceRemoveOperation::new(
@@ -285,37 +349,37 @@ async fn start_control_process_with_client_reload_and_issuer(
             namespace_intent.clone(),
             controllers.clone(),
             config.deploy_step_timeout,
-            namespace_remove_tasks.clone(),
+            task_spawner.clone(),
         );
     let volume_remove = crate::control::operations::volume_remove::VolumeRemoveOperation::new(
         client.clone(),
         namespace_intent.clone(),
         controllers.clone(),
         config.deploy_step_timeout,
-        volume_remove_tasks.clone(),
+        task_spawner.clone(),
     );
     let machine_mint = MachineCredentialMint::new(
         controllers.clone(),
         authorization.handle(),
         MintVerifyEndpoint::from_connect(&config.nats_connect),
         config.nats_authorization.machine_seed_file.clone(),
-        mint_tasks.clone(),
+        task_spawner.clone(),
     );
     let credential_grant = CredentialGrantOperation::new(
         controllers.clone(),
         authorization.handle(),
         client.clone(),
-        credential_grant_tasks.clone(),
+        task_spawner.clone(),
     );
     let ingress_configure = IngressConfigureOperation::new(
         controllers.clone(),
         IngressIntentStore::new(core_store.clone()),
         client.clone(),
-        ingress_configure_tasks.clone(),
+        task_spawner.clone(),
     );
     // Startup reconciliation (one bounded pass, owned by control start): a
     // control crash between machine-add acceptance and material-ready
-    // leaves the mint without a worker. Resume those mints now, before the
+    // leaves the mint without a worker. Finish those mints now, before the
     // operation API takes new requests.
     machine_mint
         .resume_unfinished_mints()
@@ -333,7 +397,7 @@ async fn start_control_process_with_client_reload_and_issuer(
             .with_request_timeout(config.deploy_step_timeout),
         client.clone(),
         config.deploy_step_timeout,
-        network_repair_tasks.clone(),
+        task_spawner.clone(),
     );
     let core_machine_id = config
         .deploy_machines
@@ -341,24 +405,26 @@ async fn start_control_process_with_client_reload_and_issuer(
         .cloned()
         .ok_or(ControlProcessError::MissingDeployMachine)?;
     start_managed_dns_task(
-        &managed_dns_tasks,
+        &control_tasks,
         client.clone(),
         IngressIntentStore::new(core_store.clone()),
         ployz_dns_target.clone(),
         controllers.repository().clone(),
         lease_client.clone(),
         certificate_wake,
-    );
+    )
+    .map_err(ControlProcessError::StartControlTask)?;
     let certificate_renewal_health = CertificateRenewalTask::new(
         client.clone(),
-        certificate_manager,
+        certificate_manager.clone(),
         NatsMachineFactsReader::new(client.clone()),
         machine_roster.clone(),
         ployz_dns_target,
         lease_client,
         certificate_wake_rx,
     )
-    .start(&certificate_renewal_tasks);
+    .start(&control_tasks)
+    .map_err(ControlProcessError::StartControlTask)?;
     let intent = start_intent_service(
         client.clone(),
         core_machine_id.clone(),
@@ -393,14 +459,19 @@ async fn start_control_process_with_client_reload_and_issuer(
     let machine_updater = NatsMachineSubstrateUpdater::new(client.clone());
     let machine_update = MachineUpdateOperation::new(
         controllers.clone(),
+        machine_updater.clone(),
+        task_spawner.clone(),
+    );
+    let machine_storage_prepare = MachineStoragePrepareOperation::new(
+        controllers.clone(),
         machine_updater,
-        machine_update_tasks.clone(),
+        task_spawner.clone(),
     );
     let machine_lifecycle = MachineLifecycleOperation::new(
         client.clone(),
         controllers.clone(),
         machine_roster.clone(),
-        machine_lifecycle_tasks.clone(),
+        task_spawner,
     );
     let operation_api = start_operation_api_service_with_handlers(
         client.clone(),
@@ -415,8 +486,9 @@ async fn start_control_process_with_client_reload_and_issuer(
                 network_repair,
                 volume_remove,
                 machine_update,
+                machine_storage_prepare,
                 machine_lifecycle,
-                machine_mint,
+                machine_mint: machine_mint.clone(),
             },
             config.dataplane_endpoint_supernet.clone(),
             core_store.clone(),
@@ -431,9 +503,12 @@ async fn start_control_process_with_client_reload_and_issuer(
             facts_reader,
             intent_reader,
             logs_tailer,
-            runtime_projection_health,
-            ingress_endpoint_projection_health,
-            certificate_renewal_health.clone(),
+            ControlHealthReaders {
+                task_supervisor: control_tasks.health_reader(),
+                runtime_projection: runtime_projection_health,
+                ingress_endpoint_projection: ingress_endpoint_projection_health,
+                certificate_renewal: certificate_renewal_health.clone(),
+            },
         ),
     )
     .await
@@ -442,24 +517,14 @@ async fn start_control_process_with_client_reload_and_issuer(
     Ok(RunningControlProcess {
         intent,
         operation_api,
-        credential_grant_tasks,
-        ingress_configure_tasks,
-        deploy_tasks,
-        service_restart_tasks,
-        namespace_remove_tasks,
-        network_repair_tasks,
-        volume_remove_tasks,
-        machine_update_tasks,
-        machine_lifecycle_tasks,
-        mint_tasks,
-        reachability_tasks,
-        managed_dns_tasks,
-        certificate_issuance_tasks,
-        certificate_renewal_tasks,
+        control_tasks,
         testimony_cache,
         runtime_projection,
         ingress_endpoint_projection,
         authorization,
+        operation_repository: repository,
+        certificate_manager,
+        machine_mint,
     })
 }
 
@@ -474,7 +539,7 @@ pub async fn run_control_until_shutdown(
     runtime
         .shutdown()
         .await
-        .map_err(ControlProcessError::ShutdownOperationApi)
+        .map_err(ControlProcessError::ShutdownControl)
 }
 
 /// Seed a fresh core store from the machine's local intent mirror at promotion
@@ -610,6 +675,10 @@ pub enum ControlProcessError {
     RenderNatsAuthorization(RenderFailure),
     #[error("failed to reconcile unfinished machine-add mints: {0}")]
     ResumeMachineAddMints(MintResumeError),
+    #[error("failed to admit control task during startup: {0}")]
+    StartControlTask(crate::tasks::TaskAdmissionError),
+    #[error("failed to recover operations interrupted by prior control process loss: {0}")]
+    RecoverInterruptedOperations(OperationStatusStoreError),
     #[error("failed to start intent service: {0}")]
     StartIntent(ployz_nats::service_runtime::NatsServiceRuntimeError),
     #[error("failed to start ingress endpoint projection: {0}")]
@@ -620,8 +689,8 @@ pub enum ControlProcessError {
     StartOperationApi(ApiServiceError),
     #[error("failed to wait for shutdown: {0}")]
     ShutdownSignal(std::io::Error),
-    #[error("failed to stop operation API service: {0}")]
-    ShutdownOperationApi(NatsServiceShutdownError),
+    #[error("failed to stop control process: {0}")]
+    ShutdownControl(ControlProcessShutdownError),
 }
 
 #[cfg(test)]

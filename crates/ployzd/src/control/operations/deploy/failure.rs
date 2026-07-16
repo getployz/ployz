@@ -35,8 +35,10 @@ fn failure_commit_scope(command: &DeployExecutionCommand) -> ControlPlaneCommitS
         };
     };
     ControlPlaneCommitScope::ServiceEntry {
-        service_id: service.request.service_id.clone(),
-        namespace_revision_entry_id: service.request.namespace_revision_entry_id.clone(),
+        service_id: service.service.service_id.clone(),
+        namespace_revision_entry_id: service
+            .service
+            .namespace_revision_entry_id(command.request.namespace_id()),
     }
 }
 
@@ -196,6 +198,8 @@ pub enum DeployExecutionError {
     StepId(SubjectTokenError),
     #[error("image pull result is invalid: {message}")]
     InvalidImagePull { message: String },
+    #[error("deploy execution invariant failed: {message}")]
+    InternalInvariant { message: String },
     #[error("deploy step {step:?} timed out after {timeout:?}")]
     StepTimedOut {
         step: DeployExecutionStep,
@@ -230,7 +234,7 @@ pub enum DeployExecutionError {
         failure: Box<CertificateProvisionFailure>,
     },
     #[error("namespace state commit failed: {0:?}")]
-    CommitNamespaceState(NamespaceCommitError),
+    CommitNamespaceState(Box<NamespaceCommitError>),
     #[error(
         "deploy failed: {failure:?}; source: {source}; failure record: {failure_record_error:?}"
     )]
@@ -526,6 +530,13 @@ impl DeployExecutionError {
         retained_artifacts: Vec<RetainedArtifact>,
     ) -> DeployOperationFailure {
         match self {
+            Self::Plan(DeployPlanError::UnknownService { service_id }) => {
+                DeployOperationFailure::PlanningFailed {
+                    service_id: service_id.clone(),
+                    namespace_revision_id: failure_namespace_revision_id(command),
+                    message: failure_message("planning input names a service outside the deploy"),
+                }
+            }
             Self::Plan(DeployPlanError::NoEligibleMachines) => {
                 DeployOperationFailure::NoUsableMachines {
                     reasons: command.unusable_machines.clone(),
@@ -538,6 +549,41 @@ impl DeployExecutionError {
                     message: failure_message("volume-backed service has conflicting volume pins"),
                 }
             }
+            Self::Plan(DeployPlanError::ProvisionedVolumeRequiresProvisioning {
+                service_id,
+                volume_name,
+            }) => DeployOperationFailure::PlanningFailed {
+                service_id: service_id.clone(),
+                namespace_revision_id: failure_namespace_revision_id(command),
+                message: failure_message(format!(
+                    "provisioned volume {} requires the volume provisioning stage",
+                    volume_name.as_str()
+                )),
+            },
+            Self::Plan(DeployPlanError::VolumePinIncompatible {
+                service_id,
+                volume_name,
+                ..
+            }) => DeployOperationFailure::PlanningFailed {
+                service_id: service_id.clone(),
+                namespace_revision_id: failure_namespace_revision_id(command),
+                message: failure_message(format!(
+                    "stored pin is incompatible with declared volume {}",
+                    volume_name.as_str()
+                )),
+            },
+            Self::Plan(DeployPlanError::ProvisionedVolumeShrink {
+                service_id,
+                volume_name,
+                ..
+            }) => DeployOperationFailure::PlanningFailed {
+                service_id: service_id.clone(),
+                namespace_revision_id: failure_namespace_revision_id(command),
+                message: failure_message(format!(
+                    "provisioned volume {} cannot shrink below its pinned maximum",
+                    volume_name.as_str()
+                )),
+            },
             Self::Plan(DeployPlanError::UnknownServiceDependency {
                 service_id,
                 dependency,
@@ -578,6 +624,11 @@ impl DeployExecutionError {
                 message: failure_message("deploy planning failed"),
             },
             Self::InvalidImagePull { message } => DeployOperationFailure::PlanningFailed {
+                service_id: failure_service_id(command),
+                namespace_revision_id: failure_namespace_revision_id(command),
+                message: failure_message(message.clone()),
+            },
+            Self::InternalInvariant { message } => DeployOperationFailure::PlanningFailed {
                 service_id: failure_service_id(command),
                 namespace_revision_id: failure_namespace_revision_id(command),
                 message: failure_message(message.clone()),
@@ -634,7 +685,7 @@ impl DeployExecutionError {
 
 impl From<NamespaceCommitError> for DeployExecutionError {
     fn from(value: NamespaceCommitError) -> Self {
-        Self::CommitNamespaceState(value)
+        Self::CommitNamespaceState(Box::new(value))
     }
 }
 
@@ -672,8 +723,8 @@ impl NamespaceCommitError {
             Self::VolumePin { state, message } => {
                 DeployOperationFailure::ControlPlaneCommitFailed {
                     scope: ControlPlaneCommitScope::VolumePin {
-                        namespace_id: state.namespace_id.clone(),
-                        volume_name: state.volume_name.clone(),
+                        namespace_id: state.namespace_id().clone(),
+                        volume_name: state.volume_name().clone(),
                     },
                     message: failure_message(format!(
                         "volume pin state could not be committed: {message}"
@@ -915,6 +966,7 @@ fn add_retained_artifacts(failure: &mut DeployOperationFailure, artifacts: Vec<R
         | DeployOperationFailure::ImageMissingOnSeed { .. }
         | DeployOperationFailure::ImageDigestMismatch { .. }
         | DeployOperationFailure::SeedUnavailable { .. }
+        | DeployOperationFailure::PlatformImageUnavailable { .. }
         | DeployOperationFailure::UnsupportedTargetPlatform { .. } => return,
     };
 

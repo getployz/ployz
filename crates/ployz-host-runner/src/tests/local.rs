@@ -736,6 +736,14 @@ fn local_effects_merge_required_docker_daemon_settings() {
         serde_json::from_slice(&fs::read(daemon_config).expect("docker config can be read"))
             .expect("docker config is JSON");
     assert_eq!(config.get("log-level"), Some(&serde_json::json!("warn")));
+    assert_eq!(
+        config.get("log-driver"),
+        Some(&serde_json::json!("json-file"))
+    );
+    assert_eq!(
+        config.get("log-opts"),
+        Some(&serde_json::json!({"max-size":"10m","max-file":"3"}))
+    );
     let features = config
         .get("features")
         .and_then(serde_json::Value::as_object)
@@ -758,6 +766,92 @@ fn local_effects_merge_required_docker_daemon_settings() {
 }
 
 #[test]
+fn local_effects_preserve_existing_docker_logging_driver_as_one_opinion() {
+    let root = temp_dir("ployz-host-runner-local-docker-log-driver");
+    let systemd_dir = root.join("systemd");
+    let daemon_config = root.join("etc/docker/daemon.json");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    fs::create_dir_all(daemon_config.parent().expect("config has parent"))
+        .expect("docker config dir can be created");
+    fs::write(
+        &daemon_config,
+        br#"{"features":{"containerd-snapshotter":true},"insecure-registries":["10.77.0.0/16"],"log-driver":"journald"}"#,
+    )
+    .expect("docker config can be written");
+    let mut effects = HostRunnerLocalEffects::new(
+        local_config(&root, &systemd_dir),
+        RecordingRunner::root_linux(),
+    );
+    validate_host(&mut effects);
+
+    effects
+        .apply_step(&HostRunnerStep::PrepareContainerRuntime(
+            ContainerRuntime::Docker,
+            ployz_core::network::MachineEndpointSupernet::try_new("10.77.0.0/16")
+                .expect("valid custom supernet"),
+        ))
+        .expect("existing logging opinion is accepted");
+
+    let config: serde_json::Value =
+        serde_json::from_slice(&fs::read(&daemon_config).expect("Docker config can be read"))
+            .expect("Docker config is JSON");
+    assert_eq!(
+        config.get("log-driver"),
+        Some(&serde_json::json!("journald"))
+    );
+    assert!(config.get("log-opts").is_none());
+    assert!(
+        !effects
+            .runner()
+            .systemctl_calls
+            .contains(&vec!["restart".to_owned(), "docker".to_owned(),])
+    );
+}
+
+#[test]
+fn local_effects_preserve_existing_docker_logging_options_as_one_opinion() {
+    let root = temp_dir("ployz-host-runner-local-docker-log-opts");
+    let systemd_dir = root.join("systemd");
+    let daemon_config = root.join("etc/docker/daemon.json");
+    fs::create_dir_all(&systemd_dir).expect("systemd dir can be created");
+    fs::create_dir_all(daemon_config.parent().expect("config has parent"))
+        .expect("docker config dir can be created");
+    fs::write(
+        &daemon_config,
+        br#"{"features":{"containerd-snapshotter":true},"insecure-registries":["10.77.0.0/16"],"log-opts":{"tag":"ployz"}}"#,
+    )
+    .expect("docker config can be written");
+    let mut effects = HostRunnerLocalEffects::new(
+        local_config(&root, &systemd_dir),
+        RecordingRunner::root_linux(),
+    );
+    validate_host(&mut effects);
+
+    effects
+        .apply_step(&HostRunnerStep::PrepareContainerRuntime(
+            ContainerRuntime::Docker,
+            ployz_core::network::MachineEndpointSupernet::try_new("10.77.0.0/16")
+                .expect("valid custom supernet"),
+        ))
+        .expect("existing logging opinion is accepted");
+
+    let config: serde_json::Value =
+        serde_json::from_slice(&fs::read(&daemon_config).expect("Docker config can be read"))
+            .expect("Docker config is JSON");
+    assert!(config.get("log-driver").is_none());
+    assert_eq!(
+        config.get("log-opts"),
+        Some(&serde_json::json!({"tag":"ployz"}))
+    );
+    assert!(
+        !effects
+            .runner()
+            .systemctl_calls
+            .contains(&vec!["restart".to_owned(), "docker".to_owned(),])
+    );
+}
+
+#[test]
 fn local_effects_use_configured_supernet_without_restarting_unchanged_docker() {
     let root = temp_dir("ployz-host-runner-local-docker-custom-supernet");
     let systemd_dir = root.join("systemd");
@@ -767,7 +861,7 @@ fn local_effects_use_configured_supernet_without_restarting_unchanged_docker() {
         .expect("docker config dir can be created");
     fs::write(
         &daemon_config,
-        br#"{"features":{"containerd-snapshotter":true},"insecure-registries":["10.77.0.0/16"]}"#,
+        br#"{"features":{"containerd-snapshotter":true},"insecure-registries":["10.77.0.0/16"],"log-driver":"json-file","log-opts":{"max-size":"10m","max-file":"3"}}"#,
     )
     .expect("docker config can be written");
     let mut effects = HostRunnerLocalEffects::new(

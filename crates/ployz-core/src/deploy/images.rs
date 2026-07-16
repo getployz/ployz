@@ -3,20 +3,179 @@
 use super::*;
 
 pub use crate::image::{
-    OciDigest, RegistryCredential, RegistryCredentialError, RegistryCredentialSecret,
+    OciDigest, OciPlatform, RegistryCredential, RegistryCredentialError, RegistryCredentialSecret,
     RegistryCredentialUsername,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct PlatformImage {
+    pub seed: MachineId,
+    pub manifest_digest: OciDigest,
+    pub image_id: OciDigest,
+}
+
+/// A validated pushed-image receipt whose identity describes replacement-relevant
+/// platform content, independently of the machines currently serving it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(try_from = "PushedImageReceiptWire", into = "PushedImageReceiptWire")]
+pub struct PushedImageReceipt {
+    index_digest: OciDigest,
+    #[cfg_attr(feature = "typescript", ts(type = "[OciPlatform, PlatformImage][]"))]
+    platforms: BTreeMap<OciPlatform, PlatformImage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PushedImageReceiptWire {
+    index_digest: OciDigest,
+    platforms: Vec<(OciPlatform, PlatformImage)>,
+}
+
+impl TryFrom<PushedImageReceiptWire> for PushedImageReceipt {
+    type Error = PushedImageReceiptError;
+
+    fn try_from(value: PushedImageReceiptWire) -> Result<Self, Self::Error> {
+        let PushedImageReceiptWire {
+            index_digest,
+            platforms,
+        } = value;
+        let receipt = Self::try_new(platforms)?;
+        if receipt.index_digest != index_digest {
+            return Err(PushedImageReceiptError::IndexDigestMismatch {
+                expected: receipt.index_digest,
+                actual: index_digest,
+            });
+        }
+        Ok(receipt)
+    }
+}
+
+impl From<PushedImageReceipt> for PushedImageReceiptWire {
+    fn from(value: PushedImageReceipt) -> Self {
+        let PushedImageReceipt {
+            index_digest,
+            platforms,
+        } = value;
+        Self {
+            index_digest,
+            platforms: platforms.into_iter().collect(),
+        }
+    }
+}
+
+impl PushedImageReceipt {
+    const INDEX_ENCODING_VERSION: &'static str = "ployz.pushed_image_receipt_index.v1";
+
+    pub fn try_new(
+        entries: impl IntoIterator<Item = (OciPlatform, PlatformImage)>,
+    ) -> Result<Self, PushedImageReceiptError> {
+        let mut platforms = BTreeMap::new();
+        for (platform, image) in entries {
+            if platforms.insert(platform.clone(), image).is_some() {
+                return Err(PushedImageReceiptError::DuplicatePlatform { platform });
+            }
+        }
+        if platforms.is_empty() {
+            return Err(PushedImageReceiptError::Empty);
+        }
+        let index_digest = receipt_index_digest(&platforms);
+        Ok(Self {
+            index_digest,
+            platforms,
+        })
+    }
+
+    #[must_use]
+    pub fn index_digest(&self) -> &OciDigest {
+        &self.index_digest
+    }
+
+    #[must_use]
+    pub fn platforms(&self) -> impl ExactSizeIterator<Item = (&OciPlatform, &PlatformImage)> {
+        self.platforms.iter()
+    }
+
+    #[must_use]
+    pub fn platform(&self, platform: &OciPlatform) -> Option<&PlatformImage> {
+        self.platforms.get(platform)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PushedImageReceiptError {
+    #[error("pushed image receipt must contain at least one platform")]
+    Empty,
+    #[error(
+        "pushed image receipt contains duplicate platform {}/{}",
+        platform.os(),
+        platform.architecture()
+    )]
+    DuplicatePlatform { platform: OciPlatform },
+    #[error("pushed image receipt index digest mismatch: expected {expected}, got {actual}")]
+    IndexDigestMismatch {
+        expected: OciDigest,
+        actual: OciDigest,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ImageSource {
+enum ImageSourceWire {
     Registry,
     PushedToSeed {
-        seed: MachineId,
-        manifest_digest: OciDigest,
-        image_id: OciDigest,
+        index_digest: OciDigest,
+        platforms: Vec<(OciPlatform, PlatformImage)>,
     },
+}
+
+impl TryFrom<ImageSourceWire> for ImageSource {
+    type Error = PushedImageReceiptError;
+
+    fn try_from(value: ImageSourceWire) -> Result<Self, Self::Error> {
+        match value {
+            ImageSourceWire::Registry => Ok(Self::Registry),
+            ImageSourceWire::PushedToSeed {
+                index_digest,
+                platforms,
+            } => PushedImageReceipt::try_from(PushedImageReceiptWire {
+                index_digest,
+                platforms,
+            })
+            .map(Self::PushedToSeed),
+        }
+    }
+}
+
+impl From<ImageSource> for ImageSourceWire {
+    fn from(value: ImageSource) -> Self {
+        match value {
+            ImageSource::Registry => Self::Registry,
+            ImageSource::PushedToSeed(receipt) => {
+                let receipt = PushedImageReceiptWire::from(receipt);
+                Self::PushedToSeed {
+                    index_digest: receipt.index_digest,
+                    platforms: receipt.platforms,
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(
+        type = "{ source: \"registry\" } | { source: \"pushed_to_seed\", index_digest: OciDigest, platforms: [OciPlatform, PlatformImage][] }"
+    )
+)]
+#[serde(try_from = "ImageSourceWire", into = "ImageSourceWire")]
+pub enum ImageSource {
+    Registry,
+    PushedToSeed(PushedImageReceipt),
 }
 
 impl ImageSource {
@@ -24,6 +183,38 @@ impl ImageSource {
     pub const fn is_registry(&self) -> bool {
         matches!(self, Self::Registry)
     }
+}
+
+fn receipt_index_digest(platforms: &BTreeMap<OciPlatform, PlatformImage>) -> OciDigest {
+    let mut hasher = Sha256::new();
+    receipt_index_frame(
+        &mut hasher,
+        "version",
+        PushedImageReceipt::INDEX_ENCODING_VERSION.as_bytes(),
+    );
+    for (platform, image) in platforms {
+        receipt_index_frame(&mut hasher, "platform_os", platform.os().as_bytes());
+        receipt_index_frame(
+            &mut hasher,
+            "platform_architecture",
+            platform.architecture().as_bytes(),
+        );
+        receipt_index_frame(
+            &mut hasher,
+            "manifest_digest",
+            image.manifest_digest.as_str().as_bytes(),
+        );
+        receipt_index_frame(&mut hasher, "image_id", image.image_id.as_str().as_bytes());
+    }
+    OciDigest::try_new(format!("sha256:{:x}", hasher.finalize()))
+        .expect("sha256 is a canonical OCI digest")
+}
+
+fn receipt_index_frame(hasher: &mut Sha256, label: &str, value: &[u8]) {
+    hasher.update((label.len() as u64).to_be_bytes());
+    hasher.update(label.as_bytes());
+    hasher.update((value.len() as u64).to_be_bytes());
+    hasher.update(value);
 }
 
 pub(super) fn registry_image_source() -> ImageSource {
@@ -255,6 +446,131 @@ fn valid_repository_component(component: &str) -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pushed_receipt_round_trips_as_ordered_platform_pairs() {
+        let source = pushed_source();
+
+        let encoded = serde_json::to_value(&source).expect("receipt serializes");
+        assert_eq!(
+            encoded.get("source"),
+            Some(&serde_json::json!("pushed_to_seed"))
+        );
+        assert!(encoded.get("index_digest").is_some());
+        assert!(
+            encoded
+                .get("platforms")
+                .is_some_and(serde_json::Value::is_array)
+        );
+        assert!(encoded.get("receipt").is_none());
+        assert_eq!(
+            serde_json::from_value::<ImageSource>(encoded).expect("receipt deserializes"),
+            source
+        );
+    }
+
+    #[test]
+    fn pushed_receipt_rejects_empty_and_duplicate_platforms() {
+        let source = pushed_source();
+        let mut encoded = serde_json::to_value(source).expect("receipt serializes");
+        let Some(platforms) = encoded.get_mut("platforms") else {
+            panic!("receipt wire includes platforms");
+        };
+        *platforms = serde_json::json!([]);
+        assert!(serde_json::from_value::<ImageSource>(encoded.clone()).is_err());
+
+        let duplicate = serde_json::json!([
+            [platform("amd64"), platform_image('b')],
+            [platform("amd64"), platform_image('c')]
+        ]);
+        let Some(platforms) = encoded.get_mut("platforms") else {
+            panic!("receipt wire includes platforms");
+        };
+        *platforms = duplicate;
+        assert!(serde_json::from_value::<ImageSource>(encoded).is_err());
+    }
+
+    #[test]
+    fn pushed_receipt_constructor_rejects_empty_and_duplicate_platforms() {
+        assert_eq!(
+            PushedImageReceipt::try_new([]),
+            Err(PushedImageReceiptError::Empty)
+        );
+        let duplicate = platform("amd64");
+        assert_eq!(
+            PushedImageReceipt::try_new([
+                (duplicate.clone(), platform_image('b')),
+                (duplicate.clone(), platform_image('c')),
+            ]),
+            Err(PushedImageReceiptError::DuplicatePlatform {
+                platform: duplicate
+            })
+        );
+    }
+
+    #[test]
+    fn pushed_receipt_rejects_forged_index_digest() {
+        let mut encoded = serde_json::to_value(pushed_source()).expect("receipt serializes");
+        let Some(image_id) = encoded.pointer_mut("/platforms/0/1/image_id") else {
+            panic!("receipt wire includes the platform image id");
+        };
+        *image_id = serde_json::json!(digest('d'));
+
+        assert!(matches!(
+            serde_json::from_value::<ImageSource>(encoded),
+            Err(error) if error.to_string().contains("index digest mismatch")
+        ));
+    }
+
+    #[test]
+    fn pushed_receipt_index_is_sorted_and_excludes_seed_location() {
+        let amd64 = platform("amd64");
+        let arm64 = platform("arm64");
+        let left = PushedImageReceipt::try_new([
+            (arm64.clone(), platform_image('b')),
+            (amd64.clone(), platform_image('c')),
+        ])
+        .expect("receipt");
+        let mut relocated_arm = platform_image('b');
+        relocated_arm.seed = MachineId::try_new("machine_relocated").expect("machine id");
+        let right =
+            PushedImageReceipt::try_new([(amd64, platform_image('c')), (arm64, relocated_arm)])
+                .expect("receipt");
+
+        assert_eq!(left.index_digest(), right.index_digest());
+        assert_eq!(
+            left.index_digest().as_str(),
+            "sha256:d66f93797a558cc78021e66cba67c1e1212f082847582dd283a613f2d4d96308"
+        );
+    }
+
+    fn pushed_source() -> ImageSource {
+        ImageSource::PushedToSeed(
+            PushedImageReceipt::try_new([(platform("amd64"), platform_image('b'))])
+                .expect("receipt"),
+        )
+    }
+
+    fn platform(architecture: &str) -> OciPlatform {
+        OciPlatform::try_new("linux", architecture).expect("platform")
+    }
+
+    fn platform_image(value: char) -> PlatformImage {
+        PlatformImage {
+            seed: MachineId::try_new(format!("machine_{value}")).expect("machine id"),
+            manifest_digest: digest(value),
+            image_id: digest(value),
+        }
+    }
+
+    fn digest(value: char) -> OciDigest {
+        OciDigest::try_new(format!("sha256:{}", value.to_string().repeat(64))).expect("OCI digest")
+    }
 }
 
 fn valid_image_tag(tag: &str) -> bool {

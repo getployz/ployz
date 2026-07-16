@@ -10,7 +10,10 @@ use crate::control::intent::service::NatsIntentReader;
 use ployz_core::intent::IntentSnapshot;
 use ployz_core::intent::recovery::{ControlPlaneEpoch, PendingMachineJoinRecoverySnapshot};
 use ployz_core::machine::roles::InstallRolePolicy;
-use ployz_core::machine::{JoinTokenRedeemedAt, MachineAddFailure, RawJoinToken};
+use ployz_core::machine::{
+    IssuedJoinToken, JoinTokenExpiresAt, JoinTokenRedeemedAt, MachineAddFailure, MachineName,
+    RawJoinToken,
+};
 use ployz_core::nats_config::{
     CredentialGrant, CredentialName, CredentialRole, NatsAuthorizationGrant, NatsInternalAuthority,
     NatsUserPublicKey,
@@ -23,7 +26,8 @@ use ployz_nats::subjects::{OPERATION_PROGRESS_SCOPE, OperationApiEndpoint};
 use ployz_sdk_types::{
     MachineAddAccepted, MachineAddError, MachineAddRequest, MachineJoinRedeemError,
     MachineJoinRedeemRequest, MachineJoinRedeemResult, MachineJoinReportOutcome,
-    MachineJoinReportRequest, MachineListRequest, OpsStatusError, OpsStatusRequest,
+    MachineJoinReportRequest, MachineJoinToken, MachineListRequest, OpsStatusError,
+    OpsStatusRequest,
 };
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -31,11 +35,15 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 
 mod dataplane;
 
-use crate::tests::support::control::{RecordingReload, TestNats, redeem_when_ready};
+use crate::tests::support::control::{
+    RecordingReload, TestNats, machine_join_template, redeem_when_ready,
+};
 use ployz_test_support::ids::{idempotency_key, machine_id, operation_id};
 use ployz_test_support::ops::wait_for_terminal_status;
 
-use crate::control::operation_evidence::{OperationRepository, OperationStatusWrite};
+use crate::control::operation_evidence::{
+    MachineAddOperationSubmission, MachineJoinIdentity, OperationRepository, OperationStatusWrite,
+};
 use crate::control::store::CoreStore;
 use crate::recovery::{IntentMirror, PendingMachineJoinMirror};
 
@@ -448,46 +456,46 @@ async fn machine_add_reload_failure_is_a_typed_terminal_failure() {
 async fn control_restart_resumes_stranded_mint_to_material_ready() {
     let _guard = lock_machine_add_mint_test().await;
     let nats = TestNats::start().await;
-    // Gate the reload so the mint cannot reach material-ready while the
-    // first control process is alive.
-    let reload = RecordingReload::gated_signal(nats.server().server_pid());
     let config = nats.control_config();
-    let runtime = nats
-        .start_control_with_reload(&config, reload.clone())
-        .await;
-    let api = nats.api();
-    let join_api = nats.join_api();
-
-    let accepted = machine_add(&api, "op_stranded", "idem_stranded", "machine_st").await;
-    let not_ready = join_api
-        .machine_join_redeem(&MachineJoinRedeemRequest {
-            join_token: accepted.join_token.clone(),
+    let repository = operation_repository_for_test(&nats).await;
+    let raw_join_token = RawJoinToken::try_new("stranded-mint-token").expect("join token");
+    let redeem_token =
+        MachineJoinToken::try_new(raw_join_token.as_str()).expect("redeem join token");
+    let join_token = IssuedJoinToken::new(
+        raw_join_token.fingerprint().expect("join fingerprint"),
+        JoinTokenExpiresAt::try_new(4_102_444_800).expect("join expiry"),
+    );
+    repository
+        .submit_machine_add(MachineAddOperationSubmission {
+            operation_id: operation_id("op_stranded"),
+            idempotency_key: idempotency_key("idem_stranded"),
+            identity: MachineJoinIdentity {
+                machine_id: machine_id("machine_st"),
+                name: MachineName::try_new("machine-st").expect("machine name"),
+                roles: InstallRolePolicy::install_all().without_gateway(),
+                host_port_assurance: ployz_core::install::HostPortAssurance::Keeper,
+                endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new(
+                    "10.198.91.0/24",
+                )
+                .expect("endpoint subnet"),
+                join_bundle: machine_join_template(&nats).join_bundle,
+                join_token: join_token.clone(),
+                raw_join_token,
+            },
         })
         .await
-        .expect_err("redeem before material-ready is refused");
-    assert!(
-        matches!(
-            not_ready,
-            OperationApiClientError::Domain {
-                error: MachineJoinRedeemError::MaterialNotReady { .. },
-                ..
-            }
-        ),
-        "mint had not reached material-ready before the crash: {not_ready:?}"
-    );
+        .expect("prior process left accepted machine-add evidence");
 
-    // The control process "crashes": the mint worker dies with it, leaving
-    // the accepted operation without material.
-    runtime
-        .shutdown()
-        .await
-        .expect("control runtime shuts down");
-    reload.release();
-
-    // A fresh control start reconciles: the stranded mint resumes and
-    // reaches material-ready without a new machine-add request.
+    // Starting the successor core does not return until its bounded recovery
+    // pass has made the persisted mint material ready.
     let runtime = nats.start_control(&config).await;
-    let redeemed = redeem_when_ready(&join_api, &accepted.join_token).await;
+    let redeemed = nats
+        .join_api()
+        .machine_join_redeem(&MachineJoinRedeemRequest {
+            join_token: redeem_token,
+        })
+        .await
+        .expect("material is ready when control start returns");
     assert!(
         redeemed
             .secret_delivery
@@ -501,6 +509,71 @@ async fn control_restart_resumes_stranded_mint_to_material_ready() {
         .shutdown()
         .await
         .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn graceful_shutdown_preserves_pending_machine_add_with_ready_material() {
+    let _guard = lock_machine_add_mint_test().await;
+    let nats = TestNats::start().await;
+    let config = nats.control_config();
+    let runtime = nats.start_control(&config).await;
+    let api = nats.api();
+    let accepted = machine_add(
+        &api,
+        "op_shutdown_ready",
+        "idem_shutdown_ready",
+        "machine_sr",
+    )
+    .await;
+    let repository = operation_repository_for_test(&nats).await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if repository
+                .machine_add_secret_delivery(&idempotency_key("idem_shutdown_ready"))
+                .await
+                .expect("secret delivery reads")
+                .is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("credential material becomes durable");
+
+    runtime.shutdown().await.expect("control shuts down");
+    assert!(matches!(
+        repository
+            .get(&accepted.accepted.operation_id)
+            .await
+            .expect("machine-add status reads")
+            .expect("machine-add status exists"),
+        OperationStatus::MachineAdd {
+            state: MachineAddOperationState::Pending { .. },
+            ..
+        }
+    ));
+
+    let restarted = nats.start_control(&config).await;
+    let redeemed = nats
+        .join_api()
+        .machine_join_redeem(&MachineJoinRedeemRequest {
+            join_token: accepted.join_token,
+        })
+        .await
+        .expect("material-ready pending machine-add redeems after restart");
+    assert!(
+        redeemed
+            .secret_delivery
+            .nats_credentials
+            .secret()
+            .starts_with("SU")
+    );
+    restarted
+        .shutdown()
+        .await
+        .expect("restarted control shuts down");
 }
 
 #[tokio::test]
@@ -526,6 +599,22 @@ async fn promoted_core_recovers_pending_join_without_old_operation_log() {
         ployz_core::install::HostPortAssurance::External,
     )
     .await;
+    let repository = operation_repository_for_test(&nats).await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if repository
+                .machine_add_secret_delivery(&idempotency_key("idem_recover_join_255"))
+                .await
+                .expect("secret delivery reads")
+                .is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("credential material becomes durable before promotion");
     runtime
         .shutdown()
         .await

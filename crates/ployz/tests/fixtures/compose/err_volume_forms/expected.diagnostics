@@ -15,6 +15,7 @@ services.short_forms.volumes[4]  invalid value  container mount path must be abs
 volumes.configured.driver  invalid value  custom volume drivers are not supported; remove driver
 volumes.configured.driver_opts  invalid value  volume driver options are not supported; remove driver_opts
 volumes.custom.mystery  invalid value  volume declaration option "mystery" is not supported; remove it
+volumes.data  advisory  declared volume is not mounted and will not be created
 volumes.external_data.external  invalid value  external volumes are not supported; remove external: true so Ployz creates the volume as pinned intent
 volumes.labeled.labels  invalid value  volume labels are not supported; remove labels
 volumes.renamed.name  invalid value  volume name overrides are not supported; use the top-level volume key

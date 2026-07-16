@@ -2,11 +2,12 @@ use super::{
     CertOperationPayload, CertOperationSubmission, CoreReplaceOperationSubmission,
     CoreReplacePayload, CredentialGrantOperationSubmission, DeployOperationPayload,
     DeployOperationSubmission, IngressConfigureOperationSubmission,
-    MachineLifecycleOperationSubmission, MachineLifecyclePayload, MachineUpdateOperationSubmission,
-    MachineUpdatePayload, ManagedDnsReconcileOperationSubmission, ManagedDnsReconcilePayload,
-    NamespaceRemoveOperationSubmission, NamespaceRemovePayload, NetworkRepairOperationSubmission,
-    NetworkRepairPayload, ServiceRestartOperationSubmission, ServiceRestartPayload,
-    VolumeRemoveOperationSubmission, VolumeRemovePayload,
+    MachineLifecycleOperationSubmission, MachineLifecyclePayload,
+    MachineStoragePrepareOperationSubmission, MachineStoragePreparePayload,
+    MachineUpdateOperationSubmission, MachineUpdatePayload, ManagedDnsReconcileOperationSubmission,
+    ManagedDnsReconcilePayload, NamespaceRemoveOperationSubmission, NamespaceRemovePayload,
+    NetworkRepairOperationSubmission, NetworkRepairPayload, ServiceRestartOperationSubmission,
+    ServiceRestartPayload, VolumeRemoveOperationSubmission, VolumeRemovePayload,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::operation::{
@@ -202,6 +203,50 @@ impl OperationAction for MachineUpdateOperationSubmission {
             operation_id,
             payload.machine_id.clone(),
             payload.target_version.clone(),
+            sequence,
+        )
+    }
+}
+
+impl OperationAction for MachineStoragePrepareOperationSubmission {
+    type Payload = MachineStoragePreparePayload;
+    const KIND: OperationKind = OperationKind::MachineStoragePrepare;
+
+    fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEvent {
+        OperationEvent::MachineStoragePrepareSubmitted {
+            operation_id,
+            machine_id: payload.machine_id,
+            requested_pool: payload.requested_pool,
+        }
+    }
+
+    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
+        let OperationEvent::MachineStoragePrepareSubmitted {
+            operation_id,
+            machine_id,
+            requested_pool,
+        } = event
+        else {
+            return None;
+        };
+        Some((
+            operation_id,
+            MachineStoragePreparePayload {
+                machine_id,
+                requested_pool,
+            },
+        ))
+    }
+
+    fn accepted_status(
+        operation_id: OperationId,
+        payload: &Self::Payload,
+        sequence: EventSequence,
+    ) -> OperationStatus {
+        OperationStatus::machine_storage_prepare_accepted(
+            operation_id,
+            payload.machine_id.clone(),
+            payload.requested_pool.clone(),
             sequence,
         )
     }

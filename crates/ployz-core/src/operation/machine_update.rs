@@ -3,6 +3,7 @@
 //! live together here.
 
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 use crate::ids::{MachineId, OperationId};
 use crate::install::InstallArtifactVersion;
@@ -13,7 +14,17 @@ use super::projection::{
     verify_subject,
 };
 use super::text::{CancellationReason, FailureMessage};
-use super::{EventSequence, OperationKind, OperationStatus};
+use super::{
+    EventSequence, OperationInterruptionCause, OperationInterruptionEvidence,
+    OperationInterruptionStage, OperationKind, OperationStatus,
+};
+
+pub const MACHINE_SUBSTRATE_UPDATE_LEAK_BACKSTOP: Duration = Duration::from_secs(30 * 60);
+pub const MACHINE_SUBSTRATE_UPDATE_TERMINATION_GRACE: Duration = Duration::from_secs(30);
+pub const MACHINE_UPDATE_REPORT_TIMEOUT: Duration = Duration::from_secs(
+    MACHINE_SUBSTRATE_UPDATE_LEAK_BACKSTOP.as_secs()
+        + MACHINE_SUBSTRATE_UPDATE_TERMINATION_GRACE.as_secs(),
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -21,18 +32,52 @@ use super::{EventSequence, OperationKind, OperationStatus};
 pub enum MachineUpdateOperationState {
     Accepted,
     Running,
-    Completed { reported: MachineSubstrateVersions },
-    Failed { failure: MachineUpdateFailure },
-    Cancelled { reason: CancellationReason },
+    Completed {
+        reported: MachineSubstrateVersions,
+    },
+    Failed {
+        failure: MachineUpdateFailure,
+    },
+    Cancelled {
+        reason: CancellationReason,
+    },
+    Interrupted {
+        evidence: OperationInterruptionEvidence,
+    },
 }
 
 impl MachineUpdateOperationState {
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
         match self {
-            Self::Completed { .. } | Self::Failed { .. } | Self::Cancelled { .. } => true,
+            Self::Completed { .. }
+            | Self::Failed { .. }
+            | Self::Cancelled { .. }
+            | Self::Interrupted { .. } => true,
             Self::Accepted | Self::Running => false,
         }
+    }
+
+    pub(super) fn interruption_evidence(
+        &self,
+        cause: OperationInterruptionCause,
+    ) -> Option<OperationInterruptionEvidence> {
+        let last_durable_stage = match self {
+            Self::Accepted => OperationInterruptionStage::MachineUpdateAccepted,
+            Self::Running => OperationInterruptionStage::MachineUpdateRunning,
+            Self::Completed { .. }
+            | Self::Failed { .. }
+            | Self::Cancelled { .. }
+            | Self::Interrupted { .. } => return None,
+        };
+        Some(OperationInterruptionEvidence::new(
+            cause,
+            last_durable_stage,
+        ))
+    }
+
+    pub(super) const fn interrupted(evidence: OperationInterruptionEvidence) -> Self {
+        Self::Interrupted { evidence }
     }
 }
 
@@ -226,12 +271,14 @@ fn transition_allowed(
             | MachineUpdateOperationState::Failed { .. }
             | MachineUpdateOperationState::Cancelled { .. },
         ) => true,
-        (
+        (_, MachineUpdateOperationState::Interrupted { .. })
+        | (
             MachineUpdateOperationState::Accepted
             | MachineUpdateOperationState::Running
             | MachineUpdateOperationState::Completed { .. }
             | MachineUpdateOperationState::Failed { .. }
-            | MachineUpdateOperationState::Cancelled { .. },
+            | MachineUpdateOperationState::Cancelled { .. }
+            | MachineUpdateOperationState::Interrupted { .. },
             MachineUpdateOperationState::Accepted
             | MachineUpdateOperationState::Running
             | MachineUpdateOperationState::Completed { .. }

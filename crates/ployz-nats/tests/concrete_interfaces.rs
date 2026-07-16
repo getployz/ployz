@@ -42,6 +42,7 @@ fn sdk_contract_registry_maps_to_every_nats_operation_endpoint() {
             OperationApiEndpoint::InitFirstMachineActivate,
             OperationApiEndpoint::MachineAdd,
             OperationApiEndpoint::MachineUpdate,
+            OperationApiEndpoint::MachineStoragePrepare,
             OperationApiEndpoint::MachineDrain,
             OperationApiEndpoint::MachineResume,
             OperationApiEndpoint::ServiceRestart,

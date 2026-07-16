@@ -1,5 +1,17 @@
 {
   "namespace_id": "fixture_named_volume",
+  "volumes": {
+    "cache": {
+      "kind": "plain"
+    },
+    "data": {
+      "kind": "provisioned",
+      "max_size_bytes": 10737418240
+    },
+    "logs": {
+      "kind": "plain"
+    }
+  },
   "services": [
     {
       "service_id": "long",

@@ -1,19 +1,364 @@
 use super::response::{machine_domain_error, machine_success};
 use crate::roles::machine::protocol::{
+    MachineStoragePrepareDomainError, MachineStoragePrepareReportRpcOk,
+    MachineStoragePrepareReportRpcRequest, MachineStoragePrepareReportRpcResponse,
+    MachineStoragePrepareRpcOk, MachineStoragePrepareRpcRequest, MachineStoragePrepareRpcResponse,
     MachineSubstrateReportRpcOk, MachineSubstrateReportRpcRequest,
     MachineSubstrateReportRpcResponse, MachineSubstrateUpdateDomainError,
     MachineSubstrateUpdateRpcOk, MachineSubstrateUpdateRpcRequest,
     MachineSubstrateUpdateRpcResponse,
 };
+use atomic_write_file::AtomicWriteFile;
+#[cfg(unix)]
+use atomic_write_file::unix::OpenOptionsExt as AtomicOpenOptionsExt;
+use ployz_core::deploy::ZfsPoolName;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::install::InstallArtifactVersion;
-use ployz_core::operation::{FailureMessage, MachineSubstrateVersions};
+use ployz_core::operation::{
+    FailureMessage, MACHINE_SUBSTRATE_UPDATE_LEAK_BACKSTOP,
+    MACHINE_SUBSTRATE_UPDATE_TERMINATION_GRACE, MachineSubstrateVersions,
+};
 use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decode_json_request};
 use serde::Deserialize;
+use std::io::ErrorKind;
+use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt as StdOpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+
+use ployz_core::storage::{
+    MACHINE_STORAGE_PREPARE_BUDGET, MachineStoragePreparationEvidence, PreparedStorageState,
+    StorageEffectFailure, StorageOperationEvidenceFile,
+};
 
 const SUBSTRATE_VERSION_FILE: &str = "/var/lib/ployz/substrate-version.json";
+const STORAGE_OPERATION_DIRECTORY: &str = "/var/lib/ployz/storage-operations";
+const MACHINE_SUBSTRATE_LOCK_FILE: &str = "/var/lib/ployz/machine-substrate.lock";
+
+enum PrivilegedHostEffect<'a> {
+    StoragePrepare {
+        operation_id: &'a OperationId,
+        pool: Option<&'a ZfsPoolName>,
+    },
+    SubstrateUpdate {
+        operation_id: &'a OperationId,
+        version: &'a InstallArtifactVersion,
+    },
+}
+
+impl PrivilegedHostEffect<'_> {
+    fn into_command(self) -> tokio::process::Command {
+        let mut command = tokio::process::Command::new("flock");
+        command
+            .arg("--no-fork")
+            .arg("--nonblock")
+            .arg(MACHINE_SUBSTRATE_LOCK_FILE)
+            .arg("ployz")
+            .arg("host");
+        match self {
+            Self::StoragePrepare { operation_id, pool } => {
+                command
+                    .arg("storage-prepare")
+                    .arg("--operation-id")
+                    .arg(operation_id.as_str());
+                if let Some(pool) = pool {
+                    command.arg("--pool").arg(pool.as_str());
+                }
+            }
+            Self::SubstrateUpdate {
+                operation_id,
+                version,
+            } => {
+                command
+                    .arg("substrate-update")
+                    .arg("--operation-id")
+                    .arg(operation_id.as_str())
+                    .arg("--version")
+                    .arg(version.as_str());
+            }
+        }
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        command
+    }
+}
+
+fn spawn_bounded_privileged_host_effect(
+    mut command: tokio::process::Command,
+) -> std::io::Result<tokio::process::Child> {
+    command.kill_on_drop(true).spawn()
+}
+
+fn spawn_detached_privileged_host_effect(
+    mut command: tokio::process::Command,
+) -> std::io::Result<tokio::process::Child> {
+    command.spawn()
+}
+
+fn privileged_substrate_lock() -> Arc<tokio::sync::Mutex<()>> {
+    static LOCK: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
+    LOCK.get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
+
+pub(crate) async fn handle_storage_prepare(
+    machine_id: MachineId,
+    _state: (),
+    request: NatsServiceRequest,
+) -> NatsServiceResponse {
+    let request = match decode_json_request::<MachineStoragePrepareRpcRequest>(&request) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    let Ok(_machine_substrate_guard) = privileged_substrate_lock().try_lock_owned() else {
+        return machine_domain_error(MachineStoragePrepareRpcResponse::DomainError {
+            machine_id,
+            error: MachineStoragePrepareDomainError::PreparationFailed {
+                failure: StorageEffectFailure::ProcessFailed {
+                    message: "another privileged machine substrate effect is running".to_owned(),
+                },
+            },
+        });
+    };
+    let prepare = supervise_storage_prepare(
+        &request.operation_id,
+        Path::new(STORAGE_OPERATION_DIRECTORY),
+        MACHINE_STORAGE_PREPARE_BUDGET,
+        || {
+            let command = PrivilegedHostEffect::StoragePrepare {
+                operation_id: &request.operation_id,
+                pool: request.pool.as_ref(),
+            }
+            .into_command();
+            spawn_bounded_privileged_host_effect(command)
+        },
+    )
+    .await;
+    match prepare {
+        Ok(prepared) => machine_success(MachineStoragePrepareRpcResponse::Ok(
+            MachineStoragePrepareRpcOk {
+                machine_id,
+                pool: prepared.pool().clone(),
+            },
+        )),
+        Err(failure) => machine_domain_error(MachineStoragePrepareRpcResponse::DomainError {
+            machine_id,
+            error: MachineStoragePrepareDomainError::PreparationFailed { failure },
+        }),
+    }
+}
+
+pub(crate) async fn handle_storage_prepare_report(
+    machine_id: MachineId,
+    _state: (),
+    request: NatsServiceRequest,
+) -> NatsServiceResponse {
+    let request = match decode_json_request::<MachineStoragePrepareReportRpcRequest>(&request) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    match StorageEvidenceRepository::host_default().read_pool(&request.operation_id) {
+        Ok(pool) => machine_success(MachineStoragePrepareReportRpcResponse::Ok(
+            MachineStoragePrepareReportRpcOk { machine_id, pool },
+        )),
+        Err(failure) => machine_domain_error(MachineStoragePrepareReportRpcResponse::DomainError {
+            machine_id,
+            error: MachineStoragePrepareDomainError::PreparationFailed { failure },
+        }),
+    }
+}
+
+#[cfg(test)]
+fn read_storage_prepare_evidence_at(
+    directory: &Path,
+    operation_id: &OperationId,
+) -> Result<Option<ployz_core::deploy::ZfsPoolName>, StorageEffectFailure> {
+    StorageEvidenceRepository::new(directory).read_pool(operation_id)
+}
+
+struct StorageEvidenceRepository<'a> {
+    directory: &'a Path,
+}
+
+impl<'a> StorageEvidenceRepository<'a> {
+    fn new(directory: &'a Path) -> Self {
+        Self { directory }
+    }
+
+    fn host_default() -> Self {
+        Self::new(Path::new(STORAGE_OPERATION_DIRECTORY))
+    }
+
+    fn file(&self, operation_id: &OperationId) -> StorageOperationEvidenceFile {
+        StorageOperationEvidenceFile::in_evidence_directory(self.directory, operation_id.clone())
+    }
+
+    fn read_optional(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<MachineStoragePreparationEvidence>, StorageEffectFailure> {
+        let file = self.file(operation_id);
+        let bytes = match std::fs::read(file.path()) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(StorageEffectFailure::ProcessFailed {
+                    message: format!("failed to read {}: {error}", file.path().display()),
+                });
+            }
+        };
+        let evidence: MachineStoragePreparationEvidence =
+            serde_json::from_slice(&bytes).map_err(|error| {
+                StorageEffectFailure::ProcessFailed {
+                    message: format!("failed to decode {}: {error}", file.path().display()),
+                }
+            })?;
+        file.validate(&evidence)?;
+        Ok(Some(evidence))
+    }
+
+    fn read_pool(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<Option<ployz_core::deploy::ZfsPoolName>, StorageEffectFailure> {
+        match self.read_optional(operation_id)? {
+            Some(MachineStoragePreparationEvidence::Completed { prepared, .. }) => {
+                Ok(Some(prepared.pool().clone()))
+            }
+            Some(MachineStoragePreparationEvidence::Failed { failure, .. }) => Err(failure),
+            None => Ok(None),
+        }
+    }
+
+    fn persist_failure(
+        &self,
+        operation_id: &OperationId,
+        failure: &StorageEffectFailure,
+    ) -> Result<(), StorageEffectFailure> {
+        std::fs::create_dir_all(self.directory).map_err(|error| {
+            StorageEffectFailure::ProcessFailed {
+                message: format!("failed to create {}: {error}", self.directory.display()),
+            }
+        })?;
+        #[cfg(unix)]
+        std::fs::set_permissions(self.directory, std::fs::Permissions::from_mode(0o700)).map_err(
+            |error| StorageEffectFailure::ProcessFailed {
+                message: format!("failed to protect {}: {error}", self.directory.display()),
+            },
+        )?;
+        let file = self.file(operation_id);
+        let bytes = serde_json::to_vec_pretty(&MachineStoragePreparationEvidence::Failed {
+            operation_id: operation_id.clone(),
+            failure: failure.clone(),
+        })
+        .map_err(|error| StorageEffectFailure::ProcessFailed {
+            message: format!("failed to encode terminal evidence: {error}"),
+        })?;
+        let mut atomic = open_secret_atomic(file.path()).map_err(|error| {
+            StorageEffectFailure::ProcessFailed {
+                message: format!("failed to create {}: {error}", file.path().display()),
+            }
+        })?;
+        atomic
+            .write_all(&bytes)
+            .and_then(|()| atomic.commit())
+            .map_err(|error| StorageEffectFailure::ProcessFailed {
+                message: format!("failed to commit {}: {error}", file.path().display()),
+            })?;
+        Ok(())
+    }
+}
+
+fn open_secret_atomic(path: &Path) -> std::io::Result<AtomicWriteFile> {
+    let mut options = AtomicWriteFile::options();
+    #[cfg(unix)]
+    {
+        AtomicOpenOptionsExt::preserve_mode(&mut options, false);
+        StdOpenOptionsExt::mode(&mut options, 0o600);
+    }
+    options.open(path)
+}
+
+async fn supervise_storage_prepare<F>(
+    operation_id: &OperationId,
+    evidence_directory: &Path,
+    budget: Duration,
+    spawn: F,
+) -> Result<PreparedStorageState, StorageEffectFailure>
+where
+    F: FnOnce() -> std::io::Result<tokio::process::Child>,
+{
+    if let Some(evidence) =
+        StorageEvidenceRepository::new(evidence_directory).read_optional(operation_id)?
+    {
+        return match evidence {
+            MachineStoragePreparationEvidence::Completed { prepared, .. } => Ok(prepared),
+            MachineStoragePreparationEvidence::Failed { failure, .. } => Err(failure),
+        };
+    }
+    let mut child = spawn().map_err(|error| StorageEffectFailure::ProcessFailed {
+        message: format!("failed to launch storage preparation: {error}"),
+    })?;
+    let status = match tokio::time::timeout(budget, child.wait()).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => {
+            terminate_storage_prepare_child(&mut child).await?;
+            let failure = StorageEffectFailure::ProcessFailed {
+                message: format!("failed waiting for storage preparation: {error}"),
+            };
+            StorageEvidenceRepository::new(evidence_directory)
+                .persist_failure(operation_id, &failure)?;
+            return Err(failure);
+        }
+        Err(_) => {
+            terminate_storage_prepare_child(&mut child).await?;
+            let failure = StorageEffectFailure::OperationTimedOut;
+            StorageEvidenceRepository::new(evidence_directory)
+                .persist_failure(operation_id, &failure)?;
+            return Err(failure);
+        }
+    };
+    let Some(evidence) =
+        StorageEvidenceRepository::new(evidence_directory).read_optional(operation_id)?
+    else {
+        let failure = StorageEffectFailure::ProcessFailed {
+            message: "storage preparation exited without terminal evidence".to_owned(),
+        };
+        StorageEvidenceRepository::new(evidence_directory)
+            .persist_failure(operation_id, &failure)?;
+        return Err(failure);
+    };
+    match evidence {
+        MachineStoragePreparationEvidence::Completed { prepared, .. } if status.success() => {
+            Ok(prepared)
+        }
+        MachineStoragePreparationEvidence::Failed { failure, .. } => Err(failure),
+        MachineStoragePreparationEvidence::Completed { .. } => {
+            let failure = StorageEffectFailure::ProcessFailed {
+                message: format!("storage preparation exited with {status}"),
+            };
+            StorageEvidenceRepository::new(evidence_directory)
+                .persist_failure(operation_id, &failure)?;
+            Err(failure)
+        }
+    }
+}
+
+async fn terminate_storage_prepare_child(
+    child: &mut tokio::process::Child,
+) -> Result<(), StorageEffectFailure> {
+    child
+        .kill()
+        .await
+        .map_err(|error| StorageEffectFailure::ProcessFailed {
+            message: format!("failed to terminate storage preparation: {error}"),
+        })
+}
 
 pub(crate) async fn handle_substrate_update(
     machine_id: MachineId,
@@ -24,42 +369,65 @@ pub(crate) async fn handle_substrate_update(
         Ok(request) => request,
         Err(response) => return response,
     };
-    let update = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("ployz")
-            .arg("host")
-            .arg("substrate-update")
-            .arg("--operation-id")
-            .arg(request.operation_id.as_str())
-            .arg("--version")
-            .arg(request.target_version.as_str())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
+    let Ok(machine_substrate_guard) = privileged_substrate_lock().try_lock_owned() else {
+        return machine_domain_error(MachineSubstrateUpdateRpcResponse::DomainError {
+            machine_id,
+            error: MachineSubstrateUpdateDomainError::UpdateFailed {
+                message: FailureMessage::try_new(
+                    "another privileged machine substrate effect is running",
+                )
+                .expect("busy message is non-empty"),
+            },
+        });
+    };
+    let child = PrivilegedHostEffect::SubstrateUpdate {
+        operation_id: &request.operation_id,
+        version: &request.target_version,
+    }
+    .into_command();
+    let child = spawn_detached_privileged_host_effect(child);
+    let child = match child {
+        Ok(child) => child,
+        Err(error) => {
+            return machine_domain_error(MachineSubstrateUpdateRpcResponse::DomainError {
+                machine_id,
+                error: MachineSubstrateUpdateDomainError::UpdateFailed {
+                    message: FailureMessage::try_new(format!(
+                        "failed to run ployz host substrate-update: {error}"
+                    ))
+                    .expect("process failure message is non-empty"),
+                },
+            });
+        }
+    };
+    tokio::spawn(async move {
+        supervise_substrate_update(
+            machine_substrate_guard,
+            child,
+            MACHINE_SUBSTRATE_UPDATE_LEAK_BACKSTOP,
+            MACHINE_SUBSTRATE_UPDATE_TERMINATION_GRACE,
+        )
+        .await;
+    });
+    machine_success(MachineSubstrateUpdateRpcResponse::Ok(
+        MachineSubstrateUpdateRpcOk { machine_id },
+    ))
+}
+
+async fn supervise_substrate_update(
+    _machine_substrate_guard: tokio::sync::OwnedMutexGuard<()>,
+    mut child: tokio::process::Child,
+    leak_backstop: Duration,
+    termination_grace: Duration,
+) {
+    if let Ok(Ok(_)) = tokio::time::timeout(leak_backstop, child.wait()).await {
+        return;
+    }
+    let _ = tokio::time::timeout(termination_grace, async {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
     })
     .await;
-
-    match update {
-        Ok(Ok(_child)) => machine_success(MachineSubstrateUpdateRpcResponse::Ok(
-            MachineSubstrateUpdateRpcOk { machine_id },
-        )),
-        Ok(Err(error)) => machine_domain_error(MachineSubstrateUpdateRpcResponse::DomainError {
-            machine_id,
-            error: MachineSubstrateUpdateDomainError::UpdateFailed {
-                message: FailureMessage::try_new(format!(
-                    "failed to run ployz host substrate-update: {error}"
-                ))
-                .expect("process failure message is non-empty"),
-            },
-        }),
-        Err(error) => machine_domain_error(MachineSubstrateUpdateRpcResponse::DomainError {
-            machine_id,
-            error: MachineSubstrateUpdateDomainError::UpdateFailed {
-                message: FailureMessage::try_new(format!("substrate update task failed: {error}"))
-                    .expect("task failure message is non-empty"),
-            },
-        }),
-    }
 }
 
 pub(crate) async fn handle_substrate_report(
@@ -122,4 +490,316 @@ fn read_substrate_update_evidence(
         ployzd: Some(evidence.ployzd),
         host_runner: None,
     })
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use std::cell::Cell;
+    use std::ffi::OsStr;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    fn command_argv(command: &tokio::process::Command) -> Vec<String> {
+        let command = command.as_std();
+        std::iter::once(command.get_program())
+            .chain(command.get_args())
+            .map(OsStr::to_string_lossy)
+            .map(|argument| argument.into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn storage_prepare_command_execs_the_privileged_effect_under_the_host_lock() {
+        let operation_id = OperationId::try_new("op_storage_prepare").expect("operation id");
+        let pool = ZfsPoolName::try_new("tank").expect("pool name");
+
+        let command = PrivilegedHostEffect::StoragePrepare {
+            operation_id: &operation_id,
+            pool: Some(&pool),
+        }
+        .into_command();
+
+        assert_eq!(
+            command_argv(&command),
+            [
+                "flock",
+                "--no-fork",
+                "--nonblock",
+                MACHINE_SUBSTRATE_LOCK_FILE,
+                "ployz",
+                "host",
+                "storage-prepare",
+                "--operation-id",
+                "op_storage_prepare",
+                "--pool",
+                "tank",
+            ]
+        );
+    }
+
+    #[test]
+    fn substrate_update_command_execs_the_privileged_effect_under_the_host_lock() {
+        let operation_id = OperationId::try_new("op_substrate_update").expect("operation id");
+        let version = InstallArtifactVersion::try_new("v1.2.3").expect("artifact version");
+
+        let command = PrivilegedHostEffect::SubstrateUpdate {
+            operation_id: &operation_id,
+            version: &version,
+        }
+        .into_command();
+
+        assert_eq!(
+            command_argv(&command),
+            [
+                "flock",
+                "--no-fork",
+                "--nonblock",
+                MACHINE_SUBSTRATE_LOCK_FILE,
+                "ployz",
+                "host",
+                "substrate-update",
+                "--operation-id",
+                "op_substrate_update",
+                "--version",
+                "v1.2.3",
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_operation_evidence_is_pending() {
+        let directory = tempfile::tempdir().expect("temporary evidence directory");
+        let operation_id = OperationId::try_new("op_storage_pending").expect("operation id");
+
+        assert_eq!(
+            read_storage_prepare_evidence_at(directory.path(), &operation_id).expect("pending"),
+            None
+        );
+    }
+
+    #[test]
+    fn completed_operation_evidence_preserves_the_pool() {
+        let directory = tempfile::tempdir().expect("temporary evidence directory");
+        let operation_id = OperationId::try_new("op_storage_complete").expect("operation id");
+        std::fs::write(
+            directory.path().join("op_storage_complete.json"),
+            r#"{"state":"completed","operation_id":"op_storage_complete","prepared":{"pool":"tank","origin":{"kind":"adopted"},"dataset_root":"tank/ployz/volumes"}}"#,
+        )
+        .expect("write evidence");
+
+        let pool = read_storage_prepare_evidence_at(directory.path(), &operation_id)
+            .expect("valid evidence")
+            .expect("terminal evidence");
+        assert_eq!(pool.as_str(), "tank");
+    }
+
+    #[tokio::test]
+    async fn timeout_reaps_child_before_terminal_evidence_and_replay_does_not_spawn() {
+        let directory = tempfile::tempdir().expect("temporary evidence directory");
+        let operation_id = OperationId::try_new("op_storage_timeout").expect("operation id");
+        let pid = Cell::new(None);
+
+        let result = supervise_storage_prepare(
+            &operation_id,
+            directory.path(),
+            Duration::from_millis(10),
+            || {
+                let mut command = tokio::process::Command::new("sleep");
+                command.arg("30").kill_on_drop(true);
+                let child = command.spawn()?;
+                pid.set(child.id());
+                Ok(child)
+            },
+        )
+        .await;
+
+        assert_eq!(result, Err(StorageEffectFailure::OperationTimedOut));
+        let Some(pid) = pid.get() else {
+            panic!("spawned child must have a process id")
+        };
+        assert!(!Path::new(&format!("/proc/{pid}")).exists());
+        assert!(matches!(
+            StorageEvidenceRepository::new(directory.path())
+                .read_optional(&operation_id)
+                .expect("timeout evidence is readable"),
+            Some(MachineStoragePreparationEvidence::Failed {
+                failure: StorageEffectFailure::OperationTimedOut,
+                ..
+            })
+        ));
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                std::fs::metadata(directory.path())
+                    .expect("evidence directory metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(
+                std::fs::metadata(directory.path().join("op_storage_timeout.json"))
+                    .expect("evidence file metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+
+        let replay = supervise_storage_prepare(
+            &operation_id,
+            directory.path(),
+            Duration::from_millis(10),
+            || panic!("terminal replay must not spawn another process"),
+        )
+        .await;
+        assert_eq!(replay, Err(StorageEffectFailure::OperationTimedOut));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn storage_timeout_releases_the_host_file_lock() {
+        let directory = tempfile::tempdir().expect("temporary evidence directory");
+        let lock_directory = tempfile::tempdir().expect("temporary lock directory");
+        let lock_file = lock_directory.path().join("machine-substrate.lock");
+        let operation_id = OperationId::try_new("op_storage_flock_timeout").expect("operation id");
+
+        let result = supervise_storage_prepare(
+            &operation_id,
+            directory.path(),
+            Duration::from_millis(10),
+            || {
+                let mut command = tokio::process::Command::new("flock");
+                command
+                    .arg("--no-fork")
+                    .arg("--nonblock")
+                    .arg(&lock_file)
+                    .arg("sleep")
+                    .arg("30");
+                spawn_bounded_privileged_host_effect(command)
+            },
+        )
+        .await;
+        assert_eq!(result, Err(StorageEffectFailure::OperationTimedOut));
+
+        let status = tokio::process::Command::new("flock")
+            .arg("--nonblock")
+            .arg(&lock_file)
+            .arg("true")
+            .status()
+            .await
+            .expect("reacquire host file lock");
+        assert!(status.success(), "host file lock remained held: {status}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn substrate_timeout_reaps_child_and_releases_the_process_guard() {
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        let guard = lock.clone().try_lock_owned().expect("process guard");
+        let mut command = tokio::process::Command::new("sleep");
+        command.arg("30");
+        let child = command.spawn().expect("sleep child");
+        let pid = child.id().expect("child process id");
+
+        supervise_substrate_update(
+            guard,
+            child,
+            Duration::from_millis(10),
+            Duration::from_secs(1),
+        )
+        .await;
+
+        assert!(!Path::new(&format!("/proc/{pid}")).exists());
+        assert!(lock.try_lock().is_ok(), "process guard remained held");
+    }
+
+    #[cfg(target_os = "linux")]
+    fn supervised_child_after_runtime_teardown(
+        spawn: fn(tokio::process::Command) -> std::io::Result<tokio::process::Child>,
+    ) -> u32 {
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let (pid, supervisor) = runtime.block_on(async {
+            let guard = lock.clone().try_lock_owned().expect("process guard");
+            let mut command = tokio::process::Command::new("sleep");
+            command.arg("30");
+            let child = spawn(command).expect("sleep child");
+            let pid = child.id().expect("child process id");
+            let supervisor = tokio::spawn(supervise_substrate_update(
+                guard,
+                child,
+                Duration::from_secs(30),
+                Duration::from_secs(1),
+            ));
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            (pid, supervisor)
+        });
+        drop(runtime);
+        drop(supervisor);
+        assert!(lock.try_lock().is_ok(), "process guard remained held");
+        pid
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_process_state(pid: u32) -> Option<char> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        stat.rsplit_once(") ")?.1.chars().next()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn terminate_linux_process(pid: u32) {
+        let kill = std::process::Command::new("kill")
+            .arg("-KILL")
+            .arg(pid.to_string())
+            .status()
+            .expect("kill surviving child");
+        assert!(kill.success(), "failed to kill surviving child: {kill}");
+        let cleanup_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("cleanup runtime");
+        for _ in 0..50 {
+            cleanup_runtime.block_on(async {
+                tokio::process::Command::new("true")
+                    .status()
+                    .await
+                    .expect("drive process reaping");
+            });
+            if linux_process_state(pid).is_none() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("surviving child {pid} was not reaped after explicit termination");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn privileged_effect_spawn_policy_distinguishes_detached_from_bounded_teardown() {
+        let detached_pid =
+            supervised_child_after_runtime_teardown(spawn_detached_privileged_host_effect);
+        assert!(
+            matches!(linux_process_state(detached_pid), Some(state) if state != 'Z'),
+            "detached child did not survive runtime teardown"
+        );
+        terminate_linux_process(detached_pid);
+
+        let bounded_pid =
+            supervised_child_after_runtime_teardown(spawn_bounded_privileged_host_effect);
+        for _ in 0..50 {
+            if !matches!(linux_process_state(bounded_pid), Some(state) if state != 'Z') {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        terminate_linux_process(bounded_pid);
+        panic!("bounded child remained alive after runtime teardown");
+    }
 }

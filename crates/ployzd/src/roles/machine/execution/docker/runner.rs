@@ -7,8 +7,8 @@ use crate::roles::machine::execution::host_dataplane::{WireGuardMtuPolicy, resol
 use crate::roles::machine::protocol::MachineImagePull;
 use crate::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
-    MachineContainerRunner, MachineContainerRunnerError, MachineLogQuery, MachineLogReader,
-    MachineLogReaderError, MachineLogTail, MachineLogTimestamps,
+    MachineContainerRunner, MachineContainerRunnerError, MachineImageRemovalRunner,
+    MachineLogQuery, MachineLogReader, MachineLogReaderError, MachineLogTail, MachineLogTimestamps,
 };
 use crate::roles::machine::volume::docker_volume_name;
 use bollard::Docker;
@@ -22,8 +22,8 @@ use bollard::models::{
 };
 use bollard::query_parameters::{
     CreateImageOptionsBuilder, InspectContainerOptions, ListContainersOptionsBuilder,
-    LogsOptionsBuilder, RemoveContainerOptionsBuilder, RemoveVolumeOptionsBuilder,
-    RestartContainerOptions, StopContainerOptionsBuilder,
+    LogsOptionsBuilder, RemoveContainerOptionsBuilder, RemoveImageOptionsBuilder,
+    RemoveVolumeOptionsBuilder, RestartContainerOptions, StopContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
 use ployz_core::deploy::{
@@ -44,6 +44,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+
+use super::provisioned_volume::ensure_provisioned_volumes;
+#[cfg(test)]
+use super::provisioned_volume::local_bind_volume_request;
 
 const DEFAULT_LOG_TAIL_LINES: u16 = 200;
 const MAX_LOG_TAIL_LINES: u16 = 1_000;
@@ -71,6 +75,26 @@ enum DockerHandle {
 }
 
 impl DockerManagedContainerRunner {
+    pub(crate) async fn remove_image(
+        &self,
+        image_identity: &OciDigest,
+    ) -> Result<ployz_core::image::ImageRemoveOutcome, String> {
+        let docker = self.docker().await.map_err(|error| error.to_string())?;
+        match docker
+            .remove_image(image_identity.as_str(), Some(remove_image_options()), None)
+            .await
+        {
+            Ok(_) => Ok(ployz_core::image::ImageRemoveOutcome::Removed),
+            Err(error) if is_docker_object_missing(&error) => {
+                Ok(ployz_core::image::ImageRemoveOutcome::AlreadyAbsent)
+            }
+            Err(BollardError::DockerResponseServerError {
+                status_code: 409, ..
+            }) => Ok(ployz_core::image::ImageRemoveOutcome::RetainedInUse),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
     #[cfg(test)]
     pub fn local_defaults(
         endpoint_network_subnet: impl Into<String>,
@@ -116,12 +140,28 @@ impl DockerManagedContainerRunner {
     }
 }
 
+fn remove_image_options() -> bollard::query_parameters::RemoveImageOptions {
+    RemoveImageOptionsBuilder::new()
+        .force(false)
+        .noprune(false)
+        .build()
+}
+
 fn connect_local_defaults() -> Result<Docker, DockerManagedContainerRunnerConnectError> {
     Docker::connect_with_local_defaults().map_err(|source| {
         DockerManagedContainerRunnerConnectError {
             message: source.to_string(),
         }
     })
+}
+
+impl MachineImageRemovalRunner for DockerManagedContainerRunner {
+    async fn remove_image(
+        &self,
+        image_identity: &OciDigest,
+    ) -> Result<ployz_core::image::ImageRemoveOutcome, String> {
+        DockerManagedContainerRunner::remove_image(self, image_identity).await
+    }
 }
 
 impl MachineContainerRunner for DockerManagedContainerRunner {
@@ -307,6 +347,13 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
             MachineImagePull::MeshSeed { .. } => None,
         };
         self.pull_image(&pull_reference, credential).await?;
+        ensure_provisioned_volumes(
+            docker,
+            &command.identity.namespace_id,
+            &command.runtime.volume_mounts,
+            &command.provisioned_volumes,
+        )
+        .await?;
         // Every service container joins the already-converged endpoint
         // network; route state alone decides whether anything dials it.
         let response = docker
@@ -1040,13 +1087,118 @@ mod tests {
         ImageReference, LinuxCapability, MemoryBytes, NanoCpus, PidsLimit, ServiceEnvironment,
         ServiceVolumeMount, StopGracePeriod, VolumeName,
     };
-    use ployz_core::ids::{NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
+    use ployz_core::ids::{NamespaceId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
     use ployz_core::machine::runtime::{ManagedContainerIdentity, ManagedContainerKind};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixListener;
 
     const TEST_ENDPOINT_SUBNET: &str = "10.42.7.0/24";
+
+    #[test]
+    fn image_reclamation_never_forces_removal_of_an_in_use_image() {
+        let options = remove_image_options();
+
+        assert!(!options.force);
+        assert!(!options.noprune);
+    }
+
+    #[tokio::test]
+    async fn image_reclamation_maps_docker_success() {
+        assert_remove_image_outcome(200, ployz_core::image::ImageRemoveOutcome::Removed).await;
+    }
+
+    #[tokio::test]
+    async fn image_reclamation_maps_docker_not_found() {
+        assert_remove_image_outcome(404, ployz_core::image::ImageRemoveOutcome::AlreadyAbsent)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn image_reclamation_maps_docker_conflict_to_retained_in_use() {
+        assert_remove_image_outcome(409, ployz_core::image::ImageRemoveOutcome::RetainedInUse)
+            .await;
+    }
+
+    async fn assert_remove_image_outcome(
+        status: u16,
+        expected: ployz_core::image::ImageRemoveOutcome,
+    ) {
+        let (runner, request, _socket_dir) = remove_image_runner(status).await;
+        let digest = OciDigest::sha256(b"superseded image");
+
+        let outcome = runner
+            .remove_image(&digest)
+            .await
+            .expect("Docker image removal returns a typed outcome");
+
+        assert_eq!(outcome, expected);
+        let request = request.await.expect("Docker stub records request");
+        assert!(request.starts_with("DELETE "), "{request}");
+        assert!(request.contains("force=false"), "{request}");
+        assert!(request.contains("noprune=false"), "{request}");
+    }
+
+    async fn remove_image_runner(
+        status: u16,
+    ) -> (
+        DockerManagedContainerRunner,
+        tokio::sync::oneshot::Receiver<String>,
+        tempfile::TempDir,
+    ) {
+        let socket_dir = tempfile::TempDir::new().expect("Docker API stub directory");
+        let socket_path = socket_dir.path().join("docker.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind Docker API stub");
+        let (request_tx, request_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept Docker API request");
+            let mut request = Vec::new();
+            let mut buffer = [0; 512];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).await.expect("read Docker request");
+                assert_ne!(read, 0, "Docker request ended before headers");
+                request.extend_from_slice(
+                    buffer
+                        .get(..read)
+                        .expect("read length is bounded by buffer"),
+                );
+            }
+            request_tx
+                .send(String::from_utf8(request).expect("Docker request is UTF-8"))
+                .expect("test receives Docker request");
+            let (reason, body) = match status {
+                200 => ("OK", "[]"),
+                404 => ("Not Found", r#"{"message":"not found"}"#),
+                409 => ("Conflict", r#"{"message":"image is in use"}"#),
+                _ => panic!("unsupported Docker stub status"),
+            };
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("write Docker response");
+        });
+        let docker = Docker::connect_with_socket(
+            socket_path.to_str().expect("UTF-8 Docker socket path"),
+            5,
+            bollard::API_DEFAULT_VERSION,
+        )
+        .expect("connect Docker API stub");
+        (
+            DockerManagedContainerRunner {
+                docker: DockerHandle::Connected(docker),
+                endpoint_network_subnet: TEST_ENDPOINT_SUBNET.to_owned(),
+                endpoint_bridge_ifname: "br-test".to_owned(),
+                endpoint_wg_ifname: "wg-test".to_owned(),
+                endpoint_mtu_policy: WireGuardMtuPolicy::Fixed(1_420),
+            },
+            request_rx,
+            socket_dir,
+        )
+    }
 
     #[tokio::test]
     async fn registry_resolution_retries_transient_server_failures() {
@@ -1205,6 +1357,7 @@ mod tests {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime: ContainerRuntimeSpec::image_defaults(),
+                provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -1226,6 +1379,7 @@ mod tests {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime: runtime_spec(),
+                provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -1249,6 +1403,7 @@ mod tests {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime: ContainerRuntimeSpec::image_defaults(),
+                provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -1289,6 +1444,7 @@ mod tests {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime,
+                provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -1324,6 +1480,7 @@ mod tests {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime,
+                provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -1341,6 +1498,7 @@ mod tests {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime: ContainerRuntimeSpec::image_defaults(),
+                provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -1364,6 +1522,7 @@ mod tests {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime,
+                provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,
@@ -1386,6 +1545,81 @@ mod tests {
     }
 
     #[test]
+    fn provisioned_volume_uses_a_local_driver_bind_to_the_zfs_mountpoint() {
+        let namespace_id = NamespaceId::try_new("default").expect("namespace");
+        let volume_name = VolumeName::try_new("postgres_data").expect("volume");
+        let request = local_bind_volume_request(&namespace_id, &volume_name);
+
+        assert_eq!(
+            request.name.as_deref(),
+            Some("ployz-n7-default-v13-postgres_data")
+        );
+        assert_eq!(request.driver.as_deref(), Some("local"));
+        assert_eq!(
+            request.driver_opts,
+            Some(HashMap::from([
+                (
+                    "device".to_owned(),
+                    "/var/lib/ployz/volumes/ployz-n7-default-v13-postgres_data".to_owned(),
+                ),
+                ("o".to_owned(), "bind".to_owned()),
+                ("type".to_owned(), "none".to_owned()),
+            ]))
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_dataset_bind_fails_at_container_start_without_creating_the_source_path() {
+        let (runner, attempts, _socket_dir) = registry_runner_with_responses(vec![
+            (
+                201,
+                r#"{"Name":"bound-volume","Driver":"local","Mountpoint":"","Labels":{},"Scope":"local","Options":{}}"#
+                    .to_owned(),
+            ),
+            (
+                500,
+                r#"{"message":"bind source path does not exist"}"#.to_owned(),
+            ),
+        ])
+        .await;
+        let namespace_id =
+            NamespaceId::try_new(format!("missing-{}", nuid::next())).expect("generated namespace");
+        let volume_name = VolumeName::try_new("data").expect("volume");
+        let request = local_bind_volume_request(&namespace_id, &volume_name);
+        let source = request
+            .driver_opts
+            .as_ref()
+            .and_then(|options| options.get("device"))
+            .expect("bind source");
+        assert!(!std::path::Path::new(source).exists());
+
+        let docker = runner.docker().await.expect("stub Docker client");
+        ensure_provisioned_volumes(
+            docker,
+            &namespace_id,
+            &[ServiceVolumeMount {
+                volume_name: volume_name.clone(),
+                target: ContainerMountPath::try_new("/data").expect("mount target"),
+            }],
+            &[volume_name],
+        )
+        .await
+        .expect("Docker records the local-driver volume without creating its source");
+        let error = docker
+            .start_container("container", None)
+            .await
+            .expect_err("Docker rejects the missing source when mounting the volume");
+
+        assert!(
+            error
+                .to_string()
+                .contains("bind source path does not exist")
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(!std::path::Path::new(source).exists());
+    }
+
+    #[test]
     fn create_body_always_joins_the_endpoint_network() {
         // Ports never influence network membership (ADR 0023): even a
         // route-less service container joins the endpoint network so a
@@ -1397,6 +1631,7 @@ mod tests {
                     reference: image("ghcr.io/acme/api:rev-2"),
                 },
                 runtime: ContainerRuntimeSpec::image_defaults(),
+                provisioned_volumes: Vec::new(),
                 identity: managed_identity(),
             },
             TEST_ENDPOINT_SUBNET,

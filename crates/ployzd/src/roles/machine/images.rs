@@ -2,6 +2,7 @@
 
 use super::protocol::MachineImagePull;
 use super::response::{failure_message, machine_domain_error, machine_success};
+use super::runner::MachineImageRemovalRunner;
 use crate::roles::machine::execution::containerd_content::{
     ContainerdContentStore, ContentIngest, ContentLease,
 };
@@ -13,6 +14,7 @@ use ployz_core::image::{
     ImageBlobCheckRequest, ImageBlobCheckResponse, ImageBlobPushOk, ImageBlobPushOutcome,
     ImageBlobPushRequest, ImageBlobPushResponse, ImageEnsureOk, ImageEnsureRequest,
     ImageEnsureResponse, ImageManifestPushOk, ImageManifestPushRequest, ImageManifestPushResponse,
+    ImageRemoveDomainError, ImageRemoveOk, ImageRemoveRequest, ImageRemoveResponse,
     ImageRpcDomainError, ImageUploadId, OCI_IMAGE_CONFIG_MEDIA_TYPE, OCI_IMAGE_MANIFEST_MEDIA_TYPE,
     OciDigest, OciPlatform,
 };
@@ -495,6 +497,9 @@ pub(crate) async fn handle_image_ensure(
         Ok(inspected) => inspected,
         Err(error) => return image_error(machine_id, error),
     };
+    if let Err(error) = ensure_platform(&request.platform, &inspected.platform) {
+        return image_error(machine_id, error);
+    }
     let reference = MachineImagePull::MeshSeed {
         seed_host: state.seed_host,
         repository: request.repository,
@@ -526,9 +531,67 @@ pub(crate) async fn handle_image_ensure(
     }))
 }
 
+pub(crate) async fn handle_image_remove<R>(
+    machine_id: MachineId,
+    docker: R,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse
+where
+    R: MachineImageRemovalRunner,
+{
+    let request = match serde_json::from_slice::<ImageRemoveRequest>(&request.payload) {
+        Ok(request) => request,
+        Err(error) => {
+            return image_remove_error(
+                machine_id,
+                ImageRemoveDomainError::InvalidRequest {
+                    message: failure_message(format!("invalid request: {error}")),
+                },
+            );
+        }
+    };
+    let ImageRemoveRequest {
+        operation_id,
+        image_identity,
+    } = request;
+    match docker.remove_image(&image_identity).await {
+        Ok(outcome) => machine_success(ImageRemoveResponse::Ok(ImageRemoveOk {
+            machine_id,
+            outcome,
+        })),
+        Err(error) => image_remove_error(
+            machine_id,
+            ImageRemoveDomainError::RemoveFailed {
+                message: failure_message(format!(
+                    "operation {} image removal failed: {}",
+                    operation_id.as_str(),
+                    error
+                )),
+            },
+        ),
+    }
+}
+
+fn image_remove_error(machine_id: MachineId, error: ImageRemoveDomainError) -> NatsServiceResponse {
+    machine_domain_error(ImageRemoveResponse::DomainError { machine_id, error })
+}
+
 struct InspectedImage {
     manifest: OciManifest,
     platform: OciPlatform,
+}
+
+fn ensure_platform(
+    expected: &OciPlatform,
+    actual: &OciPlatform,
+) -> Result<(), ImageRpcDomainError> {
+    if expected == actual {
+        return Ok(());
+    }
+    Err(ImageRpcDomainError::PlatformMismatch {
+        expected: expected.clone(),
+        actual: actual.clone(),
+    })
 }
 
 async fn inspect_content(
@@ -636,7 +699,9 @@ async fn read_platform(
         }
     })?;
     let OciImageConfig { architecture, os } = config;
-    Ok(OciPlatform { os, architecture })
+    OciPlatform::try_new(os, architecture).map_err(|error| ImageRpcDomainError::InvalidRequest {
+        message: failure_message(format!("invalid image platform: {error}")),
+    })
 }
 
 async fn release_manifest_leases(
@@ -730,7 +795,8 @@ fn image_error(machine_id: MachineId, error: ImageRpcDomainError) -> NatsService
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_manifest, validate_chunk_bounds};
+    use super::{ensure_platform, parse_manifest, validate_chunk_bounds};
+    use ployz_core::image::{ImageRpcDomainError, OciPlatform};
 
     #[test]
     fn manifest_parser_rejects_manifest_lists() {
@@ -744,5 +810,27 @@ mod tests {
         assert!(validate_chunk_bounds(10, 8, 2).is_ok());
         assert!(validate_chunk_bounds(10, 8, 3).is_err());
         assert!(validate_chunk_bounds(10, u64::MAX, 1).is_err());
+    }
+
+    #[test]
+    fn image_ensure_accepts_the_requested_platform() {
+        let platform = platform("amd64");
+
+        assert_eq!(ensure_platform(&platform, &platform), Ok(()));
+    }
+
+    #[test]
+    fn image_ensure_reports_a_typed_platform_mismatch() {
+        let expected = platform("arm64");
+        let actual = platform("amd64");
+
+        assert_eq!(
+            ensure_platform(&expected, &actual),
+            Err(ImageRpcDomainError::PlatformMismatch { expected, actual })
+        );
+    }
+
+    fn platform(architecture: &str) -> OciPlatform {
+        OciPlatform::try_new("linux", architecture).expect("platform")
     }
 }

@@ -9,7 +9,7 @@ const DATABASE_COMPOSE: &str =
 const UMAMI_COMPOSE: &str =
     include_str!("../../../testing/ployz-e2e/tests/fixtures/v1-acceptance-umami.yaml");
 
-fn parse(source: &str) -> ployz::deploy::compose::ParsedComposeDeploy {
+fn parse(source: &str) -> ployz_core::deploy::DeployRequest {
     let (parsed, warnings) = parse_deploy_file(ComposeInput {
         source,
         base_dir: Path::new("."),

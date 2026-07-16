@@ -1,10 +1,10 @@
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployRequest, DeployServiceRequest, ExistingServiceReplica,
-    RegistryCredential,
+    DeployCleanupContainer, DeployServiceSpec, ExistingServiceReplica, ObservedCleanupCandidate,
+    RegistryCredential, VolumeDeclaredDeployRequest,
 };
 use ployz_core::ids::{
-    ContainerId, MachineId, NamespaceRevisionEntryId, NamespaceRevisionId, OperationId, ServiceId,
-    StepId,
+    ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
+    OperationId, ServiceId, StepId,
 };
 use ployz_core::image::OciPlatform;
 use ployz_core::intent::RouteBindingState;
@@ -12,7 +12,7 @@ use ployz_core::intent::ServingTargetEntry;
 use ployz_core::intent::VolumePinState;
 use ployz_core::network::DataplaneMember;
 use ployz_core::operation::{
-    DeployCompletionOutcome, FailureMessage, OperatorHint, RetainedArtifact,
+    DeployCompletionOutcome, DeployImageCleanup, FailureMessage, OperatorHint, RetainedArtifact,
 };
 
 use std::collections::BTreeMap;
@@ -25,7 +25,7 @@ const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(180);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployExecutionCommand {
     pub(super) operation_id: OperationId,
-    pub(super) request: DeployRequest,
+    pub(super) request: VolumeDeclaredDeployRequest,
     pub(super) services: Vec<DeployServiceExecutionCommand>,
     pub(super) route_binding_removals: Vec<RouteBindingState>,
     pub(super) serving_target_removals: Vec<ServingTargetEntry>,
@@ -42,13 +42,13 @@ pub struct DeployExecutionCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployServiceExecutionCommand {
-    pub(super) request: DeployServiceRequest,
+    pub(super) service: DeployServiceSpec,
     pub(super) registry_credential: Option<RegistryCredential>,
     pub(super) route_commits: Vec<RouteBindingState>,
     pub(super) volume_pins: Vec<VolumePinState>,
     pub(super) eligible_machines: Vec<MachineId>,
     pub(super) existing_replicas: Vec<ExistingServiceReplica>,
-    pub(super) cleanup_candidates: Vec<DeployCleanupContainer>,
+    pub(super) cleanup_candidates: Vec<ObservedCleanupCandidate>,
 }
 
 impl DeployExecutionCommand {
@@ -83,9 +83,16 @@ impl DeployExecutionCommand {
         &self.unusable_machines
     }
 
-    #[must_use]
-    pub fn machine_platform(&self, machine_id: &MachineId) -> Option<&OciPlatform> {
-        self.machine_platforms.get(machine_id)
+    pub(super) fn target_platform(
+        &self,
+        machine_id: &MachineId,
+    ) -> Result<&OciPlatform, MissingTargetPlatform> {
+        let Some(platform) = self.machine_platforms.get(machine_id) else {
+            return Err(MissingTargetPlatform {
+                machine_id: machine_id.clone(),
+            });
+        };
+        Ok(platform)
     }
 
     #[must_use]
@@ -127,6 +134,21 @@ impl DeployExecutionCommand {
     }
 }
 
+pub(super) struct MissingTargetPlatform {
+    machine_id: MachineId,
+}
+
+impl MissingTargetPlatform {
+    pub(super) fn into_execution_error(self) -> super::DeployExecutionError {
+        super::DeployExecutionError::InternalInvariant {
+            message: format!(
+                "placed target machine {} has no answered platform facts",
+                self.machine_id.as_str()
+            ),
+        }
+    }
+}
+
 impl DeployServiceExecutionCommand {
     #[must_use]
     pub fn registry_credential(&self) -> Option<&RegistryCredential> {
@@ -141,7 +163,7 @@ impl DeployServiceExecutionCommand {
 
     #[must_use]
     #[cfg(test)]
-    pub fn cleanup_candidates(&self) -> &[DeployCleanupContainer] {
+    pub fn cleanup_candidates(&self) -> &[ObservedCleanupCandidate] {
         &self.cleanup_candidates
     }
 
@@ -152,9 +174,9 @@ impl DeployServiceExecutionCommand {
     }
 
     #[must_use]
-    pub fn serving_target_entry_state(&self) -> ServingTargetEntry {
+    pub fn serving_target_entry_state(&self, namespace_id: &NamespaceId) -> ServingTargetEntry {
         let mut volume_names = self
-            .request
+            .service
             .runtime
             .volume_mounts
             .iter()
@@ -163,11 +185,11 @@ impl DeployServiceExecutionCommand {
         volume_names.sort();
         volume_names.dedup();
         ServingTargetEntry {
-            namespace_id: self.request.namespace_id.clone(),
-            service_id: self.request.service_id.clone(),
-            namespace_revision_entry_id: self.request.namespace_revision_entry_id.clone(),
-            image: self.request.image.clone(),
-            desired_replicas: self.request.replicas,
+            namespace_id: namespace_id.clone(),
+            service_id: self.service.service_id.clone(),
+            namespace_revision_entry_id: self.service.namespace_revision_entry_id(namespace_id),
+            image: self.service.image.clone(),
+            desired_replicas: self.service.replicas,
             volume_names,
         }
     }
@@ -184,6 +206,7 @@ pub struct DeployExecutionOutcome {
     pub namespace_revision_id: NamespaceRevisionId,
     pub containers: Vec<DeployContainer>,
     pub cleanup: Vec<DeployCleanupResult>,
+    pub image_cleanup: Vec<DeployImageCleanup>,
     pub terminal_event: DeployTerminalEvent,
 }
 
@@ -191,7 +214,7 @@ impl DeployExecutionOutcome {
     #[must_use]
     #[cfg(test)]
     pub fn completion_outcome(&self) -> DeployCompletionOutcome {
-        DeployCleanupResult::completion_outcome(&self.cleanup)
+        DeployCleanupResult::completion_outcome(&self.cleanup, &self.image_cleanup)
     }
 }
 
@@ -205,10 +228,17 @@ pub enum DeployCleanupResult {
 }
 
 impl DeployCleanupResult {
-    pub(super) fn completion_outcome(cleanup: &[Self]) -> DeployCompletionOutcome {
-        if cleanup
-            .iter()
-            .any(|result| matches!(result, Self::Failed { .. }))
+    pub(super) fn completion_outcome(
+        cleanup: &[Self],
+        images: &[DeployImageCleanup],
+    ) -> DeployCompletionOutcome {
+        if Self::has_failure(cleanup)
+            || images.iter().any(|image| {
+                matches!(
+                    image,
+                    DeployImageCleanup::MissingIdentity { .. } | DeployImageCleanup::Failed { .. }
+                )
+            })
         {
             DeployCompletionOutcome::CompletedWithWarnings
         } else {

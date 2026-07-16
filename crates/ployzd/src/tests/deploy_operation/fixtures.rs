@@ -109,6 +109,7 @@ pub(super) enum RecordedOperation {
     CleanupFinished {
         removed: Vec<DeployCleanupContainer>,
         failed: Vec<DeployCleanupFailure>,
+        images: Vec<ployz_core::operation::DeployImageCleanup>,
     },
 }
 
@@ -178,15 +179,22 @@ impl DeployOperationRecorder for RecordingOperations {
                 }
                 self.phase_records.push(evidence);
             }
-            DeployEvidence::CleanupFinished { removed, failed } => {
+            DeployEvidence::CleanupFinished {
+                removed,
+                failed,
+                images,
+            } => {
                 if self.fail_cleanup_evidence_remaining > 0 {
                     self.fail_cleanup_evidence_remaining -= 1;
                     return Err(DeployOperationRecordError::Synthetic {
                         message: "cleanup evidence record failed",
                     });
                 }
-                self.records
-                    .push(RecordedOperation::CleanupFinished { removed, failed });
+                self.records.push(RecordedOperation::CleanupFinished {
+                    removed,
+                    failed,
+                    images,
+                });
             }
         }
         Ok(())
@@ -199,9 +207,11 @@ pub(super) struct RecordingRuntime {
     pub(super) hook_requests: Vec<(MachineId, MachineContainerRunHookRpcRequest)>,
     pub(super) stops: Vec<(MachineId, MachineContainerStopRpcRequest)>,
     pub(super) removals: Vec<(MachineId, MachineContainerRemoveRpcRequest)>,
+    pub(super) image_removals: Vec<(MachineId, ployz_core::image::ImageRemoveRequest)>,
     containers: Vec<ContainerId>,
     hook_outcomes: Vec<(ContainerId, i64)>,
     fail_after_first: bool,
+    hang_after_first: Option<Arc<tokio::sync::Notify>>,
     reuse_existing: bool,
     start_existing: bool,
     fail_start: bool,
@@ -505,6 +515,27 @@ impl DeployHealthChecker for HangingHealth {
     }
 }
 
+pub(super) struct NotifyingHangingHealth {
+    reached: Arc<tokio::sync::Notify>,
+}
+
+impl NotifyingHangingHealth {
+    pub(super) fn new(reached: Arc<tokio::sync::Notify>) -> Self {
+        Self { reached }
+    }
+}
+
+impl DeployHealthChecker for NotifyingHangingHealth {
+    async fn wait_healthy(
+        &mut self,
+        _containers: &[crate::control::operations::deploy::DeployContainer],
+    ) -> Result<(), DeployHealthCheckError> {
+        self.reached.notify_one();
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DeployContainerForAssert {
     machine_id: MachineId,
@@ -542,9 +573,11 @@ impl RecordingRuntime {
             hook_requests: Vec::new(),
             stops: Vec::new(),
             removals: Vec::new(),
+            image_removals: Vec::new(),
             containers: containers.into_iter().map(container_id).rev().collect(),
             hook_outcomes: Vec::new(),
             fail_after_first: false,
+            hang_after_first: None,
             reuse_existing: false,
             start_existing: false,
             fail_start: false,
@@ -560,9 +593,11 @@ impl RecordingRuntime {
             hook_requests: Vec::new(),
             stops: Vec::new(),
             removals: Vec::new(),
+            image_removals: Vec::new(),
             containers: containers.into_iter().map(container_id).rev().collect(),
             hook_outcomes: Vec::new(),
             fail_after_first: false,
+            hang_after_first: None,
             reuse_existing: true,
             start_existing: false,
             fail_start: false,
@@ -578,9 +613,11 @@ impl RecordingRuntime {
             hook_requests: Vec::new(),
             stops: Vec::new(),
             removals: Vec::new(),
+            image_removals: Vec::new(),
             containers: containers.into_iter().map(container_id).rev().collect(),
             hook_outcomes: Vec::new(),
             fail_after_first: false,
+            hang_after_first: None,
             reuse_existing: false,
             start_existing: true,
             fail_start: false,
@@ -596,9 +633,34 @@ impl RecordingRuntime {
             hook_requests: Vec::new(),
             stops: Vec::new(),
             removals: Vec::new(),
+            image_removals: Vec::new(),
             containers: vec![container_id("ctr_1")],
             hook_outcomes: Vec::new(),
             fail_after_first: true,
+            hang_after_first: None,
+            reuse_existing: false,
+            start_existing: false,
+            fail_start: false,
+            fail_remove: false,
+            fail_stop: false,
+        }
+    }
+
+    pub(super) fn hanging_after_first_container(
+        container_id: &str,
+        hang_reached: Arc<tokio::sync::Notify>,
+    ) -> Self {
+        Self {
+            resolutions: Vec::new(),
+            requests: Vec::new(),
+            hook_requests: Vec::new(),
+            stops: Vec::new(),
+            removals: Vec::new(),
+            image_removals: Vec::new(),
+            containers: vec![self::container_id(container_id)],
+            hook_outcomes: Vec::new(),
+            fail_after_first: false,
+            hang_after_first: Some(hang_reached),
             reuse_existing: false,
             start_existing: false,
             fail_start: false,
@@ -614,9 +676,11 @@ impl RecordingRuntime {
             hook_requests: Vec::new(),
             stops: Vec::new(),
             removals: Vec::new(),
+            image_removals: Vec::new(),
             containers: vec![self::container_id(container_id)],
             hook_outcomes: Vec::new(),
             fail_after_first: false,
+            hang_after_first: None,
             reuse_existing: false,
             start_existing: false,
             fail_start: true,
@@ -642,6 +706,23 @@ impl RecordingRuntime {
     }
 }
 
+impl crate::control::operations::deploy::MachineImageRemovalRuntime for RecordingRuntime {
+    async fn remove_image(
+        &mut self,
+        machine_id: &MachineId,
+        request: ployz_core::image::ImageRemoveRequest,
+    ) -> Result<
+        ployz_core::image::ImageRemoveOk,
+        crate::control::role_client::machine::MachineImageRemoveError,
+    > {
+        self.image_removals.push((machine_id.clone(), request));
+        Ok(ployz_core::image::ImageRemoveOk {
+            machine_id: machine_id.clone(),
+            outcome: ployz_core::image::ImageRemoveOutcome::RetainedInUse,
+        })
+    }
+}
+
 impl MachineContainerRuntime for RecordingRuntime {
     async fn resolve_image(
         &mut self,
@@ -656,17 +737,14 @@ impl MachineContainerRuntime for RecordingRuntime {
     async fn ensure_image(
         &mut self,
         machine_id: &MachineId,
-        _request: ployz_core::image::ImageEnsureRequest,
+        request: ployz_core::image::ImageEnsureRequest,
     ) -> Result<
         ployz_core::image::ImageEnsureOk,
         crate::control::role_client::machine::MachineImageEnsureError,
     > {
         Ok(ployz_core::image::ImageEnsureOk {
             machine_id: machine_id.clone(),
-            platform: ployz_core::image::OciPlatform {
-                os: "linux".to_owned(),
-                architecture: "amd64".to_owned(),
-            },
+            platform: request.platform,
         })
     }
 
@@ -675,6 +753,12 @@ impl MachineContainerRuntime for RecordingRuntime {
         machine_id: &MachineId,
         request: MachineContainerRunRpcRequest,
     ) -> Result<MachineRunContainerOutcome, MachineContainerRuntimeError> {
+        if let Some(hang_reached) = &self.hang_after_first
+            && !self.requests.is_empty()
+        {
+            hang_reached.notify_one();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
         self.requests.push((machine_id.clone(), request));
         if self.fail_after_first && self.requests.len() > 1 {
             return Err(MachineContainerRuntimeError::Unavailable {
@@ -1103,7 +1187,9 @@ fn routed_deploy_request(replicas: u16) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
         origin: None,
+        volumes: std::collections::BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_api"),
             image: image("registry.example/api:rev_2"),
             image_source: ployz_core::deploy::ImageSource::Registry,
@@ -1128,7 +1214,9 @@ pub(super) fn ployz_automatic_deploy_command() -> DeployExecutionInput {
         DeployRequest {
             namespace_id: namespace_id("default"),
             origin: None,
+            volumes: std::collections::BTreeMap::new(),
             services: vec![DeployServiceSpec {
+                keep: None,
                 service_id: service_id("svc_api"),
                 image: image("registry.example/api:rev_2"),
                 image_source: ployz_core::deploy::ImageSource::Registry,
@@ -1176,22 +1264,50 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
     let request = DeployRequest {
         namespace_id: namespace_id("default"),
         origin: None,
+        volumes: std::collections::BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_api"),
             image: image("local/api:rev_2"),
-            image_source: ployz_core::deploy::ImageSource::PushedToSeed {
-                seed: machine_id("machine_seed"),
-                manifest_digest: ployz_core::image::OciDigest::try_new(format!(
-                    "sha256:{}",
-                    "a".repeat(64)
-                ))
-                .expect("valid manifest digest"),
-                image_id: ployz_core::image::OciDigest::try_new(format!(
-                    "sha256:{}",
-                    "b".repeat(64)
-                ))
-                .expect("valid image id"),
-            },
+            image_source: ployz_core::deploy::ImageSource::PushedToSeed(
+                ployz_core::deploy::PushedImageReceipt::try_new([
+                    (
+                        ployz_core::image::OciPlatform::try_new("linux", "amd64")
+                            .expect("platform"),
+                        ployz_core::deploy::PlatformImage {
+                            seed: machine_id("machine_seed"),
+                            manifest_digest: ployz_core::image::OciDigest::try_new(format!(
+                                "sha256:{}",
+                                "a".repeat(64)
+                            ))
+                            .expect("valid manifest digest"),
+                            image_id: ployz_core::image::OciDigest::try_new(format!(
+                                "sha256:{}",
+                                "b".repeat(64)
+                            ))
+                            .expect("valid image id"),
+                        },
+                    ),
+                    (
+                        ployz_core::image::OciPlatform::try_new("linux", "arm64")
+                            .expect("platform"),
+                        ployz_core::deploy::PlatformImage {
+                            seed: machine_id("machine_arm_seed"),
+                            manifest_digest: ployz_core::image::OciDigest::try_new(format!(
+                                "sha256:{}",
+                                "d".repeat(64)
+                            ))
+                            .expect("valid manifest digest"),
+                            image_id: ployz_core::image::OciDigest::try_new(format!(
+                                "sha256:{}",
+                                "e".repeat(64)
+                            ))
+                            .expect("valid image id"),
+                        },
+                    ),
+                ])
+                .expect("pushed receipt"),
+            ),
             replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
@@ -1199,17 +1315,15 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
             routes: Vec::new(),
         }],
     };
-    let platform = ployz_core::image::OciPlatform {
-        os: "linux".to_owned(),
-        architecture: "amd64".to_owned(),
-    };
+    let amd64 = ployz_core::image::OciPlatform::try_new("linux", "amd64").expect("platform");
+    let arm64 = ployz_core::image::OciPlatform::try_new("linux", "arm64").expect("platform");
     deploy_execution_input(
         operation_id("op_123"),
         request,
         DeployExecutionFacts {
             machine_platforms: [
-                (machine_id("machine_a"), platform.clone()),
-                (machine_id("machine_b"), platform),
+                (machine_id("machine_a"), amd64),
+                (machine_id("machine_b"), arm64),
             ]
             .into_iter()
             .collect(),
@@ -1218,13 +1332,22 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
             namespace_serving_entries: Vec::new(),
             namespace_volume_pins: Vec::new(),
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
-            dataplane_members: vec![ployz_core::network::DataplaneMember {
-                machine_id: machine_id("machine_seed"),
-                endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new(
-                    "10.198.99.0/24",
-                )
-                .expect("valid seed subnet"),
-            }],
+            dataplane_members: vec![
+                ployz_core::network::DataplaneMember {
+                    machine_id: machine_id("machine_seed"),
+                    endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new(
+                        "10.198.99.0/24",
+                    )
+                    .expect("valid seed subnet"),
+                },
+                ployz_core::network::DataplaneMember {
+                    machine_id: machine_id("machine_arm_seed"),
+                    endpoint_subnet: ployz_core::network::MachineEndpointSubnet::try_new(
+                        "10.198.98.0/24",
+                    )
+                    .expect("valid seed subnet"),
+                },
+            ],
             observed_machines: Vec::new(),
             namespace_cleanup_candidates: Vec::new(),
             automatic_hostname_mode: AutomaticHostnameMode::Disabled,
@@ -1241,6 +1364,10 @@ pub(super) fn deploy_command_without_eligible_machines(replicas: u16) -> DeployE
 
 pub(super) fn volume_backed_deploy_command(replicas: u16) -> DeployExecutionInput {
     let mut request = target_deploy_request(replicas);
+    request.volumes.insert(
+        volume_name("postgres_data"),
+        ployz_core::deploy::VolumeSpec::Plain,
+    );
     let [service] = request.services.as_mut_slice() else {
         panic!("deploy request fixture has one service");
     };
@@ -1330,11 +1457,61 @@ pub(super) fn deploy_command_replacing_old_container(
     )
 }
 
+pub(super) fn deploy_command_replacing_old_container_with_keep(
+    machine_id: &str,
+    container_id: &str,
+) -> DeployExecutionInput {
+    let image_identity = ployz_core::image::OciDigest::sha256(b"old image");
+    let snapshot = MachineContainerObservationSnapshot::try_new(
+        self::machine_id(machine_id),
+        [containers::observation(machine_id, container_id)
+            .with(
+                containers::identity("svc_api")
+                    .entry("entry_old")
+                    .operation("op_existing")
+                    .step(&format!("existing_{container_id}")),
+            )
+            .running_unroutable()
+            .resolved_image_identity(image_identity.as_str())
+            .created_at_unix_seconds(10)
+            .build()],
+    )
+    .expect("valid machine observation snapshot");
+    let mut request = target_deploy_request(1);
+    let [service] = request.services.as_mut_slice() else {
+        panic!("target request has one service");
+    };
+    service.keep = Some(ployz_core::deploy::ContainerRetentionCount::new(0));
+    deploy_execution_input(
+        operation_id("op_123"),
+        request,
+        DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
+            unusable_machines: Vec::new(),
+            namespace_route_bindings: Vec::new(),
+            namespace_serving_entries: Vec::new(),
+            namespace_volume_pins: Vec::new(),
+            dataplane_members: Vec::new(),
+            eligible_machines: vec![self::machine_id("machine_a"), self::machine_id(machine_id)],
+            namespace_cleanup_candidates: namespace_cleanup_candidates(std::slice::from_ref(
+                &snapshot,
+            )),
+            observed_machines: vec![snapshot],
+            automatic_hostname_mode: AutomaticHostnameMode::Disabled,
+            gateway_certificate_targets: Vec::new(),
+            ployz_gateway_certificate_targets: Vec::new(),
+            step_timeout: Duration::from_secs(5),
+        },
+    )
+}
+
 pub(super) fn target_deploy_request(replicas: u16) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
         origin: None,
+        volumes: std::collections::BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_api"),
             image: image("registry.example/api:rev_2"),
             image_source: ployz_core::deploy::ImageSource::Registry,
@@ -1350,13 +1527,25 @@ pub(super) fn target_deploy_request(replicas: u16) -> DeployRequest {
 fn deploy_execution_input(
     operation_id: OperationId,
     request: DeployRequest,
-    facts: DeployExecutionFacts,
+    mut facts: DeployExecutionFacts,
 ) -> DeployExecutionInput {
+    if facts.machine_platforms.is_empty() {
+        let platform = ployz_core::image::OciPlatform::try_new("linux", "amd64")
+            .expect("valid default fixture platform");
+        facts.machine_platforms = facts
+            .eligible_machines
+            .iter()
+            .cloned()
+            .map(|machine_id| (machine_id, platform.clone()))
+            .collect();
+    }
     DeployExecutionInput::new(
         operation_id,
-        request,
+        ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(request)
+            .expect("fixture deploy request normalizes"),
         facts,
         std::collections::BTreeMap::new(),
+        std::collections::BTreeSet::new(),
     )
 }
 
@@ -1406,6 +1595,7 @@ pub(super) fn empty_deploy_command_with_running_container(
         DeployRequest {
             namespace_id: namespace_id("default"),
             origin: None,
+            volumes: std::collections::BTreeMap::new(),
             services: Vec::new(),
         },
         DeployExecutionFacts {

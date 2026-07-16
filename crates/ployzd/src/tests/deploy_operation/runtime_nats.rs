@@ -27,11 +27,13 @@ use ployz_core::machine::MachineLifecycle;
 use ployz_core::machine::MachineName;
 use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineFactsSnapshot};
 use ployz_core::operation::{
-    DeployCompletionOutcome, DeployOperationFailure, DeployOperationState, OperationStatus,
+    DeployCompletionOutcome, DeployOperationFailure, DeployOperationState,
+    OperationInterruptionCause, OperationStatus,
 };
 use ployz_nats::subjects::{INTENT_CHANGED, MachineServiceEndpoint, machine_service};
 use ployz_test_support::ids::idempotency_key;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[tokio::test]
@@ -60,12 +62,13 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
         .await
         .expect("subscribe intent changes");
     let resolved_request = resolved_deploy_request(1);
-    let resolved_entry_id = resolved_request
-        .service_requests()
-        .into_iter()
-        .next()
-        .expect("resolved fixture has one service")
-        .namespace_revision_entry_id;
+    let resolved_entry_id =
+        ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(resolved_request.clone())
+            .expect("request normalizes")
+            .services()
+            .first()
+            .expect("resolved fixture has one service")
+            .namespace_revision_entry_id(&namespace_id("default"));
 
     let outcome = run_deploy_operation(
         accepted,
@@ -136,6 +139,421 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
 }
 
 #[tokio::test]
+async fn interrupted_deploy_retry_gathers_and_reuses_retained_runtime_work() {
+    let nats = test_nats().await;
+    let (machine_a_facts_task, machine_a_facts) = start_dynamic_facts_subscription(
+        nats.machine_a.clone(),
+        nats.client.clone(),
+        machine_id("machine_a"),
+    )
+    .await;
+    let (machine_slow_facts_task, machine_slow_facts) = start_dynamic_facts_subscription(
+        nats.machine_slow.clone(),
+        nats.client.clone(),
+        machine_id("machine_slow"),
+    )
+    .await;
+    let _facts_tasks = (machine_a_facts_task, machine_slow_facts_task);
+    let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
+    let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
+    let controllers = operation_controllers(nats.client.clone()).await;
+    let accepted = controllers
+        .submit_deploy(deploy_submit_command(&controllers, deploy_request(2)).await)
+        .await
+        .expect("first deploy operation accepted");
+    let first_run_hang = Arc::new(tokio::sync::Notify::new());
+    let mut first_runtime = RecordingRuntime::hanging_after_first_container(
+        "ctr_retained",
+        Arc::clone(&first_run_hang),
+    );
+    let mut first_health = RecordingHealth::healthy();
+    let mut first_certificates = RecordingCertificates::successful();
+
+    {
+        let first_run = run_deploy_operation(
+            accepted,
+            DeployOperationStores {
+                intent_change_client: nats.client.clone(),
+                namespace_intent: nats.namespace_intent.clone(),
+                ployz_dns_target: nats.ployz_dns_target.clone(),
+                ingress_projection: nats.ingress_projection.clone(),
+                controllers: controllers.clone(),
+            },
+            DeployOperationPorts {
+                facts_reader: &facts_reader,
+                intent_reader: &intent_reader,
+                machine_runtime: &mut first_runtime,
+                health_checker: &mut first_health,
+                certificate_provisioner: &mut first_certificates,
+            },
+            Duration::from_secs(5),
+        );
+        tokio::pin!(first_run);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                () = first_run_hang.notified() => {}
+                outcome = &mut first_run => panic!("first deploy settled before interruption: {outcome:?}"),
+            }
+        })
+        .await
+        .expect("first deploy reaches controlled interruption seam");
+    }
+
+    let [(retained_machine_id, retained_request)] = first_runtime.requests.as_slice() else {
+        panic!("first deploy created exactly one retained container");
+    };
+    assert_eq!(
+        retained_request.container.operation_id,
+        operation_id("op_123")
+    );
+    let retained_observation = ployz_core::machine::runtime::ManagedContainerObservation {
+        machine_id: retained_machine_id.clone(),
+        container_id: container_id("ctr_retained"),
+        identity: retained_request.container.clone(),
+        state: ployz_core::machine::runtime::ContainerRuntimeState::running_unroutable(),
+        health_status: None,
+        resolved_image_identity: None,
+        created_at_unix_seconds: None,
+    };
+    let retained_facts = machine_facts(retained_machine_id.clone(), [retained_observation]);
+    let target_facts = if retained_machine_id == &machine_id("machine_a") {
+        &machine_a_facts
+    } else {
+        &machine_slow_facts
+    };
+    *target_facts
+        .lock()
+        .expect("dynamic facts lock is not poisoned") = retained_facts;
+
+    let repository = controllers.repository().clone();
+    let summary = repository
+        .record_interrupted_operations(OperationInterruptionCause::PriorCoreProcessLoss)
+        .await
+        .expect("process loss records terminal interruption evidence");
+    assert_eq!(summary.recorded, 1);
+    assert!(matches!(
+        repository
+            .get(&operation_id("op_123"))
+            .await
+            .expect("first status reads"),
+        Some(OperationStatus::Deploy {
+            state: DeployOperationState::Interrupted { evidence },
+            ..
+        }) if evidence.cause() == OperationInterruptionCause::PriorCoreProcessLoss
+    ));
+
+    drop(controllers);
+    let restarted_controllers = OperationControllers::new(
+        repository,
+        MachineAddBootstrapConfig::new(
+            MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
+                .expect("default bootstrap URL is valid"),
+        ),
+    );
+    let retry = restarted_controllers
+        .submit_deploy(DeploySubmitCommand {
+            registry_credentials: std::collections::BTreeMap::new(),
+            operation_id: operation_id("op_retry"),
+            idempotency_key: idempotency_key("idem_deploy_retry"),
+            reservation_id: reserve_deploy(&restarted_controllers).await,
+            target: normalized_deploy_request(2),
+        })
+        .await
+        .expect("retry deploy accepted by restarted sequencer");
+    let mut retry_runtime = RecordingRuntime::with_containers(["ctr_missing"]);
+    let mut retry_health = RecordingHealth::healthy();
+    let mut retry_certificates = RecordingCertificates::successful();
+
+    let outcome = run_deploy_operation(
+        retry,
+        DeployOperationStores {
+            intent_change_client: nats.client.clone(),
+            namespace_intent: nats.namespace_intent.clone(),
+            ployz_dns_target: nats.ployz_dns_target.clone(),
+            ingress_projection: nats.ingress_projection.clone(),
+            controllers: restarted_controllers.clone(),
+        },
+        DeployOperationPorts {
+            facts_reader: &facts_reader,
+            intent_reader: &intent_reader,
+            machine_runtime: &mut retry_runtime,
+            health_checker: &mut retry_health,
+            certificate_provisioner: &mut retry_certificates,
+        },
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("retry converges from observed retained work");
+
+    assert_eq!(
+        outcome
+            .containers
+            .iter()
+            .map(|container| container.container_id.clone())
+            .collect::<Vec<_>>(),
+        vec![container_id("ctr_retained"), container_id("ctr_missing")]
+    );
+    let [(retry_machine_id, retry_request)] = retry_runtime.requests.as_slice() else {
+        panic!("retry creates only the missing replica");
+    };
+    assert_eq!(
+        retry_request.container.operation_id,
+        operation_id("op_retry")
+    );
+    assert_eq!(
+        retry_health.checked,
+        vec![vec![
+            DeployContainerForAssert::new(retained_machine_id.as_str(), "ctr_retained"),
+            DeployContainerForAssert::new(retry_machine_id.as_str(), "ctr_missing"),
+        ]]
+    );
+    let serving = nats
+        .namespace_intent
+        .load()
+        .await
+        .expect("namespace intent reads")
+        .serving_target_entries
+        .into_iter()
+        .find(|entry| entry.service_id == service_id("svc_api"))
+        .expect("retry commits serving target");
+    assert_eq!(
+        serving.desired_replicas,
+        ReplicaCount::try_new(2).expect("replica count")
+    );
+    assert!(matches!(
+        restarted_controllers
+            .repository()
+            .get(&operation_id("op_retry"))
+            .await
+            .expect("retry status reads"),
+        Some(OperationStatus::Deploy {
+            state: DeployOperationState::Completed { .. },
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn interrupted_scale_up_replica_is_regated_under_a_promoted_entry() {
+    let nats = test_nats().await;
+    let (machine_a_facts_task, machine_a_facts) = start_dynamic_facts_subscription(
+        nats.machine_a.clone(),
+        nats.client.clone(),
+        machine_id("machine_a"),
+    )
+    .await;
+    let (machine_slow_facts_task, machine_slow_facts) = start_dynamic_facts_subscription(
+        nats.machine_slow.clone(),
+        nats.client.clone(),
+        machine_id("machine_slow"),
+    )
+    .await;
+    let _facts_tasks = (machine_a_facts_task, machine_slow_facts_task);
+    let facts_reader = facts_reader(&nats.client, Duration::from_secs(5));
+    let intent_reader = intent_reader(&nats.client, Duration::from_secs(5));
+    let controllers = operation_controllers(nats.client.clone()).await;
+
+    let initial = controllers
+        .submit_deploy(DeploySubmitCommand {
+            registry_credentials: std::collections::BTreeMap::new(),
+            operation_id: operation_id("op_initial"),
+            idempotency_key: idempotency_key("idem_initial"),
+            reservation_id: reserve_deploy(&controllers).await,
+            target: normalized_deploy_request(1),
+        })
+        .await
+        .expect("initial deploy accepted");
+    let mut initial_runtime = RecordingRuntime::with_containers(["ctr_promoted"]);
+    let mut initial_health = RecordingHealth::healthy();
+    run_deploy_operation(
+        initial,
+        DeployOperationStores {
+            intent_change_client: nats.client.clone(),
+            namespace_intent: nats.namespace_intent.clone(),
+            ployz_dns_target: nats.ployz_dns_target.clone(),
+            ingress_projection: nats.ingress_projection.clone(),
+            controllers: controllers.clone(),
+        },
+        DeployOperationPorts {
+            facts_reader: &facts_reader,
+            intent_reader: &intent_reader,
+            machine_runtime: &mut initial_runtime,
+            health_checker: &mut initial_health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+        },
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("initial deploy promotes one replica");
+    controllers
+        .release_namespace(&namespace_id("default"), &operation_id("op_initial"))
+        .await;
+    let [(promoted_machine_id, promoted_request)] = initial_runtime.requests.as_slice() else {
+        panic!("initial deploy creates one container");
+    };
+    let promoted_observation = ployz_core::machine::runtime::ManagedContainerObservation {
+        machine_id: promoted_machine_id.clone(),
+        container_id: container_id("ctr_promoted"),
+        identity: promoted_request.container.clone(),
+        state: ployz_core::machine::runtime::ContainerRuntimeState::running_unroutable(),
+        health_status: None,
+        resolved_image_identity: None,
+        created_at_unix_seconds: None,
+    };
+    let promoted_facts = if promoted_machine_id == &machine_id("machine_a") {
+        &machine_a_facts
+    } else {
+        &machine_slow_facts
+    };
+    *promoted_facts
+        .lock()
+        .expect("dynamic facts lock is not poisoned") =
+        machine_facts(promoted_machine_id.clone(), [promoted_observation.clone()]);
+
+    let scale_up = controllers
+        .submit_deploy(DeploySubmitCommand {
+            registry_credentials: std::collections::BTreeMap::new(),
+            operation_id: operation_id("op_scale_up"),
+            idempotency_key: idempotency_key("idem_scale_up"),
+            reservation_id: reserve_deploy(&controllers).await,
+            target: normalized_deploy_request(2),
+        })
+        .await
+        .expect("scale-up deploy accepted");
+    let health_reached = Arc::new(tokio::sync::Notify::new());
+    let mut scale_runtime = RecordingRuntime::with_containers(["ctr_interrupted"]);
+    let mut scale_health = NotifyingHangingHealth::new(Arc::clone(&health_reached));
+    let mut scale_certificates = RecordingCertificates::successful();
+    {
+        let scale_run = run_deploy_operation(
+            scale_up,
+            DeployOperationStores {
+                intent_change_client: nats.client.clone(),
+                namespace_intent: nats.namespace_intent.clone(),
+                ployz_dns_target: nats.ployz_dns_target.clone(),
+                ingress_projection: nats.ingress_projection.clone(),
+                controllers: controllers.clone(),
+            },
+            DeployOperationPorts {
+                facts_reader: &facts_reader,
+                intent_reader: &intent_reader,
+                machine_runtime: &mut scale_runtime,
+                health_checker: &mut scale_health,
+                certificate_provisioner: &mut scale_certificates,
+            },
+            Duration::from_secs(5),
+        );
+        tokio::pin!(scale_run);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::select! {
+                () = health_reached.notified() => {}
+                outcome = &mut scale_run => panic!("scale-up settled before interruption: {outcome:?}"),
+            }
+        })
+        .await
+        .expect("scale-up reaches its creation health gate");
+    }
+    let [(interrupted_machine_id, interrupted_request)] = scale_runtime.requests.as_slice() else {
+        panic!("scale-up creates one additional container");
+    };
+    let interrupted_observation = ployz_core::machine::runtime::ManagedContainerObservation {
+        machine_id: interrupted_machine_id.clone(),
+        container_id: container_id("ctr_interrupted"),
+        identity: interrupted_request.container.clone(),
+        state: ployz_core::machine::runtime::ContainerRuntimeState::running_unroutable(),
+        health_status: None,
+        resolved_image_identity: None,
+        created_at_unix_seconds: None,
+    };
+    let interrupted_facts = if interrupted_machine_id == &machine_id("machine_a") {
+        &machine_a_facts
+    } else {
+        &machine_slow_facts
+    };
+    *interrupted_facts
+        .lock()
+        .expect("dynamic facts lock is not poisoned") =
+        if interrupted_machine_id == promoted_machine_id {
+            machine_facts(
+                interrupted_machine_id.clone(),
+                [promoted_observation, interrupted_observation],
+            )
+        } else {
+            machine_facts(interrupted_machine_id.clone(), [interrupted_observation])
+        };
+
+    let repository = controllers.repository().clone();
+    let summary = repository
+        .record_interrupted_operations(OperationInterruptionCause::PriorCoreProcessLoss)
+        .await
+        .expect("scale-up interruption records");
+    assert_eq!(summary.recorded, 1);
+    drop(controllers);
+    let restarted_controllers = OperationControllers::new(
+        repository,
+        MachineAddBootstrapConfig::new(
+            MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
+                .expect("default bootstrap URL is valid"),
+        ),
+    );
+    let retry = restarted_controllers
+        .submit_deploy(DeploySubmitCommand {
+            registry_credentials: std::collections::BTreeMap::new(),
+            operation_id: operation_id("op_scale_retry"),
+            idempotency_key: idempotency_key("idem_scale_retry"),
+            reservation_id: reserve_deploy(&restarted_controllers).await,
+            target: normalized_deploy_request(2),
+        })
+        .await
+        .expect("scale-up retry accepted");
+    let mut retry_runtime = RecordingRuntime::with_containers([]);
+    let mut retry_health = RecordingHealth::healthy();
+    let outcome = run_deploy_operation(
+        retry,
+        DeployOperationStores {
+            intent_change_client: nats.client.clone(),
+            namespace_intent: nats.namespace_intent.clone(),
+            ployz_dns_target: nats.ployz_dns_target.clone(),
+            ingress_projection: nats.ingress_projection.clone(),
+            controllers: restarted_controllers,
+        },
+        DeployOperationPorts {
+            facts_reader: &facts_reader,
+            intent_reader: &intent_reader,
+            machine_runtime: &mut retry_runtime,
+            health_checker: &mut retry_health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+        },
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("scale-up retry promotes both observed replicas");
+
+    assert!(retry_runtime.requests.is_empty());
+    assert_eq!(
+        retry_health.checked,
+        vec![vec![DeployContainerForAssert::new(
+            interrupted_machine_id.as_str(),
+            "ctr_interrupted",
+        )]]
+    );
+    assert_eq!(outcome.containers.len(), 2);
+    let serving = nats
+        .namespace_intent
+        .load()
+        .await
+        .expect("namespace intent reads")
+        .serving_target_entries
+        .into_iter()
+        .find(|entry| entry.service_id == service_id("svc_api"))
+        .expect("retry commits serving target");
+    assert_eq!(
+        serving.desired_replicas,
+        ReplicaCount::try_new(2).expect("replica count")
+    );
+}
+
+#[tokio::test]
 async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
     let nats = test_nats().await;
     let _facts = start_facts_subscription(
@@ -194,7 +612,7 @@ async fn idempotent_completed_deploy_retry_releases_namespace_lock() {
             operation_id: operation_id("op_next"),
             idempotency_key: idempotency_key("idem_deploy_next"),
             reservation_id: reserve_deploy(&controllers).await,
-            target: deploy_request(1),
+            target: normalized_deploy_request(1),
         })
         .await
         .expect("next deploy can acquire the namespace");
@@ -289,6 +707,7 @@ async fn duplicate_driver_execution_does_not_release_the_original_namespace_lock
         )
         .await
         .expect("deploy already started");
+    let tasks = TaskRegistry::default();
     let driver = DeployOperationDriver::new(
         DeployOperationStores {
             intent_change_client: nats.client.clone(),
@@ -305,7 +724,7 @@ async fn duplicate_driver_execution_does_not_release_the_original_namespace_lock
             CertificateManagerConfig::for_core_db(Path::new("ployz-core.db")),
         ),
         Duration::from_secs(5),
-        TaskRegistry::default(),
+        tasks.spawner(),
     );
 
     let result = driver.run(accepted).await;
@@ -315,7 +734,7 @@ async fn duplicate_driver_execution_does_not_release_the_original_namespace_lock
             operation_id: operation_id("op_second"),
             idempotency_key: idempotency_key("idem_second"),
             reservation_id: reserve_deploy(&controllers).await,
-            target: deploy_request(1),
+            target: normalized_deploy_request(1),
         })
         .await
         .expect_err("original deploy still owns the namespace lock");
@@ -499,7 +918,7 @@ async fn deploy_submit_rejects_busy_namespace_without_creating_second_operation(
             operation_id: operation_id("op_first"),
             idempotency_key: idempotency_key("idem_first"),
             reservation_id: reserve_deploy(&controllers).await,
-            target: deploy_request(1),
+            target: normalized_deploy_request(1),
         })
         .await
         .expect("first deploy operation accepted");
@@ -510,7 +929,7 @@ async fn deploy_submit_rejects_busy_namespace_without_creating_second_operation(
             operation_id: operation_id("op_second"),
             idempotency_key: idempotency_key("idem_second"),
             reservation_id: reserve_deploy(&controllers).await,
-            target: deploy_request(1),
+            target: normalized_deploy_request(1),
         })
         .await
         .expect_err("second deploy is rejected while namespace is locked");
@@ -545,7 +964,7 @@ async fn older_reservation_is_stale_while_newer_deploy_holds_namespace_lock() {
             operation_id: operation_id("op_newer"),
             idempotency_key: idempotency_key("idem_newer"),
             reservation_id: newer,
-            target: deploy_request(1),
+            target: normalized_deploy_request(1),
         })
         .await
         .expect("newer deploy operation accepted");
@@ -556,7 +975,7 @@ async fn older_reservation_is_stale_while_newer_deploy_holds_namespace_lock() {
             operation_id: operation_id("op_older"),
             idempotency_key: idempotency_key("idem_older"),
             reservation_id: older,
-            target: deploy_request(1),
+            target: normalized_deploy_request(1),
         })
         .await
         .expect_err("older reservation is stale after newer admission");
@@ -583,7 +1002,7 @@ async fn deploy_submit_retry_with_same_idempotency_key_adopts_original_operation
             operation_id: operation_id("op_first"),
             idempotency_key: idempotency_key("idem_deploy"),
             reservation_id: reserve_deploy(&controllers).await,
-            target: deploy_request(1),
+            target: normalized_deploy_request(1),
         })
         .await
         .expect("first deploy operation accepted");
@@ -594,7 +1013,7 @@ async fn deploy_submit_retry_with_same_idempotency_key_adopts_original_operation
             operation_id: operation_id("op_retry_candidate"),
             idempotency_key: idempotency_key("idem_deploy"),
             reservation_id: reserve_deploy(&controllers).await,
-            target: deploy_request(1),
+            target: normalized_deploy_request(1),
         })
         .await
         .expect("retry deploy operation accepted");
@@ -718,6 +1137,19 @@ async fn start_facts_subscription(
     intent_client: async_nats::Client,
     machine_id: ployz_core::ids::MachineId,
 ) -> tokio::task::JoinHandle<()> {
+    start_dynamic_facts_subscription(client, intent_client, machine_id)
+        .await
+        .0
+}
+
+async fn start_dynamic_facts_subscription(
+    client: async_nats::Client,
+    intent_client: async_nats::Client,
+    machine_id: ployz_core::ids::MachineId,
+) -> (
+    tokio::task::JoinHandle<()>,
+    Arc<Mutex<MachineFactsSnapshot>>,
+) {
     crate::tests::support::dataplane::start_applied_status_responder(
         client.clone(),
         intent_client,
@@ -733,12 +1165,17 @@ async fn start_facts_subscription(
         .flush()
         .await
         .expect("flush facts service subscription");
-    tokio::spawn(async move {
+    let facts = Arc::new(Mutex::new(empty_machine_facts(&machine_id)));
+    let served_facts = Arc::clone(&facts);
+    let task = tokio::spawn(async move {
         while let Some(message) = subscriber.next().await {
             let Some(reply) = message.reply else {
                 continue;
             };
-            let facts = empty_machine_facts(&machine_id);
+            let facts = served_facts
+                .lock()
+                .expect("dynamic facts lock is not poisoned")
+                .clone();
             let response =
                 serde_json::to_vec(&MachineFactsGetRpcResponse::Ok(MachineFactsGetRpcOk {
                     facts,
@@ -746,7 +1183,8 @@ async fn start_facts_subscription(
                 .expect("facts response serializes");
             let _ = client.publish(reply, response.into()).await;
         }
-    })
+    });
+    (task, facts)
 }
 
 fn facts_reader(client: &async_nats::Client, timeout: Duration) -> NatsMachineFactsReader {
@@ -758,10 +1196,17 @@ fn intent_reader(client: &async_nats::Client, timeout: Duration) -> NatsIntentRe
 }
 
 fn empty_machine_facts(machine_id: &ployz_core::ids::MachineId) -> MachineFactsSnapshot {
+    machine_facts(machine_id.clone(), [])
+}
+
+fn machine_facts(
+    machine_id: ployz_core::ids::MachineId,
+    containers: impl IntoIterator<Item = ployz_core::machine::runtime::ManagedContainerObservation>,
+) -> MachineFactsSnapshot {
     MachineFactsSnapshot::try_new(
         machine_id.clone(),
-        MachineContainerObservationSnapshot::try_new(machine_id.clone(), [])
-            .expect("empty machine snapshot is valid"),
+        MachineContainerObservationSnapshot::try_new(machine_id, containers)
+            .expect("machine snapshot is valid"),
         None,
         test_disk_space(),
         ployz_core::image::OciPlatform::current(),
@@ -799,8 +1244,14 @@ async fn deploy_submit_command(
         operation_id: operation_id("op_123"),
         idempotency_key: idempotency_key("idem_deploy_123"),
         reservation_id: reserve_deploy(controllers).await,
-        target,
+        target: ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(target)
+            .expect("deploy request normalizes"),
     }
+}
+
+fn normalized_deploy_request(replicas: u16) -> ployz_core::deploy::VolumeDeclaredDeployRequest {
+    ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(deploy_request(replicas))
+        .expect("deploy request normalizes")
 }
 
 async fn reserve_deploy(
@@ -817,7 +1268,9 @@ fn deploy_request(replicas: u16) -> DeployRequest {
     DeployRequest {
         namespace_id: namespace_id("default"),
         origin: None,
+        volumes: std::collections::BTreeMap::new(),
         services: vec![DeployServiceSpec {
+            keep: None,
             service_id: service_id("svc_api"),
             image: image("registry.example/api:rev_2"),
             image_source: ployz_core::deploy::ImageSource::Registry,
