@@ -3,13 +3,12 @@ use std::collections::BTreeMap;
 use ployz_core::build::BuildPlatforms;
 use ployz_core::ids::MachineId;
 use ployz_core::image::OciPlatform;
-use ployz_core::machine::{MachineUsabilityReason, placement_rejection};
+use ployz_core::machine::MachineUsabilityReason;
 use ployz_core::network::{DataplaneProjection, MachineDataplaneStatus};
 use ployz_core::operation::{BuildOperationFailure, FailureMessage, UnusableMachine};
 
+use crate::control::operations::local_execution_admission::classify_local_execution_admission;
 use crate::control::role_client::machine::MachinePlacementFacts;
-
-use super::super::deploy::declared_local_dataplane_candidate;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BuildPlacement {
@@ -33,42 +32,25 @@ pub(crate) fn place_build_platforms(
     projection: &DataplaneProjection,
     dataplane_statuses: &[(MachineId, Result<MachineDataplaneStatus, FailureMessage>)],
 ) -> Result<BuildPlacement, Box<BuildOperationFailure>> {
+    let (admitted, shared_unusable) =
+        classify_local_execution_admission(facts, projection, dataplane_statuses);
     let mut by_platform = BTreeMap::new();
     for platform in platforms.iter() {
-        let mut unusable = Vec::new();
+        let mut unusable = shared_unusable.clone();
         let mut eligible = Vec::new();
-        for candidate in facts {
-            let reason = placement_rejection(candidate.lifecycle).or_else(|| {
-                candidate.answer.as_ref().map_or(
-                    Some(MachineUsabilityReason::FactsUnavailable),
-                    |answer| {
-                        if answer.platform != *platform {
-                            Some(MachineUsabilityReason::PlatformMismatch {
-                                required: platform.clone(),
-                                reported: answer.platform.clone(),
-                            })
-                        } else {
-                            declared_local_dataplane_candidate(
-                                &candidate.machine_id,
-                                projection,
-                                dataplane_statuses,
-                            )
-                            .err()
-                        }
+        for candidate in &admitted {
+            if *candidate.platform == *platform {
+                eligible.push(candidate.machine_id.clone());
+            } else {
+                unusable.push(UnusableMachine {
+                    machine_id: candidate.machine_id.clone(),
+                    reason: MachineUsabilityReason::PlatformMismatch {
+                        required: platform.clone(),
+                        reported: candidate.platform.clone(),
                     },
-                )
-            });
-            match reason {
-                None => eligible.push(candidate.machine_id.clone()),
-                Some(reason) => {
-                    unusable.push(UnusableMachine {
-                        machine_id: candidate.machine_id.clone(),
-                        reason,
-                    });
-                }
+                });
             }
         }
-        eligible.sort();
         unusable.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
         let Some(machine_id) = eligible.into_iter().next() else {
             return Err(Box::new(BuildOperationFailure::NoEligibleMachine {
