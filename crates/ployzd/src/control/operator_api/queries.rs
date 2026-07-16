@@ -155,7 +155,7 @@ impl RuntimeSnapshotQueryService {
             snapshot: runtime_snapshot_from_sources(
                 intent,
                 &facts,
-                &storage_testimony,
+                Some(&storage_testimony),
                 &gateway_statuses,
                 ingress,
                 read_at_unix_seconds,
