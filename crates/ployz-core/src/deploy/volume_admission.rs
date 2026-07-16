@@ -46,7 +46,9 @@ impl VolumeAdmissionDecision {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, thiserror::Error)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VolumeAdmissionFailure {
     #[error("mounted volume {volume_name:?} has no declaration")]
     MissingDeclaration { volume_name: VolumeName },
@@ -109,11 +111,12 @@ pub enum VolumeAdmissionFailure {
     UnpinnedDatasetExists { dataset: DatasetName },
     #[error("quota admission arithmetic overflowed")]
     CapacityOverflow,
-    #[error(
-        "quota admission exceeds available capacity: available={available_bytes} requested_total={requested_total_bytes}"
-    )]
+    #[error("quota admission exceeds available capacity")]
     CapacityExceeded {
-        available_bytes: u64,
+        total_bytes: u64,
+        provisioned_used_bytes: u64,
+        free_bytes: u64,
+        required_headroom_bytes: u64,
         requested_total_bytes: u64,
     },
     #[error(
@@ -445,10 +448,13 @@ fn admit_provisioned_capacity(
         PoolCapacityAdmissionFailure::Overflow => VolumeAdmissionFailure::CapacityOverflow,
         PoolCapacityAdmissionFailure::Exceeded {
             free_bytes,
+            required_headroom_bytes,
             requested_total_bytes,
-            ..
         } => VolumeAdmissionFailure::CapacityExceeded {
-            available_bytes: free_bytes,
+            total_bytes: capacity.total_bytes,
+            provisioned_used_bytes: capacity.provisioned_used_bytes,
+            free_bytes,
+            required_headroom_bytes,
             requested_total_bytes,
         },
     })?;
@@ -858,7 +864,10 @@ mod tests {
                 storage_testimony: StorageTestimony::Answered(Some(&insufficient)),
             }),
             Err(VolumeAdmissionFailure::CapacityExceeded {
-                available_bytes: 100,
+                total_bytes: 100,
+                provisioned_used_bytes: 0,
+                free_bytes: 100,
+                required_headroom_bytes: 101,
                 requested_total_bytes: 101,
             })
         );

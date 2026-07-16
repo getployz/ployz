@@ -17,6 +17,7 @@ use super::managed_dns_reconcile::{self, ManagedDnsReconcileOperationState};
 use super::namespace_remove::{self, NamespaceRemoveOperationState};
 use super::network_repair::{self, NetworkRepairOperationState};
 use super::service_restart::{self, ServiceRestartOperationState};
+use super::volume_create::{self, VolumeCreateOperationState};
 use super::volume_remove::{self, VolumeRemoveOperationState};
 use super::{
     EventSequence, OperationEvent, OperationId, OperationInterruptionEvidence, OperationKind,
@@ -111,6 +112,7 @@ pub enum ProjectionOperationState {
     ManagedDnsReconcile(ManagedDnsReconcileOperationState),
     IngressConfigure(IngressConfigureOperationState),
     NamespaceRemove(NamespaceRemoveOperationState),
+    VolumeCreate(VolumeCreateOperationState),
     VolumeRemove(VolumeRemoveOperationState),
 }
 
@@ -131,6 +133,7 @@ impl ProjectionOperationState {
             Self::ManagedDnsReconcile(_) => OperationKind::ManagedDnsReconcile,
             Self::IngressConfigure(_) => OperationKind::IngressConfigure,
             Self::NamespaceRemove(_) => OperationKind::NamespaceRemove,
+            Self::VolumeCreate(_) => OperationKind::VolumeCreate,
             Self::VolumeRemove(_) => OperationKind::VolumeRemove,
         }
     }
@@ -151,6 +154,7 @@ pub(crate) const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::ManagedDnsReconcile => "managed-dns-reconcile",
         OperationKind::IngressConfigure => "ingress-configure",
         OperationKind::NamespaceRemove => "namespace-remove",
+        OperationKind::VolumeCreate => "volume-create",
         OperationKind::VolumeRemove => "volume-remove",
     }
 }
@@ -490,6 +494,12 @@ pub fn project_operation_event(
                 event_sequence,
             )
         }
+        ClassifiedOperationEvent::VolumeCreate { event, .. } => {
+            let OperationStatus::VolumeCreate { request, state, .. } = current else {
+                return Err(kind_mismatch(current, OperationKind::VolumeCreate));
+            };
+            volume_create::project_event(request, state, event, event_sequence)
+        }
         ClassifiedOperationEvent::OperationInterrupted { evidence, .. } => {
             project_operation_interruption(current, evidence, event_sequence)
         }
@@ -587,6 +597,14 @@ fn project_operation_interruption(
             ..
         } => {
             *state = VolumeRemoveOperationState::interrupted(evidence);
+            *last_event_sequence = event_sequence;
+        }
+        OperationStatus::VolumeCreate {
+            state,
+            last_event_sequence,
+            ..
+        } => {
+            *state = VolumeCreateOperationState::interrupted(evidence);
             *last_event_sequence = event_sequence;
         }
         OperationStatus::Cert { .. }

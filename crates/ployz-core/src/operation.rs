@@ -42,6 +42,7 @@ mod replay;
 mod routes;
 mod service_restart;
 mod text;
+mod volume_create;
 mod volume_remove;
 
 pub use accessors::NextEventSequenceError;
@@ -113,6 +114,10 @@ pub use service_restart::{
     ServiceRestartTransition, project_service_restart_transition,
 };
 pub use text::{CancellationReason, FailureMessage, NonEmptyTextError, OperatorHint};
+pub use volume_create::{
+    VolumeCreateFailure, VolumeCreateOperationState, VolumeCreateRequest, VolumeCreateRunningStage,
+    VolumeCreateTransition, project_volume_create_transition,
+};
 pub use volume_remove::{
     VolumeRemoveFailure, VolumeRemoveOperationState, VolumeRemoveRunningStage,
     VolumeRemoveTransition, project_volume_remove_transition,
@@ -137,6 +142,7 @@ pub enum OperationKind {
     ManagedDnsReconcile,
     IngressConfigure,
     NamespaceRemove,
+    VolumeCreate,
     VolumeRemove,
 }
 
@@ -238,6 +244,11 @@ pub enum OperationStatus {
         id: OperationId,
         namespace_id: NamespaceId,
         state: NamespaceRemoveOperationState,
+        last_event_sequence: EventSequence,
+    },
+    VolumeCreate {
+        request: VolumeCreateRequest,
+        state: VolumeCreateOperationState,
         last_event_sequence: EventSequence,
     },
     VolumeRemove {
@@ -452,6 +463,18 @@ impl OperationStatus {
     }
 
     #[must_use]
+    pub fn volume_create_accepted(
+        request: VolumeCreateRequest,
+        event_sequence: EventSequence,
+    ) -> Self {
+        Self::VolumeCreate {
+            request,
+            state: VolumeCreateOperationState::Accepted,
+            last_event_sequence: event_sequence,
+        }
+    }
+
+    #[must_use]
     pub fn managed_dns_reconcile_accepted(
         id: OperationId,
         subject: ManagedDnsReconcileSubject,
@@ -495,6 +518,7 @@ impl OperationStatus {
             Self::ManagedDnsReconcile { state, .. } => state.is_terminal(),
             Self::IngressConfigure { state, .. } => state.is_terminal(),
             Self::NamespaceRemove { state, .. } => state.is_terminal(),
+            Self::VolumeCreate { state, .. } => state.is_terminal(),
             Self::VolumeRemove { state, .. } => state.is_terminal(),
         }
     }
@@ -565,6 +589,10 @@ impl OperationStatus {
             ),
             Self::VolumeRemove { state, .. } => OperationOutcome::from_terminal(
                 matches!(state, VolumeRemoveOperationState::Completed),
+                false,
+            ),
+            Self::VolumeCreate { state, .. } => OperationOutcome::from_terminal(
+                matches!(state, VolumeCreateOperationState::Completed),
                 false,
             ),
         };

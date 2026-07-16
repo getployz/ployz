@@ -88,7 +88,11 @@ pub struct DeployPlan {
     pub namespace_revision_id: NamespaceRevisionId,
     pub phases: Vec<DeployPhasePlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Desired pins committed after image availability is ensured and before
+    /// the corresponding machine-local volume effects begin.
     pub volume_pin_commits: Vec<VolumePinState>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volume_ensures: Vec<VolumePinState>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cleanup_actions: Vec<DeployCleanupAction>,
 }
@@ -212,10 +216,6 @@ pub enum DeployPlanError {
     ConflictingVolumePins {
         service_id: ServiceId,
         machines: Vec<MachineId>,
-    },
-    ProvisionedVolumeRequiresProvisioning {
-        service_id: ServiceId,
-        volume_name: VolumeName,
     },
     VolumeAdmission {
         service_id: ServiceId,
@@ -581,6 +581,7 @@ pub fn plan_namespace_deploy(
     let mut phase_plans = Vec::new();
     let volume_plan = build_namespace_volume_plan(request, &phases, context)?;
     let volume_pin_commits = volume_plan.commits().to_vec();
+    let volume_ensures = volume_plan.ensures().to_vec();
     let mut cleanup_actions = Vec::new();
     for phase in phases {
         let mut services = Vec::new();
@@ -617,6 +618,7 @@ pub fn plan_namespace_deploy(
         namespace_revision_id: request.namespace_revision_id(),
         phases: phase_plans,
         volume_pin_commits,
+        volume_ensures,
         cleanup_actions,
     })
 }

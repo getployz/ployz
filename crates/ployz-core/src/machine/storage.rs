@@ -133,6 +133,21 @@ mod capacity_tests {
             })
         ));
     }
+
+    #[test]
+    fn volume_ensure_machine_mismatch_is_structured_on_the_wire() {
+        let failure = VolumeEnsureFailure::MachineMismatch {
+            expected_machine_id: MachineId::try_new("machine_expected").expect("machine id"),
+            responder_machine_id: MachineId::try_new("machine_responder").expect("machine id"),
+        };
+
+        let encoded = serde_json::to_value(&failure).expect("serialize failure");
+        assert_eq!(encoded["kind"], "machine_mismatch");
+        assert_eq!(
+            serde_json::from_value::<VolumeEnsureFailure>(encoded).expect("deserialize failure"),
+            failure
+        );
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -149,6 +164,31 @@ pub enum StorageUnavailableReason {
 pub enum StorageTestimony<'a> {
     NoAnswer,
     Answered(Option<&'a StorageCapability>),
+}
+
+/// Typed machine-local failure from ensuring one durable volume shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum VolumeEnsureFailure {
+    MachineMismatch {
+        expected_machine_id: MachineId,
+        responder_machine_id: MachineId,
+    },
+    Dataset {
+        dataset: DatasetName,
+        failure: crate::storage::StorageEffectFailure,
+    },
+    DockerShapeMismatch {
+        volume_name: VolumeName,
+        message: String,
+    },
+    DockerEnsureFailed {
+        volume_name: VolumeName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retained_dataset: Option<DatasetName>,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
