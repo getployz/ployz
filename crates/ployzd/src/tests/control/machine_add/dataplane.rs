@@ -293,7 +293,10 @@ async fn start_join_dataplane_responder(
                 1,
             )
             .expect("machine facts");
-            let response = MachineFactsGetRpcResponse::Ok(MachineFactsGetRpcOk { facts });
+            let response = MachineFactsGetRpcResponse::Ok(MachineFactsGetRpcOk {
+                facts,
+                build: crate::roles::machine::protocol::MachineBuildCapability::Available,
+            });
             let payload = serde_json::to_vec(&response).expect("facts response serializes");
             let _ = facts_client.publish(reply, payload.into()).await;
         }

@@ -1183,6 +1183,7 @@ async fn start_facts_subscription(
             let response =
                 serde_json::to_vec(&MachineFactsGetRpcResponse::Ok(MachineFactsGetRpcOk {
                     facts,
+                    build: crate::roles::machine::protocol::MachineBuildCapability::Available,
                 }))
                 .expect("facts response serializes");
             let _ = client.publish(reply, response.into()).await;

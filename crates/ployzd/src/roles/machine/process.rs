@@ -9,6 +9,8 @@ use crate::process_support::{
 };
 use crate::recovery::{IntentFailover, mirrored_server_pool, spawn_intent_failover_mirror};
 use crate::recovery::{IntentMirror, PendingMachineJoinMirror};
+use crate::roles::machine::build::MachineBuildRuntime;
+use crate::roles::machine::execution::build::{BuildExecutionError, DockerBuildExecutor};
 use crate::roles::machine::execution::containerd_content::ContainerdContentStore;
 use crate::roles::machine::execution::docker::runner::DockerManagedContainerRunner;
 use crate::roles::machine::execution::host_dataplane::{
@@ -30,6 +32,7 @@ use crate::roles::machine::service::{
     start_machine_role_service_with_endpoint_cache_and_image,
 };
 use futures_util::StreamExt;
+use ployz_core::build::{BUILD_FORCE_CLEANUP_TIMEOUT, BUILD_TASK_DRAIN_TIMEOUT};
 use ployz_core::ids::MachineId;
 use ployz_core::image::IMAGE_MESH_REGISTRY_PORT;
 use ployz_core::intent::recovery::PendingMachineJoinRecoverySnapshot;
@@ -38,6 +41,7 @@ use ployz_nats::connect::{NatsClientUrl, NatsConnectError, connect_authenticated
 use ployz_nats::service_runtime::{NatsClient, NatsServiceShutdownError, RunningNatsService};
 use ployz_nats::subjects::PENDING_MACHINE_JOINS_CHANGED;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{broadcast, oneshot};
@@ -47,8 +51,12 @@ const MACHINE_NATS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MACHINE_OBSERVATION_INTERVAL: Duration =
     ployz_core::machine::runtime::OBSERVATION_PUBLISH_INTERVAL;
 const MACHINE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(5);
-const MACHINE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+const MACHINE_SHUTDOWN_TIMEOUT: Duration = BUILD_TASK_DRAIN_TIMEOUT
+    .saturating_add(BUILD_TASK_DRAIN_TIMEOUT)
+    .saturating_add(BUILD_FORCE_CLEANUP_TIMEOUT)
+    .saturating_add(Duration::from_secs(5));
 const INTENT_MIRROR_RESUBSCRIBE_DELAY: Duration = Duration::from_secs(5);
+const BUILD_WORKSPACE_ROOT: &str = "/var/lib/ployz/builds";
 
 pub struct RunningMachineProcess {
     machine_service: RunningNatsService,
@@ -58,6 +66,7 @@ pub struct RunningMachineProcess {
     pending_join_mirror: RunningTask,
     projection: RunningProjectionTask,
     image_registry: Option<RunningRegistryV2>,
+    build_runtime: Option<MachineBuildRuntime>,
 }
 
 impl RunningMachineProcess {
@@ -70,6 +79,7 @@ impl RunningMachineProcess {
             mut pending_join_mirror,
             mut projection,
             image_registry,
+            build_runtime,
         } = self;
         pending_join_mirror.request_shutdown();
         projection.request_shutdown();
@@ -82,6 +92,9 @@ impl RunningMachineProcess {
             observer.task.abort_handle(),
         ];
         let cleanup = async {
+            if let Some(build_runtime) = build_runtime {
+                build_runtime.shutdown().await;
+            }
             if let Some(image_registry) = image_registry {
                 image_registry.shutdown().await;
             }
@@ -218,6 +231,23 @@ where
 {
     let endpoint_cache = MachineEndpointCache::new(wg_ifname);
     let projection_state = MachineProjectionState::new();
+    let build_state = match image_state.clone() {
+        Some(images) => {
+            let executor = DockerBuildExecutor::new(
+                machine_id.clone(),
+                client.clone(),
+                PathBuf::from(BUILD_WORKSPACE_ROOT),
+            );
+            let runtime = MachineBuildRuntime::new(machine_id.clone(), executor, Some(images))
+                .map_err(|message| MachineProcessError::InitializeBuildRuntime { message })?;
+            runtime
+                .recover_orphans()
+                .await
+                .map_err(MachineProcessError::RecoverBuildRuntime)?;
+            Some(runtime)
+        }
+        None => None,
+    };
     let machine_service = start_machine_role_service_with_endpoint_cache_and_image(
         client.clone(),
         machine_id.clone(),
@@ -226,12 +256,14 @@ where
         log_reader,
         endpoint_cache.clone(),
         MachineRoleProjectionServices {
+            build_state: build_state.clone(),
             image_state,
             projection_state: projection_state.clone(),
         },
     )
     .await
     .map_err(MachineProcessError::StartMachineService)?;
+    let build_runtime = build_state;
     let (intent_mirror_shutdown, intent_mirror_shutdown_rx) = broadcast::channel(1);
     let intent_mirror = spawn_intent_failover_mirror(
         client.clone(),
@@ -265,6 +297,7 @@ where
         pending_join_mirror,
         projection,
         image_registry: None,
+        build_runtime,
     })
 }
 
@@ -487,6 +520,10 @@ pub enum MachineProcessError {
     InvalidDataplaneMtu { message: String },
     #[error("invalid image registry address: {message}")]
     InvalidImageRegistryAddress { message: String },
+    #[error("failed to initialize machine build runtime: {message}")]
+    InitializeBuildRuntime { message: String },
+    #[error("failed to recover machine build runtime: {0}")]
+    RecoverBuildRuntime(BuildExecutionError),
     #[error("failed to start machine service: {0:?}")]
     StartMachineService(MachineServiceError),
     #[error("failed to wait for shutdown: {0}")]

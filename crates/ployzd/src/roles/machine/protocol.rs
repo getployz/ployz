@@ -14,10 +14,12 @@ use ployz_core::network::{
 use ployz_core::operation::{FailureMessage, MachineSubstrateVersions, OperatorHint};
 use serde::{Deserialize, Serialize};
 
+mod build;
 mod dataplane_status;
 mod facts;
 mod volume_testimony;
 
+pub use build::*;
 pub use dataplane_status::*;
 pub use facts::*;
 pub use volume_testimony::*;

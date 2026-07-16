@@ -107,6 +107,10 @@ fn direct_image_target() -> DeployRequest {
                 seed: machine_id("hetzner-1"),
                 manifest_digest: OciDigest::sha256(b"manifest"),
                 image_id: OciDigest::sha256(b"image-config"),
+                availability_expires_at: ployz_core::deploy::ImageAvailabilityExpiresAt::try_new(
+                    4_102_444_800,
+                )
+                .expect("expiry"),
             },
         )])
         .expect("pushed receipt"),
@@ -388,6 +392,9 @@ fn pushed_image_stays_pending_until_availability_is_verified() {
                     seed: machine_id("hetzner-1"),
                     manifest_digest: OciDigest::sha256(b"manifest"),
                     image_id: OciDigest::sha256(b"image-config"),
+                    availability_expires_at:
+                        ployz_core::deploy::ImageAvailabilityExpiresAt::try_new(4_102_444_800)
+                            .expect("expiry"),
                 },
             ),
             (
@@ -396,6 +403,9 @@ fn pushed_image_stays_pending_until_availability_is_verified() {
                     seed: machine_id("hetzner-2"),
                     manifest_digest: OciDigest::sha256(b"arm-manifest"),
                     image_id: OciDigest::sha256(b"arm-image-config"),
+                    availability_expires_at:
+                        ployz_core::deploy::ImageAvailabilityExpiresAt::try_new(4_102_444_800)
+                            .expect("expiry"),
                 },
             ),
         ])

@@ -67,6 +67,12 @@ fn first_machine_install_spec_wire_shape_is_grouped_json() {
                     "sha256": "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
                     "install_path": "/usr/local/bin/ployz-ebpf-ctl"
                 },
+                "railpack": {
+                    "version": "0.1.0",
+                    "source": "/tmp/railpack",
+                    "sha256": "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
+                    "install_path": "/usr/local/lib/ployz/railpack/v0.31.0/railpack"
+                },
                 "nats_server": {
                     "version": "2.12.0",
                     "source": "/tmp/nats-server",
@@ -107,6 +113,12 @@ fn first_machine_install_spec_parses_from_grouped_json() {
                 "source": "/tmp/ployz-ebpf-ctl",
                 "sha256": "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
                 "install_path": "/usr/local/bin/ployz-ebpf-ctl"
+            },
+            "railpack": {
+                "version": "0.1.0",
+                "source": "/tmp/railpack",
+                "sha256": "0cae9f85a05ca2a47cb515ab3554b071dc64fb3616abda8b3685d9141da11f2e",
+                "install_path": "/usr/local/lib/ployz/railpack/v0.31.0/railpack"
             },
             "nats_server": {
                 "version": "2.12.0",
@@ -254,6 +266,12 @@ fn machine_join_bundle_wire_shape_stays_plain_json() {
                     "source": "/tmp/ployz-ebpf-ctl",
                     "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "install_path": "/usr/local/bin/ployz-ebpf-ctl"
+                },
+                "railpack": {
+                    "version": "0.1.0",
+                    "source": "/tmp/railpack",
+                    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "install_path": "/usr/local/lib/ployz/railpack/v0.31.0/railpack"
                 }
             }
         })
@@ -289,6 +307,10 @@ fn first_machine_install_spec(gateway: GatewayRole) -> FirstMachineInstallSpec {
                 "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
             ),
             ebpf_ctl: install_artifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
+            railpack: install_artifact(
+                "/tmp/railpack",
+                "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
+            ),
             nats_server: Some(NatsServerInstallSpec {
                 version: InstallArtifactVersion::try_new("2.12.0").expect("valid nats version"),
                 source: InstallArtifactSource::try_new("/tmp/nats-server")
@@ -339,6 +361,10 @@ fn machine_join_bundle() -> MachineJoinBundle {
                 "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
             ),
             ebpf_ctl: join_artifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
+            railpack: join_artifact(
+                "/tmp/railpack",
+                "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
+            ),
         },
     }
 }

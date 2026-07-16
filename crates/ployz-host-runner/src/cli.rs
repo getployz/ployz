@@ -513,6 +513,7 @@ pub fn first_machine_install_target_from_spec(
                 ployzd,
                 ebpf_bytecode,
                 ebpf_ctl,
+                railpack,
                 nats_server,
             },
         machine_join_cluster_name,
@@ -521,6 +522,7 @@ pub fn first_machine_install_target_from_spec(
     let ployzd_artifact = artifact_target(ArtifactKind::Ployzd, &ployzd)?;
     let ebpf_bytecode_artifact = artifact_target(ArtifactKind::EbpfBytecode, &ebpf_bytecode)?;
     let ebpf_ctl_artifact = artifact_target(ArtifactKind::EbpfCtl, &ebpf_ctl)?;
+    let railpack_artifact = artifact_target(ArtifactKind::Railpack, &railpack)?;
     // Founding a first machine always installs the core nats-server; a
     // manifest without one (a dev substrate push) cannot found a cluster.
     let Some(nats_server) = nats_server else {
@@ -572,6 +574,7 @@ pub fn first_machine_install_target_from_spec(
         machine_id,
         ployzd_artifact,
         DataplaneArtifactTargets::new(ebpf_bytecode_artifact, ebpf_ctl_artifact),
+        railpack_artifact,
         nats_server_artifact,
         roles,
         host_port_assurance,
@@ -1125,6 +1128,12 @@ mod tests {
                 "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "install_path": "/usr/local/bin/ployz-ebpf-ctl"
             },
+            "railpack": {
+                "version": "v0.31.0",
+                "source": "/tmp/railpack",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "install_path": "/usr/local/lib/ployz/railpack/v0.31.0/railpack"
+            },
             "nats_server": {
                 "version": "2.12.0",
                 "source": "/tmp/nats-server",
@@ -1161,6 +1170,12 @@ mod tests {
                 "source": "/tmp/ployz-ebpf-ctl",
                 "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "install_path": "/usr/local/bin/ployz-ebpf-ctl"
+            },
+            "railpack": {
+                "version": "v0.31.0",
+                "source": "/tmp/railpack",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "install_path": "/usr/local/lib/ployz/railpack/v0.31.0/railpack"
             },
             "nats_server": {
                 "version": "2.12.0",

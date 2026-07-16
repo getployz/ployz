@@ -61,7 +61,7 @@ pub fn install_artifact(source: &str, install_path: &str) -> InstallArtifactSpec
     }
 }
 
-/// Join material for cluster `prod` with the canonical three artifacts.
+/// Join material for cluster `prod` with the canonical release artifacts.
 #[must_use]
 pub fn machine_join_material(runtime_nats_url: &str, ca_pem: &str) -> MachineJoinMaterial {
     MachineJoinMaterial {
@@ -80,6 +80,10 @@ pub fn machine_join_material(runtime_nats_url: &str, ca_pem: &str) -> MachineJoi
             "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
         ),
         ebpf_ctl: install_artifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
+        railpack: install_artifact(
+            "/tmp/railpack",
+            "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
+        ),
     }
 }
 

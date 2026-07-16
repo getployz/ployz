@@ -6,15 +6,17 @@ use bollard::errors::Error as DockerError;
 use flate2::{Compression, GzBuilder, read::GzDecoder};
 use futures_util::{StreamExt, TryStreamExt, stream};
 use ployz_core::deploy::DeployServiceSpec;
-use ployz_core::deploy::{ImageReference, ImageSource, PlatformImage, PushedImageReceipt};
+use ployz_core::deploy::{
+    ImageAvailabilityExpiresAt, ImageReference, ImageSource, PlatformImage, PushedImageReceipt,
+};
 use ployz_core::ids::MachineId;
 use ployz_core::image::{
     IMAGE_BLOB_CHUNK_MAX_BYTES, IMAGE_BLOB_PUSH_ACTION_CHUNK, IMAGE_BLOB_PUSH_ACTION_HEADER,
-    IMAGE_BLOB_PUSH_OFFSET_HEADER, IMAGE_BLOB_PUSH_UPLOAD_ID_HEADER, ImageBlobCheckRequest,
-    ImageBlobCheckResponse, ImageBlobPushOk, ImageBlobPushOutcome, ImageBlobPushRequest,
-    ImageBlobPushResponse, ImageManifestPushOk, ImageManifestPushRequest,
-    ImageManifestPushResponse, ImageRpcDomainError, ImageUploadId, OCI_IMAGE_CONFIG_MEDIA_TYPE,
-    OCI_IMAGE_LAYER_GZIP_MEDIA_TYPE, OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciDigest, OciPlatform,
+    IMAGE_BLOB_PUSH_OFFSET_HEADER, IMAGE_BLOB_PUSH_UPLOAD_ID_HEADER, ImageBlobPushOk,
+    ImageBlobPushOutcome, ImageBlobPushRequest, ImageBlobPushResponse, ImageContentLeaseExpiresAt,
+    ImageManifestPushOk, ImageManifestPushRequest, ImageManifestPushResponse, ImageRpcDomainError,
+    ImageUploadId, OCI_IMAGE_CONFIG_MEDIA_TYPE, OCI_IMAGE_LAYER_GZIP_MEDIA_TYPE,
+    OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciDigest, OciPlatform,
 };
 use ployz_core::machine::MachineLifecycle;
 use ployz_core::machine::rpc::{MachineRpcResponder, MachineRpcResponse};
@@ -24,7 +26,7 @@ use ployz_nats::service_runtime::request_json;
 use ployz_nats::subjects::{MachineServiceEndpoint, machine_service};
 use ployz_sdk_types::MachineListRequest;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::{Cursor, Read, Write};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -179,23 +181,16 @@ pub async fn push_local_image(
         export.extend_from_slice(&chunk);
     }
     let prepared = prepare_docker_save(&export)?;
-    let requested_digests = prepared
-        .blobs
-        .iter()
-        .map(|blob| blob.digest.clone())
-        .collect::<Vec<_>>();
-    let present = blob_check(client, seed, requested_digests).await?;
-    let present = present.into_iter().collect::<BTreeSet<_>>();
     let mut uploaded = Vec::new();
     let mut reused = Vec::new();
+    let mut lease_expiries = Vec::new();
     for blob in &prepared.blobs {
-        if present.contains(&blob.digest) {
-            if matches!(blob.kind, PreparedBlobKind::Layer) {
+        let (lease_expires_at, was_reused) = push_blob(client, seed, blob).await?;
+        lease_expiries.push(lease_expires_at);
+        if matches!(blob.kind, PreparedBlobKind::Layer) {
+            if was_reused {
                 reused.push((blob.digest.clone(), blob.bytes.len()));
-            }
-        } else {
-            push_blob(client, seed, blob).await?;
-            if matches!(blob.kind, PreparedBlobKind::Layer) {
+            } else {
                 uploaded.push((blob.digest.clone(), blob.bytes.len()));
             }
         }
@@ -225,12 +220,15 @@ pub async fn push_local_image(
             message: "seed reported a different image platform".to_owned(),
         });
     }
+    lease_expiries.push(pushed.lease_expires_at);
+    let availability_expires_at = receipt_availability(lease_expiries)?;
     let receipt = PushedImageReceipt::try_new([(
         pushed.platform.clone(),
         PlatformImage {
             seed: seed.clone(),
             manifest_digest: pushed.manifest_digest.clone(),
             image_id: pushed.image_id.clone(),
+            availability_expires_at,
         },
     )])
     .expect("a successful image push contains one platform");
@@ -238,6 +236,21 @@ pub async fn push_local_image(
         receipt,
         uploaded: transfer_receipt(uploaded)?,
         reused: transfer_receipt(reused)?,
+    })
+}
+
+fn receipt_availability(
+    lease_expiries: impl IntoIterator<Item = ImageContentLeaseExpiresAt>,
+) -> Result<ImageAvailabilityExpiresAt, ImagePushError> {
+    let Some(lease_expires_at) = lease_expiries.into_iter().min() else {
+        return Err(ImagePushError::UnexpectedResponse {
+            message: "image push reported no content lease deadlines".to_owned(),
+        });
+    };
+    ImageAvailabilityExpiresAt::from_content_lease_expiry(lease_expires_at).map_err(|error| {
+        ImagePushError::UnexpectedResponse {
+            message: format!("invalid image availability deadline: {error}"),
+        }
     })
 }
 
@@ -437,27 +450,11 @@ fn prepare_layer(layer: Vec<u8>) -> Result<Vec<u8>, ImagePushError> {
     Ok(layer)
 }
 
-async fn blob_check(
-    client: &async_nats::Client,
-    machine_id: &MachineId,
-    digests: Vec<OciDigest>,
-) -> Result<Vec<OciDigest>, ImagePushError> {
-    let response = request_json::<_, ImageBlobCheckResponse>(
-        client,
-        machine_service(machine_id, MachineServiceEndpoint::ImageBlobCheck),
-        &ImageBlobCheckRequest { digests },
-        PUSH_RPC_TIMEOUT,
-    )
-    .await
-    .map_err(|error| rpc_transport(machine_id, error.to_string()))?;
-    image_response(machine_id, response).map(|ok| ok.present)
-}
-
 async fn push_blob(
     client: &async_nats::Client,
     machine_id: &MachineId,
     blob: &PreparedBlob,
-) -> Result<(), ImagePushError> {
+) -> Result<(ImageContentLeaseExpiresAt, bool), ImagePushError> {
     let begun = blob_push_json(
         client,
         machine_id,
@@ -468,10 +465,24 @@ async fn push_blob(
         },
     )
     .await?;
-    let ImageBlobPushOutcome::Begun { upload_id } = begun.outcome else {
-        return Err(ImagePushError::UnexpectedResponse {
-            message: "blob begin returned the wrong outcome".to_owned(),
-        });
+    let upload_id = match begun.outcome {
+        ImageBlobPushOutcome::Retained {
+            digest,
+            size,
+            lease_expires_at,
+        } if digest == blob.digest
+            && size == u64::try_from(blob.bytes.len()).unwrap_or(u64::MAX) =>
+        {
+            return Ok((lease_expires_at, true));
+        }
+        ImageBlobPushOutcome::Begun { upload_id } => upload_id,
+        ImageBlobPushOutcome::Retained { .. }
+        | ImageBlobPushOutcome::ChunkAccepted { .. }
+        | ImageBlobPushOutcome::Committed { .. } => {
+            return Err(ImagePushError::UnexpectedResponse {
+                message: "blob begin returned the wrong outcome".to_owned(),
+            });
+        }
     };
     stream::iter(blob.bytes.chunks(IMAGE_BLOB_CHUNK_MAX_BYTES).enumerate())
         .map(|(index, chunk)| {
@@ -496,13 +507,17 @@ async fn push_blob(
     )
     .await?;
     match committed.outcome {
-        ImageBlobPushOutcome::Committed { digest, size }
-            if digest == blob.digest
-                && size == u64::try_from(blob.bytes.len()).unwrap_or(u64::MAX) =>
+        ImageBlobPushOutcome::Committed {
+            digest,
+            size,
+            lease_expires_at,
+        } if digest == blob.digest
+            && size == u64::try_from(blob.bytes.len()).unwrap_or(u64::MAX) =>
         {
-            Ok(())
+            Ok((lease_expires_at, false))
         }
         ImageBlobPushOutcome::Begun { .. }
+        | ImageBlobPushOutcome::Retained { .. }
         | ImageBlobPushOutcome::ChunkAccepted { .. }
         | ImageBlobPushOutcome::Committed { .. } => Err(ImagePushError::UnexpectedResponse {
             message: format!("blob commit returned an unexpected outcome for {upload_id:?}"),
@@ -545,6 +560,7 @@ async fn push_chunk(
             upload_id: actual, ..
         } if actual == *upload_id => Ok(()),
         ImageBlobPushOutcome::Begun { .. }
+        | ImageBlobPushOutcome::Retained { .. }
         | ImageBlobPushOutcome::ChunkAccepted { .. }
         | ImageBlobPushOutcome::Committed { .. } => Err(ImagePushError::UnexpectedResponse {
             message: "blob chunk returned the wrong outcome".to_owned(),
@@ -690,10 +706,10 @@ pub enum ImagePushError {
 
 #[cfg(test)]
 mod tests {
-    use super::{PreparedBlobKind, deterministic_gzip, prepare_docker_save};
+    use super::{PreparedBlobKind, deterministic_gzip, prepare_docker_save, receipt_availability};
     use ployz_core::deploy::{PlatformImage, PushedImageReceipt};
     use ployz_core::ids::MachineId;
-    use ployz_core::image::{OciDigest, OciPlatform};
+    use ployz_core::image::{ImageContentLeaseExpiresAt, OciDigest, OciPlatform};
     use std::io::Cursor;
 
     #[test]
@@ -704,6 +720,18 @@ mod tests {
             OciDigest::sha256(&compressed).as_str(),
             "sha256:63402c3de330966758f6d9c95461b607e966b827cfd73783a5c538eb5e2c235c"
         );
+    }
+
+    #[test]
+    fn receipt_availability_uses_the_earliest_machine_lease_deadline() {
+        let availability = receipt_availability([
+            ImageContentLeaseExpiresAt::try_new(4_200).expect("lease"),
+            ImageContentLeaseExpiresAt::try_new(4_000).expect("lease"),
+            ImageContentLeaseExpiresAt::try_new(4_100).expect("lease"),
+        ])
+        .expect("availability");
+
+        assert_eq!(availability.unix_seconds(), 3_700);
     }
 
     #[test]
@@ -719,6 +747,9 @@ mod tests {
                     seed: MachineId::try_new("machine_seed").expect("machine id"),
                     manifest_digest: manifest.clone(),
                     image_id: manifest,
+                    availability_expires_at:
+                        ployz_core::deploy::ImageAvailabilityExpiresAt::try_new(4_102_444_800)
+                            .expect("expiry"),
                 },
             )])
             .expect("receipt")

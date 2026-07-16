@@ -3,6 +3,9 @@
 # See docs/operations/real-host-acceptance.md before running.
 set -euo pipefail
 
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
+
 CORE="${1:?usage: real-host-acceptance.sh <core-ip> <edge-ip>}"
 EDGE="${2:?usage: real-host-acceptance.sh <core-ip> <edge-ip>}"
 SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o GSSAPIAuthentication=no \
@@ -27,6 +30,7 @@ stopped_host=
 stopped_container=
 probe_dir=
 probe_pid=
+git_fixture_dir=
 cleanup() {
   if [ -n "$probe_pid" ]; then
     touch "$probe_dir/stop"
@@ -36,6 +40,11 @@ cleanup() {
     remote "$stopped_host" "docker start '${stopped_container}' >/dev/null" || true
   fi
   [ -z "$probe_dir" ] || rm -rf "$probe_dir"
+  if [ -n "$git_fixture_dir" ]; then
+    core 'systemctl stop ployz-real-host-build-git.service 2>/dev/null || true; firewall-cmd --quiet --remove-port=9443/tcp 2>/dev/null || true; rm -rf /tmp/ployz-authenticated-git-server.py /tmp/ployz-build-git /etc/pki/ca-trust/source/anchors/ployz-build-git.crt; update-ca-trust >/dev/null 2>&1 || true' || true
+    remote "$EDGE" 'rm -f /usr/local/share/ca-certificates/ployz-build-git.crt; update-ca-certificates >/dev/null 2>&1 || true' || true
+    rm -rf "$git_fixture_dir"
+  fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -94,6 +103,93 @@ t0=$(ts)
 core "timeout 15m ployz machine add root@${EDGE} --name ployz-edge"
 log "TIMING machine-add=$(( $(ts)-t0 ))s"
 core 'ployz machine list'
+
+log "preparing authenticated exact-commit Git build fixture"
+git_fixture_dir=$(mktemp -d)
+scp "${SSH_OPTS[@]}" \
+  "$REPO_ROOT/testing/ployz-e2e/tests/dind_cluster/fixtures/authenticated_git_server.py" \
+  "root@${CORE}:/tmp/ployz-authenticated-git-server.py" >/dev/null
+ssh "${SSH_OPTS[@]}" "root@${CORE}" 'bash -s' <<SETUP_GIT
+set -euo pipefail
+rm -rf /tmp/ployz-build-git
+mkdir -p /tmp/ployz-build-git/work/dockerfile /tmp/ployz-build-git/work/railpack /tmp/ployz-build-git/work/slow
+mv /tmp/ployz-authenticated-git-server.py /tmp/ployz-build-git/server.py
+chmod 0700 /tmp/ployz-build-git/server.py
+printf '%s\n' 'FROM alpine:3.20' 'COPY marker /marker' 'CMD ["sh", "-c", "while true; do sleep 600; done"]' > /tmp/ployz-build-git/work/dockerfile/Dockerfile
+printf '%s\n' 'real-host exact Dockerfile commit' > /tmp/ployz-build-git/work/dockerfile/marker
+printf '%s\n' '{"scripts":{"start":"node server.js"},"engines":{"node":"22"}}' > /tmp/ployz-build-git/work/railpack/package.json
+printf '%s\n' 'require("http").createServer((_, res) => res.end("real-host railpack\\n")).listen(process.env.PORT || 3000);' > /tmp/ployz-build-git/work/railpack/server.js
+printf '%s\n' 'FROM alpine:3.20' 'RUN echo blocking-build-start && sleep 600' 'CMD ["true"]' > /tmp/ployz-build-git/work/slow/Dockerfile
+git -C /tmp/ployz-build-git/work init -q -b main
+git -C /tmp/ployz-build-git/work config user.name 'Ployz acceptance'
+git -C /tmp/ployz-build-git/work config user.email 'acceptance@example.invalid'
+git -C /tmp/ployz-build-git/work add .
+GIT_AUTHOR_DATE='2026-01-01T00:00:00Z' GIT_COMMITTER_DATE='2026-01-01T00:00:00Z' git -C /tmp/ployz-build-git/work commit -qm fixture
+git clone -q --bare /tmp/ployz-build-git/work /tmp/ployz-build-git/repo.git
+git -C /tmp/ployz-build-git/repo.git update-server-info
+git -C /tmp/ployz-build-git/work rev-parse HEAD > /tmp/ployz-build-git/commit
+openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj '/CN=${CORE}' -addext 'subjectAltName=IP:${CORE}' -keyout /tmp/ployz-build-git/server.key -out /tmp/ployz-build-git/server.crt >/dev/null 2>&1
+install -m 0644 /tmp/ployz-build-git/server.crt /etc/pki/ca-trust/source/anchors/ployz-build-git.crt
+update-ca-trust
+firewall-cmd --quiet --add-port=9443/tcp
+printf '%s\n' 'PLOYZ_BUILD_GIT_SECRET=build-secret-370' > /tmp/ployz-build-git/secret.env
+chmod 0600 /tmp/ployz-build-git/secret.env
+systemd-run --unit=ployz-real-host-build-git --setenv=GIT_USERNAME=builder --setenv=GIT_PASSWORD=build-secret-370 /usr/bin/python3 /tmp/ployz-build-git/server.py >/dev/null
+for _ in $(seq 1 50); do curl -fsS -u builder:build-secret-370 'https://${CORE}:9443/repo.git/info/refs?service=git-upload-pack' >/dev/null && exit 0; sleep 0.2; done
+exit 1
+SETUP_GIT
+scp "${SSH_OPTS[@]}" "root@${CORE}:/tmp/ployz-build-git/server.crt" "$git_fixture_dir/server.crt" >/dev/null
+scp "${SSH_OPTS[@]}" "$git_fixture_dir/server.crt" "root@${EDGE}:/usr/local/share/ca-certificates/ployz-build-git.crt" >/dev/null
+remote "$EDGE" 'update-ca-certificates >/dev/null'
+build_commit=$(core 'cat /tmp/ployz-build-git/commit')
+
+assert_build_evidence() {
+  local operation_id=$1
+  local expected_adapter=$2
+  local first second first_index second_index
+  first=$(core "ployz ops watch '${operation_id}' --json")
+  second=$(core "ployz ops watch '${operation_id}' --json")
+  [ "$first" = "$second" ] || { log "${operation_id} operation evidence was not stable"; exit 1; }
+  first_index=$(BUILD_EVENTS="$first" python3 -c 'import json,os; events=[json.loads(line)["event"] for line in os.environ["BUILD_EVENTS"].splitlines() if line]; print(next(event["receipt"]["index_digest"] for event in events if event.get("event") == "build_completed"))')
+  second_index=$(BUILD_EVENTS="$second" python3 -c 'import json,os; events=[json.loads(line)["event"] for line in os.environ["BUILD_EVENTS"].splitlines() if line]; print(next(event["receipt"]["index_digest"] for event in events if event.get("event") == "build_completed"))')
+  [ -n "$first_index" ] && [ "$first_index" = "$second_index" ] || { log "${operation_id} logical index was empty or unstable"; exit 1; }
+  BUILD_EVENTS="$first" BUILD_COMMIT="$build_commit" BUILD_ADAPTER="$expected_adapter" python3 - <<'PY'
+import json, os
+events = [json.loads(line)["event"] for line in os.environ["BUILD_EVENTS"].splitlines() if line]
+verified = [event for event in events if event.get("event") == "build_commit_verified"]
+assert any(event["commit"]["commit"] == os.environ["BUILD_COMMIT"] for event in verified)
+completed = [event for event in events if event.get("event") == "build_completed"]
+assert len(completed) == 1
+platforms = completed[0]["receipt"]["platforms"]
+assert {(item[0]["os"], item[0]["architecture"]) for item in platforms} == {("linux", "amd64"), ("linux", "arm64")}
+submitted = [event for event in events if event.get("event") == "build_submitted"]
+assert len(submitted) == 1 and submitted[0]["adapter"]["adapter"] == os.environ["BUILD_ADAPTER"]
+PY
+}
+
+log "building authenticated exact SHA for amd64 and arm64 with Dockerfile"
+core "set -a; . /tmp/ployz-build-git/secret.env; set +a; timeout 30m ployz build submit --git 'https://${CORE}:9443/repo.git' --commit '${build_commit}' --git-username builder --git-secret-env PLOYZ_BUILD_GIT_SECRET --subdir dockerfile --platform linux/amd64 --platform linux/arm64 --dockerfile Dockerfile --operation-id op_real_host_build_dockerfile"
+assert_build_evidence op_real_host_build_dockerfile dockerfile
+
+log "building authenticated exact SHA for amd64 and arm64 with Railpack"
+core "set -a; . /tmp/ployz-build-git/secret.env; set +a; timeout 30m ployz build submit --git 'https://${CORE}:9443/repo.git' --commit '${build_commit}' --git-username builder --git-secret-env PLOYZ_BUILD_GIT_SECRET --subdir railpack --platform linux/amd64 --platform linux/arm64 --railpack --cache-scope real-host-railpack --operation-id op_real_host_build_railpack"
+assert_build_evidence op_real_host_build_railpack railpack
+
+log "cancelling a blocking authenticated build and checking cleanup evidence"
+core "set -a; . /tmp/ployz-build-git/secret.env; set +a; ployz build submit --git 'https://${CORE}:9443/repo.git' --commit '${build_commit}' --git-username builder --git-secret-env PLOYZ_BUILD_GIT_SECRET --subdir slow --platform linux/amd64 --dockerfile Dockerfile --operation-id op_real_host_build_cancel --detach"
+for _ in $(seq 1 180); do
+  if core 'ployz ops status op_real_host_build_cancel' | grep -q 'state building'; then break; fi
+  sleep 1
+done
+core 'ployz ops status op_real_host_build_cancel' | grep -q 'state building'
+core 'ployz build cancel op_real_host_build_cancel --reason "real-host cancellation proof"'
+cancel_events=$(core 'ployz ops watch op_real_host_build_cancel --json' || true)
+CANCEL_EVENTS="$cancel_events" python3 - <<'PY'
+import json, os
+events = [json.loads(line)["event"] for line in os.environ["CANCEL_EVENTS"].splitlines() if line]
+cancelled = [event for event in events if event.get("event") == "build_cancelled"]
+assert len(cancelled) == 1 and cancelled[0]["cleanup"]["kind"] == "completed"
+PY
 
 log "checking keeper-managed firewall rules"
 for port in 4222/tcp 80/tcp 443/tcp 51820/udp; do

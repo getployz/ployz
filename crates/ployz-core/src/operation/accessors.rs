@@ -4,7 +4,8 @@ impl OperationStatus {
     #[must_use]
     pub const fn id(&self) -> &OperationId {
         match self {
-            Self::Deploy { id, .. }
+            Self::Build { id, .. }
+            | Self::Deploy { id, .. }
             | Self::Cert { id, .. }
             | Self::MachineAdd { id, .. }
             | Self::MachineUpdate { id, .. }
@@ -25,6 +26,7 @@ impl OperationStatus {
     #[must_use]
     pub const fn kind(&self) -> OperationKind {
         match self {
+            Self::Build { .. } => OperationKind::Build,
             Self::Deploy { .. } => OperationKind::Deploy,
             Self::Cert { .. } => OperationKind::Cert,
             Self::MachineAdd { .. } => OperationKind::MachineAdd,
@@ -46,6 +48,7 @@ impl OperationStatus {
     #[must_use]
     pub fn progress_scope(&self) -> OperationProgressScope {
         match self {
+            Self::Build { .. } => OperationProgressScope::Cluster,
             Self::Deploy { namespace_id, .. } => OperationProgressScope::Namespace {
                 namespace_id: namespace_id.clone(),
             },
@@ -77,7 +80,11 @@ impl OperationStatus {
     #[must_use]
     pub const fn last_event_sequence(&self) -> EventSequence {
         match self {
-            Self::Deploy {
+            Self::Build {
+                last_event_sequence,
+                ..
+            }
+            | Self::Deploy {
                 last_event_sequence,
                 ..
             }

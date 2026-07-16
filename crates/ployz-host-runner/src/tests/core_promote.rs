@@ -12,7 +12,7 @@ use ployz_core::install::{
 };
 use ployz_core::roles::{DaemonProcessRole, InstallRolePolicy};
 use ployz_test_support::ids::machine_id;
-use support::artifacts::{nats_server_artifact, ployzd_artifact};
+use support::artifacts::{nats_server_artifact, ployzd_artifact, railpack_artifact};
 use support::bootstrap::*;
 
 const MIRRORED_MACHINE_PUBLIC: &str = "UBCXCMGAZQZN55X5TTTWMB5CZNZIKJHEDZJOJ3TV63NKPJ6FRXSR2ZO4";
@@ -25,6 +25,7 @@ fn promote_target() -> CorePromoteTarget {
         machine_id("core_2"),
         ployzd_artifact(),
         dataplane_artifacts(),
+        railpack_artifact(),
         nats_server_artifact(),
         InstallRolePolicy::install_all().without_gateway(),
         ployz_core::install::HostPortAssurance::Keeper,
@@ -46,6 +47,7 @@ fn promote_target() -> CorePromoteTarget {
         nats_server_artifact: first_machine.nats_server_artifact.clone(),
         ployzd_artifact: first_machine.ployzd_artifact.clone(),
         dataplane_artifacts: first_machine.dataplane_artifacts.clone(),
+        railpack_artifact: first_machine.railpack_artifact.clone(),
         nats_identity: first_machine.nats_identity.clone(),
         recovery_key_wrapped: first_machine.recovery_key_wrapped.clone(),
         core_seeds_wrapped: first_machine.core_seeds_wrapped.clone(),
@@ -85,10 +87,12 @@ fn core_promote_plan_adds_the_core_without_reinstalling_machine_units() {
     assert!(matches!(store, HostRunnerStep::StoreAssignedSubstrate(_)));
     assert!(matches!(mutate, HostRunnerStep::InstallArtifact(_)));
 
-    // Installs nats-server (the machine had none as a Machine), but not ployzd/ebpf.
+    // Installs nats-server (the machine had none as a Machine), but does not
+    // reinstall the substrate artifacts already delivered when it joined.
     assert!(installs_artifact_kind(&plan, ArtifactKind::NatsServer));
     assert!(!installs_artifact_kind(&plan, ArtifactKind::Ployzd));
     assert!(!installs_artifact_kind(&plan, ArtifactKind::EbpfBytecode));
+    assert!(!installs_artifact_kind(&plan, ArtifactKind::Railpack));
 
     // Renders + starts the core NATS material and server.
     assert!(

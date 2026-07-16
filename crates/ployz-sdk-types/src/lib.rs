@@ -12,6 +12,7 @@
 //! Rules. A new error field takes `String` unless it lands on an operation
 //! record.
 
+mod build;
 mod cloud_bootstrap;
 mod core_replace;
 mod core_types;
@@ -29,6 +30,7 @@ mod service;
 pub mod typescript;
 mod volume;
 
+pub use build::*;
 pub use cloud_bootstrap::*;
 pub use core_replace::*;
 pub use core_types::*;

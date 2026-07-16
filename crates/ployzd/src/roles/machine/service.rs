@@ -1,5 +1,6 @@
 //! NATS Service API wiring for machine-local commands.
 
+use super::build::{MachineBuildRuntime, handle_build_cancel, handle_build_start};
 use super::containers::{
     MachineContainerState, handle_container_inspect, handle_container_remove,
     handle_container_resolve_image, handle_container_restart, handle_container_run,
@@ -9,7 +10,8 @@ use super::dataplane::{
     MachineDataplaneStatusState, handle_dataplane_public_key, handle_dataplane_status,
 };
 use super::facts::{
-    MachineEndpointCache, MachineFactsState, handle_facts_get, handle_facts_refresh,
+    MachineEndpointCache, MachineFactsGetState, MachineFactsState, handle_facts_get,
+    handle_facts_refresh,
 };
 use super::images::{
     AvailableImageService, handle_image_blob_check, handle_image_blob_push, handle_image_ensure,
@@ -32,6 +34,7 @@ use crate::roles::machine::runner::{
     MachineContainerRunner, MachineImageRemovalRunner, MachineLogReader, MachineVolumeUsageReader,
 };
 use crate::service_catalog::{machine_endpoint_spec, machine_role_service_base};
+use ployz_core::build::BUILD_START_ENDPOINT_TIMEOUT;
 use ployz_core::ids::MachineId;
 #[cfg(test)]
 use ployz_core::machine::MachineEndpointObservation;
@@ -168,6 +171,7 @@ where
         log_reader,
         endpoint_cache,
         MachineRoleProjectionServices {
+            build_state: None,
             image_state: None,
             projection_state: projection_state.clone(),
         },
@@ -238,6 +242,7 @@ where
         log_reader,
         endpoint_cache,
         MachineRoleProjectionServices {
+            build_state: None,
             image_state: None,
             projection_state: MachineProjectionState::new(),
         },
@@ -266,9 +271,15 @@ where
     L: Clone + MachineLogReader + Send + Sync + 'static,
 {
     let MachineRoleProjectionServices {
+        build_state,
         image_state,
         projection_state,
     } = projection_services;
+    let build_capability = if build_state.is_some() {
+        crate::roles::machine::protocol::MachineBuildCapability::Available
+    } else {
+        crate::roles::machine::protocol::MachineBuildCapability::Unavailable
+    };
     let spec = machine_role_service_base(&machine_id);
     let mutation_state = MachineContainerState {
         runner: runner.clone(),
@@ -281,11 +292,30 @@ where
     bind_machine_endpoint(
         &mut runtime,
         &machine_id,
+        MachineServiceEndpoint::BuildStart,
+        build_state.clone(),
+        handle_build_start,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
+        MachineServiceEndpoint::BuildCancel,
+        build_state,
+        handle_build_cancel,
+    )
+    .await?;
+    bind_machine_endpoint(
+        &mut runtime,
+        &machine_id,
         MachineServiceEndpoint::FactsGet,
-        MachineFactsState {
-            runner: runner.clone(),
-            endpoint_cache: endpoint_cache.clone(),
-            client: client.clone(),
+        MachineFactsGetState {
+            facts: MachineFactsState {
+                runner: runner.clone(),
+                endpoint_cache: endpoint_cache.clone(),
+                client: client.clone(),
+            },
+            build: build_capability,
         },
         handle_facts_get,
     )
@@ -525,6 +555,9 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         MachineServiceEndpoint::StoragePrepare => {
             policy.request_timeout = ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT;
         }
+        MachineServiceEndpoint::BuildStart => {
+            policy.request_timeout = BUILD_START_ENDPOINT_TIMEOUT;
+        }
         MachineServiceEndpoint::VolumeEnsure => {
             policy.request_timeout = VOLUME_ENSURE_ENDPOINT_TIMEOUT;
         }
@@ -556,6 +589,7 @@ fn machine_endpoint_policy(endpoint: MachineServiceEndpoint) -> EndpointExecutio
         | MachineServiceEndpoint::ImageManifestPush
         | MachineServiceEndpoint::ImageEnsure
         | MachineServiceEndpoint::ImageRemove
+        | MachineServiceEndpoint::BuildCancel
         | MachineServiceEndpoint::CertificateArtifactStatus
         | MachineServiceEndpoint::CertificateArtifactPush
         | MachineServiceEndpoint::CertificateArtifactRemove
@@ -597,6 +631,7 @@ pub enum MachineServiceError {
 }
 
 pub(crate) struct MachineRoleProjectionServices {
+    pub build_state: Option<MachineBuildRuntime>,
     pub image_state: Option<AvailableImageService>,
     pub projection_state: MachineProjectionState,
 }
@@ -625,6 +660,14 @@ mod tests {
             policy.request_timeout,
             ployz_core::storage::MACHINE_STORAGE_PREPARE_RPC_TIMEOUT
         );
+    }
+
+    #[test]
+    fn build_start_endpoint_covers_the_max_operation_and_cleanup_budget() {
+        let policy = machine_endpoint_policy(MachineServiceEndpoint::BuildStart);
+
+        assert_eq!(policy.request_timeout, BUILD_START_ENDPOINT_TIMEOUT);
+        assert!(policy.request_timeout > ployz_core::build::BUILD_MAX_MACHINE_RESPONSE_LIFETIME);
     }
 
     #[test]

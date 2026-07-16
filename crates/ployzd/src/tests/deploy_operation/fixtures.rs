@@ -209,6 +209,7 @@ pub(super) struct RecordingRuntime {
     pub(super) stops: Vec<(MachineId, MachineContainerStopRpcRequest)>,
     pub(super) removals: Vec<(MachineId, MachineContainerRemoveRpcRequest)>,
     pub(super) image_removals: Vec<(MachineId, ployz_core::image::ImageRemoveRequest)>,
+    pub(super) image_ensures: Vec<(MachineId, ployz_core::image::ImageEnsureRequest)>,
     pub(super) volume_ensures: Vec<(MachineId, VolumePinState)>,
     volume_ensure_failure: Option<crate::control::operations::deploy::MachineVolumeEnsureError>,
     required_pin_commit: Option<Arc<AtomicBool>>,
@@ -602,6 +603,7 @@ impl RecordingRuntime {
             stops: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
+            image_ensures: Vec::new(),
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
@@ -625,6 +627,7 @@ impl RecordingRuntime {
             stops: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
+            image_ensures: Vec::new(),
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
@@ -648,6 +651,7 @@ impl RecordingRuntime {
             stops: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
+            image_ensures: Vec::new(),
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
@@ -671,6 +675,7 @@ impl RecordingRuntime {
             stops: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
+            image_ensures: Vec::new(),
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
@@ -697,6 +702,7 @@ impl RecordingRuntime {
             stops: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
+            image_ensures: Vec::new(),
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
@@ -720,6 +726,7 @@ impl RecordingRuntime {
             stops: Vec::new(),
             removals: Vec::new(),
             image_removals: Vec::new(),
+            image_ensures: Vec::new(),
             volume_ensures: Vec::new(),
             volume_ensure_failure: None,
             required_pin_commit: None,
@@ -807,6 +814,8 @@ impl MachineContainerRuntime for RecordingRuntime {
         ployz_core::image::ImageEnsureOk,
         crate::control::role_client::machine::MachineImageEnsureError,
     > {
+        self.image_ensures
+            .push((machine_id.clone(), request.clone()));
         Ok(ployz_core::image::ImageEnsureOk {
             machine_id: machine_id.clone(),
             platform: request.platform,
@@ -1075,6 +1084,7 @@ fn execution_input_for_request(
         request,
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
@@ -1103,6 +1113,7 @@ pub(super) fn pinned_deploy_command() -> DeployExecutionInput {
         request,
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
@@ -1139,6 +1150,7 @@ pub(super) fn deploy_command_with_healthcheck(replicas: u16) -> DeployExecutionI
         request,
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
@@ -1187,6 +1199,7 @@ pub(super) fn deploy_command_with_pre_start() -> DeployExecutionInput {
         request,
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
@@ -1233,6 +1246,7 @@ fn routed_deploy_command_with_stored_routes(
         routed_deploy_request(replicas),
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings,
@@ -1305,6 +1319,7 @@ pub(super) fn ployz_automatic_deploy_command() -> DeployExecutionInput {
         },
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
@@ -1357,6 +1372,11 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
                                 "b".repeat(64)
                             ))
                             .expect("valid image id"),
+                            availability_expires_at:
+                                ployz_core::deploy::ImageAvailabilityExpiresAt::try_new(
+                                    4_102_444_800,
+                                )
+                                .expect("expiry"),
                         },
                     ),
                     (
@@ -1374,6 +1394,11 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
                                 "e".repeat(64)
                             ))
                             .expect("valid image id"),
+                            availability_expires_at:
+                                ployz_core::deploy::ImageAvailabilityExpiresAt::try_new(
+                                    4_102_444_800,
+                                )
+                                .expect("expiry"),
                         },
                     ),
                 ])
@@ -1395,6 +1420,24 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
             machine_platforms: [
                 (machine_id("machine_a"), amd64),
                 (machine_id("machine_b"), arm64),
+            ]
+            .into_iter()
+            .collect(),
+            seed_clock_testimony: [
+                (
+                    machine_id("machine_seed"),
+                    crate::control::role_client::machine::MachineClockTestimony {
+                        control_request_started_at_unix_ms: 1_000_000,
+                        machine_observed_at_unix_ms: 1_000_000,
+                    },
+                ),
+                (
+                    machine_id("machine_arm_seed"),
+                    crate::control::role_client::machine::MachineClockTestimony {
+                        control_request_started_at_unix_ms: 1_000_000,
+                        machine_observed_at_unix_ms: 1_000_000,
+                    },
+                ),
             ]
             .into_iter()
             .collect(),
@@ -1459,6 +1502,7 @@ fn volume_backed_deploy_command_with_pins(
         request,
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
@@ -1512,6 +1556,7 @@ pub(super) fn provisioned_volume_backed_deploy_command(
         request,
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::from([(
                 machine_id.clone(),
                 Some(ployz_core::machine::StorageCapability::Ready {
@@ -1567,6 +1612,7 @@ pub(super) fn deploy_command_with_existing_container(
         request,
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
@@ -1637,6 +1683,7 @@ pub(super) fn deploy_command_replacing_old_container_with_keep(
         request,
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
@@ -1710,6 +1757,7 @@ fn prepared_deploy_command(
         target_deploy_request(replicas),
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: Vec::new(),
@@ -1752,6 +1800,7 @@ pub(super) fn empty_deploy_command_with_running_container(
         },
         DeployExecutionFacts {
             machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
             machine_storage_testimony: std::collections::BTreeMap::new(),
             unusable_machines: Vec::new(),
             namespace_route_bindings: vec![RouteBindingState {

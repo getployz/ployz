@@ -1,6 +1,7 @@
 //! Assertion and polling helpers the scenario bodies share.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
@@ -12,8 +13,9 @@ use super::formation::CoreContext;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::MachineCredentialProvisioningStep;
 use ployz_core::operation::{
-    DeployCompletionOutcome, DeployRunningStage, OperationEvent, OperationEventReplayCursor,
-    OperationEventReplayPage, OperationEventReplayRequest, OperationStatus,
+    DeployCompletionOutcome, DeployRunningStage, EventSequence, OperationEvent,
+    OperationEventReplayCursor, OperationEventReplayPage, OperationEventReplayRequest,
+    OperationStatus,
 };
 use ployz_e2e::dind::DindMachine;
 use ployz_nats::connect::{NatsConnectConfig, authenticated_connect_options};
@@ -116,12 +118,89 @@ pub async fn terminal_operation_events(
     core: &CoreContext,
     operation_id: &OperationId,
 ) -> Vec<OperationEvent> {
-    let page = operation_event_page(core, operation_id).await;
-    assert!(
-        page.cursor == OperationEventReplayCursor::Terminal,
-        "operation {operation_id:?} replay is not terminal: {page:?}"
-    );
-    page.events.into_iter().map(|event| event.event).collect()
+    drain_terminal_operation_events(operation_id, |start_sequence| async move {
+        core.api
+            .ops_watch(&OperationEventReplayRequest {
+                operation_id: operation_id.clone(),
+                start_sequence,
+                limit: event_replay_limit(64),
+            })
+            .await
+            .unwrap_or_else(|error| panic!("ops watch {operation_id:?} failed: {error}"))
+    })
+    .await
+}
+
+async fn drain_terminal_operation_events<F, Fut>(
+    operation_id: &OperationId,
+    mut fetch: F,
+) -> Vec<OperationEvent>
+where
+    F: FnMut(EventSequence) -> Fut,
+    Fut: Future<Output = OperationEventReplayPage>,
+{
+    let mut start_sequence = event_sequence(1);
+    let mut events = Vec::new();
+    loop {
+        let page = fetch(start_sequence).await;
+        events.extend(page.events.into_iter().map(|event| event.event));
+        match page.cursor {
+            OperationEventReplayCursor::Terminal => return events,
+            OperationEventReplayCursor::More {
+                next_start_sequence,
+            } => {
+                assert!(
+                    next_start_sequence > start_sequence,
+                    "operation {operation_id:?} replay cursor did not advance from \
+                     {start_sequence:?}: {next_start_sequence:?}"
+                );
+                start_sequence = next_start_sequence;
+            }
+            OperationEventReplayCursor::CaughtUp => {
+                panic!(
+                    "operation {operation_id:?} replay caught up before reaching a terminal cursor"
+                )
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod terminal_replay_tests {
+    use std::collections::VecDeque;
+    use std::future::ready;
+
+    use ployz_core::operation::{OperationEventReplayPage, ReplayedOperationEvent};
+    use ployz_test_support::ids::{operation_event_recorded_at, operation_id};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn terminal_history_drains_every_replay_page() {
+        let operation_id = operation_id("op_paginated_terminal_history");
+        let replayed = |sequence| ReplayedOperationEvent {
+            sequence: event_sequence(sequence),
+            recorded_at_unix_ms: operation_event_recorded_at(sequence),
+            event: OperationEvent::BuildRunning {
+                operation_id: operation_id.clone(),
+            },
+        };
+        let mut pages = VecDeque::from([
+            OperationEventReplayPage::more((1..=64).map(replayed).collect(), event_sequence(65)),
+            OperationEventReplayPage::terminal((65..=125).map(replayed).collect()),
+        ]);
+        let mut requested_starts = Vec::new();
+
+        let events = drain_terminal_operation_events(&operation_id, |start_sequence| {
+            requested_starts.push(start_sequence.get());
+            ready(pages.pop_front().expect("fixture has one page per request"))
+        })
+        .await;
+
+        assert_eq!(events.len(), 125);
+        assert_eq!(requested_starts, [1, 65]);
+        assert!(pages.is_empty());
+    }
 }
 
 /// One named step of an expected event sequence.

@@ -19,11 +19,14 @@ RUN apt-get update \
     ca-certificates \
     curl \
     dbus \
+    git \
     gnupg \
     iproute2 \
     iptables \
     iputils-ping \
+    openssl \
     procps \
+    python3 \
     systemd \
     systemd-sysv \
     wireguard-tools \

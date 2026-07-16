@@ -12,6 +12,12 @@ It proves this flow:
 4. Receive and serve its managed public HTTPS URL.
 5. Route through both gateways, including to the replica on the other machine.
 6. Restart the control daemon without interrupting the public route.
+7. Serve an authenticated HTTPS Git fixture trusted through Rocky's
+   `update-ca-trust` and Ubuntu's `update-ca-certificates` paths.
+8. Build one exact commit with both Dockerfile and Railpack for `linux/amd64`
+   and `linux/arm64`, verify each stable logical index contains exactly those
+   two platform images, and re-read identical durable evidence.
+9. Cancel a deliberately blocking build and verify completed cleanup evidence.
 
 The fixed matrix deliberately covers both release architectures and both
 managed firewall backends:
@@ -23,7 +29,7 @@ managed firewall backends:
 
 Use fresh hosts. The script rejects a different OS/architecture pair, requires
 root SSH to both public IPs, and leaves the machines running for inspection.
-The operator machine needs Bash, SSH, curl, and its key in `ssh-agent`. At
+The operator machine needs Bash, SSH, curl, Python 3, and its key in `ssh-agent`. At
 least 1 GB RAM and 1 vCPU per host is sufficient.
 
 ## Before running
@@ -72,6 +78,17 @@ certificate. A continuous probe must see no failed request while the control
 daemon restarts. Any failed command or non-200 response exits non-zero. Keep
 the full transcript as release evidence. `scripts/cli-smoke-test.sh` is an
 optional broader CLI check against the cluster left by this run.
+
+The build fixture uses a short-lived self-signed certificate and HTTP basic
+credential. The secret is stored only in a root-readable temporary environment
+file, passed to `ployz build submit` by environment-variable name, and removed
+by the exit trap; it is never placed in CLI arguments or printed. The fixture,
+trust anchors, service, and credential file are cleaned even on failure.
+
+Build timeout remains a deterministic lower-level control/machine boundary.
+This real-host command surface intentionally exposes no timeout knob: the
+capstone proves terminal success, cancellation, and cleanup, while focused
+driver tests prove timeout and unconfirmed-cleanup semantics.
 
 ## Tear down
 

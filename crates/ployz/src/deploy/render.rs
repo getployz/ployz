@@ -329,7 +329,8 @@ impl DeployTree {
                         };
                     }
                 }
-                OperationKind::Cert
+                OperationKind::Build
+                | OperationKind::Cert
                 | OperationKind::IngressConfigure
                 | OperationKind::ManagedDnsReconcile
                 | OperationKind::MachineAdd
@@ -359,7 +360,22 @@ impl DeployTree {
                     };
                 }
             }
-            OperationEvent::MachineStoragePrepareSubmitted { .. }
+            OperationEvent::BuildSubmitted { .. }
+            | OperationEvent::BuildPlacementStarted { .. }
+            | OperationEvent::BuildPlatformPlaced { .. }
+            | OperationEvent::BuildCommitVerified { .. }
+            | OperationEvent::BuildPlatformToolchainVerified { .. }
+            | OperationEvent::BuildRunning { .. }
+            | OperationEvent::BuildPlatformLog { .. }
+            | OperationEvent::BuildPlatformLogTruncated { .. }
+            | OperationEvent::BuildPlatformLogGap { .. }
+            | OperationEvent::BuildPlatformCompleted { .. }
+            | OperationEvent::BuildPlatformFailed { .. }
+            | OperationEvent::BuildCompleted { .. }
+            | OperationEvent::BuildFailed { .. }
+            | OperationEvent::BuildCancelled { .. }
+            | OperationEvent::BuildTimedOut { .. }
+            | OperationEvent::MachineStoragePrepareSubmitted { .. }
             | OperationEvent::MachineStoragePreparePreparing { .. }
             | OperationEvent::MachineStoragePrepareCompleted { .. }
             | OperationEvent::MachineStoragePrepareFailed { .. } => {}
@@ -858,6 +874,7 @@ fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine
                         | DeployOperationFailure::ImageDigestMismatch { .. }
                         | DeployOperationFailure::SeedUnavailable { .. }
                         | DeployOperationFailure::PlatformImageUnavailable { .. }
+                        | DeployOperationFailure::PlatformImageExpired { .. }
                         | DeployOperationFailure::UnsupportedTargetPlatform { .. } => {
                             failure_cause(target, failure)
                         }
