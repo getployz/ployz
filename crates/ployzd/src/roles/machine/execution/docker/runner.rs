@@ -7,8 +7,12 @@ use crate::roles::machine::execution::host_dataplane::{WireGuardMtuPolicy, resol
 use crate::roles::machine::protocol::MachineImagePull;
 use crate::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
-    MachineContainerRunner, MachineContainerRunnerError, MachineImageRemovalRunner,
-    MachineLogQuery, MachineLogReader, MachineLogReaderError, MachineLogTail, MachineLogTimestamps,
+    MachineContainerCreateError, MachineContainerListError, MachineContainerRemoveError,
+    MachineContainerRestartError, MachineContainerRunner, MachineContainerStartError,
+    MachineContainerStopError, MachineContainerWaitError, MachineEndpointNetworkError,
+    MachineImageRemovalRunner, MachineLogQuery, MachineLogReader, MachineLogReaderError,
+    MachineLogTail, MachineLogTimestamps, MachineRegistryImageResolveError,
+    MachineVolumeRemoveError,
 };
 use crate::roles::machine::volume::{
     destroy_provisioned_dataset, docker_volume_name, ensure_provisioned_dataset,
@@ -58,6 +62,9 @@ const MAX_LOG_TAIL_LINES: u16 = 1_000;
 const MAX_LOG_TAIL_BYTES: usize = 64 * 1024;
 const REGISTRY_RESOLVE_RETRY_DELAYS: [Duration; 2] =
     [Duration::from_millis(250), Duration::from_secs(1)];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DockerImagePullError(pub(crate) String);
 
 #[derive(Debug, Clone)]
 pub struct DockerManagedContainerRunner {
@@ -199,17 +206,17 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
 
     async fn existing_managed_containers(
         &self,
-    ) -> Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError> {
+    ) -> Result<Vec<ExistingManagedContainer>, MachineContainerListError> {
         let docker =
             self.docker()
                 .await
-                .map_err(|error| MachineContainerRunnerError::ListExisting {
+                .map_err(|error| MachineContainerListError::ListExisting {
                     message: error.to_string(),
                 })?;
         let summaries = docker
             .list_containers(Some(managed_container_list_options()))
             .await
-            .map_err(|error| MachineContainerRunnerError::ListExisting {
+            .map_err(|error| MachineContainerListError::ListExisting {
                 message: error.to_string(),
             })?;
 
@@ -217,7 +224,7 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
             .into_iter()
             .map(existing_container_from_summary)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| MachineContainerRunnerError::ListExisting {
+            .map_err(|error| MachineContainerListError::ListExisting {
                 message: error.to_string(),
             })?;
 
@@ -233,9 +240,7 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
             let (observed_health, observed_started_at_unix_ms) =
                 docker_container_details(docker, &container.container_id)
                     .await
-                    .map_err(|error| MachineContainerRunnerError::ListExisting {
-                        message: error,
-                    })?;
+                    .map_err(|error| MachineContainerListError::ListExisting { message: error })?;
             *health = observed_health;
             *started_at_unix_ms = Some(observed_started_at_unix_ms);
         }
@@ -243,9 +248,9 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
         Ok(containers)
     }
 
-    async fn ensure_endpoint_network(&self) -> Result<(), MachineContainerRunnerError> {
+    async fn ensure_endpoint_network(&self) -> Result<(), MachineEndpointNetworkError> {
         let docker = self.docker().await.map_err(|error| {
-            MachineContainerRunnerError::EnsureEndpointNetwork {
+            MachineEndpointNetworkError::EnsureEndpointNetwork {
                 message: error.to_string(),
             }
         })?;
@@ -263,15 +268,15 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
     async fn ensure_projection_endpoint_network(
         &self,
         expected_subnet: &MachineEndpointSubnet,
-    ) -> Result<(), MachineContainerRunnerError> {
+    ) -> Result<(), MachineEndpointNetworkError> {
         let observed =
             MachineEndpointSubnet::try_new(&self.endpoint_network_subnet).map_err(|error| {
-                MachineContainerRunnerError::EnsureEndpointNetwork {
+                MachineEndpointNetworkError::EnsureEndpointNetwork {
                     message: error.to_string(),
                 }
             })?;
         if &observed != expected_subnet {
-            return Err(MachineContainerRunnerError::EndpointNetworkSubnetMismatch {
+            return Err(MachineEndpointNetworkError::EndpointNetworkSubnetMismatch {
                 expected: expected_subnet.clone(),
                 observed,
             });
@@ -313,14 +318,14 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
         &self,
         reference: &ImageReference,
         credential: Option<&RegistryCredential>,
-    ) -> Result<OciDigest, MachineContainerRunnerError> {
+    ) -> Result<OciDigest, MachineRegistryImageResolveError> {
         let docker =
             self.docker()
                 .await
-                .map_err(|error| MachineContainerRunnerError::ImagePull {
+                .map_err(|error| MachineRegistryImageResolveError::ImagePull {
                     message: error.to_string(),
                 })?;
-        let failure = |error: BollardError| MachineContainerRunnerError::ImagePull {
+        let failure = |error: BollardError| MachineRegistryImageResolveError::ImagePull {
             message: redact_registry_credential(
                 format!("resolve Docker image {}: {error}", reference.as_str()),
                 credential,
@@ -345,11 +350,11 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
             }
         };
         let Some(digest) = inspected.descriptor.digest else {
-            return Err(MachineContainerRunnerError::ImagePull {
+            return Err(MachineRegistryImageResolveError::ImagePull {
                 message: format!("registry returned no digest for {}", reference.as_str()),
             });
         };
-        OciDigest::try_new(digest).map_err(|error| MachineContainerRunnerError::ImagePull {
+        OciDigest::try_new(digest).map_err(|error| MachineRegistryImageResolveError::ImagePull {
             message: error.to_string(),
         })
     }
@@ -357,11 +362,11 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
     async fn create_managed_container(
         &self,
         command: CreateManagedContainer,
-    ) -> Result<ContainerId, MachineContainerRunnerError> {
+    ) -> Result<ContainerId, MachineContainerCreateError> {
         let docker = self
             .docker()
             .await
-            .map_err(|error| MachineContainerRunnerError::Create {
+            .map_err(|error| MachineContainerCreateError::Create {
                 message: error.to_string(),
             })?;
         let endpoint_mtu =
@@ -378,16 +383,18 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
             MachineImagePull::Registry { credential, .. } => credential.as_ref(),
             MachineImagePull::MeshSeed { .. } => None,
         };
-        self.pull_image(&pull_reference, credential).await?;
+        self.pull_image(&pull_reference, credential).await.map_err(
+            |DockerImagePullError(message)| MachineContainerCreateError::ImagePull { message },
+        )?;
         // Every service container joins the already-converged endpoint
         // network; route state alone decides whether anything dials it.
         let response = docker
             .create_container(None, create_body(command, &self.endpoint_network_subnet))
             .await
-            .map_err(|error| MachineContainerRunnerError::Create {
+            .map_err(|error| MachineContainerCreateError::Create {
                 message: error.to_string(),
             })?;
-        ContainerId::try_new(response.id).map_err(|error| MachineContainerRunnerError::Create {
+        ContainerId::try_new(response.id).map_err(|error| MachineContainerCreateError::Create {
             message: error.to_string(),
         })
     }
@@ -395,18 +402,18 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
     async fn start_managed_container(
         &self,
         container_id: &ContainerId,
-    ) -> Result<(), MachineContainerRunnerError> {
+    ) -> Result<(), MachineContainerStartError> {
         let docker = self
             .docker()
             .await
-            .map_err(|error| MachineContainerRunnerError::Start {
+            .map_err(|error| MachineContainerStartError::Start {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             })?;
         docker
             .start_container(container_id.as_str(), None)
             .await
-            .map_err(|error| MachineContainerRunnerError::Start {
+            .map_err(|error| MachineContainerStartError::Start {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             })
@@ -415,11 +422,11 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
     async fn wait_managed_container(
         &self,
         container_id: &ContainerId,
-    ) -> Result<i64, MachineContainerRunnerError> {
+    ) -> Result<i64, MachineContainerWaitError> {
         let docker = self
             .docker()
             .await
-            .map_err(|error| MachineContainerRunnerError::Wait {
+            .map_err(|error| MachineContainerWaitError::Wait {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             })?;
@@ -430,11 +437,11 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
         match result {
             Some(Ok(response)) => Ok(response.status_code),
             Some(Err(BollardError::DockerContainerWaitError { code, .. })) => Ok(code),
-            Some(Err(error)) => Err(MachineContainerRunnerError::Wait {
+            Some(Err(error)) => Err(MachineContainerWaitError::Wait {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             }),
-            None => Err(MachineContainerRunnerError::Wait {
+            None => Err(MachineContainerWaitError::Wait {
                 container_id: container_id.clone(),
                 message: "Docker wait stream ended without a status code".to_owned(),
             }),
@@ -445,17 +452,22 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
-    ) -> Result<(), MachineContainerRunnerError> {
+    ) -> Result<(), MachineContainerRemoveError> {
         let existing = self
             .existing_managed_containers()
-            .await?
+            .await
+            .map_err(|error| match error {
+                MachineContainerListError::ListExisting { message } => {
+                    MachineContainerRemoveError::ListExisting { message }
+                }
+            })?
             .into_iter()
             .find(|container| container.container_id == *container_id);
         let Some(existing) = existing else {
             return Ok(());
         };
         if existing.identity != *expected_identity {
-            return Err(MachineContainerRunnerError::Remove {
+            return Err(MachineContainerRemoveError::Remove {
                 container_id: container_id.clone(),
                 message: format!(
                     "container identity did not match cleanup target: expected {:?}, found {:?}",
@@ -467,7 +479,7 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
         let docker = self
             .docker()
             .await
-            .map_err(|error| MachineContainerRunnerError::Remove {
+            .map_err(|error| MachineContainerRemoveError::Remove {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             })?;
@@ -478,7 +490,7 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
         {
             Ok(()) => Ok(()),
             Err(error) if is_docker_object_missing(&error) => Ok(()),
-            Err(error) => Err(MachineContainerRunnerError::Remove {
+            Err(error) => Err(MachineContainerRemoveError::Remove {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             }),
@@ -488,11 +500,11 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
     async fn remove_volume(
         &self,
         docker_volume_name: &str,
-    ) -> Result<(), MachineContainerRunnerError> {
+    ) -> Result<(), MachineVolumeRemoveError> {
         let docker =
             self.docker()
                 .await
-                .map_err(|error| MachineContainerRunnerError::RemoveVolume {
+                .map_err(|error| MachineVolumeRemoveError::RemoveVolume {
                     docker_volume_name: docker_volume_name.to_owned(),
                     message: error.to_string(),
                 })?;
@@ -503,7 +515,7 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
         {
             Ok(()) => Ok(()),
             Err(error) if is_docker_object_missing(&error) => Ok(()),
-            Err(error) => Err(MachineContainerRunnerError::RemoveVolume {
+            Err(error) => Err(MachineVolumeRemoveError::RemoveVolume {
                 docker_volume_name: docker_volume_name.to_owned(),
                 message: error.to_string(),
             }),
@@ -521,17 +533,22 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
-    ) -> Result<(), MachineContainerRunnerError> {
+    ) -> Result<(), MachineContainerStopError> {
         let existing = self
             .existing_managed_containers()
-            .await?
+            .await
+            .map_err(|error| match error {
+                MachineContainerListError::ListExisting { message } => {
+                    MachineContainerStopError::ListExisting { message }
+                }
+            })?
             .into_iter()
             .find(|container| container.container_id == *container_id);
         let Some(existing) = existing else {
             return Ok(());
         };
         if existing.identity != *expected_identity {
-            return Err(MachineContainerRunnerError::Stop {
+            return Err(MachineContainerStopError::Stop {
                 container_id: container_id.clone(),
                 message: format!(
                     "container identity did not match stop target: expected {:?}, found {:?}",
@@ -550,7 +567,7 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
         let docker = self
             .docker()
             .await
-            .map_err(|error| MachineContainerRunnerError::Stop {
+            .map_err(|error| MachineContainerStopError::Stop {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             })?;
@@ -561,7 +578,7 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
         {
             Ok(()) => Ok(()),
             Err(error) if is_docker_object_missing(&error) => Ok(()),
-            Err(error) => Err(MachineContainerRunnerError::Stop {
+            Err(error) => Err(MachineContainerStopError::Stop {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             }),
@@ -572,20 +589,25 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
-    ) -> Result<(), MachineContainerRunnerError> {
+    ) -> Result<(), MachineContainerRestartError> {
         let existing = self
             .existing_managed_containers()
-            .await?
+            .await
+            .map_err(|error| match error {
+                MachineContainerListError::ListExisting { message } => {
+                    MachineContainerRestartError::ListExisting { message }
+                }
+            })?
             .into_iter()
             .find(|container| container.container_id == *container_id);
         let Some(existing) = existing else {
-            return Err(MachineContainerRunnerError::Restart {
+            return Err(MachineContainerRestartError::Restart {
                 container_id: container_id.clone(),
                 message: "container was not found".to_owned(),
             });
         };
         if existing.identity != *expected_identity {
-            return Err(MachineContainerRunnerError::Restart {
+            return Err(MachineContainerRestartError::Restart {
                 container_id: container_id.clone(),
                 message: format!(
                     "container identity did not match restart target: expected {:?}, found {:?}",
@@ -594,19 +616,19 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
             });
         }
 
-        let docker = self
-            .docker()
-            .await
-            .map_err(|error| MachineContainerRunnerError::Restart {
-                container_id: container_id.clone(),
-                message: error.to_string(),
-            })?;
+        let docker =
+            self.docker()
+                .await
+                .map_err(|error| MachineContainerRestartError::Restart {
+                    container_id: container_id.clone(),
+                    message: error.to_string(),
+                })?;
         match docker
             .restart_container(container_id.as_str(), None::<RestartContainerOptions>)
             .await
         {
             Ok(()) => Ok(()),
-            Err(error) => Err(MachineContainerRunnerError::Restart {
+            Err(error) => Err(MachineContainerRestartError::Restart {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             }),
@@ -691,22 +713,20 @@ impl DockerManagedContainerRunner {
         &self,
         image: &str,
         credential: Option<&RegistryCredential>,
-    ) -> Result<(), MachineContainerRunnerError> {
-        let docker =
-            self.docker()
-                .await
-                .map_err(|error| MachineContainerRunnerError::ImagePull {
-                    message: error.to_string(),
-                })?;
+    ) -> Result<(), DockerImagePullError> {
+        let docker = self
+            .docker()
+            .await
+            .map_err(|error| DockerImagePullError(error.to_string()))?;
         let options = CreateImageOptionsBuilder::new().from_image(image).build();
         let mut stream = docker.create_image(Some(options), None, docker_credentials(credential));
 
         while let Some(result) = stream.next().await {
-            result.map_err(|error| MachineContainerRunnerError::ImagePull {
-                message: redact_registry_credential(
+            result.map_err(|error| {
+                DockerImagePullError(redact_registry_credential(
                     format!("pull Docker image {image}: {error}"),
                     credential,
-                ),
+                ))
             })?;
         }
 
@@ -1272,9 +1292,7 @@ mod tests {
             .await
             .expect_err("missing manifest is terminal");
 
-        let MachineContainerRunnerError::ImagePull { message } = error else {
-            panic!("expected image pull failure");
-        };
+        let MachineRegistryImageResolveError::ImagePull { message } = error;
         assert!(message.contains("status code 404"), "{message}");
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
@@ -1298,9 +1316,7 @@ mod tests {
             .await
             .expect_err("three transient failures exhaust retries");
 
-        let MachineContainerRunnerError::ImagePull { message } = error else {
-            panic!("expected image pull failure");
-        };
+        let MachineRegistryImageResolveError::ImagePull { message } = error;
         assert!(message.contains("final failure"), "{message}");
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
     }
@@ -1682,7 +1698,7 @@ mod tests {
 
         assert!(matches!(
             runner.ensure_projection_endpoint_network(&expected).await,
-            Err(MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. })
+            Err(MachineEndpointNetworkError::EndpointNetworkSubnetMismatch { .. })
         ));
     }
 

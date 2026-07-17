@@ -3,7 +3,8 @@
 //! - `protocol`: wire request/response types and the shared RPC envelope.
 //! - `service`: server-side NATS handlers for machine-local commands.
 //! - `execution`: machine-owned container, image, and host dataplane adapters.
-//! - `runner`: the `MachineContainerRunner` port and container-run decision.
+//! - `runner`: the `MachineContainerRunner` port for machine-local effects.
+//! - `deploy_container_run`: private Service and Hook Container run choreography.
 //! - `process`: the machine role process and observation loop.
 //!
 //! Recovery mirroring and failover are owned by the role-neutral
@@ -12,6 +13,7 @@
 mod build;
 mod containers;
 mod dataplane;
+mod deploy_container_run;
 mod endpoints;
 pub mod execution;
 mod facts;

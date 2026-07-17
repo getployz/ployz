@@ -582,7 +582,7 @@ pub(crate) async fn handle_image_ensure(
                 return image_error(
                     machine_id,
                     ImageRpcDomainError::SelfPullFailed {
-                        message: failure_message(runner_error_message(error)),
+                        message: failure_message(error.0),
                     },
                 );
             }
@@ -773,28 +773,6 @@ fn header<'a>(request: &'a NatsServiceRequest, name: &str) -> Option<&'a str> {
         .as_ref()
         .and_then(|headers| headers.get(name))
         .map(|value| value.as_str())
-}
-
-fn runner_error_message(
-    error: crate::roles::machine::runner::MachineContainerRunnerError,
-) -> String {
-    use crate::roles::machine::runner::MachineContainerRunnerError;
-
-    match error {
-        MachineContainerRunnerError::ListExisting { message }
-        | MachineContainerRunnerError::EnsureEndpointNetwork { message }
-        | MachineContainerRunnerError::Create { message }
-        | MachineContainerRunnerError::ImagePull { message }
-        | MachineContainerRunnerError::Start { message, .. }
-        | MachineContainerRunnerError::Wait { message, .. }
-        | MachineContainerRunnerError::Stop { message, .. }
-        | MachineContainerRunnerError::Restart { message, .. }
-        | MachineContainerRunnerError::Remove { message, .. }
-        | MachineContainerRunnerError::RemoveVolume { message, .. } => message,
-        MachineContainerRunnerError::EndpointNetworkSubnetMismatch { expected, observed } => {
-            format!("endpoint network subnet is {observed:?}, expected {expected:?}")
-        }
-    }
 }
 
 fn unavailable(machine_id: MachineId) -> NatsServiceResponse {

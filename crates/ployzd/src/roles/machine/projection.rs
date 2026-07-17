@@ -17,7 +17,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::control::intent::service::NatsIntentReader;
-use crate::roles::machine::runner::{MachineContainerRunner, MachineContainerRunnerError};
+use crate::roles::machine::runner::{MachineContainerRunner, MachineEndpointNetworkError};
 use crate::roles::machine::service::MachinePloyzNativeMeshPreparer;
 
 const PROJECTION_READ_TIMEOUT: Duration = Duration::from_secs(30);
@@ -407,9 +407,9 @@ fn render_projection(
 }
 
 fn endpoint_network_failure(
-    error: MachineContainerRunnerError,
+    error: MachineEndpointNetworkError,
 ) -> (EndpointBridgeStatus, DataplaneProjectionFailure) {
-    if let MachineContainerRunnerError::EndpointNetworkSubnetMismatch { expected, observed } = error
+    if let MachineEndpointNetworkError::EndpointNetworkSubnetMismatch { expected, observed } = error
     {
         return (
             EndpointBridgeStatus::SubnetMismatch {
@@ -535,7 +535,7 @@ mod tests {
         let observed = MachineEndpointSubnet::try_new("10.198.2.0/24").expect("observed");
 
         let (bridge, failure) =
-            endpoint_network_failure(MachineContainerRunnerError::EndpointNetworkSubnetMismatch {
+            endpoint_network_failure(MachineEndpointNetworkError::EndpointNetworkSubnetMismatch {
                 expected: expected.clone(),
                 observed: observed.clone(),
             });
