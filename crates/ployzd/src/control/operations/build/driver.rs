@@ -224,21 +224,25 @@ impl BuildOperationDriver {
     async fn run(self, accepted: AcceptedBuildExecution) {
         let id = accepted.submission.operation_id.clone();
         let result = self.run_inner(&accepted).await;
+        self.record_run_result(&id, result).await;
+        self.active.remove(&id).await;
+    }
+
+    async fn record_run_result(&self, id: &OperationId, result: Result<(), BuildOperationFailure>) {
         if let Err(failure) = result {
-            let transition = match self.active.claim_finalization(&id).await {
+            let transition = match self.active.claim_finalization(id).await {
                 Some(reason) => BuildTransition::Cancelled {
                     reason,
-                    cleanup: self.active.cleanup_evidence(&id, Vec::new()).await,
+                    cleanup: self.active.cleanup_evidence(id, Vec::new()).await,
                 },
                 None => BuildTransition::Failed { failure },
             };
             let _ = self
                 .controllers
                 .repository()
-                .record_build_transition(&id, transition)
+                .record_build_transition(id, transition)
                 .await;
         }
-        self.active.remove(&id).await;
     }
 
     async fn run_inner(
@@ -252,6 +256,14 @@ impl BuildOperationDriver {
                 self.run_platform(accepted, platform.clone(), machine_id.clone())
             }))
             .await;
+        self.finalize_joined_outcomes(id, outcomes).await
+    }
+
+    async fn finalize_joined_outcomes(
+        &self,
+        id: &OperationId,
+        outcomes: Vec<Result<PlatformOutcome, BuildOperationFailure>>,
+    ) -> Result<(), BuildOperationFailure> {
         let mut images = Vec::new();
         let mut cancelled = Vec::new();
         let mut timed_out = Vec::new();
