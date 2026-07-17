@@ -18,8 +18,8 @@ use crate::control::operation_evidence::{
 };
 use ployz_core::build::{BuildAdapter, BuildPlatforms, GitSource};
 use ployz_core::deploy::{
-    DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS, DeployReservationExpiresAt, DeployReservationId,
-    RegistryCredential, VolumeDeclaredDeployRequest, VolumeName,
+    DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS, DeployRequest, DeployReservationExpiresAt,
+    DeployReservationId, RegistryCredential, VolumeName,
 };
 use ployz_core::ids::{NamespaceId, OperationId, ServiceId};
 use ployz_core::install::{
@@ -51,7 +51,7 @@ pub struct DeploySubmitCommand {
     pub operation_id: OperationId,
     pub idempotency_key: IdempotencyKey,
     pub reservation_id: DeployReservationId,
-    pub target: VolumeDeclaredDeployRequest,
+    pub target: DeployRequest,
     pub registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
 }
 
@@ -285,7 +285,7 @@ impl OperationControllers {
         let acquired_ingress = matches!(ingress_claim, Some(IngressClaim::Acquired));
         if let Some(IngressClaim::Busy { owner }) = &ingress_claim {
             return Err(SubmitCommandError::IngressBusy {
-                namespace_id: command.target.namespace_id().clone(),
+                namespace_id: command.target.namespace_id.clone(),
                 owner: owner.clone(),
             });
         }
@@ -337,7 +337,7 @@ impl OperationControllers {
         let operation_id = command.operation_id;
         let idempotency_key = command.idempotency_key;
         let reservation_id = command.reservation_id;
-        let target = command.target.into_request();
+        let target = command.target;
         let registry_credentials = command.registry_credentials;
         let claimed = self
             .repository

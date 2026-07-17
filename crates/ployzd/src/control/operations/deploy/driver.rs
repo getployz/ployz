@@ -24,7 +24,8 @@ use crate::roles::machine::protocol::{
 use crate::tasks::TaskSpawner;
 use ployz_core::certificate::ActiveCertState;
 use ployz_core::deploy::{
-    AutoHostnameRouteBindingError, DeployRouteBindingValidationError, VolumeDeclaredDeployRequest,
+    AutoHostnameRouteBindingError, DeployPlanningTarget, DeployRequest,
+    DeployRouteBindingValidationError,
 };
 use ployz_core::ingress::CertificateOwner;
 use ployz_core::machine::runtime::{ContainerHealth, ContainerRuntimeState};
@@ -37,6 +38,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
+pub(crate) const DEPLOY_PREVIEW_NATS_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 /// A container without a Docker healthcheck must stay running this long
 /// before deploy completion commits it: a fast-exiting process can be
 /// sampled alive once, and one running observation is not survival.
@@ -132,7 +134,7 @@ where
     };
     let reusable_interrupted_operation_ids = match reusable_interrupted_deploy_operation_ids(
         stores.controllers.repository(),
-        normalized_request.namespace_id(),
+        &normalized_request.namespace_id,
         &facts.observed_machines,
     )
     .await
@@ -188,13 +190,14 @@ where
 }
 
 fn normalize_stored_deploy_target(
-    request: ployz_core::deploy::DeployRequest,
-) -> Result<VolumeDeclaredDeployRequest, DeployFactLoadError> {
-    VolumeDeclaredDeployRequest::try_new(request).map_err(|error| {
+    request: DeployRequest,
+) -> Result<DeployRequest, DeployFactLoadError> {
+    DeployPlanningTarget::try_from_deploy(&request).map_err(|error| {
         DeployFactLoadError::InvalidStoredTarget {
             message: error.to_string(),
         }
-    })
+    })?;
+    Ok(request)
 }
 
 async fn record_operation_failure(
@@ -440,7 +443,7 @@ mod fact_load_failure_tests {
     }
 }
 
-async fn reusable_interrupted_deploy_operation_ids(
+pub(super) async fn reusable_interrupted_deploy_operation_ids(
     repository: &crate::control::operation_evidence::OperationRepository,
     namespace_id: &ployz_core::ids::NamespaceId,
     observed_machines: &[ployz_core::machine::runtime::MachineContainerObservationSnapshot],
@@ -523,6 +526,32 @@ impl DeployOperationDriver {
             }),
         )
         .await;
+    }
+
+    pub async fn preview(
+        &self,
+        request: ployz_sdk_types::DeployPreviewRequest,
+    ) -> Result<ployz_sdk_types::DeployPreview, ployz_sdk_types::DeployPreviewError> {
+        let request_timeout = self.step_timeout.min(DEPLOY_PREVIEW_NATS_REQUEST_TIMEOUT);
+        let client = self.stores.intent_change_client.clone();
+        let facts_reader =
+            NatsMachineFactsReader::new(client.clone()).with_request_timeout(request_timeout);
+        let mut machine_runtime =
+            NatsMachineContainerRuntime::new(client.clone()).with_request_timeout(request_timeout);
+        let intent_reader = NatsIntentReader::new(client).with_request_timeout(request_timeout);
+        super::preview_deploy_from_nats(
+            request,
+            &intent_reader,
+            &facts_reader,
+            &mut machine_runtime,
+            super::DeployPreviewStores {
+                operation_repository: self.stores.controllers.repository(),
+                target_store: &self.stores.ployz_dns_target,
+                projection_store: &self.stores.ingress_projection,
+            },
+            request_timeout,
+        )
+        .await
     }
 
     pub async fn run(

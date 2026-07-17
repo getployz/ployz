@@ -2,8 +2,8 @@
 
 use crate::control::operator_api::{
     OperationApiHandlers, build_cancel, build_submit, core_replace, core_replace_report,
-    credential_add, credential_list, credential_remove, deploy_reserve, deploy_submit,
-    ingress_configure, init_first_machine_activate, machine_add, machine_drain,
+    credential_add, credential_list, credential_remove, deploy_preview, deploy_reserve,
+    deploy_submit, ingress_configure, init_first_machine_activate, machine_add, machine_drain,
     machine_join_redeem, machine_join_report, machine_resume, machine_storage_prepare,
     machine_update, namespace_remove, network_repair, ops_list, ops_status, ops_watch,
     service_restart, submit_volume_create, volume_remove,
@@ -18,14 +18,14 @@ use ployz_sdk_types::{
     OperationApiResponse,
     operation_api::{
         BuildCancelApi, BuildSubmitApi, CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi,
-        CredentialListApi, CredentialRemoveApi, DeployReserveApi, DeploySubmitApi,
-        IngressConfigureApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
-        MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi,
-        MachineListApi, MachineResumeApi, MachineStoragePrepareApi, MachineUpdateApi,
-        NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, NetworkStatusApi,
-        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
-        ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeCreateApi, VolumeListApi,
-        VolumeRemoveApi,
+        CredentialListApi, CredentialRemoveApi, DeployPreviewApi, DeployReserveApi,
+        DeploySubmitApi, IngressConfigureApi, InitFirstMachineActivateApi, LogsTailApi,
+        MachineAddApi, MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi,
+        MachineJoinReportApi, MachineListApi, MachineResumeApi, MachineStoragePrepareApi,
+        MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi,
+        NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi,
+        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeCreateApi,
+        VolumeListApi, VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -36,6 +36,7 @@ use std::time::Duration;
 const MACHINE_JOIN_REPORT_HANDLER_TIMEOUT: Duration = Duration::from_secs(105);
 const NETWORK_RESOLVE_HANDLER_TIMEOUT: Duration = Duration::from_secs(35);
 const NETWORK_STATUS_HANDLER_TIMEOUT: Duration = Duration::from_secs(65);
+const DEPLOY_PREVIEW_HANDLER_TIMEOUT: Duration = Duration::from_secs(9);
 
 pub async fn start_operation_api_service_with_handlers(
     client: ployz_nats::service_runtime::NatsClient,
@@ -71,6 +72,14 @@ async fn bind_operation_endpoint(
                 runtime,
                 handlers,
                 |handlers, request| async move { deploy_reserve(&handlers, request).await },
+            )
+            .await
+        }
+        OperationApiEndpoint::DeployPreview => {
+            bind_operation_contract::<DeployPreviewApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move { deploy_preview(&handlers, request).await },
             )
             .await
         }
@@ -383,7 +392,9 @@ where
 
 fn operation_endpoint_policy(endpoint: OperationApiEndpoint) -> EndpointExecutionPolicy {
     let mut policy = EndpointExecutionPolicy::default();
-    if endpoint == OperationApiEndpoint::MachineJoinReport {
+    if endpoint == OperationApiEndpoint::DeployPreview {
+        policy.request_timeout = DEPLOY_PREVIEW_HANDLER_TIMEOUT;
+    } else if endpoint == OperationApiEndpoint::MachineJoinReport {
         policy.request_timeout = MACHINE_JOIN_REPORT_HANDLER_TIMEOUT;
     } else if endpoint == OperationApiEndpoint::NetworkResolve {
         policy.request_timeout = NETWORK_RESOLVE_HANDLER_TIMEOUT;
@@ -458,6 +469,19 @@ mod tests {
         assert!(
             resolve.request_timeout > Duration::from_secs(30)
                 && status.request_timeout > Duration::from_secs(60)
+        );
+    }
+
+    #[test]
+    fn deploy_preview_deadlines_cover_gathers_and_registry_resolution() {
+        let policy = operation_endpoint_policy(OperationApiEndpoint::DeployPreview);
+        let nested_request_budget =
+            crate::control::operations::deploy::driver::DEPLOY_PREVIEW_NATS_REQUEST_TIMEOUT;
+
+        assert!(nested_request_budget * 4 < policy.request_timeout);
+        assert!(
+            policy.request_timeout
+                < ployz_nats::operation_api_client::DEFAULT_OPERATION_API_REQUEST_TIMEOUT
         );
     }
 }

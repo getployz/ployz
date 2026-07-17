@@ -11,15 +11,15 @@ use ployz_sdk_types::{
     CoreReplaceError, CoreReplaceReportError, CoreReplaceReportRequest, CoreReplaceReported,
     CoreReplaceRequest, CredentialAddError, CredentialAddRequest, CredentialListError,
     CredentialListRequest, CredentialListResult, CredentialRemoveError, CredentialRemoveRequest,
-    DeployReserveError, DeployReserveRequest, DeployReserved, DeploySubmitError,
-    DeploySubmitRequest, IngressConfigureError, IngressConfigureRequest,
-    InitFirstMachineActivateError, InitFirstMachineActivateRequest, InitFirstMachineActivated,
-    LogsTailError, LogsTailRequest, LogsTailResult, MachineAddAccepted, MachineAddError,
-    MachineAddRequest, MachineInspectError, MachineInspectRequest, MachineJoinRedeemError,
-    MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
-    MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError, MachineLifecycleRequest,
-    MachineListError, MachineListRequest, MachineListResult, MachineSnapshot,
-    MachineStoragePrepareError, MachineStoragePrepareRequest, MachineUpdateError,
+    DeployPreview, DeployPreviewError, DeployPreviewRequest, DeployReserveError,
+    DeployReserveRequest, DeployReserved, DeploySubmitError, DeploySubmitRequest,
+    IngressConfigureError, IngressConfigureRequest, InitFirstMachineActivateError,
+    InitFirstMachineActivateRequest, InitFirstMachineActivated, LogsTailError, LogsTailRequest,
+    LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest, MachineInspectError,
+    MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
+    MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError,
+    MachineLifecycleRequest, MachineListError, MachineListRequest, MachineListResult,
+    MachineSnapshot, MachineStoragePrepareError, MachineStoragePrepareRequest, MachineUpdateError,
     MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest, NetworkRepairError,
     NetworkRepairRequest, NetworkResolveError, NetworkResolveRequest, NetworkResolveResult,
     NetworkStatusError, NetworkStatusRequest, NetworkStatusResult, OperationApiResponse,
@@ -31,14 +31,14 @@ use ployz_sdk_types::{
     VolumeRemoveError, VolumeRemoveRequest,
     operation_api::{
         BuildCancelApi, BuildSubmitApi, CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi,
-        CredentialListApi, CredentialRemoveApi, DeployReserveApi, DeploySubmitApi,
-        IngressConfigureApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
-        MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi,
-        MachineListApi, MachineResumeApi, MachineStoragePrepareApi, MachineUpdateApi,
-        NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, NetworkStatusApi,
-        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
-        ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeCreateApi, VolumeListApi,
-        VolumeRemoveApi,
+        CredentialListApi, CredentialRemoveApi, DeployPreviewApi, DeployReserveApi,
+        DeploySubmitApi, IngressConfigureApi, InitFirstMachineActivateApi, LogsTailApi,
+        MachineAddApi, MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi,
+        MachineJoinReportApi, MachineListApi, MachineResumeApi, MachineStoragePrepareApi,
+        MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi,
+        NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi,
+        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeCreateApi,
+        VolumeListApi, VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -100,6 +100,13 @@ impl OperationApiClient {
         request: &DeployReserveRequest,
     ) -> Result<DeployReserved, OperationApiClientError<DeployReserveError>> {
         self.request_api::<DeployReserveApi>(request).await
+    }
+
+    pub async fn deploy_preview(
+        &self,
+        request: &DeployPreviewRequest,
+    ) -> Result<DeployPreview, OperationApiClientError<DeployPreviewError>> {
+        self.request_api::<DeployPreviewApi>(request).await
     }
 
     #[must_use]

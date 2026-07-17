@@ -39,7 +39,7 @@ fn failure_commit_scope(command: &DeployExecutionCommand) -> ControlPlaneCommitS
         service_id: service.service.service_id.clone(),
         namespace_revision_entry_id: service
             .service
-            .namespace_revision_entry_id(command.request.namespace_id()),
+            .namespace_revision_entry_id(&command.request.namespace_id),
     }
 }
 
@@ -552,9 +552,11 @@ impl DeployExecutionError {
                     message: failure_message("planning input names a service outside the deploy"),
                 }
             }
-            Self::Plan(DeployPlanError::NoEligibleMachines) => {
+            Self::Plan(DeployPlanError::NoEligibleMachines { service_id }) => {
                 DeployOperationFailure::NoUsableMachines {
-                    reasons: command.unusable_machines.clone(),
+                    reasons: command
+                        .unusable_machines_for_service(service_id)
+                        .unwrap_or_else(|| command.unusable_machines.clone()),
                 }
             }
             Self::Plan(DeployPlanError::ConflictingVolumePins { .. }) => {

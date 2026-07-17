@@ -481,6 +481,88 @@ async fn mixed_platform_pushed_deploy_selects_each_platform_image_and_keeps_one_
 }
 
 #[tokio::test]
+async fn pushed_receipt_places_only_on_machines_with_a_covered_platform() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+
+    execute_deploy(
+        amd64_pushed_deploy_command([
+            (machine_id("machine_a"), platform("amd64")),
+            (machine_id("machine_b"), platform("arm64")),
+        ]),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect("amd64 receipt deploys to the compatible machine");
+
+    assert_eq!(
+        runtime
+            .requests
+            .iter()
+            .map(|(machine_id, _)| machine_id.clone())
+            .collect::<Vec<_>>(),
+        [machine_id("machine_a")]
+    );
+}
+
+#[tokio::test]
+async fn pushed_receipt_without_a_compatible_machine_fails_before_effects() {
+    let mut recorder = RecordingOperations::default();
+    let mut runtime = RecordingRuntime::with_containers(["unused"]);
+    let mut health = RecordingHealth::healthy();
+    let mut namespace_state = RecordingNamespaceState::stored();
+    let required = platform("amd64");
+    let reported = platform("arm64");
+
+    let error = execute_deploy(
+        amd64_pushed_deploy_command([(machine_id("machine_b"), reported.clone())]),
+        DeployExecutionPorts {
+            recorder: &mut recorder,
+            machine_runtime: &mut runtime,
+            health_checker: &mut health,
+            certificate_provisioner: &mut RecordingCertificates::successful(),
+            namespace_state: &mut namespace_state,
+        },
+    )
+    .await
+    .expect_err("receipt without a compatible target fails deploy");
+
+    let DeployExecutionError::Failed { failure, .. } = error else {
+        panic!("expected recorded deploy failure");
+    };
+    assert_eq!(
+        *failure,
+        DeployOperationFailure::NoUsableMachines {
+            reasons: vec![ployz_core::operation::UnusableMachine {
+                machine_id: machine_id("machine_b"),
+                reason: ployz_core::machine::MachineUsabilityReason::PlatformMismatch {
+                    supported: ployz_core::build::BuildPlatforms::try_new([required])
+                        .expect("one supported platform"),
+                    reported,
+                },
+            }],
+        }
+    );
+    assert!(runtime.requests.is_empty());
+    assert!(runtime.image_ensures.is_empty());
+    assert!(runtime.volume_ensures.is_empty());
+    assert!(
+        !recorder
+            .records
+            .iter()
+            .any(|record| matches!(record, RecordedOperation::PlanCreated { .. }))
+    );
+}
+
+#[tokio::test]
 async fn seed_clock_ahead_of_control_fails_before_image_ensure_rpc() {
     let mut recorder = RecordingOperations::default();
     let mut runtime = RecordingRuntime::with_containers(["ctr_1"]);

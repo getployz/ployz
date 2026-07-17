@@ -22,7 +22,7 @@ pub enum MachineLifecycle {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MachineUsabilityReason {
     PlatformMismatch {
-        required: crate::image::OciPlatform,
+        supported: crate::build::BuildPlatforms,
         reported: crate::image::OciPlatform,
     },
     Draining,
@@ -77,12 +77,16 @@ mod tests {
     #[test]
     fn platform_mismatch_is_typed_attempt_evidence() {
         let reason = MachineUsabilityReason::PlatformMismatch {
-            required: crate::image::OciPlatform::try_new("linux", "arm64").expect("required"),
+            supported: crate::build::BuildPlatforms::try_new([
+                crate::image::OciPlatform::try_new("linux", "arm64").expect("supported"),
+                crate::image::OciPlatform::try_new("linux", "amd64").expect("supported"),
+            ])
+            .expect("distinct platforms"),
             reported: crate::image::OciPlatform::try_new("linux", "amd64").expect("reported"),
         };
         assert_eq!(
             serde_json::to_value(reason).expect("json"),
-            serde_json::json!({"kind":"platform_mismatch","required":{"os":"linux","architecture":"arm64"},"reported":{"os":"linux","architecture":"amd64"}})
+            serde_json::json!({"kind":"platform_mismatch","supported":[{"os":"linux","architecture":"amd64"},{"os":"linux","architecture":"arm64"}],"reported":{"os":"linux","architecture":"amd64"}})
         );
     }
 

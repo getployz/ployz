@@ -1347,6 +1347,44 @@ pub(super) fn ployz_automatic_deploy_command() -> DeployExecutionInput {
 }
 
 pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecutionInput {
+    pushed_deploy_command(
+        replicas,
+        ployz_core::deploy::PushedImageReceipt::try_new([
+            (platform("amd64"), platform_image("machine_seed", 'a', 'b')),
+            (
+                platform("arm64"),
+                platform_image("machine_arm_seed", 'd', 'e'),
+            ),
+        ])
+        .expect("pushed receipt"),
+        [
+            (machine_id("machine_a"), platform("amd64")),
+            (machine_id("machine_b"), platform("arm64")),
+        ]
+        .into_iter()
+        .collect(),
+    )
+}
+
+pub(super) fn amd64_pushed_deploy_command(
+    machine_platforms: impl IntoIterator<Item = (MachineId, ployz_core::image::OciPlatform)>,
+) -> DeployExecutionInput {
+    pushed_deploy_command(
+        1,
+        ployz_core::deploy::PushedImageReceipt::try_new([(
+            platform("amd64"),
+            platform_image("machine_seed", 'a', 'b'),
+        )])
+        .expect("pushed receipt"),
+        machine_platforms.into_iter().collect(),
+    )
+}
+
+fn pushed_deploy_command(
+    replicas: u16,
+    receipt: ployz_core::deploy::PushedImageReceipt,
+    machine_platforms: std::collections::BTreeMap<MachineId, ployz_core::image::OciPlatform>,
+) -> DeployExecutionInput {
     let request = DeployRequest {
         namespace_id: namespace_id("default"),
         origin: None,
@@ -1355,55 +1393,7 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
             keep: None,
             service_id: service_id("svc_api"),
             image: image("local/api:rev_2"),
-            image_source: ployz_core::deploy::ImageSource::PushedToSeed(
-                ployz_core::deploy::PushedImageReceipt::try_new([
-                    (
-                        ployz_core::image::OciPlatform::try_new("linux", "amd64")
-                            .expect("platform"),
-                        ployz_core::deploy::PlatformImage {
-                            seed: machine_id("machine_seed"),
-                            manifest_digest: ployz_core::image::OciDigest::try_new(format!(
-                                "sha256:{}",
-                                "a".repeat(64)
-                            ))
-                            .expect("valid manifest digest"),
-                            image_id: ployz_core::image::OciDigest::try_new(format!(
-                                "sha256:{}",
-                                "b".repeat(64)
-                            ))
-                            .expect("valid image id"),
-                            availability_expires_at:
-                                ployz_core::deploy::ImageAvailabilityExpiresAt::try_new(
-                                    4_102_444_800,
-                                )
-                                .expect("expiry"),
-                        },
-                    ),
-                    (
-                        ployz_core::image::OciPlatform::try_new("linux", "arm64")
-                            .expect("platform"),
-                        ployz_core::deploy::PlatformImage {
-                            seed: machine_id("machine_arm_seed"),
-                            manifest_digest: ployz_core::image::OciDigest::try_new(format!(
-                                "sha256:{}",
-                                "d".repeat(64)
-                            ))
-                            .expect("valid manifest digest"),
-                            image_id: ployz_core::image::OciDigest::try_new(format!(
-                                "sha256:{}",
-                                "e".repeat(64)
-                            ))
-                            .expect("valid image id"),
-                            availability_expires_at:
-                                ployz_core::deploy::ImageAvailabilityExpiresAt::try_new(
-                                    4_102_444_800,
-                                )
-                                .expect("expiry"),
-                        },
-                    ),
-                ])
-                .expect("pushed receipt"),
-            ),
+            image_source: ployz_core::deploy::ImageSource::PushedToSeed(receipt),
             replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
@@ -1411,18 +1401,12 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
             routes: Vec::new(),
         }],
     };
-    let amd64 = ployz_core::image::OciPlatform::try_new("linux", "amd64").expect("platform");
-    let arm64 = ployz_core::image::OciPlatform::try_new("linux", "arm64").expect("platform");
+    let eligible_machines = machine_platforms.keys().cloned().collect();
     deploy_execution_input(
         operation_id("op_123"),
         request,
         DeployExecutionFacts {
-            machine_platforms: [
-                (machine_id("machine_a"), amd64),
-                (machine_id("machine_b"), arm64),
-            ]
-            .into_iter()
-            .collect(),
+            machine_platforms,
             seed_clock_testimony: [
                 (
                     machine_id("machine_seed"),
@@ -1446,7 +1430,7 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
             namespace_route_bindings: Vec::new(),
             namespace_serving_entries: Vec::new(),
             namespace_volume_pins: Vec::new(),
-            eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+            eligible_machines,
             dataplane_members: vec![
                 ployz_core::network::DataplaneMember {
                     machine_id: machine_id("machine_seed"),
@@ -1471,6 +1455,30 @@ pub(super) fn route_less_pushed_deploy_command(replicas: u16) -> DeployExecution
             step_timeout: Duration::from_secs(5),
         },
     )
+}
+
+pub(super) fn platform(architecture: &str) -> ployz_core::image::OciPlatform {
+    ployz_core::image::OciPlatform::try_new("linux", architecture).expect("platform")
+}
+
+fn platform_image(seed: &str, manifest: char, image: char) -> ployz_core::deploy::PlatformImage {
+    ployz_core::deploy::PlatformImage {
+        seed: machine_id(seed),
+        manifest_digest: ployz_core::image::OciDigest::try_new(format!(
+            "sha256:{}",
+            manifest.to_string().repeat(64)
+        ))
+        .expect("valid manifest digest"),
+        image_id: ployz_core::image::OciDigest::try_new(format!(
+            "sha256:{}",
+            image.to_string().repeat(64)
+        ))
+        .expect("valid image id"),
+        availability_expires_at: ployz_core::deploy::ImageAvailabilityExpiresAt::try_new(
+            4_102_444_800,
+        )
+        .expect("expiry"),
+    }
 }
 
 pub(super) fn deploy_command_without_eligible_machines(replicas: u16) -> DeployExecutionInput {
@@ -1739,8 +1747,7 @@ fn deploy_execution_input(
     }
     DeployExecutionInput::new(
         operation_id,
-        ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(request)
-            .expect("fixture deploy request normalizes"),
+        request,
         facts,
         std::collections::BTreeMap::new(),
         std::collections::BTreeSet::new(),

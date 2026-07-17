@@ -2,6 +2,7 @@
 
 use super::images::registry_image_source;
 use super::*;
+use crate::network::internal_dns::InternalServiceName;
 
 pub const DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS: u64 = 60 * 60;
 const MAX_DEPLOY_ORIGIN_BYTES: usize = 128;
@@ -121,63 +122,6 @@ impl DeployRequest {
                 .expect("namespace id is a valid service id fallback")
         })
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VolumeDeclaredDeployRequest(DeployRequest);
-
-impl VolumeDeclaredDeployRequest {
-    pub fn try_new(request: DeployRequest) -> Result<Self, DeployVolumeDeclarationError> {
-        for service in &request.services {
-            for mount in &service.runtime.volume_mounts {
-                if !request.volumes.contains_key(&mount.volume_name) {
-                    return Err(DeployVolumeDeclarationError {
-                        service_id: service.service_id.clone(),
-                        volume_name: mount.volume_name.clone(),
-                    });
-                }
-            }
-        }
-        Ok(Self(request))
-    }
-
-    #[must_use]
-    pub fn namespace_id(&self) -> &NamespaceId {
-        &self.0.namespace_id
-    }
-
-    #[must_use]
-    pub fn namespace_revision_id(&self) -> NamespaceRevisionId {
-        self.0.namespace_revision_id()
-    }
-
-    #[must_use]
-    pub fn status_service_id(&self) -> ServiceId {
-        self.0.status_service_id()
-    }
-
-    #[must_use]
-    pub fn request(&self) -> &DeployRequest {
-        &self.0
-    }
-
-    #[must_use]
-    pub fn services(&self) -> &[DeployServiceSpec] {
-        &self.0.services
-    }
-
-    #[must_use]
-    pub fn service(&self, service_id: &ServiceId) -> Option<&DeployServiceSpec> {
-        self.0
-            .services
-            .iter()
-            .find(|service| service.service_id == *service_id)
-    }
-
-    #[must_use]
-    pub fn into_request(self) -> DeployRequest {
-        self.0
-    }
 
     pub fn replace_service_image(
         &mut self,
@@ -185,7 +129,6 @@ impl VolumeDeclaredDeployRequest {
         image: ImageReference,
     ) -> Result<(), DeployImageReplacementError> {
         let Some(service) = self
-            .0
             .services
             .iter_mut()
             .find(|service| service.service_id == *service_id)
@@ -201,7 +144,7 @@ impl VolumeDeclaredDeployRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DeployImageReplacementError {
-    #[error("volume-declared deploy does not contain service {}", .service_id.as_str())]
+    #[error("deploy request does not contain service {}", .service_id.as_str())]
     UnknownService { service_id: ServiceId },
 }
 
@@ -214,6 +157,122 @@ pub enum DeployImageReplacementError {
 pub struct DeployVolumeDeclarationError {
     pub service_id: ServiceId,
     pub volume_name: VolumeName,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum DeployTargetValidationError {
+    #[error("service {} is declared more than once", .service_id.as_str())]
+    DuplicateServiceId { service_id: ServiceId },
+    #[error(transparent)]
+    UndeclaredVolume(#[from] DeployVolumeDeclarationError),
+    #[error(
+        "service {} in namespace {} cannot form an internal DNS name",
+        .service_id.as_str(),
+        .namespace_id.as_str()
+    )]
+    InvalidInternalServiceName {
+        service_id: ServiceId,
+        namespace_id: NamespaceId,
+    },
+    #[error("service {} pushed image reference {source}", .service_id.as_str())]
+    InvalidPushedImage {
+        service_id: ServiceId,
+        #[source]
+        source: PushedImageReferenceError,
+    },
+}
+
+pub(super) fn validate_deploy_target<'a>(
+    namespace_id: &NamespaceId,
+    volumes: &BTreeMap<VolumeName, VolumeSpec>,
+    services: impl IntoIterator<Item = (&'a ServiceId, &'a ContainerRuntimeSpec)>,
+) -> Result<(), DeployTargetValidationError> {
+    let services = services.into_iter().collect::<Vec<_>>();
+    for (service_id, runtime) in &services {
+        for mount in &runtime.volume_mounts {
+            if !volumes.contains_key(&mount.volume_name) {
+                return Err(DeployVolumeDeclarationError {
+                    service_id: (*service_id).clone(),
+                    volume_name: mount.volume_name.clone(),
+                }
+                .into());
+            }
+        }
+    }
+    for (service_id, _) in services {
+        if InternalServiceName::try_from_ids(service_id, namespace_id).is_err() {
+            return Err(DeployTargetValidationError::InvalidInternalServiceName {
+                service_id: service_id.clone(),
+                namespace_id: namespace_id.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deploy_normalization_rejects_an_invalid_internal_service_name() {
+        let service_id = ServiceId::try_new("a".repeat(64)).expect("service id");
+        let namespace_id = NamespaceId::try_new("default").expect("namespace id");
+        let request = DeployRequest {
+            namespace_id: namespace_id.clone(),
+            origin: None,
+            volumes: BTreeMap::new(),
+            services: vec![DeployServiceSpec {
+                service_id: service_id.clone(),
+                image: ImageReference::try_new("ghcr.io/acme/api:current").expect("image"),
+                image_source: ImageSource::Registry,
+                replicas: ReplicaCount::try_new(1).expect("replicas"),
+                keep: None,
+                runtime: ContainerRuntimeSpec::image_defaults(),
+                pre_start: None,
+                depends_on: Vec::new(),
+                routes: Vec::new(),
+            }],
+        };
+        let error = DeployPlanningTarget::try_from_deploy(&request)
+            .expect_err("internal service name is invalid");
+
+        assert_eq!(
+            error,
+            DeployTargetValidationError::InvalidInternalServiceName {
+                service_id,
+                namespace_id,
+            }
+        );
+    }
+
+    #[test]
+    fn deploy_normalization_rejects_duplicate_service_ids() {
+        let service_id = ServiceId::try_new("api").expect("service id");
+        let service = DeployServiceSpec {
+            service_id: service_id.clone(),
+            image: ImageReference::try_new("ghcr.io/acme/api:current").expect("image"),
+            image_source: ImageSource::Registry,
+            replicas: ReplicaCount::try_new(1).expect("replicas"),
+            keep: None,
+            runtime: ContainerRuntimeSpec::image_defaults(),
+            pre_start: None,
+            depends_on: Vec::new(),
+            routes: Vec::new(),
+        };
+        let request = DeployRequest {
+            namespace_id: NamespaceId::try_new("default").expect("namespace id"),
+            origin: None,
+            volumes: BTreeMap::new(),
+            services: vec![service.clone(), service],
+        };
+
+        assert_eq!(
+            DeployPlanningTarget::try_from_deploy(&request)
+                .expect_err("duplicate service ids must be rejected"),
+            DeployTargetValidationError::DuplicateServiceId { service_id }
+        );
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

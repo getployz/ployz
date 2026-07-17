@@ -20,7 +20,7 @@ pub(crate) use queries::ControlHealthReaders;
 pub use queries::ops_status_missing;
 pub use queries::{
     LogsQueryService, MachineQueryService, RuntimeSnapshotQueryService, ServiceQueryService,
-    VolumeQueryService, credential_list, ops_list, ops_status, ops_watch,
+    VolumeQueryService, credential_list, deploy_preview, ops_list, ops_status, ops_watch,
 };
 #[cfg(test)]
 pub use submit::owned_operation;

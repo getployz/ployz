@@ -236,6 +236,22 @@ _Avoid_: Latest tag, requested image, background refresh
 The typed deploy input submitted by Ployz Cloud or another SDK client. It is the first deploy input source for core Ployz.
 _Avoid_: Compose project
 
+**Deploy Preview**:
+A read-only, non-authoritative projection of how current runtime testimony could satisfy deploy input. It includes tentative target machines and per-service Build Platform Requirements but creates no operation or runtime intent.
+_Avoid_: Deploy Plan, dry run, deploy reservation
+
+**Pending Build Image**:
+A preview-only service image state saying that Cloud must produce the image before authoritative deploy submission. It can participate in a Deploy Preview but is never valid deploy input for an operation.
+_Avoid_: Missing image, placeholder receipt, unresolved registry image
+
+**Build Platform Requirement**:
+The set of target platforms one service image must cover, derived from that service's tentative targets in a Deploy Preview. A reusable image receipt may cover additional platforms.
+_Avoid_: Cluster architecture, builder architecture, global platform policy
+
+**Deploy Plan**:
+The authoritative, phase-ordered plan created by a Deploy from fresh runtime testimony and concrete image identities. It may differ from an earlier Deploy Preview while remaining limited to platforms covered by each service image.
+_Avoid_: Deploy Preview, Cloud workflow plan, stored desired state
+
 **Compose Adapter**:
 A future adapter that translates Docker Compose input into deploy input for one namespace. The adapter preserves familiar Compose concepts without making Compose the core domain model.
 _Avoid_: Core deploy model
@@ -363,10 +379,6 @@ _Avoid_: Garbage, orphan
 **Cleanup**:
 Explicit removal of runtime material that is outside the desired namespace revision. Cleanup happens after service phases in a deploy or through another named operation, not through a hidden background reconciler.
 _Avoid_: Garbage collection
-
-**Deploy Plan**:
-The phase-ordered changes computed to move a namespace from runtime state to a namespace revision. A deploy plan is produced for an attempt; it is not durable desired state.
-_Avoid_: Workflow definition
 
 **Service**:
 A named workload inside a namespace. A service's desired definition belongs to a namespace revision, and its runtime presence is one or more service containers.

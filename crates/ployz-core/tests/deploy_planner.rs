@@ -2,16 +2,16 @@ use ployz_core::deploy::{
     ContainerCommand, ContainerEntrypoint, ContainerHealthcheck, ContainerHealthcheckTest,
     ContainerMountPath, ContainerRuntimeSpec, DatasetName, DependencyCondition,
     DeployCleanupContainer, DeployPhasePlan, DeployPlan, DeployPlanError, DeployPlanStep,
-    DeployPlanningInput as CoreDeployPlanningInput, DeployPreparationInput, DeployRoute,
-    DeployRouteTarget, DeployServicePlan, DeployServiceSpec, EnvName, EnvValue,
+    DeployPlanningInput as CoreDeployPlanningInput, DeployPlanningTarget, DeployPreparationInput,
+    DeployRoute, DeployRouteTarget, DeployServicePlan, DeployServiceSpec, EnvName, EnvValue,
     ExistingReplicaCreationGate, ExistingReplicaPolicy, ExistingServiceReplica,
     HealthcheckShellCommand, ImageReference, ImageSource, ObservedCleanupCandidate, PlatformImage,
     PreStartHook, PreStartHookStep, PushedImageReceipt, ReplicaCount, ReplicaSlot,
     ServiceDependency, ServiceEnvironment, ServiceVolumeMount, StopGracePeriod,
     VolumeAdmissionFailure, VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName,
-    auto_hostname_route_binding_commits, namespace_revision_id_for,
-    namespace_route_binding_removals, namespace_serving_target_removals, plan_namespace_deploy,
-    prepare_deploy, validate_deploy_route_bindings,
+    commit_deploy_route_bindings, namespace_revision_id_for, namespace_route_binding_removals,
+    namespace_serving_target_removals, plan_namespace_deploy, prepare_deploy,
+    validate_deploy_route_bindings,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::image::{OciDigest, OciPlatform};
@@ -126,8 +126,8 @@ fn retention_policy_changes_neither_service_entry_nor_namespace_revision_identit
         with_keep.namespace_revision_entry_id(&namespace)
     );
     assert_eq!(
-        normalized_services(vec![without_keep], BTreeMap::new()).namespace_revision_id(),
-        normalized_services(vec![with_keep], BTreeMap::new()).namespace_revision_id()
+        namespace_revision_id_for(&namespace, &[without_keep]),
+        namespace_revision_id_for(&namespace, &[with_keep])
     );
 }
 
@@ -157,6 +157,28 @@ fn pushed_image_identity_uses_index_digest_across_platform_receipts() {
         left.namespace_revision_entry_id(&namespace_id("default")),
         changed_content.namespace_revision_entry_id(&namespace_id("default"))
     );
+}
+
+#[test]
+fn planning_target_rejects_a_pushed_receipt_with_a_different_image_reference() {
+    let mut service = deploy_request(1);
+    service.image_source = pushed_image_source([('a', "amd64", "machine_seed")], 4_000_000_000);
+    let request = ployz_core::deploy::DeployRequest {
+        namespace_id: namespace_id("default"),
+        origin: None,
+        volumes: BTreeMap::new(),
+        services: vec![service],
+    };
+
+    assert!(matches!(
+        DeployPlanningTarget::try_from_deploy(&request),
+        Err(
+            ployz_core::deploy::DeployTargetValidationError::InvalidPushedImage {
+                source: ployz_core::deploy::PushedImageReferenceError::NotDigestPinned,
+                ..
+            }
+        )
+    ));
 }
 
 fn pushed_image_source<const N: usize>(
@@ -484,7 +506,9 @@ fn service_keep_breaks_created_time_ties_deterministically_after_excluding_selec
 fn deploy_plan_requires_eligible_machine() {
     assert_eq!(
         plan_single_service(&planning_input(1, [])),
-        Err(DeployPlanError::NoEligibleMachines)
+        Err(DeployPlanError::NoEligibleMachines {
+            service_id: service_id("svc_api"),
+        })
     );
 }
 
@@ -519,18 +543,16 @@ fn deploy_preparation_rejects_a_service_id_outside_the_validated_request() {
     let request = normalized_services(vec![deploy_request(1)], BTreeMap::new());
 
     assert_eq!(
-        prepare_deploy(
-            DeployPreparationInput {
-                request: &request,
-                service_id: service_id("svc_foreign"),
-                occupied_route_bindings: Vec::new(),
-                eligible_machines: Vec::new(),
-                draining_machines: Vec::new(),
-                observed_machines: Vec::new(),
-                existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
-            },
-            route_binding_id_for,
-        ),
+        prepare_deploy(DeployPreparationInput {
+            target: &request,
+            service_id: service_id("svc_foreign"),
+            occupied_route_bindings: Vec::new(),
+            eligible_machines: Vec::new(),
+            machine_platforms: BTreeMap::new(),
+            draining_machines: Vec::new(),
+            observed_machines: Vec::new(),
+            existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
+        },),
         Err(ployz_core::deploy::DeployPreparationError::UnknownService {
             service_id: service_id("svc_foreign"),
         })
@@ -958,7 +980,9 @@ fn volume_backed_service_fails_when_existing_pin_is_not_eligible() {
 
     assert_eq!(
         plan_single_service(&input),
-        Err(DeployPlanError::NoEligibleMachines)
+        Err(DeployPlanError::NoEligibleMachines {
+            service_id: service_id("svc_api"),
+        })
     );
 }
 
@@ -1151,59 +1175,56 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
     let request = deploy_request(2);
     let entry_id = request.namespace_revision_entry_id(&namespace_id("default"));
     let normalized = normalized_services(vec![request.clone()], BTreeMap::new());
-    let prepared = prepare_deploy(
-        DeployPreparationInput {
-            request: &normalized,
-            service_id: request.service_id.clone(),
-            occupied_route_bindings: Vec::new(),
-            eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
-            draining_machines: Vec::new(),
-            observed_machines: vec![observed_machine(
-                "machine_b",
-                [
-                    observed_container(
-                        "machine_b",
-                        "ctr_target",
-                        "svc_api",
-                        entry_id.as_str(),
-                        ManagedContainerKind::Service,
-                        ContainerRuntimeState::running_unroutable(),
-                    ),
-                    observed_container(
-                        "machine_b",
-                        "ctr_old",
-                        "svc_api",
-                        "entry_old",
-                        ManagedContainerKind::Service,
-                        ContainerRuntimeState::running_unroutable(),
-                    ),
-                    observed_container(
-                        "machine_b",
-                        "ctr_job",
-                        "svc_api",
-                        entry_id.as_str(),
-                        ManagedContainerKind::Job,
-                        ContainerRuntimeState::running_unroutable(),
-                    ),
-                    observed_container(
-                        "machine_b",
-                        "ctr_exited",
-                        "svc_api",
-                        entry_id.as_str(),
-                        ManagedContainerKind::Service,
-                        ContainerRuntimeState::Exited,
-                    ),
-                ],
-            )],
-            existing_replica_policy: ExistingReplicaPolicy::Promoted {
-                interrupted_operation_ids: BTreeSet::new(),
-            },
+    let prepared = prepare_deploy(DeployPreparationInput {
+        target: &normalized,
+        service_id: request.service_id.clone(),
+        occupied_route_bindings: Vec::new(),
+        eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+        machine_platforms: BTreeMap::new(),
+        draining_machines: Vec::new(),
+        observed_machines: vec![observed_machine(
+            "machine_b",
+            [
+                observed_container(
+                    "machine_b",
+                    "ctr_target",
+                    "svc_api",
+                    entry_id.as_str(),
+                    ManagedContainerKind::Service,
+                    ContainerRuntimeState::running_unroutable(),
+                ),
+                observed_container(
+                    "machine_b",
+                    "ctr_old",
+                    "svc_api",
+                    "entry_old",
+                    ManagedContainerKind::Service,
+                    ContainerRuntimeState::running_unroutable(),
+                ),
+                observed_container(
+                    "machine_b",
+                    "ctr_job",
+                    "svc_api",
+                    entry_id.as_str(),
+                    ManagedContainerKind::Job,
+                    ContainerRuntimeState::running_unroutable(),
+                ),
+                observed_container(
+                    "machine_b",
+                    "ctr_exited",
+                    "svc_api",
+                    entry_id.as_str(),
+                    ManagedContainerKind::Service,
+                    ContainerRuntimeState::Exited,
+                ),
+            ],
+        )],
+        existing_replica_policy: ExistingReplicaPolicy::Promoted {
+            interrupted_operation_ids: BTreeSet::new(),
         },
-        route_binding_id_for,
-    )
+    })
     .expect("deploy preparation");
 
-    assert_eq!(prepared.service, deploy_request(2));
     assert_eq!(
         prepared.eligible_machines,
         vec![machine_id("machine_a"), machine_id("machine_b")]
@@ -1223,34 +1244,97 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
 }
 
 #[test]
+fn deploy_preparation_applies_receipt_platforms_to_candidates_and_reusable_replicas_once() {
+    let amd64 = OciPlatform::try_new("linux", "amd64").expect("platform");
+    let arm64 = OciPlatform::try_new("linux", "arm64").expect("platform");
+    let mut request = deploy_request(1);
+    request.image_source = pushed_image_source([('a', "amd64", "machine_seed")], 4_000_000_000);
+    let ImageSource::PushedToSeed(receipt) = &request.image_source else {
+        panic!("pushed fixture");
+    };
+    request.image = request
+        .image
+        .clone()
+        .with_digest(receipt.index_digest())
+        .expect("pinned image");
+    let entry_id = request.namespace_revision_entry_id(&namespace_id("default"));
+    let normalized = normalized_services(vec![request.clone()], BTreeMap::new());
+
+    let prepared = prepare_deploy(DeployPreparationInput {
+        target: &normalized,
+        service_id: request.service_id,
+        occupied_route_bindings: Vec::new(),
+        eligible_machines: vec![machine_id("machine_arm")],
+        machine_platforms: BTreeMap::from([
+            (machine_id("machine_arm"), arm64.clone()),
+            (machine_id("machine_existing"), amd64),
+        ]),
+        draining_machines: Vec::new(),
+        observed_machines: vec![observed_machine(
+            "machine_existing",
+            [observed_container(
+                "machine_existing",
+                "ctr_existing",
+                "svc_api",
+                entry_id.as_str(),
+                ManagedContainerKind::Service,
+                ContainerRuntimeState::running_unroutable(),
+            )],
+        )],
+        existing_replica_policy: ExistingReplicaPolicy::Promoted {
+            interrupted_operation_ids: BTreeSet::new(),
+        },
+    })
+    .expect("deploy preparation");
+
+    assert!(prepared.eligible_machines.is_empty());
+    assert_eq!(
+        prepared
+            .existing_replicas
+            .iter()
+            .map(|replica| replica.machine_id.clone())
+            .collect::<Vec<_>>(),
+        [machine_id("machine_existing")]
+    );
+    assert!(matches!(
+        prepared.unusable_machines.as_slice(),
+        [ployz_core::operation::UnusableMachine {
+            machine_id: actual_machine,
+            reason: ployz_core::machine::MachineUsabilityReason::PlatformMismatch {
+                reported,
+                ..
+            },
+        }] if actual_machine == &machine_id("machine_arm") && reported == &arm64
+    ));
+}
+
+#[test]
 fn deploy_preparation_marks_interrupted_replicas_for_creation_gating() {
     let request = deploy_request(2);
     let entry_id = request.namespace_revision_entry_id(&namespace_id("default"));
     let normalized = normalized_services(vec![request.clone()], BTreeMap::new());
-    let prepared = prepare_deploy(
-        DeployPreparationInput {
-            request: &normalized,
-            service_id: request.service_id.clone(),
-            occupied_route_bindings: Vec::new(),
-            eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
-            draining_machines: Vec::new(),
-            observed_machines: vec![observed_machine(
+    let prepared = prepare_deploy(DeployPreparationInput {
+        target: &normalized,
+        service_id: request.service_id.clone(),
+        occupied_route_bindings: Vec::new(),
+        eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+        machine_platforms: BTreeMap::new(),
+        draining_machines: Vec::new(),
+        observed_machines: vec![observed_machine(
+            "machine_b",
+            [observed_container(
                 "machine_b",
-                [observed_container(
-                    "machine_b",
-                    "ctr_retained",
-                    "svc_api",
-                    entry_id.as_str(),
-                    ManagedContainerKind::Service,
-                    ContainerRuntimeState::running_unroutable(),
-                )],
+                "ctr_retained",
+                "svc_api",
+                entry_id.as_str(),
+                ManagedContainerKind::Service,
+                ContainerRuntimeState::running_unroutable(),
             )],
-            existing_replica_policy: ExistingReplicaPolicy::RecoverInterrupted {
-                operation_ids: BTreeSet::from([operation_id("op_existing")]),
-            },
+        )],
+        existing_replica_policy: ExistingReplicaPolicy::RecoverInterrupted {
+            operation_ids: BTreeSet::from([operation_id("op_existing")]),
         },
-        route_binding_id_for,
-    )
+    })
     .expect("interrupted deploy preparation");
 
     assert_eq!(
@@ -1286,23 +1370,21 @@ fn promoted_entry_still_gates_replica_from_interrupted_provenance() {
         ContainerRuntimeState::running_unroutable(),
     );
     interrupted.identity.operation_id = operation_id("op_interrupted");
-    let prepared = prepare_deploy(
-        DeployPreparationInput {
-            request: &normalized,
-            service_id: request.service_id,
-            occupied_route_bindings: Vec::new(),
-            eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
-            draining_machines: Vec::new(),
-            observed_machines: vec![
-                observed_machine("machine_a", [completed]),
-                observed_machine("machine_b", [interrupted]),
-            ],
-            existing_replica_policy: ExistingReplicaPolicy::Promoted {
-                interrupted_operation_ids: BTreeSet::from([operation_id("op_interrupted")]),
-            },
+    let prepared = prepare_deploy(DeployPreparationInput {
+        target: &normalized,
+        service_id: request.service_id,
+        occupied_route_bindings: Vec::new(),
+        eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+        machine_platforms: BTreeMap::new(),
+        draining_machines: Vec::new(),
+        observed_machines: vec![
+            observed_machine("machine_a", [completed]),
+            observed_machine("machine_b", [interrupted]),
+        ],
+        existing_replica_policy: ExistingReplicaPolicy::Promoted {
+            interrupted_operation_ids: BTreeSet::from([operation_id("op_interrupted")]),
         },
-        route_binding_id_for,
-    )
+    })
     .expect("promoted deploy preparation");
 
     assert_eq!(
@@ -1326,30 +1408,28 @@ fn promoted_entry_still_gates_replica_from_interrupted_provenance() {
 fn deploy_preparation_evacuates_draining_machine_replicas() {
     let request = deploy_request(1);
     let normalized = normalized_services(vec![request.clone()], BTreeMap::new());
-    let prepared = prepare_deploy(
-        DeployPreparationInput {
-            request: &normalized,
-            service_id: request.service_id.clone(),
-            occupied_route_bindings: Vec::new(),
-            eligible_machines: vec![machine_id("machine_a")],
-            draining_machines: vec![machine_id("machine_b")],
-            observed_machines: vec![observed_machine(
+    let prepared = prepare_deploy(DeployPreparationInput {
+        target: &normalized,
+        service_id: request.service_id.clone(),
+        occupied_route_bindings: Vec::new(),
+        eligible_machines: vec![machine_id("machine_a")],
+        machine_platforms: BTreeMap::new(),
+        draining_machines: vec![machine_id("machine_b")],
+        observed_machines: vec![observed_machine(
+            "machine_b",
+            [observed_container(
                 "machine_b",
-                [observed_container(
-                    "machine_b",
-                    "ctr_target",
-                    "svc_api",
-                    "entry_1",
-                    ManagedContainerKind::Service,
-                    ContainerRuntimeState::running_unroutable(),
-                )],
+                "ctr_target",
+                "svc_api",
+                "entry_1",
+                ManagedContainerKind::Service,
+                ContainerRuntimeState::running_unroutable(),
             )],
-            existing_replica_policy: ExistingReplicaPolicy::Promoted {
-                interrupted_operation_ids: BTreeSet::new(),
-            },
+        )],
+        existing_replica_policy: ExistingReplicaPolicy::Promoted {
+            interrupted_operation_ids: BTreeSet::new(),
         },
-        route_binding_id_for,
-    )
+    })
     .expect("deploy preparation");
 
     assert_eq!(prepared.existing_replicas, Vec::new());
@@ -1365,7 +1445,7 @@ fn deploy_preparation_evacuates_draining_machine_replicas() {
     );
 
     let input = DeployPlanningInput {
-        service: prepared.service,
+        service: request,
         volumes: BTreeMap::new(),
         eligible_machines: prepared.eligible_machines,
         existing_replicas: prepared.existing_replicas,
@@ -1393,40 +1473,38 @@ fn routed_deploy_preparation_reuses_matching_identity_regardless_of_endpoint_por
     let entry_id = request.namespace_revision_entry_id(&namespace_id("default"));
     let normalized = normalized_services(vec![request.clone()], BTreeMap::new());
 
-    let prepared = prepare_deploy(
-        DeployPreparationInput {
-            request: &normalized,
-            service_id: request.service_id.clone(),
-            occupied_route_bindings: Vec::new(),
-            eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
-            draining_machines: Vec::new(),
-            observed_machines: vec![observed_machine(
-                "machine_b",
-                [
-                    observed_container(
-                        "machine_b",
-                        "ctr_wrong_port",
-                        "svc_api",
-                        entry_id.as_str(),
-                        ManagedContainerKind::Service,
-                        ContainerRuntimeState::running_at(endpoint_ip("10.0.0.2")),
-                    ),
-                    observed_container(
-                        "machine_b",
-                        "ctr_target",
-                        "svc_api",
-                        entry_id.as_str(),
-                        ManagedContainerKind::Service,
-                        ContainerRuntimeState::running_at(endpoint_ip("10.0.0.3")),
-                    ),
-                ],
-            )],
-            existing_replica_policy: ExistingReplicaPolicy::Promoted {
-                interrupted_operation_ids: BTreeSet::new(),
-            },
+    let prepared = prepare_deploy(DeployPreparationInput {
+        target: &normalized,
+        service_id: request.service_id.clone(),
+        occupied_route_bindings: Vec::new(),
+        eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+        machine_platforms: BTreeMap::new(),
+        draining_machines: Vec::new(),
+        observed_machines: vec![observed_machine(
+            "machine_b",
+            [
+                observed_container(
+                    "machine_b",
+                    "ctr_wrong_port",
+                    "svc_api",
+                    entry_id.as_str(),
+                    ManagedContainerKind::Service,
+                    ContainerRuntimeState::running_at(endpoint_ip("10.0.0.2")),
+                ),
+                observed_container(
+                    "machine_b",
+                    "ctr_target",
+                    "svc_api",
+                    entry_id.as_str(),
+                    ManagedContainerKind::Service,
+                    ContainerRuntimeState::running_at(endpoint_ip("10.0.0.3")),
+                ),
+            ],
+        )],
+        existing_replica_policy: ExistingReplicaPolicy::Promoted {
+            interrupted_operation_ids: BTreeSet::new(),
         },
-        route_binding_id_for,
-    )
+    })
     .expect("deploy preparation");
 
     assert_eq!(
@@ -1450,22 +1528,20 @@ fn deploy_preparation_commits_multiple_routes_per_service() {
     );
     let normalized = normalized_services(vec![request.clone()], BTreeMap::new());
 
-    let prepared = prepare_deploy(
-        DeployPreparationInput {
-            request: &normalized,
-            service_id: request.service_id.clone(),
-            occupied_route_bindings: Vec::new(),
-            eligible_machines: vec![machine_id("machine_a")],
-            draining_machines: Vec::new(),
-            observed_machines: Vec::new(),
-            existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
-        },
-        route_binding_id_for,
-    )
+    let prepared = prepare_deploy(DeployPreparationInput {
+        target: &normalized,
+        service_id: request.service_id.clone(),
+        occupied_route_bindings: Vec::new(),
+        eligible_machines: vec![machine_id("machine_a")],
+        machine_platforms: BTreeMap::new(),
+        draining_machines: Vec::new(),
+        observed_machines: Vec::new(),
+        existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
+    })
     .expect("deploy preparation");
 
     assert_eq!(
-        prepared.route_commits,
+        commit_deploy_route_bindings(prepared.route_additions, &[], route_binding_id_for),
         vec![
             RouteBindingState {
                 id: route_binding_id("route_api_example_com"),
@@ -1495,20 +1571,20 @@ fn declared_route_reroute_reuses_the_binding_identity_and_updates_endpoint_port(
     existing.id = route_binding_id("route_existing");
     let normalized = normalized_services(vec![request.clone()], BTreeMap::new());
 
-    let prepared = prepare_deploy(
-        DeployPreparationInput {
-            request: &normalized,
-            service_id: request.service_id.clone(),
-            occupied_route_bindings: vec![existing],
-            eligible_machines: Vec::new(),
-            draining_machines: Vec::new(),
-            observed_machines: Vec::new(),
-            existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
-        },
-        route_binding_id_for,
-    )
+    let prepared = prepare_deploy(DeployPreparationInput {
+        target: &normalized,
+        service_id: request.service_id.clone(),
+        occupied_route_bindings: vec![existing.clone()],
+        eligible_machines: Vec::new(),
+        machine_platforms: BTreeMap::new(),
+        draining_machines: Vec::new(),
+        observed_machines: Vec::new(),
+        existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
+    })
     .expect("declared route reuse");
-    let [commit] = prepared.route_commits.as_slice() else {
+    let committed =
+        commit_deploy_route_bindings(prepared.route_additions, &[existing], route_binding_id_for);
+    let [commit] = committed.as_slice() else {
         panic!("one declared route commit")
     };
 
@@ -1529,24 +1605,22 @@ fn declared_route_rejects_duplicate_target_regardless_of_endpoint_port() {
         );
         let normalized = normalized_services(vec![request.clone()], BTreeMap::new());
 
-        let error = prepare_deploy(
-            DeployPreparationInput {
-                request: &normalized,
-                service_id: request.service_id.clone(),
-                occupied_route_bindings: Vec::new(),
-                eligible_machines: Vec::new(),
-                draining_machines: Vec::new(),
-                observed_machines: Vec::new(),
-                existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
-            },
-            route_binding_id_for,
-        )
+        let error = prepare_deploy(DeployPreparationInput {
+            target: &normalized,
+            service_id: request.service_id.clone(),
+            occupied_route_bindings: Vec::new(),
+            eligible_machines: Vec::new(),
+            machine_platforms: BTreeMap::new(),
+            draining_machines: Vec::new(),
+            observed_machines: Vec::new(),
+            existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
+        })
         .expect_err("duplicate declared target must collide");
 
         assert!(matches!(
             error,
             ployz_core::deploy::DeployPreparationError::Route(
-                ployz_core::deploy::RouteBindingCommitError::HostnameCollision { .. }
+                ployz_core::deploy::RouteBindingCommitError::DuplicateHostname { .. }
             )
         ));
     }
@@ -1568,18 +1642,16 @@ fn declared_route_reroute_rejects_other_owners_and_automatic_bindings() {
 
     for occupied in [other_service, other_namespace, automatic] {
         let normalized = normalized_services(vec![request.clone()], BTreeMap::new());
-        let error = prepare_deploy(
-            DeployPreparationInput {
-                request: &normalized,
-                service_id: request.service_id.clone(),
-                occupied_route_bindings: vec![occupied],
-                eligible_machines: Vec::new(),
-                draining_machines: Vec::new(),
-                observed_machines: Vec::new(),
-                existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
-            },
-            route_binding_id_for,
-        )
+        let error = prepare_deploy(DeployPreparationInput {
+            target: &normalized,
+            service_id: request.service_id.clone(),
+            occupied_route_bindings: vec![occupied],
+            eligible_machines: Vec::new(),
+            machine_platforms: BTreeMap::new(),
+            draining_machines: Vec::new(),
+            observed_machines: Vec::new(),
+            existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
+        })
         .expect_err("hostname owner must collide");
 
         assert!(matches!(
@@ -1649,22 +1721,20 @@ fn deploy_preparation_updates_endpoint_port_without_container_plan_changes() {
     set_routes(&mut request, vec![deploy_route("api.example.com", 8080)]);
     let normalized = normalized_services(vec![request.clone()], BTreeMap::new());
 
-    let prepared = prepare_deploy(
-        DeployPreparationInput {
-            request: &normalized,
-            service_id: request.service_id.clone(),
-            occupied_route_bindings: Vec::new(),
-            eligible_machines: Vec::new(),
-            draining_machines: Vec::new(),
-            observed_machines: Vec::new(),
-            existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
-        },
-        route_binding_id_for,
-    )
+    let prepared = prepare_deploy(DeployPreparationInput {
+        target: &normalized,
+        service_id: request.service_id.clone(),
+        occupied_route_bindings: Vec::new(),
+        eligible_machines: Vec::new(),
+        machine_platforms: BTreeMap::new(),
+        draining_machines: Vec::new(),
+        observed_machines: Vec::new(),
+        existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
+    })
     .expect("deploy preparation");
 
     assert_eq!(
-        prepared.route_commits,
+        commit_deploy_route_bindings(prepared.route_additions, &[], route_binding_id_for),
         vec![RouteBindingState {
             id: route_binding_id("route_api_example_com"),
             namespace_id: namespace_id("default"),
@@ -1693,79 +1763,7 @@ fn namespace_route_removals_keep_targets_reassigned_to_another_service() {
 }
 
 #[test]
-fn automatic_route_commit_uses_the_exact_requested_label() {
-    let mut request = deploy_request(1);
-    set_routes(&mut request, vec![automatic_deploy_route("api", 8080)]);
-
-    let commits = auto_hostname_route_binding_commits(
-        &namespace_id("default"),
-        &request,
-        Some(&route_hostname("lease.up.ployz.app")),
-        &[],
-        route_binding_id_for,
-    )
-    .expect("automatic binding");
-    let [commit] = commits.as_slice() else {
-        panic!("one automatic binding")
-    };
-
-    assert_eq!(commit.target, route_target("api.lease.up.ployz.app"));
-}
-
-#[test]
-fn automatic_route_reroute_reuses_the_binding_identity_and_updates_endpoint_port() {
-    let mut request = deploy_request(1);
-    set_routes(&mut request, vec![automatic_deploy_route("api", 9090)]);
-    let mut existing = route_binding_state("api.apps.example.com", "svc_api");
-    existing.id = route_binding_id("route_existing");
-    existing.origin = RouteBindingOrigin::Automatic;
-
-    let commits = auto_hostname_route_binding_commits(
-        &namespace_id("default"),
-        &request,
-        Some(&route_hostname("apps.example.com")),
-        &[existing],
-        route_binding_id_for,
-    )
-    .expect("reused binding");
-    let [commit] = commits.as_slice() else {
-        panic!("one reused binding")
-    };
-
-    assert_eq!(commit.id, route_binding_id("route_existing"));
-    assert_eq!(commit.endpoint_port, route_port(9090));
-}
-
-#[test]
-fn automatic_route_rejects_duplicate_target_regardless_of_endpoint_port() {
-    for duplicate_port in [8080, 9090] {
-        let mut request = deploy_request(1);
-        set_routes(
-            &mut request,
-            vec![
-                automatic_deploy_route("api", 8080),
-                automatic_deploy_route("api", duplicate_port),
-            ],
-        );
-
-        let error = auto_hostname_route_binding_commits(
-            &namespace_id("default"),
-            &request,
-            Some(&route_hostname("apps.example.com")),
-            &[],
-            route_binding_id_for,
-        )
-        .expect_err("duplicate automatic target must collide");
-
-        assert!(matches!(
-            error,
-            ployz_core::deploy::AutoHostnameRouteBindingError::HostnameCollision { .. }
-        ));
-    }
-}
-
-#[test]
-fn deploy_route_validation_rejects_duplicate_service_ids() {
+fn deploy_target_validation_rejects_duplicate_service_ids() {
     let mut first = service_spec("svc_api", "registry.example/api:rev-1", 1, None);
     first.routes = vec![automatic_deploy_route("api", 8080)];
     let mut second = first.clone();
@@ -1776,47 +1774,15 @@ fn deploy_route_validation_rejects_duplicate_service_ids() {
         volumes: std::collections::BTreeMap::new(),
         services: vec![first, second],
     };
-    let request = ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(request)
-        .expect("deploy request normalizes");
-
-    let error = validate_deploy_route_bindings(
-        &request,
-        Some(&route_hostname("apps.example.com")),
-        &[],
-        route_binding_id_for,
-    )
-    .expect_err("duplicate service ids must be rejected");
+    let error = DeployPlanningTarget::try_from_deploy(&request)
+        .expect_err("duplicate service ids must be rejected");
 
     assert!(matches!(
         error,
-        ployz_core::deploy::DeployRouteBindingValidationError::DuplicateServiceId {
+        ployz_core::deploy::DeployTargetValidationError::DuplicateServiceId {
             service_id: duplicate_service_id
         } if duplicate_service_id == service_id("svc_api")
     ));
-}
-
-#[test]
-fn automatic_route_rejects_a_declared_hostname_collision() {
-    let mut request = deploy_request(1);
-    set_routes(&mut request, vec![automatic_deploy_route("api", 8080)]);
-    let existing = route_binding_state("api.apps.example.com", "svc_api");
-
-    let error = auto_hostname_route_binding_commits(
-        &namespace_id("default"),
-        &request,
-        Some(&route_hostname("apps.example.com")),
-        &[existing],
-        route_binding_id_for,
-    )
-    .expect_err("declared collision");
-
-    assert_eq!(
-        error,
-        ployz_core::deploy::AutoHostnameRouteBindingError::HostnameCollision {
-            hostname: route_hostname("api.apps.example.com"),
-            route_binding_id: route_binding_id("route_api_apps_example_com"),
-        }
-    );
 }
 
 #[test]
@@ -1829,8 +1795,8 @@ fn deploy_route_validation_reuses_identical_automatic_binding() {
         volumes: std::collections::BTreeMap::new(),
         services: vec![service],
     };
-    let request = ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(request)
-        .expect("deploy request normalizes");
+    let request =
+        DeployPlanningTarget::try_from_deploy(&request).expect("deploy request normalizes");
     let mut existing = route_binding_state("api.apps.example.com", "svc_api");
     existing.id = route_binding_id("route_existing");
     existing.origin = RouteBindingOrigin::Automatic;
@@ -1838,15 +1804,15 @@ fn deploy_route_validation_reuses_identical_automatic_binding() {
     let commits = validate_deploy_route_bindings(
         &request,
         Some(&route_hostname("apps.example.com")),
-        &[existing],
-        route_binding_id_for,
+        std::slice::from_ref(&existing),
     )
     .expect("identical route is valid");
 
-    let [commit] = commits.as_slice() else {
-        panic!("expected one route binding commit");
+    let durable = commit_deploy_route_bindings(commits, &[existing], route_binding_id_for);
+    let [binding] = durable.as_slice() else {
+        panic!("expected one durable route binding");
     };
-    assert_eq!(commit.id, route_binding_id("route_existing"));
+    assert_eq!(binding.id, route_binding_id("route_existing"));
 }
 
 #[test]
@@ -1879,20 +1845,18 @@ fn deploy_preparation_ignores_same_service_id_in_other_namespace() {
     foreign.identity.namespace_id = namespace_id("other");
     let request = deploy_request(1);
     let normalized = normalized_services(vec![request.clone()], BTreeMap::new());
-    let prepared = prepare_deploy(
-        DeployPreparationInput {
-            request: &normalized,
-            service_id: request.service_id.clone(),
-            occupied_route_bindings: Vec::new(),
-            eligible_machines: vec![machine_id("machine_a")],
-            draining_machines: Vec::new(),
-            observed_machines: vec![observed_machine("machine_a", [foreign])],
-            existing_replica_policy: ExistingReplicaPolicy::Promoted {
-                interrupted_operation_ids: BTreeSet::new(),
-            },
+    let prepared = prepare_deploy(DeployPreparationInput {
+        target: &normalized,
+        service_id: request.service_id.clone(),
+        occupied_route_bindings: Vec::new(),
+        eligible_machines: vec![machine_id("machine_a")],
+        machine_platforms: BTreeMap::new(),
+        draining_machines: Vec::new(),
+        observed_machines: vec![observed_machine("machine_a", [foreign])],
+        existing_replica_policy: ExistingReplicaPolicy::Promoted {
+            interrupted_operation_ids: BTreeSet::new(),
         },
-        route_binding_id_for,
-    )
+    })
     .expect("deploy preparation");
 
     assert!(prepared.existing_replicas.is_empty());
@@ -2065,21 +2029,21 @@ fn plan_inputs(
     for input in &inputs {
         volumes.extend(input.volumes.clone());
     }
-    let request = ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(
-        ployz_core::deploy::DeployRequest {
-            namespace_id: namespace_id("default"),
-            origin: None,
-            volumes,
-            services: inputs.iter().map(|input| input.service.clone()).collect(),
-        },
-    )
-    .expect("planner fixture normalizes");
+    let request = ployz_core::deploy::DeployRequest {
+        namespace_id: namespace_id("default"),
+        origin: None,
+        volumes,
+        services: inputs.iter().map(|input| input.service.clone()).collect(),
+    };
+    let namespace_revision_id = request.namespace_revision_id();
+    let target =
+        DeployPlanningTarget::try_from_deploy(&request).expect("planner fixture normalizes");
     let storage_testimony = inputs
         .iter()
         .flat_map(|input| input.storage_testimony.clone())
         .collect::<BTreeMap<_, _>>();
-    plan_namespace_deploy(
-        &request,
+    let placement = plan_namespace_deploy(
+        &target,
         inputs
             .into_iter()
             .map(|input| CoreDeployPlanningInput {
@@ -2094,20 +2058,21 @@ fn plan_inputs(
         ployz_core::deploy::DeployPlanningContext {
             storage_testimony: &storage_testimony,
         },
-    )
+    )?;
+    Ok(placement.with_revision(namespace_revision_id))
 }
 
 fn normalized_services(
     services: Vec<DeployServiceSpec>,
     volumes: BTreeMap<VolumeName, VolumeSpec>,
-) -> ployz_core::deploy::VolumeDeclaredDeployRequest {
-    ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(ployz_core::deploy::DeployRequest {
+) -> DeployPlanningTarget {
+    let request = ployz_core::deploy::DeployRequest {
         namespace_id: namespace_id("default"),
         origin: None,
         volumes,
         services,
-    })
-    .expect("planner fixture normalizes")
+    };
+    DeployPlanningTarget::try_from_deploy(&request).expect("planner fixture normalizes")
 }
 
 fn deploy_plan(

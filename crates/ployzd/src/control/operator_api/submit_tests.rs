@@ -1,21 +1,16 @@
 use std::collections::BTreeMap;
 
 use ployz_core::deploy::{
-    ContainerMountPath, ContainerRuntimeSpec, DeployRequest, DeployReservationId,
-    DeployServiceSpec, ImageReference, ImageSource, ReplicaCount, ServiceVolumeMount,
-    VolumeDeclaredDeployRequest, VolumeName,
+    ContainerMountPath, ContainerRuntimeSpec, DeployPlanningTarget, DeployRequest,
+    DeployReservationId, DeployServiceSpec, ImageReference, ImageSource, ReplicaCount,
+    ServiceVolumeMount, VolumeName,
 };
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::image::OciDigest;
 use ployz_core::operation::OperationIdempotencyKey;
 use ployz_sdk_types::{DeploySubmitError, DeploySubmitRequest, NetworkRepairError};
 
-use crate::control::sequencer::DeploySubmitCommand;
-
-use super::{
-    normalize_deploy_submit, validate_internal_dns_name, validate_network_repair_preconditions,
-    validate_registry_credentials,
-};
+use super::{normalize_deploy_submit, validate_network_repair_preconditions};
 
 fn operation_id() -> OperationId {
     OperationId::try_new("op_network_repair").expect("operation id")
@@ -53,10 +48,30 @@ fn deploy_admission_rejects_ids_that_cannot_form_internal_dns_labels() {
     let namespace_id = NamespaceId::try_new("default").expect("namespace id");
     let service_id = ServiceId::try_new("s".repeat(64)).expect("service id");
 
-    let failure = validate_internal_dns_name(&namespace_id, &service_id)
+    let request = DeployRequest {
+        namespace_id,
+        origin: None,
+        volumes: BTreeMap::new(),
+        services: vec![DeployServiceSpec {
+            keep: None,
+            service_id,
+            image: ImageReference::try_new("nginx:latest").expect("image"),
+            image_source: ImageSource::Registry,
+            replicas: ReplicaCount::try_new(1).expect("replicas"),
+            runtime: ContainerRuntimeSpec::image_defaults(),
+            pre_start: None,
+            depends_on: Vec::new(),
+            routes: Vec::new(),
+        }],
+    };
+    let failure = DeployPlanningTarget::try_from_deploy(&request)
         .expect_err("oversized DNS label must be rejected");
 
-    assert!(failure.as_str().contains("limited to 63 bytes"));
+    assert!(
+        failure
+            .to_string()
+            .contains("cannot form an internal DNS name")
+    );
 }
 
 #[test]
@@ -65,12 +80,11 @@ fn pushed_image_digest_must_match_the_index_digest() {
         .expect("valid image")
         .with_digest(&OciDigest::sha256(b"different"))
         .expect("image accepts digest");
-    let command = DeploySubmitCommand {
-        operation_id: OperationId::try_new("op_test").expect("valid operation id"),
+    let request = DeploySubmitRequest {
         idempotency_key: OperationIdempotencyKey::try_new("idem_test")
             .expect("valid idempotency key"),
         reservation_id: DeployReservationId::first(),
-        target: VolumeDeclaredDeployRequest::try_new(DeployRequest {
+        target: DeployRequest {
             namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
             origin: None,
             volumes: std::collections::BTreeMap::new(),
@@ -101,13 +115,12 @@ fn pushed_image_digest_must_match_the_index_digest() {
                 depends_on: Vec::new(),
                 routes: Vec::new(),
             }],
-        })
-        .expect("deploy request normalizes"),
+        },
         registry_credentials: BTreeMap::new(),
     };
 
     assert!(matches!(
-        validate_registry_credentials(&command),
+        normalize_deploy_submit(request),
         Err(DeploySubmitError::InvalidTarget { message, .. })
             if message.as_str().contains("must match its pushed index digest")
     ));

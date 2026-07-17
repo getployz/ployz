@@ -336,8 +336,6 @@ async fn prepare_command_from_nats(
     facts_reader: &NatsMachineFactsReader,
     step_timeout: Duration,
 ) -> crate::control::operations::deploy::DeployExecutionCommand {
-    let request = ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(request)
-        .expect("test deploy request normalizes");
     let store = crate::control::store::CoreStore::open_in_memory()
         .await
         .expect("open ingress store");
@@ -355,7 +353,7 @@ async fn prepare_command_from_nats(
     )
     .await
     .expect("deploy facts load from nats");
-    prepare_deploy_execution_command(operation_id, request.into_request(), facts)
+    prepare_deploy_execution_command(operation_id, request, facts)
 }
 
 struct TestNats {

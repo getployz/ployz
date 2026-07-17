@@ -1,6 +1,7 @@
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployServiceSpec, ExistingServiceReplica, ObservedCleanupCandidate,
-    RegistryCredential, VolumeDeclaredDeployRequest,
+    DeployCleanupContainer, DeployPlanningInput, DeployPlanningTarget, DeployRequest,
+    DeployRouteBindingAddition, DeployServiceSpec, ExistingServiceReplica,
+    ObservedCleanupCandidate, RegistryCredential,
 };
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
@@ -24,9 +25,27 @@ use crate::control::role_client::machine::MachineClockTestimony;
 const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct DeployPreviewPlanningCommand {
+    pub(super) target: DeployPlanningTarget,
+    pub(super) planning_inputs: Vec<DeployPlanningInput>,
+    pub(super) route_binding_additions: Vec<DeployRouteBindingAddition>,
+    pub(super) route_binding_removals: Vec<RouteBindingState>,
+    pub(super) serving_target_commits: Vec<ServingTargetEntry>,
+    pub(super) serving_target_removals: Vec<ServingTargetEntry>,
+    pub(super) namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
+    pub(super) storage_testimony:
+        BTreeMap<MachineId, Option<ployz_core::machine::StorageCapability>>,
+    pub(super) machine_platforms: BTreeMap<MachineId, OciPlatform>,
+    pub(super) seed_clock_testimony: BTreeMap<MachineId, MachineClockTestimony>,
+    pub(super) unusable_machines: Vec<ployz_core::operation::UnusableMachine>,
+    pub(super) unusable_machines_by_service:
+        BTreeMap<ServiceId, Vec<ployz_core::operation::UnusableMachine>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployExecutionCommand {
     pub(super) operation_id: OperationId,
-    pub(super) request: VolumeDeclaredDeployRequest,
+    pub(super) request: DeployRequest,
     pub(super) services: Vec<DeployServiceExecutionCommand>,
     pub(super) route_binding_removals: Vec<RouteBindingState>,
     pub(super) serving_target_removals: Vec<ServingTargetEntry>,
@@ -51,6 +70,7 @@ pub struct DeployServiceExecutionCommand {
     pub(super) route_commits: Vec<RouteBindingState>,
     pub(super) volume_pins: Vec<VolumePinState>,
     pub(super) eligible_machines: Vec<MachineId>,
+    pub(super) unusable_machines: Vec<ployz_core::operation::UnusableMachine>,
     pub(super) existing_replicas: Vec<ExistingServiceReplica>,
     pub(super) cleanup_candidates: Vec<ObservedCleanupCandidate>,
 }
@@ -64,6 +84,25 @@ impl DeployExecutionCommand {
     #[must_use]
     pub fn services(&self) -> &[DeployServiceExecutionCommand] {
         &self.services
+    }
+
+    #[must_use]
+    pub fn service(&self, service_id: &ServiceId) -> Option<&DeployServiceExecutionCommand> {
+        self.services
+            .iter()
+            .find(|service| &service.service.service_id == service_id)
+    }
+
+    #[must_use]
+    pub fn unusable_machines_for_service(
+        &self,
+        service_id: &ServiceId,
+    ) -> Option<Vec<ployz_core::operation::UnusableMachine>> {
+        let service = self.service(service_id)?;
+        Some(merged_unusable_machines(
+            &self.unusable_machines,
+            service.unusable_machines.clone(),
+        ))
     }
 
     #[must_use]
@@ -138,6 +177,20 @@ impl DeployExecutionCommand {
     }
 }
 
+pub(super) fn merged_unusable_machines(
+    shared: &[ployz_core::operation::UnusableMachine],
+    service: Vec<ployz_core::operation::UnusableMachine>,
+) -> Vec<ployz_core::operation::UnusableMachine> {
+    let mut merged = shared.to_vec();
+    for unusable in service {
+        if !merged.contains(&unusable) {
+            merged.push(unusable);
+        }
+    }
+    merged.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
+    merged
+}
+
 pub(super) struct MissingTargetPlatform {
     machine_id: MachineId,
 }
@@ -154,6 +207,12 @@ impl MissingTargetPlatform {
 }
 
 impl DeployServiceExecutionCommand {
+    #[must_use]
+    #[cfg(test)]
+    pub fn unusable_machines(&self) -> &[ployz_core::operation::UnusableMachine] {
+        &self.unusable_machines
+    }
+
     #[must_use]
     pub fn registry_credential(&self) -> Option<&RegistryCredential> {
         self.registry_credential.as_ref()
@@ -179,28 +238,44 @@ impl DeployServiceExecutionCommand {
 
     #[must_use]
     pub fn serving_target_entry_state(&self, namespace_id: &NamespaceId) -> ServingTargetEntry {
-        let mut volume_names = self
-            .service
-            .runtime
-            .volume_mounts
-            .iter()
-            .map(|mount| mount.volume_name.clone())
-            .collect::<Vec<_>>();
-        volume_names.sort();
-        volume_names.dedup();
-        ServingTargetEntry {
-            namespace_id: namespace_id.clone(),
-            service_id: self.service.service_id.clone(),
-            namespace_revision_entry_id: self.service.namespace_revision_entry_id(namespace_id),
-            image: self.service.image.clone(),
-            desired_replicas: self.service.replicas,
-            volume_names,
-        }
+        serving_target_entry(
+            namespace_id,
+            &self.service.service_id,
+            self.service.namespace_revision_entry_id(namespace_id),
+            &self.service.image,
+            self.service.replicas,
+            &self.service.runtime,
+        )
     }
 
     #[must_use]
     pub fn route_binding_states(&self) -> &[RouteBindingState] {
         &self.route_commits
+    }
+}
+
+pub(super) fn serving_target_entry(
+    namespace_id: &NamespaceId,
+    service_id: &ServiceId,
+    namespace_revision_entry_id: NamespaceRevisionEntryId,
+    image: &ployz_core::deploy::ImageReference,
+    desired_replicas: ployz_core::deploy::ReplicaCount,
+    runtime: &ployz_core::deploy::ContainerRuntimeSpec,
+) -> ServingTargetEntry {
+    let mut volume_names = runtime
+        .volume_mounts
+        .iter()
+        .map(|mount| mount.volume_name.clone())
+        .collect::<Vec<_>>();
+    volume_names.sort();
+    volume_names.dedup();
+    ServingTargetEntry {
+        namespace_id: namespace_id.clone(),
+        service_id: service_id.clone(),
+        namespace_revision_entry_id,
+        image: image.clone(),
+        desired_replicas,
+        volume_names,
     }
 }
 

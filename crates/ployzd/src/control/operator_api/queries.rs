@@ -37,6 +37,15 @@ use ployz_sdk_types::{
     ServiceListResult, ServiceSnapshot,
 };
 
+use super::OperationApiHandlers;
+
+pub async fn deploy_preview(
+    handlers: &OperationApiHandlers,
+    request: ployz_sdk_types::DeployPreviewRequest,
+) -> Result<ployz_sdk_types::DeployPreview, ployz_sdk_types::DeployPreviewError> {
+    handlers.deploy_driver.preview(request).await
+}
+
 pub async fn credential_list(
     intent_reader: &NatsIntentReader,
 ) -> Result<CredentialListResult, CredentialListError> {

@@ -1,11 +1,12 @@
 use crate::control::operations::deploy::{
-    AutomaticHostnameMode, DeployExecutionCommand, DeployExecutionFacts,
+    AutomaticHostnameMode, DeployExecutionCommand, DeployExecutionError, DeployExecutionFacts,
     DeployServiceExecutionCommand, prepare_deploy_execution_command,
 };
 use ployz_core::deploy::{
     ContainerMountPath, DatasetName, DeployCleanupContainer, DeployRequest, DeployRoute,
-    DeployRouteTarget, DeployServiceSpec, ImageReference, ReplicaCount, ServiceVolumeMount,
-    VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName,
+    DeployRouteTarget, DeployServiceSpec, ImageAvailabilityExpiresAt, ImageReference, ImageSource,
+    PlatformImage, PushedImageReceipt, ReplicaCount, ServiceVolumeMount, VolumeMaxSizeBytes,
+    VolumeName, VolumeSpec, ZfsPoolName,
 };
 use ployz_core::ids::{NamespaceRevisionEntryId, RouteBindingId};
 use ployz_core::ingress::{AutomaticHostnameLabel, RouteBindingOrigin};
@@ -14,7 +15,7 @@ use ployz_core::machine::runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
 use ployz_core::machine::{MachineUsabilityReason, StorageCapability};
-use ployz_core::operation::{RouteHostname, RoutePort, RouteTarget};
+use ployz_core::operation::{DeployOperationFailure, RouteHostname, RoutePort, RouteTarget};
 use ployz_test_support::containers;
 use ployz_test_support::fixtures::serving_target_entry;
 use ployz_test_support::ids::{
@@ -155,6 +156,141 @@ async fn reuses_a_matching_running_promoted_target_entry() {
         single_service(&command).existing_replicas(),
         vec![existing_service_replica("machine_a", "ctr_target")]
     );
+}
+
+#[tokio::test]
+async fn pushed_receipt_keeps_a_covered_existing_replica_outside_new_placement_candidates() {
+    let amd64 = ployz_core::image::OciPlatform::try_new("linux", "amd64").expect("platform");
+    let receipt = PushedImageReceipt::try_new([(
+        amd64.clone(),
+        PlatformImage {
+            seed: machine_id("machine_seed"),
+            manifest_digest: ployz_core::image::OciDigest::sha256(b"manifest"),
+            image_id: ployz_core::image::OciDigest::sha256(b"image"),
+            availability_expires_at: ImageAvailabilityExpiresAt::try_new(4_102_444_800)
+                .expect("expiry"),
+        },
+    )])
+    .expect("receipt");
+    let mut request = deploy_request();
+    let [service] = request.services.as_mut_slice() else {
+        panic!("deploy request has one service");
+    };
+    service.image = ImageReference::try_new("local/api:build")
+        .expect("image")
+        .with_digest(receipt.index_digest())
+        .expect("pinned image");
+    service.image_source = ImageSource::PushedToSeed(receipt);
+    let entry_id = service.namespace_revision_entry_id(&request.namespace_id);
+    let mut promoted = serving_target_entry("svc_api", "unused");
+    promoted.namespace_revision_entry_id = entry_id.clone();
+    let facts = DeployExecutionFacts {
+        machine_platforms: std::collections::BTreeMap::from([
+            (
+                machine_id("machine_new"),
+                ployz_core::image::OciPlatform::try_new("linux", "arm64").expect("platform"),
+            ),
+            (machine_id("machine_existing"), amd64),
+        ]),
+        seed_clock_testimony: std::collections::BTreeMap::new(),
+        machine_storage_testimony: std::collections::BTreeMap::new(),
+        unusable_machines: Vec::new(),
+        namespace_route_bindings: Vec::new(),
+        namespace_serving_entries: vec![promoted],
+        namespace_volume_pins: Vec::new(),
+        eligible_machines: vec![machine_id("machine_new")],
+        dataplane_members: Vec::new(),
+        observed_machines: vec![
+            MachineContainerObservationSnapshot::try_new(
+                machine_id("machine_existing"),
+                [observed_service_container_with_entry(
+                    "machine_existing",
+                    "ctr_existing",
+                    entry_id,
+                )],
+            )
+            .expect("observation snapshot"),
+        ],
+        namespace_cleanup_candidates: Vec::new(),
+        automatic_hostname_mode: AutomaticHostnameMode::Disabled,
+        gateway_certificate_targets: Vec::new(),
+        ployz_gateway_certificate_targets: Vec::new(),
+        step_timeout: Duration::from_secs(5),
+    };
+
+    let command = prepare_deploy_execution_command(operation_id("op_123"), request, facts);
+
+    assert_eq!(
+        single_service(&command).existing_replicas(),
+        [existing_service_replica("machine_existing", "ctr_existing")]
+    );
+}
+
+#[test]
+fn receipt_platform_rejections_are_scoped_to_the_service_that_requires_them() {
+    let amd64 = ployz_core::image::OciPlatform::try_new("linux", "amd64").expect("platform");
+    let arm64 = ployz_core::image::OciPlatform::try_new("linux", "arm64").expect("platform");
+    let mut request = deploy_request();
+    let registry_service = DeployServiceSpec {
+        service_id: service_id("svc_registry"),
+        ..request.services.remove(0)
+    };
+    request.services = vec![pushed_service("svc_arm", arm64.clone()), registry_service];
+    let machine = machine_id("machine_amd64");
+    let command = prepare_deploy_execution_command(
+        operation_id("op_platform_scope"),
+        request,
+        DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::from([(machine.clone(), amd64.clone())]),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
+            machine_storage_testimony: std::collections::BTreeMap::new(),
+            unusable_machines: Vec::new(),
+            namespace_route_bindings: Vec::new(),
+            namespace_serving_entries: Vec::new(),
+            namespace_volume_pins: Vec::new(),
+            eligible_machines: vec![machine.clone()],
+            dataplane_members: Vec::new(),
+            observed_machines: Vec::new(),
+            namespace_cleanup_candidates: Vec::new(),
+            automatic_hostname_mode: AutomaticHostnameMode::Disabled,
+            gateway_certificate_targets: Vec::new(),
+            ployz_gateway_certificate_targets: Vec::new(),
+            step_timeout: Duration::from_secs(5),
+        },
+    );
+
+    assert!(command.unusable_machines().is_empty());
+    let arm = command
+        .service(&service_id("svc_arm"))
+        .expect("arm service is prepared");
+    assert!(arm.eligible_machines().is_empty());
+    assert_eq!(
+        arm.unusable_machines(),
+        [ployz_core::operation::UnusableMachine {
+            machine_id: machine.clone(),
+            reason: MachineUsabilityReason::PlatformMismatch {
+                supported: ployz_core::build::BuildPlatforms::try_new([arm64])
+                    .expect("one supported platform"),
+                reported: amd64,
+            },
+        }]
+    );
+    let registry = command
+        .service(&service_id("svc_registry"))
+        .expect("registry service is prepared");
+    assert_eq!(registry.eligible_machines(), [machine]);
+    assert!(registry.unusable_machines().is_empty());
+
+    let failure =
+        DeployExecutionError::Plan(ployz_core::deploy::DeployPlanError::NoEligibleMachines {
+            service_id: service_id("svc_arm"),
+        })
+        .deploy_failure(&command, Vec::new());
+    assert!(matches!(
+        failure,
+        DeployOperationFailure::NoUsableMachines { reasons }
+            if reasons == arm.unusable_machines()
+    ));
 }
 
 #[tokio::test]
@@ -346,13 +482,16 @@ fn provisioned_mount_requires_fresh_ready_storage_without_filtering_plain_work()
             .iter()
             .all(|service| { service.eligible_machines() == [machine_id("machine_a")] })
     );
-    let [unusable] = provisioned.unusable_machines() else {
-        panic!("legacy machine is the sole unusable candidate");
-    };
-    assert_eq!(
-        unusable.reason,
-        MachineUsabilityReason::StorageTestimonyNotReported
-    );
+    assert!(provisioned.unusable_machines().is_empty());
+    for service in provisioned.services() {
+        let [unusable] = service.unusable_machines() else {
+            panic!("legacy machine is the sole service-scoped unusable candidate");
+        };
+        assert_eq!(
+            unusable.reason,
+            MachineUsabilityReason::StorageTestimonyNotReported
+        );
+    }
 }
 
 #[test]
@@ -421,7 +560,7 @@ fn pinned_provisioned_mount_rejects_ready_testimony_from_the_wrong_pool() {
 
     assert!(single_service(&command).eligible_machines().is_empty());
     assert_eq!(
-        command.unusable_machines(),
+        single_service(&command).unusable_machines(),
         [ployz_core::operation::UnusableMachine {
             machine_id: machine_id("machine_a"),
             reason: MachineUsabilityReason::StoragePoolMismatch { expected, reported },
@@ -557,6 +696,34 @@ fn deploy_request() -> DeployRequest {
             depends_on: Vec::new(),
             routes: Vec::new(),
         }],
+    }
+}
+
+fn pushed_service(service: &str, platform: ployz_core::image::OciPlatform) -> DeployServiceSpec {
+    let receipt = PushedImageReceipt::try_new([(
+        platform,
+        PlatformImage {
+            seed: machine_id("machine_seed"),
+            manifest_digest: ployz_core::image::OciDigest::sha256(b"manifest"),
+            image_id: ployz_core::image::OciDigest::sha256(b"image"),
+            availability_expires_at: ImageAvailabilityExpiresAt::try_new(4_102_444_800)
+                .expect("expiry"),
+        },
+    )])
+    .expect("receipt");
+    DeployServiceSpec {
+        keep: None,
+        service_id: service_id(service),
+        image: ImageReference::try_new(format!("local/{service}:build"))
+            .expect("image")
+            .with_digest(receipt.index_digest())
+            .expect("pinned image"),
+        image_source: ImageSource::PushedToSeed(receipt),
+        replicas: ReplicaCount::try_new(1).expect("replicas"),
+        runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
+        pre_start: None,
+        depends_on: Vec::new(),
+        routes: Vec::new(),
     }
 }
 

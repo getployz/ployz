@@ -313,7 +313,7 @@ where
                         service_id: service.service.service_id.clone(),
                         namespace_revision_entry_id: service
                             .service
-                            .namespace_revision_entry_id(command.request.namespace_id()),
+                            .namespace_revision_entry_id(&command.request.namespace_id),
                         machine_id: machine_id.clone(),
                         container_id: container_id.clone(),
                         step_id: deploy_step_id(*slot).map_err(|source| {
@@ -550,10 +550,10 @@ where
         route_bindings,
         route_binding_removals,
         first_serving_target_entry: first_service
-            .serving_target_entry_state(command.request.namespace_id()),
+            .serving_target_entry_state(&command.request.namespace_id),
         remaining_serving_target_entries: remaining_services
             .iter()
-            .map(|service| service.serving_target_entry_state(command.request.namespace_id()))
+            .map(|service| service.serving_target_entry_state(&command.request.namespace_id))
             .collect(),
     };
     with_step_timeout(

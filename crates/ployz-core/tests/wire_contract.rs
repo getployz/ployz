@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use ployz_core::deploy::{
     ContainerMountPath, ContainerRuntimeSpec, DatasetName, DatasetNameError, DependencyCondition,
-    DeployOrigin, DeployOriginError, DeployRequest, DeployServiceSpec, ImageReference, ImageSource,
-    ReplicaCount, ServiceDependency, ServiceVolumeMount, VolumeDeclaredDeployRequest,
+    DeployOrigin, DeployOriginError, DeployPlanningTarget, DeployRequest, DeployServiceSpec,
+    ImageReference, ImageSource, ReplicaCount, ServiceDependency, ServiceVolumeMount,
     VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName, ZfsPoolNameError,
 };
 use ployz_core::ids::RouteBindingId;
@@ -509,8 +509,11 @@ fn deploy_request_requires_a_declaration_for_every_mounted_volume() {
     let request = request_with_volume_mount(std::collections::BTreeMap::new());
 
     let error =
-        VolumeDeclaredDeployRequest::try_new(request).expect_err("undeclared mount is invalid");
+        DeployPlanningTarget::try_from_deploy(&request).expect_err("undeclared mount is invalid");
 
+    let ployz_core::deploy::DeployTargetValidationError::UndeclaredVolume(error) = error else {
+        panic!("expected undeclared volume error");
+    };
     assert_eq!(error.service_id, service_id("svc_api"));
     assert_eq!(error.volume_name, volume_name("data"));
 }
@@ -518,9 +521,12 @@ fn deploy_request_requires_a_declaration_for_every_mounted_volume() {
 #[test]
 fn planner_service_constructor_rejects_an_undeclared_mount() {
     let request = request_with_volume_mount(BTreeMap::new());
-    let error = VolumeDeclaredDeployRequest::try_new(request)
+    let error = DeployPlanningTarget::try_from_deploy(&request)
         .expect_err("planner views are unavailable for an undeclared mount");
 
+    let ployz_core::deploy::DeployTargetValidationError::UndeclaredVolume(error) = error else {
+        panic!("expected undeclared volume error");
+    };
     assert_eq!(error.service_id, service_id("svc_api"));
     assert_eq!(error.volume_name, volume_name("data"));
 }
@@ -547,18 +553,16 @@ fn normalized_service_requests_retain_mounted_volume_declarations() {
         (volume_name("unused"), VolumeSpec::Plain),
     ]));
 
-    let original = request.clone();
-    let request = VolumeDeclaredDeployRequest::try_new(request).expect("request validates");
-    assert_eq!(request.request(), &original);
+    let request = DeployPlanningTarget::try_from_deploy(&request).expect("request validates");
     let [service] = request.services() else {
         panic!("request has one service");
     };
-    let [mount] = service.runtime.volume_mounts.as_slice() else {
+    let [mount] = service.runtime().volume_mounts.as_slice() else {
         panic!("service has one volume mount");
     };
     assert_eq!(mount.volume_name, volume_name("data"));
     assert_eq!(
-        request.request().volumes.get(&mount.volume_name),
+        request.volumes().get(&mount.volume_name),
         Some(&provisioned)
     );
 }
@@ -567,30 +571,22 @@ fn normalized_service_requests_retain_mounted_volume_declarations() {
 fn normalized_image_replacement_preserves_volume_invariants_without_revalidation() {
     let mut request =
         request_with_volume_mount(BTreeMap::from([(volume_name("data"), VolumeSpec::Plain)]));
-    let mut normalized =
-        VolumeDeclaredDeployRequest::try_new(request.clone()).expect("request validates once");
+    DeployPlanningTarget::try_from_deploy(&request).expect("request validates once");
     let resolved = ImageReference::try_new(
         "registry.example/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     )
     .expect("resolved image");
 
-    normalized
+    request
         .replace_service_image(&service_id("svc_api"), resolved.clone())
         .expect("known service image changes invariant-preservingly");
-    let [service] = request.services.as_mut_slice() else {
+    let [service] = request.services.as_slice() else {
         panic!("request has one service");
     };
-    service.image = resolved;
-
-    assert_eq!(normalized.request(), &request);
-    let [service] = normalized.services() else {
-        panic!("request has one service");
-    };
+    assert_eq!(service.image, resolved);
     assert_eq!(service.runtime.volume_mounts.len(), 1);
-    assert_eq!(
-        normalized.request().namespace_revision_id(),
-        normalized.namespace_revision_id()
-    );
+    DeployPlanningTarget::try_from_deploy(&request)
+        .expect("resolved image preserves deploy target invariants");
 }
 
 #[test]

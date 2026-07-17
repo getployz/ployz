@@ -13,10 +13,7 @@ use crate::control::sequencer::{
     NetworkRepairSubmitCommand, OperationControllers, ServiceRestartSubmitCommand,
     VolumeCreateSubmitCommand, VolumeRemoveSubmitCommand,
 };
-use ployz_core::deploy::ImageSource;
-use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
-use ployz_core::machine::MachineLifecycle;
-use ployz_core::network::internal_dns::InternalServiceName;
+use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::operation::{CredentialGrantAction, EventSequence, VolumeCreateRequest};
 use ployz_nats::subjects::{OperationProgressScope, operation_progress_watch};
 use ployz_sdk_types::{
@@ -125,13 +122,18 @@ fn normalize_deploy_submit(
         target,
         registry_credentials,
     } = value;
-    let target =
-        ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(target).map_err(|error| {
-            DeploySubmitError::InvalidTarget {
-                operation_id: operation_id.clone(),
-                message: ployz_core::operation::FailureMessage::try_new(error.to_string())
-                    .expect("volume declaration validation error is non-empty"),
-            }
+    let planning_target = ployz_core::deploy::DeployPlanningTarget::try_from_deploy(&target)
+        .map_err(|error| DeploySubmitError::InvalidTarget {
+            operation_id: operation_id.clone(),
+            message: ployz_core::operation::FailureMessage::try_new(error.to_string())
+                .expect("deploy target validation error is non-empty"),
+        })?;
+    planning_target
+        .validate_registry_credential_service_ids(registry_credentials.keys())
+        .map_err(|error| DeploySubmitError::InvalidTarget {
+            operation_id: operation_id.clone(),
+            message: ployz_core::operation::FailureMessage::try_new(error.to_string())
+                .expect("registry credential target validation error is non-empty"),
         })?;
     Ok(DeploySubmitCommand {
         operation_id,
@@ -338,16 +340,6 @@ pub async fn deploy_submit(
 ) -> Result<AcceptedOperation, DeploySubmitError> {
     let command = normalize_deploy_submit(request)?;
     let operation_id = command.operation_id.clone();
-    for service in command.target.services() {
-        validate_internal_dns_name(command.target.namespace_id(), &service.service_id).map_err(
-            |message| DeploySubmitError::InvalidTarget {
-                operation_id: operation_id.clone(),
-                message,
-            },
-        )?;
-    }
-    validate_registry_credentials(&command)?;
-    validate_pushed_image_seeds(handlers, &command).await?;
     validate_deploy_route_admission(
         &command.target,
         &handlers.ingress_intent,
@@ -377,152 +369,6 @@ pub async fn deploy_submit(
     handlers.deploy_driver.start(accepted_execution).await;
 
     Ok(operation)
-}
-
-fn validate_internal_dns_name(
-    namespace_id: &NamespaceId,
-    service_id: &ServiceId,
-) -> Result<(), ployz_core::operation::FailureMessage> {
-    InternalServiceName::try_from_ids(service_id, namespace_id)
-        .map(|_| ())
-        .map_err(|_| {
-            ployz_core::operation::FailureMessage::try_new(format!(
-                "service {} in namespace {} cannot form internal DNS name because each label is limited to 63 bytes",
-                service_id.as_str(),
-                namespace_id.as_str()
-            ))
-            .expect("generated internal DNS validation message is non-empty")
-        })
-}
-
-fn validate_registry_credentials(command: &DeploySubmitCommand) -> Result<(), DeploySubmitError> {
-    let services = command.target.services();
-    for service_id in command.registry_credentials.keys() {
-        let Some(service) = services
-            .iter()
-            .find(|service| service.service_id == *service_id)
-        else {
-            return Err(invalid_registry_credential(
-                command,
-                service_id,
-                "does not name a service in the deploy target",
-            ));
-        };
-        if !matches!(service.image_source, ImageSource::Registry) {
-            return Err(invalid_registry_credential(
-                command,
-                service_id,
-                "belongs to a pushed image",
-            ));
-        }
-    }
-
-    for service in command.target.services() {
-        let ImageSource::PushedToSeed(receipt) = &service.image_source else {
-            continue;
-        };
-        let Some(pinned_digest) = service.image.pinned_digest() else {
-            return Err(invalid_pushed_image(
-                command,
-                service,
-                "must be digest-pinned",
-            ));
-        };
-        if &pinned_digest != receipt.index_digest() {
-            return Err(invalid_pushed_image(
-                command,
-                service,
-                "digest must match its pushed index digest",
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn invalid_pushed_image(
-    command: &DeploySubmitCommand,
-    service: &ployz_core::deploy::DeployServiceSpec,
-    reason: &str,
-) -> DeploySubmitError {
-    DeploySubmitError::InvalidTarget {
-        operation_id: command.operation_id.clone(),
-        message: ployz_core::operation::FailureMessage::try_new(format!(
-            "pushed image for service {} {reason}",
-            service.service_id.as_str()
-        ))
-        .expect("generated pushed image failure message is non-empty"),
-    }
-}
-
-fn invalid_registry_credential(
-    command: &DeploySubmitCommand,
-    service_id: &ployz_core::ids::ServiceId,
-    reason: &str,
-) -> DeploySubmitError {
-    DeploySubmitError::InvalidTarget {
-        operation_id: command.operation_id.clone(),
-        message: ployz_core::operation::FailureMessage::try_new(format!(
-            "registry credential for service {} {reason}",
-            service_id.as_str()
-        ))
-        .expect("generated registry credential failure message is non-empty"),
-    }
-}
-
-async fn validate_pushed_image_seeds(
-    handlers: &OperationApiHandlers,
-    command: &DeploySubmitCommand,
-) -> Result<(), DeploySubmitError> {
-    let services = command.target.services();
-    let mut seeds = std::collections::BTreeSet::new();
-    for service in services {
-        let ImageSource::PushedToSeed(receipt) = &service.image_source else {
-            continue;
-        };
-        seeds.extend(receipt.platforms().map(|(_, image)| image.seed.clone()));
-    }
-
-    for seed in &seeds {
-        let active = handlers
-            .machine_roster
-            .active_machine(seed)
-            .await
-            .map_err(|error| DeploySubmitError::Unavailable {
-                operation_id: command.operation_id.clone(),
-                message: error.to_string(),
-            })?;
-        let Some(active) = active else {
-            return Err(invalid_image_seed(
-                command,
-                seed,
-                "is not in the active roster",
-            ));
-        };
-        if !matches!(active.lifecycle, MachineLifecycle::Active) {
-            return Err(invalid_image_seed(
-                command,
-                seed,
-                "is not in the active lifecycle",
-            ));
-        }
-    }
-
-    Ok(())
-}
-
-fn invalid_image_seed(
-    command: &DeploySubmitCommand,
-    seed: &MachineId,
-    reason: &str,
-) -> DeploySubmitError {
-    DeploySubmitError::InvalidTarget {
-        operation_id: command.operation_id.clone(),
-        message: ployz_core::operation::FailureMessage::try_new(format!(
-            "pushed image seed {} {reason}",
-            seed.as_str()
-        ))
-        .expect("generated pushed image seed failure message is non-empty"),
-    }
 }
 
 pub async fn service_restart(

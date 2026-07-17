@@ -41,6 +41,7 @@ fn sdk_contract_registry_maps_to_every_nats_operation_endpoint() {
             OperationApiEndpoint::BuildSubmit,
             OperationApiEndpoint::BuildCancel,
             OperationApiEndpoint::DeployReserve,
+            OperationApiEndpoint::DeployPreview,
             OperationApiEndpoint::DeploySubmit,
             OperationApiEndpoint::InitFirstMachineActivate,
             OperationApiEndpoint::MachineAdd,

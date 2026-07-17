@@ -3,10 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
-    DeployPlanError, DeployPlanningContext, DeployPlanningInput, DeployServiceSpec, ServiceId,
-    VolumeAdmissionDecision, VolumeAdmissionFailure, VolumeAdmissionInput,
-    VolumeDeclaredDeployRequest, VolumeName, admit_mounted_volumes,
-    validate_mounted_volume_structure,
+    DeployPlanError, DeployPlanningContext, DeployPlanningInput, DeployPlanningService,
+    DeployPlanningTarget, ServiceId, VolumeAdmissionDecision, VolumeAdmissionFailure,
+    VolumeAdmissionInput, VolumeName, admit_mounted_volumes, validate_mounted_volume_structure,
 };
 use crate::ids::MachineId;
 use crate::intent::VolumePinState;
@@ -50,14 +49,14 @@ impl VolumePlan {
 }
 
 pub(super) fn build_namespace_volume_plan(
-    request: &VolumeDeclaredDeployRequest,
+    target: &DeployPlanningTarget,
     phases: &[Vec<DeployPlanningInput>],
     context: DeployPlanningContext<'_>,
 ) -> Result<VolumePlan, DeployPlanError> {
     let durable_pins = canonical_volume_pins(phases);
     let mut assignments = durable_pins
         .iter()
-        .filter(|pin| pin.namespace_id() == request.namespace_id())
+        .filter(|pin| pin.namespace_id() == target.namespace_id())
         .map(|pin| (pin.volume_name().clone(), pin.machine_id().clone()))
         .collect::<BTreeMap<_, _>>();
     let mut services = Vec::new();
@@ -65,7 +64,7 @@ pub(super) fn build_namespace_volume_plan(
     // Structural intent is resolved first. Assignments made for an unpinned
     // volume remain visible to every later phase and service in this plan.
     for input in phases.iter().flatten() {
-        let Some(service) = request.service(&input.service_id) else {
+        let Some(service) = target.service(&input.service_id) else {
             return Err(DeployPlanError::UnknownService {
                 service_id: input.service_id.clone(),
             });
@@ -73,14 +72,14 @@ pub(super) fn build_namespace_volume_plan(
         let mounted = mounted_volume_names(service);
         if mounted.is_empty() {
             services.push(ServiceVolumeTarget {
-                service_id: service.service_id.clone(),
+                service_id: service.service_id().clone(),
                 machine_id: None,
                 mounted,
             });
             continue;
         }
         let machine_id = resolve_service_machine(
-            request,
+            target,
             service,
             &mounted,
             &input.eligible_machines,
@@ -88,15 +87,15 @@ pub(super) fn build_namespace_volume_plan(
             &assignments,
         )?;
         validate_mounted_volume_structure(VolumeAdmissionInput {
-            namespace_id: request.namespace_id(),
+            namespace_id: target.namespace_id(),
             mounted_volume_names: &mounted,
-            declarations: &request.request().volumes,
+            declarations: target.volumes(),
             volume_pins: &durable_pins,
             selected_machine_id: &machine_id,
             storage_testimony: StorageTestimony::NoAnswer,
         })
         .map_err(|failure| DeployPlanError::VolumeAdmission {
-            service_id: service.service_id.clone(),
+            service_id: service.service_id().clone(),
             failure,
         })?;
         for volume_name in &mounted {
@@ -105,7 +104,7 @@ pub(super) fn build_namespace_volume_plan(
                 .or_insert_with(|| machine_id.clone());
         }
         services.push(ServiceVolumeTarget {
-            service_id: service.service_id.clone(),
+            service_id: service.service_id().clone(),
             machine_id: Some(machine_id),
             mounted,
         });
@@ -126,7 +125,9 @@ pub(super) fn build_namespace_volume_plan(
             });
         };
         if !input.eligible_machines.contains(machine_id) {
-            return Err(DeployPlanError::NoEligibleMachines);
+            return Err(DeployPlanError::NoEligibleMachines {
+                service_id: target.service_id.clone(),
+            });
         }
     }
 
@@ -146,15 +147,15 @@ pub(super) fn build_namespace_volume_plan(
     for (machine_id, mounted) in mounted_by_machine {
         let mounted = mounted.into_iter().collect::<Vec<_>>();
         let decisions = admit_mounted_volumes(VolumeAdmissionInput {
-            namespace_id: request.namespace_id(),
+            namespace_id: target.namespace_id(),
             mounted_volume_names: &mounted,
-            declarations: &request.request().volumes,
+            declarations: target.volumes(),
             volume_pins: &durable_pins,
             selected_machine_id: &machine_id,
             storage_testimony: operation_storage_testimony(context.storage_testimony, &machine_id),
         })
         .map_err(|failure| DeployPlanError::VolumeAdmission {
-            service_id: service_for_volume(&services, &mounted, request.status_service_id()),
+            service_id: service_for_volume(&services, &mounted, target.status_service_id()),
             failure,
         })?;
         for decision in decisions {
@@ -201,9 +202,9 @@ struct ServiceVolumeTarget {
     mounted: Vec<VolumeName>,
 }
 
-fn mounted_volume_names(service: &DeployServiceSpec) -> Vec<VolumeName> {
+fn mounted_volume_names(service: &DeployPlanningService) -> Vec<VolumeName> {
     service
-        .runtime
+        .runtime()
         .volume_mounts
         .iter()
         .map(|mount| mount.volume_name.clone())
@@ -213,8 +214,8 @@ fn mounted_volume_names(service: &DeployServiceSpec) -> Vec<VolumeName> {
 }
 
 fn resolve_service_machine(
-    request: &VolumeDeclaredDeployRequest,
-    service: &DeployServiceSpec,
+    target: &DeployPlanningTarget,
+    service: &DeployPlanningService,
     mounted: &[VolumeName],
     eligible_machines: &[MachineId],
     durable_pins: &[VolumePinState],
@@ -225,7 +226,7 @@ fn resolve_service_machine(
         let matching = durable_pins
             .iter()
             .filter(|pin| {
-                pin.namespace_id() == request.namespace_id() && pin.volume_name() == volume_name
+                pin.namespace_id() == target.namespace_id() && pin.volume_name() == volume_name
             })
             .collect::<Vec<_>>();
         match matching.as_slice() {
@@ -239,7 +240,7 @@ fn resolve_service_machine(
             }
             pins => {
                 return Err(DeployPlanError::VolumeAdmission {
-                    service_id: service.service_id.clone(),
+                    service_id: service.service_id().clone(),
                     failure: VolumeAdmissionFailure::AmbiguousPins {
                         volume_name: volume_name.clone(),
                         pin_count: pins.len(),
@@ -249,13 +250,17 @@ fn resolve_service_machine(
         }
     }
     match machines.into_iter().collect::<Vec<_>>().as_slice() {
-        [] => eligible_machines
-            .first()
-            .cloned()
-            .ok_or(DeployPlanError::NoEligibleMachines),
+        [] => {
+            eligible_machines
+                .first()
+                .cloned()
+                .ok_or_else(|| DeployPlanError::NoEligibleMachines {
+                    service_id: service.service_id().clone(),
+                })
+        }
         [machine_id] => Ok(machine_id.clone()),
         several => Err(DeployPlanError::ConflictingVolumePins {
-            service_id: service.service_id.clone(),
+            service_id: service.service_id().clone(),
             machines: several.to_vec(),
         }),
     }

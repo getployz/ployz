@@ -43,21 +43,24 @@ use crate::{
     DeployCleanupContainer, DeployCleanupFailure, DeployCompletionOutcome, DeployImageCleanup,
     DeployInterruptionStage, DeployOperationFailure, DeployOperationState, DeployOrigin,
     DeployPhaseNumber, DeployPhaseOutcome, DeployPhasePlan, DeployPlan, DeployPlanStep,
-    DeployRequest, DeployReservationExpiresAt, DeployReservationId, DeployReserveError,
-    DeployReserveRequest, DeployReserveResponse, DeployReserved, DeployRoute, DeployRouteTarget,
-    DeployRunningStage, DeployServicePlan, DeployServiceResult, DeployServiceSpec,
-    DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse, DockerfileStageName,
-    EbpfAttachmentStatus, EbpfForwardingReady, EbpfForwardingReadyEvidence, EndpointBridgeStatus,
-    EnvName, EnvValue, EventSequence, FailureMessage, FirstMachineInstallArtifacts,
-    FirstMachineInstallSpec, GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessHealth,
-    GatewayRole, GatewayServingStatus, GatewayStatusObservation, GatewayStatusPublishFailure,
-    GatewayWatchFailure, GitBasicCredential, GitCommit, GitCredentialSecret, GitCredentialUsername,
-    GitRepositoryUrl, GitSource, GitSourceEvidence, HealthCheckFailure, HealthcheckDurationNanos,
-    HealthcheckRetries, HealthcheckShellCommand, HostPortAssurance, ImageAvailabilityExpiresAt,
-    ImageReference, ImageSource, IngressConfiguration, IngressConfigureError,
-    IngressConfigureFailure, IngressConfigureOperationState, IngressConfigureRequest,
-    IngressEndpointProjection, IngressEndpointProjectionIdentity, IngressEndpointProjectionState,
-    IngressEndpointSet, IngressEndpointUnavailableReason, InitFirstMachineActivateError,
+    DeployPreview, DeployPreviewError, DeployPreviewImage, DeployPreviewImageFailure,
+    DeployPreviewProjection, DeployPreviewRequest, DeployPreviewResponse, DeployPreviewService,
+    DeployPreviewTarget, DeployRequest, DeployReservationExpiresAt, DeployReservationId,
+    DeployReserveError, DeployReserveRequest, DeployReserveResponse, DeployReserved, DeployRoute,
+    DeployRouteTarget, DeployRunningStage, DeployServicePlan, DeployServiceResult,
+    DeployServiceSpec, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse,
+    DockerfileStageName, EbpfAttachmentStatus, EbpfForwardingReady, EbpfForwardingReadyEvidence,
+    EndpointBridgeStatus, EnvName, EnvValue, EventSequence, FailureMessage,
+    FirstMachineInstallArtifacts, FirstMachineInstallSpec, GatewayHttpFailure,
+    GatewayProcessAttempt, GatewayProcessHealth, GatewayRole, GatewayServingStatus,
+    GatewayStatusObservation, GatewayStatusPublishFailure, GatewayWatchFailure, GitBasicCredential,
+    GitCommit, GitCredentialSecret, GitCredentialUsername, GitRepositoryUrl, GitSource,
+    GitSourceEvidence, HealthCheckFailure, HealthcheckDurationNanos, HealthcheckRetries,
+    HealthcheckShellCommand, HostPortAssurance, ImageAvailabilityExpiresAt, ImageReference,
+    ImageSource, IngressConfiguration, IngressConfigureError, IngressConfigureFailure,
+    IngressConfigureOperationState, IngressConfigureRequest, IngressEndpointProjection,
+    IngressEndpointProjectionIdentity, IngressEndpointProjectionState, IngressEndpointSet,
+    IngressEndpointUnavailableReason, InitFirstMachineActivateError,
     InitFirstMachineActivateRequest, InitFirstMachineActivateResponse, InitFirstMachineActivated,
     InstallArtifactSource, InstallArtifactSpec, InstallArtifactVersion, InstallRolePolicy,
     InstallSha256Digest, InternalDnsFactGeneration, InternalDnsFactWatermark,
@@ -134,6 +137,7 @@ use crate::{
     WireGuardPublicKey, WireGuardReadinessFailure, WireGuardReady, WireGuardReadyEvidence,
     WireGuardRttStatus, WireGuardStatus, WrappedCaKey, WrappedCoreSeeds, ZfsPoolName,
 };
+use ployz_core::deploy::DeployRouteBindingAddition;
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -305,6 +309,7 @@ macro_rules! exported_types {
             PreStartHook,
             DeployRoute,
             DeployRouteTarget,
+            DeployRouteBindingAddition,
             DeployPlan,
             DeployPhasePlan,
             DeployServicePlan,
@@ -516,6 +521,14 @@ macro_rules! exported_types {
             InitFirstMachineActivateError,
             DeployReserveRequest,
             DeployReserved,
+            DeployPreviewRequest,
+            DeployPreviewTarget,
+            DeployPreviewService,
+            DeployPreviewImage,
+            DeployPreviewImageFailure,
+            DeployPreview,
+            DeployPreviewProjection,
+            DeployPreviewError,
             DeploySubmitRequest,
             BuildSubmitRequest,
             BuildSubmitError,
@@ -862,8 +875,83 @@ pub fn operation_contract_fixture() -> Value {
     let machine = cloud_machine_facts();
     let trusted_nats = trusted_nats();
     let join_secret_delivery = machine_join_secret_delivery();
+    let Some(preview_service) = deploy_target.services.first() else {
+        panic!("fixture deploy has one service");
+    };
+    let preview_target = DeployPreviewTarget {
+        namespace_id: deploy_target.namespace_id.clone(),
+        origin: deploy_target.origin.clone(),
+        volumes: deploy_target.volumes.clone(),
+        services: vec![DeployPreviewService {
+            service_id: preview_service.service_id.clone(),
+            image: DeployPreviewImage::PendingBuild,
+            replicas: preview_service.replicas,
+            keep: preview_service.keep,
+            runtime: preview_service.runtime.clone(),
+            pre_start: preview_service.pre_start.clone(),
+            depends_on: preview_service.depends_on.clone(),
+            routes: preview_service.routes.clone(),
+        }],
+    };
 
     json!({
+        "deploy_preview_request": value(DeployPreviewRequest {
+            target: preview_target,
+            registry_credentials: std::collections::BTreeMap::new(),
+        }),
+        "deploy_preview_response": value(DeployPreviewResponse::Ok {
+            value: DeployPreview {
+                projection: DeployPreviewProjection {
+                    namespace_id: deploy_target.namespace_id.clone(),
+                    phases: vec![DeployPhasePlan {
+                        services: vec![DeployServicePlan {
+                            service_id: service_id("svc_api"),
+                            steps: vec![DeployPlanStep::RunContainer {
+                                machine_id: machine_id("machine_2"),
+                                slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
+                            }],
+                            pre_start: None,
+                        }],
+                    }],
+                    volume_pins: Vec::new(),
+                    volume_preparations: Vec::new(),
+                    cleanup_candidates: Vec::new(),
+                    route_binding_additions: vec![DeployRouteBindingAddition {
+                        namespace_id: deploy_target.namespace_id.clone(),
+                        target: RouteTarget::new(
+                            RouteHostname::try_new("api.example.com").expect("valid hostname"),
+                        ),
+                        endpoint_port: RoutePort::try_new(8080).expect("valid route port"),
+                        service_id: service_id("svc_api"),
+                        origin: RouteBindingOrigin::Declared,
+                    }],
+                    route_binding_removals: Vec::new(),
+                    serving_target_commits: Vec::new(),
+                    serving_target_removals: Vec::new(),
+                },
+                build_platform_requirements: std::collections::BTreeMap::from([(
+                    service_id("svc_api"),
+                    BuildPlatforms::try_new([OciPlatform::try_new("linux", "amd64")
+                        .expect("valid platform")])
+                    .expect("build platforms"),
+                )]),
+                unusable_machines: Vec::new(),
+                unusable_machines_by_service: std::collections::BTreeMap::new(),
+            },
+        }),
+        "deploy_preview_image_unavailable_response": value(DeployPreviewResponse::DomainError {
+            error: DeployPreviewError::ImageUnavailable {
+                failure: Box::new(DeployPreviewImageFailure::ImageResolutionFailed {
+                    service_id: service_id("svc_api"),
+                    machine_id: machine_id("machine_2"),
+                    image: ImageReference::try_new("registry.example/api:latest")
+                        .expect("valid image reference"),
+                    message: FailureMessage::try_new("registry unavailable")
+                        .expect("valid failure message"),
+                }),
+                unusable_machines: Vec::new(),
+            },
+        }),
         "deploy_submit_request": value(DeploySubmitRequest {
             registry_credentials: std::collections::BTreeMap::new(),
             idempotency_key: OperationIdempotencyKey::try_new("idem_deploy_123")

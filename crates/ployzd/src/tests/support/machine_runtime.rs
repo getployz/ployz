@@ -46,6 +46,7 @@ impl ObservingContainerRunner {
                 resolutions: Vec::new(),
                 pulls: Vec::new(),
                 resolution_failure: None,
+                resolution_barrier: None,
             })),
         }
     }
@@ -82,6 +83,13 @@ impl ObservingContainerRunner {
             .lock()
             .expect("observing runner state lock is not poisoned")
             .resolution_failure = Some(message.into());
+    }
+
+    pub fn synchronize_registry_resolutions(&self, count: usize) {
+        self.state
+            .lock()
+            .expect("observing runner state lock is not poisoned")
+            .resolution_barrier = Some(Arc::new(tokio::sync::Barrier::new(count)));
     }
 
     fn replace_snapshot(&self, snapshot: MachineContainerObservationSnapshot) {
@@ -162,6 +170,17 @@ impl MachineContainerRunner for ObservingContainerRunner {
         reference: &ImageReference,
         credential: Option<&RegistryCredential>,
     ) -> Result<OciDigest, MachineRegistryImageResolveError> {
+        let barrier = self
+            .state
+            .lock()
+            .map_err(|error| MachineRegistryImageResolveError::ImagePull {
+                message: error.to_string(),
+            })?
+            .resolution_barrier
+            .clone();
+        if let Some(barrier) = barrier {
+            barrier.wait().await;
+        }
         let mut state =
             self.state
                 .lock()
@@ -425,6 +444,7 @@ struct ObservingContainerRunnerState {
     resolutions: Vec<(ImageReference, Option<RegistryCredential>)>,
     pulls: Vec<MachineImagePull>,
     resolution_failure: Option<String>,
+    resolution_barrier: Option<Arc<tokio::sync::Barrier>>,
 }
 
 impl ObservingContainerRunnerState {

@@ -5,15 +5,15 @@ use crate::{
     CoreReplaceError, CoreReplaceReportError, CoreReplaceReportRequest, CoreReplaceReported,
     CoreReplaceRequest, CredentialAddError, CredentialAddRequest, CredentialListError,
     CredentialListRequest, CredentialListResult, CredentialRemoveError, CredentialRemoveRequest,
-    DeployReserveError, DeployReserveRequest, DeployReserved, DeploySubmitError,
-    DeploySubmitRequest, IngressConfigureError, IngressConfigureRequest,
-    InitFirstMachineActivateError, InitFirstMachineActivateRequest, InitFirstMachineActivated,
-    LogsTailError, LogsTailRequest, LogsTailResult, MachineAddAccepted, MachineAddError,
-    MachineAddRequest, MachineInspectError, MachineInspectRequest, MachineJoinRedeemError,
-    MachineJoinRedeemRequest, MachineJoinRedeemed, MachineJoinReportError,
-    MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError, MachineLifecycleRequest,
-    MachineListError, MachineListRequest, MachineListResult, MachineSnapshot,
-    MachineStoragePrepareError, MachineStoragePrepareRequest, MachineUpdateError,
+    DeployPreview, DeployPreviewError, DeployPreviewRequest, DeployReserveError,
+    DeployReserveRequest, DeployReserved, DeploySubmitError, DeploySubmitRequest,
+    IngressConfigureError, IngressConfigureRequest, InitFirstMachineActivateError,
+    InitFirstMachineActivateRequest, InitFirstMachineActivated, LogsTailError, LogsTailRequest,
+    LogsTailResult, MachineAddAccepted, MachineAddError, MachineAddRequest, MachineInspectError,
+    MachineInspectRequest, MachineJoinRedeemError, MachineJoinRedeemRequest, MachineJoinRedeemed,
+    MachineJoinReportError, MachineJoinReportRequest, MachineJoinReported, MachineLifecycleError,
+    MachineLifecycleRequest, MachineListError, MachineListRequest, MachineListResult,
+    MachineSnapshot, MachineStoragePrepareError, MachineStoragePrepareRequest, MachineUpdateError,
     MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest, NetworkRepairError,
     NetworkRepairRequest, NetworkResolveError, NetworkResolveRequest, NetworkResolveResult,
     NetworkStatusError, NetworkStatusRequest, NetworkStatusResult, OperationStatusSnapshot,
@@ -32,6 +32,7 @@ pub enum OperationApiEndpoint {
     BuildSubmit,
     BuildCancel,
     DeployReserve,
+    DeployPreview,
     DeploySubmit,
     InitFirstMachineActivate,
     MachineAdd,
@@ -83,6 +84,7 @@ macro_rules! operation_api_contracts {
             $crate::operation_api::BuildSubmitApi,
             $crate::operation_api::BuildCancelApi,
             $crate::operation_api::DeployReserveApi,
+            $crate::operation_api::DeployPreviewApi,
             $crate::operation_api::DeploySubmitApi,
             $crate::operation_api::InitFirstMachineActivateApi,
             $crate::operation_api::MachineAddApi,
@@ -165,6 +167,18 @@ impl OperationApiContract for DeploySubmitApi {
 
     const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::DeploySubmit;
     const RESPONSE_ALIAS: &'static str = "DeploySubmitResponse";
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeployPreviewApi;
+
+impl OperationApiContract for DeployPreviewApi {
+    type Request = DeployPreviewRequest;
+    type Success = DeployPreview;
+    type Error = DeployPreviewError;
+
+    const ENDPOINT: OperationApiEndpoint = OperationApiEndpoint::DeployPreview;
+    const RESPONSE_ALIAS: &'static str = "DeployPreviewResponse";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
