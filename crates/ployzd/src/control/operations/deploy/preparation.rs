@@ -3,8 +3,9 @@
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlanningInput, DeployPlanningService, DeployPlanningTarget,
     DeployPreparationInput, DeployRequest, DeployRouteBindingAddition, ExistingReplicaPolicy,
-    RegistryCredential, commit_deploy_route_bindings, namespace_route_binding_removals,
-    namespace_serving_target_removals, prepare_deploy, validate_deploy_route_bindings,
+    PreparedDeploy, RegistryCredential, commit_deploy_route_bindings,
+    namespace_route_binding_removals, namespace_serving_target_removals, prepare_deploy,
+    validate_deploy_route_bindings,
 };
 use ployz_core::ids::{MachineId, OperationId, RouteBindingId, ServiceId};
 use ployz_core::image::OciPlatform;
@@ -311,13 +312,6 @@ fn prepare_deploy_command(
     }
 }
 
-struct PreparedPlanningService {
-    eligible_machines: Vec<MachineId>,
-    unusable_machines: Vec<ployz_core::operation::UnusableMachine>,
-    existing_replicas: Vec<ployz_core::deploy::ExistingServiceReplica>,
-    cleanup_candidates: Vec<ployz_core::deploy::ObservedCleanupCandidate>,
-}
-
 fn prepare_planning_service(
     target: &DeployPlanningTarget,
     service_id: &ServiceId,
@@ -325,8 +319,8 @@ fn prepare_planning_service(
     draining_machines: &[MachineId],
     facts: &DeployExecutionFacts,
     existing_replica_policy: ExistingReplicaPolicy,
-) -> PreparedPlanningService {
-    let prepared = prepare_deploy(DeployPreparationInput {
+) -> PreparedDeploy {
+    prepare_deploy(DeployPreparationInput {
         target,
         service_id: service_id.clone(),
         occupied_route_bindings: facts.namespace_route_bindings.clone(),
@@ -336,13 +330,7 @@ fn prepare_planning_service(
         observed_machines: facts.observed_machines.clone(),
         existing_replica_policy,
     })
-    .expect("route bindings were validated while loading deploy facts");
-    PreparedPlanningService {
-        eligible_machines: prepared.eligible_machines,
-        unusable_machines: prepared.unusable_machines,
-        existing_replicas: prepared.existing_replicas,
-        cleanup_candidates: prepared.cleanup_candidates,
-    }
+    .expect("route bindings were validated while loading deploy facts")
 }
 
 fn existing_replica_policy(
