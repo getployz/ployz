@@ -23,7 +23,9 @@ use crate::roles::machine::protocol::{
 };
 use crate::tasks::TaskSpawner;
 use ployz_core::certificate::ActiveCertState;
-use ployz_core::deploy::VolumeDeclaredDeployRequest;
+use ployz_core::deploy::{
+    AutoHostnameRouteBindingError, DeployRouteBindingValidationError, VolumeDeclaredDeployRequest,
+};
 use ployz_core::ingress::CertificateOwner;
 use ployz_core::machine::runtime::{ContainerHealth, ContainerRuntimeState};
 use ployz_core::operation::{
@@ -212,6 +214,18 @@ fn fact_load_failure(
     source: &DeployFactLoadError,
 ) -> DeployOperationFailure {
     match source {
+        DeployFactLoadError::InvalidRouteBindings {
+            failure:
+                DeployRouteBindingValidationError::Automatic(
+                    AutoHostnameRouteBindingError::HostnameCollision {
+                        hostname,
+                        route_binding_id,
+                    },
+                ),
+        } => DeployOperationFailure::AutomaticHostnameCollision {
+            hostname: hostname.clone(),
+            route_binding_id: route_binding_id.clone(),
+        },
         DeployFactLoadError::InvalidStoredTarget { .. }
         | DeployFactLoadError::IntentRead { .. }
         | DeployFactLoadError::InvalidRouteBindings { .. }
@@ -368,6 +382,62 @@ pub enum DeployOperationRunError {
     },
     #[error("deploy execution failed: {0}")]
     Execute(DeployExecutionError),
+}
+
+#[cfg(test)]
+mod fact_load_failure_tests {
+    use super::*;
+    use ployz_core::deploy::{AutoHostnameRouteBindingError, DeployRouteBindingValidationError};
+    use ployz_core::ids::RouteBindingId;
+    use ployz_test_support::fixtures::deploy_target;
+    use ployz_test_support::ids::{route_hostname, service_id};
+
+    #[test]
+    fn fact_load_failure_preserves_automatic_hostname_collision_identity() {
+        let request = deploy_target("svc_api");
+        let failure = fact_load_failure(
+            &request,
+            &DeployFactLoadError::InvalidRouteBindings {
+                failure: DeployRouteBindingValidationError::Automatic(
+                    AutoHostnameRouteBindingError::HostnameCollision {
+                        hostname: route_hostname("api.apps.example.com"),
+                        route_binding_id: RouteBindingId::try_new("route_existing")
+                            .expect("valid route binding id"),
+                    },
+                ),
+            },
+        );
+
+        assert_eq!(
+            failure,
+            DeployOperationFailure::AutomaticHostnameCollision {
+                hostname: route_hostname("api.apps.example.com"),
+                route_binding_id: RouteBindingId::try_new("route_existing")
+                    .expect("valid route binding id"),
+            }
+        );
+    }
+
+    #[test]
+    fn non_collision_invalid_route_failure_keeps_planning_failed_contract() {
+        let request = deploy_target("svc_api");
+        let failure = fact_load_failure(
+            &request,
+            &DeployFactLoadError::InvalidRouteBindings {
+                failure: DeployRouteBindingValidationError::DuplicateServiceId {
+                    service_id: service_id("svc_api"),
+                },
+            },
+        );
+
+        let DeployOperationFailure::PlanningFailed { message, .. } = failure else {
+            panic!("non-collision route error must keep planning_failed")
+        };
+        assert_eq!(
+            message.as_str(),
+            "invalid route bindings: service svc_api is declared more than once"
+        );
+    }
 }
 
 async fn reusable_interrupted_deploy_operation_ids(

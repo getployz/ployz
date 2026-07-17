@@ -8,7 +8,10 @@ use crate::control::intent::namespace_intent::NamespaceIntentStore;
 use crate::control::intent::service::NatsIntentReader;
 use crate::control::role_client::machine::{NatsMachineFactsReader, read_machine_placement_facts};
 use crate::control::role_client::machine_convergence::gather_dataplane_statuses;
-use ployz_core::deploy::{DeployRouteTarget, VolumeDeclaredDeployRequest};
+use ployz_core::deploy::{
+    AutoHostnameRouteBindingError, DeployRouteBindingValidationError, DeployRouteTarget,
+    VolumeDeclaredDeployRequest,
+};
 use ployz_core::ids::MachineId;
 use ployz_core::ingress::{AutomaticHostnameConfiguration, IngressConfiguration};
 use ployz_core::intent::ActiveMachineState;
@@ -90,7 +93,9 @@ fn resolve_automatic_hostname_mode(
     match configuration {
         AutomaticHostnameConfiguration::Disabled => {
             Err(DeployFactLoadError::InvalidRouteBindings {
-                message: "automatic hostnames are disabled".to_owned(),
+                failure: DeployRouteBindingValidationError::Automatic(
+                    AutoHostnameRouteBindingError::AutomaticHostnamesDisabled,
+                ),
             })
         }
         AutomaticHostnameConfiguration::Custom { suffix } => Ok(AutomaticHostnameMode::Custom {
@@ -296,9 +301,7 @@ fn validate_route_bindings(
         mint_route_binding_id,
     )
     .map(|_| ())
-    .map_err(|error| DeployFactLoadError::InvalidRouteBindings {
-        message: error.to_string(),
-    })
+    .map_err(|failure| DeployFactLoadError::InvalidRouteBindings { failure })
 }
 
 fn operation_dataplane_members(
@@ -341,8 +344,10 @@ pub enum DeployFactLoadError {
     InvalidStoredTarget { message: String },
     #[error("intent could not be read: {message}")]
     IntentRead { message: String },
-    #[error("invalid route bindings: {message}")]
-    InvalidRouteBindings { message: String },
+    #[error("invalid route bindings: {failure}")]
+    InvalidRouteBindings {
+        failure: DeployRouteBindingValidationError,
+    },
     #[error("ingress state could not be read: {message}")]
     IngressState { message: String },
     #[error("ingress is unavailable: {message}")]
