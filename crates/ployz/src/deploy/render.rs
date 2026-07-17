@@ -880,6 +880,7 @@ fn render_image_lines(tree: &DeployTree, target: &DeployRequest) -> Vec<TreeLine
                         }
                         DeployOperationFailure::NoUsableMachines { .. }
                         | DeployOperationFailure::PlanningFailed { .. }
+                        | DeployOperationFailure::AutomaticHostnameCollision { .. }
                         | DeployOperationFailure::RuntimeUnavailable { .. }
                         | DeployOperationFailure::VolumeEnsureFailed { .. }
                         | DeployOperationFailure::ContainerStartFailed { .. }

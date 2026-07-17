@@ -1810,10 +1810,13 @@ fn automatic_route_rejects_a_declared_hostname_collision() {
     )
     .expect_err("declared collision");
 
-    assert!(matches!(
+    assert_eq!(
         error,
-        ployz_core::deploy::AutoHostnameRouteBindingError::HostnameCollision { .. }
-    ));
+        ployz_core::deploy::AutoHostnameRouteBindingError::HostnameCollision {
+            hostname: route_hostname("api.apps.example.com"),
+            route_binding_id: route_binding_id("route_api_apps_example_com"),
+        }
+    );
 }
 
 #[test]

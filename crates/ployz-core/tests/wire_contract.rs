@@ -6,6 +6,7 @@ use ployz_core::deploy::{
     ReplicaCount, ServiceDependency, ServiceVolumeMount, VolumeDeclaredDeployRequest,
     VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName, ZfsPoolNameError,
 };
+use ployz_core::ids::RouteBindingId;
 use ployz_core::intent::{VolumeKind, VolumePinState};
 use ployz_core::machine::MachineUsabilityReason;
 use ployz_core::operation::{
@@ -131,6 +132,32 @@ fn container_start_failures_keep_container_scope() {
         serde_json::to_string(&failure).expect("failure serializes"),
         r#"{"kind":"container_start_failed","machine_id":"machine_7","container_id":"ctr_123","message":"container start failed","retained_artifacts":[{"type":"created_container","machine_id":"machine_7","container_id":"ctr_123","inspect_hint":"ployzctl container inspect ctr_123"}]}"#
     );
+}
+
+#[test]
+fn automatic_hostname_collision_failure_keeps_typed_route_identity() {
+    let failure = DeployOperationFailure::AutomaticHostnameCollision {
+        hostname: route_hostname("api.apps.example.com"),
+        route_binding_id: RouteBindingId::try_new("route_existing")
+            .expect("valid route binding id"),
+    };
+
+    assert_eq!(
+        serde_json::to_string(&failure).expect("failure serializes"),
+        r#"{"kind":"automatic_hostname_collision","hostname":"api.apps.example.com","route_binding_id":"route_existing"}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&DeployOperationState::Failed {
+            failure: failure.clone(),
+        })
+        .expect("terminal state serializes"),
+        r#"{"state":"failed","failure":{"kind":"automatic_hostname_collision","hostname":"api.apps.example.com","route_binding_id":"route_existing"}}"#
+    );
+    assert_eq!(
+        failure.failure_class(),
+        DeployFailureClass::PreconditionRejected
+    );
+    assert!(failure.retained_artifacts().is_empty());
 }
 
 #[test]

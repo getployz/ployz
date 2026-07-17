@@ -7,7 +7,7 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::{
     CertId, ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
-    OperationId, ServiceId,
+    OperationId, RouteBindingId, ServiceId,
 };
 use ployz_core::image::{OciDigest, OciPlatform};
 use ployz_core::ingress::AutomaticHostnameLabel;
@@ -822,6 +822,28 @@ fn certificate_provision_timeout_renders_hostname_scope_and_seconds() {
     assert_eq!(
         failure_cause(&single_service_target(), &failure),
         "certificate provisioning timed out after 90s for api.example.com (namespace revision revision_318)"
+    );
+}
+
+#[test]
+fn automatic_hostname_collision_renders_only_typed_route_identity() {
+    let failure = DeployOperationFailure::AutomaticHostnameCollision {
+        hostname: RouteHostname::try_new("api.apps.example.com").expect("valid hostname"),
+        route_binding_id: RouteBindingId::try_new("route_existing")
+            .expect("valid route binding id"),
+    };
+    let failure_view = DeployFailureView::new(&failure, None);
+
+    assert!(matches!(
+        failure_view.safety(),
+        FailureSafety::NothingChanged
+    ));
+    assert!(failure_view.image_failure_service().is_none());
+    assert!(failure_view.failed_route().is_none());
+    assert!(failure_view.guidance().is_none());
+    assert_eq!(
+        failure_cause(&single_service_target(), &failure),
+        "automatic hostname api.apps.example.com conflicts with route binding route_existing"
     );
 }
 

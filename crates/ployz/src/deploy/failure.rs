@@ -97,6 +97,7 @@ impl<'a> DeployFailureView<'a> {
                 | RouteCutoverFailureReason::TimedOut { .. } => {}
             },
             DeployOperationFailure::PlanningFailed { .. }
+            | DeployOperationFailure::AutomaticHostnameCollision { .. }
             | DeployOperationFailure::ArtifactUnavailable {
                 reason:
                     ArtifactUnavailableReason::BundleMissing
@@ -207,6 +208,7 @@ impl<'a> DeployFailureView<'a> {
         match self.failure {
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
+            | DeployOperationFailure::AutomaticHostnameCollision { .. }
             | DeployOperationFailure::ImageResolutionFailed { .. }
             | DeployOperationFailure::ArtifactUnavailable { .. }
             | DeployOperationFailure::ImageMissingOnSeed { .. }
@@ -245,6 +247,7 @@ impl<'a> DeployFailureView<'a> {
             }
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
+            | DeployOperationFailure::AutomaticHostnameCollision { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
             | DeployOperationFailure::VolumeEnsureFailed { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
@@ -262,6 +265,7 @@ impl<'a> DeployFailureView<'a> {
             DeployOperationFailure::RouteCutoverFailed { route, .. } => Some(route),
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
+            | DeployOperationFailure::AutomaticHostnameCollision { .. }
             | DeployOperationFailure::ImageResolutionFailed { .. }
             | DeployOperationFailure::ArtifactUnavailable { .. }
             | DeployOperationFailure::ImageMissingOnSeed { .. }
@@ -305,6 +309,7 @@ impl<'a> DeployFailureView<'a> {
             )),
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
+            | DeployOperationFailure::AutomaticHostnameCollision { .. }
             | DeployOperationFailure::ImageResolutionFailed { .. }
             | DeployOperationFailure::ArtifactUnavailable { .. }
             | DeployOperationFailure::ImageMissingOnSeed { .. }
@@ -343,6 +348,7 @@ impl<'a> DeployFailureView<'a> {
                 | ControlPlaneCommitScope::VolumePin { .. } => None,
             },
             DeployOperationFailure::NoUsableMachines { .. }
+            | DeployOperationFailure::AutomaticHostnameCollision { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
             | DeployOperationFailure::VolumeEnsureFailed { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
@@ -441,6 +447,14 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
         DeployOperationFailure::PlanningFailed { message, .. } => {
             format!("deploy planning failed: {}", message.as_str())
         }
+        DeployOperationFailure::AutomaticHostnameCollision {
+            hostname,
+            route_binding_id,
+        } => format!(
+            "automatic hostname {} conflicts with route binding {}",
+            hostname.as_str(),
+            route_binding_id.as_str()
+        ),
         DeployOperationFailure::ImageResolutionFailed {
             image,
             machine_id,

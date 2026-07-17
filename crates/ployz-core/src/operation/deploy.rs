@@ -11,7 +11,7 @@ use crate::deploy::VolumeName;
 use crate::deploy::{DeployCleanupContainer, DeployPlan, ImageReference};
 use crate::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
-    OperationId, ServiceId,
+    OperationId, RouteBindingId, ServiceId,
 };
 use crate::image::OciDigest;
 use crate::machine::MachineUsabilityReason;
@@ -288,6 +288,10 @@ pub enum DeployOperationFailure {
         namespace_revision_id: NamespaceRevisionId,
         message: FailureMessage,
     },
+    AutomaticHostnameCollision {
+        hostname: RouteHostname,
+        route_binding_id: RouteBindingId,
+    },
     ImageResolutionFailed {
         service_id: ServiceId,
         machine_id: MachineId,
@@ -439,7 +443,9 @@ impl DeployOperationFailure {
                     DeployFailureClass::PreconditionRejected
                 }
             }
-            Self::PlanningFailed { .. } => DeployFailureClass::PreconditionRejected,
+            Self::PlanningFailed { .. } | Self::AutomaticHostnameCollision { .. } => {
+                DeployFailureClass::PreconditionRejected
+            }
             Self::ArtifactUnavailable { .. }
             | Self::ImageResolutionFailed { .. }
             | Self::ImageMissingOnSeed { .. }
@@ -505,6 +511,7 @@ impl DeployOperationFailure {
             } => retained_artifacts,
             Self::NoUsableMachines { .. }
             | Self::PlanningFailed { .. }
+            | Self::AutomaticHostnameCollision { .. }
             | Self::VolumeEnsureFailed { .. }
             | Self::ImageResolutionFailed { .. }
             | Self::ArtifactUnavailable { .. }
