@@ -1385,6 +1385,9 @@ fn pushed_deploy_command(
     receipt: ployz_core::deploy::PushedImageReceipt,
     machine_platforms: std::collections::BTreeMap<MachineId, ployz_core::image::OciPlatform>,
 ) -> DeployExecutionInput {
+    let image = image("local/api:rev_2")
+        .with_digest(receipt.index_digest())
+        .expect("pushed image pins receipt index");
     let request = DeployRequest {
         namespace_id: namespace_id("default"),
         origin: None,
@@ -1392,7 +1395,7 @@ fn pushed_deploy_command(
         services: vec![DeployServiceSpec {
             keep: None,
             service_id: service_id("svc_api"),
-            image: image("local/api:rev_2"),
+            image,
             image_source: ployz_core::deploy::ImageSource::PushedToSeed(receipt),
             replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
