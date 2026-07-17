@@ -16,6 +16,7 @@ use ployz_core::network::DataplaneMember;
 use ployz_core::operation::{
     DeployEvidence, DeployImageCleanup, DeployOperationFailure, FailureMessage,
 };
+use ployz_sdk_types::DeployPreviewImageFailure;
 
 use crate::control::role_client::machine::{
     MachineClockTestimony, MachineImageEnsureError, MachineImageRemoveError,
@@ -31,23 +32,141 @@ use super::{
     cleanup_failure_message, record_evidence,
 };
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ImagePreparationFailure {
+    ResolutionFailed {
+        service_id: ServiceId,
+        machine_id: MachineId,
+        image: ImageReference,
+        message: FailureMessage,
+    },
+    SelectedPlatformUnavailable {
+        service_id: ServiceId,
+        machine_id: MachineId,
+        target_platform: ployz_core::image::OciPlatform,
+    },
+    SeedUnavailable {
+        service_id: ServiceId,
+        seed: MachineId,
+        message: FailureMessage,
+    },
+    AvailabilityExpired {
+        service_id: ServiceId,
+        seed: MachineId,
+        target_platform: ployz_core::image::OciPlatform,
+        expired_at: ployz_core::deploy::ImageAvailabilityExpiresAt,
+    },
+}
+
 #[derive(Debug)]
 pub(super) enum ImagePreparationError {
-    OperationFailure {
-        failure: Box<DeployOperationFailure>,
-    },
-    InternalInvariant {
-        message: String,
-    },
+    Failure { failure: ImagePreparationFailure },
+    InternalInvariant { message: String },
 }
 
 impl From<ImagePreparationError> for DeployExecutionError {
     fn from(error: ImagePreparationError) -> Self {
         match error {
-            ImagePreparationError::OperationFailure { failure } => Self::Image { failure },
+            ImagePreparationError::Failure { failure } => Self::Image {
+                failure: Box::new(failure.into()),
+            },
             ImagePreparationError::InternalInvariant { message } => {
                 Self::InternalInvariant { message }
             }
+        }
+    }
+}
+
+impl From<ImagePreparationFailure> for DeployOperationFailure {
+    fn from(failure: ImagePreparationFailure) -> Self {
+        match failure {
+            ImagePreparationFailure::ResolutionFailed {
+                service_id,
+                machine_id,
+                image,
+                message,
+            } => Self::ImageResolutionFailed {
+                service_id,
+                machine_id,
+                image,
+                message,
+            },
+            ImagePreparationFailure::SelectedPlatformUnavailable {
+                service_id,
+                machine_id,
+                target_platform,
+            } => Self::PlatformImageUnavailable {
+                service_id,
+                machine_id,
+                target_platform,
+            },
+            ImagePreparationFailure::SeedUnavailable {
+                service_id,
+                seed,
+                message,
+            } => Self::SeedUnavailable {
+                service_id,
+                seed,
+                message,
+            },
+            ImagePreparationFailure::AvailabilityExpired {
+                service_id,
+                seed,
+                target_platform,
+                expired_at,
+            } => Self::PlatformImageExpired {
+                service_id,
+                seed,
+                target_platform,
+                expired_at,
+            },
+        }
+    }
+}
+
+impl From<ImagePreparationFailure> for DeployPreviewImageFailure {
+    fn from(failure: ImagePreparationFailure) -> Self {
+        match failure {
+            ImagePreparationFailure::ResolutionFailed {
+                service_id,
+                machine_id,
+                image,
+                message,
+            } => Self::ImageResolutionFailed {
+                service_id,
+                machine_id,
+                image,
+                message,
+            },
+            ImagePreparationFailure::SelectedPlatformUnavailable {
+                service_id,
+                machine_id,
+                target_platform,
+            } => Self::PlatformImageUnavailable {
+                service_id,
+                machine_id,
+                target_platform,
+            },
+            ImagePreparationFailure::SeedUnavailable {
+                service_id,
+                seed,
+                message,
+            } => Self::SeedUnavailable {
+                service_id,
+                seed,
+                message,
+            },
+            ImagePreparationFailure::AvailabilityExpired {
+                service_id,
+                seed,
+                target_platform,
+                expired_at,
+            } => Self::PlatformImageExpired {
+                service_id,
+                seed,
+                target_platform,
+                expired_at,
+            },
         }
     }
 }
@@ -400,13 +519,13 @@ fn image_resolution_failure(
     requested: &ployz_core::deploy::ImageReference,
     message: FailureMessage,
 ) -> ImagePreparationError {
-    ImagePreparationError::OperationFailure {
-        failure: Box::new(DeployOperationFailure::ImageResolutionFailed {
+    ImagePreparationError::Failure {
+        failure: ImagePreparationFailure::ResolutionFailed {
             service_id: service_id.clone(),
             machine_id: machine_id.clone(),
             image: requested.clone(),
             message,
-        }),
+        },
     }
 }
 
@@ -566,12 +685,12 @@ pub(super) fn validate_pushed_service_availability(
     }
     for (target_platform, machine_id) in target_platforms {
         let Some(platform_image) = receipt.platform(&target_platform) else {
-            return Err(ImagePreparationError::OperationFailure {
-                failure: Box::new(DeployOperationFailure::PlatformImageUnavailable {
+            return Err(ImagePreparationError::Failure {
+                failure: ImagePreparationFailure::SelectedPlatformUnavailable {
                     service_id: service_id.clone(),
                     machine_id,
                     target_platform,
-                }),
+                },
             });
         };
         let failure = seed_clock_failure(
@@ -588,9 +707,7 @@ pub(super) fn validate_pushed_service_availability(
             )
         });
         if let Some(failure) = failure {
-            return Err(ImagePreparationError::OperationFailure {
-                failure: Box::new(failure),
-            });
+            return Err(ImagePreparationError::Failure { failure });
         }
     }
     Ok(())
@@ -600,9 +717,9 @@ fn seed_clock_failure(
     service_id: &ployz_core::ids::ServiceId,
     platform_image: &ployz_core::deploy::PlatformImage,
     testimony: Option<&MachineClockTestimony>,
-) -> Option<DeployOperationFailure> {
+) -> Option<ImagePreparationFailure> {
     let Some(testimony) = testimony else {
-        return Some(DeployOperationFailure::SeedUnavailable {
+        return Some(ImagePreparationFailure::SeedUnavailable {
             service_id: service_id.clone(),
             seed: platform_image.seed.clone(),
             message: deploy_failure_message("fresh clock testimony from image seed is unavailable"),
@@ -615,7 +732,7 @@ fn seed_clock_failure(
             .unwrap_or(u64::MAX),
     );
     (testimony.machine_observed_at_unix_ms > maximum_seed_time).then(|| {
-        DeployOperationFailure::SeedUnavailable {
+        ImagePreparationFailure::SeedUnavailable {
             service_id: service_id.clone(),
             seed: platform_image.seed.clone(),
             message: deploy_failure_message(
@@ -639,11 +756,11 @@ fn expired_platform_failure(
     target_platform: &ployz_core::image::OciPlatform,
     platform_image: &ployz_core::deploy::PlatformImage,
     now_unix_seconds: u64,
-) -> Option<DeployOperationFailure> {
+) -> Option<ImagePreparationFailure> {
     platform_image
         .availability_expires_at
         .is_expired_at(now_unix_seconds)
-        .then(|| DeployOperationFailure::PlatformImageExpired {
+        .then(|| ImagePreparationFailure::AvailabilityExpired {
             service_id: service_id.clone(),
             seed: platform_image.seed.clone(),
             target_platform: target_platform.clone(),
@@ -777,7 +894,7 @@ mod tests {
                 platform_image,
                 None,
             ),
-            Some(DeployOperationFailure::SeedUnavailable { message, .. })
+            Some(ImagePreparationFailure::SeedUnavailable { message, .. })
                 if message.as_str() == "fresh clock testimony from image seed is unavailable"
         ));
     }
@@ -797,7 +914,7 @@ mod tests {
                 platform_image,
                 Some(&testimony),
             ),
-            Some(DeployOperationFailure::SeedUnavailable { message, .. })
+            Some(ImagePreparationFailure::SeedUnavailable { message, .. })
                 if message.as_str() == "image seed clock is more than 300 seconds ahead of Control"
         ));
     }
@@ -885,7 +1002,7 @@ mod tests {
 
         assert_eq!(
             failure,
-            DeployOperationFailure::PlatformImageExpired {
+            ImagePreparationFailure::AvailabilityExpired {
                 service_id: service.service.service_id.clone(),
                 seed: platform_image.seed.clone(),
                 target_platform,

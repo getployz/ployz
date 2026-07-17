@@ -10,11 +10,7 @@ use ployz_core::image::OciDigest;
 use ployz_core::operation::OperationIdempotencyKey;
 use ployz_sdk_types::{DeploySubmitError, DeploySubmitRequest, NetworkRepairError};
 
-use crate::control::sequencer::DeploySubmitCommand;
-
-use super::{
-    normalize_deploy_submit, validate_network_repair_preconditions, validate_registry_credentials,
-};
+use super::{normalize_deploy_submit, validate_network_repair_preconditions};
 
 fn operation_id() -> OperationId {
     OperationId::try_new("op_network_repair").expect("operation id")
@@ -84,8 +80,7 @@ fn pushed_image_digest_must_match_the_index_digest() {
         .expect("valid image")
         .with_digest(&OciDigest::sha256(b"different"))
         .expect("image accepts digest");
-    let command = DeploySubmitCommand {
-        operation_id: OperationId::try_new("op_test").expect("valid operation id"),
+    let request = DeploySubmitRequest {
         idempotency_key: OperationIdempotencyKey::try_new("idem_test")
             .expect("valid idempotency key"),
         reservation_id: DeployReservationId::first(),
@@ -125,7 +120,7 @@ fn pushed_image_digest_must_match_the_index_digest() {
     };
 
     assert!(matches!(
-        validate_registry_credentials(&command),
+        normalize_deploy_submit(request),
         Err(DeploySubmitError::InvalidTarget { message, .. })
             if message.as_str().contains("must match its pushed index digest")
     ));

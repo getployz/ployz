@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
+use futures_util::future::join_all;
 use ployz_core::build::BuildPlatforms;
 use ployz_core::deploy::{
     DeployPlacementPlan, DeployPlanError, DeployPlanningContext, DeployPlanningTarget,
@@ -11,6 +12,7 @@ use ployz_sdk_types::{DeployPreview, DeployPreviewError, DeployPreviewRequest};
 
 use crate::control::intent::ingress_intent::{IngressProjectionStore, PloyzDnsTargetStore};
 use crate::control::intent::service::NatsIntentReader;
+use crate::control::operation_evidence::OperationRepository;
 use crate::control::role_client::machine::NatsMachineFactsReader;
 
 use super::{
@@ -18,13 +20,18 @@ use super::{
     images::ImagePreparationError,
 };
 
+pub(crate) struct DeployPreviewStores<'a> {
+    pub operation_repository: &'a OperationRepository,
+    pub target_store: &'a PloyzDnsTargetStore,
+    pub projection_store: &'a IngressProjectionStore,
+}
+
 pub async fn preview_deploy_from_nats(
     request: DeployPreviewRequest,
     intent_reader: &NatsIntentReader,
     facts_reader: &NatsMachineFactsReader,
-    machine_runtime: &mut impl MachineContainerRuntime,
-    target_store: &PloyzDnsTargetStore,
-    projection_store: &IngressProjectionStore,
+    machine_runtime: &mut (impl MachineContainerRuntime + Clone),
+    stores: DeployPreviewStores<'_>,
     step_timeout: Duration,
 ) -> Result<DeployPreview, DeployPreviewError> {
     let DeployPreviewRequest {
@@ -33,18 +40,34 @@ pub async fn preview_deploy_from_nats(
     } = request;
     let planning_target = DeployPlanningTarget::try_from_preview(&target)
         .map_err(|error| invalid_target(error.to_string()))?;
+    planning_target
+        .validate_registry_credential_service_ids(registry_credentials.keys())
+        .map_err(|error| invalid_target(error.to_string()))?;
     let facts = load_planning_facts_from_nats(
         &planning_target,
         intent_reader,
         facts_reader,
-        target_store,
-        projection_store,
+        stores.target_store,
+        stores.projection_store,
         step_timeout,
     )
     .await
     .map_err(preview_fact_load_error)?;
-    let provisional_command =
-        super::preparation::prepare_deploy_preview_command(planning_target, facts.clone());
+    let reusable_interrupted_operation_ids =
+        super::driver::reusable_interrupted_deploy_operation_ids(
+            stores.operation_repository,
+            planning_target.namespace_id(),
+            &facts.observed_machines,
+        )
+        .await
+        .map_err(|error| DeployPreviewError::Unavailable {
+            message: error.to_string(),
+        })?;
+    let provisional_command = super::preparation::prepare_deploy_preview_command(
+        planning_target,
+        facts.clone(),
+        &reusable_interrupted_operation_ids,
+    );
     let provisional_plan = preview_plan(&provisional_command)?;
     resolve_preview_registry_images(
         &mut target,
@@ -57,7 +80,11 @@ pub async fn preview_deploy_from_nats(
     .await?;
     let planning_target = DeployPlanningTarget::try_from_preview(&target)
         .map_err(|error| invalid_target(error.to_string()))?;
-    let command = super::preparation::prepare_deploy_preview_command(planning_target, facts);
+    let command = super::preparation::prepare_deploy_preview_command(
+        planning_target,
+        facts,
+        &reusable_interrupted_operation_ids,
+    );
     let plan = preview_plan(&command)?;
 
     let now_unix_seconds = super::images::current_unix_seconds()
@@ -168,9 +195,9 @@ async fn resolve_preview_registry_images(
         ployz_core::deploy::RegistryCredential,
     >,
     step_timeout: Duration,
-    machine_runtime: &mut impl MachineContainerRuntime,
+    machine_runtime: &mut (impl MachineContainerRuntime + Clone),
 ) -> Result<(), DeployPreviewError> {
-    let unresolved = target
+    let mut unresolved = target
         .services
         .iter()
         .filter_map(|service| match &service.image {
@@ -183,26 +210,50 @@ async fn resolve_preview_registry_images(
             DeployPreviewImage::Concrete { .. } | DeployPreviewImage::PendingBuild => None,
         })
         .collect::<Vec<_>>();
-    for (service_id, requested) in unresolved {
-        let unusable_machines = unusable_machines_for_service(command, &service_id);
-        let Some(machine_id) =
-            super::images::registry_resolution_machine(&plan.phases, &service_id)
-        else {
-            return Err(planning_failed(
-                format!("preview plan omitted service {}", service_id.as_str()),
+    unresolved.sort_by(|left, right| left.0.cmp(&right.0));
+    let requests = unresolved
+        .into_iter()
+        .map(|(service_id, requested)| {
+            let unusable_machines = unusable_machines_for_service(command, &service_id);
+            let Some(machine_id) =
+                super::images::registry_resolution_machine(&plan.phases, &service_id)
+            else {
+                return Err(planning_failed(
+                    format!("preview plan omitted service {}", service_id.as_str()),
+                    unusable_machines,
+                ));
+            };
+            Ok((
+                service_id.clone(),
+                requested,
+                machine_id,
+                registry_credentials.get(&service_id).cloned(),
                 unusable_machines,
-            ));
-        };
-        let resolved = super::images::resolve_registry_image(
-            &service_id,
-            &requested,
-            &machine_id,
-            registry_credentials.get(&service_id),
-            step_timeout,
-            machine_runtime,
-        )
-        .await
-        .map_err(|error| preview_image_preparation_error(error, unusable_machines))?;
+            ))
+        })
+        .collect::<Result<Vec<_>, DeployPreviewError>>()?;
+    let resolutions = join_all(requests.into_iter().map(
+        |(service_id, requested, machine_id, credential, unusable_machines)| {
+            let mut runtime = (*machine_runtime).clone();
+            async move {
+                let resolved = super::images::resolve_registry_image(
+                    &service_id,
+                    &requested,
+                    &machine_id,
+                    credential.as_ref(),
+                    step_timeout,
+                    &mut runtime,
+                )
+                .await
+                .map_err(|error| preview_image_preparation_error(error, unusable_machines))?;
+                Ok((service_id, resolved))
+            }
+        },
+    ))
+    .await
+    .into_iter()
+    .collect::<Result<Vec<_>, DeployPreviewError>>()?;
+    for (service_id, resolved) in resolutions {
         let service = target
             .services
             .iter_mut()
@@ -232,12 +283,10 @@ fn preview_image_preparation_error(
     unusable_machines: Vec<UnusableMachine>,
 ) -> DeployPreviewError {
     match error {
-        ImagePreparationError::OperationFailure { failure } => {
-            DeployPreviewError::ImageUnavailable {
-                failure,
-                unusable_machines,
-            }
-        }
+        ImagePreparationError::Failure { failure } => DeployPreviewError::ImageUnavailable {
+            failure: Box::new(failure.into()),
+            unusable_machines,
+        },
         ImagePreparationError::InternalInvariant { message } => planning_failed(
             format!("deploy execution invariant failed: {message}"),
             unusable_machines,

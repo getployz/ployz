@@ -60,6 +60,14 @@ impl DeployPlanningTarget {
         volumes: BTreeMap<VolumeName, VolumeSpec>,
         services: Vec<DeployPlanningService>,
     ) -> Result<Self, DeployTargetValidationError> {
+        let mut service_ids = BTreeSet::new();
+        for service in &services {
+            if !service_ids.insert(service.service_id.clone()) {
+                return Err(DeployTargetValidationError::DuplicateServiceId {
+                    service_id: service.service_id.clone(),
+                });
+            }
+        }
         super::request::validate_deploy_target(
             &namespace_id,
             &volumes,
@@ -120,6 +128,58 @@ impl DeployPlanningTarget {
     pub fn services(&self) -> &[DeployPlanningService] {
         &self.services
     }
+
+    pub fn validate_registry_credential_service_ids<'a>(
+        &self,
+        service_ids: impl IntoIterator<Item = &'a ServiceId>,
+    ) -> Result<(), DeployRegistryCredentialTargetError> {
+        for service_id in service_ids {
+            let Some(service) = self.service(service_id) else {
+                return Err(DeployRegistryCredentialTargetError::UnknownService {
+                    service_id: service_id.clone(),
+                });
+            };
+            match &service.image {
+                DeployPlanningImage::Concrete {
+                    image_source: ImageSource::Registry,
+                    ..
+                } => {}
+                DeployPlanningImage::PendingBuild => {
+                    return Err(DeployRegistryCredentialTargetError::PendingBuild {
+                        service_id: service_id.clone(),
+                    });
+                }
+                DeployPlanningImage::Concrete {
+                    image_source: ImageSource::PushedToSeed(_),
+                    ..
+                } => {
+                    return Err(DeployRegistryCredentialTargetError::PushedImage {
+                        service_id: service_id.clone(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum DeployRegistryCredentialTargetError {
+    #[error(
+        "registry credential for service {} does not name a service in the deploy target",
+        .service_id.as_str()
+    )]
+    UnknownService { service_id: ServiceId },
+    #[error(
+        "registry credential for service {} belongs to a pending build",
+        .service_id.as_str()
+    )]
+    PendingBuild { service_id: ServiceId },
+    #[error(
+        "registry credential for service {} belongs to a pushed image",
+        .service_id.as_str()
+    )]
+    PushedImage { service_id: ServiceId },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

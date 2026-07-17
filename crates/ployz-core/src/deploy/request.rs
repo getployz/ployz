@@ -161,6 +161,8 @@ pub struct DeployVolumeDeclarationError {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DeployTargetValidationError {
+    #[error("service {} is declared more than once", .service_id.as_str())]
+    DuplicateServiceId { service_id: ServiceId },
     #[error(transparent)]
     UndeclaredVolume(#[from] DeployVolumeDeclarationError),
     #[error(
@@ -241,6 +243,34 @@ mod tests {
                 service_id,
                 namespace_id,
             }
+        );
+    }
+
+    #[test]
+    fn deploy_normalization_rejects_duplicate_service_ids() {
+        let service_id = ServiceId::try_new("api").expect("service id");
+        let service = DeployServiceSpec {
+            service_id: service_id.clone(),
+            image: ImageReference::try_new("ghcr.io/acme/api:current").expect("image"),
+            image_source: ImageSource::Registry,
+            replicas: ReplicaCount::try_new(1).expect("replicas"),
+            keep: None,
+            runtime: ContainerRuntimeSpec::image_defaults(),
+            pre_start: None,
+            depends_on: Vec::new(),
+            routes: Vec::new(),
+        };
+        let request = DeployRequest {
+            namespace_id: NamespaceId::try_new("default").expect("namespace id"),
+            origin: None,
+            volumes: BTreeMap::new(),
+            services: vec![service.clone(), service],
+        };
+
+        assert_eq!(
+            DeployPlanningTarget::try_from_deploy(&request)
+                .expect_err("duplicate service ids must be rejected"),
+            DeployTargetValidationError::DuplicateServiceId { service_id }
         );
     }
 }

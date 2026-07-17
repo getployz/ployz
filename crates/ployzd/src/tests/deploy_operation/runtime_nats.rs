@@ -12,6 +12,7 @@ use crate::control::operations::deploy::driver::{
     DeployOperationDriver, DeployOperationPorts, DeployOperationRunError, DeployOperationStores,
     run_deploy_operation,
 };
+use crate::control::operations::deploy::{DeployPreviewStores, preview_deploy_from_nats};
 use crate::control::role_client::machine::{NatsMachineContainerRuntime, NatsMachineFactsReader};
 use crate::control::sequencer::{
     DeploySubmitCommand, MachineAddBootstrapConfig, OperationControllers, SubmitCommandError,
@@ -20,7 +21,10 @@ use crate::control::store::CoreStore;
 use crate::roles::machine::protocol::{MachineFactsGetRpcOk, MachineFactsGetRpcResponse};
 use crate::tasks::TaskRegistry;
 use futures_util::StreamExt;
-use ployz_core::deploy::{DeployRequest, DeployServiceSpec, ReplicaCount};
+use ployz_core::deploy::{
+    DeployPlanStep, DeployPreviewImage, DeployPreviewService, DeployPreviewTarget, DeployRequest,
+    DeployServiceSpec, ReplicaCount,
+};
 use ployz_core::install::MachineBootstrapUrl;
 use ployz_core::intent::ActiveMachineState;
 use ployz_core::machine::MachineLifecycle;
@@ -31,6 +35,7 @@ use ployz_core::operation::{
     OperationInterruptionCause, OperationStatus,
 };
 use ployz_nats::subjects::{INTENT_CHANGED, MachineServiceEndpoint, machine_service};
+use ployz_sdk_types::DeployPreviewRequest;
 use ployz_test_support::ids::idempotency_key;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -239,6 +244,46 @@ async fn interrupted_deploy_retry_gathers_and_reuses_retained_runtime_work() {
             ..
         }) if evidence.cause() == OperationInterruptionCause::PriorCoreProcessLoss
     ));
+
+    let mut preview_runtime = NatsMachineContainerRuntime::new(nats.client.clone())
+        .with_request_timeout(Duration::from_secs(5));
+    let preview = preview_deploy_from_nats(
+        DeployPreviewRequest {
+            target: preview_target_from_deploy(resolved_deploy_request(2)),
+            registry_credentials: std::collections::BTreeMap::new(),
+        },
+        &intent_reader,
+        &facts_reader,
+        &mut preview_runtime,
+        DeployPreviewStores {
+            operation_repository: &repository,
+            target_store: &nats.ployz_dns_target,
+            projection_store: &nats.ingress_projection,
+        },
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("preview reuses observed interrupted work");
+    assert!(
+        preview.projection.phases.iter().any(|phase| {
+            phase
+                .services
+                .iter()
+                .flat_map(|service| service.steps.iter().cloned())
+                .any(|step| {
+                    matches!(
+                        step,
+                        DeployPlanStep::UseExistingContainer {
+                            machine_id,
+                            container_id: existing_container_id,
+                            ..
+                        } if machine_id == retained_machine_id.clone()
+                            && existing_container_id == container_id("ctr_retained")
+                    )
+                })
+        }),
+        "preview must project the same interrupted container reuse as execution"
+    );
 
     drop(controllers);
     let restarted_controllers = OperationControllers::new(
@@ -1295,4 +1340,29 @@ fn resolved_deploy_request(replicas: u16) -> DeployRequest {
         .with_digest(&digest)
         .expect("fixture image accepts a digest");
     request
+}
+
+fn preview_target_from_deploy(request: DeployRequest) -> DeployPreviewTarget {
+    DeployPreviewTarget {
+        namespace_id: request.namespace_id,
+        origin: request.origin,
+        volumes: request.volumes,
+        services: request
+            .services
+            .into_iter()
+            .map(|service| DeployPreviewService {
+                service_id: service.service_id,
+                image: DeployPreviewImage::Concrete {
+                    image: service.image,
+                    image_source: service.image_source,
+                },
+                replicas: service.replicas,
+                keep: service.keep,
+                runtime: service.runtime,
+                pre_start: service.pre_start,
+                depends_on: service.depends_on,
+                routes: service.routes,
+            })
+            .collect(),
+    }
 }

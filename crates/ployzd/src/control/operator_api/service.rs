@@ -36,7 +36,7 @@ use std::time::Duration;
 const MACHINE_JOIN_REPORT_HANDLER_TIMEOUT: Duration = Duration::from_secs(105);
 const NETWORK_RESOLVE_HANDLER_TIMEOUT: Duration = Duration::from_secs(35);
 const NETWORK_STATUS_HANDLER_TIMEOUT: Duration = Duration::from_secs(65);
-const DEPLOY_PREVIEW_HANDLER_TIMEOUT: Duration = Duration::from_secs(6);
+const DEPLOY_PREVIEW_HANDLER_TIMEOUT: Duration = Duration::from_secs(9);
 
 pub async fn start_operation_api_service_with_handlers(
     client: ployz_nats::service_runtime::NatsClient,
@@ -473,12 +473,12 @@ mod tests {
     }
 
     #[test]
-    fn deploy_preview_deadlines_cover_sequential_machine_gathers() {
+    fn deploy_preview_deadlines_cover_gathers_and_registry_resolution() {
         let policy = operation_endpoint_policy(OperationApiEndpoint::DeployPreview);
-        let gather_budget =
+        let nested_request_budget =
             crate::control::operations::deploy::driver::DEPLOY_PREVIEW_NATS_REQUEST_TIMEOUT;
 
-        assert!(gather_budget * 2 < policy.request_timeout);
+        assert!(nested_request_budget * 4 < policy.request_timeout);
         assert!(
             policy.request_timeout
                 < ployz_nats::operation_api_client::DEFAULT_OPERATION_API_REQUEST_TIMEOUT

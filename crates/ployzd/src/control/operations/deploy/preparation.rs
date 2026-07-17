@@ -365,8 +365,9 @@ fn existing_replica_policy(
 pub(super) fn prepare_deploy_preview_command(
     target: DeployPlanningTarget,
     facts: DeployExecutionFacts,
+    reusable_interrupted_operation_ids: &BTreeSet<OperationId>,
 ) -> DeployPreviewPlanningCommand {
-    let prepared = prepare_deploy_command(&target, &facts, &BTreeSet::new());
+    let prepared = prepare_deploy_command(&target, &facts, reusable_interrupted_operation_ids);
     let mut planning_inputs = Vec::with_capacity(prepared.services.len());
     let mut unusable_machines_by_service = BTreeMap::new();
     for service in prepared.services {

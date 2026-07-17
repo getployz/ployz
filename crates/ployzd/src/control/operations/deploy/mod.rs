@@ -50,6 +50,7 @@ pub use ports::{
 pub use preparation::{AutomaticHostnameMode, DeployExecutionFacts, DeployExecutionInput};
 #[cfg(test)]
 pub use preparation::{namespace_cleanup_candidates, prepare_deploy_execution_command};
+pub(crate) use preview::DeployPreviewStores;
 pub use preview::preview_deploy_from_nats;
 use step::with_step_timeout;
 pub use step::{DeployExecutionStep, DeployFailureRecordError, DeployOperationRecordError};

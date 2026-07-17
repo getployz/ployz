@@ -50,6 +50,33 @@ pub struct DeployPreview {
 
 pub type DeployPreviewResponse = OperationApiResponse<DeployPreview, DeployPreviewError>;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeployPreviewImageFailure {
+    ImageResolutionFailed {
+        service_id: ServiceId,
+        machine_id: MachineId,
+        image: ImageReference,
+        message: FailureMessage,
+    },
+    PlatformImageUnavailable {
+        service_id: ServiceId,
+        machine_id: MachineId,
+        target_platform: OciPlatform,
+    },
+    SeedUnavailable {
+        service_id: ServiceId,
+        seed: MachineId,
+        message: FailureMessage,
+    },
+    PlatformImageExpired {
+        service_id: ServiceId,
+        seed: MachineId,
+        target_platform: OciPlatform,
+        expired_at: ImageAvailabilityExpiresAt,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, thiserror::Error)]
 #[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DeployPreviewError {
@@ -63,7 +90,7 @@ pub enum DeployPreviewError {
     },
     #[error("deploy preview image unavailable")]
     ImageUnavailable {
-        failure: Box<DeployOperationFailure>,
+        failure: Box<DeployPreviewImageFailure>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         unusable_machines: Vec<UnusableMachine>,
     },

@@ -443,7 +443,7 @@ mod fact_load_failure_tests {
     }
 }
 
-async fn reusable_interrupted_deploy_operation_ids(
+pub(super) async fn reusable_interrupted_deploy_operation_ids(
     repository: &crate::control::operation_evidence::OperationRepository,
     namespace_id: &ployz_core::ids::NamespaceId,
     observed_machines: &[ployz_core::machine::runtime::MachineContainerObservationSnapshot],
@@ -544,8 +544,11 @@ impl DeployOperationDriver {
             &intent_reader,
             &facts_reader,
             &mut machine_runtime,
-            &self.stores.ployz_dns_target,
-            &self.stores.ingress_projection,
+            super::DeployPreviewStores {
+                operation_repository: self.stores.controllers.repository(),
+                target_store: &self.stores.ployz_dns_target,
+                projection_store: &self.stores.ingress_projection,
+            },
             request_timeout,
         )
         .await

@@ -1763,7 +1763,7 @@ fn namespace_route_removals_keep_targets_reassigned_to_another_service() {
 }
 
 #[test]
-fn deploy_route_validation_rejects_duplicate_service_ids() {
+fn deploy_target_validation_rejects_duplicate_service_ids() {
     let mut first = service_spec("svc_api", "registry.example/api:rev-1", 1, None);
     first.routes = vec![automatic_deploy_route("api", 8080)];
     let mut second = first.clone();
@@ -1774,16 +1774,12 @@ fn deploy_route_validation_rejects_duplicate_service_ids() {
         volumes: std::collections::BTreeMap::new(),
         services: vec![first, second],
     };
-    let request =
-        DeployPlanningTarget::try_from_deploy(&request).expect("deploy request normalizes");
-
-    let error =
-        validate_deploy_route_bindings(&request, Some(&route_hostname("apps.example.com")), &[])
-            .expect_err("duplicate service ids must be rejected");
+    let error = DeployPlanningTarget::try_from_deploy(&request)
+        .expect_err("duplicate service ids must be rejected");
 
     assert!(matches!(
         error,
-        ployz_core::deploy::DeployRouteBindingValidationError::DuplicateServiceId {
+        ployz_core::deploy::DeployTargetValidationError::DuplicateServiceId {
             service_id: duplicate_service_id
         } if duplicate_service_id == service_id("svc_api")
     ));

@@ -90,8 +90,11 @@
     "error": {
       "error": "image_unavailable",
       "failure": {
-        "kind": "no_usable_machines",
-        "reasons": []
+        "image": "registry.example/api:latest",
+        "kind": "image_resolution_failed",
+        "machine_id": "machine_2",
+        "message": "registry unavailable",
+        "service_id": "svc_api"
       }
     },
     "status": "domain_error"

@@ -913,6 +913,62 @@ async fn registry_tag_preview_matches_reusing_execution_plan() {
 }
 
 #[tokio::test]
+async fn registry_tag_preview_resolves_services_concurrently() {
+    let machine = machine_id("machine_a");
+    let nats = TestNats::start_with_machines(std::slice::from_ref(&machine)).await;
+    let config = nats
+        .control_config()
+        .with_deploy_machines(vec![machine.clone()])
+        .with_deploy_step_timeout(Duration::from_secs(2));
+    let machine_roster = machine_roster(&config).await;
+    let runtime = nats.start_control(&config).await;
+    machine_roster
+        .replace_active_machine(&active_machine(machine.as_str()))
+        .await
+        .expect("active machine stores");
+    let runner = ObservingContainerRunner::new(machine.clone());
+    runner.synchronize_registry_resolutions(2);
+    let machine_runtime = start_machine_role_runtime(
+        nats.machine_client(&machine).await,
+        machine.clone(),
+        runner.clone(),
+        ReadyWireGuardEbpf::for_machine(&machine),
+        runner.clone(),
+    )
+    .await
+    .expect("machine runtime starts");
+    wait_for_dataplane_projection(&nats, &machine).await;
+
+    let mut target = deploy_target("svc_api");
+    let [service] = target.services.as_slice() else {
+        panic!("deploy target fixture has one service");
+    };
+    target.services.push(DeployServiceSpec {
+        service_id: service_id("svc_worker"),
+        image: image("ghcr.io/acme/worker:rev-2"),
+        ..service.clone()
+    });
+    nats.api()
+        .deploy_preview(&DeployPreviewRequest {
+            target: concrete_registry_preview_target(target),
+            registry_credentials: BTreeMap::new(),
+        })
+        .await
+        .expect("registry services resolve within one request budget");
+
+    assert_eq!(runner.resolutions().len(), 2);
+
+    machine_runtime
+        .shutdown()
+        .await
+        .expect("machine runtime shuts down");
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
 async fn deploy_preview_returns_pending_service_platforms_without_runtime_effects() {
     let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
     let config = nats
@@ -1127,8 +1183,8 @@ async fn deploy_preview_rejects_an_expired_concrete_receipt_without_runtime_effe
             error: ployz_sdk_types::DeployPreviewError::ImageUnavailable { failure, .. },
             ..
         } if matches!(
-            *failure,
-            ployz_core::operation::DeployOperationFailure::PlatformImageExpired { .. }
+            failure.as_ref(),
+            ployz_sdk_types::DeployPreviewImageFailure::PlatformImageExpired { .. }
         )
     ));
     assert!(runner.snapshot().containers().is_empty());
@@ -1180,6 +1236,59 @@ async fn deploy_preview_rejects_duplicate_service_ids() {
             ..
         } if message.as_str().contains("declared more than once")
     ));
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn deploy_preview_rejects_credentials_not_bound_to_concrete_registry_services_before_facts() {
+    let nats = TestNats::start().await;
+    let runtime = nats.start_control(&nats.control_config()).await;
+    let credential = RegistryCredential::try_basic("preview", "private-secret")
+        .expect("valid registry credential");
+    let cases = [
+        (
+            concrete_registry_preview_target(deploy_target("svc_api")),
+            service_id("missing"),
+            "does not name a service in the deploy target",
+        ),
+        (
+            pending_preview_target(deploy_target("svc_api")),
+            service_id("svc_api"),
+            "belongs to a pending build",
+        ),
+        (
+            concrete_pushed_preview_target(
+                deploy_target("svc_api"),
+                machine_id("machine_a"),
+                ImageAvailabilityExpiresAt::try_new(4_102_444_800).expect("future timestamp"),
+            ),
+            service_id("svc_api"),
+            "belongs to a pushed image",
+        ),
+    ];
+
+    for (target, credential_service_id, expected_message) in cases {
+        let error = nats
+            .api()
+            .deploy_preview(&DeployPreviewRequest {
+                target,
+                registry_credentials: BTreeMap::from([(credential_service_id, credential.clone())]),
+            })
+            .await
+            .expect_err("invalid registry credential binding is rejected");
+
+        assert!(matches!(
+            error,
+            OperationApiClientError::Domain {
+                error: ployz_sdk_types::DeployPreviewError::InvalidTarget { message },
+                ..
+            } if message.as_str().contains(expected_message)
+        ));
+    }
+
     runtime
         .shutdown()
         .await

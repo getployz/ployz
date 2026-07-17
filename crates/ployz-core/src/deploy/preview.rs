@@ -170,6 +170,33 @@ mod tests {
     }
 
     #[test]
+    fn preview_normalization_rejects_duplicate_service_ids() {
+        let service_id = ServiceId::try_new("api").expect("service id");
+        let service = DeployPreviewService {
+            service_id: service_id.clone(),
+            image: DeployPreviewImage::PendingBuild,
+            replicas: ReplicaCount::try_new(1).expect("replicas"),
+            keep: None,
+            runtime: ContainerRuntimeSpec::image_defaults(),
+            pre_start: None,
+            depends_on: Vec::new(),
+            routes: Vec::new(),
+        };
+        let target = DeployPreviewTarget {
+            namespace_id: NamespaceId::try_new("default").expect("namespace id"),
+            origin: None,
+            volumes: BTreeMap::new(),
+            services: vec![service.clone(), service],
+        };
+
+        assert_eq!(
+            DeployPlanningTarget::try_from_preview(&target)
+                .expect_err("duplicate service ids must be rejected"),
+            DeployTargetValidationError::DuplicateServiceId { service_id }
+        );
+    }
+
+    #[test]
     fn preview_projection_keeps_route_and_serving_changes() {
         let namespace_id = NamespaceId::try_new("default").expect("namespace id");
         let service_id = ServiceId::try_new("api").expect("service id");

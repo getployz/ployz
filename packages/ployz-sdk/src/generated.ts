@@ -718,11 +718,13 @@ export type DeployPreviewService = { service_id: ServiceId, image: DeployPreview
 
 export type DeployPreviewImage = { "state": "concrete", image: ImageReference, image_source: ImageSource, } | { "state": "pending_build" };
 
+export type DeployPreviewImageFailure = { "kind": "image_resolution_failed", service_id: ServiceId, machine_id: MachineId, image: ImageReference, message: FailureMessage, } | { "kind": "platform_image_unavailable", service_id: ServiceId, machine_id: MachineId, target_platform: OciPlatform, } | { "kind": "seed_unavailable", service_id: ServiceId, seed: MachineId, message: FailureMessage, } | { "kind": "platform_image_expired", service_id: ServiceId, seed: MachineId, target_platform: OciPlatform, expired_at: ImageAvailabilityExpiresAt, };
+
 export type DeployPreview = { projection: DeployPreviewProjection, build_platform_requirements: { [key in ServiceId]: BuildPlatforms }, unusable_machines?: Array<UnusableMachine>, unusable_machines_by_service?: { [key in ServiceId]: Array<UnusableMachine> }, };
 
 export type DeployPreviewProjection = { namespace_id: NamespaceId, phases: Array<DeployPhasePlan>, volume_pins?: Array<VolumePinState>, volume_preparations?: Array<VolumePinState>, cleanup_candidates?: Array<DeployCleanupAction>, route_binding_additions?: Array<DeployRouteBindingAddition>, route_binding_removals?: Array<RouteBindingState>, serving_target_commits?: Array<ServingTargetEntry>, serving_target_removals?: Array<ServingTargetEntry>, };
 
-export type DeployPreviewError = { "error": "invalid_target", message: FailureMessage, } | { "error": "planning_failed", message: FailureMessage, unusable_machines?: Array<UnusableMachine>, } | { "error": "image_unavailable", failure: DeployOperationFailure, unusable_machines?: Array<UnusableMachine>, } | { "error": "unavailable", message: string, };
+export type DeployPreviewError = { "error": "invalid_target", message: FailureMessage, } | { "error": "planning_failed", message: FailureMessage, unusable_machines?: Array<UnusableMachine>, } | { "error": "image_unavailable", failure: DeployPreviewImageFailure, unusable_machines?: Array<UnusableMachine>, } | { "error": "unavailable", message: string, };
 
 export type DeploySubmitRequest = { idempotency_key: OperationIdempotencyKey, reservation_id: DeployReservationId, target: DeployRequest, registry_credentials?: { [key in ServiceId]: RegistryCredential }, };
 

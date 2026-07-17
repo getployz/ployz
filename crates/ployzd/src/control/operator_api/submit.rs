@@ -13,7 +13,6 @@ use crate::control::sequencer::{
     NetworkRepairSubmitCommand, OperationControllers, ServiceRestartSubmitCommand,
     VolumeCreateSubmitCommand, VolumeRemoveSubmitCommand,
 };
-use ployz_core::deploy::ImageSource;
 use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::operation::{CredentialGrantAction, EventSequence, VolumeCreateRequest};
 use ployz_nats::subjects::{OperationProgressScope, operation_progress_watch};
@@ -123,13 +122,19 @@ fn normalize_deploy_submit(
         target,
         registry_credentials,
     } = value;
-    ployz_core::deploy::DeployPlanningTarget::try_from_deploy(&target).map_err(|error| {
-        DeploySubmitError::InvalidTarget {
+    let planning_target = ployz_core::deploy::DeployPlanningTarget::try_from_deploy(&target)
+        .map_err(|error| DeploySubmitError::InvalidTarget {
             operation_id: operation_id.clone(),
             message: ployz_core::operation::FailureMessage::try_new(error.to_string())
                 .expect("deploy target validation error is non-empty"),
-        }
-    })?;
+        })?;
+    planning_target
+        .validate_registry_credential_service_ids(registry_credentials.keys())
+        .map_err(|error| DeploySubmitError::InvalidTarget {
+            operation_id: operation_id.clone(),
+            message: ployz_core::operation::FailureMessage::try_new(error.to_string())
+                .expect("registry credential target validation error is non-empty"),
+        })?;
     Ok(DeploySubmitCommand {
         operation_id,
         idempotency_key,
@@ -335,7 +340,6 @@ pub async fn deploy_submit(
 ) -> Result<AcceptedOperation, DeploySubmitError> {
     let command = normalize_deploy_submit(request)?;
     let operation_id = command.operation_id.clone();
-    validate_registry_credentials(&command)?;
     validate_deploy_route_admission(
         &command.target,
         &handlers.ingress_intent,
@@ -365,72 +369,6 @@ pub async fn deploy_submit(
     handlers.deploy_driver.start(accepted_execution).await;
 
     Ok(operation)
-}
-
-fn validate_registry_credentials(command: &DeploySubmitCommand) -> Result<(), DeploySubmitError> {
-    let services = &command.target.services;
-    for service_id in command.registry_credentials.keys() {
-        let Some(service) = services
-            .iter()
-            .find(|service| service.service_id == *service_id)
-        else {
-            return Err(invalid_registry_credential(
-                command,
-                service_id,
-                "does not name a service in the deploy target",
-            ));
-        };
-        if !matches!(service.image_source, ImageSource::Registry) {
-            return Err(invalid_registry_credential(
-                command,
-                service_id,
-                "belongs to a pushed image",
-            ));
-        }
-    }
-
-    for service in &command.target.services {
-        let ImageSource::PushedToSeed(_) = &service.image_source else {
-            continue;
-        };
-        if let Err(error) = ployz_core::deploy::validate_pushed_image_reference(
-            &service.image,
-            &service.image_source,
-        ) {
-            return Err(invalid_pushed_image(command, service, &error.to_string()));
-        }
-    }
-    Ok(())
-}
-
-fn invalid_pushed_image(
-    command: &DeploySubmitCommand,
-    service: &ployz_core::deploy::DeployServiceSpec,
-    reason: &str,
-) -> DeploySubmitError {
-    DeploySubmitError::InvalidTarget {
-        operation_id: command.operation_id.clone(),
-        message: ployz_core::operation::FailureMessage::try_new(format!(
-            "pushed image for service {} {reason}",
-            service.service_id.as_str()
-        ))
-        .expect("generated pushed image failure message is non-empty"),
-    }
-}
-
-fn invalid_registry_credential(
-    command: &DeploySubmitCommand,
-    service_id: &ployz_core::ids::ServiceId,
-    reason: &str,
-) -> DeploySubmitError {
-    DeploySubmitError::InvalidTarget {
-        operation_id: command.operation_id.clone(),
-        message: ployz_core::operation::FailureMessage::try_new(format!(
-            "registry credential for service {} {reason}",
-            service_id.as_str()
-        ))
-        .expect("generated registry credential failure message is non-empty"),
-    }
 }
 
 pub async fn service_restart(
