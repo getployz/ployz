@@ -32,7 +32,8 @@ use async_trait::async_trait;
 use ployz::api_client::OperationApiClient;
 use ployz_core::deploy::{
     DeployPlanningInput, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec,
-    ImageReference, ReplicaCount, VolumeName, plan_namespace_deploy,
+    ImageAvailabilityExpiresAt, ImageReference, ImageSource, PlatformImage, PushedImageReceipt,
+    ReplicaCount, VolumeName, plan_namespace_deploy,
 };
 use ployz_core::ids::{CertId, OperationId};
 use ployz_core::install::{HostPortAssurance, MachineBootstrapUrl};
@@ -338,6 +339,30 @@ async fn e2e_deploy_submit_service_accepts_operation_over_real_nats()
         }
     );
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn deploy_submit_accepts_an_unused_invalid_receipt_platform()
+-> Result<(), Box<dyn Error + Send + Sync>> {
+    let machine = machine_id("machine_a");
+    let nats = TestNats::start_with_machines(std::slice::from_ref(&machine)).await;
+    let config = nats
+        .control_config(machine_id("core_1"))
+        .with_deploy_machines(vec![machine.clone()])
+        .with_machine_bootstrap(machine_bootstrap_config());
+    let runtime = start_control_with_deploy_roster(&nats, &config).await?;
+    let api = OperationApiClient::new(nats.user_client());
+    let request = reserved_deploy_request(
+        &api,
+        "idem_unused_receipt_platform",
+        pushed_deploy_target_with_unused_arm64(machine),
+    )
+    .await?;
+
+    api.deploy_submit(&request).await?;
+
+    runtime.shutdown().await?;
     Ok(())
 }
 
@@ -1034,6 +1059,41 @@ fn deploy_target(service_id: &str) -> DeployRequest {
             routes: Vec::new(),
         }],
     }
+}
+
+fn pushed_deploy_target_with_unused_arm64(amd64_seed: ployz_core::ids::MachineId) -> DeployRequest {
+    let receipt = PushedImageReceipt::try_new([
+        (
+            ployz_core::image::OciPlatform::try_new("linux", "amd64").expect("amd64 platform"),
+            PlatformImage {
+                seed: amd64_seed,
+                manifest_digest: ployz_core::image::OciDigest::sha256(b"amd64 manifest"),
+                image_id: ployz_core::image::OciDigest::sha256(b"amd64 image"),
+                availability_expires_at: ImageAvailabilityExpiresAt::try_new(4_102_444_800)
+                    .expect("future expiry"),
+            },
+        ),
+        (
+            ployz_core::image::OciPlatform::try_new("linux", "arm64").expect("arm64 platform"),
+            PlatformImage {
+                seed: machine_id("machine_removed"),
+                manifest_digest: ployz_core::image::OciDigest::sha256(b"arm64 manifest"),
+                image_id: ployz_core::image::OciDigest::sha256(b"arm64 image"),
+                availability_expires_at: ImageAvailabilityExpiresAt::try_new(1)
+                    .expect("expired availability"),
+            },
+        ),
+    ])
+    .expect("pushed receipt");
+    let mut target = deploy_target("svc_api");
+    let [service] = target.services.as_mut_slice() else {
+        panic!("deploy target has one service");
+    };
+    service.image = image("local/api:build")
+        .with_digest(receipt.index_digest())
+        .expect("pushed image pins receipt index");
+    service.image_source = ImageSource::PushedToSeed(receipt);
+    target
 }
 
 fn deploy_target_with_route(service_id: &str, hostname: &str, endpoint_port: u16) -> DeployRequest {

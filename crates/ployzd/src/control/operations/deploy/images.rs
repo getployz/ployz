@@ -4,9 +4,11 @@ use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ployz_core::deploy::{
-    DeployCleanupAction, DeployPlan, DeployPlanStep, DeployRequest, DeployServicePlan,
-    IMAGE_AVAILABILITY_SAFETY_MARGIN, ImageSource,
+    DeployCleanupAction, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployRequest,
+    DeployServicePlan, IMAGE_AVAILABILITY_SAFETY_MARGIN, ImageReference, ImageSource,
+    RegistryCredential,
 };
+use ployz_core::ids::{MachineId, ServiceId};
 use ployz_core::image::{
     ImageEnsureRequest, ImageRemoveDomainError, ImageRepository, ImageRpcDomainError,
 };
@@ -28,6 +30,27 @@ use super::{
     DeployServiceExecutionCommand, MachineContainerRuntime, MachineImageRemovalRuntime,
     cleanup_failure_message, record_evidence,
 };
+
+#[derive(Debug)]
+pub(super) enum ImagePreparationError {
+    OperationFailure {
+        failure: Box<DeployOperationFailure>,
+    },
+    InternalInvariant {
+        message: String,
+    },
+}
+
+impl From<ImagePreparationError> for DeployExecutionError {
+    fn from(error: ImagePreparationError) -> Self {
+        match error {
+            ImagePreparationError::OperationFailure { failure } => Self::Image { failure },
+            ImagePreparationError::InternalInvariant { message } => {
+                Self::InternalInvariant { message }
+            }
+        }
+    }
+}
 
 pub(crate) async fn execute_cleanup_actions<N>(
     operation_id: &ployz_core::ids::OperationId,
@@ -264,47 +287,20 @@ where
         else {
             return Err(DeployExecutionError::PlanInconsistent { service_id });
         };
-        let Some(machine_id) = provisional_plan
-            .phases
-            .iter()
-            .flat_map(|phase| &phase.services)
-            .find(|plan| plan.service_id == service_id)
-            .and_then(|plan| plan.steps.first())
-            .map(|step| match step {
-                DeployPlanStep::UseExistingContainer { machine_id, .. }
-                | DeployPlanStep::RunContainer { machine_id, .. } => machine_id.clone(),
-            })
+        let Some(machine_id) = registry_resolution_machine(&provisional_plan.phases, &service_id)
         else {
             return Err(DeployExecutionError::PlanInconsistent { service_id });
         };
-        let digest = tokio::time::timeout(
+        let resolved = resolve_registry_image(
+            &service_id,
+            &requested,
+            &machine_id,
+            service.registry_credential(),
             command.step_timeout(),
-            machine_runtime.resolve_image(
-                &machine_id,
-                MachineContainerResolveImageRpcRequest {
-                    reference: requested.clone(),
-                    credential: service.registry_credential().cloned(),
-                },
-            ),
+            machine_runtime,
         )
         .await
-        .map_err(|_| {
-            image_resolution_failure(
-                service,
-                &machine_id,
-                &requested,
-                deploy_failure_message("image resolution timed out"),
-            )
-        })?
-        .map_err(|error| image_resolution_error(service, &requested, error))?;
-        let resolved = requested.with_digest(&digest).map_err(|error| {
-            image_resolution_failure(
-                service,
-                &machine_id,
-                &requested,
-                deploy_failure_message(error.to_string()),
-            )
-        })?;
+        .map_err(DeployExecutionError::from)?;
         request
             .replace_service_image(&service_id, resolved.clone())
             .map_err(|error| DeployExecutionError::InternalInvariant {
@@ -326,31 +322,87 @@ where
     Ok(())
 }
 
+pub(super) fn registry_resolution_machine(
+    phases: &[DeployPhasePlan],
+    service_id: &ServiceId,
+) -> Option<MachineId> {
+    phases
+        .iter()
+        .flat_map(|phase| &phase.services)
+        .find(|plan| &plan.service_id == service_id)
+        .and_then(|plan| plan.steps.first())
+        .map(|step| match step {
+            DeployPlanStep::UseExistingContainer { machine_id, .. }
+            | DeployPlanStep::RunContainer { machine_id, .. } => machine_id.clone(),
+        })
+}
+
+pub(super) async fn resolve_registry_image<N>(
+    service_id: &ServiceId,
+    requested: &ImageReference,
+    machine_id: &MachineId,
+    credential: Option<&RegistryCredential>,
+    step_timeout: std::time::Duration,
+    machine_runtime: &mut N,
+) -> Result<ImageReference, ImagePreparationError>
+where
+    N: MachineContainerRuntime,
+{
+    let digest = tokio::time::timeout(
+        step_timeout,
+        machine_runtime.resolve_image(
+            machine_id,
+            MachineContainerResolveImageRpcRequest {
+                reference: requested.clone(),
+                credential: credential.cloned(),
+            },
+        ),
+    )
+    .await
+    .map_err(|_| {
+        image_resolution_failure(
+            service_id,
+            machine_id,
+            requested,
+            deploy_failure_message("image resolution timed out"),
+        )
+    })?
+    .map_err(|error| image_resolution_error(service_id, requested, error))?;
+    requested.with_digest(&digest).map_err(|error| {
+        image_resolution_failure(
+            service_id,
+            machine_id,
+            requested,
+            deploy_failure_message(error.to_string()),
+        )
+    })
+}
+
 fn image_resolution_error(
-    service: &DeployServiceExecutionCommand,
+    service_id: &ServiceId,
     requested: &ployz_core::deploy::ImageReference,
     error: MachineImageResolveError,
-) -> DeployExecutionError {
+) -> ImagePreparationError {
     match error {
         MachineImageResolveError::Rejected {
             machine_id,
             message,
-        } => image_resolution_failure(service, &machine_id, requested, message),
+        } => image_resolution_failure(service_id, &machine_id, requested, message),
         MachineImageResolveError::Unavailable { machine_id, reason } => {
-            image_resolution_failure(service, &machine_id, requested, reason.failure_message())
+            image_resolution_failure(service_id, &machine_id, requested, reason.failure_message())
         }
     }
 }
 
 fn image_resolution_failure(
-    service: &DeployServiceExecutionCommand,
+    service_id: &ServiceId,
     machine_id: &ployz_core::ids::MachineId,
     requested: &ployz_core::deploy::ImageReference,
     message: FailureMessage,
-) -> DeployExecutionError {
-    DeployExecutionError::Image {
+) -> ImagePreparationError {
+    ImagePreparationError::OperationFailure {
         failure: Box::new(DeployOperationFailure::ImageResolutionFailed {
-            service_id: service.service.service_id.clone(),
+            service_id: service_id.clone(),
             machine_id: machine_id.clone(),
             image: requested.clone(),
             message,
@@ -484,7 +536,8 @@ pub(super) fn validate_pushed_image_availability(
             &command.machine_platforms,
             &command.seed_clock_testimony,
             now_unix_seconds,
-        )?;
+        )
+        .map_err(DeployExecutionError::from)?;
     }
     Ok(())
 }
@@ -496,11 +549,11 @@ pub(super) fn validate_pushed_service_availability(
     machine_platforms: &BTreeMap<ployz_core::ids::MachineId, ployz_core::image::OciPlatform>,
     seed_clock_testimony: &BTreeMap<ployz_core::ids::MachineId, MachineClockTestimony>,
     now_unix_seconds: u64,
-) -> Result<(), DeployExecutionError> {
+) -> Result<(), ImagePreparationError> {
     let mut target_platforms = BTreeMap::new();
     for machine_id in target_machines {
         let Some(target_platform) = machine_platforms.get(machine_id) else {
-            return Err(DeployExecutionError::InternalInvariant {
+            return Err(ImagePreparationError::InternalInvariant {
                 message: format!(
                     "placed target machine {} has no answered platform facts",
                     machine_id.as_str()
@@ -513,7 +566,7 @@ pub(super) fn validate_pushed_service_availability(
     }
     for (target_platform, machine_id) in target_platforms {
         let Some(platform_image) = receipt.platform(&target_platform) else {
-            return Err(DeployExecutionError::Image {
+            return Err(ImagePreparationError::OperationFailure {
                 failure: Box::new(DeployOperationFailure::PlatformImageUnavailable {
                     service_id: service_id.clone(),
                     machine_id,
@@ -535,7 +588,7 @@ pub(super) fn validate_pushed_service_availability(
             )
         });
         if let Some(failure) = failure {
-            return Err(DeployExecutionError::Image {
+            return Err(ImagePreparationError::OperationFailure {
                 failure: Box::new(failure),
             });
         }
@@ -862,6 +915,53 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn amd64_plan_ignores_an_unused_invalid_arm64_receipt_entry() {
+        let amd64_seed = machine_id("machine_amd_seed");
+        let receipt = PushedImageReceipt::try_new([
+            (
+                platform("amd64"),
+                PlatformImage {
+                    seed: amd64_seed.clone(),
+                    manifest_digest: OciDigest::sha256(b"amd64 manifest"),
+                    image_id: OciDigest::sha256(b"amd64 image"),
+                    availability_expires_at:
+                        ployz_core::deploy::ImageAvailabilityExpiresAt::try_new(4_102_444_800)
+                            .expect("future expiry"),
+                },
+            ),
+            (
+                platform("arm64"),
+                PlatformImage {
+                    seed: machine_id("machine_removed"),
+                    manifest_digest: OciDigest::sha256(b"arm64 manifest"),
+                    image_id: OciDigest::sha256(b"arm64 image"),
+                    availability_expires_at:
+                        ployz_core::deploy::ImageAvailabilityExpiresAt::try_new(1)
+                            .expect("expired availability"),
+                },
+            ),
+        ])
+        .expect("pushed receipt");
+        let target_machine = machine_id("machine_amd");
+
+        validate_pushed_service_availability(
+            &ServiceId::try_new("api").expect("service id"),
+            &receipt,
+            std::slice::from_ref(&target_machine),
+            &BTreeMap::from([(target_machine.clone(), platform("amd64"))]),
+            &BTreeMap::from([(
+                amd64_seed,
+                MachineClockTestimony {
+                    control_request_started_at_unix_ms: 1_000_000,
+                    machine_observed_at_unix_ms: 1_000_000,
+                },
+            )]),
+            2,
+        )
+        .expect("unused invalid arm64 receipt entry does not affect an amd64 plan");
     }
 
     #[test]

@@ -2,10 +2,9 @@
 
 use ployz_core::deploy::{
     DeployCleanupContainer, DeployPlanningInput, DeployPlanningService, DeployPlanningTarget,
-    DeployPreparationInput, DeployPreviewTarget, DeployRequest, DeployRouteBindingAddition,
-    ExistingReplicaPolicy, RegistryCredential, commit_deploy_route_bindings,
-    namespace_route_binding_removals, namespace_serving_target_removals, prepare_deploy,
-    validate_deploy_route_bindings,
+    DeployPreparationInput, DeployRequest, DeployRouteBindingAddition, ExistingReplicaPolicy,
+    RegistryCredential, commit_deploy_route_bindings, namespace_route_binding_removals,
+    namespace_serving_target_removals, prepare_deploy, validate_deploy_route_bindings,
 };
 use ployz_core::ids::{MachineId, OperationId, RouteBindingId, ServiceId};
 use ployz_core::image::OciPlatform;
@@ -141,12 +140,7 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
 ) -> DeployExecutionCommand {
     let target = DeployPlanningTarget::try_from_deploy(&request)
         .expect("volume-declared deploy request is a validated planning target");
-    let prepared = prepare_deploy_command(
-        &target,
-        &facts,
-        DeployPreparationKind::Execution,
-        reusable_interrupted_operation_ids,
-    );
+    let prepared = prepare_deploy_command(&target, &facts, reusable_interrupted_operation_ids);
     let route_binding_commits = commit_deploy_route_bindings(
         prepared.route_binding_additions.clone(),
         &facts.namespace_route_bindings,
@@ -215,16 +209,9 @@ struct PreparedDeployService {
     unusable_machines: Vec<ployz_core::operation::UnusableMachine>,
 }
 
-#[derive(Clone, Copy)]
-enum DeployPreparationKind {
-    Execution,
-    Preview,
-}
-
 fn prepare_deploy_command(
     target: &DeployPlanningTarget,
     facts: &DeployExecutionFacts,
-    kind: DeployPreparationKind,
     reusable_interrupted_operation_ids: &BTreeSet<OperationId>,
 ) -> PreparedDeployCommand {
     let mut planning_services = target.services().iter().collect::<Vec<_>>();
@@ -285,7 +272,7 @@ fn prepare_deploy_command(
             service_eligible_machines,
             &draining_machines,
             facts,
-            existing_replica_policy(kind, is_promoted, reusable_interrupted_operation_ids),
+            existing_replica_policy(is_promoted, reusable_interrupted_operation_ids),
         );
         if let Some(entry) = preview_serving_target_entry(target.namespace_id(), service) {
             serving_target_commits.push(entry);
@@ -359,7 +346,6 @@ fn prepare_planning_service(
 }
 
 fn existing_replica_policy(
-    kind: DeployPreparationKind,
     is_promoted: bool,
     reusable_interrupted_operation_ids: &BTreeSet<OperationId>,
 ) -> ExistingReplicaPolicy {
@@ -367,9 +353,7 @@ fn existing_replica_policy(
         ExistingReplicaPolicy::Promoted {
             interrupted_operation_ids: reusable_interrupted_operation_ids.clone(),
         }
-    } else if matches!(kind, DeployPreparationKind::Execution)
-        && !reusable_interrupted_operation_ids.is_empty()
-    {
+    } else if !reusable_interrupted_operation_ids.is_empty() {
         ExistingReplicaPolicy::RecoverInterrupted {
             operation_ids: reusable_interrupted_operation_ids.clone(),
         }
@@ -379,23 +363,13 @@ fn existing_replica_policy(
 }
 
 pub(super) fn prepare_deploy_preview_command(
-    target: DeployPreviewTarget,
+    target: DeployPlanningTarget,
     facts: DeployExecutionFacts,
 ) -> DeployPreviewPlanningCommand {
-    let planning_target = DeployPlanningTarget::try_from_preview(&target)
-        .expect("volume-declared deploy preview is a validated planning target");
-    let prepared = prepare_deploy_command(
-        &planning_target,
-        &facts,
-        DeployPreparationKind::Preview,
-        &BTreeSet::new(),
-    );
+    let prepared = prepare_deploy_command(&target, &facts, &BTreeSet::new());
     let mut planning_inputs = Vec::with_capacity(prepared.services.len());
     let mut unusable_machines_by_service = BTreeMap::new();
-    let mut unusable_machines = prepared.unusable_machines.clone();
     for service in prepared.services {
-        unusable_machines =
-            merged_unusable_machines(&unusable_machines, service.unusable_machines.clone());
         unusable_machines_by_service.insert(
             service.planning_input.service_id.clone(),
             merged_unusable_machines(&prepared.unusable_machines, service.unusable_machines),
@@ -414,7 +388,7 @@ pub(super) fn prepare_deploy_preview_command(
         storage_testimony: facts.machine_storage_testimony,
         machine_platforms: facts.machine_platforms,
         seed_clock_testimony: facts.seed_clock_testimony,
-        unusable_machines,
+        unusable_machines: prepared.unusable_machines,
         unusable_machines_by_service,
     }
 }

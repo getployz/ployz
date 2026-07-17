@@ -5,6 +5,8 @@
 //! Machine-add credential minting has its own scenario module; the shared
 //! fixture lives in `crate::tests::support::control`.
 
+use std::collections::BTreeMap;
+
 use crate::certificate::{AcmeIssueContext, AcmeIssuer, AcmeIssuerError, IssuedCertificate};
 use crate::control::intent::machine_roster::MachineRosterStore;
 use crate::control::intent::namespace_intent::NamespaceIntentStore;
@@ -782,6 +784,135 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
 }
 
 #[tokio::test]
+async fn registry_tag_preview_matches_reusing_execution_plan() {
+    let machine = machine_id("machine_a");
+    let nats = TestNats::start_with_machines(std::slice::from_ref(&machine)).await;
+    let config = nats
+        .control_config()
+        .with_deploy_machines(vec![machine.clone()])
+        .with_deploy_step_timeout(Duration::from_secs(2));
+    let machine_roster = machine_roster(&config).await;
+    let runtime = nats.start_control(&config).await;
+    machine_roster
+        .replace_active_machine(&active_machine(machine.as_str()))
+        .await
+        .expect("active machine stores");
+    let runner = ObservingContainerRunner::new(machine.clone());
+    let machine_runtime = start_machine_role_runtime(
+        nats.machine_client(&machine).await,
+        machine.clone(),
+        runner.clone(),
+        ReadyWireGuardEbpf::for_machine(&machine),
+        runner.clone(),
+    )
+    .await
+    .expect("machine runtime starts");
+    wait_for_dataplane_projection(&nats, &machine).await;
+    let api = nats.api();
+    let target = deploy_target("svc_api");
+    let first = reserved_deploy_request(&api, "idem_registry_first", target.clone()).await;
+    let first = api
+        .deploy_submit(&first)
+        .await
+        .expect("first deploy submits");
+    let first_status =
+        wait_for_terminal_status(&api, &first.operation_id, Duration::from_secs(4)).await;
+    assert!(matches!(
+        first_status,
+        OperationStatus::Deploy {
+            state: DeployOperationState::Completed { .. },
+            ..
+        }
+    ));
+
+    let preview_credential = RegistryCredential::try_basic("preview", "private-secret")
+        .expect("valid preview registry credential");
+    let preview = api
+        .deploy_preview(&DeployPreviewRequest {
+            target: concrete_registry_preview_target(target.clone()),
+            registry_credentials: BTreeMap::from([(
+                service_id("svc_api"),
+                preview_credential.clone(),
+            )]),
+        })
+        .await
+        .expect("registry tag preview succeeds");
+    let [preview_phase] = preview.projection.phases.as_slice() else {
+        panic!("preview has one phase")
+    };
+    let [preview_service] = preview_phase.services.as_slice() else {
+        panic!("preview has one service")
+    };
+    assert!(matches!(
+        preview_service.steps.as_slice(),
+        [ployz_core::deploy::DeployPlanStep::UseExistingContainer {
+            machine_id,
+            ..
+        }] if machine_id == &machine
+    ));
+    assert!(preview.projection.cleanup_candidates.is_empty());
+
+    let second = reserved_deploy_request(&api, "idem_registry_second", target).await;
+    let second = api
+        .deploy_submit(&second)
+        .await
+        .expect("second deploy submits");
+    let second_status =
+        wait_for_terminal_status(&api, &second.operation_id, Duration::from_secs(4)).await;
+    assert!(matches!(
+        second_status,
+        OperationStatus::Deploy {
+            state: DeployOperationState::Completed { .. },
+            ..
+        }
+    ));
+    let replay = api
+        .ops_watch(&OpsWatchRequest {
+            operation_id: second.operation_id,
+            start_sequence: event_sequence(1),
+            limit: OperationEventReplayLimit::try_new(100).expect("valid replay limit"),
+        })
+        .await
+        .expect("second deploy evidence replays");
+    let Some(OperationEvent::DeployPlanCreated { plan, .. }) = replay
+        .events
+        .iter()
+        .map(|event| &event.event)
+        .find(|event| matches!(event, OperationEvent::DeployPlanCreated { .. }))
+    else {
+        panic!("second deploy records its plan")
+    };
+    assert_eq!(preview.projection.phases, plan.phases);
+    assert_eq!(preview.projection.cleanup_candidates, plan.cleanup_actions);
+    assert!(replay.events.iter().any(|event| matches!(
+        &event.event,
+        OperationEvent::DeployPhaseFinished { services, .. }
+            if matches!(
+                services.as_slice(),
+                [ployz_core::operation::DeployServiceResult::Unchanged { service_id }]
+                    if service_id == &self::service_id("svc_api")
+            )
+    )));
+    assert_eq!(runner.snapshot().containers().len(), 1);
+    assert_eq!(runner.pulls().len(), 1);
+    assert!(
+        runner
+            .resolutions()
+            .iter()
+            .any(|(_, credential)| credential.as_ref() == Some(&preview_credential))
+    );
+
+    machine_runtime
+        .shutdown()
+        .await
+        .expect("machine runtime shuts down");
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
 async fn deploy_preview_returns_pending_service_platforms_without_runtime_effects() {
     let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
     let config = nats
@@ -820,6 +951,7 @@ async fn deploy_preview_returns_pending_service_platforms_without_runtime_effect
         .api()
         .deploy_preview(&DeployPreviewRequest {
             target: pending_preview_target(deploy_target("svc_api")),
+            registry_credentials: BTreeMap::new(),
         })
         .await
         .expect("deploy preview succeeds");
@@ -925,6 +1057,7 @@ async fn deploy_preview_returns_silent_roster_evidence_before_the_client_deadlin
         Duration::from_secs(7),
         nats.api().deploy_preview(&DeployPreviewRequest {
             target: pending_preview_target(deploy_target("svc_api")),
+            registry_credentials: BTreeMap::new(),
         }),
     )
     .await
@@ -983,6 +1116,7 @@ async fn deploy_preview_rejects_an_expired_concrete_receipt_without_runtime_effe
                 machine,
                 ImageAvailabilityExpiresAt::try_new(1).expect("expired timestamp"),
             ),
+            registry_credentials: BTreeMap::new(),
         })
         .await
         .expect_err("expired receipt is rejected");
@@ -1032,7 +1166,10 @@ async fn deploy_preview_rejects_duplicate_service_ids() {
 
     let error = nats
         .api()
-        .deploy_preview(&DeployPreviewRequest { target })
+        .deploy_preview(&DeployPreviewRequest {
+            target,
+            registry_credentials: BTreeMap::new(),
+        })
         .await
         .expect_err("duplicate service ids are rejected");
 
@@ -1639,6 +1776,36 @@ fn pending_preview_target(target: DeployRequest) -> DeployPreviewTarget {
             depends_on: service.depends_on.clone(),
             routes: service.routes.clone(),
         }],
+    }
+}
+
+fn concrete_registry_preview_target(target: DeployRequest) -> DeployPreviewTarget {
+    let DeployRequest {
+        namespace_id,
+        origin,
+        volumes,
+        services,
+    } = target;
+    DeployPreviewTarget {
+        namespace_id,
+        origin,
+        volumes,
+        services: services
+            .into_iter()
+            .map(|service| DeployPreviewService {
+                service_id: service.service_id,
+                image: DeployPreviewImage::Concrete {
+                    image: service.image,
+                    image_source: service.image_source,
+                },
+                replicas: service.replicas,
+                keep: service.keep,
+                runtime: service.runtime,
+                pre_start: service.pre_start,
+                depends_on: service.depends_on,
+                routes: service.routes,
+            })
+            .collect(),
     }
 }
 

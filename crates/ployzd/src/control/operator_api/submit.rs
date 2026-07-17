@@ -15,7 +15,6 @@ use crate::control::sequencer::{
 };
 use ployz_core::deploy::ImageSource;
 use ployz_core::ids::{MachineId, OperationId};
-use ployz_core::machine::MachineLifecycle;
 use ployz_core::operation::{CredentialGrantAction, EventSequence, VolumeCreateRequest};
 use ployz_nats::subjects::{OperationProgressScope, operation_progress_watch};
 use ployz_sdk_types::{
@@ -337,7 +336,6 @@ pub async fn deploy_submit(
     let command = normalize_deploy_submit(request)?;
     let operation_id = command.operation_id.clone();
     validate_registry_credentials(&command)?;
-    validate_pushed_image_seeds(handlers, &command).await?;
     validate_deploy_route_admission(
         &command.target,
         &handlers.ingress_intent,
@@ -432,85 +430,6 @@ fn invalid_registry_credential(
             service_id.as_str()
         ))
         .expect("generated registry credential failure message is non-empty"),
-    }
-}
-
-async fn validate_pushed_image_seeds(
-    handlers: &OperationApiHandlers,
-    command: &DeploySubmitCommand,
-) -> Result<(), DeploySubmitError> {
-    validate_pushed_image_seed_roster(&handlers.machine_roster, &command.target)
-        .await
-        .map_err(|error| match error {
-            PushedImageSeedValidationError::Unavailable { message } => {
-                DeploySubmitError::Unavailable {
-                    operation_id: command.operation_id.clone(),
-                    message,
-                }
-            }
-            PushedImageSeedValidationError::Invalid { seed, reason } => {
-                invalid_image_seed(command, &seed, reason)
-            }
-        })
-}
-
-pub(super) async fn validate_pushed_image_seed_roster(
-    machine_roster: &crate::control::intent::machine_roster::MachineRosterStore,
-    target: &ployz_core::deploy::DeployRequest,
-) -> Result<(), PushedImageSeedValidationError> {
-    let mut seeds = std::collections::BTreeSet::new();
-    for service in &target.services {
-        let ImageSource::PushedToSeed(receipt) = &service.image_source else {
-            continue;
-        };
-        seeds.extend(receipt.platforms().map(|(_, image)| image.seed.clone()));
-    }
-
-    for seed in &seeds {
-        let active = machine_roster.active_machine(seed).await.map_err(|error| {
-            PushedImageSeedValidationError::Unavailable {
-                message: error.to_string(),
-            }
-        })?;
-        let Some(active) = active else {
-            return Err(PushedImageSeedValidationError::Invalid {
-                seed: seed.clone(),
-                reason: "is not in the active roster",
-            });
-        };
-        if !matches!(active.lifecycle, MachineLifecycle::Active) {
-            return Err(PushedImageSeedValidationError::Invalid {
-                seed: seed.clone(),
-                reason: "is not in the active lifecycle",
-            });
-        }
-    }
-
-    Ok(())
-}
-
-pub(super) enum PushedImageSeedValidationError {
-    Unavailable {
-        message: String,
-    },
-    Invalid {
-        seed: MachineId,
-        reason: &'static str,
-    },
-}
-
-fn invalid_image_seed(
-    command: &DeploySubmitCommand,
-    seed: &MachineId,
-    reason: &str,
-) -> DeploySubmitError {
-    DeploySubmitError::InvalidTarget {
-        operation_id: command.operation_id.clone(),
-        message: ployz_core::operation::FailureMessage::try_new(format!(
-            "pushed image seed {} {reason}",
-            seed.as_str()
-        ))
-        .expect("generated pushed image seed failure message is non-empty"),
     }
 }
 

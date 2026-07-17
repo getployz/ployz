@@ -895,6 +895,7 @@ pub fn operation_contract_fixture() -> Value {
     json!({
         "deploy_preview_request": value(DeployPreviewRequest {
             target: preview_target,
+            registry_credentials: std::collections::BTreeMap::new(),
         }),
         "deploy_preview_response": value(DeployPreviewResponse::Ok {
             value: DeployPreview {
@@ -933,6 +934,7 @@ pub fn operation_contract_fixture() -> Value {
                     .expect("build platforms"),
                 )]),
                 unusable_machines: Vec::new(),
+                unusable_machines_by_service: std::collections::BTreeMap::new(),
             },
         }),
         "deploy_preview_image_unavailable_response": value(DeployPreviewResponse::DomainError {

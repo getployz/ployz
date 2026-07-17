@@ -9,7 +9,7 @@ use crate::control::intent::service::NatsIntentReader;
 use crate::control::role_client::machine::{NatsMachineFactsReader, read_machine_placement_facts};
 use crate::control::role_client::machine_convergence::gather_dataplane_statuses;
 use ployz_core::deploy::{
-    AutoHostnameRouteBindingError, DeployPlanningTarget, DeployPreviewTarget, DeployRequest,
+    AutoHostnameRouteBindingError, DeployPlanningTarget, DeployRequest,
     DeployRouteBindingValidationError, DeployRouteTarget,
 };
 use ployz_core::ids::MachineId;
@@ -50,31 +50,7 @@ pub async fn load_deploy_execution_facts_from_nats(
     .await
 }
 
-pub async fn load_deploy_preview_facts_from_nats(
-    target: &DeployPreviewTarget,
-    intent_reader: &NatsIntentReader,
-    facts_reader: &NatsMachineFactsReader,
-    target_store: &PloyzDnsTargetStore,
-    projection_store: &IngressProjectionStore,
-    step_timeout: Duration,
-) -> Result<DeployExecutionFacts, DeployFactLoadError> {
-    let planning_target = DeployPlanningTarget::try_from_preview(target).map_err(|error| {
-        DeployFactLoadError::InvalidStoredTarget {
-            message: error.to_string(),
-        }
-    })?;
-    load_planning_facts_from_nats(
-        &planning_target,
-        intent_reader,
-        facts_reader,
-        target_store,
-        projection_store,
-        step_timeout,
-    )
-    .await
-}
-
-async fn load_planning_facts_from_nats(
+pub(super) async fn load_planning_facts_from_nats(
     target: &DeployPlanningTarget,
     intent_reader: &NatsIntentReader,
     facts_reader: &NatsMachineFactsReader,

@@ -3,10 +3,9 @@ use std::time::Duration;
 
 use ployz_core::build::BuildPlatforms;
 use ployz_core::deploy::{
-    DeployPlanError, DeployPlanningContext, DeployPlanningTarget, DeployPreviewImage, ImageSource,
-    plan_namespace_deploy,
+    DeployPlacementPlan, DeployPlanError, DeployPlanningContext, DeployPlanningTarget,
+    DeployPreviewImage, DeployPreviewTarget, ImageSource, plan_namespace_deploy,
 };
-use ployz_core::machine::MachineUsabilityReason;
 use ployz_core::operation::{FailureMessage, UnusableMachine};
 use ployz_sdk_types::{DeployPreview, DeployPreviewError, DeployPreviewRequest};
 
@@ -14,21 +13,28 @@ use crate::control::intent::ingress_intent::{IngressProjectionStore, PloyzDnsTar
 use crate::control::intent::service::NatsIntentReader;
 use crate::control::role_client::machine::NatsMachineFactsReader;
 
-use super::{DeployExecutionFacts, DeployFactLoadError, load_deploy_preview_facts_from_nats};
+use super::{
+    DeployFactLoadError, MachineContainerRuntime, facts::load_planning_facts_from_nats,
+    images::ImagePreparationError,
+};
 
 pub async fn preview_deploy_from_nats(
     request: DeployPreviewRequest,
     intent_reader: &NatsIntentReader,
     facts_reader: &NatsMachineFactsReader,
+    machine_runtime: &mut impl MachineContainerRuntime,
     target_store: &PloyzDnsTargetStore,
     projection_store: &IngressProjectionStore,
     step_timeout: Duration,
 ) -> Result<DeployPreview, DeployPreviewError> {
-    let target = request.target;
-    DeployPlanningTarget::try_from_preview(&target)
+    let DeployPreviewRequest {
+        mut target,
+        registry_credentials,
+    } = request;
+    let planning_target = DeployPlanningTarget::try_from_preview(&target)
         .map_err(|error| invalid_target(error.to_string()))?;
-    let facts = load_deploy_preview_facts_from_nats(
-        &target,
+    let facts = load_planning_facts_from_nats(
+        &planning_target,
         intent_reader,
         facts_reader,
         target_store,
@@ -37,43 +43,42 @@ pub async fn preview_deploy_from_nats(
     )
     .await
     .map_err(preview_fact_load_error)?;
-    validate_pushed_image_seeds(&target, &facts)?;
-    let command = super::preparation::prepare_deploy_preview_command(target, facts);
-    let planning_target = DeployPlanningTarget::try_from_preview(&command.target)
-        .expect("deploy preview command contains a validated planning target");
-    let plan = plan_namespace_deploy(
-        &planning_target,
-        command.planning_inputs.clone(),
-        command.namespace_cleanup_candidates.clone(),
-        DeployPlanningContext {
-            storage_testimony: &command.storage_testimony,
-        },
+    let provisional_command =
+        super::preparation::prepare_deploy_preview_command(planning_target, facts.clone());
+    let provisional_plan = preview_plan(&provisional_command)?;
+    resolve_preview_registry_images(
+        &mut target,
+        &provisional_plan,
+        &provisional_command,
+        &registry_credentials,
+        step_timeout,
+        machine_runtime,
     )
-    .map_err(|error| preview_plan_error(error, &command))?;
+    .await?;
+    let planning_target = DeployPlanningTarget::try_from_preview(&target)
+        .map_err(|error| invalid_target(error.to_string()))?;
+    let command = super::preparation::prepare_deploy_preview_command(planning_target, facts);
+    let plan = preview_plan(&command)?;
 
     let now_unix_seconds = super::images::current_unix_seconds()
         .map_err(|error| planning_failed(error.to_string(), command.unusable_machines.clone()))?;
-    for service in &command.target.services {
-        let DeployPreviewImage::Concrete {
-            image_source: ImageSource::PushedToSeed(receipt),
-            ..
-        } = &service.image
-        else {
+    for service in command.target.services() {
+        let Some((_, ImageSource::PushedToSeed(receipt))) = service.concrete_image() else {
             continue;
         };
         let target_machines = plan
-            .service_target_machines(&service.service_id)
+            .service_target_machines(service.service_id())
             .ok_or_else(|| {
                 planning_failed(
                     format!(
                         "preview plan omitted service {}",
-                        service.service_id.as_str()
+                        service.service_id().as_str()
                     ),
                     command.unusable_machines.clone(),
                 )
             })?;
         super::images::validate_pushed_service_availability(
-            &service.service_id,
+            service.service_id(),
             receipt,
             &target_machines,
             &command.machine_platforms,
@@ -81,41 +86,15 @@ pub async fn preview_deploy_from_nats(
             now_unix_seconds,
         )
         .map_err(|error| {
-            let unusable_machines = command
-                .unusable_machines_by_service
-                .get(&service.service_id)
-                .cloned()
-                .unwrap_or_else(|| command.unusable_machines.clone());
-            match error {
-                super::DeployExecutionError::Image { failure } => {
-                    DeployPreviewError::ImageUnavailable {
-                        failure,
-                        unusable_machines,
-                    }
-                }
-                error @ (super::DeployExecutionError::Plan(_)
-                | super::DeployExecutionError::PlanInconsistent { .. }
-                | super::DeployExecutionError::StepId(_)
-                | super::DeployExecutionError::InvalidImagePull { .. }
-                | super::DeployExecutionError::InternalInvariant { .. }
-                | super::DeployExecutionError::StepTimedOut { .. }
-                | super::DeployExecutionError::RecordTransition(_)
-                | super::DeployExecutionError::RecordEvidence(_)
-                | super::DeployExecutionError::RunContainer(_)
-                | super::DeployExecutionError::EnsureVolume(_)
-                | super::DeployExecutionError::PreStartHook(_)
-                | super::DeployExecutionError::PreStartHookExited { .. }
-                | super::DeployExecutionError::WaitHealthy(_)
-                | super::DeployExecutionError::ProvisionCertificate { .. }
-                | super::DeployExecutionError::CommitNamespaceState(_)
-                | super::DeployExecutionError::Failed { .. }) => {
-                    planning_failed(error.to_string(), unusable_machines)
-                }
-            }
+            preview_image_preparation_error(
+                error,
+                unusable_machines_for_service(&command, service.service_id()),
+            )
         })?;
     }
 
-    let build_platform_requirements = planning_target
+    let build_platform_requirements = command
+        .target
         .services()
         .iter()
         .filter(|service| service.concrete_image().is_none())
@@ -162,45 +141,108 @@ pub async fn preview_deploy_from_nats(
         ),
         build_platform_requirements,
         unusable_machines: command.unusable_machines,
+        unusable_machines_by_service: command.unusable_machines_by_service,
     })
 }
 
-fn validate_pushed_image_seeds(
-    target: &ployz_core::deploy::DeployPreviewTarget,
-    facts: &DeployExecutionFacts,
+fn preview_plan(
+    command: &super::types::DeployPreviewPlanningCommand,
+) -> Result<DeployPlacementPlan, DeployPreviewError> {
+    plan_namespace_deploy(
+        &command.target,
+        command.planning_inputs.clone(),
+        command.namespace_cleanup_candidates.clone(),
+        DeployPlanningContext {
+            storage_testimony: &command.storage_testimony,
+        },
+    )
+    .map_err(|error| preview_plan_error(error, command))
+}
+
+async fn resolve_preview_registry_images(
+    target: &mut DeployPreviewTarget,
+    plan: &DeployPlacementPlan,
+    command: &super::types::DeployPreviewPlanningCommand,
+    registry_credentials: &BTreeMap<
+        ployz_core::ids::ServiceId,
+        ployz_core::deploy::RegistryCredential,
+    >,
+    step_timeout: Duration,
+    machine_runtime: &mut impl MachineContainerRuntime,
 ) -> Result<(), DeployPreviewError> {
-    for service in &target.services {
-        let DeployPreviewImage::Concrete {
-            image_source: ImageSource::PushedToSeed(receipt),
-            ..
-        } = &service.image
+    let unresolved = target
+        .services
+        .iter()
+        .filter_map(|service| match &service.image {
+            DeployPreviewImage::Concrete {
+                image,
+                image_source: ImageSource::Registry,
+            } if image.pinned_digest().is_none() => {
+                Some((service.service_id.clone(), image.clone()))
+            }
+            DeployPreviewImage::Concrete { .. } | DeployPreviewImage::PendingBuild => None,
+        })
+        .collect::<Vec<_>>();
+    for (service_id, requested) in unresolved {
+        let unusable_machines = unusable_machines_for_service(command, &service_id);
+        let Some(machine_id) =
+            super::images::registry_resolution_machine(&plan.phases, &service_id)
         else {
-            continue;
+            return Err(planning_failed(
+                format!("preview plan omitted service {}", service_id.as_str()),
+                unusable_machines,
+            ));
         };
-        for (_, platform_image) in receipt.platforms() {
-            let seed = &platform_image.seed;
-            if !facts
-                .dataplane_members
-                .iter()
-                .any(|member| &member.machine_id == seed)
-            {
-                return Err(invalid_target(format!(
-                    "pushed image seed {} is not in the active roster",
-                    seed.as_str()
-                )));
-            }
-            if facts.unusable_machines.iter().any(|unusable| {
-                &unusable.machine_id == seed
-                    && matches!(&unusable.reason, MachineUsabilityReason::Draining)
-            }) {
-                return Err(invalid_target(format!(
-                    "pushed image seed {} is not in the active lifecycle",
-                    seed.as_str()
-                )));
-            }
-        }
+        let resolved = super::images::resolve_registry_image(
+            &service_id,
+            &requested,
+            &machine_id,
+            registry_credentials.get(&service_id),
+            step_timeout,
+            machine_runtime,
+        )
+        .await
+        .map_err(|error| preview_image_preparation_error(error, unusable_machines))?;
+        let service = target
+            .services
+            .iter_mut()
+            .find(|service| service.service_id == service_id)
+            .expect("validated preview target still contains its service");
+        let DeployPreviewImage::Concrete { image, .. } = &mut service.image else {
+            unreachable!("registry resolution target remains concrete")
+        };
+        *image = resolved;
     }
     Ok(())
+}
+
+fn unusable_machines_for_service(
+    command: &super::types::DeployPreviewPlanningCommand,
+    service_id: &ployz_core::ids::ServiceId,
+) -> Vec<UnusableMachine> {
+    command
+        .unusable_machines_by_service
+        .get(service_id)
+        .cloned()
+        .unwrap_or_else(|| command.unusable_machines.clone())
+}
+
+fn preview_image_preparation_error(
+    error: ImagePreparationError,
+    unusable_machines: Vec<UnusableMachine>,
+) -> DeployPreviewError {
+    match error {
+        ImagePreparationError::OperationFailure { failure } => {
+            DeployPreviewError::ImageUnavailable {
+                failure,
+                unusable_machines,
+            }
+        }
+        ImagePreparationError::InternalInvariant { message } => planning_failed(
+            format!("deploy execution invariant failed: {message}"),
+            unusable_machines,
+        ),
+    }
 }
 
 fn preview_plan_error(

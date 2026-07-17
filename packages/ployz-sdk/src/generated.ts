@@ -710,7 +710,7 @@ export type DeployReserveRequest = { namespace_id: NamespaceId, };
 
 export type DeployReserved = { reservation_id: DeployReservationId, expires_at: DeployReservationExpiresAt, };
 
-export type DeployPreviewRequest = { target: DeployPreviewTarget, };
+export type DeployPreviewRequest = { target: DeployPreviewTarget, registry_credentials?: { [key in ServiceId]: RegistryCredential }, };
 
 export type DeployPreviewTarget = { namespace_id: NamespaceId, origin?: DeployOrigin | null, volumes?: { [key in VolumeName]: VolumeSpec }, services: Array<DeployPreviewService>, };
 
@@ -718,7 +718,7 @@ export type DeployPreviewService = { service_id: ServiceId, image: DeployPreview
 
 export type DeployPreviewImage = { "state": "concrete", image: ImageReference, image_source: ImageSource, } | { "state": "pending_build" };
 
-export type DeployPreview = { projection: DeployPreviewProjection, build_platform_requirements: { [key in ServiceId]: BuildPlatforms }, unusable_machines?: Array<UnusableMachine>, };
+export type DeployPreview = { projection: DeployPreviewProjection, build_platform_requirements: { [key in ServiceId]: BuildPlatforms }, unusable_machines?: Array<UnusableMachine>, unusable_machines_by_service?: { [key in ServiceId]: Array<UnusableMachine> }, };
 
 export type DeployPreviewProjection = { namespace_id: NamespaceId, phases: Array<DeployPhasePlan>, volume_pins?: Array<VolumePinState>, volume_preparations?: Array<VolumePinState>, cleanup_candidates?: Array<DeployCleanupAction>, route_binding_additions?: Array<DeployRouteBindingAddition>, route_binding_removals?: Array<RouteBindingState>, serving_target_commits?: Array<ServingTargetEntry>, serving_target_removals?: Array<ServingTargetEntry>, };
 

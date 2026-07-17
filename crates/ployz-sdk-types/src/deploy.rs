@@ -33,6 +33,8 @@ pub enum DeployReserveError {
 #[serde(deny_unknown_fields)]
 pub struct DeployPreviewRequest {
     pub target: DeployPreviewTarget,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -42,6 +44,8 @@ pub struct DeployPreview {
     pub build_platform_requirements: BTreeMap<ServiceId, BuildPlatforms>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unusable_machines: Vec<UnusableMachine>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unusable_machines_by_service: BTreeMap<ServiceId, Vec<UnusableMachine>>,
 }
 
 pub type DeployPreviewResponse = OperationApiResponse<DeployPreview, DeployPreviewError>;

@@ -1,5 +1,5 @@
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployPlanningInput, DeployPreviewTarget, DeployRequest,
+    DeployCleanupContainer, DeployPlanningInput, DeployPlanningTarget, DeployRequest,
     DeployRouteBindingAddition, DeployServiceSpec, ExistingServiceReplica,
     ObservedCleanupCandidate, RegistryCredential,
 };
@@ -26,7 +26,7 @@ const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DeployPreviewPlanningCommand {
-    pub(super) target: DeployPreviewTarget,
+    pub(super) target: DeployPlanningTarget,
     pub(super) planning_inputs: Vec<DeployPlanningInput>,
     pub(super) route_binding_additions: Vec<DeployRouteBindingAddition>,
     pub(super) route_binding_removals: Vec<RouteBindingState>,

@@ -29,8 +29,7 @@ pub use crate::control::role_client::machine::MachineVolumeEnsureError;
 #[cfg(test)]
 pub use crate::roles::machine::MachineRuntimeUnavailableReason;
 pub use facts::{
-    DeployFactLoadError, load_deploy_execution_facts_from_nats,
-    load_deploy_preview_facts_from_nats, validate_deploy_route_admission,
+    DeployFactLoadError, load_deploy_execution_facts_from_nats, validate_deploy_route_admission,
 };
 pub use failure::{
     DeployExecutionError, DeployHealthCheckError, MachineContainerRuntimeError,

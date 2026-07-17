@@ -536,11 +536,14 @@ impl DeployOperationDriver {
         let client = self.stores.intent_change_client.clone();
         let facts_reader =
             NatsMachineFactsReader::new(client.clone()).with_request_timeout(request_timeout);
+        let mut machine_runtime =
+            NatsMachineContainerRuntime::new(client.clone()).with_request_timeout(request_timeout);
         let intent_reader = NatsIntentReader::new(client).with_request_timeout(request_timeout);
         super::preview_deploy_from_nats(
             request,
             &intent_reader,
             &facts_reader,
+            &mut machine_runtime,
             &self.stores.ployz_dns_target,
             &self.stores.ingress_projection,
             request_timeout,
