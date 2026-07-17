@@ -1814,7 +1814,7 @@ fn automatic_route_rejects_a_declared_hostname_collision() {
         error,
         ployz_core::deploy::AutoHostnameRouteBindingError::HostnameCollision {
             hostname: route_hostname("api.apps.example.com"),
-            route_binding_id: route_binding_id("route_api_example_com"),
+            route_binding_id: route_binding_id("route_api_apps_example_com"),
         }
     );
 }
