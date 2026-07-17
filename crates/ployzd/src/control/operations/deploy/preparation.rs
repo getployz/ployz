@@ -18,7 +18,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use crate::certificate::GatewayCertificateTarget;
+use crate::control::role_client::machine::MachineClockTestimony;
 
+use super::placement::{ProvisionedStorageRequirement, classify_storage_usability};
 use super::{DeployExecutionCommand, DeployServiceExecutionCommand};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +55,9 @@ pub struct DeployExecutionFacts {
     pub dataplane_members: Vec<DataplaneMember>,
     pub observed_machines: Vec<MachineContainerObservationSnapshot>,
     pub machine_platforms: BTreeMap<MachineId, OciPlatform>,
+    pub seed_clock_testimony: BTreeMap<MachineId, MachineClockTestimony>,
+    pub machine_storage_testimony:
+        BTreeMap<MachineId, Option<ployz_core::machine::StorageCapability>>,
     pub namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
     pub automatic_hostname_mode: AutomaticHostnameMode,
     pub gateway_certificate_targets: Vec<GatewayCertificateTarget>,
@@ -92,6 +97,17 @@ impl DeployExecutionInput {
     #[cfg(test)]
     pub fn with_step_timeout(mut self, step_timeout: Duration) -> Self {
         self.facts.step_timeout = step_timeout;
+        self
+    }
+
+    #[must_use]
+    #[cfg(test)]
+    pub(crate) fn with_seed_clock_testimony(
+        mut self,
+        seed: MachineId,
+        testimony: MachineClockTestimony,
+    ) -> Self {
+        self.facts.seed_clock_testimony.insert(seed, testimony);
         self
     }
 }
@@ -176,12 +192,31 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         .filter(|unusable| match unusable.reason {
             ployz_core::machine::MachineUsabilityReason::Draining => true,
             ployz_core::machine::MachineUsabilityReason::FactsUnavailable
+            | ployz_core::machine::MachineUsabilityReason::BuildUnavailable
+            | ployz_core::machine::MachineUsabilityReason::PlatformMismatch { .. }
+            | ployz_core::machine::MachineUsabilityReason::StorageTestimonyNotReported
+            | ployz_core::machine::MachineUsabilityReason::StorageUnprepared
+            | ployz_core::machine::MachineUsabilityReason::StorageUnavailable { .. }
+            | ployz_core::machine::MachineUsabilityReason::StoragePoolMismatch { .. }
             | ployz_core::machine::MachineUsabilityReason::DataplaneUnavailable { .. } => false,
         })
         .map(|unusable| unusable.machine_id.clone())
         .collect::<Vec<_>>();
     let mut services = Vec::new();
+    let mut unusable_machines = facts.unusable_machines.clone();
     for service in request.services() {
+        let storage_requirement =
+            provisioned_storage_requirement(&request, service, &facts.namespace_volume_pins);
+        let (service_eligible_machines, storage_unusable_machines) = classify_storage_usability(
+            &facts.eligible_machines,
+            &facts.machine_storage_testimony,
+            &storage_requirement,
+        );
+        for unusable in storage_unusable_machines {
+            if !unusable_machines.contains(&unusable) {
+                unusable_machines.push(unusable);
+            }
+        }
         let is_promoted = facts.namespace_serving_entries.iter().any(|entry| {
             entry.namespace_id == *request.namespace_id()
                 && entry.service_id == service.service_id
@@ -193,7 +228,7 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
                 request: &request,
                 service_id: service.service_id.clone(),
                 occupied_route_bindings: occupied_bindings.clone(),
-                eligible_machines: facts.eligible_machines.clone(),
+                eligible_machines: service_eligible_machines,
                 draining_machines: draining_machines.clone(),
                 observed_machines: facts.observed_machines.clone(),
                 existing_replica_policy: if is_promoted {
@@ -232,6 +267,7 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         });
     }
     let ployz_automatic_hostnames = facts.automatic_hostname_mode.is_ployz();
+    unusable_machines.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
     let exact_certificate_routes = exact_certificate_routes(&services, ployz_automatic_hostnames);
 
     // Manifest omission removes a service: its containers are cleanup
@@ -250,15 +286,46 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
         route_binding_removals,
         serving_target_removals,
         namespace_cleanup_candidates,
+        storage_testimony: facts.machine_storage_testimony,
         machine_platforms: facts.machine_platforms,
+        seed_clock_testimony: facts.seed_clock_testimony,
         dataplane_members: facts.dataplane_members,
         exact_certificate_routes,
         ployz_automatic_hostnames,
         gateway_certificate_targets: facts.gateway_certificate_targets,
         ployz_gateway_certificate_targets: facts.ployz_gateway_certificate_targets,
-        unusable_machines: facts.unusable_machines,
+        unusable_machines,
         step_timeout: facts.step_timeout,
     }
+}
+
+fn provisioned_storage_requirement(
+    request: &VolumeDeclaredDeployRequest,
+    service: &ployz_core::deploy::DeployServiceSpec,
+    pins: &[VolumePinState],
+) -> ProvisionedStorageRequirement {
+    let mut expected_pools = Vec::new();
+    let needs_provisioned = service.runtime.volume_mounts.iter().any(|mount| {
+        matches!(
+            request.request().volumes.get(&mount.volume_name),
+            Some(ployz_core::deploy::VolumeSpec::Provisioned { .. })
+        )
+    });
+    if !needs_provisioned {
+        return ProvisionedStorageRequirement::None;
+    }
+    for mount in &service.runtime.volume_mounts {
+        for pin in pins.iter().filter(|pin| {
+            pin.namespace_id() == request.namespace_id() && pin.volume_name() == &mount.volume_name
+        }) {
+            if let ployz_core::intent::VolumeKind::Provisioned { dataset, .. } = pin.kind() {
+                expected_pools.push(dataset.pool());
+            }
+        }
+    }
+    expected_pools.sort();
+    expected_pools.dedup();
+    ProvisionedStorageRequirement::Ready { expected_pools }
 }
 
 fn exact_certificate_routes(

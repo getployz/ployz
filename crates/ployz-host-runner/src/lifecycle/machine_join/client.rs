@@ -336,6 +336,11 @@ fn host_runner_join_target(
         &redeemed.join_bundle.material.ebpf_ctl,
     )
     .map_err(|error| failure_message(&format!("invalid eBPF ctl install target: {error}")))?;
+    let railpack_artifact = artifact_target(
+        ArtifactKind::Railpack,
+        &redeemed.join_bundle.material.railpack,
+    )
+    .map_err(|error| failure_message(&format!("invalid Railpack install target: {error}")))?;
     let roles = NonEmptyRoleSet::try_new(
         plan_joined_machine_process_set(&machine_id, redeemed.roles)
             .roles()
@@ -360,6 +365,7 @@ fn host_runner_join_target(
             material,
             ployzd_artifact,
             DataplaneArtifactTargets::new(ebpf_bytecode_artifact, ebpf_ctl_artifact),
+            railpack_artifact,
             roles,
             role_environment,
             host_port_assurance,
@@ -509,6 +515,10 @@ mod tests {
                     "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
                 ),
                 ebpf_ctl: join_artifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
+                railpack: join_artifact(
+                    "/tmp/railpack",
+                    "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
+                ),
             },
         }
     }

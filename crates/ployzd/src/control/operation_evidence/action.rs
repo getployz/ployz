@@ -1,13 +1,14 @@
 use super::{
-    CertOperationPayload, CertOperationSubmission, CoreReplaceOperationSubmission,
-    CoreReplacePayload, CredentialGrantOperationSubmission, DeployOperationPayload,
-    DeployOperationSubmission, IngressConfigureOperationSubmission,
+    BuildOperationPayload, BuildOperationSubmission, CertOperationPayload, CertOperationSubmission,
+    CoreReplaceOperationSubmission, CoreReplacePayload, CredentialGrantOperationSubmission,
+    DeployOperationPayload, DeployOperationSubmission, IngressConfigureOperationSubmission,
     MachineLifecycleOperationSubmission, MachineLifecyclePayload,
     MachineStoragePrepareOperationSubmission, MachineStoragePreparePayload,
     MachineUpdateOperationSubmission, MachineUpdatePayload, ManagedDnsReconcileOperationSubmission,
     ManagedDnsReconcilePayload, NamespaceRemoveOperationSubmission, NamespaceRemovePayload,
     NetworkRepairOperationSubmission, NetworkRepairPayload, ServiceRestartOperationSubmission,
-    ServiceRestartPayload, VolumeRemoveOperationSubmission, VolumeRemovePayload,
+    ServiceRestartPayload, VolumeCreateOperationSubmission, VolumeCreatePayload,
+    VolumeRemoveOperationSubmission, VolumeRemovePayload,
 };
 use ployz_core::ids::OperationId;
 use ployz_core::operation::{
@@ -24,6 +25,54 @@ pub(super) trait OperationAction: Sized {
         payload: &Self::Payload,
         sequence: EventSequence,
     ) -> OperationStatus;
+}
+
+impl OperationAction for BuildOperationSubmission {
+    type Payload = BuildOperationPayload;
+    const KIND: OperationKind = OperationKind::Build;
+
+    fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEvent {
+        OperationEvent::BuildSubmitted {
+            operation_id,
+            source: payload.source,
+            adapter: payload.adapter,
+            platforms: payload.platforms,
+        }
+    }
+
+    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
+        let OperationEvent::BuildSubmitted {
+            operation_id,
+            source,
+            adapter,
+            platforms,
+        } = event
+        else {
+            return None;
+        };
+        Some((
+            operation_id,
+            BuildOperationPayload {
+                source,
+                adapter,
+                platforms,
+            },
+        ))
+    }
+
+    fn accepted_status(
+        operation_id: OperationId,
+        payload: &Self::Payload,
+        sequence: EventSequence,
+    ) -> OperationStatus {
+        OperationStatus::build_accepted(
+            operation_id,
+            payload.source.clone(),
+            payload.adapter.clone(),
+            payload.platforms.clone(),
+            sequence,
+        )
+    }
 }
 
 impl OperationAction for DeployOperationSubmission {
@@ -490,6 +539,37 @@ impl OperationAction for VolumeRemoveOperationSubmission {
             payload.volume_name.clone(),
             sequence,
         )
+    }
+}
+
+impl OperationAction for VolumeCreateOperationSubmission {
+    type Payload = VolumeCreatePayload;
+    const KIND: OperationKind = OperationKind::VolumeCreate;
+
+    fn submitted_event(operation_id: OperationId, payload: Self::Payload) -> OperationEvent {
+        debug_assert_eq!(operation_id, payload.request.operation_id);
+        OperationEvent::VolumeCreateSubmitted {
+            request: payload.request,
+        }
+    }
+
+    fn submitted_event_parts(event: OperationEvent) -> Option<(OperationId, Self::Payload)> {
+        let OperationEvent::VolumeCreateSubmitted { request } = event else {
+            return None;
+        };
+        Some((
+            request.operation_id.clone(),
+            VolumeCreatePayload { request },
+        ))
+    }
+
+    fn accepted_status(
+        operation_id: OperationId,
+        payload: &Self::Payload,
+        sequence: EventSequence,
+    ) -> OperationStatus {
+        debug_assert_eq!(operation_id, payload.request.operation_id);
+        OperationStatus::volume_create_accepted(payload.request.clone(), sequence)
     }
 }
 

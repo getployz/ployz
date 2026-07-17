@@ -58,6 +58,7 @@ pub(crate) fn machine_join_template_command(
                 ployzd: artifacts.ployzd,
                 ebpf_bytecode: artifacts.ebpf_bytecode,
                 ebpf_ctl: artifacts.ebpf_ctl,
+                railpack: artifacts.railpack,
             },
         },
     })

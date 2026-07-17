@@ -174,6 +174,44 @@ impl<'de> Deserialize<'de> for VolumePinState {
     }
 }
 
+/// A volume pin whose variant proves an exact provisioned dataset identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct ProvisionedVolumePinState(VolumePinState, #[serde(skip)] DatasetName);
+
+impl ProvisionedVolumePinState {
+    pub fn try_new(volume: VolumePinState) -> Result<Self, VolumePinState> {
+        let dataset = match volume.kind() {
+            VolumeKind::Plain => return Err(volume),
+            VolumeKind::Provisioned { dataset, .. } => dataset.clone(),
+        };
+        Ok(Self(volume, dataset))
+    }
+
+    #[must_use]
+    pub fn volume(&self) -> &VolumePinState {
+        let Self(volume, _) = self;
+        volume
+    }
+
+    #[must_use]
+    pub fn dataset(&self) -> &DatasetName {
+        let Self(_, dataset) = self;
+        dataset
+    }
+}
+
+impl<'de> Deserialize<'de> for ProvisionedVolumePinState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let volume = VolumePinState::deserialize(deserializer)?;
+        Self::try_new(volume)
+            .map_err(|_| serde::de::Error::custom("provisioned volume pin required"))
+    }
+}
+
 /// Core-owned active-machine roster value.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
@@ -267,9 +305,79 @@ impl IntentSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::deploy::ZfsPoolName;
     use crate::nats_config::{
         CredentialGrant, CredentialName, CredentialRole, NatsAuthorizationGrant, NatsUserPublicKey,
     };
+    use serde_json::json;
+
+    #[test]
+    fn provisioned_volume_pin_rejects_plain_volume() {
+        let volume = VolumePinState::plain(
+            NamespaceId::try_new("prod").expect("namespace id"),
+            VolumeName::try_new("data").expect("volume name"),
+            MachineId::try_new("machine_a").expect("machine id"),
+        );
+
+        assert_eq!(
+            ProvisionedVolumePinState::try_new(volume.clone()),
+            Err(volume)
+        );
+    }
+
+    #[test]
+    fn provisioned_volume_pin_exposes_exact_validated_dataset() {
+        let namespace_id = NamespaceId::try_new("prod").expect("namespace id");
+        let volume_name = VolumeName::try_new("data").expect("volume name");
+        let dataset = DatasetName::for_volume(
+            &ZfsPoolName::try_new("tank").expect("pool name"),
+            &namespace_id,
+            &volume_name,
+        )
+        .expect("dataset name");
+        let volume = VolumePinState::try_new(
+            namespace_id,
+            volume_name,
+            MachineId::try_new("machine_a").expect("machine id"),
+            VolumeKind::Provisioned {
+                dataset: dataset.clone(),
+                max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("volume size"),
+            },
+        )
+        .expect("valid volume pin");
+
+        let provisioned =
+            ProvisionedVolumePinState::try_new(volume.clone()).expect("provisioned pin");
+
+        assert_eq!(provisioned.volume(), &volume);
+        assert_eq!(provisioned.dataset(), &dataset);
+    }
+
+    #[test]
+    fn provisioned_volume_pin_round_trips_transparent_wire_shape() {
+        let value = json!({
+            "namespace_id": "prod",
+            "volume_name": "data",
+            "machine_id": "machine_a",
+            "kind": {
+                "kind": "provisioned",
+                "dataset": "tank/ployz/volumes/ployz-n4-prod-v4-data",
+                "max_size_bytes": 1024,
+            },
+        });
+
+        let provisioned = serde_json::from_value::<ProvisionedVolumePinState>(value.clone())
+            .expect("provisioned pin deserializes");
+
+        assert_eq!(
+            provisioned.dataset().as_str(),
+            "tank/ployz/volumes/ployz-n4-prod-v4-data"
+        );
+        assert_eq!(
+            serde_json::to_value(provisioned).expect("provisioned pin serializes"),
+            value
+        );
+    }
 
     #[test]
     fn intent_snapshot_round_trips_named_credential_grants() {

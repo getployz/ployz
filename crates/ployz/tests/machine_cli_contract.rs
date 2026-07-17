@@ -11,7 +11,8 @@ use ployz::machine::command::{
     MachineListOutput, MachineName, derive_machine_identity,
 };
 use ployz::ssh::{SshClient, SshCommandError, SshPhase, SshTarget, SshTargetParseError};
-use ployz_core::ids::MachineId;
+use ployz_core::deploy::VolumeName;
+use ployz_core::ids::{MachineId, NamespaceId};
 use ployz_core::install::{
     AbsoluteInstallPath, HostPortAssurance, InstallArtifactSource, InstallArtifactSpec,
     InstallArtifactVersion, InstallSha256Digest, MachineJoinBundle, MachineJoinClusterName,
@@ -21,7 +22,7 @@ use ployz_core::intent::ActiveMachineState;
 use ployz_core::machine::GatewayServingStatus;
 use ployz_core::machine::GatewayStatusObservation;
 use ployz_core::machine::MachineEndpointObservation;
-use ployz_core::machine::MachineLifecycle;
+use ployz_core::machine::{MachineLifecycle, StrandedVolumeAlarm, StrandedVolumeReason};
 use ployz_core::nats_config::NatsCaCertificatePem;
 use ployz_core::roles::{GatewayRole, InstallRolePolicy};
 
@@ -138,7 +139,7 @@ fn machine_list_renders_machine_summaries() {
 
     assert_eq!(
         output,
-        "machine_1 edge_1 control-endpoints 203.0.113.10 mesh-endpoints 203.0.113.10:51820 gateway current 127.0.0.1:8080 routes 2 containers 3\n"
+        "machine_1 edge_1 control-endpoints 203.0.113.10 mesh-endpoints 203.0.113.10:51820 gateway current 127.0.0.1:8080 routes 2 containers 3 storage not reported alarms 0\n"
     );
 }
 
@@ -162,8 +163,23 @@ fn machine_inspect_renders_machine_detail() {
 
     assert_eq!(
         output,
-        "machine machine_1\nname edge_1\nactivated-by op_machine\ncontrol-endpoints 203.0.113.10\nmesh-endpoints 203.0.113.10:51820\ngateway last-known-good 127.0.0.1:8080 routes 2\ncontainers 3\ndisk-space 40 available / 100 total\n"
+        "machine machine_1\nname edge_1\nactivated-by op_machine\ncontrol-endpoints 203.0.113.10\nmesh-endpoints 203.0.113.10:51820\ngateway last-known-good 127.0.0.1:8080 routes 2\ncontainers 3\ndisk-space 40 available / 100 total\nstorage not reported\nstorage-alarms none\n"
     );
+}
+
+#[test]
+fn machine_inspect_renders_stranded_volume_identity_and_reason() {
+    let mut machine = machine_snapshot("machine_1", Some(GatewayServingStatus::Current));
+    machine.storage_alarms.push(StrandedVolumeAlarm::new(
+        NamespaceId::try_new("team-a").expect("valid namespace id"),
+        VolumeName::try_new("data").expect("valid volume name"),
+        machine.active.machine_id.clone(),
+        StrandedVolumeReason::MachineSilent,
+    ));
+
+    let output = MachineInspectOutput::new(machine).render();
+
+    assert!(output.contains("storage-alarms team-a/data:machine-silent\n"));
 }
 
 #[test]
@@ -174,6 +190,7 @@ fn machine_inspect_renders_missing_observations_as_unknown() {
         gateway: None,
         observed_container_count: 3,
         disk_space: ployz_test_support::fixtures::test_disk_space(),
+        storage: None,
         last_observed_at_unix_seconds: 60,
     };
 
@@ -181,7 +198,7 @@ fn machine_inspect_renders_missing_observations_as_unknown() {
 
     assert_eq!(
         output,
-        "machine machine_1\nname edge_1\nactivated-by op_machine\ncontrol-endpoints unknown\nmesh-endpoints unknown\ngateway none\ncontainers 3\ndisk-space 40 available / 100 total\n"
+        "machine machine_1\nname edge_1\nactivated-by op_machine\ncontrol-endpoints unknown\nmesh-endpoints unknown\ngateway none\ncontainers 3\ndisk-space 40 available / 100 total\nstorage not reported\nstorage-alarms none\n"
     );
 }
 
@@ -194,7 +211,7 @@ fn machine_inspect_renders_no_answer() {
 
     assert_eq!(
         output,
-        "machine machine_1\nname edge_1\nactivated-by op_machine\ncontrol-endpoints no answer\nmesh-endpoints no answer\ngateway no answer\ncontainers no answer\ndisk-space no answer\n"
+        "machine machine_1\nname edge_1\nactivated-by op_machine\ncontrol-endpoints no answer\nmesh-endpoints no answer\ngateway no answer\ncontainers no answer\ndisk-space no answer\nstorage no answer\nstorage-alarms none\n"
     );
 }
 
@@ -242,8 +259,10 @@ fn machine_snapshot(machine_id: &str, gateway: Option<GatewayServingStatus>) -> 
             }),
             observed_container_count: 3,
             disk_space: ployz_test_support::fixtures::test_disk_space(),
+            storage: None,
             last_observed_at_unix_seconds: 60,
         },
+        storage_alarms: Vec::new(),
     }
 }
 
@@ -285,6 +304,12 @@ fn machine_join_bundle(runtime_nats_url: &str) -> MachineJoinBundle {
                 source: source("/tmp/ployz-ebpf-ctl"),
                 sha256: digest("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
                 install_path: absolute_path("/usr/local/bin/ployz-ebpf-ctl"),
+            },
+            railpack: InstallArtifactSpec {
+                version: version("v0.31.0"),
+                source: source("/tmp/railpack"),
+                sha256: digest("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                install_path: absolute_path("/usr/local/lib/ployz/railpack/v0.31.0/railpack"),
             },
         },
     }
@@ -466,15 +491,35 @@ fn ssh_timeout() -> std::time::Duration {
 }
 
 #[cfg(unix)]
+fn read_fake_remote_hostname(
+    client: &SshClient,
+    target: &SshTarget,
+) -> Result<String, Box<SshCommandError>> {
+    for _ in 0..9 {
+        match client.read_remote_hostname(target) {
+            Err(error)
+                if matches!(
+                    error.as_ref(),
+                    SshCommandError::Spawn { message, .. }
+                        if message.contains("Text file busy")
+                ) =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
+    client.read_remote_hostname(target)
+}
+
+#[cfg(unix)]
 #[test]
 fn read_remote_hostname_returns_trimmed_first_line() {
     let (_dir, script) = fake_ssh("echo 'sg-core-1'\n");
     let client = SshClient::with_program(script, ssh_timeout());
     let target = SshTarget::parse("root@203.0.113.10").expect("target parses");
 
-    let hostname = client
-        .read_remote_hostname(&target)
-        .expect("hostname reads");
+    let hostname = read_fake_remote_hostname(&client, &target).expect("hostname reads");
 
     assert_eq!(hostname, "sg-core-1");
 }
@@ -495,9 +540,7 @@ fn ssh_commands_pass_destination_and_remote_command() {
     let client = SshClient::with_program(script, ssh_timeout());
     let target = SshTarget::parse("root@203.0.113.10").expect("target parses");
 
-    client
-        .read_remote_hostname(&target)
-        .expect("hostname reads");
+    read_fake_remote_hostname(&client, &target).expect("hostname reads");
 
     let args = fs::read_to_string(&args_file).expect("args file reads");
     let lines: Vec<&str> = args.lines().collect();
@@ -524,26 +567,7 @@ fn ssh_failures_carry_phase_and_stderr() {
     let client = SshClient::with_program(script, ssh_timeout());
     let target = SshTarget::parse("root@203.0.113.10").expect("target parses");
 
-    let error = (0..10)
-        .find_map(|_| {
-            let error = client
-                .read_remote_hostname(&target)
-                .expect_err("refused connection fails");
-            match error.as_ref() {
-                SshCommandError::Spawn { message, .. } if message.contains("Text file busy") => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                    None
-                }
-                SshCommandError::Spawn { .. }
-                | SshCommandError::CaptureSetup { .. }
-                | SshCommandError::Wait { .. }
-                | SshCommandError::StdinWrite { .. }
-                | SshCommandError::Timeout { .. }
-                | SshCommandError::Failed { .. }
-                | SshCommandError::EmptyRemoteHostname { .. } => Some(error),
-            }
-        })
-        .expect("fake ssh becomes executable");
+    let error = read_fake_remote_hostname(&client, &target).expect_err("refused connection fails");
 
     let SshCommandError::Failed { phase, .. } = error.as_ref() else {
         panic!("expected failed command error, got {error:?}");
@@ -568,11 +592,7 @@ fn ssh_commands_time_out_with_phase_evidence() {
     // this test is not about; retry past them, bounded, so it asserts timeout
     // classification rather than the runner's fork headroom.
     let error = (0..50)
-        .map(|_| {
-            client
-                .read_remote_hostname(&target)
-                .expect_err("slow command times out")
-        })
+        .map(|_| read_fake_remote_hostname(&client, &target).expect_err("slow command times out"))
         .find(|error| matches!(error.as_ref(), SshCommandError::Timeout { .. }))
         .expect("a 5s command must time out against a 200ms bound within 50 attempts");
     let rendered = error.to_string();
@@ -1099,9 +1119,7 @@ fn empty_remote_hostname_is_an_explicit_error() {
     let client = SshClient::with_program(script, ssh_timeout());
     let target = SshTarget::parse("root@203.0.113.10").expect("target parses");
 
-    let error = client
-        .read_remote_hostname(&target)
-        .expect_err("empty hostname fails");
+    let error = read_fake_remote_hostname(&client, &target).expect_err("empty hostname fails");
 
     assert!(matches!(
         error.as_ref(),

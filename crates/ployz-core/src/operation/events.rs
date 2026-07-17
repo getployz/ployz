@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::build::{BuildAdapter, BuildPlatforms, GitSourceEvidence, VerifiedGitCommit};
 use crate::certificate::AcmeHttp01Challenge;
 use crate::deploy::{
     DeployCleanupContainer, DeployPlan, DeployRequest, DeployReservationId, VolumeName,
@@ -17,6 +18,10 @@ use crate::machine::{
     MachineName,
 };
 
+use super::build::{
+    BuildCleanupEvidence, BuildEvent, BuildEvidence, BuildLogChunk, BuildOperationFailure,
+    BuildPlatformFailure, BuildTimeoutFailure, BuildToolchainEvidence, BuildTransition,
+};
 use super::cert::{CertEvent, CertTransition, CertificateProvisionWarning};
 use super::core_replace::{CoreReplaceEvent, CoreReplaceFailure, CoreReplaceTransition};
 use super::credential_grant::{
@@ -33,6 +38,7 @@ use super::namespace_remove::{NamespaceRemoveEvent, NamespaceRemoveTransition};
 use super::network_repair::{NetworkRepairEvent, NetworkRepairEvidence, NetworkRepairTransition};
 use super::service_restart::{ServiceRestartEvent, ServiceRestartTransition};
 use super::text::CancellationReason;
+use super::volume_create::{VolumeCreateEvent, VolumeCreateTransition};
 use super::volume_remove::{VolumeRemoveEvent, VolumeRemoveTransition};
 use super::{
     CertOperationFailure, CertRunningStage, DeployCleanupFailure, DeployCompletionOutcome,
@@ -40,14 +46,15 @@ use super::{
     MachineAddOperationState, MachineLifecycleFailure, MachineStoragePrepareFailure,
     MachineSubstrateVersions, MachineUpdateFailure, NamespaceRemoveFailure,
     NamespaceRemoveRunningStage, NetworkRepairFailure, NetworkRepairRunningStage, OperationKind,
-    RouteTarget, ServiceRestartFailure, ServiceRestartRunningStage, VolumeRemoveFailure,
-    VolumeRemoveRunningStage,
+    RouteTarget, ServiceRestartFailure, ServiceRestartRunningStage, VolumeCreateFailure,
+    VolumeCreateRequest, VolumeCreateRunningStage, VolumeRemoveFailure, VolumeRemoveRunningStage,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperationSubject {
+    Build,
     Deploy {
         service_id: ServiceId,
     },
@@ -78,6 +85,10 @@ pub enum OperationSubject {
     NamespaceRemove {
         namespace_id: NamespaceId,
     },
+    VolumeCreate {
+        namespace_id: NamespaceId,
+        volume_name: VolumeName,
+    },
     VolumeRemove {
         namespace_id: NamespaceId,
         volume_name: VolumeName,
@@ -92,6 +103,84 @@ pub enum OperationSubject {
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperationEvent {
+    BuildSubmitted {
+        operation_id: OperationId,
+        source: GitSourceEvidence,
+        adapter: BuildAdapter,
+        platforms: BuildPlatforms,
+    },
+    BuildPlacementStarted {
+        operation_id: OperationId,
+    },
+    BuildPlatformPlaced {
+        operation_id: OperationId,
+        platform: crate::image::OciPlatform,
+        machine_id: MachineId,
+    },
+    BuildCommitVerified {
+        operation_id: OperationId,
+        platform: crate::image::OciPlatform,
+        machine_id: MachineId,
+        commit: VerifiedGitCommit,
+    },
+    BuildPlatformToolchainVerified {
+        operation_id: OperationId,
+        platform: crate::image::OciPlatform,
+        machine_id: MachineId,
+        toolchain: BuildToolchainEvidence,
+    },
+    BuildRunning {
+        operation_id: OperationId,
+    },
+    BuildPlatformLog {
+        operation_id: OperationId,
+        platform: crate::image::OciPlatform,
+        machine_id: MachineId,
+        chunk: BuildLogChunk,
+    },
+    BuildPlatformLogTruncated {
+        operation_id: OperationId,
+        platform: crate::image::OciPlatform,
+        machine_id: MachineId,
+        omitted_bytes: u64,
+    },
+    BuildPlatformLogGap {
+        operation_id: OperationId,
+        platform: crate::image::OciPlatform,
+        machine_id: MachineId,
+        expected_sequence: u64,
+        final_sequence: u64,
+    },
+    BuildPlatformCompleted {
+        operation_id: OperationId,
+        platform: crate::image::OciPlatform,
+        machine_id: MachineId,
+        image: crate::deploy::PlatformImage,
+    },
+    BuildPlatformFailed {
+        operation_id: OperationId,
+        platform: crate::image::OciPlatform,
+        machine_id: MachineId,
+        failure: BuildPlatformFailure,
+    },
+    BuildCompleted {
+        operation_id: OperationId,
+        receipt: crate::deploy::PushedImageReceipt,
+    },
+    BuildFailed {
+        operation_id: OperationId,
+        failure: BuildOperationFailure,
+    },
+    BuildCancelled {
+        operation_id: OperationId,
+        reason: CancellationReason,
+        cleanup: BuildCleanupEvidence,
+    },
+    BuildTimedOut {
+        operation_id: OperationId,
+        failure: BuildTimeoutFailure,
+        cleanup: BuildCleanupEvidence,
+    },
     DeploySubmitted {
         operation_id: OperationId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -388,6 +477,23 @@ pub enum OperationEvent {
         operation_id: OperationId,
         failure: NamespaceRemoveFailure,
     },
+    VolumeCreateSubmitted {
+        request: VolumeCreateRequest,
+    },
+    VolumeCreatePlanningStarted {
+        operation_id: OperationId,
+    },
+    VolumeCreateRunning {
+        operation_id: OperationId,
+        stage: VolumeCreateRunningStage,
+    },
+    VolumeCreateCompleted {
+        operation_id: OperationId,
+    },
+    VolumeCreateFailed {
+        operation_id: OperationId,
+        failure: VolumeCreateFailure,
+    },
     VolumeRemoveSubmitted {
         operation_id: OperationId,
         namespace_id: NamespaceId,
@@ -419,7 +525,22 @@ impl OperationEvent {
     #[must_use]
     pub fn operation_id(&self) -> &OperationId {
         match self {
-            Self::DeploySubmitted { operation_id, .. }
+            Self::BuildSubmitted { operation_id, .. }
+            | Self::BuildPlacementStarted { operation_id }
+            | Self::BuildPlatformPlaced { operation_id, .. }
+            | Self::BuildCommitVerified { operation_id, .. }
+            | Self::BuildPlatformToolchainVerified { operation_id, .. }
+            | Self::BuildRunning { operation_id }
+            | Self::BuildPlatformLog { operation_id, .. }
+            | Self::BuildPlatformLogTruncated { operation_id, .. }
+            | Self::BuildPlatformLogGap { operation_id, .. }
+            | Self::BuildPlatformCompleted { operation_id, .. }
+            | Self::BuildPlatformFailed { operation_id, .. }
+            | Self::BuildCompleted { operation_id, .. }
+            | Self::BuildFailed { operation_id, .. }
+            | Self::BuildCancelled { operation_id, .. }
+            | Self::BuildTimedOut { operation_id, .. }
+            | Self::DeploySubmitted { operation_id, .. }
             | Self::DeployPlanningStarted { operation_id }
             | Self::DeployImageResolved { operation_id, .. }
             | Self::DeployPlanCreated { operation_id, .. }
@@ -484,12 +605,17 @@ impl OperationEvent {
             | Self::NamespaceRemoveContainerRemoved { operation_id, .. }
             | Self::NamespaceRemoveCompleted { operation_id }
             | Self::NamespaceRemoveFailed { operation_id, .. }
+            | Self::VolumeCreatePlanningStarted { operation_id }
+            | Self::VolumeCreateRunning { operation_id, .. }
+            | Self::VolumeCreateCompleted { operation_id }
+            | Self::VolumeCreateFailed { operation_id, .. }
             | Self::VolumeRemoveSubmitted { operation_id, .. }
             | Self::VolumeRemoveRunning { operation_id, .. }
             | Self::VolumeRemoveCompleted { operation_id }
             | Self::VolumeRemoveFailed { operation_id, .. }
             | Self::OperationInterrupted { operation_id, .. }
             | Self::Cancelled { operation_id, .. } => operation_id,
+            Self::VolumeCreateSubmitted { request } => &request.operation_id,
         }
     }
 
@@ -512,7 +638,22 @@ impl OperationEvent {
             }
             Self::DeployHealthCheckStarted { .. } => Some("deploy.health_check.started"),
             Self::DeployCleanupFinished { .. } => Some("deploy.cleanup.finished"),
-            Self::DeploySubmitted { .. }
+            Self::BuildSubmitted { .. }
+            | Self::BuildPlacementStarted { .. }
+            | Self::BuildPlatformPlaced { .. }
+            | Self::BuildCommitVerified { .. }
+            | Self::BuildPlatformToolchainVerified { .. }
+            | Self::BuildRunning { .. }
+            | Self::BuildPlatformLog { .. }
+            | Self::BuildPlatformLogTruncated { .. }
+            | Self::BuildPlatformLogGap { .. }
+            | Self::BuildPlatformCompleted { .. }
+            | Self::BuildPlatformFailed { .. }
+            | Self::BuildCompleted { .. }
+            | Self::BuildFailed { .. }
+            | Self::BuildCancelled { .. }
+            | Self::BuildTimedOut { .. }
+            | Self::DeploySubmitted { .. }
             | Self::DeployPlanningStarted { .. }
             | Self::DeployImageResolved { .. }
             | Self::DeployImageAvailabilityVerified { .. }
@@ -571,6 +712,11 @@ impl OperationEvent {
             | Self::NamespaceRemoveContainerRemoved { .. }
             | Self::NamespaceRemoveCompleted { .. }
             | Self::NamespaceRemoveFailed { .. }
+            | Self::VolumeCreateSubmitted { .. }
+            | Self::VolumeCreatePlanningStarted { .. }
+            | Self::VolumeCreateRunning { .. }
+            | Self::VolumeCreateCompleted { .. }
+            | Self::VolumeCreateFailed { .. }
             | Self::VolumeRemoveSubmitted { .. }
             | Self::VolumeRemoveRunning { .. }
             | Self::VolumeRemoveCompleted { .. }
@@ -649,7 +795,22 @@ impl OperationEvent {
                 failed: failed.clone(),
                 images: images.clone(),
             }),
-            Self::DeploySubmitted { .. }
+            Self::BuildSubmitted { .. }
+            | Self::BuildPlacementStarted { .. }
+            | Self::BuildPlatformPlaced { .. }
+            | Self::BuildCommitVerified { .. }
+            | Self::BuildPlatformToolchainVerified { .. }
+            | Self::BuildRunning { .. }
+            | Self::BuildPlatformLog { .. }
+            | Self::BuildPlatformLogTruncated { .. }
+            | Self::BuildPlatformLogGap { .. }
+            | Self::BuildPlatformCompleted { .. }
+            | Self::BuildPlatformFailed { .. }
+            | Self::BuildCompleted { .. }
+            | Self::BuildFailed { .. }
+            | Self::BuildCancelled { .. }
+            | Self::BuildTimedOut { .. }
+            | Self::DeploySubmitted { .. }
             | Self::DeployPlanningStarted { .. }
             | Self::DeployRunning { .. }
             | Self::DeployCompleted { .. }
@@ -706,6 +867,11 @@ impl OperationEvent {
             | Self::NamespaceRemoveContainerRemoved { .. }
             | Self::NamespaceRemoveCompleted { .. }
             | Self::NamespaceRemoveFailed { .. }
+            | Self::VolumeCreateSubmitted { .. }
+            | Self::VolumeCreatePlanningStarted { .. }
+            | Self::VolumeCreateRunning { .. }
+            | Self::VolumeCreateCompleted { .. }
+            | Self::VolumeCreateFailed { .. }
             | Self::VolumeRemoveSubmitted { .. }
             | Self::VolumeRemoveRunning { .. }
             | Self::VolumeRemoveCompleted { .. }
@@ -721,6 +887,7 @@ impl OperationEvent {
 /// evidence instead of silently mutating the wrong operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperationSubjectRef {
+    Build,
     Cert(CertId),
     MachineAdd(MachineId),
     MachineUpdate(MachineId),
@@ -733,6 +900,10 @@ pub enum OperationSubjectRef {
 }
 
 pub(super) enum ClassifiedOperationEvent {
+    Build {
+        operation_id: OperationId,
+        event: BuildEvent,
+    },
     Deploy {
         operation_id: OperationId,
         event: DeployEvent,
@@ -785,6 +956,10 @@ pub(super) enum ClassifiedOperationEvent {
         operation_id: OperationId,
         event: NamespaceRemoveEvent,
     },
+    VolumeCreate {
+        operation_id: OperationId,
+        event: VolumeCreateEvent,
+    },
     VolumeRemove {
         operation_id: OperationId,
         event: VolumeRemoveEvent,
@@ -798,7 +973,8 @@ pub(super) enum ClassifiedOperationEvent {
 impl ClassifiedOperationEvent {
     pub(super) fn operation_id(&self) -> &OperationId {
         match self {
-            Self::Deploy { operation_id, .. }
+            Self::Build { operation_id, .. }
+            | Self::Deploy { operation_id, .. }
             | Self::Cert { operation_id, .. }
             | Self::MachineAdd { operation_id, .. }
             | Self::MachineUpdate { operation_id, .. }
@@ -811,7 +987,8 @@ impl ClassifiedOperationEvent {
             | Self::ManagedDnsReconcile { operation_id, .. }
             | Self::IngressConfigure { operation_id, .. }
             | Self::NamespaceRemove { operation_id, .. } => operation_id,
-            Self::VolumeRemove { operation_id, .. }
+            Self::VolumeCreate { operation_id, .. }
+            | Self::VolumeRemove { operation_id, .. }
             | Self::OperationInterrupted { operation_id, .. } => operation_id,
         }
     }
@@ -820,6 +997,161 @@ impl ClassifiedOperationEvent {
 impl From<OperationEvent> for ClassifiedOperationEvent {
     fn from(event: OperationEvent) -> Self {
         match event {
+            OperationEvent::BuildSubmitted {
+                operation_id,
+                source,
+                adapter,
+                platforms,
+            } => Self::Build {
+                operation_id,
+                event: BuildEvent::Submitted {
+                    source,
+                    adapter,
+                    platforms,
+                },
+            },
+            OperationEvent::BuildPlacementStarted { operation_id } => Self::Build {
+                operation_id,
+                event: BuildEvent::Transition(BuildTransition::Placing),
+            },
+            OperationEvent::BuildPlatformPlaced {
+                operation_id,
+                platform,
+                machine_id,
+            } => Self::Build {
+                operation_id,
+                event: BuildEvent::Evidence(BuildEvidence::PlatformPlaced {
+                    platform,
+                    machine_id,
+                }),
+            },
+            OperationEvent::BuildCommitVerified {
+                operation_id,
+                platform,
+                machine_id,
+                commit,
+            } => Self::Build {
+                operation_id,
+                event: BuildEvent::Evidence(BuildEvidence::VerifiedCommit {
+                    platform,
+                    machine_id,
+                    commit,
+                }),
+            },
+            OperationEvent::BuildPlatformToolchainVerified {
+                operation_id,
+                platform,
+                machine_id,
+                toolchain,
+            } => Self::Build {
+                operation_id,
+                event: BuildEvent::Evidence(BuildEvidence::ToolchainVerified {
+                    platform,
+                    machine_id,
+                    toolchain,
+                }),
+            },
+            OperationEvent::BuildRunning { operation_id } => Self::Build {
+                operation_id,
+                event: BuildEvent::Transition(BuildTransition::Building),
+            },
+            OperationEvent::BuildPlatformLog {
+                operation_id,
+                platform,
+                machine_id,
+                chunk,
+            } => Self::Build {
+                operation_id,
+                event: BuildEvent::Evidence(BuildEvidence::PlatformLog {
+                    platform,
+                    machine_id,
+                    chunk,
+                }),
+            },
+            OperationEvent::BuildPlatformLogTruncated {
+                operation_id,
+                platform,
+                machine_id,
+                omitted_bytes,
+            } => Self::Build {
+                operation_id,
+                event: BuildEvent::Evidence(BuildEvidence::PlatformLogTruncated {
+                    platform,
+                    machine_id,
+                    omitted_bytes,
+                }),
+            },
+            OperationEvent::BuildPlatformLogGap {
+                operation_id,
+                platform,
+                machine_id,
+                expected_sequence,
+                final_sequence,
+            } => Self::Build {
+                operation_id,
+                event: BuildEvent::Evidence(BuildEvidence::PlatformLogGap {
+                    platform,
+                    machine_id,
+                    expected_sequence,
+                    final_sequence,
+                }),
+            },
+            OperationEvent::BuildPlatformCompleted {
+                operation_id,
+                platform,
+                machine_id,
+                image,
+            } => Self::Build {
+                operation_id,
+                event: BuildEvent::Evidence(BuildEvidence::PlatformCompleted {
+                    platform,
+                    machine_id,
+                    image,
+                }),
+            },
+            OperationEvent::BuildPlatformFailed {
+                operation_id,
+                platform,
+                machine_id,
+                failure,
+            } => Self::Build {
+                operation_id,
+                event: BuildEvent::Evidence(BuildEvidence::PlatformFailed {
+                    platform,
+                    machine_id,
+                    failure,
+                }),
+            },
+            OperationEvent::BuildCompleted {
+                operation_id,
+                receipt,
+            } => Self::Build {
+                operation_id,
+                event: BuildEvent::Transition(BuildTransition::Completed { receipt }),
+            },
+            OperationEvent::BuildFailed {
+                operation_id,
+                failure,
+            } => Self::Build {
+                operation_id,
+                event: BuildEvent::Transition(BuildTransition::Failed { failure }),
+            },
+            OperationEvent::BuildCancelled {
+                operation_id,
+                reason,
+                cleanup,
+            } => Self::Build {
+                operation_id,
+                event: BuildEvent::Transition(BuildTransition::Cancelled { reason, cleanup }),
+            },
+            OperationEvent::BuildTimedOut {
+                operation_id,
+                failure,
+                cleanup,
+            } => Self::Build {
+                operation_id,
+                event: BuildEvent::Transition(BuildTransition::TimedOut { failure, cleanup }),
+            },
             OperationEvent::DeploySubmitted { operation_id, .. } => Self::Deploy {
                 operation_id,
                 event: DeployEvent::Submitted,
@@ -1404,6 +1736,32 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                     volume_name,
                 },
             },
+            OperationEvent::VolumeCreateSubmitted { request } => Self::VolumeCreate {
+                operation_id: request.operation_id.clone(),
+                event: VolumeCreateEvent::Submitted { request },
+            },
+            OperationEvent::VolumeCreatePlanningStarted { operation_id } => Self::VolumeCreate {
+                operation_id,
+                event: VolumeCreateEvent::Transition(VolumeCreateTransition::Planning),
+            },
+            OperationEvent::VolumeCreateRunning {
+                operation_id,
+                stage,
+            } => Self::VolumeCreate {
+                operation_id,
+                event: VolumeCreateEvent::Transition(VolumeCreateTransition::Running { stage }),
+            },
+            OperationEvent::VolumeCreateCompleted { operation_id } => Self::VolumeCreate {
+                operation_id,
+                event: VolumeCreateEvent::Transition(VolumeCreateTransition::Completed),
+            },
+            OperationEvent::VolumeCreateFailed {
+                operation_id,
+                failure,
+            } => Self::VolumeCreate {
+                operation_id,
+                event: VolumeCreateEvent::Transition(VolumeCreateTransition::Failed { failure }),
+            },
             OperationEvent::VolumeRemoveRunning {
                 operation_id,
                 stage,
@@ -1434,6 +1792,13 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 kind,
                 reason,
             } => match kind {
+                OperationKind::Build => Self::Build {
+                    operation_id,
+                    event: BuildEvent::Transition(BuildTransition::Cancelled {
+                        reason,
+                        cleanup: BuildCleanupEvidence::NotRequired,
+                    }),
+                },
                 OperationKind::Deploy => Self::Deploy {
                     operation_id,
                     event: DeployEvent::Transition(DeployTransition::Cancelled { reason }),
@@ -1495,6 +1860,10 @@ impl From<OperationEvent> for ClassifiedOperationEvent {
                 OperationKind::VolumeRemove => Self::VolumeRemove {
                     operation_id,
                     event: VolumeRemoveEvent::Cancelled(reason),
+                },
+                OperationKind::VolumeCreate => Self::VolumeCreate {
+                    operation_id,
+                    event: VolumeCreateEvent::Cancelled,
                 },
             },
         }

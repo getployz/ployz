@@ -1,41 +1,43 @@
-//! Docker local-driver bindings for prepared Provisioned Volume datasets.
+//! Docker local-driver shapes for durable named volumes.
 
 use std::collections::HashMap;
 
 use bollard::Docker;
-use bollard::models::VolumeCreateRequest;
-use ployz_core::deploy::{ServiceVolumeMount, VolumeName};
-use ployz_core::ids::NamespaceId;
+use bollard::errors::Error as BollardError;
+use bollard::models::{Volume, VolumeCreateRequest};
+use ployz_core::intent::{VolumeKind, VolumePinState};
+use ployz_core::machine::VolumeEnsureFailure;
 use ployz_core::storage::PROVISIONED_VOLUME_MOUNTPOINT;
 
-use crate::roles::machine::runner::MachineContainerRunnerError;
+use super::network::is_docker_object_missing;
 use crate::roles::machine::volume::docker_volume_name;
 
-pub(super) async fn ensure_provisioned_volumes(
+pub(super) async fn ensure_docker_volume(
     docker: &Docker,
-    namespace_id: &NamespaceId,
-    mounts: &[ServiceVolumeMount],
-    provisioned_volumes: &[VolumeName],
-) -> Result<(), MachineContainerRunnerError> {
-    for mount in mounts
-        .iter()
-        .filter(|mount| provisioned_volumes.contains(&mount.volume_name))
-    {
-        docker
-            .create_volume(local_bind_volume_request(namespace_id, &mount.volume_name))
-            .await
-            .map_err(|error| MachineContainerRunnerError::Create {
-                message: error.to_string(),
-            })?;
+    volume: &VolumePinState,
+) -> Result<(), VolumeEnsureFailure> {
+    let request = match volume.kind() {
+        VolumeKind::Plain => plain_volume_request(volume),
+        VolumeKind::Provisioned { .. } => local_bind_volume_request(volume),
+    };
+    let storage_name = docker_volume_name(volume.namespace_id(), volume.volume_name());
+    let expected_driver = "local";
+    let expected_options = request.driver_opts.as_ref().cloned().unwrap_or_default();
+    match docker.inspect_volume(&storage_name).await {
+        Ok(existing) => validate_volume_shape(volume, existing, expected_driver, &expected_options),
+        Err(error) if is_docker_object_missing(&error) => {
+            let created = docker
+                .create_volume(request)
+                .await
+                .map_err(|error| docker_ensure_failed(volume, error))?;
+            validate_volume_shape(volume, created, expected_driver, &expected_options)
+        }
+        Err(error) => Err(docker_ensure_failed(volume, error)),
     }
-    Ok(())
 }
 
-pub(super) fn local_bind_volume_request(
-    namespace_id: &NamespaceId,
-    volume_name: &VolumeName,
-) -> VolumeCreateRequest {
-    let storage_name = docker_volume_name(namespace_id, volume_name);
+pub(super) fn local_bind_volume_request(volume: &VolumePinState) -> VolumeCreateRequest {
+    let storage_name = docker_volume_name(volume.namespace_id(), volume.volume_name());
     VolumeCreateRequest {
         name: Some(storage_name.clone()),
         driver: Some("local".to_owned()),
@@ -51,35 +53,147 @@ pub(super) fn local_bind_volume_request(
     }
 }
 
+pub(super) fn plain_volume_request(volume: &VolumePinState) -> VolumeCreateRequest {
+    VolumeCreateRequest {
+        name: Some(docker_volume_name(
+            volume.namespace_id(),
+            volume.volume_name(),
+        )),
+        driver: Some("local".to_owned()),
+        ..Default::default()
+    }
+}
+
+pub(super) fn validate_volume_shape(
+    volume: &VolumePinState,
+    observed: Volume,
+    expected_driver: &str,
+    expected_options: &HashMap<String, String>,
+) -> Result<(), VolumeEnsureFailure> {
+    if observed.driver == expected_driver && observed.options == *expected_options {
+        return Ok(());
+    }
+    let retained_dataset = match volume.kind() {
+        VolumeKind::Plain => None,
+        VolumeKind::Provisioned { dataset, .. } => Some(dataset.clone()),
+    };
+    Err(VolumeEnsureFailure::DockerShapeMismatch {
+        volume_name: volume.volume_name().clone(),
+        retained_dataset,
+        message: format!(
+            "expected driver {expected_driver:?} with options {expected_options:?}, observed driver {:?} with options {:?}",
+            observed.driver, observed.options
+        ),
+    })
+}
+
+fn docker_ensure_failed(volume: &VolumePinState, error: BollardError) -> VolumeEnsureFailure {
+    let retained_dataset = match volume.kind() {
+        VolumeKind::Plain => None,
+        VolumeKind::Provisioned { dataset, .. } => Some(dataset.clone()),
+    };
+    VolumeEnsureFailure::DockerEnsureFailed {
+        volume_name: volume.volume_name().clone(),
+        retained_dataset,
+        message: error.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::deploy::ContainerMountPath;
+    use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes, VolumeName, ZfsPoolName};
+    use ployz_core::ids::{MachineId, NamespaceId};
 
-    #[tokio::test]
-    async fn plain_volume_does_not_create_a_local_driver_binding() {
-        let directory = tempfile::tempdir().expect("socket directory");
-        let socket = directory.path().join("docker.sock");
-        let _listener = tokio::net::UnixListener::bind(&socket).expect("stub Docker socket");
-        let docker = Docker::connect_with_socket(
-            socket.to_str().expect("UTF-8 socket path"),
-            1,
-            bollard::API_DEFAULT_VERSION,
+    fn provisioned_pin() -> VolumePinState {
+        let namespace = NamespaceId::try_new("default").expect("namespace");
+        let volume = VolumeName::try_new("data").expect("volume");
+        VolumePinState::try_new(
+            namespace.clone(),
+            volume.clone(),
+            MachineId::try_new("machine-1").expect("machine"),
+            VolumeKind::Provisioned {
+                dataset: DatasetName::for_volume(
+                    &ZfsPoolName::try_new("tank").expect("pool"),
+                    &namespace,
+                    &volume,
+                )
+                .expect("dataset"),
+                max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("quota"),
+            },
         )
-        .expect("lazy Docker client");
-        let volume_name = VolumeName::try_new("data").expect("volume");
-        let mounts = [ServiceVolumeMount {
-            volume_name,
-            target: ContainerMountPath::try_new("/data").expect("mount path"),
-        }];
+        .expect("pin")
+    }
 
-        ensure_provisioned_volumes(
-            &docker,
-            &NamespaceId::try_new("default").expect("namespace"),
-            &mounts,
-            &[],
+    #[test]
+    fn existing_docker_volume_must_match_the_provisioned_bind_shape() {
+        let pin = provisioned_pin();
+        let request = local_bind_volume_request(&pin);
+        let expected_options = request.driver_opts.expect("options");
+        let wrong = Volume {
+            name: request.name.expect("name"),
+            driver: "local".to_owned(),
+            options: HashMap::new(),
+            ..Default::default()
+        };
+        let VolumeKind::Provisioned { dataset, .. } = pin.kind() else {
+            panic!("provisioned pin")
+        };
+
+        assert!(matches!(
+            validate_volume_shape(&pin, wrong, "local", &expected_options),
+            Err(VolumeEnsureFailure::DockerShapeMismatch {
+                retained_dataset: Some(retained),
+                ..
+            }) if retained == *dataset
+        ));
+    }
+
+    #[test]
+    fn plain_shape_mismatch_has_no_retained_dataset() {
+        let pin = VolumePinState::try_new(
+            NamespaceId::try_new("default").expect("namespace"),
+            VolumeName::try_new("cache").expect("volume"),
+            MachineId::try_new("machine-1").expect("machine"),
+            VolumeKind::Plain,
         )
-        .await
-        .expect("plain volumes use Docker's default named-volume behavior");
+        .expect("pin");
+        let request = plain_volume_request(&pin);
+        let wrong = Volume {
+            name: request.name.expect("name"),
+            driver: "wrong".to_owned(),
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            validate_volume_shape(&pin, wrong, "local", &HashMap::new()),
+            Err(VolumeEnsureFailure::DockerShapeMismatch {
+                retained_dataset: None,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn docker_failure_names_the_retained_dataset_for_retry() {
+        let pin = provisioned_pin();
+        let failure = docker_ensure_failed(
+            &pin,
+            BollardError::DockerResponseServerError {
+                status_code: 500,
+                message: "daemon unavailable".to_owned(),
+            },
+        );
+        let VolumeKind::Provisioned { dataset, .. } = pin.kind() else {
+            panic!("provisioned pin")
+        };
+        assert_eq!(
+            failure,
+            VolumeEnsureFailure::DockerEnsureFailed {
+                volume_name: pin.volume_name().clone(),
+                retained_dataset: Some(dataset.clone()),
+                message: "Docker responded with status code 500: daemon unavailable".to_owned(),
+            }
+        );
     }
 }

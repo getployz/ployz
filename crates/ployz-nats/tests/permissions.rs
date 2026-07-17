@@ -1,3 +1,4 @@
+use ployz_core::build::BUILD_RESPONSE_PERMISSION_EXPIRY;
 use ployz_core::security::NatsPrincipal;
 use ployz_nats::permissions::{
     NatsPermissionProfile, ResponsePermission, inbox_prefix, inbox_subscribe_scope,
@@ -10,8 +11,9 @@ use ployz_nats::subjects::{
     OPERATOR_MACHINE_IMAGE_COMMAND_SCOPE, OPERATOR_MACHINE_IMAGE_QUERY_SCOPE,
     OPERATOR_RPC_COMMAND_SCOPE, OPERATOR_RPC_QUERY_SCOPE, OPERATOR_RUNTIME_SNAPSHOT,
     PENDING_MACHINE_JOINS_CHANGED, RUNTIME_SNAPSHOT_SEED, RUNTIME_SNAPSHOT_STREAM, gateway_status,
-    gateway_status_scope, machine_container_facts, machine_facts, machine_facts_scope,
-    machine_service, machine_service_command_scope, machine_service_query_scope,
+    gateway_status_scope, machine_build_log_publish_scope, machine_build_log_subscribe_scope,
+    machine_container_facts, machine_facts, machine_facts_scope, machine_service,
+    machine_service_command_scope, machine_service_query_scope,
 };
 use ployz_test_support::ids::machine_id;
 
@@ -29,6 +31,7 @@ fn machine_credential_renders_own_scopes_and_intent_request() {
         machine_facts(&machine_id),
         machine_container_facts(&machine_id),
         gateway_status(&machine_id),
+        machine_build_log_publish_scope(&machine_id),
     ];
     assert_eq!(profile.publish.allowed_subjects(), expected_publish);
     assert_eq!(profile.publish.denied_subjects(), &[] as &[String]);
@@ -47,7 +50,12 @@ fn machine_credential_renders_own_scopes_and_intent_request() {
         ]
     );
     assert_eq!(profile.subscribe.denied_subjects(), &[] as &[String]);
-    assert_eq!(profile.allow_responses, ResponsePermission::Allowed);
+    assert_eq!(
+        profile.allow_responses,
+        ResponsePermission::RequestScoped {
+            expires: BUILD_RESPONSE_PERMISSION_EXPIRY
+        }
+    );
 }
 
 #[test]
@@ -82,6 +90,7 @@ fn controller_credential_renders_owner_machine_service_and_progress_scopes() {
             INTENT_CHANGED.to_owned(),
             INGRESS_ENDPOINT_CHANGED.to_owned(),
             machine_facts_scope(),
+            machine_build_log_subscribe_scope(),
             gateway_status_scope(),
             "$SRV.>".to_owned(),
             "_INBOX_ctl.>".to_owned()
@@ -287,7 +296,12 @@ fn runtime_snapshot_seed_is_an_operator_query_served_by_controller() {
             .allowed_subjects()
             .contains(&OPERATOR_RPC_QUERY_SCOPE.to_owned())
     );
-    assert_eq!(controller.allow_responses, ResponsePermission::Allowed);
+    assert_eq!(
+        controller.allow_responses,
+        ResponsePermission::RequestScoped {
+            expires: std::time::Duration::from_secs(2 * 60)
+        }
+    );
 }
 
 #[test]

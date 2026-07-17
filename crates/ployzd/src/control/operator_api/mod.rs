@@ -25,15 +25,16 @@ pub use queries::{
 #[cfg(test)]
 pub use submit::owned_operation;
 pub use submit::{
-    core_replace, credential_add, credential_remove, deploy_reserve, deploy_submit,
-    ingress_configure, machine_add, machine_drain, machine_resume, machine_update,
-    namespace_remove, network_repair, service_restart, volume_remove,
+    build_cancel, build_submit, core_replace, credential_add, credential_remove, deploy_reserve,
+    deploy_submit, ingress_configure, machine_add, machine_drain, machine_resume, machine_update,
+    namespace_remove, network_repair, service_restart, submit_volume_create, volume_remove,
 };
 
 use crate::control::authorization::MachineCredentialMint;
 use crate::control::intent::ingress_intent::IngressIntentStore;
 use crate::control::intent::machine_roster::MachineRosterStore;
 use crate::control::intent::service::{NatsIntentReader, publish_pending_machine_joins};
+use crate::control::operations::build::BuildOperationDriver;
 use crate::control::operations::credential_grant::CredentialGrantOperation;
 use crate::control::operations::dataplane_projection_admission::DataplaneProjectionAdmissionOperation;
 use crate::control::operations::deploy::driver::DeployOperationDriver;
@@ -44,8 +45,11 @@ use crate::control::operations::machine_update::MachineUpdateOperation;
 use crate::control::operations::namespace_remove::NamespaceRemoveOperation;
 use crate::control::operations::network_repair::NetworkRepairOperation;
 use crate::control::operations::service_restart::ServiceRestartOperation;
+use crate::control::operations::volume_create::VolumeCreateOperation;
 use crate::control::operations::volume_remove::VolumeRemoveOperation;
-use crate::control::role_client::machine::{NatsMachineFactsReader, NatsMachineLogsTailer};
+use crate::control::role_client::machine::{
+    NatsMachineFactsReader, NatsMachineLogsTailer, NatsMachineVolumeTestimonyReader,
+};
 use crate::control::sequencer::OperationControllers;
 use crate::control::store::CoreStore;
 use crate::role_testimony::RoleTestimonyCache;
@@ -56,12 +60,14 @@ use std::sync::Arc;
 /// The operation drivers, bundled so a new kind adds a field here instead of
 /// another positional parameter threaded through `execute_operations`.
 pub struct OperationWorkers {
+    pub build: BuildOperationDriver,
     pub credential_grant: CredentialGrantOperation,
     pub ingress_configure: IngressConfigureOperation,
     pub deploy: DeployOperationDriver,
     pub service_restart: ServiceRestartOperation,
     pub namespace_remove: NamespaceRemoveOperation,
     pub network_repair: NetworkRepairOperation,
+    pub volume_create: VolumeCreateOperation,
     pub volume_remove: VolumeRemoveOperation,
     pub machine_update: MachineUpdateOperation,
     pub machine_storage_prepare: MachineStoragePrepareOperation,
@@ -73,9 +79,11 @@ pub struct OperationWorkers {
 pub struct OperationApiHandlers {
     controllers: OperationControllers,
     deploy_driver: Arc<DeployOperationDriver>,
+    build_driver: Arc<BuildOperationDriver>,
     service_restart: Arc<ServiceRestartOperation>,
     namespace_remove: Arc<NamespaceRemoveOperation>,
     network_repair: Arc<NetworkRepairOperation>,
+    volume_create: Arc<VolumeCreateOperation>,
     volume_remove: Arc<VolumeRemoveOperation>,
     machine_update: Arc<MachineUpdateOperation>,
     machine_storage_prepare: Arc<MachineStoragePrepareOperation>,
@@ -117,12 +125,14 @@ impl OperationApiHandlers {
         control_health: queries::ControlHealthReaders,
     ) -> Self {
         let OperationWorkers {
+            build: build_driver,
             credential_grant,
             ingress_configure,
             deploy: deploy_driver,
             service_restart,
             namespace_remove,
             network_repair,
+            volume_create,
             volume_remove,
             machine_update,
             machine_storage_prepare,
@@ -134,7 +144,10 @@ impl OperationApiHandlers {
         let service_query = ServiceQueryService::new(intent_reader.clone(), facts_reader.clone());
         let network_query =
             NetworkQueryService::new(intent_reader.clone(), intent_change_client.clone());
-        let volume_query = VolumeQueryService::new(intent_reader.clone());
+        let volume_query = VolumeQueryService::new(
+            intent_reader.clone(),
+            NatsMachineVolumeTestimonyReader::new(intent_change_client.clone()),
+        );
         let runtime_snapshot_query = RuntimeSnapshotQueryService::new(
             intent_reader.clone(),
             facts.clone(),
@@ -152,9 +165,11 @@ impl OperationApiHandlers {
         Self {
             controllers,
             deploy_driver: Arc::new(deploy_driver),
+            build_driver: Arc::new(build_driver),
             service_restart: Arc::new(service_restart),
             namespace_remove: Arc::new(namespace_remove),
             network_repair: Arc::new(network_repair),
+            volume_create: Arc::new(volume_create),
             volume_remove: Arc::new(volume_remove),
             machine_update: Arc::new(machine_update),
             machine_storage_prepare: Arc::new(machine_storage_prepare),
@@ -182,6 +197,10 @@ impl OperationApiHandlers {
     #[must_use]
     pub const fn controllers(&self) -> &OperationControllers {
         &self.controllers
+    }
+
+    pub(crate) fn build_driver(&self) -> &BuildOperationDriver {
+        &self.build_driver
     }
 
     pub(crate) fn machine_query(&self) -> &MachineQueryService {
@@ -242,6 +261,10 @@ impl OperationApiHandlers {
 
     pub(crate) fn volume_remove(&self) -> &VolumeRemoveOperation {
         &self.volume_remove
+    }
+
+    pub(crate) fn volume_create(&self) -> &VolumeCreateOperation {
+        &self.volume_create
     }
 
     pub(crate) fn machine_lifecycle(&self) -> &MachineLifecycleOperation {

@@ -29,8 +29,8 @@ use ployz_sdk_types::{
     MachineJoinRedeemResponse, MachineJoinRedeemResult, MachineJoinRedeemed, MachineJoinToken,
     MachineListResponse, MachineListResult, MachineName, MachineSnapshot, OperationApiResponse,
     OpsStatusError, OpsStatusResponse, ServiceInspectRequest, ServiceInspectResponse,
-    ServiceListResponse, ServiceListResult, ServiceSnapshot, VolumeListRequest, VolumeListResponse,
-    VolumeListResult, VolumeSnapshot, VolumeStatus,
+    ServiceListResponse, ServiceListResult, ServiceSnapshot, VolumeKind, VolumeListRequest,
+    VolumeListResponse, VolumeListResult, VolumeSnapshot, VolumeStatus, VolumeTestimony,
     operation_api::{
         DeploySubmitApi, MachineAddApi, MachineInspectApi, MachineJoinRedeemApi, MachineListApi,
         OperationApiContract, OpsStatusApi, OpsWatchApi, ServiceInspectApi, ServiceListApi,
@@ -315,6 +315,9 @@ async fn operation_api_client_routes_volume_list_success() {
         namespace_id: namespace_id("prod"),
         volume_name: VolumeName::try_new("data").expect("valid volume name"),
         machine_id: machine_id("machine_1"),
+        kind: VolumeKind::Plain,
+        referencing_services: Vec::new(),
+        testimony: VolumeTestimony::NoAnswer,
         status: VolumeStatus::Orphaned,
     };
 
@@ -702,6 +705,20 @@ fn machine_join_bundle() -> MachineJoinBundle {
                 )
                 .expect("valid install path"),
             },
+            railpack: InstallArtifactSpec {
+                version: ployz_core::install::InstallArtifactVersion::try_new("v0.31.0")
+                    .expect("valid version"),
+                source: ployz_core::install::InstallArtifactSource::try_new("/tmp/railpack")
+                    .expect("valid source"),
+                sha256: ployz_core::install::InstallSha256Digest::try_new(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                )
+                .expect("valid digest"),
+                install_path: ployz_core::install::AbsoluteInstallPath::try_new(
+                    "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
+                )
+                .expect("valid install path"),
+            },
         },
     }
 }
@@ -740,8 +757,10 @@ fn machine_snapshot(machine_id: &str) -> MachineSnapshot {
             })),
             observed_container_count: 3,
             disk_space: ployz_test_support::fixtures::test_disk_space(),
+            storage: None,
             last_observed_at_unix_seconds: 60,
         },
+        storage_alarms: Vec::new(),
     }
 }
 

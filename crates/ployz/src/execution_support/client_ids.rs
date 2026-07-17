@@ -101,6 +101,16 @@ pub(crate) fn generate_client_volume_remove_id(
     )
 }
 
+pub(crate) fn generate_client_volume_create_id(
+    namespace_id: &NamespaceId,
+    volume_name: &VolumeName,
+) -> Result<ClientGeneratedOperationId, ClientGeneratedIdsError> {
+    generate_client_operation_id(
+        "volume_create",
+        &format!("{}_{}", namespace_id.as_str(), volume_name.as_str()),
+    )
+}
+
 pub(crate) fn generate_client_core_replace_id(
     machine_id: &MachineId,
 ) -> Result<ClientGeneratedOperationId, ClientGeneratedIdsError> {
@@ -119,6 +129,16 @@ pub(crate) fn generate_client_network_repair_id(
 pub(crate) fn generate_client_ingress_configure_id()
 -> Result<ClientGeneratedOperationId, ClientGeneratedIdsError> {
     generate_client_operation_id("ingress", "configure")
+}
+
+pub(crate) fn generate_client_build_id()
+-> Result<ClientGeneratedOperationId, ClientGeneratedIdsError> {
+    let suffix = generated_id_suffix();
+    Ok(ClientGeneratedOperationId {
+        operation_id: OperationId::try_new(format!("op_build_{suffix}"))
+            .map_err(|source| ClientGeneratedIdsError::OperationId { source })?,
+        suffix,
+    })
 }
 
 fn generate_client_operation_id(

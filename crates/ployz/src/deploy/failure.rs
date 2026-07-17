@@ -1,3 +1,4 @@
+use crate::machine::command::render_storage_unavailable_reason;
 use ployz_core::deploy::DeployRequest;
 use ployz_core::ids::{ContainerId, MachineId, NamespaceRevisionId, ServiceId};
 use ployz_core::machine::MachineUsabilityReason;
@@ -45,6 +46,7 @@ impl<'a> DeployFailureView<'a> {
                 }
             }
             DeployOperationFailure::RuntimeUnavailable { machine_id, .. }
+            | DeployOperationFailure::VolumeEnsureFailed { machine_id, .. }
             | DeployOperationFailure::ContainerStartFailed { machine_id, .. }
             | DeployOperationFailure::ImageResolutionFailed { machine_id, .. }
             | DeployOperationFailure::PlatformImageUnavailable { machine_id, .. }
@@ -54,7 +56,8 @@ impl<'a> DeployFailureView<'a> {
             }
             DeployOperationFailure::ImageMissingOnSeed { seed, .. }
             | DeployOperationFailure::ImageDigestMismatch { seed, .. }
-            | DeployOperationFailure::SeedUnavailable { seed, .. } => {
+            | DeployOperationFailure::SeedUnavailable { seed, .. }
+            | DeployOperationFailure::PlatformImageExpired { seed, .. } => {
                 push_unique(&mut machines, seed);
             }
             DeployOperationFailure::ArtifactUnavailable {
@@ -210,10 +213,12 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::ImageDigestMismatch { .. }
             | DeployOperationFailure::SeedUnavailable { .. }
             | DeployOperationFailure::PlatformImageUnavailable { .. }
+            | DeployOperationFailure::PlatformImageExpired { .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { .. } => {
                 FailureSafety::NothingChanged
             }
             DeployOperationFailure::RuntimeUnavailable { .. }
+            | DeployOperationFailure::VolumeEnsureFailed { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. }
@@ -234,12 +239,14 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::ImageDigestMismatch { service_id, .. }
             | DeployOperationFailure::SeedUnavailable { service_id, .. }
             | DeployOperationFailure::PlatformImageUnavailable { service_id, .. }
+            | DeployOperationFailure::PlatformImageExpired { service_id, .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { service_id, .. } => {
                 Some(service_id)
             }
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::PlanningFailed { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
+            | DeployOperationFailure::VolumeEnsureFailed { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. }
@@ -261,8 +268,10 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::ImageDigestMismatch { .. }
             | DeployOperationFailure::SeedUnavailable { .. }
             | DeployOperationFailure::PlatformImageUnavailable { .. }
+            | DeployOperationFailure::PlatformImageExpired { .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
+            | DeployOperationFailure::VolumeEnsureFailed { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. }
@@ -302,8 +311,10 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::ImageDigestMismatch { .. }
             | DeployOperationFailure::SeedUnavailable { .. }
             | DeployOperationFailure::PlatformImageUnavailable { .. }
+            | DeployOperationFailure::PlatformImageExpired { .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
+            | DeployOperationFailure::VolumeEnsureFailed { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. }
@@ -321,6 +332,7 @@ impl<'a> DeployFailureView<'a> {
             | DeployOperationFailure::ImageDigestMismatch { service_id, .. }
             | DeployOperationFailure::SeedUnavailable { service_id, .. }
             | DeployOperationFailure::PlatformImageUnavailable { service_id, .. }
+            | DeployOperationFailure::PlatformImageExpired { service_id, .. }
             | DeployOperationFailure::UnsupportedTargetPlatform { service_id, .. } => {
                 Some(service_id)
             }
@@ -332,6 +344,7 @@ impl<'a> DeployFailureView<'a> {
             },
             DeployOperationFailure::NoUsableMachines { .. }
             | DeployOperationFailure::RuntimeUnavailable { .. }
+            | DeployOperationFailure::VolumeEnsureFailed { .. }
             | DeployOperationFailure::ContainerStartFailed { .. }
             | DeployOperationFailure::PreStartHookFailed { .. }
             | DeployOperationFailure::HealthCheckFailed { .. }
@@ -370,12 +383,44 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
             let details = reasons
                 .iter()
                 .map(|reason| match &reason.reason {
+                    MachineUsabilityReason::PlatformMismatch { required, reported } => format!(
+                        "{} reports platform {}/{}, expected {}/{}",
+                        reason.machine_id.as_str(),
+                        reported.os(),
+                        reported.architecture(),
+                        required.os(),
+                        required.architecture(),
+                    ),
                     MachineUsabilityReason::Draining => {
                         format!("{} is draining", reason.machine_id.as_str())
                     }
                     MachineUsabilityReason::FactsUnavailable => {
                         format!("{} did not answer with facts", reason.machine_id.as_str())
                     }
+                    MachineUsabilityReason::BuildUnavailable => {
+                        format!("{} cannot accept builds", reason.machine_id.as_str())
+                    }
+                    MachineUsabilityReason::StorageTestimonyNotReported => format!(
+                        "{} did not report storage capability",
+                        reason.machine_id.as_str()
+                    ),
+                    MachineUsabilityReason::StorageUnprepared => format!(
+                        "{} has no prepared Provisioned Volume storage",
+                        reason.machine_id.as_str()
+                    ),
+                    MachineUsabilityReason::StorageUnavailable {
+                        reason: unavailable,
+                    } => format!(
+                        "{} storage is unavailable: {}",
+                        reason.machine_id.as_str(),
+                        render_storage_unavailable_reason(unavailable),
+                    ),
+                    MachineUsabilityReason::StoragePoolMismatch { expected, reported } => format!(
+                        "{} reports storage pool {}, expected {}",
+                        reason.machine_id.as_str(),
+                        reported.as_str(),
+                        expected.as_str()
+                    ),
                     MachineUsabilityReason::DataplaneUnavailable {
                         reason: unavailable,
                     } => {
@@ -463,6 +508,19 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
             target_platform.architecture(),
             machine_id.as_str()
         ),
+        DeployOperationFailure::PlatformImageExpired {
+            service_id,
+            seed,
+            target_platform,
+            expired_at,
+        } => format!(
+            "image {} for {}/{} expired on seed {} at Unix second {}",
+            requested_image(target, service_id).unwrap_or("requested image"),
+            target_platform.os(),
+            target_platform.architecture(),
+            seed.as_str(),
+            expired_at.unix_seconds()
+        ),
         DeployOperationFailure::UnsupportedTargetPlatform {
             service_id,
             machine_id,
@@ -480,6 +538,16 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
         DeployOperationFailure::RuntimeUnavailable { message, .. } => {
             format!("container runtime unavailable: {}", message.as_str())
         }
+        DeployOperationFailure::VolumeEnsureFailed {
+            machine_id,
+            volume_name,
+            failure,
+        } => format!(
+            "volume {} could not be ensured on {}: {}",
+            volume_name.as_str(),
+            machine_id.as_str(),
+            crate::volume::presentation::ensure_failure(failure)
+        ),
         DeployOperationFailure::ContainerStartFailed { message, .. } => {
             format!("container failed to start: {}", message.as_str())
         }

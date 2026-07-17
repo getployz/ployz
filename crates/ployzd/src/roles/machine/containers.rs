@@ -1,8 +1,11 @@
 use super::current_unix_ms;
+use super::deploy_container_run::{
+    HookContainerInfrastructureError, HookContainerRunError, ServiceContainerInfrastructureError,
+    ServiceContainerRunError, run_hook_container, run_service_container,
+};
 use super::facts::observation_state;
 use super::response::{
-    container_start_error, failure_message, inspect_hint, log_hint, machine_domain_error,
-    machine_success, runner_error,
+    container_list_error, failure_message, inspect_hint, machine_domain_error, machine_success,
 };
 use crate::roles::machine::protocol::{
     MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
@@ -12,24 +15,28 @@ use crate::roles::machine::protocol::{
     MachineContainerResolveImageRpcOk, MachineContainerResolveImageRpcRequest,
     MachineContainerResolveImageRpcResponse, MachineContainerRestartDomainError,
     MachineContainerRestartRpcRequest, MachineContainerRestartRpcResponse, MachineContainerRpcOk,
-    MachineContainerRunDomainError, MachineContainerRunHookDomainError,
     MachineContainerRunHookRpcOk, MachineContainerRunHookRpcRequest,
     MachineContainerRunHookRpcResponse, MachineContainerRunRpcOk, MachineContainerRunRpcRequest,
     MachineContainerRunRpcResponse, MachineContainerStopDomainError,
     MachineContainerStopRpcRequest, MachineContainerStopRpcResponse, MachineRunContainerOutcome,
+    MachineVolumeEnsureRpcOk, MachineVolumeEnsureRpcRequest, MachineVolumeEnsureRpcResponse,
     MachineVolumeRemoveDomainError, MachineVolumeRemoveRpcOk, MachineVolumeRemoveRpcRequest,
     MachineVolumeRemoveRpcResponse,
 };
 use crate::roles::machine::runner::{
-    CreateManagedContainer, MachineContainerRunDecision, MachineContainerRunner,
-    MachineContainerRunnerError, decide_container_run,
+    CreateManagedContainer, MachineContainerListError, MachineContainerRemoveError,
+    MachineContainerRestartError, MachineContainerRunner, MachineContainerStopError,
+    MachineRegistryImageResolveError, MachineVolumeRemoveError,
 };
 use crate::roles::machine::volume::docker_volume_name;
 use ployz_core::ids::{ContainerId, MachineId};
+use ployz_core::intent::VolumePinState;
+use ployz_core::machine::VolumeEnsureFailure;
 use ployz_core::machine::runtime::{MachineContainerFactDelta, ManagedContainerObservation};
-use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decode_json_request};
+use ployz_nats::service_runtime::{
+    NatsServiceError, NatsServiceRequest, NatsServiceResponse, decode_json_request,
+};
 use ployz_nats::subjects::machine_container_facts;
-use std::time::Duration;
 
 #[derive(Clone)]
 pub(crate) struct MachineContainerState<R> {
@@ -49,120 +56,26 @@ where
         Ok(request) => request,
         Err(response) => return response,
     };
-    let existing = match state.runner.existing_managed_containers().await {
-        Ok(existing) => existing,
-        Err(error) => return runner_error(error),
-    };
-    match decide_container_run(&request.container, existing) {
-        MachineContainerRunDecision::Create { identity } => {
-            let service_id = identity.service_id.clone();
-            let namespace_revision_entry_id = identity.namespace_revision_entry_id.clone();
-            match state
-                .runner
-                .create_managed_container(CreateManagedContainer {
-                    pull: request.pull,
-                    runtime: request.runtime,
-                    provisioned_volumes: request.provisioned_volumes,
-                    identity,
-                })
-                .await
-            {
-                Ok(container_id) => match state.runner.start_managed_container(&container_id).await
-                {
-                    Ok(()) => {
-                        container_run_success(
-                            machine_id,
-                            &state.runner,
-                            &state.client,
-                            MachineRunContainerOutcome::Created { container_id },
-                        )
-                        .await
-                    }
-                    Err(error) => container_start_error(
-                        machine_id,
-                        container_id,
-                        error,
-                        |container_id, message, inspect_hint| {
-                            MachineContainerRunDomainError::CreatedContainerStartFailed {
-                                container_id,
-                                message,
-                                inspect_hint,
-                            }
-                        },
-                    ),
-                },
-                Err(MachineContainerRunnerError::ImagePull { message }) => {
-                    machine_domain_error(MachineContainerRunRpcResponse::DomainError {
-                        machine_id,
-                        error: MachineContainerRunDomainError::ImagePullFailed {
-                            service_id,
-                            namespace_revision_entry_id,
-                            message: failure_message(message),
-                        },
-                    })
-                }
-                Err(error) => runner_error(error),
-            }
+    match run_service_container(
+        &state.runner,
+        CreateManagedContainer {
+            pull: request.pull,
+            runtime: request.runtime,
+            provisioned_volumes: request.provisioned_volumes,
+            identity: request.container,
+        },
+    )
+    .await
+    {
+        Ok(outcome) => {
+            container_run_success(machine_id, &state.runner, &state.client, outcome).await
         }
-        MachineContainerRunDecision::ReuseRunning { container_id } => {
-            container_run_success(
-                machine_id,
-                &state.runner,
-                &state.client,
-                MachineRunContainerOutcome::ReusedRunning { container_id },
-            )
-            .await
+        Err(ServiceContainerRunError::Domain(error)) => {
+            machine_domain_error(MachineContainerRunRpcResponse::DomainError { machine_id, error })
         }
-        MachineContainerRunDecision::StartExisting { container_id } => {
-            match state.runner.start_managed_container(&container_id).await {
-                Ok(()) => {
-                    container_run_success(
-                        machine_id,
-                        &state.runner,
-                        &state.client,
-                        MachineRunContainerOutcome::StartedExisting { container_id },
-                    )
-                    .await
-                }
-                Err(error) => container_start_error(
-                    machine_id,
-                    container_id,
-                    error,
-                    |container_id, message, inspect_hint| {
-                        MachineContainerRunDomainError::ExistingContainerStartFailed {
-                            container_id,
-                            message,
-                            inspect_hint,
-                        }
-                    },
-                ),
-            }
+        Err(ServiceContainerRunError::Infrastructure(error)) => {
+            service_container_infrastructure_error(error)
         }
-        MachineContainerRunDecision::NotStartable {
-            container_id,
-            state,
-        } => machine_domain_error(MachineContainerRunRpcResponse::DomainError {
-            machine_id,
-            error: MachineContainerRunDomainError::OperationStepContainerNotStartable {
-                container_id: container_id.clone(),
-                message: failure_message(format!(
-                    "operation step container is not startable: {state:?}"
-                )),
-                inspect_hint: inspect_hint(&container_id),
-            },
-        }),
-        MachineContainerRunDecision::Ambiguous {
-            operation_id,
-            step_id,
-            container_ids,
-        } => machine_domain_error(MachineContainerRunRpcResponse::DomainError {
-            machine_id,
-            error: MachineContainerRunDomainError::OperationStepAmbiguous {
-                operation_id,
-                step_id,
-                container_ids,
-            },
-        }),
     }
 }
 
@@ -178,182 +91,34 @@ where
         Ok(request) => request,
         Err(response) => return response,
     };
-    let existing = match state.runner.existing_managed_containers().await {
-        Ok(existing) => existing,
-        Err(error) => return runner_error(error),
-    };
-    let identity = request.container;
-    let container_id = match decide_container_run(&identity, existing) {
-        MachineContainerRunDecision::Create { identity } => {
-            let container_id = match state
-                .runner
-                .create_managed_container(CreateManagedContainer {
-                    pull: request.pull,
-                    runtime: request.runtime,
-                    provisioned_volumes: request.provisioned_volumes,
-                    identity,
-                })
-                .await
-            {
-                Ok(container_id) => container_id,
-                Err(MachineContainerRunnerError::Create { message }) => {
-                    return machine_domain_error(MachineContainerRunHookRpcResponse::DomainError {
-                        machine_id,
-                        error: MachineContainerRunHookDomainError::CreateFailed {
-                            message: failure_message(format!(
-                                "hook container create failed: {message}"
-                            )),
-                        },
-                    });
-                }
-                Err(error @ MachineContainerRunnerError::ListExisting { .. })
-                | Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. })
-                | Err(error @ MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. })
-                | Err(error @ MachineContainerRunnerError::ImagePull { .. })
-                | Err(error @ MachineContainerRunnerError::Start { .. })
-                | Err(error @ MachineContainerRunnerError::Wait { .. })
-                | Err(error @ MachineContainerRunnerError::Stop { .. })
-                | Err(error @ MachineContainerRunnerError::Restart { .. })
-                | Err(error @ MachineContainerRunnerError::Remove { .. })
-                | Err(error @ MachineContainerRunnerError::RemoveVolume { .. }) => {
-                    return runner_error(error);
-                }
-            };
-            if let Err(error) = state.runner.start_managed_container(&container_id).await {
-                return hook_start_error(machine_id, container_id, error);
-            }
-            container_id
-        }
-        MachineContainerRunDecision::StartExisting { container_id } => {
-            if let Err(error) = state.runner.start_managed_container(&container_id).await {
-                return hook_start_error(machine_id, container_id, error);
-            }
-            container_id
-        }
-        MachineContainerRunDecision::ReuseRunning { container_id }
-        | MachineContainerRunDecision::NotStartable { container_id, .. } => container_id,
-        MachineContainerRunDecision::Ambiguous {
-            operation_id,
-            step_id,
-            container_ids,
-        } => {
-            return machine_domain_error(MachineContainerRunHookRpcResponse::DomainError {
-                machine_id,
-                error: MachineContainerRunHookDomainError::OperationStepAmbiguous {
-                    operation_id,
-                    step_id,
-                    container_ids,
-                },
-            });
-        }
-    };
-
-    let timeout = Duration::from_millis(request.timeout_millis.max(1));
-    let exit_code =
-        match tokio::time::timeout(timeout, state.runner.wait_managed_container(&container_id))
-            .await
-        {
-            Ok(Ok(exit_code)) => exit_code,
-            Ok(Err(MachineContainerRunnerError::Wait { message, .. })) => {
-                return machine_domain_error(MachineContainerRunHookRpcResponse::DomainError {
-                    machine_id,
-                    error: MachineContainerRunHookDomainError::WaitFailed {
-                        container_id: container_id.clone(),
-                        message: failure_message(format!("hook container wait failed: {message}")),
-                        log_hint: log_hint(&container_id),
-                    },
-                });
-            }
-            Ok(Err(error @ MachineContainerRunnerError::ListExisting { .. }))
-            | Ok(Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. }))
-            | Ok(Err(error @ MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. }))
-            | Ok(Err(error @ MachineContainerRunnerError::Create { .. }))
-            | Ok(Err(error @ MachineContainerRunnerError::ImagePull { .. }))
-            | Ok(Err(error @ MachineContainerRunnerError::Start { .. }))
-            | Ok(Err(error @ MachineContainerRunnerError::Stop { .. }))
-            | Ok(Err(error @ MachineContainerRunnerError::Restart { .. }))
-            | Ok(Err(error @ MachineContainerRunnerError::Remove { .. }))
-            | Ok(Err(error @ MachineContainerRunnerError::RemoveVolume { .. })) => {
-                return runner_error(error);
-            }
-            Err(_) => {
-                let message = match state
-                    .runner
-                    .stop_managed_container(&container_id, &identity)
-                    .await
-                {
-                    Ok(()) => format!(
-                        "hook timed out after {}ms and was stopped",
-                        timeout.as_millis()
-                    ),
-                    Err(MachineContainerRunnerError::Stop { message, .. }) => format!(
-                        "hook timed out after {}ms and could not be stopped: {message}",
-                        timeout.as_millis()
-                    ),
-                    Err(error @ MachineContainerRunnerError::ListExisting { .. })
-                    | Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. })
-                    | Err(
-                        error @ MachineContainerRunnerError::EndpointNetworkSubnetMismatch {
-                            ..
-                        },
-                    )
-                    | Err(error @ MachineContainerRunnerError::Create { .. })
-                    | Err(error @ MachineContainerRunnerError::ImagePull { .. })
-                    | Err(error @ MachineContainerRunnerError::Start { .. })
-                    | Err(error @ MachineContainerRunnerError::Wait { .. })
-                    | Err(error @ MachineContainerRunnerError::Restart { .. })
-                    | Err(error @ MachineContainerRunnerError::Remove { .. })
-                    | Err(error @ MachineContainerRunnerError::RemoveVolume { .. }) => {
-                        return runner_error(error);
-                    }
-                };
-                return machine_domain_error(MachineContainerRunHookRpcResponse::DomainError {
-                    machine_id,
-                    error: MachineContainerRunHookDomainError::TimedOut {
-                        container_id: container_id.clone(),
-                        timeout_millis: request.timeout_millis,
-                        message: failure_message(message),
-                        inspect_hint: inspect_hint(&container_id),
-                    },
-                });
-            }
-        };
-
-    machine_success(MachineContainerRunHookRpcResponse::Ok(
-        MachineContainerRunHookRpcOk {
-            machine_id,
-            container_id,
-            exit_code,
+    match run_hook_container(
+        &state.runner,
+        CreateManagedContainer {
+            pull: request.pull,
+            runtime: request.runtime,
+            provisioned_volumes: request.provisioned_volumes,
+            identity: request.container,
         },
-    ))
-}
-
-fn hook_start_error(
-    machine_id: MachineId,
-    container_id: ContainerId,
-    error: MachineContainerRunnerError,
-) -> NatsServiceResponse {
-    match error {
-        MachineContainerRunnerError::Start { message, .. } => {
+        request.timeout_millis,
+    )
+    .await
+    {
+        Ok(outcome) => machine_success(MachineContainerRunHookRpcResponse::Ok(
+            MachineContainerRunHookRpcOk {
+                machine_id,
+                container_id: outcome.container_id,
+                exit_code: outcome.exit_code,
+            },
+        )),
+        Err(HookContainerRunError::Domain(error)) => {
             machine_domain_error(MachineContainerRunHookRpcResponse::DomainError {
                 machine_id,
-                error: MachineContainerRunHookDomainError::StartFailed {
-                    container_id: container_id.clone(),
-                    message: failure_message(format!("hook container start failed: {message}")),
-                    inspect_hint: inspect_hint(&container_id),
-                },
+                error,
             })
         }
-        error @ (MachineContainerRunnerError::ListExisting { .. }
-        | MachineContainerRunnerError::EnsureEndpointNetwork { .. }
-        | MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. }
-        | MachineContainerRunnerError::Create { .. }
-        | MachineContainerRunnerError::ImagePull { .. }
-        | MachineContainerRunnerError::Wait { .. }
-        | MachineContainerRunnerError::Stop { .. }
-        | MachineContainerRunnerError::Restart { .. }
-        | MachineContainerRunnerError::Remove { .. }
-        | MachineContainerRunnerError::RemoveVolume { .. }) => runner_error(error),
+        Err(HookContainerRunError::Infrastructure(error)) => {
+            hook_container_infrastructure_error(error)
+        }
     }
 }
 
@@ -416,7 +181,7 @@ where
         Ok(digest) => machine_success(MachineContainerResolveImageRpcResponse::Ok(
             MachineContainerResolveImageRpcOk { machine_id, digest },
         )),
-        Err(MachineContainerRunnerError::ImagePull { message }) => {
+        Err(MachineRegistryImageResolveError::ImagePull { message }) => {
             let message = match request.credential.as_ref() {
                 Some(credential) => credential.redact_secret_in(message),
                 None => message,
@@ -428,7 +193,6 @@ where
                 },
             })
         }
-        Err(error) => runner_error(error),
     }
 }
 
@@ -464,7 +228,7 @@ where
                 },
             ))
         }
-        Err(MachineContainerRunnerError::Remove {
+        Err(MachineContainerRemoveError::Remove {
             container_id,
             message,
         }) => machine_domain_error(MachineContainerRemoveRpcResponse::DomainError {
@@ -475,7 +239,9 @@ where
                 inspect_hint: inspect_hint(&container_id),
             },
         }),
-        Err(error) => runner_error(error),
+        Err(MachineContainerRemoveError::ListExisting { message }) => {
+            container_list_error(MachineContainerListError::ListExisting { message })
+        }
     }
 }
 
@@ -492,21 +258,112 @@ where
         Err(response) => return response,
     };
 
-    let docker_volume_name = docker_volume_name(&request.namespace_id, &request.volume_name);
-    match runner.remove_volume(&docker_volume_name).await {
-        Ok(()) => machine_success(MachineVolumeRemoveRpcResponse::Ok(
-            MachineVolumeRemoveRpcOk { machine_id },
-        )),
-        Err(MachineContainerRunnerError::RemoveVolume { message, .. }) => {
-            machine_domain_error(MachineVolumeRemoveRpcResponse::DomainError {
-                machine_id,
-                error: MachineVolumeRemoveDomainError::RemoveFailed {
-                    message: failure_message(format!("volume remove failed: {message}")),
-                },
-            })
-        }
-        Err(error) => runner_error(error),
+    let volume = match &request {
+        MachineVolumeRemoveRpcRequest::DockerReference { volume, .. } => volume,
+        MachineVolumeRemoveRpcRequest::ProvisionedDataset { volume, .. } => volume.volume(),
+    };
+    if volume.machine_id() != &machine_id {
+        return machine_domain_error(MachineVolumeRemoveRpcResponse::DomainError {
+            error: MachineVolumeRemoveDomainError::MachineMismatch {
+                expected_machine_id: volume.machine_id().clone(),
+                responder_machine_id: machine_id.clone(),
+            },
+            machine_id,
+        });
     }
+
+    match request {
+        MachineVolumeRemoveRpcRequest::DockerReference { volume, .. } => {
+            let docker_volume_name =
+                docker_volume_name(volume.namespace_id(), volume.volume_name());
+            match runner.remove_volume(&docker_volume_name).await {
+                Ok(()) => machine_success(MachineVolumeRemoveRpcResponse::Ok(
+                    MachineVolumeRemoveRpcOk { machine_id },
+                )),
+                Err(MachineVolumeRemoveError::RemoveVolume { message, .. }) => {
+                    machine_domain_error(MachineVolumeRemoveRpcResponse::DomainError {
+                        machine_id,
+                        error: MachineVolumeRemoveDomainError::DockerRemoveFailed {
+                            message: failure_message(format!("volume remove failed: {message}")),
+                        },
+                    })
+                }
+            }
+        }
+        MachineVolumeRemoveRpcRequest::ProvisionedDataset { volume, .. } => {
+            let pin = volume.volume();
+            let dataset = volume.dataset();
+            let docker_volume_name = docker_volume_name(pin.namespace_id(), pin.volume_name());
+            if let Err(error) = runner.remove_volume(&docker_volume_name).await {
+                return match error {
+                    MachineVolumeRemoveError::RemoveVolume { message, .. } => {
+                        machine_domain_error(MachineVolumeRemoveRpcResponse::DomainError {
+                            machine_id,
+                            error: MachineVolumeRemoveDomainError::DockerRemoveFailed {
+                                message: failure_message(format!(
+                                    "volume remove failed before dataset destroy: {message}"
+                                )),
+                            },
+                        })
+                    }
+                };
+            }
+            match runner.destroy_provisioned_dataset(dataset).await {
+                Ok(()) => machine_success(MachineVolumeRemoveRpcResponse::Ok(
+                    MachineVolumeRemoveRpcOk { machine_id },
+                )),
+                Err(failure) => machine_domain_error(MachineVolumeRemoveRpcResponse::DomainError {
+                    machine_id,
+                    error: MachineVolumeRemoveDomainError::DatasetDestroyFailed {
+                        dataset: dataset.clone(),
+                        failure,
+                    },
+                }),
+            }
+        }
+    }
+}
+
+pub(crate) async fn handle_volume_ensure<R>(
+    machine_id: MachineId,
+    runner: R,
+    request: NatsServiceRequest,
+) -> NatsServiceResponse
+where
+    R: MachineContainerRunner,
+{
+    let request = match decode_json_request::<MachineVolumeEnsureRpcRequest>(&request) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    if let Err(failure) = validate_volume_target(&machine_id, &request.volume) {
+        return machine_domain_error(MachineVolumeEnsureRpcResponse::DomainError {
+            machine_id,
+            error: failure,
+        });
+    }
+    match runner.ensure_volume(&request.volume).await {
+        Ok(()) => machine_success(MachineVolumeEnsureRpcResponse::Ok(
+            MachineVolumeEnsureRpcOk { machine_id },
+        )),
+        Err(failure) => machine_domain_error(MachineVolumeEnsureRpcResponse::DomainError {
+            machine_id,
+            error: failure,
+        }),
+    }
+}
+
+fn validate_volume_target(
+    responder_machine_id: &MachineId,
+    volume: &VolumePinState,
+) -> Result<(), VolumeEnsureFailure> {
+    if volume.machine_id() == responder_machine_id {
+        return Ok(());
+    }
+    Err(VolumeEnsureFailure::MachineMismatch {
+        expected_machine_id: volume.machine_id().clone(),
+        responder_machine_id: responder_machine_id.clone(),
+    })
 }
 
 pub(crate) async fn handle_container_stop<R>(
@@ -540,7 +397,7 @@ where
                 container_id: request.container_id,
             }))
         }
-        Err(MachineContainerRunnerError::Stop {
+        Err(MachineContainerStopError::Stop {
             container_id,
             message,
         }) => machine_domain_error(MachineContainerStopRpcResponse::DomainError {
@@ -551,7 +408,9 @@ where
                 inspect_hint: inspect_hint(&container_id),
             },
         }),
-        Err(error) => runner_error(error),
+        Err(MachineContainerStopError::ListExisting { message }) => {
+            container_list_error(MachineContainerListError::ListExisting { message })
+        }
     }
 }
 
@@ -588,7 +447,7 @@ where
                 },
             ))
         }
-        Err(MachineContainerRunnerError::Restart {
+        Err(MachineContainerRestartError::Restart {
             container_id,
             message,
         }) => machine_domain_error(MachineContainerRestartRpcResponse::DomainError {
@@ -599,8 +458,52 @@ where
                 inspect_hint: inspect_hint(&container_id),
             },
         }),
-        Err(error) => runner_error(error),
+        Err(MachineContainerRestartError::ListExisting { message }) => {
+            container_list_error(MachineContainerListError::ListExisting { message })
+        }
     }
+}
+
+fn service_container_infrastructure_error(
+    error: ServiceContainerInfrastructureError,
+) -> NatsServiceResponse {
+    let message = match error {
+        ServiceContainerInfrastructureError::List { message } => {
+            format!("container list failed: {message}")
+        }
+        ServiceContainerInfrastructureError::Create { message } => {
+            format!("container create failed: {message}")
+        }
+        ServiceContainerInfrastructureError::EnsureEndpointNetwork { message } => {
+            format!("endpoint network ensure failed: {message}")
+        }
+        ServiceContainerInfrastructureError::EndpointNetworkSubnetMismatch {
+            expected,
+            observed,
+        } => format!("endpoint network subnet is {observed:?}, expected {expected:?}"),
+    };
+    NatsServiceResponse::transport_error(NatsServiceError::internal(message))
+}
+
+fn hook_container_infrastructure_error(
+    error: HookContainerInfrastructureError,
+) -> NatsServiceResponse {
+    let message = match error {
+        HookContainerInfrastructureError::List { message }
+        | HookContainerInfrastructureError::TimeoutStopList { message } => {
+            format!("container list failed: {message}")
+        }
+        HookContainerInfrastructureError::ImagePull { message } => {
+            format!("image pull failed: {message}")
+        }
+        HookContainerInfrastructureError::EnsureEndpointNetwork { message } => {
+            format!("endpoint network ensure failed: {message}")
+        }
+        HookContainerInfrastructureError::EndpointNetworkSubnetMismatch { expected, observed } => {
+            format!("endpoint network subnet is {observed:?}, expected {expected:?}")
+        }
+    };
+    NatsServiceResponse::transport_error(NatsServiceError::internal(message))
 }
 
 fn container_run_ok(
@@ -694,4 +597,32 @@ where
             resolved_image_identity: container.resolved_image_identity,
             created_at_unix_seconds: container.created_at_unix_seconds,
         })
+}
+
+#[cfg(test)]
+mod volume_ensure_tests {
+    use super::validate_volume_target;
+    use ployz_core::deploy::VolumeName;
+    use ployz_core::ids::{MachineId, NamespaceId};
+    use ployz_core::intent::VolumePinState;
+    use ployz_core::machine::VolumeEnsureFailure;
+
+    #[test]
+    fn volume_ensure_rejects_a_pin_for_another_machine_before_effects() {
+        let expected_machine_id = MachineId::try_new("machine-a").expect("machine");
+        let responder_machine_id = MachineId::try_new("machine-b").expect("machine");
+        let volume = VolumePinState::plain(
+            NamespaceId::try_new("default").expect("namespace"),
+            VolumeName::try_new("data").expect("volume"),
+            expected_machine_id.clone(),
+        );
+
+        assert_eq!(
+            validate_volume_target(&responder_machine_id, &volume),
+            Err(VolumeEnsureFailure::MachineMismatch {
+                expected_machine_id,
+                responder_machine_id,
+            })
+        );
+    }
 }

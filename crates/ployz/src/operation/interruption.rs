@@ -1,8 +1,9 @@
 use ployz_core::operation::{
-    DeployInterruptionStage, DeployRunningStage, NamespaceRemoveRunningStage,
-    NetworkRepairRunningStage, OperationInterruptionCause, OperationInterruptionEvidence,
-    OperationInterruptionNextAction, OperationInterruptionStage,
-    OperationInterruptionUncertainWork, ServiceRestartRunningStage, VolumeRemoveRunningStage,
+    BuildInterruptionStage, DeployInterruptionStage, DeployRunningStage,
+    NamespaceRemoveRunningStage, NetworkRepairRunningStage, OperationInterruptionCause,
+    OperationInterruptionEvidence, OperationInterruptionNextAction, OperationInterruptionStage,
+    OperationInterruptionUncertainWork, ServiceRestartRunningStage, VolumeCreateRunningStage,
+    VolumeRemoveRunningStage,
 };
 
 pub(crate) fn render_interruption(evidence: &OperationInterruptionEvidence) -> String {
@@ -24,6 +25,11 @@ const fn cause(cause: OperationInterruptionCause) -> &'static str {
 
 fn stage(stage: OperationInterruptionStage) -> String {
     match stage {
+        OperationInterruptionStage::Build { stage } => match stage {
+            BuildInterruptionStage::Accepted => "build accepted".to_owned(),
+            BuildInterruptionStage::Placing => "build placing".to_owned(),
+            BuildInterruptionStage::Building => "build running".to_owned(),
+        },
         OperationInterruptionStage::Deploy { stage } => match stage {
             DeployInterruptionStage::Accepted => "deploy accepted".to_owned(),
             DeployInterruptionStage::Planning => "deploy planning".to_owned(),
@@ -66,18 +72,31 @@ fn stage(stage: OperationInterruptionStage) -> String {
         OperationInterruptionStage::VolumeRemoveRunning { stage } => {
             format!("volume remove running {}", volume_remove_stage(stage))
         }
+        OperationInterruptionStage::VolumeCreateAccepted => "volume create accepted".to_owned(),
+        OperationInterruptionStage::VolumeCreatePlanning => "volume create planning".to_owned(),
+        OperationInterruptionStage::VolumeCreateRunning { stage } => {
+            format!("volume create running {}", volume_create_stage(stage))
+        }
     }
 }
 
 const fn deploy_stage(stage: DeployRunningStage) -> &'static str {
     match stage {
         DeployRunningStage::EnsuringImages => "ensuring images",
+        DeployRunningStage::EnsuringVolumes => "ensuring volumes",
         DeployRunningStage::StartingContainers => "starting containers",
         DeployRunningStage::WaitingForHealth => "waiting for health",
         DeployRunningStage::EnsuringCertificates => "ensuring certificates",
         DeployRunningStage::RouteCutover => "route cutover",
         DeployRunningStage::ServingTargetCommit => "serving target commit",
         DeployRunningStage::RemovingSupersededContainers => "removing superseded containers",
+    }
+}
+
+const fn volume_create_stage(stage: VolumeCreateRunningStage) -> &'static str {
+    match stage {
+        VolumeCreateRunningStage::CommittingPin => "committing pin",
+        VolumeCreateRunningStage::EnsuringVolume => "ensuring volume",
     }
 }
 
@@ -107,6 +126,7 @@ const fn namespace_remove_stage(stage: NamespaceRemoveRunningStage) -> &'static 
 const fn volume_remove_stage(stage: VolumeRemoveRunningStage) -> &'static str {
     match stage {
         VolumeRemoveRunningStage::RemovingVolumeData => "removing volume data",
+        VolumeRemoveRunningStage::RemovingDataset => "removing dataset",
     }
 }
 

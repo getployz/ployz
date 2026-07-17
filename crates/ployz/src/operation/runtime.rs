@@ -1,5 +1,7 @@
 //! Operation query, replay, and progress execution.
 
+use std::time::Duration;
+
 use crate::api_client::OperationApiClient;
 use crate::dispatcher::PloyzctlRuntimeConfig;
 use crate::execution_error::PloyzctlExecutionError;
@@ -73,10 +75,19 @@ pub(crate) async fn watch_accepted(
     operation_id: OperationId,
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
+    watch_accepted_with_timeout(api, operation_id, config.ops_watch_timeout(), config).await
+}
+
+pub(crate) async fn watch_accepted_with_timeout(
+    api: &OperationApiClient,
+    operation_id: OperationId,
+    timeout: Duration,
+    config: &PloyzctlRuntimeConfig,
+) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
     let (events, outcome) = watch_operation_until_terminal(
         api,
         replay_request(operation_id),
-        config.ops_watch_timeout(),
+        timeout,
         config.ops_watch_poll_interval(),
     )
     .await?;

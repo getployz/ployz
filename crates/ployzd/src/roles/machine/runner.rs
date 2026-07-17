@@ -1,9 +1,13 @@
 use std::future::Future;
 
-use ployz_core::deploy::{ContainerRuntimeSpec, ImageReference, RegistryCredential, VolumeName};
+use ployz_core::deploy::{
+    ContainerRuntimeSpec, DatasetName, ImageReference, RegistryCredential, VolumeName,
+};
 use ployz_core::ids::ContainerId;
 use ployz_core::image::OciDigest;
+use ployz_core::intent::VolumePinState;
 use ployz_core::machine::runtime::ContainerHealth;
+use ployz_core::machine::{VolumeEnsureFailure, VolumeUsageFacts};
 use std::net::IpAddr;
 
 use crate::roles::machine::protocol::MachineImagePull;
@@ -42,8 +46,32 @@ pub struct CreateManagedContainer {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MachineContainerRunnerError {
-    ListExisting {
+pub enum MachineContainerListError {
+    ListExisting { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineEndpointNetworkError {
+    EnsureEndpointNetwork {
+        message: String,
+    },
+    EndpointNetworkSubnetMismatch {
+        expected: MachineEndpointSubnet,
+        observed: MachineEndpointSubnet,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineRegistryImageResolveError {
+    ImagePull { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineContainerCreateError {
+    Create {
+        message: String,
+    },
+    ImagePull {
         message: String,
     },
     EnsureEndpointNetwork {
@@ -53,32 +81,59 @@ pub enum MachineContainerRunnerError {
         expected: MachineEndpointSubnet,
         observed: MachineEndpointSubnet,
     },
-    Create {
-        message: String,
-    },
-    ImagePull {
-        message: String,
-    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineContainerStartError {
     Start {
         container_id: ContainerId,
         message: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineContainerWaitError {
     Wait {
         container_id: ContainerId,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineContainerStopError {
+    ListExisting {
         message: String,
     },
     Stop {
         container_id: ContainerId,
         message: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineContainerRestartError {
+    ListExisting {
+        message: String,
+    },
     Restart {
         container_id: ContainerId,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineContainerRemoveError {
+    ListExisting {
         message: String,
     },
     Remove {
         container_id: ContainerId,
         message: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineVolumeRemoveError {
     RemoveVolume {
         docker_volume_name: String,
         message: String,
@@ -116,18 +171,23 @@ pub enum MachineLogTimestamps {
 }
 
 pub trait MachineContainerRunner {
+    fn ensure_volume(
+        &self,
+        volume: &VolumePinState,
+    ) -> impl Future<Output = Result<(), VolumeEnsureFailure>> + Send;
+
     fn existing_managed_containers(
         &self,
-    ) -> impl Future<Output = Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<Vec<ExistingManagedContainer>, MachineContainerListError>> + Send;
 
     fn ensure_endpoint_network(
         &self,
-    ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<(), MachineEndpointNetworkError>> + Send;
 
     fn ensure_projection_endpoint_network(
         &self,
         expected_subnet: &MachineEndpointSubnet,
-    ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<(), MachineEndpointNetworkError>> + Send;
 
     fn read_endpoint_network_status(&self) -> impl Future<Output = EndpointBridgeStatus> + Send;
 
@@ -135,45 +195,59 @@ pub trait MachineContainerRunner {
         &self,
         reference: &ImageReference,
         credential: Option<&RegistryCredential>,
-    ) -> impl Future<Output = Result<OciDigest, MachineContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<OciDigest, MachineRegistryImageResolveError>> + Send;
 
     fn create_managed_container(
         &self,
         command: CreateManagedContainer,
-    ) -> impl Future<Output = Result<ContainerId, MachineContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<ContainerId, MachineContainerCreateError>> + Send;
 
     fn start_managed_container(
         &self,
         container_id: &ContainerId,
-    ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<(), MachineContainerStartError>> + Send;
 
     fn wait_managed_container(
         &self,
         container_id: &ContainerId,
-    ) -> impl Future<Output = Result<i64, MachineContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<i64, MachineContainerWaitError>> + Send;
 
     fn stop_managed_container(
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
-    ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<(), MachineContainerStopError>> + Send;
 
     fn restart_managed_container(
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
-    ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<(), MachineContainerRestartError>> + Send;
 
     fn remove_managed_container(
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
-    ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<(), MachineContainerRemoveError>> + Send;
 
     fn remove_volume(
         &self,
         docker_volume_name: &str,
-    ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<(), MachineVolumeRemoveError>> + Send;
+
+    fn destroy_provisioned_dataset(
+        &self,
+        dataset: &DatasetName,
+    ) -> impl Future<Output = Result<(), ployz_core::storage::StorageEffectFailure>> + Send;
+}
+
+/// Fresh, machine-owned volume testimony. Implementations must return `None`
+/// whenever either usage or latest-write evidence cannot be gathered fully.
+pub trait MachineVolumeUsageReader {
+    fn read_volume_usage(
+        &self,
+        volume: &VolumePinState,
+    ) -> impl Future<Output = Option<VolumeUsageFacts>> + Send;
 }
 
 pub trait MachineImageRemovalRunner {
@@ -190,78 +264,3 @@ pub trait MachineLogReader {
         query: MachineLogQuery,
     ) -> impl Future<Output = Result<MachineLogTail, MachineLogReaderError>> + Send;
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MachineContainerRunDecision {
-    Create {
-        identity: ManagedContainerIdentity,
-    },
-    ReuseRunning {
-        container_id: ContainerId,
-    },
-    StartExisting {
-        container_id: ContainerId,
-    },
-    NotStartable {
-        container_id: ContainerId,
-        state: ExistingManagedContainerState,
-    },
-    Ambiguous {
-        operation_id: ployz_core::ids::OperationId,
-        step_id: ployz_core::ids::StepId,
-        container_ids: Vec<ContainerId>,
-    },
-}
-
-#[must_use]
-pub fn decide_container_run(
-    expected: &ManagedContainerIdentity,
-    existing: impl IntoIterator<Item = ExistingManagedContainer>,
-) -> MachineContainerRunDecision {
-    let mut matches = existing
-        .into_iter()
-        .filter(|container| container.identity == *expected);
-
-    let Some(first) = matches.next() else {
-        return MachineContainerRunDecision::Create {
-            identity: expected.clone(),
-        };
-    };
-
-    let rest = matches.collect::<Vec<_>>();
-    if !rest.is_empty() {
-        let container_ids = std::iter::once(first.container_id)
-            .chain(rest.into_iter().map(|container| container.container_id))
-            .collect();
-        return MachineContainerRunDecision::Ambiguous {
-            operation_id: expected.operation_id.clone(),
-            step_id: expected.step_id.clone(),
-            container_ids,
-        };
-    }
-
-    let ExistingManagedContainer {
-        container_id,
-        state,
-        ..
-    } = first;
-
-    match state {
-        ExistingManagedContainerState::Running { .. } => {
-            MachineContainerRunDecision::ReuseRunning { container_id }
-        }
-        ExistingManagedContainerState::StartableStopped => {
-            MachineContainerRunDecision::StartExisting { container_id }
-        }
-        ExistingManagedContainerState::NotStartable { .. } => {
-            MachineContainerRunDecision::NotStartable {
-                container_id,
-                state,
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-#[path = "runner_tests.rs"]
-mod tests;

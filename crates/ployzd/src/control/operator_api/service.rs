@@ -1,11 +1,12 @@
 //! NATS Service API wiring for daemon commands.
 
 use crate::control::operator_api::{
-    OperationApiHandlers, core_replace, core_replace_report, credential_add, credential_list,
-    credential_remove, deploy_reserve, deploy_submit, ingress_configure,
-    init_first_machine_activate, machine_add, machine_drain, machine_join_redeem,
-    machine_join_report, machine_resume, machine_storage_prepare, machine_update, namespace_remove,
-    network_repair, ops_list, ops_status, ops_watch, service_restart, volume_remove,
+    OperationApiHandlers, build_cancel, build_submit, core_replace, core_replace_report,
+    credential_add, credential_list, credential_remove, deploy_reserve, deploy_submit,
+    ingress_configure, init_first_machine_activate, machine_add, machine_drain,
+    machine_join_redeem, machine_join_report, machine_resume, machine_storage_prepare,
+    machine_update, namespace_remove, network_repair, ops_list, ops_status, ops_watch,
+    service_restart, submit_volume_create, volume_remove,
 };
 use crate::service_catalog::{IMPLEMENTED_OPERATION_API_ENDPOINTS, api_endpoint_spec, api_service};
 use ployz_nats::service_runtime::{
@@ -16,14 +17,15 @@ use ployz_nats::subjects::OperationApiEndpoint;
 use ployz_sdk_types::{
     OperationApiResponse,
     operation_api::{
-        CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi, CredentialListApi,
-        CredentialRemoveApi, DeployReserveApi, DeploySubmitApi, IngressConfigureApi,
-        InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineDrainApi,
-        MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
-        MachineResumeApi, MachineStoragePrepareApi, MachineUpdateApi, NamespaceRemoveApi,
-        NetworkRepairApi, NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi,
-        OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi,
-        ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
+        BuildCancelApi, BuildSubmitApi, CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi,
+        CredentialListApi, CredentialRemoveApi, DeployReserveApi, DeploySubmitApi,
+        IngressConfigureApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
+        MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi,
+        MachineListApi, MachineResumeApi, MachineStoragePrepareApi, MachineUpdateApi,
+        NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, NetworkStatusApi,
+        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
+        ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeCreateApi, VolumeListApi,
+        VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -58,6 +60,12 @@ async fn bind_operation_endpoint(
     endpoint: OperationApiEndpoint,
 ) -> Result<(), ApiServiceError> {
     match endpoint {
+        OperationApiEndpoint::BuildSubmit => bind_operation_contract::<BuildSubmitApi, _, _>(
+            runtime, handlers, |handlers, request| async move { build_submit(&handlers, request).await }
+        ).await,
+        OperationApiEndpoint::BuildCancel => bind_operation_contract::<BuildCancelApi, _, _>(
+            runtime, handlers, |handlers, request| async move { build_cancel(&handlers, request).await }
+        ).await,
         OperationApiEndpoint::DeployReserve => {
             bind_operation_contract::<DeployReserveApi, _, _>(
                 runtime,
@@ -127,6 +135,16 @@ async fn bind_operation_endpoint(
                 runtime,
                 handlers,
                 |handlers, request| async move { volume_remove(&handlers, request).await },
+            )
+            .await
+        }
+        OperationApiEndpoint::VolumeCreate => {
+            bind_operation_contract::<VolumeCreateApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move {
+                    submit_volume_create(&handlers, request).await
+                },
             )
             .await
         }

@@ -2,6 +2,7 @@ use crate::dispatcher::PloyzctlRuntimeConfig;
 use crate::execution_error::PloyzctlExecutionError;
 use crate::execution_support::{PloyzctlExecutionOutput, api_error, operation_api_client};
 use crate::namespace::command::{NamespaceRemoveCommand, NamespaceRemoveConfirmation};
+use ployz_sdk_types::VolumeListRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NamespaceExecutionError {
@@ -19,12 +20,11 @@ impl From<NamespaceExecutionError> for PloyzctlExecutionError {
     }
 }
 
-fn confirm_remove(command: &NamespaceRemoveCommand) -> Result<(), PloyzctlExecutionError> {
-    let prompt = NamespaceRemoveConfirmation {
-        namespace_id: command.namespace_id.clone(),
-        volume_backed_services: Vec::new(),
-    }
-    .prompt();
+fn confirm_remove(
+    command: &NamespaceRemoveCommand,
+    confirmation: &NamespaceRemoveConfirmation,
+) -> Result<(), PloyzctlExecutionError> {
+    let prompt = confirmation.prompt();
     crate::confirmation::read_typed_confirmation(
         &prompt,
         command.namespace_id.as_str(),
@@ -43,10 +43,16 @@ pub(crate) async fn remove(
     config: &PloyzctlRuntimeConfig,
 ) -> Result<PloyzctlExecutionOutput, PloyzctlExecutionError> {
     let detach = command.detach;
-    if !command.force {
-        confirm_remove(&command)?;
-    }
     let api = operation_api_client(config).await?;
+    if !command.force {
+        let result = api
+            .volume_list(&VolumeListRequest {})
+            .await
+            .map_err(api_error)?;
+        let confirmation =
+            NamespaceRemoveConfirmation::from_volume_list(command.namespace_id.clone(), result);
+        confirm_remove(&command, &confirmation)?;
+    }
     let accepted = api
         .namespace_remove(&command.into_request())
         .await

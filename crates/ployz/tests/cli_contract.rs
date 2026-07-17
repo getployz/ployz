@@ -564,6 +564,56 @@ fn cli_dispatches_volume_rm_request() {
 }
 
 #[test]
+fn cli_dispatches_plain_volume_create_request() {
+    let command = parse_command(
+        ["volume", "create", "prod", "data", "--machine", "machine-a"].map(str::to_owned),
+    )
+    .expect("volume create command parses");
+
+    let PloyzctlCommand::VolumeCreate(command) = command else {
+        panic!("expected volume create command");
+    };
+    let request = command.into_request();
+    assert_eq!(request.namespace_id.as_str(), "prod");
+    assert_eq!(request.volume_name.as_str(), "data");
+    assert_eq!(request.machine_id.as_str(), "machine-a");
+    assert_eq!(request.spec, ployz_sdk_types::VolumeSpec::Plain);
+    assert!(
+        request
+            .operation_id
+            .as_str()
+            .starts_with("op_volume_create_prod_data_")
+    );
+}
+
+#[test]
+fn cli_dispatches_provisioned_volume_create_request() {
+    let command = parse_command(
+        [
+            "volume",
+            "create",
+            "prod",
+            "data",
+            "--machine",
+            "machine-a",
+            "--max-size",
+            "10G",
+        ]
+        .map(str::to_owned),
+    )
+    .expect("volume create command parses");
+
+    let PloyzctlCommand::VolumeCreate(command) = command else {
+        panic!("expected volume create command");
+    };
+    let ployz_sdk_types::VolumeSpec::Provisioned { max_size_bytes } = command.into_request().spec
+    else {
+        panic!("expected provisioned volume spec");
+    };
+    assert_eq!(max_size_bytes.get(), 10 * 1024 * 1024 * 1024);
+}
+
+#[test]
 fn cli_dispatches_service_inspect_request() {
     let command =
         parse_command(["service", "inspect", "-n", "default", "svc_api"].map(str::to_owned))
@@ -1587,6 +1637,12 @@ fn first_machine_install_spec_json(ployzd_source: &str, machine_public_ip: Optio
                     "source": "/tmp/ployz-ebpf-ctl",
                     "sha256": "{PLOYZ_NEWLINE_SHA256}",
                     "install_path": "/usr/local/bin/ployz-ebpf-ctl"
+                }},
+                "railpack": {{
+                    "version": "0.31.0",
+                    "source": "/tmp/railpack",
+                    "sha256": "{PLOYZ_NEWLINE_SHA256}",
+                    "install_path": "/usr/local/bin/railpack"
                 }},
                 "nats_server": {{
                     "version": "2.12.0",

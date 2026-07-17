@@ -1,12 +1,13 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CredentialGrantOperationState, DeployOperationState, DeployRunningStage,
+    BuildOperationState, CredentialGrantOperationState, DeployOperationState, DeployRunningStage,
     IngressConfigureOperationState, MachineLifecycleOperationState,
     MachineStoragePrepareOperationState, MachineUpdateOperationState,
     NamespaceRemoveOperationState, NamespaceRemoveRunningStage, NetworkRepairOperationState,
     NetworkRepairRunningStage, OperationKind, OperationStatus, ServiceRestartOperationState,
-    ServiceRestartRunningStage, VolumeRemoveOperationState, VolumeRemoveRunningStage,
+    ServiceRestartRunningStage, VolumeCreateOperationState, VolumeCreateRunningStage,
+    VolumeRemoveOperationState, VolumeRemoveRunningStage,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,8 +29,18 @@ pub enum DeployInterruptionStage {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum BuildInterruptionStage {
+    Accepted,
+    Placing,
+    Building,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OperationInterruptionStage {
+    Build { stage: BuildInterruptionStage },
     Deploy { stage: DeployInterruptionStage },
     CredentialGrantAccepted,
     IngressConfigureAccepted,
@@ -46,12 +57,16 @@ pub enum OperationInterruptionStage {
     NamespaceRemoveRunning { stage: NamespaceRemoveRunningStage },
     VolumeRemoveAccepted,
     VolumeRemoveRunning { stage: VolumeRemoveRunningStage },
+    VolumeCreateAccepted,
+    VolumeCreatePlanning,
+    VolumeCreateRunning { stage: VolumeCreateRunningStage },
 }
 
 impl OperationInterruptionStage {
     #[must_use]
     pub const fn kind(self) -> OperationKind {
         match self {
+            Self::Build { .. } => OperationKind::Build,
             Self::Deploy { .. } => OperationKind::Deploy,
             Self::CredentialGrantAccepted => OperationKind::CredentialGrant,
             Self::IngressConfigureAccepted => OperationKind::IngressConfigure,
@@ -74,12 +89,16 @@ impl OperationInterruptionStage {
             Self::VolumeRemoveAccepted | Self::VolumeRemoveRunning { .. } => {
                 OperationKind::VolumeRemove
             }
+            Self::VolumeCreateAccepted
+            | Self::VolumeCreatePlanning
+            | Self::VolumeCreateRunning { .. } => OperationKind::VolumeCreate,
         }
     }
 
     #[must_use]
     pub const fn uncertain_work(self) -> OperationInterruptionUncertainWork {
         match self {
+            Self::Build { .. } => OperationInterruptionUncertainWork::Runtime,
             Self::CredentialGrantAccepted
             | Self::IngressConfigureAccepted
             | Self::MachineLifecycleAccepted => OperationInterruptionUncertainWork::Intent,
@@ -95,7 +114,10 @@ impl OperationInterruptionStage {
             | Self::NamespaceRemoveAccepted
             | Self::NamespaceRemoveRunning { .. }
             | Self::VolumeRemoveAccepted
-            | Self::VolumeRemoveRunning { .. } => {
+            | Self::VolumeRemoveRunning { .. }
+            | Self::VolumeCreateAccepted
+            | Self::VolumeCreatePlanning
+            | Self::VolumeCreateRunning { .. } => {
                 OperationInterruptionUncertainWork::IntentAndRuntime
             }
         }
@@ -104,6 +126,7 @@ impl OperationInterruptionStage {
     #[must_use]
     pub const fn next_action(self) -> OperationInterruptionNextAction {
         match self {
+            Self::Build { .. } => OperationInterruptionNextAction::InspectThenResubmit,
             Self::Deploy { .. } => OperationInterruptionNextAction::RetryFromObservedReality,
             Self::CredentialGrantAccepted
             | Self::IngressConfigureAccepted
@@ -119,7 +142,10 @@ impl OperationInterruptionStage {
             | Self::NamespaceRemoveAccepted
             | Self::NamespaceRemoveRunning { .. }
             | Self::VolumeRemoveAccepted
-            | Self::VolumeRemoveRunning { .. } => {
+            | Self::VolumeRemoveRunning { .. }
+            | Self::VolumeCreateAccepted
+            | Self::VolumeCreatePlanning
+            | Self::VolumeCreateRunning { .. } => {
                 OperationInterruptionNextAction::InspectThenResubmit
             }
         }
@@ -251,6 +277,7 @@ impl OperationStatus {
         cause: OperationInterruptionCause,
     ) -> Option<OperationInterruptionEvidence> {
         match self {
+            Self::Build { state, .. } => state.interruption_evidence(cause),
             Self::Deploy { state, .. } => state.interruption_evidence(cause),
             Self::CredentialGrant { state, .. } => state.interruption_evidence(cause),
             Self::IngressConfigure { state, .. } => state.interruption_evidence(cause),
@@ -261,6 +288,7 @@ impl OperationStatus {
             Self::ServiceRestart { state, .. } => state.interruption_evidence(cause),
             Self::NamespaceRemove { state, .. } => state.interruption_evidence(cause),
             Self::VolumeRemove { state, .. } => state.interruption_evidence(cause),
+            Self::VolumeCreate { state, .. } => state.interruption_evidence(cause),
             Self::Cert { .. }
             | Self::MachineAdd { .. }
             | Self::CoreReplace { .. }
@@ -271,7 +299,11 @@ impl OperationStatus {
     #[must_use]
     pub const fn terminal_interruption_evidence(&self) -> Option<&OperationInterruptionEvidence> {
         match self {
-            Self::Deploy {
+            Self::Build {
+                state: BuildOperationState::Interrupted { evidence },
+                ..
+            }
+            | Self::Deploy {
                 state: DeployOperationState::Interrupted { evidence },
                 ..
             }
@@ -310,8 +342,13 @@ impl OperationStatus {
             | Self::VolumeRemove {
                 state: VolumeRemoveOperationState::Interrupted { evidence },
                 ..
+            }
+            | Self::VolumeCreate {
+                state: VolumeCreateOperationState::Interrupted { evidence },
+                ..
             } => Some(evidence),
-            Self::Deploy { .. }
+            Self::Build { .. }
+            | Self::Deploy { .. }
             | Self::CredentialGrant { .. }
             | Self::IngressConfigure { .. }
             | Self::MachineUpdate { .. }
@@ -321,6 +358,7 @@ impl OperationStatus {
             | Self::ServiceRestart { .. }
             | Self::NamespaceRemove { .. }
             | Self::VolumeRemove { .. }
+            | Self::VolumeCreate { .. }
             | Self::Cert { .. }
             | Self::MachineAdd { .. }
             | Self::CoreReplace { .. }

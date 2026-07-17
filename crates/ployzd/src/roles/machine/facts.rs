@@ -2,13 +2,14 @@ use super::current_unix_ms;
 use super::response::{failure_message, machine_domain_error, machine_success};
 use crate::roles::machine::endpoints::{observe_interface_endpoints, observe_machine_endpoints};
 use crate::roles::machine::protocol::{
-    MachineFactsGetDomainError, MachineFactsGetRpcOk, MachineFactsGetRpcRequest,
-    MachineFactsGetRpcResponse, MachineFactsRefreshDomainError, MachineFactsRefreshRpcOk,
-    MachineFactsRefreshRpcRequest, MachineFactsRefreshRpcResponse,
+    MachineBuildCapability, MachineFactsGetDomainError, MachineFactsGetRpcOk,
+    MachineFactsGetRpcRequest, MachineFactsGetRpcResponse, MachineFactsRefreshDomainError,
+    MachineFactsRefreshRpcOk, MachineFactsRefreshRpcRequest, MachineFactsRefreshRpcResponse,
 };
 use crate::roles::machine::runner::{
-    ExistingManagedContainerState, MachineContainerRunner, MachineContainerRunnerError,
+    ExistingManagedContainerState, MachineContainerListError, MachineContainerRunner,
 };
+use crate::roles::machine::volume::observe_storage_capability;
 use ployz_core::ids::MachineId;
 use ployz_core::machine::MachineEndpointObservation;
 use ployz_core::machine::runtime::{
@@ -30,6 +31,12 @@ pub(crate) struct MachineFactsState<R> {
     pub(crate) runner: R,
     pub(crate) endpoint_cache: MachineEndpointCache,
     pub(crate) client: async_nats::Client,
+}
+
+#[derive(Clone)]
+pub(crate) struct MachineFactsGetState<R> {
+    pub(crate) facts: MachineFactsState<R>,
+    pub(crate) build: MachineBuildCapability,
 }
 
 pub(crate) async fn handle_facts_refresh<R>(
@@ -98,9 +105,11 @@ async fn publish_machine_facts_snapshot<R>(
 where
     R: MachineContainerRunner,
 {
-    let facts = read_machine_facts_snapshot(machine_id, runner, endpoints, current_unix_ms())
-        .await
-        .map_err(MachineFactsPublishError::Read)?;
+    let storage = observe_storage_capability().await;
+    let facts =
+        read_machine_facts_snapshot(machine_id, runner, endpoints, storage, current_unix_ms())
+            .await
+            .map_err(MachineFactsPublishError::Read)?;
     let payload = serde_json::to_vec(&facts).map_err(MachineFactsPublishError::Encode)?;
     client
         .publish(machine_facts(machine_id), payload.into())
@@ -129,7 +138,7 @@ pub(crate) enum MachineFactsPublishError {
 
 pub(crate) async fn handle_facts_get<R>(
     machine_id: MachineId,
-    state: MachineFactsState<R>,
+    state: MachineFactsGetState<R>,
     request: NatsServiceRequest,
 ) -> NatsServiceResponse
 where
@@ -143,15 +152,25 @@ where
     // (process startup, or a test with no observer), fall back to interface-only
     // discovery — a syscall, no network — so mesh peer discovery never sees missing
     // endpoints and the public-IP echo stays off the per-RPC path.
-    let endpoints = match state.endpoint_cache.latest() {
+    let endpoints = match state.facts.endpoint_cache.latest() {
         Some(observation) => Some(observation),
-        None => observe_interface_endpoints(&machine_id, state.endpoint_cache.wg_ifname()).await,
+        None => {
+            observe_interface_endpoints(&machine_id, state.facts.endpoint_cache.wg_ifname()).await
+        }
     };
-    match read_machine_facts_snapshot(&machine_id, &state.runner, endpoints, current_unix_ms())
-        .await
+    let storage = observe_storage_capability().await;
+    match read_machine_facts_snapshot(
+        &machine_id,
+        &state.facts.runner,
+        endpoints,
+        storage,
+        current_unix_ms(),
+    )
+    .await
     {
         Ok(facts) => machine_success(MachineFactsGetRpcResponse::Ok(MachineFactsGetRpcOk {
             facts,
+            build: state.build,
         })),
         Err(error) => machine_domain_error(MachineFactsGetRpcResponse::DomainError {
             machine_id,
@@ -226,6 +245,7 @@ pub(crate) async fn read_machine_facts_snapshot<R>(
     machine_id: &MachineId,
     runner: &R,
     endpoints: Option<MachineEndpointObservation>,
+    storage: Option<ployz_core::machine::StorageCapability>,
     observed_at_unix_ms: u64,
 ) -> Result<MachineFactsSnapshot, MachineFactsReadError>
 where
@@ -256,6 +276,7 @@ where
         containers,
         endpoints,
         disk_space,
+        storage,
         ployz_core::image::OciPlatform::current(),
         observed_at_unix_ms,
     )
@@ -265,7 +286,7 @@ where
 #[derive(Debug, thiserror::Error)]
 pub enum MachineFactsReadError {
     #[error("failed to list managed Docker containers: {0:?}")]
-    ListContainers(MachineContainerRunnerError),
+    ListContainers(MachineContainerListError),
     #[error("failed to build container snapshot: {0}")]
     BuildContainerSnapshot(MachineContainerObservationSnapshotError),
     #[error("failed to read disk space: {0}")]

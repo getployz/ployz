@@ -4,7 +4,8 @@ impl OperationStatus {
     #[must_use]
     pub const fn id(&self) -> &OperationId {
         match self {
-            Self::Deploy { id, .. }
+            Self::Build { id, .. }
+            | Self::Deploy { id, .. }
             | Self::Cert { id, .. }
             | Self::MachineAdd { id, .. }
             | Self::MachineUpdate { id, .. }
@@ -17,6 +18,7 @@ impl OperationStatus {
             | Self::ManagedDnsReconcile { id, .. }
             | Self::IngressConfigure { id, .. }
             | Self::NamespaceRemove { id, .. } => id,
+            Self::VolumeCreate { request, .. } => &request.operation_id,
             Self::VolumeRemove { id, .. } => id,
         }
     }
@@ -24,6 +26,7 @@ impl OperationStatus {
     #[must_use]
     pub const fn kind(&self) -> OperationKind {
         match self {
+            Self::Build { .. } => OperationKind::Build,
             Self::Deploy { .. } => OperationKind::Deploy,
             Self::Cert { .. } => OperationKind::Cert,
             Self::MachineAdd { .. } => OperationKind::MachineAdd,
@@ -37,6 +40,7 @@ impl OperationStatus {
             Self::ManagedDnsReconcile { .. } => OperationKind::ManagedDnsReconcile,
             Self::IngressConfigure { .. } => OperationKind::IngressConfigure,
             Self::NamespaceRemove { .. } => OperationKind::NamespaceRemove,
+            Self::VolumeCreate { .. } => OperationKind::VolumeCreate,
             Self::VolumeRemove { .. } => OperationKind::VolumeRemove,
         }
     }
@@ -44,12 +48,16 @@ impl OperationStatus {
     #[must_use]
     pub fn progress_scope(&self) -> OperationProgressScope {
         match self {
+            Self::Build { .. } => OperationProgressScope::Cluster,
             Self::Deploy { namespace_id, .. } => OperationProgressScope::Namespace {
                 namespace_id: namespace_id.clone(),
             },
             Self::ServiceRestart { namespace_id, .. }
             | Self::NamespaceRemove { namespace_id, .. } => OperationProgressScope::Namespace {
                 namespace_id: namespace_id.clone(),
+            },
+            Self::VolumeCreate { request, .. } => OperationProgressScope::Namespace {
+                namespace_id: request.namespace_id.clone(),
             },
             Self::VolumeRemove { namespace_id, .. } => OperationProgressScope::Namespace {
                 namespace_id: namespace_id.clone(),
@@ -72,7 +80,11 @@ impl OperationStatus {
     #[must_use]
     pub const fn last_event_sequence(&self) -> EventSequence {
         match self {
-            Self::Deploy {
+            Self::Build {
+                last_event_sequence,
+                ..
+            }
+            | Self::Deploy {
                 last_event_sequence,
                 ..
             }
@@ -125,6 +137,10 @@ impl OperationStatus {
                 ..
             }
             | Self::VolumeRemove {
+                last_event_sequence,
+                ..
+            }
+            | Self::VolumeCreate {
                 last_event_sequence,
                 ..
             } => *last_event_sequence,

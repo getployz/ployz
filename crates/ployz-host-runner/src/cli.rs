@@ -37,9 +37,9 @@ pub enum HostRunnerCommand {
     CoreDemote(HostRunnerCoreDemote),
     SubstrateUpdate(HostRunnerSubstrateUpdate),
     StoragePrepare(HostRunnerStoragePrepare),
+    StorageCapability,
     StoragePoolFacts,
-    StorageDatasetCreate(HostRunnerDatasetQuota),
-    StorageDatasetGrow(HostRunnerDatasetQuota),
+    StorageDatasetEnsure(HostRunnerDatasetQuota),
     StorageDatasetFacts(DatasetName),
     StorageDatasetDestroy(DatasetName),
 }
@@ -252,12 +252,10 @@ pub fn load_command(
         Some(HostRunnerSubcommand::StoragePrepare { operation_id, pool }) => Ok(
             HostRunnerCommand::StoragePrepare(HostRunnerStoragePrepare { operation_id, pool }),
         ),
+        Some(HostRunnerSubcommand::StorageCapability) => Ok(HostRunnerCommand::StorageCapability),
         Some(HostRunnerSubcommand::StoragePoolFacts) => Ok(HostRunnerCommand::StoragePoolFacts),
-        Some(HostRunnerSubcommand::StorageDatasetCreate { dataset, quota }) => Ok(
-            HostRunnerCommand::StorageDatasetCreate(HostRunnerDatasetQuota { dataset, quota }),
-        ),
-        Some(HostRunnerSubcommand::StorageDatasetGrow { dataset, quota }) => Ok(
-            HostRunnerCommand::StorageDatasetGrow(HostRunnerDatasetQuota { dataset, quota }),
+        Some(HostRunnerSubcommand::StorageDatasetEnsure { dataset, quota }) => Ok(
+            HostRunnerCommand::StorageDatasetEnsure(HostRunnerDatasetQuota { dataset, quota }),
         ),
         Some(HostRunnerSubcommand::StorageDatasetFacts { dataset }) => {
             Ok(HostRunnerCommand::StorageDatasetFacts(dataset))
@@ -335,17 +333,12 @@ enum HostRunnerSubcommand {
         #[arg(long, value_name = "pool", value_parser = parse_zfs_pool)]
         pool: Option<ZfsPoolName>,
     },
+    #[command(name = "internal-storage-capability", hide = true)]
+    StorageCapability,
     #[command(name = "internal-storage-pool-facts", hide = true)]
     StoragePoolFacts,
-    #[command(name = "internal-storage-dataset-create", hide = true)]
-    StorageDatasetCreate {
-        #[arg(long, value_parser = parse_dataset_name)]
-        dataset: DatasetName,
-        #[arg(long, value_parser = parse_volume_size)]
-        quota: VolumeMaxSizeBytes,
-    },
-    #[command(name = "internal-storage-dataset-grow", hide = true)]
-    StorageDatasetGrow {
+    #[command(name = "internal-storage-dataset-ensure", hide = true)]
+    StorageDatasetEnsure {
         #[arg(long, value_parser = parse_dataset_name)]
         dataset: DatasetName,
         #[arg(long, value_parser = parse_volume_size)]
@@ -520,6 +513,7 @@ pub fn first_machine_install_target_from_spec(
                 ployzd,
                 ebpf_bytecode,
                 ebpf_ctl,
+                railpack,
                 nats_server,
             },
         machine_join_cluster_name,
@@ -528,6 +522,7 @@ pub fn first_machine_install_target_from_spec(
     let ployzd_artifact = artifact_target(ArtifactKind::Ployzd, &ployzd)?;
     let ebpf_bytecode_artifact = artifact_target(ArtifactKind::EbpfBytecode, &ebpf_bytecode)?;
     let ebpf_ctl_artifact = artifact_target(ArtifactKind::EbpfCtl, &ebpf_ctl)?;
+    let railpack_artifact = artifact_target(ArtifactKind::Railpack, &railpack)?;
     // Founding a first machine always installs the core nats-server; a
     // manifest without one (a dev substrate push) cannot found a cluster.
     let Some(nats_server) = nats_server else {
@@ -579,6 +574,7 @@ pub fn first_machine_install_target_from_spec(
         machine_id,
         ployzd_artifact,
         DataplaneArtifactTargets::new(ebpf_bytecode_artifact, ebpf_ctl_artifact),
+        railpack_artifact,
         nats_server_artifact,
         roles,
         host_port_assurance,
@@ -1132,6 +1128,12 @@ mod tests {
                 "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "install_path": "/usr/local/bin/ployz-ebpf-ctl"
             },
+            "railpack": {
+                "version": "v0.31.0",
+                "source": "/tmp/railpack",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "install_path": "/usr/local/lib/ployz/railpack/v0.31.0/railpack"
+            },
             "nats_server": {
                 "version": "2.12.0",
                 "source": "/tmp/nats-server",
@@ -1168,6 +1170,12 @@ mod tests {
                 "source": "/tmp/ployz-ebpf-ctl",
                 "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "install_path": "/usr/local/bin/ployz-ebpf-ctl"
+            },
+            "railpack": {
+                "version": "v0.31.0",
+                "source": "/tmp/railpack",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "install_path": "/usr/local/lib/ployz/railpack/v0.31.0/railpack"
             },
             "nats_server": {
                 "version": "2.12.0",

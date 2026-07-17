@@ -24,6 +24,8 @@ pub const RUNTIME_SNAPSHOT_STREAM: &str = "plz.v1.projection.runtime.snapshot";
 pub const RUNTIME_SNAPSHOT_SEED: &str = "plz.v1.rpc.operator.query.runtime.snapshot.seed";
 
 pub const OPERATOR_DEPLOY_SUBMIT: &str = "plz.v1.rpc.operator.command.deploy.submit";
+pub const OPERATOR_BUILD_SUBMIT: &str = "plz.v1.rpc.operator.command.build.submit";
+pub const OPERATOR_BUILD_CANCEL: &str = "plz.v1.rpc.operator.command.build.cancel";
 pub const OPERATOR_DEPLOY_RESERVE: &str = "plz.v1.rpc.operator.command.deploy.reserve";
 pub const OPERATOR_OPS_LIST: &str = "plz.v1.rpc.operator.query.ops.list";
 pub const OPERATOR_OPS_STATUS: &str = "plz.v1.rpc.operator.query.ops.status";
@@ -45,6 +47,7 @@ pub const OPERATOR_SERVICE_RESTART: &str = "plz.v1.rpc.operator.command.service.
 pub const OPERATOR_NAMESPACE_REMOVE: &str = "plz.v1.rpc.operator.command.namespace.remove";
 pub const OPERATOR_VOLUME_LIST: &str = "plz.v1.rpc.operator.query.volume.list";
 pub const OPERATOR_VOLUME_REMOVE: &str = "plz.v1.rpc.operator.command.volume.remove";
+pub const OPERATOR_VOLUME_CREATE: &str = "plz.v1.rpc.operator.command.volume.create";
 pub const OPERATOR_RUNTIME_SNAPSHOT: &str = "plz.v1.rpc.operator.query.runtime.snapshot";
 pub const OPERATOR_LOGS_TAIL: &str = "plz.v1.rpc.operator.query.logs.tail";
 pub const OPERATOR_MACHINE_DRAIN: &str = "plz.v1.rpc.operator.command.machine.drain";
@@ -60,6 +63,8 @@ pub const OPERATOR_INGRESS_CONFIGURE: &str = "plz.v1.rpc.operator.command.ingres
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApiEndpoint {
+    BuildSubmit,
+    BuildCancel,
     DeployReserve,
     DeploySubmit,
     InitFirstMachineActivate,
@@ -80,6 +85,7 @@ pub enum OperationApiEndpoint {
     ServiceRestart,
     NamespaceRemove,
     VolumeList,
+    VolumeCreate,
     VolumeRemove,
     RuntimeSnapshot,
     LogsTail,
@@ -105,6 +111,8 @@ impl OperationApiEndpoint {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
+            Self::BuildSubmit => "build.submit",
+            Self::BuildCancel => "build.cancel",
             Self::DeployReserve => "deploy.reserve",
             Self::DeploySubmit => "deploy.submit",
             Self::InitFirstMachineActivate => "init.first_machine.activate",
@@ -125,6 +133,7 @@ impl OperationApiEndpoint {
             Self::ServiceRestart => "service.restart",
             Self::NamespaceRemove => "namespace.remove",
             Self::VolumeList => "volume.list",
+            Self::VolumeCreate => "volume.create",
             Self::VolumeRemove => "volume.remove",
             Self::RuntimeSnapshot => "runtime.snapshot",
             Self::LogsTail => "logs.tail",
@@ -143,6 +152,8 @@ impl OperationApiEndpoint {
     #[must_use]
     pub const fn subject(self) -> &'static str {
         match self {
+            Self::BuildSubmit => OPERATOR_BUILD_SUBMIT,
+            Self::BuildCancel => OPERATOR_BUILD_CANCEL,
             Self::DeployReserve => OPERATOR_DEPLOY_RESERVE,
             Self::DeploySubmit => OPERATOR_DEPLOY_SUBMIT,
             Self::InitFirstMachineActivate => OPERATOR_INIT_FIRST_MACHINE_ACTIVATE,
@@ -163,6 +174,7 @@ impl OperationApiEndpoint {
             Self::ServiceRestart => OPERATOR_SERVICE_RESTART,
             Self::NamespaceRemove => OPERATOR_NAMESPACE_REMOVE,
             Self::VolumeList => OPERATOR_VOLUME_LIST,
+            Self::VolumeCreate => OPERATOR_VOLUME_CREATE,
             Self::VolumeRemove => OPERATOR_VOLUME_REMOVE,
             Self::RuntimeSnapshot => OPERATOR_RUNTIME_SNAPSHOT,
             Self::LogsTail => OPERATOR_LOGS_TAIL,
@@ -181,7 +193,8 @@ impl OperationApiEndpoint {
     #[must_use]
     pub const fn execution(self) -> OperationApiEndpointExecution {
         match self {
-            Self::DeploySubmit
+            Self::BuildSubmit
+            | Self::DeploySubmit
             | Self::MachineAdd
             | Self::MachineUpdate
             | Self::MachineStoragePrepare
@@ -191,11 +204,13 @@ impl OperationApiEndpoint {
             | Self::ServiceRestart
             | Self::NamespaceRemove
             | Self::VolumeRemove
+            | Self::VolumeCreate
             | Self::CoreReplace
             | Self::CredentialAdd
             | Self::CredentialRemove
             | Self::IngressConfigure => OperationApiEndpointExecution::AcceptsOperation,
-            Self::DeployReserve
+            Self::BuildCancel
+            | Self::DeployReserve
             | Self::InitFirstMachineActivate
             | Self::MachineJoinRedeem
             | Self::MachineJoinReport
@@ -222,6 +237,8 @@ impl From<ployz_sdk_types::operation_api::OperationApiEndpoint> for OperationApi
         use ployz_sdk_types::operation_api::OperationApiEndpoint as Core;
 
         match endpoint {
+            Core::BuildSubmit => Self::BuildSubmit,
+            Core::BuildCancel => Self::BuildCancel,
             Core::DeployReserve => Self::DeployReserve,
             Core::DeploySubmit => Self::DeploySubmit,
             Core::InitFirstMachineActivate => Self::InitFirstMachineActivate,
@@ -242,6 +259,7 @@ impl From<ployz_sdk_types::operation_api::OperationApiEndpoint> for OperationApi
             Core::ServiceRestart => Self::ServiceRestart,
             Core::NamespaceRemove => Self::NamespaceRemove,
             Core::VolumeList => Self::VolumeList,
+            Core::VolumeCreate => Self::VolumeCreate,
             Core::VolumeRemove => Self::VolumeRemove,
             Core::RuntimeSnapshot => Self::RuntimeSnapshot,
             Core::LogsTail => Self::LogsTail,
@@ -335,6 +353,28 @@ pub fn machine_service_command_scope(machine_id: &MachineId) -> String {
 }
 
 #[must_use]
+pub fn machine_build_log(machine_id: &MachineId, operation_id: &OperationId) -> String {
+    format!(
+        "plz.v1.signal.machine.{}.build.operation.{}.log",
+        machine_id.as_str(),
+        operation_id.as_str()
+    )
+}
+
+#[must_use]
+pub fn machine_build_log_publish_scope(machine_id: &MachineId) -> String {
+    format!(
+        "plz.v1.signal.machine.{}.build.operation.*.log",
+        machine_id.as_str()
+    )
+}
+
+#[must_use]
+pub fn machine_build_log_subscribe_scope() -> String {
+    "plz.v1.signal.machine.*.build.operation.*.log".to_owned()
+}
+
+#[must_use]
 pub fn machine_facts(machine_id: &MachineId) -> String {
     format!("plz.v1.testimony.machine.{}.snapshot", machine_id.as_str())
 }
@@ -366,6 +406,7 @@ pub fn gateway_status_scope() -> String {
 pub const fn deploy_running_stage(stage: &DeployRunningStage) -> &'static str {
     match stage {
         DeployRunningStage::EnsuringImages => "ensuring_images",
+        DeployRunningStage::EnsuringVolumes => "ensuring_volumes",
         DeployRunningStage::StartingContainers => "starting_containers",
         DeployRunningStage::WaitingForHealth => "waiting_for_health",
         DeployRunningStage::EnsuringCertificates => "ensuring_certificates",
@@ -405,6 +446,7 @@ pub const fn namespace_remove_running_stage(stage: &NamespaceRemoveRunningStage)
 pub const fn volume_remove_running_stage(stage: &VolumeRemoveRunningStage) -> &'static str {
     match stage {
         VolumeRemoveRunningStage::RemovingVolumeData => "removing_volume_data",
+        VolumeRemoveRunningStage::RemovingDataset => "removing_dataset",
     }
 }
 
@@ -422,7 +464,9 @@ pub enum MachineServiceEndpoint {
     ContainerRestart,
     ContainerStop,
     ContainerRemove,
+    VolumeEnsure,
     VolumeRemove,
+    VolumeTestimony,
     DataplanePublicKey,
     DataplaneStatus,
     SubstrateUpdate,
@@ -435,6 +479,8 @@ pub enum MachineServiceEndpoint {
     ImageManifestPush,
     ImageEnsure,
     ImageRemove,
+    BuildStart,
+    BuildCancel,
     CertificateArtifactStatus,
     CertificateArtifactPush,
     CertificateArtifactRemove,
@@ -466,7 +512,9 @@ impl MachineServiceEndpoint {
             Self::ContainerRestart => "container.restart",
             Self::ContainerStop => "container.stop",
             Self::ContainerRemove => "container.remove",
+            Self::VolumeEnsure => "volume.ensure",
             Self::VolumeRemove => "volume.remove",
+            Self::VolumeTestimony => "volume.testimony",
             Self::DataplanePublicKey => "dataplane.public_key",
             Self::DataplaneStatus => "dataplane.status",
             Self::SubstrateUpdate => "substrate.update",
@@ -479,6 +527,8 @@ impl MachineServiceEndpoint {
             Self::ImageManifestPush => "image.manifest.push",
             Self::ImageEnsure => "container.ensure_image",
             Self::ImageRemove => "container.remove_image",
+            Self::BuildStart => "build.start",
+            Self::BuildCancel => "build.cancel",
             Self::CertificateArtifactStatus => "certificate.artifact.status",
             Self::CertificateArtifactPush => "certificate.artifact.push",
             Self::CertificateArtifactRemove => "certificate.artifact.remove",
@@ -498,6 +548,7 @@ impl MachineServiceEndpoint {
             | Self::DnsStatus
             | Self::ContainerInspect
             | Self::ContainerResolveImage
+            | Self::VolumeTestimony
             | Self::DataplanePublicKey
             | Self::SubstrateReport
             | Self::StoragePrepareReport
@@ -513,6 +564,7 @@ impl MachineServiceEndpoint {
             | Self::ContainerRestart
             | Self::ContainerStop
             | Self::ContainerRemove
+            | Self::VolumeEnsure
             | Self::VolumeRemove
             | Self::SubstrateUpdate
             | Self::StoragePrepare
@@ -520,10 +572,69 @@ impl MachineServiceEndpoint {
             | Self::ImageManifestPush
             | Self::ImageEnsure
             | Self::ImageRemove
+            | Self::BuildStart
+            | Self::BuildCancel
             | Self::CertificateArtifactPush
             | Self::CertificateArtifactRemove
             | Self::CertificateChallengeApply
             | Self::CertificateChallengeRemove => MachineServiceEndpointExecution::Command,
         }
+    }
+}
+
+#[cfg(test)]
+mod build_contract_tests {
+    use super::*;
+
+    #[test]
+    fn build_endpoint_metadata_is_stable() {
+        assert_eq!(OperationApiEndpoint::BuildSubmit.name(), "build.submit");
+        assert_eq!(
+            OperationApiEndpoint::BuildSubmit.subject(),
+            "plz.v1.rpc.operator.command.build.submit"
+        );
+        assert_eq!(
+            OperationApiEndpoint::BuildSubmit.execution(),
+            OperationApiEndpointExecution::AcceptsOperation
+        );
+        assert_eq!(OperationApiEndpoint::BuildCancel.name(), "build.cancel");
+        assert_eq!(
+            OperationApiEndpoint::BuildCancel.subject(),
+            "plz.v1.rpc.operator.command.build.cancel"
+        );
+        assert_eq!(
+            OperationApiEndpoint::BuildCancel.execution(),
+            OperationApiEndpointExecution::MutatesOperation
+        );
+    }
+
+    #[test]
+    fn sdk_registry_maps_to_build_endpoints() {
+        assert_eq!(
+            OperationApiEndpoint::from(
+                ployz_sdk_types::operation_api::OperationApiEndpoint::BuildSubmit
+            ),
+            OperationApiEndpoint::BuildSubmit
+        );
+        assert_eq!(
+            OperationApiEndpoint::from(
+                ployz_sdk_types::operation_api::OperationApiEndpoint::BuildCancel
+            ),
+            OperationApiEndpoint::BuildCancel
+        );
+    }
+
+    #[test]
+    fn machine_build_transport_subjects_are_stable_and_machine_scoped() {
+        let machine = MachineId::try_new("machine-a").expect("machine");
+        let operation = OperationId::try_new("build-1").expect("operation");
+        assert_eq!(
+            machine_service(&machine, MachineServiceEndpoint::BuildStart),
+            "plz.v1.rpc.machine.command.machine-a.build.start"
+        );
+        assert_eq!(
+            machine_build_log(&machine, &operation),
+            "plz.v1.signal.machine.machine-a.build.operation.build-1.log"
+        );
     }
 }

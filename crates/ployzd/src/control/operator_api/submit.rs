@@ -6,28 +6,95 @@ use crate::control::intent::ingress_intent::PloyzDnsTargetStore;
 use crate::control::intent::namespace_intent::NamespaceIntentStore;
 use crate::control::operations::deploy::validate_deploy_route_admission;
 use crate::control::sequencer::{
-    CoreReplaceSubmitCommand, CredentialGrantSubmitCommand, DeploySubmitCommand,
-    IngressConfigureSubmitCommand, IngressConfigureSubmitError, MachineAddBootstrapMaterial,
-    MachineAddBootstrapMaterialError, MachineAddSubmitCommand, MachineLifecycleSubmitCommand,
-    MachineUpdateSubmitCommand, NamespaceRemoveSubmitCommand, NetworkRepairSubmitCommand,
-    OperationControllers, ServiceRestartSubmitCommand, VolumeRemoveSubmitCommand,
+    BuildSubmitCommand, CoreReplaceSubmitCommand, CredentialGrantSubmitCommand,
+    DeploySubmitCommand, IngressConfigureSubmitCommand, IngressConfigureSubmitError,
+    MachineAddBootstrapMaterial, MachineAddBootstrapMaterialError, MachineAddSubmitCommand,
+    MachineLifecycleSubmitCommand, MachineUpdateSubmitCommand, NamespaceRemoveSubmitCommand,
+    NetworkRepairSubmitCommand, OperationControllers, ServiceRestartSubmitCommand,
+    VolumeCreateSubmitCommand, VolumeRemoveSubmitCommand,
 };
 use ployz_core::deploy::ImageSource;
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::machine::MachineLifecycle;
 use ployz_core::network::internal_dns::InternalServiceName;
-use ployz_core::operation::{CredentialGrantAction, EventSequence};
+use ployz_core::operation::{CredentialGrantAction, EventSequence, VolumeCreateRequest};
 use ployz_nats::subjects::{OperationProgressScope, operation_progress_watch};
 use ployz_sdk_types::{
-    AcceptedOperation, CoreReplaceError, CoreReplaceRequest, CredentialAddError,
-    CredentialAddRequest, CredentialRemoveError, CredentialRemoveRequest, DeployReserveError,
-    DeployReserveRequest, DeployReserved, DeploySubmitError, DeploySubmitRequest,
-    IngressConfigureError, IngressConfigureRequest, MachineAddAccepted, MachineAddError,
-    MachineAddRequest, MachineJoinToken, MachineLifecycleError, MachineLifecycleRequest,
-    MachineUpdateError, MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest,
-    NetworkRepairError, NetworkRepairRequest, ServiceRestartError, ServiceRestartRequest,
+    AcceptedOperation, BuildCancelError, BuildCancelRequest, BuildSubmitError, BuildSubmitRequest,
+    CoreReplaceError, CoreReplaceRequest, CredentialAddError, CredentialAddRequest,
+    CredentialRemoveError, CredentialRemoveRequest, DeployReserveError, DeployReserveRequest,
+    DeployReserved, DeploySubmitError, DeploySubmitRequest, IngressConfigureError,
+    IngressConfigureRequest, MachineAddAccepted, MachineAddError, MachineAddRequest,
+    MachineJoinToken, MachineLifecycleError, MachineLifecycleRequest, MachineUpdateError,
+    MachineUpdateRequest, NamespaceRemoveError, NamespaceRemoveRequest, NetworkRepairError,
+    NetworkRepairRequest, ServiceRestartError, ServiceRestartRequest, VolumeCreateError,
     VolumeRemoveError, VolumeRemoveRequest,
 };
+
+pub async fn build_submit(
+    handlers: &OperationApiHandlers,
+    request: BuildSubmitRequest,
+) -> Result<AcceptedOperation, BuildSubmitError> {
+    let operation_id = request.operation_id.clone();
+    let accepted = handlers.controllers().submit_build(BuildSubmitCommand {
+        operation_id: request.operation_id,
+        source: request.source,
+        adapter: request.adapter,
+        platforms: request.platforms,
+    }).await.map_err(|error| match error {
+        crate::control::sequencer::SubmitCommandError::Submit(
+            crate::control::operation_evidence::SubmitOperationError::DuplicateSequenceMismatch { .. }
+        ) => BuildSubmitError::OperationConflict { operation_id: operation_id.clone() },
+        error @ (crate::control::sequencer::SubmitCommandError::Clock { .. }
+        | crate::control::sequencer::SubmitCommandError::NamespaceBusy { .. }
+        | crate::control::sequencer::SubmitCommandError::MachineSubstrateBusy { .. }
+        | crate::control::sequencer::SubmitCommandError::IngressBusy { .. }
+        | crate::control::sequencer::SubmitCommandError::ReservationNotFound { .. }
+        | crate::control::sequencer::SubmitCommandError::ReservationExpired { .. }
+        | crate::control::sequencer::SubmitCommandError::Submit(_)) => BuildSubmitError::Unavailable {
+            operation_id: operation_id.clone(),
+            message: format!("{error:?}"),
+        },
+    })?;
+    let operation = owned_operation(
+        accepted.submission.operation_id.clone(),
+        OperationProgressScope::Cluster,
+        accepted.submission.start_sequence,
+    );
+    handlers.build_driver().start(accepted).await;
+    Ok(operation)
+}
+
+pub async fn build_cancel(
+    handlers: &OperationApiHandlers,
+    request: BuildCancelRequest,
+) -> Result<AcceptedOperation, BuildCancelError> {
+    let operation_id = request.operation_id;
+    let disposition = handlers
+        .build_driver()
+        .cancel(&operation_id, request.reason)
+        .await
+        .map_err(|message| BuildCancelError::Unavailable {
+            operation_id: operation_id.clone(),
+            message,
+        })?;
+    let watch_start_sequence = match disposition {
+        crate::control::operations::build::BuildCancelDisposition::NoSuchOperation => {
+            return Err(BuildCancelError::NoSuchOperation { operation_id });
+        }
+        crate::control::operations::build::BuildCancelDisposition::AlreadyTerminal => {
+            return Err(BuildCancelError::AlreadyTerminal { operation_id });
+        }
+        crate::control::operations::build::BuildCancelDisposition::Accepted {
+            watch_start_sequence,
+        } => watch_start_sequence,
+    };
+    Ok(owned_operation(
+        operation_id,
+        OperationProgressScope::Cluster,
+        watch_start_sequence,
+    ))
+}
 
 use super::OperationApiHandlers;
 use super::error_map::{
@@ -678,6 +745,49 @@ pub async fn volume_remove(
         accepted.start_sequence,
     );
     handlers.volume_remove().start(accepted).await;
+    Ok(operation)
+}
+
+/// Accepts a volume-create request and starts its owned operation work.
+pub async fn submit_volume_create(
+    handlers: &OperationApiHandlers,
+    request: VolumeCreateRequest,
+) -> Result<AcceptedOperation, VolumeCreateError> {
+    let operation_id = request.operation_id.clone();
+    let accepted = handlers
+        .controllers()
+        .submit_volume_create(VolumeCreateSubmitCommand { request })
+        .await
+        .map_err(|error| match super::error_map::submit_failure(error) {
+            super::error_map::SubmitFailure::ResourceBusy {
+                namespace_id,
+                owner,
+            } => VolumeCreateError::ResourceBusy {
+                operation_id: operation_id.clone(),
+                namespace_id,
+                owner_operation_id: owner,
+            },
+            super::error_map::SubmitFailure::Unavailable { message } => {
+                VolumeCreateError::Unavailable {
+                    operation_id: operation_id.clone(),
+                    message,
+                }
+            }
+            super::error_map::SubmitFailure::DuplicateSequenceMismatch { sequence } => {
+                VolumeCreateError::DuplicateSequenceMismatch {
+                    operation_id: operation_id.clone(),
+                    sequence,
+                }
+            }
+        })?;
+    let operation = owned_operation(
+        accepted.request.operation_id.clone(),
+        OperationProgressScope::Namespace {
+            namespace_id: accepted.request.namespace_id.clone(),
+        },
+        accepted.start_sequence,
+    );
+    handlers.volume_create().start(accepted).await;
     Ok(operation)
 }
 

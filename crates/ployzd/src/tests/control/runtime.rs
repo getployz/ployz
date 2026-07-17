@@ -1183,6 +1183,7 @@ async fn start_facts_subscription(
             let response =
                 serde_json::to_vec(&MachineFactsGetRpcResponse::Ok(MachineFactsGetRpcOk {
                     facts,
+                    build: crate::roles::machine::protocol::MachineBuildCapability::Available,
                 }))
                 .expect("facts response serializes");
             let _ = client.publish(reply, response.into()).await;
@@ -1290,6 +1291,7 @@ fn machine_facts(
             mesh_endpoints: Vec::new(),
         }),
         test_disk_space(),
+        None,
         ployz_core::image::OciPlatform::current(),
         1,
     )

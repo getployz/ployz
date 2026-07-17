@@ -297,6 +297,7 @@ fn render_watch_events(events: &[ReplayedOperationEvent], output: OpsWatchOutput
 /// the core accessors on [`OperationStatus`].
 const fn operation_kind_name(kind: OperationKind) -> &'static str {
     match kind {
+        OperationKind::Build => "build",
         OperationKind::Deploy => "deploy",
         OperationKind::Cert => "cert",
         OperationKind::MachineAdd => "machine-add",
@@ -310,12 +311,18 @@ const fn operation_kind_name(kind: OperationKind) -> &'static str {
         OperationKind::ManagedDnsReconcile => "managed-dns-reconcile",
         OperationKind::IngressConfigure => "ingress-configure",
         OperationKind::NamespaceRemove => "namespace-remove",
+        OperationKind::VolumeCreate => "volume-create",
         OperationKind::VolumeRemove => "volume-remove",
     }
 }
 
 fn operation_subject(status: &OperationStatus) -> String {
     match status {
+        OperationStatus::Build { source, .. } => format!(
+            "source {} commit {}",
+            source.url.as_str(),
+            source.commit.as_str()
+        ),
         OperationStatus::Deploy { service_id, .. } => {
             format!("service {}", service_id.as_str())
         }
@@ -394,6 +401,12 @@ fn operation_subject(status: &OperationStatus) -> String {
             volume_name,
             ..
         } => format!("volume {}/{}", namespace_id.as_str(), volume_name.as_str()),
+        OperationStatus::VolumeCreate { request, .. } => format!(
+            "volume {}/{} machine {}",
+            request.namespace_id.as_str(),
+            request.volume_name.as_str(),
+            request.machine_id.as_str()
+        ),
         OperationStatus::ManagedDnsReconcile { subject, .. } => match subject {
             ployz_sdk_types::ManagedDnsReconcileSubject::Acquire => {
                 "Ployz DNS target acquisition".to_owned()
@@ -442,6 +455,7 @@ const fn machine_lifecycle_state(
 
 fn operation_state(status: &OperationStatus) -> String {
     match status {
+        OperationStatus::Build { state, .. } => build_state(state).to_owned(),
         OperationStatus::Deploy { state, .. } => deploy_state(state).to_owned(),
         OperationStatus::Cert { state, .. } => cert_state(state).to_owned(),
         OperationStatus::MachineAdd { state, .. } => machine_add_state(state).to_owned(),
@@ -464,6 +478,20 @@ fn operation_state(status: &OperationStatus) -> String {
         }
         OperationStatus::NamespaceRemove { state, .. } => namespace_remove_state(state).to_owned(),
         OperationStatus::VolumeRemove { state, .. } => volume_remove_state(state).to_owned(),
+        OperationStatus::VolumeCreate { state, .. } => volume_create_state(state).to_owned(),
+    }
+}
+
+const fn build_state(state: &ployz_sdk_types::BuildOperationState) -> &'static str {
+    match state {
+        ployz_sdk_types::BuildOperationState::Accepted => "accepted",
+        ployz_sdk_types::BuildOperationState::Placing => "placing",
+        ployz_sdk_types::BuildOperationState::Building => "building",
+        ployz_sdk_types::BuildOperationState::Completed { .. } => "completed",
+        ployz_sdk_types::BuildOperationState::Failed { .. } => "failed",
+        ployz_sdk_types::BuildOperationState::Cancelled { .. } => "cancelled",
+        ployz_sdk_types::BuildOperationState::TimedOut { .. } => "timed-out",
+        ployz_sdk_types::BuildOperationState::Interrupted { .. } => "interrupted",
     }
 }
 
@@ -554,10 +582,27 @@ const fn volume_remove_state(state: &ployz_sdk_types::VolumeRemoveOperationState
             ployz_sdk_types::VolumeRemoveRunningStage::RemovingVolumeData => {
                 "running:removing-volume-data"
             }
+            ployz_sdk_types::VolumeRemoveRunningStage::RemovingDataset => {
+                "running:removing-dataset"
+            }
         },
         ployz_sdk_types::VolumeRemoveOperationState::Completed => "completed",
         ployz_sdk_types::VolumeRemoveOperationState::Failed { .. } => "failed",
         ployz_sdk_types::VolumeRemoveOperationState::Interrupted { .. } => "interrupted",
+    }
+}
+
+const fn volume_create_state(state: &ployz_sdk_types::VolumeCreateOperationState) -> &'static str {
+    match state {
+        ployz_sdk_types::VolumeCreateOperationState::Accepted => "accepted",
+        ployz_sdk_types::VolumeCreateOperationState::Planning => "planning",
+        ployz_sdk_types::VolumeCreateOperationState::Running { stage } => match stage {
+            ployz_sdk_types::VolumeCreateRunningStage::CommittingPin => "running:committing-pin",
+            ployz_sdk_types::VolumeCreateRunningStage::EnsuringVolume => "running:ensuring-volume",
+        },
+        ployz_sdk_types::VolumeCreateOperationState::Completed => "completed",
+        ployz_sdk_types::VolumeCreateOperationState::Failed { .. } => "failed",
+        ployz_sdk_types::VolumeCreateOperationState::Interrupted { .. } => "interrupted",
     }
 }
 
@@ -566,6 +611,10 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
         return Some(format!("interruption {}", render_interruption(evidence)));
     }
     match status {
+        OperationStatus::Build {
+            state: ployz_sdk_types::BuildOperationState::Failed { failure },
+            ..
+        } => Some(format!("failure {failure:?}")),
         OperationStatus::Deploy {
             service_id,
             state: DeployOperationState::Failed { failure },
@@ -607,7 +656,15 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
             "failure {}",
             machine_storage_prepare_failure(failure)
         )),
-        OperationStatus::Deploy { .. }
+        OperationStatus::VolumeCreate {
+            state: ployz_sdk_types::VolumeCreateOperationState::Failed { failure },
+            ..
+        } => Some(format!(
+            "failure {}",
+            crate::volume::presentation::create_failure(failure)
+        )),
+        OperationStatus::Build { .. }
+        | OperationStatus::Deploy { .. }
         | OperationStatus::Cert { .. }
         | OperationStatus::MachineAdd { .. }
         | OperationStatus::MachineUpdate { .. }
@@ -620,6 +677,7 @@ fn status_failure_detail(status: &OperationStatus) -> Option<String> {
         | OperationStatus::ManagedDnsReconcile { .. }
         | OperationStatus::IngressConfigure { .. }
         | OperationStatus::NamespaceRemove { .. }
+        | OperationStatus::VolumeCreate { .. }
         | OperationStatus::VolumeRemove { .. } => None,
     }
 }
@@ -728,6 +786,7 @@ const fn deploy_completion_outcome(
 const fn deploy_running_stage(stage: DeployRunningStage) -> &'static str {
     match stage {
         DeployRunningStage::EnsuringImages => "running:ensuring-images",
+        DeployRunningStage::EnsuringVolumes => "running:ensuring-volumes",
         DeployRunningStage::StartingContainers => "running:starting-containers",
         DeployRunningStage::WaitingForHealth => "running:waiting-for-health",
         DeployRunningStage::EnsuringCertificates => "running:ensuring-certificates",
@@ -815,7 +874,22 @@ impl DeployEventRenderContext {
             OperationEvent::DeploySubmitted { target, .. } => {
                 self.service_id = Some(target.status_service_id());
             }
-            OperationEvent::DeployPlanningStarted { .. }
+            OperationEvent::BuildSubmitted { .. }
+            | OperationEvent::BuildPlacementStarted { .. }
+            | OperationEvent::BuildPlatformPlaced { .. }
+            | OperationEvent::BuildCommitVerified { .. }
+            | OperationEvent::BuildPlatformToolchainVerified { .. }
+            | OperationEvent::BuildRunning { .. }
+            | OperationEvent::BuildPlatformLog { .. }
+            | OperationEvent::BuildPlatformLogTruncated { .. }
+            | OperationEvent::BuildPlatformLogGap { .. }
+            | OperationEvent::BuildPlatformCompleted { .. }
+            | OperationEvent::BuildPlatformFailed { .. }
+            | OperationEvent::BuildCompleted { .. }
+            | OperationEvent::BuildFailed { .. }
+            | OperationEvent::BuildCancelled { .. }
+            | OperationEvent::BuildTimedOut { .. }
+            | OperationEvent::DeployPlanningStarted { .. }
             | OperationEvent::DeployImageResolved { .. }
             | OperationEvent::DeployPlanCreated { .. }
             | OperationEvent::DeployRunning { .. }
@@ -883,6 +957,11 @@ impl DeployEventRenderContext {
             | OperationEvent::VolumeRemoveRunning { .. }
             | OperationEvent::VolumeRemoveCompleted { .. }
             | OperationEvent::VolumeRemoveFailed { .. }
+            | OperationEvent::VolumeCreateSubmitted { .. }
+            | OperationEvent::VolumeCreatePlanningStarted { .. }
+            | OperationEvent::VolumeCreateRunning { .. }
+            | OperationEvent::VolumeCreateCompleted { .. }
+            | OperationEvent::VolumeCreateFailed { .. }
             | OperationEvent::OperationInterrupted { .. }
             | OperationEvent::Cancelled { .. } => {}
         }
@@ -951,7 +1030,35 @@ fn render_replayed_event_text(
                 "absent"
             }
         ),
-        OperationEvent::DeployPlanningStarted { .. }
+        OperationEvent::BuildPlatformLog {
+            platform,
+            machine_id,
+            chunk,
+            ..
+        } => format!(
+            "{} {} platform {}/{} machine {} {}",
+            event.sequence.get(),
+            label,
+            platform.os(),
+            platform.architecture(),
+            machine_id.as_str(),
+            chunk.as_str()
+        ),
+        OperationEvent::BuildSubmitted { .. }
+        | OperationEvent::BuildPlacementStarted { .. }
+        | OperationEvent::BuildPlatformPlaced { .. }
+        | OperationEvent::BuildCommitVerified { .. }
+        | OperationEvent::BuildPlatformToolchainVerified { .. }
+        | OperationEvent::BuildRunning { .. }
+        | OperationEvent::BuildPlatformLogTruncated { .. }
+        | OperationEvent::BuildPlatformLogGap { .. }
+        | OperationEvent::BuildPlatformCompleted { .. }
+        | OperationEvent::BuildPlatformFailed { .. }
+        | OperationEvent::BuildCompleted { .. }
+        | OperationEvent::BuildFailed { .. }
+        | OperationEvent::BuildCancelled { .. }
+        | OperationEvent::BuildTimedOut { .. }
+        | OperationEvent::DeployPlanningStarted { .. }
         | OperationEvent::DeployPlanCreated { .. }
         | OperationEvent::DeployRunning { .. }
         | OperationEvent::DeployContainerStarted { .. }
@@ -1015,6 +1122,11 @@ fn render_replayed_event_text(
         | OperationEvent::VolumeRemoveRunning { .. }
         | OperationEvent::VolumeRemoveCompleted { .. }
         | OperationEvent::VolumeRemoveFailed { .. }
+        | OperationEvent::VolumeCreateSubmitted { .. }
+        | OperationEvent::VolumeCreatePlanningStarted { .. }
+        | OperationEvent::VolumeCreateRunning { .. }
+        | OperationEvent::VolumeCreateCompleted { .. }
+        | OperationEvent::VolumeCreateFailed { .. }
         | OperationEvent::Cancelled { .. } => {
             format!("{} {}", event.sequence.get(), label)
         }
@@ -1027,6 +1139,23 @@ fn render_replayed_event_json(event: &ReplayedOperationEvent) -> String {
 
 fn operation_event_label(event: &OperationEvent) -> &'static str {
     match event {
+        OperationEvent::BuildSubmitted { .. } => "build.submitted",
+        OperationEvent::BuildPlacementStarted { .. } => "build.placement_started",
+        OperationEvent::BuildPlatformPlaced { .. } => "build.platform_placed",
+        OperationEvent::BuildCommitVerified { .. } => "build.commit_verified",
+        OperationEvent::BuildPlatformToolchainVerified { .. } => {
+            "build.platform_toolchain_verified"
+        }
+        OperationEvent::BuildRunning { .. } => "build.running",
+        OperationEvent::BuildPlatformLog { .. } => "build.platform_log",
+        OperationEvent::BuildPlatformLogTruncated { .. } => "build.platform_log_truncated",
+        OperationEvent::BuildPlatformLogGap { .. } => "build.platform_log_gap",
+        OperationEvent::BuildPlatformCompleted { .. } => "build.platform_completed",
+        OperationEvent::BuildPlatformFailed { .. } => "build.platform_failed",
+        OperationEvent::BuildCompleted { .. } => "build.completed",
+        OperationEvent::BuildFailed { .. } => "build.failed",
+        OperationEvent::BuildCancelled { .. } => "build.cancelled",
+        OperationEvent::BuildTimedOut { .. } => "build.timed_out",
         OperationEvent::DeploySubmitted { .. } => "deploy.submitted",
         OperationEvent::DeployPlanningStarted { .. } => "deploy.planning",
         OperationEvent::DeployImageResolved { .. } => "deploy.image_resolved",
@@ -1135,6 +1264,11 @@ fn operation_event_label(event: &OperationEvent) -> &'static str {
         OperationEvent::VolumeRemoveRunning { .. } => "volume.remove.running",
         OperationEvent::VolumeRemoveCompleted { .. } => "volume.remove.completed",
         OperationEvent::VolumeRemoveFailed { .. } => "volume.remove.failed",
+        OperationEvent::VolumeCreateSubmitted { .. } => "volume.create.submitted",
+        OperationEvent::VolumeCreatePlanningStarted { .. } => "volume.create.planning",
+        OperationEvent::VolumeCreateRunning { .. } => "volume.create.running",
+        OperationEvent::VolumeCreateCompleted { .. } => "volume.create.completed",
+        OperationEvent::VolumeCreateFailed { .. } => "volume.create.failed",
         OperationEvent::OperationInterrupted { .. } => "operation.interrupted",
         OperationEvent::Cancelled { .. } => "cancelled",
     }
@@ -1160,16 +1294,37 @@ fn render_deploy_failure_detail(
 
 #[cfg(test)]
 mod tests {
-    use super::status_failure_detail;
+    use super::{DeployEventRenderContext, render_replayed_event_text, status_failure_detail};
     use ployz_core::certificate::{
         ActiveCertState, CertBundleRef, CertValidAt, CertValidityWindow,
         CertificateProvisionFailure,
     };
     use ployz_core::ids::{CertId, MachineId, OperationId};
     use ployz_core::operation::{
-        CertOperationFailure, CertOperationState, EventSequence, FailureMessage, OperationStatus,
+        BuildLogChunk, CertOperationFailure, CertOperationState, EventSequence, FailureMessage,
+        OperationEvent, OperationEventRecordedAtUnixMs, OperationStatus, ReplayedOperationEvent,
         RouteHostname,
     };
+
+    #[test]
+    fn build_log_text_includes_platform_machine_and_chunk() {
+        let event = ReplayedOperationEvent {
+            sequence: EventSequence::try_new(3).expect("sequence"),
+            recorded_at_unix_ms: OperationEventRecordedAtUnixMs::try_new(1).expect("timestamp"),
+            event: OperationEvent::BuildPlatformLog {
+                operation_id: OperationId::try_new("build-1").expect("operation id"),
+                platform: ployz_core::image::OciPlatform::try_new("linux", "amd64")
+                    .expect("platform"),
+                machine_id: MachineId::try_new("machine-a").expect("machine id"),
+                chunk: BuildLogChunk::try_new("compiling crate").expect("chunk"),
+            },
+        };
+
+        assert_eq!(
+            render_replayed_event_text(&event, &DeployEventRenderContext { service_id: None }),
+            "3 build.platform_log platform linux/amd64 machine machine-a compiling crate"
+        );
+    }
 
     #[test]
     fn every_certificate_failure_renders_in_cert_status() {

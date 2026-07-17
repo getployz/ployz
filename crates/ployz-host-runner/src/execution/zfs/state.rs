@@ -3,17 +3,73 @@
 use std::path::{Path, PathBuf};
 
 use ployz_core::deploy::{DatasetName, ZfsPoolName};
+use ployz_core::machine::{StorageCapability, StorageUnavailableReason};
 use ployz_core::storage::{
     PLOYZ_OWNED_ZFS_BACKING_FILE, PLOYZ_OWNED_ZFS_POOL, PROVISIONED_VOLUME_MOUNTPOINT,
     PreparedStorageOrigin, PreparedStorageState, StorageEffectFailure as ZfsEffectError,
 };
 
 use super::command::{COMMAND_TIMEOUT, EffectClass, checked, parse_last_u64};
+use super::dataset::gather_pool_capacity_for_state;
 use super::preparation::PoolSelection;
 use crate::execution::{FileMode, HostRunnerCommandRunner, write_durable_file};
 
 pub(super) const PREPARED_STORAGE_FILE: &str = "prepared-storage.json";
 pub(super) const STORAGE_DIRECTORY: &str = "/var/lib/ployz/zfs";
+
+/// Observes the capability prepared by Ployz without importing pools or
+/// changing host storage. The prepared descriptor supplies the pool identity;
+/// current module and pool state supply the live testimony.
+pub fn observe_storage_capability(
+    runner: &mut impl HostRunnerCommandRunner,
+    state_directory: &Path,
+    zfs_module_path: &Path,
+) -> Result<StorageCapability, ZfsEffectError> {
+    let descriptor = state_directory.join(PREPARED_STORAGE_FILE);
+    if !descriptor.exists() {
+        return Ok(StorageCapability::Unprepared);
+    }
+    let state = load_prepared_storage_state(state_directory)?;
+    if !zfs_module_path.exists() {
+        return Ok(StorageCapability::Unavailable {
+            reason: StorageUnavailableReason::ZfsModuleMissing,
+        });
+    }
+    let imported = imported_pools(runner)?;
+    if !imported.contains(state.pool()) {
+        return Ok(StorageCapability::Unavailable {
+            reason: StorageUnavailableReason::PoolNotImported {
+                pool: state.pool().clone(),
+            },
+        });
+    }
+    let health = checked(
+        runner,
+        "zpool",
+        &["list", "-H", "-o", "health", state.pool().as_str()],
+        COMMAND_TIMEOUT,
+        EffectClass::PoolList,
+    )?;
+    if health.stdout.trim() != "ONLINE" {
+        return Ok(StorageCapability::Unavailable {
+            reason: StorageUnavailableReason::PoolFaulted {
+                pool: state.pool().clone(),
+            },
+        });
+    }
+    let capacity = match gather_pool_capacity_for_state(runner, &state) {
+        Ok(capacity) => capacity,
+        Err(_) => {
+            return Ok(StorageCapability::Unavailable {
+                reason: StorageUnavailableReason::CapacityFactsUnavailable,
+            });
+        }
+    };
+    Ok(StorageCapability::Ready {
+        pool: state.pool().clone(),
+        capacity,
+    })
+}
 
 pub(super) fn load_prepared_storage_state(
     state_directory: &Path,
@@ -178,12 +234,20 @@ pub(super) fn load_and_verify(
     runner: &mut impl HostRunnerCommandRunner,
     state_directory: &Path,
 ) -> Result<PreparedStorageState, ZfsEffectError> {
+    load_and_verify_with_timeout(runner, state_directory, COMMAND_TIMEOUT)
+}
+
+pub(super) fn load_and_verify_with_timeout(
+    runner: &mut impl HostRunnerCommandRunner,
+    state_directory: &Path,
+    command_timeout: std::time::Duration,
+) -> Result<PreparedStorageState, ZfsEffectError> {
     let state = load_prepared_storage_state(state_directory)?;
     checked(
         runner,
         "zpool",
         &["list", "-H", "-o", "name", state.pool().as_str()],
-        COMMAND_TIMEOUT,
+        command_timeout,
         EffectClass::Mismatch,
     )?;
     let observed = checked(
@@ -197,7 +261,7 @@ pub(super) fn load_and_verify(
             "mountpoint",
             state.dataset_root().as_str(),
         ],
-        COMMAND_TIMEOUT,
+        command_timeout,
         EffectClass::Mismatch,
     )?;
     if observed.stdout.trim() != PROVISIONED_VOLUME_MOUNTPOINT {
@@ -215,7 +279,7 @@ pub(super) fn load_and_verify(
             runner,
             "zpool",
             &["status", "-P", state.pool().as_str()],
-            COMMAND_TIMEOUT,
+            command_timeout,
             EffectClass::Mismatch,
         )?;
         if !observed.stdout.lines().any(|line| line.trim() == path) {

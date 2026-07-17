@@ -8,13 +8,15 @@ pub use ingress::{IngressConfigureSubmitCommand, IngressConfigureSubmitError};
 pub use machine_substrate::{MachineStoragePrepareSubmitCommand, MachineUpdateSubmitCommand};
 
 use crate::control::operation_evidence::{
-    AcceptedDeploySubmission, AcceptedMachineAddSubmission, CoreReplaceOperationSubmission,
-    CredentialGrantOperationSubmission, DeployOperationSubmission, MachineAddOperationSubmission,
-    MachineJoinIdentity, MachineJoinRedemption, MachineLifecycleOperationSubmission,
-    NamespaceRemoveOperationSubmission, NetworkRepairOperationSubmission, OperationRepository,
-    OperationStatusStoreError, RedeemMachineJoinTokenError, ServiceRestartOperationSubmission,
-    SubmitMachineAddError, SubmitOperationError, VolumeRemoveOperationSubmission,
+    AcceptedBuildSubmission, AcceptedDeploySubmission, AcceptedMachineAddSubmission,
+    BuildOperationSubmission, CoreReplaceOperationSubmission, CredentialGrantOperationSubmission,
+    DeployOperationSubmission, MachineAddOperationSubmission, MachineJoinIdentity,
+    MachineJoinRedemption, MachineLifecycleOperationSubmission, NamespaceRemoveOperationSubmission,
+    NetworkRepairOperationSubmission, OperationRepository, OperationStatusStoreError,
+    RedeemMachineJoinTokenError, ServiceRestartOperationSubmission, SubmitMachineAddError,
+    SubmitOperationError, VolumeCreateOperationSubmission, VolumeRemoveOperationSubmission,
 };
+use ployz_core::build::{BuildAdapter, BuildPlatforms, GitSource};
 use ployz_core::deploy::{
     DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS, DeployReservationExpiresAt, DeployReservationId,
     RegistryCredential, VolumeDeclaredDeployRequest, VolumeName,
@@ -51,6 +53,20 @@ pub struct DeploySubmitCommand {
     pub reservation_id: DeployReservationId,
     pub target: VolumeDeclaredDeployRequest,
     pub registry_credentials: BTreeMap<ServiceId, RegistryCredential>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildSubmitCommand {
+    pub operation_id: OperationId,
+    pub source: GitSource,
+    pub adapter: BuildAdapter,
+    pub platforms: BuildPlatforms,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedBuildExecution {
+    pub submission: AcceptedBuildSubmission,
+    pub source: GitSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,6 +140,11 @@ pub struct VolumeRemoveSubmitCommand {
     pub operation_id: OperationId,
     pub namespace_id: NamespaceId,
     pub volume_name: VolumeName,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeCreateSubmitCommand {
+    pub request: ployz_core::operation::VolumeCreateRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -283,6 +304,29 @@ impl OperationControllers {
             }
         }
         result
+    }
+
+    pub async fn submit_build(
+        &self,
+        command: BuildSubmitCommand,
+    ) -> Result<AcceptedBuildExecution, SubmitCommandError> {
+        let BuildSubmitCommand {
+            operation_id,
+            source,
+            adapter,
+            platforms,
+        } = command;
+        let submission = self
+            .repository
+            .submit_build(BuildOperationSubmission {
+                operation_id,
+                source: source.evidence(),
+                adapter,
+                platforms,
+            })
+            .await
+            .map_err(SubmitCommandError::Submit)?;
+        Ok(AcceptedBuildExecution { submission, source })
     }
 
     async fn submit_deploy_inner(
@@ -660,6 +704,49 @@ impl OperationControllers {
                 if matches!(claim, NamespaceClaim::Acquired) {
                     self.release_namespace(&namespace_id, &command.operation_id)
                         .await;
+                }
+                Err(SubmitCommandError::Submit(error))
+            }
+        }
+    }
+
+    pub async fn submit_volume_create(
+        &self,
+        command: VolumeCreateSubmitCommand,
+    ) -> Result<
+        crate::control::operation_evidence::AcceptedVolumeCreateSubmission,
+        SubmitCommandError,
+    > {
+        let namespace_id = command.request.namespace_id.clone();
+        let operation_id = command.request.operation_id.clone();
+        let claim = self.claim_namespace(&namespace_id, &operation_id).await;
+        if let NamespaceClaim::Busy { owner } = claim {
+            return Err(SubmitCommandError::NamespaceBusy {
+                namespace_id,
+                owner,
+            });
+        }
+
+        let submitted = self
+            .repository
+            .submit_volume_create(VolumeCreateOperationSubmission {
+                request: command.request,
+            })
+            .await;
+        match submitted {
+            Ok(accepted) => {
+                if !accepted.should_start_execution && matches!(claim, NamespaceClaim::Acquired) {
+                    self.release_namespace(
+                        &accepted.request.namespace_id,
+                        &accepted.request.operation_id,
+                    )
+                    .await;
+                }
+                Ok(accepted)
+            }
+            Err(error) => {
+                if matches!(claim, NamespaceClaim::Acquired) {
+                    self.release_namespace(&namespace_id, &operation_id).await;
                 }
                 Err(SubmitCommandError::Submit(error))
             }

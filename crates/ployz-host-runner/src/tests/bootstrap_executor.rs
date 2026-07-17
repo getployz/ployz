@@ -11,7 +11,7 @@ use crate::plan::{
 };
 use ployz_core::roles::InstallRolePolicy;
 use ployz_test_support::ids::{failure_message, machine_id};
-use support::artifacts::{nats_server_artifact, ployzd_artifact};
+use support::artifacts::{nats_server_artifact, ployzd_artifact, railpack_artifact};
 use support::bootstrap::*;
 
 #[test]
@@ -36,6 +36,7 @@ fn host_runner_plan_executor_runs_steps_in_order_and_records_progress() {
         machine_id("machine_1"),
         ployzd_artifact(),
         dataplane_artifacts(),
+        railpack_artifact(),
         nats_server_artifact(),
         InstallRolePolicy::install_all().without_gateway(),
         ployz_core::install::HostPortAssurance::Keeper,

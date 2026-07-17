@@ -16,6 +16,8 @@
 
 #[path = "dind_cluster/acceptance.rs"]
 mod acceptance;
+#[path = "dind_cluster/build.rs"]
+mod build;
 #[path = "dind_cluster/network.rs"]
 mod network;
 #[path = "dind_cluster/placement.rs"]
@@ -34,6 +36,7 @@ use ployz_core::deploy::{
     HealthcheckDurationNanos, HealthcheckRetries, HealthcheckShellCommand, ImageReference,
     LinuxCapability, MemoryBytes, NanoCpus, PidsLimit, PreStartHook, RegistryCredential,
     ReplicaCount, ServiceDependency, ServiceEnvironment, ServiceVolumeMount, VolumeName,
+    VolumeSpec,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::machine::{
@@ -48,7 +51,7 @@ use ployz_core::network::{
 use ployz_core::operation::{
     ArtifactUnavailableReason, DeployCompletionOutcome, DeployOperationFailure,
     DeployOperationState, NamespaceRemoveOperationState, OperationEvent, OperationStatus,
-    PreStartHookFailure, VolumeRemoveOperationState,
+    PreStartHookFailure, VolumeCreateOperationState, VolumeRemoveOperationState,
 };
 use ployz_core::operation::{MachineAddOperationState, ManagedDnsReconcileOperationState};
 use ployz_core::security::NatsPrincipal;
@@ -62,10 +65,11 @@ use ployz_nats::operation_api_client::{OperationApiClient, OperationApiClientErr
 use ployz_nats::permissions::inbox_subscribe_scope;
 use ployz_nats::subjects::{MachineServiceEndpoint, OPERATOR_RUNTIME_SNAPSHOT, machine_service};
 use ployz_sdk_types::{
-    DeployReserveRequest, DeploySubmitRequest, MachineJoinRedeemError, MachineJoinRedeemRequest,
-    MachineListRequest, MachineSnapshot, MachineTestimony, NamespaceRemoveRequest,
-    NetworkDataplaneTestimony, NetworkStatusMachine, NetworkStatusRequest, OpsListRequest,
-    ServiceInspectRequest, VolumeListRequest, VolumeRemoveRequest, VolumeStatus,
+    AcceptedOperation, DeployReserveRequest, DeploySubmitRequest, MachineJoinRedeemError,
+    MachineJoinRedeemRequest, MachineListRequest, MachineSnapshot, MachineTestimony,
+    NamespaceRemoveRequest, NetworkDataplaneTestimony, NetworkStatusMachine, NetworkStatusRequest,
+    OpsListRequest, ServiceInspectRequest, VolumeCreateRequest, VolumeListRequest,
+    VolumeRemoveRequest, VolumeStatus,
 };
 use ployz_test_support::ids::{
     idempotency_key, machine_id, namespace_id, operation_id, route_port, service_id,
@@ -104,6 +108,11 @@ const WORKLOAD_ENDPOINT_PORT: u16 = 80;
 /// Budget for the routed two-machine deploy to reach a terminal state
 /// (includes the image pull check and WireGuard/eBPF preparation).
 const DEPLOY_TERMINAL_BUDGET: Duration = Duration::from_secs(300);
+
+struct PreparedWorkloadImage {
+    reference: ImageReference,
+    source: ployz_core::deploy::ImageSource,
+}
 
 async fn wait_for_ready_dataplane(core: &CoreContext, projection: &DataplaneProjection) {
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -211,14 +220,19 @@ async fn group_core_deploy_semantics() {
         assert_init_and_activate_first_machine(&core),
     )
     .await;
+    let workload_image = timed(
+        "prepare_group_workload_image",
+        prepare_group_workload_image(&core),
+    )
+    .await;
     timed(
         "auto_hostname_https_survives_core_stop",
-        assert_auto_hostname_https_survives_core_stop(&core),
+        assert_auto_hostname_https_survives_core_stop(&core, &workload_image),
     )
     .await;
     timed(
         "namespace_manifest_convergence",
-        assert_namespace_manifest_convergence_sweeps_failed_retry(&core),
+        assert_namespace_manifest_convergence_sweeps_failed_retry(&core, &workload_image),
     )
     .await;
     timed(
@@ -237,6 +251,11 @@ async fn group_core_deploy_semantics() {
     )
     .await;
     timed(
+        "boot_crash_failure_journey",
+        rollback::assert_boot_crash_preserves_serving_and_failure_evidence(&core, &workload_image),
+    )
+    .await;
+    timed(
         "private_registry_digest_pinning",
         assert_private_registry_digest_pinning(&core),
     )
@@ -244,6 +263,11 @@ async fn group_core_deploy_semantics() {
     timed(
         "repush_new_layers",
         assert_repush_transfers_only_new_layers(&core),
+    )
+    .await;
+    timed(
+        "authenticated_source_builds",
+        build::assert_authenticated_build_journeys(&core),
     )
     .await;
 
@@ -385,17 +409,66 @@ async fn assert_init_and_activate_first_machine(core: &CoreContext) {
     .await;
 }
 
-async fn assert_auto_hostname_https_survives_core_stop(core: &CoreContext) {
+async fn prepare_group_workload_image(core: &CoreContext) -> PreparedWorkloadImage {
+    let mut target = auto_hostname_deploy_target();
+    let pushed = prepare_deploy_images(&core.api, &mut target.services, false)
+        .await
+        .expect("group workload image pushes from the local DinD seed");
+    assert_eq!(
+        pushed.len(),
+        1,
+        "group fixture must use its one locally seeded workload image"
+    );
+    let [service] = target.services.as_slice() else {
+        panic!("group workload fixture must contain one service")
+    };
+    PreparedWorkloadImage {
+        reference: service.image.clone(),
+        source: service.image_source.clone(),
+    }
+}
+
+fn apply_prepared_workload_image(target: &mut DeployRequest, image: &PreparedWorkloadImage) {
+    let [service] = target.services.as_mut_slice() else {
+        panic!("workload fixture must contain one service")
+    };
+    service.image = image.reference.clone();
+    service.image_source = image.source.clone();
+}
+
+async fn committed_route_hostname(core: &CoreContext, namespace: &str, fixture: &str) -> String {
+    let controller = connect_core_client(
+        core,
+        NatsPrincipal::Controller,
+        &core.material.controller_seed,
+    )
+    .await
+    .unwrap_or_else(|error| panic!("connect controller for {fixture} route intent: {error}"));
+    let intent = read_intent(&controller, CONNECT_TIMEOUT)
+        .await
+        .unwrap_or_else(|error| panic!("read {fixture} route intent: {error}"));
+    intent
+        .route_bindings
+        .iter()
+        .find(|binding| binding.namespace_id == namespace_id(namespace))
+        .unwrap_or_else(|| panic!("{fixture} route binding is committed"))
+        .target
+        .hostname
+        .as_str()
+        .to_owned()
+}
+
+async fn assert_auto_hostname_https_survives_core_stop(
+    core: &CoreContext,
+    image: &PreparedWorkloadImage,
+) {
     with_evidence(&core.cluster, async {
+        let mut first_target = auto_hostname_deploy_target();
+        apply_prepared_workload_image(&mut first_target, image);
         let first = core
             .api
             .deploy_submit(
-                &reserved_deploy_request(
-                    core,
-                    "idem_auto_https_first",
-                    auto_hostname_deploy_target(),
-                )
-                .await,
+                &reserved_deploy_request(core, "idem_auto_https_first", first_target).await,
             )
             .await
             .expect("auto-hostname deploy submits");
@@ -436,15 +509,12 @@ async fn assert_auto_hostname_https_survives_core_stop(core: &CoreContext) {
         assert!(hostname.starts_with("svc-auto."));
         assert!(hostname.ends_with(".up.ployz.app"));
 
+        let mut second_target = auto_hostname_deploy_target();
+        apply_prepared_workload_image(&mut second_target, image);
         let second = core
             .api
             .deploy_submit(
-                &reserved_deploy_request(
-                    core,
-                    "idem_auto_https_second",
-                    auto_hostname_deploy_target(),
-                )
-                .await,
+                &reserved_deploy_request(core, "idem_auto_https_second", second_target).await,
             )
             .await
             .expect("auto-hostname redeploy submits");
@@ -509,11 +579,15 @@ async fn assert_auto_hostname_https_survives_core_stop(core: &CoreContext) {
 
 /// A failed deploy retains its stopped container for inspection until the
 /// next explicit deploy to the namespace sweeps the prior attempt.
-async fn assert_namespace_manifest_convergence_sweeps_failed_retry(core: &CoreContext) {
+async fn assert_namespace_manifest_convergence_sweeps_failed_retry(
+    core: &CoreContext,
+    image: &PreparedWorkloadImage,
+) {
     with_evidence(&core.cluster, async {
         wait_for_machine_observations(core, &machine_id("core_1")).await;
 
         let mut failed_target = convergence_deploy_target("sleep 600");
+        apply_prepared_workload_image(&mut failed_target, image);
         let [failed_service] = failed_target.services.as_mut_slice() else {
             panic!("convergence target has one service");
         };
@@ -525,10 +599,6 @@ async fn assert_namespace_manifest_convergence_sweeps_failed_retry(core: &CoreCo
             })
             .await
             .expect("failed deploy reservation is issued");
-        let pushed = prepare_deploy_images(&core.api, &mut failed_target.services, false)
-            .await
-            .expect("convergence image pushes before deploy submit");
-        assert_eq!(pushed.len(), 1, "one convergence image must be pushed");
         let [failed_service] = failed_target.services.as_slice() else {
             panic!("convergence target has one service");
         };
@@ -1538,62 +1608,12 @@ async fn assert_internal_service_dns_reaches_cross_machine_sibling(core: &CoreCo
             "internal DNS deploy did not complete: {status:?}"
         );
 
-        let mut servers = Vec::new();
-        let mut clients = Vec::new();
-        for machine in std::iter::once(core.cluster.core()).chain(core.cluster.edges()) {
-            for container in managed_workload_containers(core, machine).await {
-                match container.labels.get(SERVICE_ID_LABEL).map(String::as_str) {
-                    Some("server") => servers.push((machine.clone(), container)),
-                    Some("client") => clients.push((machine.clone(), container)),
-                    Some(_) | None => {}
-                }
-            }
-        }
-        let [(server_machine, server)] = servers.as_slice() else {
-            panic!("expected one server container, got {servers:?}");
-        };
-        let Some((client_machine, client)) = clients
-            .iter()
-            .find(|(machine, _)| machine.name != server_machine.name)
-        else {
-            panic!("expected a client on the machine opposite {server_machine:?}: {clients:?}");
-        };
-        let Some(server_ip) = server.endpoint_ip else {
-            panic!("server container has no endpoint IP: {server:?}");
-        };
-        let Some(client_ip) = client.endpoint_ip else {
-            panic!("client container has no endpoint IP: {client:?}");
-        };
-
-        let deadline = Instant::now() + OVERLAY_FIRST_CONTACT_BUDGET;
-        let last = loop {
-            let outcome = exec_in_container(
-                docker,
-                &client_machine.container_id,
-                &[
-                    "docker",
-                    "exec",
-                    &client.id,
-                    "sh",
-                    "-c",
-                    "wget -T 2 -qO- http://server/ | grep -q 'Welcome to nginx'",
-                ],
-            )
-            .await;
-            if matches!(&outcome, Ok(outcome) if outcome.success()) {
-                break outcome;
-            }
-            if Instant::now() >= deadline {
-                break outcome;
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        };
-        assert!(
-            matches!(&last, Ok(outcome) if outcome.success()),
-            "plain service DNS failed from {}:{client_ip} to {}:{server_ip}: {last:?}",
-            client_machine.name,
-            server_machine.name,
-        );
+        let traffic = cross_machine_internal_traffic_probe(core)
+            .await
+            .unwrap_or_else(|error| panic!("managed cross-machine pair discovery failed: {error}"));
+        wait_for_cross_machine_internal_traffic(core, &traffic)
+            .await
+            .unwrap_or_else(|error| panic!("plain service DNS failed: {error}"));
 
         let stopped_control = exec_in_container(
             docker,
@@ -1606,38 +1626,16 @@ async fn assert_internal_service_dns_reaches_cross_machine_sibling(core: &CoreCo
             "stopping core control plane failed: {stopped_control:?}"
         );
 
-        let deadline = Instant::now() + OVERLAY_FIRST_CONTACT_BUDGET;
-        let last = loop {
-            let outcome = exec_in_container(
-                docker,
-                &client_machine.container_id,
-                &[
-                    "docker",
-                    "exec",
-                    &client.id,
-                    "sh",
-                    "-c",
-                    "wget -T 2 -qO- http://server/ | grep -q 'Welcome to nginx'",
-                ],
-            )
-            .await;
-            if matches!(&outcome, Ok(outcome) if outcome.success()) {
-                break outcome;
-            }
-            if Instant::now() >= deadline {
-                break outcome;
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        };
-        assert!(
-            matches!(&last, Ok(outcome) if outcome.success()),
-            "plain service DNS lost last-known-good facts with core control stopped: {last:?}"
-        );
+        wait_for_cross_machine_internal_traffic(core, &traffic)
+            .await
+            .unwrap_or_else(|error| {
+                panic!("plain service DNS lost last-known-good facts with core control stopped: {error}")
+            });
 
         let stopped_server = exec_in_container(
             docker,
-            &server_machine.container_id,
-            &["docker", "stop", &server.id],
+            &traffic.server_machine.container_id,
+            &["docker", "stop", &traffic.server_container_id],
         )
         .await;
         assert!(
@@ -1649,11 +1647,11 @@ async fn assert_internal_service_dns_reaches_cross_machine_sibling(core: &CoreCo
         let last = loop {
             let outcome = exec_in_container(
                 docker,
-                &client_machine.container_id,
+                &traffic.client_machine.container_id,
                 &[
                     "docker",
                     "exec",
-                    &client.id,
+                    &traffic.client_container_id,
                     "sh",
                     "-c",
                     "wget -T 2 -qO- http://server/ | grep -q 'Welcome to nginx'",
@@ -1676,6 +1674,96 @@ async fn assert_internal_service_dns_reaches_cross_machine_sibling(core: &CoreCo
         );
     })
     .await;
+}
+
+struct CrossMachineInternalTrafficProbe {
+    client_machine: DindMachine,
+    client_container_id: String,
+    client_endpoint_ip: std::net::IpAddr,
+    server_machine: DindMachine,
+    server_container_id: String,
+    server_endpoint_ip: std::net::IpAddr,
+}
+
+async fn cross_machine_internal_traffic_probe(
+    core: &CoreContext,
+) -> Result<CrossMachineInternalTrafficProbe, String> {
+    let [edge] = core.cluster.edges() else {
+        return Err(String::from("scenario requires exactly one edge machine"));
+    };
+    let mut servers = Vec::new();
+    let mut clients = Vec::new();
+    for machine in [core.cluster.core(), edge] {
+        for container in managed_workload_containers(core, machine).await {
+            match container.labels.get(SERVICE_ID_LABEL).map(String::as_str) {
+                Some("server") => servers.push((machine, container)),
+                Some("client") => clients.push((machine, container)),
+                Some(_) | None => {}
+            }
+        }
+    }
+    let [(server_machine, server)] = servers.as_slice() else {
+        return Err(format!("expected one managed server, got {servers:?}"));
+    };
+    let Some((client_machine, client)) = clients
+        .iter()
+        .find(|(machine, _)| machine.name != server_machine.name)
+    else {
+        return Err(format!(
+            "expected a managed client opposite {}, got {clients:?}",
+            server_machine.name
+        ));
+    };
+    let Some(server_endpoint_ip) = server.endpoint_ip else {
+        return Err(format!("server container has no endpoint IP: {server:?}"));
+    };
+    let Some(client_endpoint_ip) = client.endpoint_ip else {
+        return Err(format!("client container has no endpoint IP: {client:?}"));
+    };
+
+    Ok(CrossMachineInternalTrafficProbe {
+        client_machine: (**client_machine).clone(),
+        client_container_id: client.id.clone(),
+        client_endpoint_ip,
+        server_machine: (*server_machine).clone(),
+        server_container_id: server.id.clone(),
+        server_endpoint_ip,
+    })
+}
+
+async fn wait_for_cross_machine_internal_traffic(
+    core: &CoreContext,
+    probe: &CrossMachineInternalTrafficProbe,
+) -> Result<(), String> {
+    let deadline = Instant::now() + OVERLAY_FIRST_CONTACT_BUDGET;
+    let mut last = None;
+    while Instant::now() < deadline {
+        let outcome = exec_in_container(
+            &core.docker,
+            &probe.client_machine.container_id,
+            &[
+                "docker",
+                "exec",
+                &probe.client_container_id,
+                "sh",
+                "-c",
+                "wget -T 2 -qO- http://server/ | grep -q 'Welcome to nginx'",
+            ],
+        )
+        .await;
+        if matches!(&outcome, Ok(outcome) if outcome.success()) {
+            return Ok(());
+        }
+        last = Some(outcome);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    Err(format!(
+        "managed client on {}:{} could not reach server on {}:{} through internal DNS: {last:?}",
+        probe.client_machine.name,
+        probe.client_endpoint_ip,
+        probe.server_machine.name,
+        probe.server_endpoint_ip,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1703,6 +1791,19 @@ async fn reserved_deploy_request(
         reservation_id: reservation.reservation_id,
         target,
     }
+}
+
+async fn submit_volume_deploy_with_fresh_peer_handshakes(
+    core: &CoreContext,
+    idempotency: &str,
+    target: DeployRequest,
+) -> AcceptedOperation {
+    let request = reserved_deploy_request(core, idempotency, target).await;
+    wait_for_fresh_peer_handshakes(core).await;
+    core.api
+        .deploy_submit(&request)
+        .await
+        .expect("named-volume deploy submits")
 }
 
 async fn scenario_cross_machine_deploy(core: &CoreContext, edge: &DindMachine) -> String {
@@ -1989,6 +2090,7 @@ async fn scenario_runtime_fields_deploy(core: &CoreContext, workload_image: &Ima
 }
 
 async fn scenario_failing_healthcheck_deploy(core: &CoreContext, workload_image: &ImageReference) {
+    wait_for_fresh_peer_handshakes(core).await;
     let accepted = core
         .api
         .deploy_submit(
@@ -2005,16 +2107,16 @@ async fn scenario_failing_healthcheck_deploy(core: &CoreContext, workload_image:
 
     let status =
         wait_for_terminal_deploy_status(core, &deploy_operation, DEPLOY_TERMINAL_BUDGET).await;
-    assert!(
-        matches!(
-            &status,
-            OperationStatus::Deploy {
-                state: DeployOperationState::Failed { .. },
-                ..
-            }
-        ),
-        "failing healthcheck deploy did not fail: {status:?}"
-    );
+    let OperationStatus::Deploy {
+        state:
+            DeployOperationState::Failed {
+                failure: DeployOperationFailure::HealthCheckFailed { .. },
+            },
+        ..
+    } = &status
+    else {
+        panic!("failing healthcheck deploy had an unexpected terminal status: {status:?}");
+    };
 
     let filter = format!("label={SERVICE_ID_LABEL}=svc_bad_health");
     let mut retained = Vec::new();
@@ -2058,21 +2160,69 @@ async fn scenario_named_volume_survives_redeploy(
     core: &CoreContext,
     workload_image: &ImageReference,
 ) {
-    let first = core
+    let volume_name = VolumeName::try_new("data").expect("valid volume name");
+    let target_machine_id = machine_id("core_1");
+    let created = core
         .api
-        .deploy_submit(
-            &reserved_deploy_request(
-                core,
-                "idem_dind_volume_first",
-                volume_deploy_target(
-                    workload_image,
-                    "printf first > /data/marker; while true; do sleep 600; done",
-                ),
-            )
-            .await,
-        )
+        .volume_create(&VolumeCreateRequest {
+            operation_id: operation_id("op_dind_volume_create"),
+            namespace_id: namespace_id("volume"),
+            volume_name: volume_name.clone(),
+            machine_id: target_machine_id.clone(),
+            spec: VolumeSpec::Plain,
+        })
         .await
-        .expect("first volume deploy submits");
+        .expect("explicit volume create submits");
+    let create_status =
+        wait_for_terminal_status(&core.api, &created.operation_id, DEPLOY_TERMINAL_BUDGET).await;
+    assert!(
+        matches!(
+            &create_status,
+            OperationStatus::VolumeCreate {
+                state: VolumeCreateOperationState::Completed,
+                ..
+            }
+        ),
+        "explicit volume create did not complete: {create_status:?}"
+    );
+
+    let listed = core
+        .api
+        .volume_list(&VolumeListRequest {})
+        .await
+        .expect("volume list after explicit create");
+    let [created_volume] = listed.volumes.as_slice() else {
+        panic!(
+            "expected one explicitly created volume, got {:?}",
+            listed.volumes
+        );
+    };
+    assert_eq!(created_volume.namespace_id.as_str(), "volume");
+    assert_eq!(created_volume.volume_name, volume_name);
+    assert_eq!(created_volume.machine_id, target_machine_id);
+    assert_eq!(created_volume.status, VolumeStatus::Orphaned);
+
+    let docker_volume_name = "ployz-n6-volume-v4-data";
+    let inspect_created = core
+        .exec_on(
+            core.cluster.core(),
+            &["docker", "volume", "inspect", docker_volume_name],
+        )
+        .await;
+    assert!(
+        inspect_created.success(),
+        "explicit create did not ensure the Docker volume: {inspect_created:?}"
+    );
+
+    let first = submit_volume_deploy_with_fresh_peer_handshakes(
+        core,
+        "idem_dind_volume_first",
+        volume_deploy_target(
+            workload_image,
+            "printf first > /data/marker; while true; do sleep 600; done",
+        ),
+    )
+    .await;
     let first_status =
         wait_for_terminal_deploy_status(core, &first.operation_id, DEPLOY_TERMINAL_BUDGET).await;
     assert!(
@@ -2088,18 +2238,15 @@ async fn scenario_named_volume_survives_redeploy(
         "first volume deploy did not complete: {first_status:?}"
     );
 
-    let second = core
-        .api
-        .deploy_submit(&reserved_deploy_request(
-            core,
-            "idem_dind_volume_second",
-            volume_deploy_target(
-                workload_image,
-                "cat /data/marker > /tmp/restored-marker || true; while true; do sleep 600; done",
-            ),
-        ).await)
-        .await
-        .expect("second volume deploy submits");
+    let second = submit_volume_deploy_with_fresh_peer_handshakes(
+        core,
+        "idem_dind_volume_second",
+        volume_deploy_target(
+            workload_image,
+            "cat /data/marker > /tmp/restored-marker || true; while true; do sleep 600; done",
+        ),
+    )
+    .await;
     let second_status =
         wait_for_terminal_deploy_status(core, &second.operation_id, DEPLOY_TERMINAL_BUDGET).await;
     assert!(
@@ -2130,6 +2277,11 @@ async fn scenario_named_volume_survives_redeploy(
     let [(machine, container)] = volume_containers.as_slice() else {
         panic!("expected one volume container, got {volume_containers:?}");
     };
+    assert_eq!(
+        machine.name,
+        core.cluster.core().name,
+        "deploy did not reuse the explicitly pinned volume machine"
+    );
     let restored = core
         .exec_on(
             machine,
@@ -2147,18 +2299,12 @@ async fn scenario_named_volume_survives_redeploy(
         "redeployed container did not restore volume marker: {restored:?}"
     );
 
-    let drop_mount = core
-        .api
-        .deploy_submit(
-            &reserved_deploy_request(
-                core,
-                "idem_dind_volume_drop_mount",
-                volume_deploy_target_without_mount(workload_image),
-            )
-            .await,
-        )
-        .await
-        .expect("drop-volume deploy submits");
+    let drop_mount = submit_volume_deploy_with_fresh_peer_handshakes(
+        core,
+        "idem_dind_volume_drop_mount",
+        volume_deploy_target_without_mount(workload_image),
+    )
+    .await;
     let drop_mount_status =
         wait_for_terminal_deploy_status(core, &drop_mount.operation_id, DEPLOY_TERMINAL_BUDGET)
             .await;
@@ -2174,7 +2320,6 @@ async fn scenario_named_volume_survives_redeploy(
     );
     assert_volume_status(core, VolumeStatus::Orphaned).await;
 
-    let docker_volume_name = "ployz-n6-volume-v4-data";
     let preserved = core
         .exec_on(
             machine,
@@ -2195,21 +2340,15 @@ async fn scenario_named_volume_survives_redeploy(
         "orphaned volume did not preserve data: {preserved:?}"
     );
 
-    let reattach = core
-        .api
-        .deploy_submit(
-            &reserved_deploy_request(
-                core,
-                "idem_dind_volume_reattach",
-                volume_deploy_target(
-                    workload_image,
-                    "cat /data/marker > /tmp/reattached-marker; while true; do sleep 600; done",
-                ),
-            )
-            .await,
-        )
-        .await
-        .expect("volume reattach deploy submits");
+    let reattach = submit_volume_deploy_with_fresh_peer_handshakes(
+        core,
+        "idem_dind_volume_reattach",
+        volume_deploy_target(
+            workload_image,
+            "cat /data/marker > /tmp/reattached-marker; while true; do sleep 600; done",
+        ),
+    )
+    .await;
     let reattach_status =
         wait_for_terminal_deploy_status(core, &reattach.operation_id, DEPLOY_TERMINAL_BUDGET).await;
     assert!(
@@ -2255,7 +2394,7 @@ async fn scenario_named_volume_survives_redeploy(
         .volume_remove(&VolumeRemoveRequest {
             operation_id: operation_id("op_dind_volume_remove"),
             namespace_id: namespace_id("volume"),
-            volume_name: VolumeName::try_new("data").expect("valid volume name"),
+            volume_name,
         })
         .await
         .expect("volume remove submits");
@@ -2944,7 +3083,11 @@ async fn wait_for_matching_snapshot(
         Duration::from_secs(120),
         &format!("state never matched the pre-restart truth (expected {before:?})"),
         |snapshot| {
-            let MachineSnapshot { active, testimony } = snapshot;
+            let MachineSnapshot {
+                active,
+                testimony,
+                storage_alarms: _,
+            } = snapshot;
             *active == before.active && matching_answered_testimony(testimony, &before.testimony)
         },
     )

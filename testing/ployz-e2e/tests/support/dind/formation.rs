@@ -9,6 +9,7 @@ use ployz::dispatcher::{PloyzctlRuntimeConfig, execute_command};
 use ployz::machine::bootstrap::BootstrapRelease;
 use ployz::machine::command::{MachineAddRemoteCommand, MachineIdentity, MachineInitCommand};
 use ployz::ssh::SshTarget;
+use ployz_core::build::railpack_pins;
 use ployz_core::install::{MachineBootstrapUrl, MachineJoinClusterName};
 use ployz_core::machine::roles::InstallRolePolicy;
 use ployz_core::nats_config::NatsUserSeed;
@@ -280,19 +281,7 @@ impl ProductCliHarness {
 /// Writes the release manifest the product `machine init` resolves artifacts
 /// from: the baked artifact mount as absolute-path sources with pinned shas.
 async fn write_release_manifest(docker: &Docker, core: &DindMachine, shas: &ArtifactShas) {
-    let manifest = format!(
-        "PLOYZ_VERSION=local\n\
-         PLOYZD_URL={ARTIFACTS_MOUNT_PATH}/ployzd\n\
-         PLOYZD_SHA256={}\n\
-         PLOYZ_EBPF_TC_URL={ARTIFACTS_MOUNT_PATH}/ployz-ebpf-tc\n\
-         PLOYZ_EBPF_TC_SHA256={}\n\
-         PLOYZ_EBPF_CTL_URL={ARTIFACTS_MOUNT_PATH}/ployz-ebpf-ctl\n\
-         PLOYZ_EBPF_CTL_SHA256={}\n\
-         PLOYZ_NATS_SERVER_VERSION={}\n\
-         PLOYZ_NATS_SERVER_URL={NATS_SERVER_ARCHIVE_PATH}\n\
-         PLOYZ_NATS_SERVER_SHA256={}\n",
-        shas.ployzd, shas.ebpf_bytecode, shas.ebpf_ctl, shas.nats_server_version, shas.nats_server,
-    );
+    let manifest = release_manifest(shas);
     write_file_in_container(
         docker,
         &core.container_id,
@@ -302,6 +291,32 @@ async fn write_release_manifest(docker: &Docker, core: &DindMachine, shas: &Arti
     )
     .await
     .expect("write release manifest");
+}
+
+fn release_manifest(shas: &ArtifactShas) -> String {
+    let railpack_version = railpack_pins().expect("checked-in Railpack pins").version();
+    let manifest = format!(
+        "PLOYZ_VERSION=local\n\
+         PLOYZD_URL={ARTIFACTS_MOUNT_PATH}/ployzd\n\
+         PLOYZD_SHA256={}\n\
+         PLOYZ_EBPF_TC_URL={ARTIFACTS_MOUNT_PATH}/ployz-ebpf-tc\n\
+         PLOYZ_EBPF_TC_SHA256={}\n\
+         PLOYZ_EBPF_CTL_URL={ARTIFACTS_MOUNT_PATH}/ployz-ebpf-ctl\n\
+         PLOYZ_EBPF_CTL_SHA256={}\n\
+         PLOYZ_RAILPACK_VERSION={railpack_version}\n\
+         PLOYZ_RAILPACK_URL={ARTIFACTS_MOUNT_PATH}/railpack\n\
+         PLOYZ_RAILPACK_SHA256={}\n\
+         PLOYZ_NATS_SERVER_VERSION={}\n\
+         PLOYZ_NATS_SERVER_URL={NATS_SERVER_ARCHIVE_PATH}\n\
+         PLOYZ_NATS_SERVER_SHA256={}\n",
+        shas.ployzd,
+        shas.ebpf_bytecode,
+        shas.ebpf_ctl,
+        shas.railpack,
+        shas.nats_server_version,
+        shas.nats_server,
+    );
+    manifest
 }
 
 /// Forms the core through the product `ployz machine init` command: the
@@ -370,6 +385,7 @@ pub struct ArtifactShas {
     pub ployzd: String,
     pub ebpf_bytecode: String,
     pub ebpf_ctl: String,
+    pub railpack: String,
     pub nats_server: String,
     /// The nats-server release version baked into the machine image next to
     /// its archive, so the manifest never drifts from the image contents.
@@ -392,6 +408,7 @@ impl ArtifactShas {
                 &format!("{ARTIFACTS_MOUNT_PATH}/ployz-ebpf-ctl"),
             )
             .await,
+            railpack: sha256_of(docker, core, &format!("{ARTIFACTS_MOUNT_PATH}/railpack")).await,
             nats_server: sha256_of(docker, core, NATS_SERVER_ARCHIVE_PATH).await,
             nats_server_version: read_file_in_machine(docker, core, NATS_SERVER_VERSION_PATH)
                 .await
@@ -405,7 +422,6 @@ impl ArtifactShas {
 /// version, for the manifest's local nats-server artifact source.
 const NATS_SERVER_ARCHIVE_PATH: &str = "/opt/ployz/nats-server.tar.gz";
 const NATS_SERVER_VERSION_PATH: &str = "/opt/ployz/nats-server.version";
-
 async fn read_file_in_machine(docker: &Docker, machine: &DindMachine, path: &str) -> String {
     let outcome = exec_in_container(docker, &machine.container_id, &["cat", path])
         .await
@@ -551,4 +567,36 @@ pub async fn finish(core: CoreContext) {
         .teardown()
         .await
         .expect("teardown DinD cluster");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ARTIFACTS_MOUNT_PATH, ArtifactShas, release_manifest};
+    use ployz_core::build::railpack_pins;
+
+    #[test]
+    fn release_manifest_includes_pinned_railpack_artifact() {
+        let manifest = release_manifest(&ArtifactShas {
+            ployzd: "ployzd-sha".to_owned(),
+            ebpf_bytecode: "ebpf-bytecode-sha".to_owned(),
+            ebpf_ctl: "ebpf-ctl-sha".to_owned(),
+            railpack: "railpack-sha".to_owned(),
+            nats_server: "nats-sha".to_owned(),
+            nats_server_version: "2.14.2".to_owned(),
+        });
+
+        for required in [
+            &format!(
+                "PLOYZ_RAILPACK_VERSION={}",
+                railpack_pins().expect("pins").version()
+            ),
+            &format!("PLOYZ_RAILPACK_URL={ARTIFACTS_MOUNT_PATH}/railpack"),
+            "PLOYZ_RAILPACK_SHA256=railpack-sha",
+        ] {
+            assert!(
+                manifest.lines().any(|line| line == required),
+                "release manifest omitted {required:?}: {manifest}"
+            );
+        }
+    }
 }

@@ -1,23 +1,31 @@
 use std::time::{Duration, Instant};
 
+use ployz_core::deploy::{DeployRequest, DeployRoute, DeployRouteTarget};
+use ployz_core::ingress::AutomaticHostnameLabel;
 use ployz_core::operation::{
     DeployCompletionOutcome, DeployOperationState, NetworkRepairOperationState, OperationStatus,
 };
 use ployz_core::security::NatsPrincipal;
 use ployz_e2e::dind::{self, exec_in_container};
-use ployz_sdk_types::{
-    NetworkDataplaneTestimony, NetworkInternalDnsTestimony, NetworkRepairRequest,
-    NetworkResolveMachineTestimony, NetworkResolveRequest, NetworkStatusMachine,
-    NetworkStatusRequest,
+use ployz_nats::operation_api_client::{
+    DEFAULT_OPERATION_API_REQUEST_TIMEOUT, OperationApiClientError,
 };
-use ployz_test_support::ids::{machine_id, operation_id};
+use ployz_nats::service_runtime::NatsServiceRequestFailure;
+use ployz_sdk_types::{
+    DeployReserveRequest, NetworkDataplaneTestimony, NetworkInternalDnsTestimony,
+    NetworkRepairRequest, NetworkResolveMachineTestimony, NetworkResolveRequest,
+    NetworkStatusMachine, NetworkStatusRequest,
+};
+use ployz_test_support::ids::{machine_id, namespace_id, operation_id, route_port};
 use ployz_test_support::ops::wait_for_terminal_status;
 
 use super::{
-    CONNECT_TIMEOUT, DEPLOY_TERMINAL_BUDGET, OVERLAY_FIRST_CONTACT_BUDGET, add_and_join_edge,
-    assert_unit_active, connect_core_client, finish, init_core_cluster, internal_dns_deploy_target,
-    read_intent, reserved_deploy_request, wait_for_machine_observations, wait_for_ready_dataplane,
-    wait_for_terminal_deploy_status, with_evidence,
+    CONNECT_TIMEOUT, CoreContext, DEPLOY_TERMINAL_BUDGET, OVERLAY_FIRST_CONTACT_BUDGET,
+    add_and_join_edge, assert_unit_active, committed_route_hostname, connect_core_client,
+    cross_machine_internal_traffic_probe, finish, gateway_https_get_unverified, init_core_cluster,
+    internal_dns_deploy_target, read_intent, reserved_deploy_request,
+    wait_for_cross_machine_internal_traffic, wait_for_machine_observations,
+    wait_for_ready_dataplane, wait_for_terminal_deploy_status, with_evidence,
 };
 
 /// Network observability is driven by intended membership, resolver answers
@@ -84,7 +92,7 @@ async fn group_network_repair() {
                 &reserved_deploy_request(
                     &core,
                     "idem_dind_network_resolve",
-                    internal_dns_deploy_target(),
+                    routed_internal_dns_deploy_target(),
                 )
                 .await,
             )
@@ -144,6 +152,8 @@ async fn group_network_repair() {
             answer_sets.all(|addresses| addresses == first),
             "known service answers diverged: {resolved:?}"
         );
+        let gateway_hostname =
+            committed_route_hostname(&core, "internal_dns", "network fixture").await;
 
         let stopped = exec_in_container(
             &docker,
@@ -231,6 +241,7 @@ async fn group_network_repair() {
             "network repair did not complete: {repaired:?}"
         );
         wait_for_ready_dataplane(&core, &intent.dataplane_projection).await;
+        assert_last_known_good_survives_control_role_downtime(&core, &gateway_hostname).await;
         super::timed(
             "internal_service_dns",
             super::assert_internal_service_dns_reaches_cross_machine_sibling(&core),
@@ -240,6 +251,125 @@ async fn group_network_repair() {
     .await;
 
     finish(core).await;
+}
+
+fn routed_internal_dns_deploy_target() -> DeployRequest {
+    let mut target = internal_dns_deploy_target();
+    let Some(server) = target
+        .services
+        .iter_mut()
+        .find(|service| service.service_id.as_str() == "server")
+    else {
+        panic!("internal DNS fixture omits its server service")
+    };
+    server.routes.push(DeployRoute {
+        target: DeployRouteTarget::AutoHostname {
+            label: AutomaticHostnameLabel::try_new("network-failure")
+                .expect("valid network failure route label"),
+        },
+        endpoint_port: route_port(80),
+    });
+    target
+}
+
+/// The control-plane-core outage stops `ployzd-control` while independently
+/// supervised substrate and data-plane roles keep serving last-known-good.
+async fn assert_last_known_good_survives_control_role_downtime(
+    core: &CoreContext,
+    gateway_hostname: &str,
+) {
+    let gateway_before = wait_for_gateway_response(core, gateway_hostname)
+        .await
+        .expect("Gateway route serves before ployzd-control downtime");
+    assert!(
+        gateway_before.contains("Welcome to nginx"),
+        "Gateway route returned an unexpected response before ployzd-control downtime: {gateway_before}"
+    );
+    let internal_traffic = cross_machine_internal_traffic_probe(core)
+        .await
+        .expect("managed cross-machine client/server pair exists");
+    wait_for_cross_machine_internal_traffic(core, &internal_traffic)
+        .await
+        .expect(
+            "managed workload reaches its cross-machine sibling before ployzd-control downtime",
+        );
+
+    let stopped = exec_in_container(
+        &core.docker,
+        &core.cluster.core().container_id,
+        &["systemctl", "stop", "ployzd-control"],
+    )
+    .await;
+    assert!(
+        matches!(&stopped, Ok(outcome) if outcome.success()),
+        "stopping ployzd-control failed: {stopped:?}"
+    );
+
+    let request_budget = DEFAULT_OPERATION_API_REQUEST_TIMEOUT + Duration::from_secs(2);
+    let request_started = Instant::now();
+    let unavailable = tokio::time::timeout(
+        request_budget,
+        core.api.deploy_reserve(&DeployReserveRequest {
+            namespace_id: namespace_id("control_unavailable"),
+        }),
+    )
+    .await;
+    let request_elapsed = request_started.elapsed();
+    let gateway_during = wait_for_gateway_response(core, gateway_hostname).await;
+    let internal_traffic_during =
+        wait_for_cross_machine_internal_traffic(core, &internal_traffic).await;
+
+    let restarted = exec_in_container(
+        &core.docker,
+        &core.cluster.core().container_id,
+        &["systemctl", "start", "ployzd-control"],
+    )
+    .await;
+    assert!(
+        matches!(&restarted, Ok(outcome) if outcome.success()),
+        "restarting ployzd-control failed: {restarted:?}"
+    );
+    assert_unit_active(core, core.cluster.core(), "ployzd-control").await;
+    wait_for_machine_observations(core, &machine_id("core_1")).await;
+
+    assert!(
+        request_elapsed <= request_budget,
+        "operation request exceeded its bounded failure budget: {request_elapsed:?}"
+    );
+    assert!(
+        matches!(
+            unavailable,
+            Ok(Err(OperationApiClientError::Request {
+                failure: NatsServiceRequestFailure::NoResponders
+                    | NatsServiceRequestFailure::TimedOut,
+                ..
+            }))
+        ),
+        "operation request did not report typed ployzd-control unavailability: {unavailable:?}"
+    );
+    let gateway_during =
+        gateway_during.expect("Gateway route remains available while ployzd-control is stopped");
+    assert!(
+        gateway_during.contains("Welcome to nginx"),
+        "Gateway route returned an unexpected response while ployzd-control was stopped: {gateway_during}"
+    );
+    internal_traffic_during.expect(
+        "managed workload internal DNS and traffic remain available while ployzd-control is stopped",
+    );
+}
+
+async fn wait_for_gateway_response(core: &CoreContext, hostname: &str) -> Result<String, String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut last = Err(String::from("Gateway route was not queried"));
+    while Instant::now() < deadline {
+        last =
+            gateway_https_get_unverified(core.cluster.core().published.gateway_tls, hostname).await;
+        if matches!(&last, Ok(response) if response.contains("Welcome to nginx")) {
+            return last;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    last
 }
 
 fn network_queries_ready(machines: &[NetworkStatusMachine]) -> bool {

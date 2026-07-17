@@ -3,15 +3,17 @@ use crate::control::operations::deploy::{
     DeployServiceExecutionCommand, prepare_deploy_execution_command,
 };
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec,
-    ImageReference, ReplicaCount,
+    ContainerMountPath, DatasetName, DeployCleanupContainer, DeployRequest, DeployRoute,
+    DeployRouteTarget, DeployServiceSpec, ImageReference, ReplicaCount, ServiceVolumeMount,
+    VolumeMaxSizeBytes, VolumeName, VolumeSpec, ZfsPoolName,
 };
 use ployz_core::ids::{NamespaceRevisionEntryId, RouteBindingId};
 use ployz_core::ingress::{AutomaticHostnameLabel, RouteBindingOrigin};
-use ployz_core::intent::RouteBindingState;
+use ployz_core::intent::{RouteBindingState, VolumeKind, VolumePinState};
 use ployz_core::machine::runtime::{
     ContainerRuntimeState, MachineContainerObservationSnapshot, ManagedContainerObservation,
 };
+use ployz_core::machine::{MachineUsabilityReason, StorageCapability};
 use ployz_core::operation::{RouteHostname, RoutePort, RouteTarget};
 use ployz_test_support::containers;
 use ployz_test_support::fixtures::serving_target_entry;
@@ -25,6 +27,8 @@ async fn separates_reusable_replicas_from_cleanup_candidates() {
     let request = deploy_request();
     let facts = DeployExecutionFacts {
         machine_platforms: std::collections::BTreeMap::new(),
+        seed_clock_testimony: std::collections::BTreeMap::new(),
+        machine_storage_testimony: std::collections::BTreeMap::new(),
         unusable_machines: Vec::new(),
         namespace_route_bindings: Vec::new(),
         namespace_serving_entries: Vec::new(),
@@ -72,6 +76,8 @@ async fn does_not_reuse_an_unpromoted_running_target_entry() {
     let request = deploy_request();
     let facts = DeployExecutionFacts {
         machine_platforms: std::collections::BTreeMap::new(),
+        seed_clock_testimony: std::collections::BTreeMap::new(),
+        machine_storage_testimony: std::collections::BTreeMap::new(),
         unusable_machines: Vec::new(),
         namespace_route_bindings: Vec::new(),
         namespace_serving_entries: Vec::new(),
@@ -117,6 +123,8 @@ async fn reuses_a_matching_running_promoted_target_entry() {
     promoted.namespace_revision_entry_id = target_namespace_revision_entry_id();
     let facts = DeployExecutionFacts {
         machine_platforms: std::collections::BTreeMap::new(),
+        seed_clock_testimony: std::collections::BTreeMap::new(),
+        machine_storage_testimony: std::collections::BTreeMap::new(),
         unusable_machines: Vec::new(),
         namespace_route_bindings: Vec::new(),
         namespace_serving_entries: vec![promoted],
@@ -171,6 +179,8 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
     .expect("valid machine observation snapshot");
     let facts = DeployExecutionFacts {
         machine_platforms: std::collections::BTreeMap::new(),
+        seed_clock_testimony: std::collections::BTreeMap::new(),
+        machine_storage_testimony: std::collections::BTreeMap::new(),
         unusable_machines: Vec::new(),
         namespace_route_bindings: vec![RouteBindingState {
             id: RouteBindingId::try_new("route_worker").expect("valid route binding id"),
@@ -223,7 +233,12 @@ async fn manifest_omission_removes_serving_entry_routes_and_containers() {
 async fn empty_manifest_prepares_no_services() {
     let facts = DeployExecutionFacts {
         machine_platforms: std::collections::BTreeMap::new(),
-        unusable_machines: Vec::new(),
+        seed_clock_testimony: std::collections::BTreeMap::new(),
+        machine_storage_testimony: std::collections::BTreeMap::new(),
+        unusable_machines: vec![ployz_core::operation::UnusableMachine {
+            machine_id: machine_id("machine_silent"),
+            reason: MachineUsabilityReason::FactsUnavailable,
+        }],
         namespace_route_bindings: Vec::new(),
         namespace_serving_entries: Vec::new(),
         namespace_volume_pins: Vec::new(),
@@ -248,6 +263,170 @@ async fn empty_manifest_prepares_no_services() {
     );
 
     assert!(command.services().is_empty());
+    assert_eq!(
+        command.unusable_machines(),
+        [ployz_core::operation::UnusableMachine {
+            machine_id: machine_id("machine_silent"),
+            reason: MachineUsabilityReason::FactsUnavailable,
+        }]
+    );
+}
+
+#[test]
+fn provisioned_mount_requires_fresh_ready_storage_without_filtering_plain_work() {
+    let candidates = vec![machine_id("machine_a"), machine_id("machine_b")];
+    let storage = std::collections::BTreeMap::from([
+        (
+            machine_id("machine_a"),
+            Some(StorageCapability::Ready {
+                pool: ZfsPoolName::try_new("ployz").expect("valid pool"),
+                capacity: ployz_core::machine::PoolCapacityFacts {
+                    total_bytes: 1024 * 1024,
+                    provisioned_used_bytes: 0,
+                    free_bytes: 1024 * 1024,
+                    child_quotas: Vec::new(),
+                },
+            }),
+        ),
+        (machine_id("machine_b"), None),
+    ]);
+    let facts = |storage| DeployExecutionFacts {
+        machine_platforms: std::collections::BTreeMap::new(),
+        seed_clock_testimony: std::collections::BTreeMap::new(),
+        machine_storage_testimony: storage,
+        unusable_machines: Vec::new(),
+        namespace_route_bindings: Vec::new(),
+        namespace_serving_entries: Vec::new(),
+        namespace_volume_pins: Vec::new(),
+        eligible_machines: candidates.clone(),
+        dataplane_members: Vec::new(),
+        observed_machines: Vec::new(),
+        namespace_cleanup_candidates: Vec::new(),
+        automatic_hostname_mode: AutomaticHostnameMode::Disabled,
+        gateway_certificate_targets: Vec::new(),
+        ployz_gateway_certificate_targets: Vec::new(),
+        step_timeout: Duration::from_secs(5),
+    };
+
+    let plain = prepare_deploy_execution_command(
+        operation_id("op_plain"),
+        deploy_request(),
+        facts(storage.clone()),
+    );
+    assert_eq!(single_service(&plain).eligible_machines(), candidates);
+
+    let mut provisioned_request = deploy_request();
+    let volume_name = VolumeName::try_new("data").expect("valid volume name");
+    provisioned_request.volumes.insert(
+        volume_name.clone(),
+        VolumeSpec::Provisioned {
+            max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("non-zero size"),
+        },
+    );
+    let [service] = provisioned_request.services.as_mut_slice() else {
+        panic!("fixture has one service");
+    };
+    service.runtime.volume_mounts = vec![ServiceVolumeMount {
+        volume_name,
+        target: ContainerMountPath::try_new("/data").expect("valid mount path"),
+    }];
+    let mut second_service = service.clone();
+    second_service.service_id = service_id("svc_worker");
+    provisioned_request.services.push(second_service);
+
+    let provisioned = prepare_deploy_execution_command(
+        operation_id("op_provisioned"),
+        provisioned_request,
+        facts(storage),
+    );
+
+    assert!(
+        provisioned
+            .services()
+            .iter()
+            .all(|service| { service.eligible_machines() == [machine_id("machine_a")] })
+    );
+    let [unusable] = provisioned.unusable_machines() else {
+        panic!("legacy machine is the sole unusable candidate");
+    };
+    assert_eq!(
+        unusable.reason,
+        MachineUsabilityReason::StorageTestimonyNotReported
+    );
+}
+
+#[test]
+fn pinned_provisioned_mount_rejects_ready_testimony_from_the_wrong_pool() {
+    let mut request = deploy_request();
+    let volume_name = VolumeName::try_new("data").expect("valid volume name");
+    request.volumes.insert(
+        volume_name.clone(),
+        VolumeSpec::Provisioned {
+            max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("non-zero size"),
+        },
+    );
+    let [service] = request.services.as_mut_slice() else {
+        panic!("fixture has one service");
+    };
+    service.runtime.volume_mounts = vec![ServiceVolumeMount {
+        volume_name: volume_name.clone(),
+        target: ContainerMountPath::try_new("/data").expect("valid mount path"),
+    }];
+    let namespace_id = namespace_id("default");
+    let expected = ZfsPoolName::try_new("tank").expect("valid pool");
+    let reported = ZfsPoolName::try_new("other").expect("valid pool");
+    let pin = VolumePinState::try_new(
+        namespace_id.clone(),
+        volume_name.clone(),
+        machine_id("machine_a"),
+        VolumeKind::Provisioned {
+            dataset: DatasetName::for_volume(&expected, &namespace_id, &volume_name)
+                .expect("canonical dataset"),
+            max_size_bytes: VolumeMaxSizeBytes::try_new(1024).expect("non-zero size"),
+        },
+    )
+    .expect("valid volume pin");
+    let command = prepare_deploy_execution_command(
+        operation_id("op_mismatch"),
+        request,
+        DeployExecutionFacts {
+            machine_platforms: std::collections::BTreeMap::new(),
+            seed_clock_testimony: std::collections::BTreeMap::new(),
+            machine_storage_testimony: std::collections::BTreeMap::from([(
+                machine_id("machine_a"),
+                Some(StorageCapability::Ready {
+                    pool: reported.clone(),
+                    capacity: ployz_core::machine::PoolCapacityFacts {
+                        total_bytes: 1024 * 1024,
+                        provisioned_used_bytes: 0,
+                        free_bytes: 1024 * 1024,
+                        child_quotas: Vec::new(),
+                    },
+                }),
+            )]),
+            unusable_machines: Vec::new(),
+            namespace_route_bindings: Vec::new(),
+            namespace_serving_entries: Vec::new(),
+            namespace_volume_pins: vec![pin],
+            eligible_machines: vec![machine_id("machine_a")],
+            dataplane_members: Vec::new(),
+            observed_machines: Vec::new(),
+            namespace_cleanup_candidates: Vec::new(),
+            automatic_hostname_mode: AutomaticHostnameMode::Disabled,
+            gateway_certificate_targets: Vec::new(),
+            ployz_gateway_certificate_targets: Vec::new(),
+            step_timeout: Duration::from_secs(5),
+        },
+    );
+
+    assert!(single_service(&command).eligible_machines().is_empty());
+    assert_eq!(
+        command.unusable_machines(),
+        [ployz_core::operation::UnusableMachine {
+            machine_id: machine_id("machine_a"),
+            reason: MachineUsabilityReason::StoragePoolMismatch { expected, reported },
+        }]
+    );
 }
 
 #[test]
@@ -290,6 +469,8 @@ fn auto_hostname_is_stable_and_collision_safe() {
         namespace_serving_entries: Vec::new(),
         namespace_volume_pins: Vec::new(),
         eligible_machines: Vec::new(),
+        seed_clock_testimony: std::collections::BTreeMap::new(),
+        machine_storage_testimony: std::collections::BTreeMap::new(),
         unusable_machines: Vec::new(),
         dataplane_members: Vec::new(),
         observed_machines: Vec::new(),
@@ -326,6 +507,8 @@ fn detached_hostname_recreation_mints_a_fresh_binding_identity() {
         namespace_serving_entries: Vec::new(),
         namespace_volume_pins: Vec::new(),
         eligible_machines: Vec::new(),
+        seed_clock_testimony: std::collections::BTreeMap::new(),
+        machine_storage_testimony: std::collections::BTreeMap::new(),
         unusable_machines: Vec::new(),
         dataplane_members: Vec::new(),
         observed_machines: Vec::new(),

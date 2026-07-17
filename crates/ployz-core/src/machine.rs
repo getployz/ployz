@@ -5,6 +5,7 @@ pub mod lifecycle;
 pub mod roles;
 pub mod rpc;
 pub mod runtime;
+pub mod storage;
 pub mod testimony;
 
 pub use dataplane_admission::{
@@ -21,6 +22,7 @@ pub use roles::{
 };
 pub use rpc::{MachineRpcResponder, MachineRpcResponse};
 pub use runtime::*;
+pub use storage::*;
 pub use testimony::{
     GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessHealth, GatewayServingStatus,
     GatewayStatusObservation, GatewayStatusPublishFailure, GatewayWatchFailure,

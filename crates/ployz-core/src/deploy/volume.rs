@@ -170,6 +170,17 @@ impl DatasetName {
     }
 
     #[must_use]
+    pub fn pool(&self) -> ZfsPoolName {
+        let Some((pool, _)) = self.0.split_once('/') else {
+            unreachable!("validated dataset names always contain a pool component");
+        };
+        match ZfsPoolName::try_new(pool) {
+            Ok(pool) => pool,
+            Err(_) => unreachable!("validated dataset names always contain a valid pool"),
+        }
+    }
+
+    #[must_use]
     pub fn matches_volume(&self, namespace_id: &NamespaceId, volume_name: &VolumeName) -> bool {
         self.0
             .rsplit_once('/')
@@ -191,7 +202,9 @@ impl From<DatasetName> for String {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DatasetNameError {
     #[error("dataset name is empty")]
     Empty,
@@ -316,4 +329,32 @@ pub enum VolumeMaxSizeError {
 pub enum VolumeSpec {
     Plain,
     Provisioned { max_size_bytes: VolumeMaxSizeBytes },
+}
+
+#[cfg(test)]
+mod dataset_name_error_tests {
+    use super::*;
+
+    #[test]
+    fn dataset_name_error_retains_structured_wire_evidence() {
+        let error = DatasetNameError::NameBudgetExceeded {
+            bytes: 300,
+            maximum: ZFS_DATASET_NAME_MAX_BYTES,
+        };
+
+        let encoded = serde_json::to_value(&error).expect("serialize dataset name error");
+        assert_eq!(
+            encoded.get("kind").and_then(serde_json::Value::as_str),
+            Some("name_budget_exceeded")
+        );
+        assert_eq!(
+            encoded.get("bytes").and_then(serde_json::Value::as_u64),
+            Some(300)
+        );
+        assert_eq!(
+            serde_json::from_value::<DatasetNameError>(encoded)
+                .expect("deserialize dataset name error"),
+            error
+        );
+    }
 }

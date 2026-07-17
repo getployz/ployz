@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use ployz_core::build::BUILD_RESPONSE_PERMISSION_EXPIRY;
 use ployz_core::nats_config::{
     CredentialGrant, CredentialName, CredentialRole, NatsAuthorizationGrant, NatsInternalAuthority,
     NatsUserPublicKey,
@@ -37,6 +38,8 @@ fn sdk_contract_registry_maps_to_every_nats_operation_endpoint() {
     assert_eq!(
         endpoints,
         [
+            OperationApiEndpoint::BuildSubmit,
+            OperationApiEndpoint::BuildCancel,
             OperationApiEndpoint::DeployReserve,
             OperationApiEndpoint::DeploySubmit,
             OperationApiEndpoint::InitFirstMachineActivate,
@@ -47,6 +50,7 @@ fn sdk_contract_registry_maps_to_every_nats_operation_endpoint() {
             OperationApiEndpoint::MachineResume,
             OperationApiEndpoint::ServiceRestart,
             OperationApiEndpoint::NamespaceRemove,
+            OperationApiEndpoint::VolumeCreate,
             OperationApiEndpoint::VolumeRemove,
             OperationApiEndpoint::CoreReplace,
             OperationApiEndpoint::CoreReplaceReport,
@@ -124,6 +128,12 @@ fn server_configuration_validates_advertised_hosts_and_tls_paths() {
 fn authorization_and_permission_rendering_are_owned_here() {
     let grants = [
         NatsAuthorizationGrant::Internal {
+            authority: NatsInternalAuthority::Machine {
+                machine_id: machine_id("machine_7"),
+            },
+            public_key: user_public_key(),
+        },
+        NatsAuthorizationGrant::Internal {
             authority: NatsInternalAuthority::Controller,
             public_key: user_public_key(),
         },
@@ -136,6 +146,12 @@ fn authorization_and_permission_rendering_are_owned_here() {
     let rendered = render_authorized_users(&grants);
     assert!(rendered.contains("# ployz-principal: controller"));
     assert!(rendered.contains("# ployz-credential-role: operator"));
+    assert!(rendered.contains(&format!(
+        "allow_responses: {{ max: 1, expires: {}s }}",
+        BUILD_RESPONSE_PERMISSION_EXPIRY.as_secs()
+    )));
+    assert!(rendered.contains("allow_responses: { max: 1, expires: 120s }"));
+    assert!(!rendered.contains("allow_responses: true"));
     assert_eq!(
         parse_authorized_users(&rendered).expect("rendered authorizations parse"),
         grants

@@ -1,42 +1,29 @@
 //! Provisioned Volume dataset effects and facts.
 
-use std::path::Path;
+use std::fs::{File, OpenOptions};
+use std::io;
+use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes};
-use ployz_core::storage::{
-    PROVISIONED_VOLUME_MOUNTPOINT, PreparedStorageOrigin, PreparedStorageState,
-    StorageEffectFailure as ZfsEffectError,
+use ployz_core::machine::{
+    DatasetQuotaFact, PoolCapacityAdmissionFailure, PoolCapacityFacts, VolumeUsageFacts,
+    admit_pool_quota_total,
 };
-use serde::{Deserialize, Serialize};
+use ployz_core::storage::{
+    DATASET_DESTROY_INNER_COMMAND_TIMEOUT, PROVISIONED_VOLUME_MOUNTPOINT, PreparedStorageOrigin,
+    PreparedStorageState, StorageEffectFailure as ZfsEffectError,
+};
 
-use super::command::{COMMAND_TIMEOUT, EffectClass, checked, parse_last_u64, parse_u64};
-use super::state::{load_and_verify, verify_child};
+use super::command::{COMMAND_TIMEOUT, EffectClass, checked, parse_u64};
+use super::state::{load_and_verify, load_and_verify_with_timeout, verify_child};
 use crate::execution::HostRunnerCommandRunner;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DatasetQuotaFact {
-    pub dataset: DatasetName,
-    pub quota_bytes: u64,
-}
+const DATASET_ENSURE_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
+const DATASET_ENSURE_LOCK_RETRY: Duration = Duration::from_millis(25);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PoolCapacityFacts {
-    pub available_bytes: u64,
-    pub child_quotas: Vec<DatasetQuotaFact>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DatasetFacts {
-    pub used_bytes: u64,
-    /// Modification time of the dataset mount directory itself. This is
-    /// directory metadata testimony, not a recursive signal of file writes.
-    pub mount_directory_modified_unix_seconds: u64,
-}
-
-pub fn create_dataset(
+pub fn ensure_dataset(
     runner: &mut impl HostRunnerCommandRunner,
     state_directory: &Path,
     dataset: &DatasetName,
@@ -44,67 +31,169 @@ pub fn create_dataset(
 ) -> Result<(), ZfsEffectError> {
     let state = load_and_verify(runner, state_directory)?;
     verify_child(&state, dataset)?;
-    admit_quota(runner, &state, dataset, quota.get())?;
-    checked(
-        runner,
-        "zfs",
-        &[
-            "create",
-            "-o",
-            &format!("quota={}", quota.get()),
-            dataset.as_str(),
-        ],
-        COMMAND_TIMEOUT,
-        EffectClass::Dataset,
-    )?;
-    Ok(())
-}
-
-pub fn grow_dataset_quota(
-    runner: &mut impl HostRunnerCommandRunner,
-    state_directory: &Path,
-    dataset: &DatasetName,
-    requested: VolumeMaxSizeBytes,
-) -> Result<(), ZfsEffectError> {
-    let state = load_and_verify(runner, state_directory)?;
-    verify_child(&state, dataset)?;
-    let output = checked(
-        runner,
-        "zfs",
-        &["get", "-H", "-p", "-o", "value", "quota", dataset.as_str()],
-        COMMAND_TIMEOUT,
-        EffectClass::Dataset,
-    )?;
-    let current = parse_u64("dataset quota", output.stdout.trim())?;
-    if requested.get() < current {
+    let _lock = DatasetEnsureLock::acquire(state_directory, state.pool().as_str())?;
+    let facts = gather_pool_capacity_for_state(runner, &state)?;
+    let current = facts
+        .child_quotas
+        .iter()
+        .find(|fact| fact.dataset == *dataset)
+        .map(|fact| fact.quota_bytes);
+    if current.is_some() {
+        verify_existing_dataset_shape(runner, dataset)?;
+    }
+    if let Some(current) = current
+        && quota.get() < current
+    {
         return Err(ZfsEffectError::QuotaShrink {
             dataset: dataset.clone(),
             current,
-            requested: requested.get(),
+            requested: quota.get(),
         });
     }
-    if requested.get() > current {
-        admit_quota(runner, &state, dataset, requested.get())?;
-        checked(
-            runner,
-            "zfs",
-            &[
-                "set",
-                &format!("quota={}", requested.get()),
-                dataset.as_str(),
-            ],
-            COMMAND_TIMEOUT,
-            EffectClass::Dataset,
-        )?;
+    if current == Some(quota.get()) {
+        return Ok(());
+    }
+    admit_quota(&facts, dataset, quota.get())?;
+    match current {
+        None => {
+            checked(
+                runner,
+                "zfs",
+                &[
+                    "create",
+                    "-o",
+                    &format!("quota={}", quota.get()),
+                    dataset.as_str(),
+                ],
+                COMMAND_TIMEOUT,
+                EffectClass::Dataset,
+            )?;
+        }
+        Some(_) => {
+            checked(
+                runner,
+                "zfs",
+                &["set", &format!("quota={}", quota.get()), dataset.as_str()],
+                COMMAND_TIMEOUT,
+                EffectClass::Dataset,
+            )?;
+        }
     }
     Ok(())
+}
+
+fn verify_existing_dataset_shape(
+    runner: &mut impl HostRunnerCommandRunner,
+    dataset: &DatasetName,
+) -> Result<(), ZfsEffectError> {
+    let observed = checked(
+        runner,
+        "zfs",
+        &[
+            "get",
+            "-H",
+            "-o",
+            "value",
+            "mountpoint,mounted",
+            dataset.as_str(),
+        ],
+        COMMAND_TIMEOUT,
+        EffectClass::Mismatch,
+    )?;
+    let mut values = observed.stdout.lines();
+    let mountpoint = values.next();
+    let mounted = values.next();
+    let (Some(mountpoint), Some(mounted)) = (mountpoint, mounted) else {
+        return Err(ZfsEffectError::PreparedStateMismatch {
+            message: format!(
+                "dataset {} returned invalid mountpoint/mounted testimony {:?}",
+                dataset.as_str(),
+                observed.stdout.trim()
+            ),
+        });
+    };
+    if values.next().is_some() {
+        return Err(ZfsEffectError::PreparedStateMismatch {
+            message: format!(
+                "dataset {} returned invalid mountpoint/mounted testimony {:?}",
+                dataset.as_str(),
+                observed.stdout.trim()
+            ),
+        });
+    }
+    let Some((_, leaf)) = dataset.as_str().rsplit_once('/') else {
+        return Err(ZfsEffectError::PreparedStateMismatch {
+            message: format!("dataset {} has no canonical child leaf", dataset.as_str()),
+        });
+    };
+    let expected_mountpoint = format!("{PROVISIONED_VOLUME_MOUNTPOINT}/{leaf}");
+    if mountpoint != expected_mountpoint || mounted != "yes" {
+        return Err(ZfsEffectError::PreparedStateMismatch {
+            message: format!(
+                "dataset {} has mountpoint {:?} and mounted {:?}, expected {:?} and mounted yes",
+                dataset.as_str(),
+                mountpoint,
+                mounted,
+                expected_mountpoint
+            ),
+        });
+    }
+    Ok(())
+}
+
+pub(super) struct DatasetEnsureLock {
+    file: File,
+}
+
+impl DatasetEnsureLock {
+    pub(super) fn acquire(state_directory: &Path, pool: &str) -> Result<Self, ZfsEffectError> {
+        let path = dataset_ensure_lock_path(state_directory, pool);
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|error| lock_error(&path, error))?;
+        let deadline = Instant::now() + DATASET_ENSURE_LOCK_TIMEOUT;
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(Self { file }),
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    if Instant::now() >= deadline {
+                        return Err(ZfsEffectError::OperationTimedOut);
+                    }
+                    thread::sleep(DATASET_ENSURE_LOCK_RETRY);
+                }
+                Err(std::fs::TryLockError::Error(error)) => {
+                    return Err(lock_error(&path, error));
+                }
+            }
+        }
+    }
+}
+
+impl Drop for DatasetEnsureLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+pub(super) fn dataset_ensure_lock_path(state_directory: &Path, pool: &str) -> PathBuf {
+    state_directory.join(format!("storage-dataset-ensure-{pool}.lock"))
+}
+
+fn lock_error(path: &Path, error: io::Error) -> ZfsEffectError {
+    ZfsEffectError::Dataset {
+        message: format!("failed to lock {}: {error}", path.display()),
+    }
 }
 
 pub fn gather_dataset_facts(
     runner: &mut impl HostRunnerCommandRunner,
     state_directory: &Path,
     dataset: &DatasetName,
-) -> Result<DatasetFacts, ZfsEffectError> {
+) -> Result<VolumeUsageFacts, ZfsEffectError> {
     let state = load_and_verify(runner, state_directory)?;
     verify_child(&state, dataset)?;
     let used = checked(
@@ -122,19 +211,48 @@ pub fn gather_dataset_facts(
             message: format!("dataset {} has no leaf", dataset.as_str()),
         })?;
     let path = format!("{PROVISIONED_VOLUME_MOUNTPOINT}/{leaf}");
-    let directory_modified = checked(
+    let recursive_modified = checked(
         runner,
-        "stat",
-        &["-c", "%Y", &path],
+        "find",
+        &[&path, "-xdev", "-printf", "%T@\n"],
         COMMAND_TIMEOUT,
         EffectClass::Dataset,
     )?;
-    Ok(DatasetFacts {
+    if recursive_modified.stdout_truncated {
+        return Err(ZfsEffectError::GatherParse {
+            message: "dataset recursive modification timestamp output exceeded the capture limit"
+                .to_owned(),
+        });
+    }
+    Ok(VolumeUsageFacts {
         used_bytes: parse_u64("dataset used bytes", used.stdout.trim())?,
-        mount_directory_modified_unix_seconds: parse_u64(
-            "dataset mount-directory modification timestamp",
-            directory_modified.stdout.trim(),
-        )?,
+        last_write_unix_seconds: parse_latest_write(&recursive_modified.stdout)?,
+    })
+}
+
+fn parse_latest_write(output: &str) -> Result<u64, ZfsEffectError> {
+    let mut latest = None;
+    for value in output.lines() {
+        let value = value.trim();
+        let seconds = value.split_once('.').map_or(value, |(seconds, _)| seconds);
+        if seconds.is_empty()
+            || !seconds.bytes().all(|byte| byte.is_ascii_digit())
+            || value.strip_prefix(seconds).is_some_and(|fraction| {
+                !fraction.is_empty()
+                    && (!fraction.starts_with('.')
+                        || fraction.len() == 1
+                        || !fraction[1..].bytes().all(|byte| byte.is_ascii_digit()))
+            })
+        {
+            return Err(ZfsEffectError::GatherParse {
+                message: format!("dataset recursive modification timestamp {value:?} is invalid"),
+            });
+        }
+        let seconds = parse_u64("dataset recursive modification timestamp", seconds)?;
+        latest = Some(latest.map_or(seconds, |current: u64| current.max(seconds)));
+    }
+    latest.ok_or_else(|| ZfsEffectError::GatherParse {
+        message: "dataset recursive modification timestamp output is empty".to_owned(),
     })
 }
 
@@ -143,16 +261,85 @@ pub fn destroy_dataset(
     state_directory: &Path,
     dataset: &DatasetName,
 ) -> Result<(), ZfsEffectError> {
-    let state = load_and_verify(runner, state_directory)?;
+    let state = load_and_verify_with_timeout(
+        runner,
+        state_directory,
+        DATASET_DESTROY_INNER_COMMAND_TIMEOUT,
+    )?;
     verify_child(&state, dataset)?;
+    if !direct_child_listing_contains(
+        runner,
+        &state,
+        dataset,
+        DATASET_DESTROY_INNER_COMMAND_TIMEOUT,
+    )? {
+        return Ok(());
+    }
     checked(
         runner,
         "zfs",
         &["destroy", dataset.as_str()],
-        COMMAND_TIMEOUT,
+        DATASET_DESTROY_INNER_COMMAND_TIMEOUT,
         EffectClass::Destructive,
     )?;
     Ok(())
+}
+
+fn direct_child_listing_contains(
+    runner: &mut impl HostRunnerCommandRunner,
+    state: &PreparedStorageState,
+    requested: &DatasetName,
+    command_timeout: Duration,
+) -> Result<bool, ZfsEffectError> {
+    let root = state.dataset_root().as_str();
+    let output = checked(
+        runner,
+        "zfs",
+        &["list", "-H", "-d", "1", "-o", "name", root],
+        command_timeout,
+        EffectClass::Destructive,
+    )?;
+    let parse_error = |message| ZfsEffectError::GatherParse { message };
+    if output.stdout_truncated {
+        return Err(parse_error(
+            "direct-child dataset listing exceeded the command output capture limit".to_owned(),
+        ));
+    }
+    let mut saw_root = false;
+    let mut saw_requested = false;
+    for row in output.stdout.lines() {
+        if row != row.trim() || row.is_empty() {
+            return Err(parse_error(format!(
+                "invalid direct-child dataset row {row:?}"
+            )));
+        }
+        if row == root {
+            if saw_root {
+                return Err(parse_error(format!(
+                    "duplicate direct-child dataset root row {root:?}"
+                )));
+            }
+            saw_root = true;
+            continue;
+        }
+        let child = DatasetName::try_new(row).map_err(|error| ZfsEffectError::GatherParse {
+            message: format!("invalid direct-child dataset row {row:?}: {error}"),
+        })?;
+        verify_child(state, &child)?;
+        if child == *requested && saw_requested {
+            return Err(parse_error(format!(
+                "duplicate direct-child dataset row {:?}",
+                requested.as_str()
+            )));
+        }
+        saw_requested |= child == *requested;
+    }
+    if !saw_root {
+        return Err(parse_error(format!(
+            "direct-child dataset listing omitted root {root}"
+        )));
+    }
+    Ok(saw_requested)
 }
 
 pub fn gather_pool_capacity(
@@ -163,33 +350,52 @@ pub fn gather_pool_capacity(
     gather_pool_capacity_for_state(runner, &state)
 }
 
-fn gather_pool_capacity_for_state(
+pub(super) fn gather_pool_capacity_for_state(
     runner: &mut impl HostRunnerCommandRunner,
     state: &PreparedStorageState,
 ) -> Result<PoolCapacityFacts, ZfsEffectError> {
-    let available = match state.origin() {
+    let (total_bytes, free_bytes) = match state.origin() {
         PreparedStorageOrigin::OwnedImage { backing_file } => {
             let path = backing_file.to_string_lossy();
             let output = checked(
                 runner,
                 "df",
-                &["-B1", "--output=avail", &path],
+                &["-B1", "--output=size,avail", &path],
                 COMMAND_TIMEOUT,
                 EffectClass::Dataset,
             )?;
-            parse_last_u64("backing filesystem available bytes", &output.stdout)?
+            parse_capacity_row("backing filesystem capacity", &output.stdout)?
         }
         PreparedStorageOrigin::Adopted => {
             let output = checked(
                 runner,
                 "zpool",
-                &["list", "-H", "-p", "-o", "free", state.pool().as_str()],
+                &["list", "-H", "-p", "-o", "size,free", state.pool().as_str()],
                 COMMAND_TIMEOUT,
                 EffectClass::Dataset,
             )?;
-            parse_u64("pool available bytes", output.stdout.trim())?
+            parse_capacity_row("pool capacity", &output.stdout)?
         }
     };
+    let provisioned_used = checked(
+        runner,
+        "zfs",
+        &[
+            "get",
+            "-H",
+            "-p",
+            "-o",
+            "value",
+            "used",
+            state.dataset_root().as_str(),
+        ],
+        COMMAND_TIMEOUT,
+        EffectClass::Dataset,
+    )?;
+    let provisioned_used_bytes = parse_u64(
+        "provisioned dataset-root used bytes",
+        provisioned_used.stdout.trim(),
+    )?;
     let output = checked(
         runner,
         "zfs",
@@ -230,32 +436,59 @@ fn gather_pool_capacity_for_state(
     }
     child_quotas.sort_by(|left, right| left.dataset.cmp(&right.dataset));
     Ok(PoolCapacityFacts {
-        available_bytes: available,
+        total_bytes,
+        provisioned_used_bytes,
+        free_bytes,
         child_quotas,
     })
 }
 
+fn parse_capacity_row(label: &str, output: &str) -> Result<(u64, u64), ZfsEffectError> {
+    let Some(line) = output.lines().rev().find(|line| !line.trim().is_empty()) else {
+        return Err(ZfsEffectError::GatherParse {
+            message: format!("missing {label}"),
+        });
+    };
+    let values = line.split_whitespace().collect::<Vec<_>>();
+    let [total, free] = values.as_slice() else {
+        return Err(ZfsEffectError::GatherParse {
+            message: format!("invalid {label} row {line:?}"),
+        });
+    };
+    Ok((
+        parse_u64(&format!("{label} total bytes"), total)?,
+        parse_u64(&format!("{label} free bytes"), free)?,
+    ))
+}
+
 fn admit_quota(
-    runner: &mut impl HostRunnerCommandRunner,
-    state: &PreparedStorageState,
+    facts: &PoolCapacityFacts,
     dataset: &DatasetName,
     requested: u64,
 ) -> Result<(), ZfsEffectError> {
-    let facts = gather_pool_capacity_for_state(runner, state)?;
     let requested_total = facts
         .child_quotas
         .iter()
         .filter(|fact| fact.dataset != *dataset)
         .try_fold(requested, |total, fact| total.checked_add(fact.quota_bytes))
-        .ok_or(ZfsEffectError::QuotaCapacityExceeded {
-            available: facts.available_bytes,
-            requested_total: u64::MAX,
+        .ok_or_else(|| ZfsEffectError::GatherParse {
+            message: "dataset quota total overflowed".to_owned(),
         })?;
-    if requested_total > facts.available_bytes {
-        return Err(ZfsEffectError::QuotaCapacityExceeded {
-            available: facts.available_bytes,
-            requested_total,
-        });
-    }
-    Ok(())
+    admit_pool_quota_total(facts, requested_total).map_err(|failure| match failure {
+        PoolCapacityAdmissionFailure::Exceeded {
+            free_bytes,
+            required_headroom_bytes,
+            requested_total_bytes,
+        } => ZfsEffectError::QuotaCapacityExceeded {
+            total_bytes: facts.total_bytes,
+            provisioned_used_bytes: facts.provisioned_used_bytes,
+            free_bytes,
+            required_headroom_bytes,
+            requested_total_bytes,
+        },
+        PoolCapacityAdmissionFailure::Overflow
+        | PoolCapacityAdmissionFailure::InconsistentFacts { .. } => ZfsEffectError::GatherParse {
+            message: failure.to_string(),
+        },
+    })
 }

@@ -34,6 +34,8 @@ pub const RUNTIME_PROJECTION_SERVICE_ID: &str = "plz-runtime-projection.core";
 pub const RUNTIME_PROJECTION_SERVICE_DESCRIPTION: &str = "Ployz passive runtime projection";
 pub const SERVICE_VERSION: ServiceVersion = ServiceVersion::new(0, 1, 0);
 pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: &[OperationApiEndpoint] = &[
+    OperationApiEndpoint::BuildSubmit,
+    OperationApiEndpoint::BuildCancel,
     OperationApiEndpoint::CredentialAdd,
     OperationApiEndpoint::CredentialList,
     OperationApiEndpoint::CredentialRemove,
@@ -43,6 +45,7 @@ pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: &[OperationApiEndpoint] = &[
     OperationApiEndpoint::ServiceRestart,
     OperationApiEndpoint::NamespaceRemove,
     OperationApiEndpoint::VolumeRemove,
+    OperationApiEndpoint::VolumeCreate,
     OperationApiEndpoint::InitFirstMachineActivate,
     OperationApiEndpoint::MachineAdd,
     OperationApiEndpoint::MachineUpdate,
@@ -235,6 +238,7 @@ pub fn machine_role_service(machine_id: &MachineId) -> NatsServiceSpec {
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerStop),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ContainerRemove),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::VolumeRemove),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::VolumeEnsure),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::DataplanePublicKey),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::DataplaneStatus),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::SubstrateUpdate),
@@ -245,6 +249,8 @@ pub fn machine_role_service(machine_id: &MachineId) -> NatsServiceSpec {
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ImageManifestPush),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ImageEnsure),
             machine_endpoint_spec(machine_id, MachineServiceEndpoint::ImageRemove),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::BuildStart),
+            machine_endpoint_spec(machine_id, MachineServiceEndpoint::BuildCancel),
         ],
     )
 }
@@ -334,7 +340,9 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         MachineServiceEndpoint::ContainerRestart => "machine.container.restart",
         MachineServiceEndpoint::ContainerStop => "machine.container.stop",
         MachineServiceEndpoint::ContainerRemove => "machine.container.remove",
+        MachineServiceEndpoint::VolumeEnsure => "machine.volume.ensure",
         MachineServiceEndpoint::VolumeRemove => "machine.volume.remove",
+        MachineServiceEndpoint::VolumeTestimony => "machine.volume.testimony",
         MachineServiceEndpoint::DataplanePublicKey => "machine.dataplane.public_key",
         MachineServiceEndpoint::DataplaneStatus => "machine.dataplane.status",
         MachineServiceEndpoint::SubstrateUpdate => "machine.substrate.update",
@@ -347,6 +355,8 @@ pub const fn machine_endpoint_name(endpoint: MachineServiceEndpoint) -> &'static
         MachineServiceEndpoint::ImageManifestPush => "machine.image.manifest.push",
         MachineServiceEndpoint::ImageEnsure => "machine.image.ensure",
         MachineServiceEndpoint::ImageRemove => "machine.image.remove",
+        MachineServiceEndpoint::BuildStart => "machine.build.start",
+        MachineServiceEndpoint::BuildCancel => "machine.build.cancel",
         MachineServiceEndpoint::CertificateArtifactStatus => "machine.certificate.artifact.status",
         MachineServiceEndpoint::CertificateArtifactPush => "machine.certificate.artifact.push",
         MachineServiceEndpoint::CertificateArtifactRemove => "machine.certificate.artifact.remove",

@@ -187,6 +187,12 @@
             "source": "/tmp/ployzd",
             "version": "0.1.0"
           },
+          "railpack": {
+            "install_path": "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "source": "/tmp/ployz-railpack",
+            "version": "0.1.0"
+          },
           "recovery_key_wrapped": [
             1,
             2,
@@ -238,6 +244,12 @@
             "install_path": "/usr/local/bin/ployzd",
             "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "source": "/tmp/ployzd",
+            "version": "0.1.0"
+          },
+          "railpack": {
+            "install_path": "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "source": "/tmp/ployz-railpack",
             "version": "0.1.0"
           },
           "recovery_key_wrapped": [

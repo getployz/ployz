@@ -1583,7 +1583,7 @@ fn parse_duration_micros(value: &str) -> Result<u64, String> {
     Ok(total_micros)
 }
 
-pub(super) fn parse_byte_quantity(value: &str, noun: &str) -> Result<u64, String> {
+pub(crate) fn parse_byte_quantity(value: &str, noun: &str) -> Result<u64, String> {
     let value = value.trim();
     if value.is_empty() {
         return Err(format!("{noun} is empty"));
@@ -1772,7 +1772,7 @@ mod tests {
     };
     use ployz_core::ids::ServiceId;
 
-    use super::{parse_compose_duration, parse_depends_on, parse_pre_start};
+    use super::{parse_byte_quantity, parse_compose_duration, parse_depends_on, parse_pre_start};
     use crate::deploy::compose::diagnostics::{ComposePath, UnsupportedFieldMode};
     use crate::deploy::compose::{ComposeInput, parse_deploy_file};
 
@@ -1961,6 +1961,18 @@ mod tests {
         );
         assert!(parse_compose_duration("1x").is_err());
         assert!(parse_compose_duration("1m30").is_err());
+    }
+
+    #[test]
+    fn byte_quantity_errors_name_the_requested_resource() {
+        assert_eq!(
+            parse_byte_quantity("0", "memory"),
+            Err("memory must be greater than zero".to_owned())
+        );
+        assert_eq!(
+            parse_byte_quantity("1XB", "volume max size"),
+            Err("unsupported volume max size unit \"xb\"".to_owned())
+        );
     }
 
     #[test]

@@ -570,6 +570,24 @@ test("sdk exports operation subjects", () => {
 test("sdk exports the Rust operation API contract registry", () => {
   assert.deepEqual(OPERATION_API_CONTRACTS, [
     {
+      name: "build.submit",
+      subject: "plz.v1.rpc.operator.command.build.submit",
+      execution: "accepts_operation",
+      request: "BuildSubmitRequest",
+      success: "AcceptedOperation",
+      error: "BuildSubmitError",
+      response: "BuildSubmitResponse",
+    },
+    {
+      name: "build.cancel",
+      subject: "plz.v1.rpc.operator.command.build.cancel",
+      execution: "mutates_operation",
+      request: "BuildCancelRequest",
+      success: "AcceptedOperation",
+      error: "BuildCancelError",
+      response: "BuildCancelResponse",
+    },
+    {
       name: "deploy.reserve",
       subject: "plz.v1.rpc.operator.command.deploy.reserve",
       execution: "mutates_operation",
@@ -658,6 +676,15 @@ test("sdk exports the Rust operation API contract registry", () => {
       success: "AcceptedOperation",
       error: "NamespaceRemoveError",
       response: "NamespaceRemoveResponse",
+    },
+    {
+      name: "volume.create",
+      subject: "plz.v1.rpc.operator.command.volume.create",
+      execution: "accepts_operation",
+      request: "VolumeCreateRequest",
+      success: "AcceptedOperation",
+      error: "VolumeCreateError",
+      response: "VolumeCreateResponse",
     },
     {
       name: "volume.remove",
@@ -1287,6 +1314,10 @@ function machineJoinBundle(): MachineJoinBundle {
         "/usr/local/lib/ployz/ebpf/ployz-ebpf-tc",
       ),
       ebpf_ctl: machineJoinArtifact("/tmp/ployz-ebpf-ctl", "/usr/local/bin/ployz-ebpf-ctl"),
+      railpack: machineJoinArtifact(
+        "/tmp/railpack",
+        "/usr/local/lib/ployz/railpack/v0.31.0/railpack",
+      ),
     },
   };
 }

@@ -1,9 +1,16 @@
+pub use ployz_core::build::{
+    BuildAdapter, BuildCacheScope, BuildContextPath, BuildPlatforms, BuildPlatformsError,
+    DockerfileStageName, GitBasicCredential, GitCommit, GitCredentialSecret, GitCredentialUsername,
+    GitRepositoryUrl, GitSource, GitSourceError, GitSourceEvidence, RailpackCacheKey,
+    VerifiedGitCommit,
+};
 pub use ployz_core::certificate::{
     AcmeChallengeError, AcmeChallengeToken, AcmeChallengeTtlError, AcmeChallengeTtlSeconds,
     AcmeChallengeValue, AcmeHttp01Challenge, ActiveCertState, CertBundleRef, CertTextError,
     CertValidAt, CertValidAtError, CertValidityError, CertValidityWindow,
     CertificateProvisionFailure, ManagedLeaseName,
 };
+pub use ployz_core::deploy::VolumeAdmissionFailure;
 pub use ployz_core::deploy::{
     ContainerCommand, ContainerCommandError, ContainerEntrypoint, ContainerHealthcheck,
     ContainerHealthcheckTest, ContainerMountPath, ContainerMountPathError, ContainerResourceLimits,
@@ -13,9 +20,10 @@ pub use ployz_core::deploy::{
     DeployReservationExpiresAt, DeployReservationId, DeployReservationNumberError, DeployRoute,
     DeployRouteTarget, DeployServicePlan, DeployServiceSpec, EnvName, EnvNameError, EnvValue,
     EnvValueError, HealthcheckDurationNanos, HealthcheckRetries, HealthcheckShellCommand,
-    ImageReference, ImageReferenceError, ImageSource, LinuxCapability, MemoryBytes, NanoCpus,
-    PidsLimit, PlatformImage, PreStartHook, PreStartHookStep, PushedImageReceipt,
-    PushedImageReceiptError, RegistryCredential, RegistryCredentialError, RegistryCredentialSecret,
+    ImageAvailabilityExpiresAt, ImageAvailabilityTimestampError, ImageReference,
+    ImageReferenceError, ImageSource, LinuxCapability, MemoryBytes, NanoCpus, PidsLimit,
+    PlatformImage, PreStartHook, PreStartHookStep, PushedImageReceipt, PushedImageReceiptError,
+    RegistryCredential, RegistryCredentialError, RegistryCredentialSecret,
     RegistryCredentialUsername, ReplicaCount, ReplicaCountError, ReplicaSlot, ServiceDependency,
     ServiceEnvironment, ServiceVolumeMount, StopGracePeriod, VolumeMaxSizeBytes,
     VolumeMaxSizeError, VolumeName, VolumeNameError, VolumeSpec, ZfsPoolName, ZfsPoolNameError,
@@ -57,9 +65,11 @@ pub use ployz_core::machine::{
     MachineReadinessCheck, MachineReadinessEvidence, WireGuardReadinessFailure,
 };
 pub use ployz_core::machine::{
-    DataplaneUnavailableReason, GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessHealth,
-    GatewayServingStatus, GatewayStatusObservation, GatewayStatusPublishFailure,
-    GatewayWatchFailure, MachineEndpointObservation, MachineLifecycle, MachineUsabilityReason,
+    DataplaneUnavailableReason, DatasetQuotaFact, GatewayHttpFailure, GatewayProcessAttempt,
+    GatewayProcessHealth, GatewayServingStatus, GatewayStatusObservation,
+    GatewayStatusPublishFailure, GatewayWatchFailure, MachineEndpointObservation, MachineLifecycle,
+    MachineUsabilityReason, PoolCapacityFacts, StorageCapability, StorageUnavailableReason,
+    StrandedVolumeAlarm, StrandedVolumeReason, VolumeEnsureFailure,
 };
 pub use ployz_core::nats_config::{
     CredentialGrant, CredentialName, CredentialNameError, CredentialRole, NatsAuthorizationGrant,
@@ -83,19 +93,21 @@ pub use ployz_core::network::{
     WireGuardReadyEvidence, WireGuardRttStatus, WireGuardStatus,
 };
 pub use ployz_core::operation::{
-    ArtifactUnavailableReason, CancellationReason, CertificateProvisionWarning,
-    CredentialGrantAction, CredentialGrantFailure, CredentialGrantOperationState, EventSequence,
-    EventSequenceError, FailureMessage, HealthCheckFailure, IngressConfigureFailure,
-    IngressConfigureOperationState, MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddOperationState,
-    MachineAddOperationStateName, MachineLifecycleFailure, MachineLifecycleOperationState,
-    MachineStoragePrepareFailure, MachineStoragePrepareOperationState, MachineSubstrateVersions,
-    MachineUpdateFailure, MachineUpdateOperationState, ManagedDnsReconcileFailure,
-    ManagedDnsReconcileFailureClass, ManagedDnsReconcileOperationState, ManagedDnsReconcileSubject,
-    ManagedDnsWithdrawAuthorization, NamespaceRemoveFailure, NamespaceRemoveOperationState,
-    NamespaceRemoveRunningStage, NetworkRepairDnsRefreshProblem, NetworkRepairFailure,
-    NetworkRepairMachineFactsRefreshOutcome, NetworkRepairOperationState,
-    NetworkRepairProgressPhase, NetworkRepairRequestFailure, NetworkRepairRunningStage,
-    NonEmptyTextError, OperationEvent, OperationEventRecordedAtUnixMs,
+    ArtifactUnavailableReason, BuildAdapterToolchainEvidence, BuildCleanupEvidence,
+    BuildInterruptionStage, BuildLogChunk, BuildOperationFailure, BuildOperationState,
+    BuildPlatformFailure, BuildTimeoutFailure, BuildToolchainEvidence, CancellationReason,
+    CertificateProvisionWarning, CredentialGrantAction, CredentialGrantFailure,
+    CredentialGrantOperationState, EventSequence, EventSequenceError, FailureMessage,
+    HealthCheckFailure, IngressConfigureFailure, IngressConfigureOperationState,
+    MAX_OPERATION_EVENT_REPLAY_LIMIT, MachineAddOperationState, MachineAddOperationStateName,
+    MachineLifecycleFailure, MachineLifecycleOperationState, MachineStoragePrepareFailure,
+    MachineStoragePrepareOperationState, MachineSubstrateVersions, MachineUpdateFailure,
+    MachineUpdateOperationState, ManagedDnsReconcileFailure, ManagedDnsReconcileFailureClass,
+    ManagedDnsReconcileOperationState, ManagedDnsReconcileSubject, ManagedDnsWithdrawAuthorization,
+    NamespaceRemoveFailure, NamespaceRemoveOperationState, NamespaceRemoveRunningStage,
+    NetworkRepairDnsRefreshProblem, NetworkRepairFailure, NetworkRepairMachineFactsRefreshOutcome,
+    NetworkRepairOperationState, NetworkRepairProgressPhase, NetworkRepairRequestFailure,
+    NetworkRepairRunningStage, NonEmptyTextError, OperationEvent, OperationEventRecordedAtUnixMs,
     OperationEventRecordedAtUnixMsError, OperationEventReplayCursor, OperationEventReplayLimit,
     OperationEventReplayLimitError, OperationEventReplayPage, OperationEventReplayRequest,
     OperationIdempotencyKey, OperationInterruptionCause, OperationInterruptionEvidence,
@@ -104,7 +116,8 @@ pub use ployz_core::operation::{
     OperationSubject, OperatorHint, ReplayedOperationEvent, RetainedArtifact,
     RouteCutoverFailureReason, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
     RouteTarget, ServiceRestartFailure, ServiceRestartOperationState, ServiceRestartRunningStage,
-    UnusableMachine, VolumeRemoveFailure, VolumeRemoveOperationState, VolumeRemoveRunningStage,
+    UnusableMachine, VolumeCreateFailure, VolumeCreateOperationState, VolumeCreateRunningStage,
+    VolumeRemoveFailure, VolumeRemoveOperationState, VolumeRemoveRunningStage,
 };
 pub use ployz_core::operation::{
     CertInterruptionStage, CertOperationFailure, CertOperationFailureError, CertOperationState,

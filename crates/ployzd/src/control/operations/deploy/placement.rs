@@ -1,22 +1,75 @@
 use std::collections::BTreeMap;
 
 use ployz_core::ids::MachineId;
-use ployz_core::machine::DataplaneUnavailableReason;
 use ployz_core::machine::MachineUsabilityReason;
-use ployz_core::machine::placement_rejection;
 use ployz_core::machine::{
-    DataplaneProjectionAdmissionFailure, validate_declared_local_machine,
+    StorageCompatibility, StorageTestimony, classify_storage_compatibility,
     validate_placement_machine_peers,
 };
-use ployz_core::network::{DataplaneProjection, DataplaneProjectionMember, MachineDataplaneStatus};
+use ployz_core::network::{DataplaneProjection, MachineDataplaneStatus};
 use ployz_core::operation::{FailureMessage, UnusableMachine};
 
+use crate::control::operations::local_execution_admission::{
+    classify_local_execution_admission, dataplane_admission_failure,
+};
 use crate::control::role_client::machine::MachinePlacementFacts;
 
-struct PreliminaryCandidate<'a> {
-    machine_id: MachineId,
-    member: &'a DataplaneProjectionMember,
-    status: &'a MachineDataplaneStatus,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ProvisionedStorageRequirement {
+    None,
+    Ready {
+        expected_pools: Vec<ployz_core::deploy::ZfsPoolName>,
+    },
+}
+
+pub(super) fn classify_storage_usability(
+    candidates: &[MachineId],
+    testimony: &BTreeMap<MachineId, Option<ployz_core::machine::StorageCapability>>,
+    requirement: &ProvisionedStorageRequirement,
+) -> (Vec<MachineId>, Vec<UnusableMachine>) {
+    let ProvisionedStorageRequirement::Ready { expected_pools } = requirement else {
+        return (candidates.to_vec(), Vec::new());
+    };
+    let mut eligible = Vec::new();
+    let mut unusable = Vec::new();
+    for machine_id in candidates {
+        let storage = testimony
+            .get(machine_id)
+            .map_or(StorageTestimony::NoAnswer, |storage| {
+                StorageTestimony::Answered(storage.as_ref())
+            });
+        let compatibility = if expected_pools.is_empty() {
+            classify_storage_compatibility(storage, None)
+        } else {
+            expected_pools
+                .iter()
+                .map(|expected| classify_storage_compatibility(storage, Some(expected)))
+                .find(|compatibility| *compatibility != StorageCompatibility::Compatible)
+                .unwrap_or(StorageCompatibility::Compatible)
+        };
+        let reason = match compatibility {
+            StorageCompatibility::Compatible => None,
+            StorageCompatibility::MachineSilent => Some(MachineUsabilityReason::FactsUnavailable),
+            StorageCompatibility::TestimonyNotReported => {
+                Some(MachineUsabilityReason::StorageTestimonyNotReported)
+            }
+            StorageCompatibility::Unprepared => Some(MachineUsabilityReason::StorageUnprepared),
+            StorageCompatibility::Unavailable { reason } => {
+                Some(MachineUsabilityReason::StorageUnavailable { reason })
+            }
+            StorageCompatibility::PoolMismatch { expected, reported } => {
+                Some(MachineUsabilityReason::StoragePoolMismatch { expected, reported })
+            }
+        };
+        match reason {
+            None => eligible.push(machine_id.clone()),
+            Some(reason) => unusable.push(UnusableMachine {
+                machine_id: machine_id.clone(),
+                reason,
+            }),
+        }
+    }
+    (eligible, unusable)
 }
 
 pub(super) fn classify_machine_usability(
@@ -24,17 +77,12 @@ pub(super) fn classify_machine_usability(
     projection: &DataplaneProjection,
     dataplane_statuses: &[(MachineId, Result<MachineDataplaneStatus, FailureMessage>)],
 ) -> (Vec<MachineId>, Vec<UnusableMachine>) {
-    let mut preliminary = Vec::new();
-    let mut unusable = BTreeMap::new();
-
-    for facts in placement_facts {
-        match preliminary_candidate(facts, projection, dataplane_statuses) {
-            Ok(candidate) => preliminary.push(candidate),
-            Err(reason) => {
-                unusable.insert(facts.machine_id.clone(), reason);
-            }
-        }
-    }
+    let (preliminary, unusable) =
+        classify_local_execution_admission(placement_facts, projection, dataplane_statuses);
+    let mut unusable = unusable
+        .into_iter()
+        .map(|machine| (machine.machine_id, machine.reason))
+        .collect::<BTreeMap<_, _>>();
 
     let fixed_placement_set = preliminary
         .iter()
@@ -47,9 +95,12 @@ pub(super) fn classify_machine_usability(
             candidate.member,
             candidate.status,
         ) {
-            None => eligible.push(candidate.machine_id),
+            None => eligible.push(candidate.machine_id.clone()),
             Some(failure) => {
-                unusable.insert(candidate.machine_id, dataplane_admission_failure(failure));
+                unusable.insert(
+                    candidate.machine_id.clone(),
+                    dataplane_admission_failure(failure),
+                );
             }
         }
     }
@@ -61,70 +112,22 @@ pub(super) fn classify_machine_usability(
     (eligible, unusable)
 }
 
-fn preliminary_candidate<'a>(
-    facts: &MachinePlacementFacts,
-    projection: &'a DataplaneProjection,
-    dataplane_statuses: &'a [(MachineId, Result<MachineDataplaneStatus, FailureMessage>)],
-) -> Result<PreliminaryCandidate<'a>, MachineUsabilityReason> {
-    if let Some(reason) = placement_rejection(facts.lifecycle) {
-        return Err(reason);
-    }
-    if facts.answer.is_none() {
-        return Err(MachineUsabilityReason::FactsUnavailable);
-    }
-    let Some(member) = projection
-        .declared_members()
-        .iter()
-        .find(|member| member.machine_id == facts.machine_id)
-    else {
-        return Err(dataplane_unavailable(
-            DataplaneUnavailableReason::NotDeclared,
-        ));
-    };
-    let Some((_, testimony)) = dataplane_statuses
-        .iter()
-        .find(|(machine_id, _)| machine_id == &facts.machine_id)
-    else {
-        return Err(dataplane_unavailable(
-            DataplaneUnavailableReason::TestimonyMissing,
-        ));
-    };
-    let status = testimony.as_ref().map_err(|message| {
-        dataplane_admission_failure(DataplaneProjectionAdmissionFailure::NoAnswer {
-            message: message.clone(),
-        })
-    })?;
-    if let Some(failure) = validate_declared_local_machine(projection, member, status) {
-        return Err(dataplane_admission_failure(failure));
-    }
-    Ok(PreliminaryCandidate {
-        machine_id: facts.machine_id.clone(),
-        member,
-        status,
-    })
-}
-
-fn dataplane_admission_failure(
-    failure: DataplaneProjectionAdmissionFailure,
-) -> MachineUsabilityReason {
-    dataplane_unavailable(DataplaneUnavailableReason::Admission { failure })
-}
-
-fn dataplane_unavailable(reason: DataplaneUnavailableReason) -> MachineUsabilityReason {
-    MachineUsabilityReason::DataplaneUnavailable { reason }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use ployz_core::machine::MachineLifecycle;
     use ployz_core::machine::runtime::MachineContainerObservationSnapshot;
+    use ployz_core::machine::{
+        DataplaneProjectionAdmissionFailure, DataplaneUnavailableReason, StorageCapability,
+        StorageUnavailableReason,
+    };
     use ployz_core::network::{
-        DataplaneProjectionRevisions, DataplaneProjectionTestimony, EbpfAttachmentStatus,
-        EndpointBridgeStatus, MachineEndpointSubnet, NativeDataplaneProjectionStatus,
-        WireGuardConfiguredMtu, WireGuardDetectedMtu, WireGuardHandshakeStatus,
-        WireGuardInterfaceMtu, WireGuardMtuProbe, WireGuardPeerEndpointSubnet, WireGuardPeerStatus,
-        WireGuardPublicKey, WireGuardRttStatus, WireGuardStatus,
+        DataplaneProjectionMember, DataplaneProjectionRevisions, DataplaneProjectionTestimony,
+        EbpfAttachmentStatus, EndpointBridgeStatus, MachineEndpointSubnet,
+        NativeDataplaneProjectionStatus, WireGuardConfiguredMtu, WireGuardDetectedMtu,
+        WireGuardHandshakeStatus, WireGuardInterfaceMtu, WireGuardMtuProbe,
+        WireGuardPeerEndpointSubnet, WireGuardPeerStatus, WireGuardPublicKey, WireGuardRttStatus,
+        WireGuardStatus,
     };
 
     #[test]
@@ -149,6 +152,94 @@ mod tests {
                 ),
             }]
         );
+    }
+
+    #[test]
+    fn provisioned_storage_filters_only_when_required_and_preserves_typed_reasons() {
+        let ready = machine_id("ready");
+        let legacy = machine_id("legacy");
+        let unprepared = machine_id("unprepared");
+        let faulted = machine_id("faulted");
+        let candidates = vec![
+            ready.clone(),
+            legacy.clone(),
+            unprepared.clone(),
+            faulted.clone(),
+        ];
+        let pool = ployz_core::deploy::ZfsPoolName::try_new("tank").expect("valid pool");
+        let testimony = BTreeMap::from([
+            (
+                ready.clone(),
+                Some(StorageCapability::Ready {
+                    pool: pool.clone(),
+                    capacity: ployz_core::machine::PoolCapacityFacts {
+                        total_bytes: 1024,
+                        provisioned_used_bytes: 0,
+                        free_bytes: 1024,
+                        child_quotas: Vec::new(),
+                    },
+                }),
+            ),
+            (legacy.clone(), None),
+            (unprepared.clone(), Some(StorageCapability::Unprepared)),
+            (
+                faulted.clone(),
+                Some(StorageCapability::Unavailable {
+                    reason: StorageUnavailableReason::PoolFaulted { pool: pool.clone() },
+                }),
+            ),
+        ]);
+
+        assert_eq!(
+            classify_storage_usability(
+                &candidates,
+                &testimony,
+                &ProvisionedStorageRequirement::None,
+            ),
+            (candidates.clone(), Vec::new())
+        );
+        let (eligible, unusable) = classify_storage_usability(
+            &candidates,
+            &testimony,
+            &ProvisionedStorageRequirement::Ready {
+                expected_pools: vec![pool.clone()],
+            },
+        );
+        assert_eq!(eligible, vec![ready]);
+        assert!(matches!(
+            unusable.as_slice(),
+            [
+                UnusableMachine {
+                    reason: MachineUsabilityReason::StorageTestimonyNotReported,
+                    ..
+                },
+                UnusableMachine {
+                    reason: MachineUsabilityReason::StorageUnprepared,
+                    ..
+                },
+                UnusableMachine {
+                    reason: MachineUsabilityReason::StorageUnavailable { .. },
+                    ..
+                },
+            ]
+        ));
+
+        let (_, mismatch) = classify_storage_usability(
+            &[machine_id("ready")],
+            &testimony,
+            &ProvisionedStorageRequirement::Ready {
+                expected_pools: vec![
+                    ployz_core::deploy::ZfsPoolName::try_new("other").expect("valid pool"),
+                ],
+            },
+        );
+        assert!(matches!(
+            mismatch.as_slice(),
+            [UnusableMachine {
+                reason: MachineUsabilityReason::StoragePoolMismatch { .. },
+                ..
+            }]
+        ));
     }
 
     #[test]
@@ -303,6 +394,12 @@ mod tests {
                     platform: ployz_core::image::OciPlatform::try_new("linux", "amd64")
                         .expect("platform"),
                     endpoints: None,
+                    storage: None,
+                    build: crate::roles::machine::protocol::MachineBuildCapability::Available,
+                    clock: crate::control::role_client::machine::MachineClockTestimony {
+                        control_request_started_at_unix_ms: 1,
+                        machine_observed_at_unix_ms: 1,
+                    },
                 },
             ),
             machine_id,

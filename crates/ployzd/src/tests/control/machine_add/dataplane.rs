@@ -288,11 +288,15 @@ async fn start_join_dataplane_responder(
                     mesh_endpoints: vec!["192.0.2.10:51820".parse().expect("mesh endpoint")],
                 }),
                 ployz_test_support::fixtures::test_disk_space(),
+                None,
                 ployz_core::image::OciPlatform::current(),
                 1,
             )
             .expect("machine facts");
-            let response = MachineFactsGetRpcResponse::Ok(MachineFactsGetRpcOk { facts });
+            let response = MachineFactsGetRpcResponse::Ok(MachineFactsGetRpcOk {
+                facts,
+                build: crate::roles::machine::protocol::MachineBuildCapability::Available,
+            });
             let payload = serde_json::to_vec(&response).expect("facts response serializes");
             let _ = facts_client.publish(reply, payload.into()).await;
         }

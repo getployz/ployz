@@ -7,11 +7,12 @@ use crate::service_runtime::{
 use crate::subjects::OperationApiEndpoint;
 use ployz_core::operation::{OperationEventReplayPage, OperationStatusSnapshot};
 use ployz_sdk_types::{
-    AcceptedOperation, CoreReplaceError, CoreReplaceReportError, CoreReplaceReportRequest,
-    CoreReplaceReported, CoreReplaceRequest, CredentialAddError, CredentialAddRequest,
-    CredentialListError, CredentialListRequest, CredentialListResult, CredentialRemoveError,
-    CredentialRemoveRequest, DeployReserveError, DeployReserveRequest, DeployReserved,
-    DeploySubmitError, DeploySubmitRequest, IngressConfigureError, IngressConfigureRequest,
+    AcceptedOperation, BuildCancelError, BuildCancelRequest, BuildSubmitError, BuildSubmitRequest,
+    CoreReplaceError, CoreReplaceReportError, CoreReplaceReportRequest, CoreReplaceReported,
+    CoreReplaceRequest, CredentialAddError, CredentialAddRequest, CredentialListError,
+    CredentialListRequest, CredentialListResult, CredentialRemoveError, CredentialRemoveRequest,
+    DeployReserveError, DeployReserveRequest, DeployReserved, DeploySubmitError,
+    DeploySubmitRequest, IngressConfigureError, IngressConfigureRequest,
     InitFirstMachineActivateError, InitFirstMachineActivateRequest, InitFirstMachineActivated,
     LogsTailError, LogsTailRequest, LogsTailResult, MachineAddAccepted, MachineAddError,
     MachineAddRequest, MachineInspectError, MachineInspectRequest, MachineJoinRedeemError,
@@ -26,16 +27,18 @@ use ployz_sdk_types::{
     OpsWatchRequest, RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult,
     ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
     ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
-    VolumeListError, VolumeListRequest, VolumeListResult, VolumeRemoveError, VolumeRemoveRequest,
+    VolumeCreateError, VolumeCreateRequest, VolumeListError, VolumeListRequest, VolumeListResult,
+    VolumeRemoveError, VolumeRemoveRequest,
     operation_api::{
-        CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi, CredentialListApi,
-        CredentialRemoveApi, DeployReserveApi, DeploySubmitApi, IngressConfigureApi,
-        InitFirstMachineActivateApi, LogsTailApi, MachineAddApi, MachineDrainApi,
-        MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
-        MachineResumeApi, MachineStoragePrepareApi, MachineUpdateApi, NamespaceRemoveApi,
-        NetworkRepairApi, NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi,
-        OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi,
-        ServiceRestartApi, VolumeListApi, VolumeRemoveApi,
+        BuildCancelApi, BuildSubmitApi, CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi,
+        CredentialListApi, CredentialRemoveApi, DeployReserveApi, DeploySubmitApi,
+        IngressConfigureApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
+        MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi,
+        MachineListApi, MachineResumeApi, MachineStoragePrepareApi, MachineUpdateApi,
+        NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, NetworkStatusApi,
+        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
+        ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeCreateApi, VolumeListApi,
+        VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -50,6 +53,20 @@ pub struct OperationApiClient {
 }
 
 impl OperationApiClient {
+    pub async fn build_submit(
+        &self,
+        request: &BuildSubmitRequest,
+    ) -> Result<AcceptedOperation, OperationApiClientError<BuildSubmitError>> {
+        self.request_api::<BuildSubmitApi>(request).await
+    }
+
+    pub async fn build_cancel(
+        &self,
+        request: &BuildCancelRequest,
+    ) -> Result<AcceptedOperation, OperationApiClientError<BuildCancelError>> {
+        self.request_api::<BuildCancelApi>(request).await
+    }
+
     pub async fn credential_add(
         &self,
         request: &CredentialAddRequest,
@@ -260,6 +277,13 @@ impl OperationApiClient {
         self.request_api::<VolumeRemoveApi>(request).await
     }
 
+    pub async fn volume_create(
+        &self,
+        request: &VolumeCreateRequest,
+    ) -> Result<AcceptedOperation, OperationApiClientError<VolumeCreateError>> {
+        self.request_api::<VolumeCreateApi>(request).await
+    }
+
     pub async fn runtime_snapshot(
         &self,
         request: &RuntimeSnapshotRequest,
@@ -376,4 +400,15 @@ pub enum OperationApiClientError<E> {
         endpoint: OperationApiEndpoint,
         error: E,
     },
+}
+
+#[cfg(test)]
+mod build_client_contract_tests {
+    use super::OperationApiClient;
+
+    #[test]
+    fn typed_build_client_methods_are_public() {
+        let _submit = OperationApiClient::build_submit;
+        let _cancel = OperationApiClient::build_cancel;
+    }
 }

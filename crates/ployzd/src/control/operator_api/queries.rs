@@ -23,6 +23,7 @@ use crate::roles::machine::protocol::MachineLogsTailRpcRequest;
 use ployz_core::ids::{ContainerId, MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::intent::ActiveMachineState;
 use ployz_core::machine::runtime::ManagedContainerKind;
+use ployz_core::machine::{MachineStorageTestimony, derive_stranded_volume_alarms};
 use ployz_core::nats_config::NatsAuthorizationGrant;
 use ployz_core::operation::{
     OperationEventReplayPage, OperationEventReplayRequest, OperationStatus, OperationStatusSnapshot,
@@ -134,6 +135,12 @@ impl RuntimeSnapshotQueryService {
             .map(|machine| machine.machine_id.clone())
             .collect::<Vec<_>>();
         let facts = read_available_machine_facts_by_id(&self.facts_reader, machine_ids).await;
+        let storage_testimony = facts
+            .values()
+            .map(|facts| {
+                MachineStorageTestimony::new(facts.machine_id().clone(), facts.storage().cloned())
+            })
+            .collect::<Vec<_>>();
         let gateway_statuses = self
             .facts
             .gateway_statuses()
@@ -148,6 +155,7 @@ impl RuntimeSnapshotQueryService {
             snapshot: runtime_snapshot_from_sources(
                 intent,
                 &facts,
+                Some(&storage_testimony),
                 &gateway_statuses,
                 ingress,
                 read_at_unix_seconds,
@@ -603,55 +611,45 @@ impl MachineQueryService {
             .iter()
             .map(|machine| machine.machine_id.clone())
             .collect::<Vec<_>>();
-        let facts = read_available_machine_facts_by_id(&self.facts_reader, machine_ids).await;
-        let endpoints = facts
+        let facts =
+            read_available_machine_facts_by_id(&self.facts_reader, machine_ids.clone()).await;
+        let storage_testimony = facts
             .values()
-            .filter_map(|facts| {
-                facts
-                    .endpoints()
-                    .map(|endpoints| (facts.machine_id().clone(), endpoints.clone()))
+            .map(|facts| {
+                MachineStorageTestimony::new(facts.machine_id().clone(), facts.storage().cloned())
             })
-            .collect::<BTreeMap<_, _>>();
+            .collect::<Vec<_>>();
+        let storage_alarms =
+            derive_stranded_volume_alarms(&intent.volume_pins, &machine_ids, &storage_testimony);
         let gateway_statuses = self
             .facts
             .gateway_statuses()
             .into_iter()
             .map(|observation| (observation.machine_id.clone(), observation))
             .collect::<BTreeMap<_, _>>();
-        let container_observations = facts
-            .values()
-            .map(|facts| {
-                let container_count = facts.containers().containers().len();
-                (
-                    facts.machine_id().clone(),
-                    (
-                        container_count,
-                        facts.disk_space(),
-                        facts.observed_at_unix_ms() / 1_000,
-                    ),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
         let mut snapshots = Vec::with_capacity(machines.len());
         for machine in machines {
-            let observation = container_observations.get(&machine.machine_id).copied();
-            let testimony = match observation {
-                Some((observed_container_count, disk_space, last_observed_at_unix_seconds)) => {
-                    MachineTestimony::Answered {
-                        endpoints: endpoints.get(&machine.machine_id).cloned(),
-                        gateway: gateway_statuses
-                            .get(&machine.machine_id)
-                            .cloned()
-                            .map(Box::new),
-                        observed_container_count,
-                        disk_space,
-                        last_observed_at_unix_seconds,
-                    }
-                }
+            let testimony = match facts.get(&machine.machine_id) {
+                Some(facts) => MachineTestimony::Answered {
+                    endpoints: facts.endpoints().cloned(),
+                    gateway: gateway_statuses
+                        .get(&machine.machine_id)
+                        .cloned()
+                        .map(Box::new),
+                    observed_container_count: facts.containers().containers().len(),
+                    disk_space: facts.disk_space(),
+                    storage: facts.storage().cloned(),
+                    last_observed_at_unix_seconds: facts.observed_at_unix_ms() / 1_000,
+                },
                 None => MachineTestimony::NoAnswer,
             };
             snapshots.push(MachineSnapshot {
                 testimony,
+                storage_alarms: storage_alarms
+                    .iter()
+                    .filter(|alarm| alarm.machine_id == machine.machine_id)
+                    .cloned()
+                    .collect(),
                 active: machine,
             });
         }
@@ -669,22 +667,33 @@ impl MachineQueryService {
                 message: error.to_string(),
             }
         })?;
+        let machine_ids = intent
+            .active_machines
+            .iter()
+            .map(|machine| machine.machine_id.clone())
+            .collect::<Vec<_>>();
         let Some(machine) = intent
             .active_machines
-            .into_iter()
+            .iter()
             .find(|machine| machine.machine_id == *machine_id)
+            .cloned()
         else {
             return Err(MachineInspectError::NoSuchMachine {
                 machine_id: machine_id.clone(),
             });
         };
 
-        self.snapshot(machine)
+        self.snapshot(machine, &intent.volume_pins, &machine_ids)
             .await
             .map_err(|message| MachineInspectError::Unavailable { message })
     }
 
-    async fn snapshot(&self, active: ActiveMachineState) -> Result<MachineSnapshot, String> {
+    async fn snapshot(
+        &self,
+        active: ActiveMachineState,
+        volume_pins: &[ployz_core::intent::VolumePinState],
+        known_machine_ids: &[MachineId],
+    ) -> Result<MachineSnapshot, String> {
         let facts = self
             .facts_reader
             .machine_facts(&active.machine_id)
@@ -692,17 +701,34 @@ impl MachineQueryService {
             .ok();
         let gateway = self.facts.gateway_status(&active.machine_id);
         let testimony = match facts {
-            Some(facts) => MachineTestimony::Answered {
+            Some(ref facts) => MachineTestimony::Answered {
                 endpoints: facts.endpoints().cloned(),
                 gateway: gateway.map(Box::new),
                 observed_container_count: facts.containers().containers().len(),
                 disk_space: facts.disk_space(),
+                storage: facts.storage().cloned(),
                 last_observed_at_unix_seconds: facts.observed_at_unix_ms() / 1_000,
             },
             None => MachineTestimony::NoAnswer,
         };
 
-        Ok(MachineSnapshot { active, testimony })
+        let answered = facts
+            .as_ref()
+            .map(|facts| {
+                MachineStorageTestimony::new(active.machine_id.clone(), facts.storage().cloned())
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+        let storage_alarms =
+            derive_stranded_volume_alarms(volume_pins, known_machine_ids, &answered)
+                .into_iter()
+                .filter(|alarm| alarm.machine_id == active.machine_id)
+                .collect();
+        Ok(MachineSnapshot {
+            active,
+            testimony,
+            storage_alarms,
+        })
     }
 }
 

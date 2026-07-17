@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/lib.sh
 source "${ROOT_DIR}/scripts/lib.sh"
+# shellcheck source=config/railpack-pins.env
+source "${ROOT_DIR}/config/railpack-pins.env"
 
 usage() {
   cat >&2 <<'EOF'
@@ -205,8 +207,21 @@ verify_platform() {
   done
 }
 
-verify_platform linux-amd64 PLOYZ:ployz PLOYZD:ployzd PLOYZ_EBPF_CTL:ployz-ebpf-ctl PLOYZ_EBPF_TC:ployz-ebpf-tc
-verify_platform linux-arm64 PLOYZ:ployz PLOYZD:ployzd PLOYZ_EBPF_CTL:ployz-ebpf-ctl PLOYZ_EBPF_TC:ployz-ebpf-tc
+verify_railpack_version() {
+  local platform="$1"
+  local manifest="${assets_dir}/ployz-release-${platform}.env"
+  local version
+  version="$(require_value "${manifest}" PLOYZ_RAILPACK_VERSION)"
+  if [ "${version}" != "${RAILPACK_VERSION}" ]; then
+    echo "release manifest ${manifest} has PLOYZ_RAILPACK_VERSION=${version}, expected ${RAILPACK_VERSION}" >&2
+    exit 1
+  fi
+}
+
+verify_platform linux-amd64 PLOYZ:ployz PLOYZD:ployzd PLOYZ_EBPF_CTL:ployz-ebpf-ctl PLOYZ_EBPF_TC:ployz-ebpf-tc PLOYZ_RAILPACK:railpack
+verify_railpack_version linux-amd64
+verify_platform linux-arm64 PLOYZ:ployz PLOYZD:ployzd PLOYZ_EBPF_CTL:ployz-ebpf-ctl PLOYZ_EBPF_TC:ployz-ebpf-tc PLOYZ_RAILPACK:railpack
+verify_railpack_version linux-arm64
 verify_platform darwin-amd64 PLOYZ:ployz
 verify_platform darwin-arm64 PLOYZ:ployz
 

@@ -723,9 +723,10 @@ impl<R: HostRunnerCommandRunner> HostRunnerLocalEffects<R> {
         })?;
         let installed = match target.kind {
             ArtifactKind::NatsServer => install_verified_nats_server_archive(&verified, target),
-            ArtifactKind::EbpfBytecode | ArtifactKind::EbpfCtl | ArtifactKind::Ployzd => {
-                install_verified_artifact(&verified, target)
-            }
+            ArtifactKind::EbpfBytecode
+            | ArtifactKind::EbpfCtl
+            | ArtifactKind::Ployzd
+            | ArtifactKind::Railpack => install_verified_artifact(&verified, target),
         }
         .map_err(|error| failure_message(error.to_string()))?;
         match installed.durability {

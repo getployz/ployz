@@ -14,6 +14,7 @@ use ployz_core::ids::NamespaceId;
 use serde_yaml::Value;
 
 pub use diagnostics::{RenderedWarning, UnsupportedFieldMode};
+pub(crate) use translate::parse_byte_quantity;
 
 use self::diagnostics::{ComposeDiagnostics, ComposeFinding, ComposePath, KnownUnsupported};
 use self::interpolate::{InterpolationFindingKind, apply_merge, interpolate_value};
@@ -356,6 +357,41 @@ mod tests {
 
         assert_eq!(parsed.services.len(), 1);
         assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn unmounted_declared_volume_is_advisory_in_both_modes() {
+        let source = r#"
+            name: default
+            volumes:
+              unused: {}
+            services:
+              web:
+                image: nginx
+        "#;
+
+        for mode in [
+            UnsupportedFieldMode::Strict,
+            UnsupportedFieldMode::AllowUnsupported,
+        ] {
+            let (parsed, warnings) = parse_deploy_file(ComposeInput {
+                source,
+                base_dir: Path::new("."),
+                interpolation_env: BTreeMap::new(),
+                namespace_override: None,
+                mode,
+            })
+            .expect("an unmounted volume declaration is non-fatal");
+
+            assert_eq!(parsed.volumes.len(), 1);
+            let [warning] = warnings.as_slice() else {
+                panic!("expected one unused-volume advisory");
+            };
+            assert_eq!(
+                warning.0,
+                "volumes.unused  warning  advisory  declared volume is not mounted and will not be created"
+            );
+        }
     }
 
     #[test]

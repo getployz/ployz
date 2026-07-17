@@ -1,4 +1,6 @@
-use super::response::{failure_message, machine_domain_error, machine_success, runner_error};
+use super::response::{
+    container_list_error, failure_message, machine_domain_error, machine_success,
+};
 use crate::roles::machine::protocol::{
     MachineLogsTailDomainError, MachineLogsTailResult, MachineLogsTailRpcOk,
     MachineLogsTailRpcRequest, MachineLogsTailRpcResponse,
@@ -27,7 +29,7 @@ where
 
     let existing = match runner.existing_managed_containers().await {
         Ok(existing) => existing,
-        Err(error) => return runner_error(error),
+        Err(error) => return container_list_error(error),
     };
     if !existing
         .iter()

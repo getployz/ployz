@@ -92,6 +92,13 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
             return ExitCode::FAILURE;
         }
     };
+    let railpack = match artifact_target(ArtifactKind::Railpack, &artifacts.railpack) {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("release manifest Railpack artifact is invalid: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     let nats_server = match artifacts.nats_server {
         Some(spec) => {
             let nats_server_spec = ployz_core::install::InstallArtifactSpec {
@@ -115,6 +122,7 @@ pub(crate) fn run_substrate_update_command(update: HostRunnerSubstrateUpdate) ->
         HostRunnerStep::PreflightHostPorts(assigned_substrate.clone()),
         HostRunnerStep::AssureHostPorts(assigned_substrate),
         HostRunnerStep::PrepareDataplaneHost,
+        HostRunnerStep::InstallArtifact(railpack),
         HostRunnerStep::InstallArtifact(ployzd),
         HostRunnerStep::InstallArtifact(ebpf_bytecode),
         HostRunnerStep::InstallArtifact(ebpf_ctl),

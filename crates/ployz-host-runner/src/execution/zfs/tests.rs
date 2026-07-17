@@ -4,8 +4,11 @@ use std::time::Duration;
 
 use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes, VolumeName, ZfsPoolName};
 use ployz_core::ids::{NamespaceId, OperationId};
+use ployz_core::machine::{DatasetQuotaFact, PoolCapacityFacts, VolumeUsageFacts};
 use ployz_core::operation::FailureMessage;
+use ployz_core::storage::PROVISIONED_VOLUME_MOUNTPOINT;
 
+use super::dataset::{DatasetEnsureLock, dataset_ensure_lock_path};
 use super::state::persist_prepared_storage_state;
 use super::*;
 use crate::execution::{HostPlatformProfile, HostRunnerCommandOutput, HostRunnerCommandRunner};
@@ -89,6 +92,7 @@ fn success() -> HostRunnerCommandOutput {
         success: true,
         exit_code: Some(0),
         stdout: String::new(),
+        stdout_truncated: false,
         failure: String::new(),
     }
 }
@@ -98,8 +102,21 @@ fn stdout(value: &str) -> HostRunnerCommandOutput {
         success: true,
         exit_code: Some(0),
         stdout: value.to_owned(),
+        stdout_truncated: false,
         failure: String::new(),
     }
+}
+
+fn truncated_stdout(value: &str) -> HostRunnerCommandOutput {
+    HostRunnerCommandOutput {
+        stdout_truncated: true,
+        ..stdout(value)
+    }
+}
+
+fn mounted_dataset_shape(dataset: &DatasetName) -> HostRunnerCommandOutput {
+    let leaf = dataset.as_str().rsplit('/').next().expect("dataset leaf");
+    stdout(&format!("{PROVISIONED_VOLUME_MOUNTPOINT}/{leaf}\nyes\n"))
 }
 
 fn failed(message: &str) -> HostRunnerCommandOutput {
@@ -107,6 +124,7 @@ fn failed(message: &str) -> HostRunnerCommandOutput {
         success: false,
         exit_code: Some(1),
         stdout: String::new(),
+        stdout_truncated: false,
         failure: message.to_owned(),
     }
 }
@@ -139,6 +157,126 @@ fn persist(directory: &Path, origin: PreparedStorageOrigin) {
         .expect("test prepared state"),
     )
     .unwrap();
+}
+
+#[test]
+fn storage_capability_distinguishes_unprepared_and_unavailable_hosts() {
+    let unprepared = tempfile::tempdir().unwrap();
+    let mut runner = RecordingRunner::new([]);
+    assert_eq!(
+        observe_storage_capability(
+            &mut runner,
+            unprepared.path(),
+            &unprepared.path().join("zfs")
+        )
+        .unwrap(),
+        ployz_core::machine::StorageCapability::Unprepared
+    );
+    assert!(runner.invocations.is_empty());
+
+    let prepared = tempfile::tempdir().unwrap();
+    persist(prepared.path(), PreparedStorageOrigin::Adopted);
+    let mut runner = RecordingRunner::new([]);
+    assert_eq!(
+        observe_storage_capability(
+            &mut runner,
+            prepared.path(),
+            &prepared.path().join("missing")
+        )
+        .unwrap(),
+        ployz_core::machine::StorageCapability::Unavailable {
+            reason: ployz_core::machine::StorageUnavailableReason::ZfsModuleMissing,
+        }
+    );
+    assert!(runner.invocations.is_empty());
+}
+
+#[test]
+fn storage_capability_reports_pool_absence_fault_and_readiness() {
+    let state = tempfile::tempdir().unwrap();
+    persist(state.path(), PreparedStorageOrigin::Adopted);
+    let module = state.path().join("zfs");
+    std::fs::create_dir(&module).unwrap();
+    let pool = ZfsPoolName::try_new("tank").unwrap();
+
+    let mut absent = RecordingRunner::new([stdout("other\n")]);
+    assert_eq!(
+        observe_storage_capability(&mut absent, state.path(), &module).unwrap(),
+        ployz_core::machine::StorageCapability::Unavailable {
+            reason: ployz_core::machine::StorageUnavailableReason::PoolNotImported {
+                pool: pool.clone(),
+            },
+        }
+    );
+
+    let mut faulted = RecordingRunner::new([stdout("tank\n"), stdout("FAULTED\n")]);
+    assert_eq!(
+        observe_storage_capability(&mut faulted, state.path(), &module).unwrap(),
+        ployz_core::machine::StorageCapability::Unavailable {
+            reason: ployz_core::machine::StorageUnavailableReason::PoolFaulted {
+                pool: pool.clone(),
+            },
+        }
+    );
+
+    let mut ready = RecordingRunner::new([
+        stdout("tank\n"),
+        stdout("ONLINE\n"),
+        stdout("16384 8192\n"),
+        stdout("0\n"),
+        stdout("tank/ployz/volumes\tnone\n"),
+    ]);
+    assert_eq!(
+        observe_storage_capability(&mut ready, state.path(), &module).unwrap(),
+        ployz_core::machine::StorageCapability::Ready {
+            pool,
+            capacity: PoolCapacityFacts {
+                total_bytes: 16_384,
+                provisioned_used_bytes: 0,
+                free_bytes: 8192,
+                child_quotas: Vec::new(),
+            },
+        }
+    );
+    assert!(
+        ready
+            .invocations
+            .iter()
+            .all(|invocation| invocation.timeout == COMMAND_TIMEOUT)
+    );
+}
+
+#[test]
+fn storage_capability_does_not_report_ready_without_capacity() {
+    let state = tempfile::tempdir().unwrap();
+    persist(state.path(), PreparedStorageOrigin::Adopted);
+    let module = state.path().join("zfs");
+    std::fs::create_dir(&module).unwrap();
+    let mut runner = RecordingRunner::new([
+        stdout("tank\n"),
+        stdout("ONLINE\n"),
+        failed("capacity unavailable"),
+    ]);
+
+    assert_eq!(
+        observe_storage_capability(&mut runner, state.path(), &module).unwrap(),
+        ployz_core::machine::StorageCapability::Unavailable {
+            reason: ployz_core::machine::StorageUnavailableReason::CapacityFactsUnavailable,
+        }
+    );
+
+    let mut parse_failure = RecordingRunner::new([
+        stdout("tank\n"),
+        stdout("ONLINE\n"),
+        stdout("8192\n"),
+        stdout("NAME QUOTA\ntank/ployz/volumes/not-a-child nope\n"),
+    ]);
+    assert_eq!(
+        observe_storage_capability(&mut parse_failure, state.path(), &module).unwrap(),
+        ployz_core::machine::StorageCapability::Unavailable {
+            reason: ployz_core::machine::StorageUnavailableReason::CapacityFactsUnavailable,
+        }
+    );
 }
 
 #[test]
@@ -480,15 +618,18 @@ fn owned_origin_survives_restart_and_selects_filesystem_capacity() {
         success(),
         stdout(VOLUME_MOUNTPOINT),
         stdout(&format!("  {PLOYZ_OWNED_ZFS_BACKING_FILE}\n")),
-        stdout("Available\n4096\n"),
+        stdout("Size Avail\n8192 4096\n"),
+        stdout("1024\n"),
         stdout("ployz/ployz/volumes\tnone\n"),
     ]);
     let facts = gather_pool_capacity(&mut runner, state.path()).unwrap();
-    assert_eq!(facts.available_bytes, 4096);
+    assert_eq!(facts.total_bytes, 8192);
+    assert_eq!(facts.provisioned_used_bytes, 1024);
+    assert_eq!(facts.free_bytes, 4096);
     assert_eq!(invocation(&runner, 3).program, "df");
     assert_eq!(
         invocation(&runner, 3).args,
-        vec!["-B1", "--output=avail", PLOYZ_OWNED_ZFS_BACKING_FILE]
+        vec!["-B1", "--output=size,avail", PLOYZ_OWNED_ZFS_BACKING_FILE]
     );
 }
 
@@ -545,15 +686,18 @@ fn adopted_origin_survives_restart_and_selects_zpool_capacity() {
     let mut runner = RecordingRunner::new([
         success(),
         stdout(VOLUME_MOUNTPOINT),
-        stdout("8192\n"),
+        stdout("16384 8192\n"),
+        stdout("2048\n"),
         stdout("tank/ployz/volumes\tnone\n"),
     ]);
     let facts = gather_pool_capacity(&mut runner, state.path()).unwrap();
-    assert_eq!(facts.available_bytes, 8192);
+    assert_eq!(facts.total_bytes, 16_384);
+    assert_eq!(facts.provisioned_used_bytes, 2048);
+    assert_eq!(facts.free_bytes, 8192);
     assert_eq!(invocation(&runner, 2).program, "zpool");
     assert_eq!(
         invocation(&runner, 2).args,
-        vec!["list", "-H", "-p", "-o", "free", "tank"]
+        vec!["list", "-H", "-p", "-o", "size,free", "tank"]
     );
 }
 
@@ -581,7 +725,8 @@ fn pool_capacity_parses_and_orders_direct_child_quotas() {
     let mut runner = RecordingRunner::new([
         success(),
         stdout(VOLUME_MOUNTPOINT),
-        stdout("8192\n"),
+        stdout("16384 8192\n"),
+        stdout("3072\n"),
         stdout(&rows),
     ]);
 
@@ -599,6 +744,7 @@ fn pool_capacity_parses_and_orders_direct_child_quotas() {
     ];
     expected.sort_by(|left, right| left.dataset.cmp(&right.dataset));
     assert_eq!(facts.child_quotas, expected);
+    assert_eq!(facts.provisioned_used_bytes, 3072);
 }
 
 #[test]
@@ -608,7 +754,8 @@ fn pool_capacity_rejects_invalid_child_quota_rows() {
     let mut runner = RecordingRunner::new([
         success(),
         stdout(VOLUME_MOUNTPOINT),
-        stdout("8192\n"),
+        stdout("16384 8192\n"),
+        stdout("0\n"),
         stdout("tank/ployz/volumes\tnone\ninvalid-row\n"),
     ]);
 
@@ -635,26 +782,27 @@ fn missing_and_mismatched_descriptors_fail_typed() {
 }
 
 #[test]
-fn dataset_create_uses_quota_without_creating_mountpoint() {
+fn dataset_ensure_creates_with_quota_without_creating_mountpoint() {
     let state = tempfile::tempdir().unwrap();
     persist(state.path(), PreparedStorageOrigin::Adopted);
     let mut runner = RecordingRunner::new([
         success(),
         stdout(VOLUME_MOUNTPOINT),
-        stdout("4096\n"),
+        stdout("4096 4096\n"),
+        stdout("0\n"),
         stdout("tank/ployz/volumes\tnone\n"),
         success(),
     ]);
-    create_dataset(
+    ensure_dataset(
         &mut runner,
         state.path(),
         &dataset("tank"),
         VolumeMaxSizeBytes::try_new(1024).unwrap(),
     )
     .unwrap();
-    assert_eq!(invocation(&runner, 4).program, "zfs");
+    assert_eq!(invocation(&runner, 5).program, "zfs");
     assert_eq!(
-        invocation(&runner, 4).args.first().map(String::as_str),
+        invocation(&runner, 5).args.first().map(String::as_str),
         Some("create")
     );
     assert!(runner.invocations.iter().all(|call| {
@@ -667,8 +815,19 @@ fn dataset_create_uses_quota_without_creating_mountpoint() {
 fn dataset_quota_is_grow_only() {
     let state = tempfile::tempdir().unwrap();
     persist(state.path(), PreparedStorageOrigin::Adopted);
-    let mut runner = RecordingRunner::new([success(), stdout(VOLUME_MOUNTPOINT), stdout("2048\n")]);
-    let error = grow_dataset_quota(
+    let rows = format!(
+        "tank/ployz/volumes\tnone\n{}\t2048\n",
+        dataset("tank").as_str()
+    );
+    let mut runner = RecordingRunner::new([
+        success(),
+        stdout(VOLUME_MOUNTPOINT),
+        stdout("4096 4096\n"),
+        stdout("0\n"),
+        stdout(&rows),
+        mounted_dataset_shape(&dataset("tank")),
+    ]);
+    let error = ensure_dataset(
         &mut runner,
         state.path(),
         &dataset("tank"),
@@ -683,7 +842,7 @@ fn dataset_quota_is_grow_only() {
             ..
         }
     ));
-    assert_eq!(runner.invocations.len(), 3);
+    assert_eq!(runner.invocations.len(), 6);
 }
 
 #[test]
@@ -695,12 +854,13 @@ fn dataset_quota_growth_is_admitted_against_total_capacity_and_equal_is_a_no_op(
     let mut runner = RecordingRunner::new([
         success(),
         stdout(VOLUME_MOUNTPOINT),
+        stdout("5120 4096\n"),
         stdout("1024\n"),
-        stdout("4096\n"),
         stdout(&rows),
+        mounted_dataset_shape(&dataset),
         success(),
     ]);
-    grow_dataset_quota(
+    ensure_dataset(
         &mut runner,
         state.path(),
         &dataset,
@@ -708,19 +868,99 @@ fn dataset_quota_growth_is_admitted_against_total_capacity_and_equal_is_a_no_op(
     )
     .unwrap();
     assert_eq!(
-        invocation(&runner, 5).args,
+        invocation(&runner, 6).args,
         vec!["set", "quota=2048", dataset.as_str()]
     );
+    assert_eq!(
+        invocation(&runner, 5).args,
+        vec![
+            "get",
+            "-H",
+            "-o",
+            "value",
+            "mountpoint,mounted",
+            dataset.as_str(),
+        ]
+    );
 
-    let mut runner = RecordingRunner::new([success(), stdout(VOLUME_MOUNTPOINT), stdout("2048\n")]);
-    grow_dataset_quota(
+    let equal_rows = format!("tank/ployz/volumes\tnone\n{}\t2048\n", dataset.as_str());
+    let mut runner = RecordingRunner::new([
+        success(),
+        stdout(VOLUME_MOUNTPOINT),
+        stdout("5120 4096\n"),
+        stdout("1024\n"),
+        stdout(&equal_rows),
+        mounted_dataset_shape(&dataset),
+    ]);
+    ensure_dataset(
         &mut runner,
         state.path(),
         &dataset,
         VolumeMaxSizeBytes::try_new(2048).unwrap(),
     )
     .unwrap();
-    assert_eq!(runner.invocations.len(), 3);
+    assert_eq!(runner.invocations.len(), 6);
+}
+
+#[test]
+fn equal_dataset_quota_rejects_a_noncanonical_mountpoint() {
+    let state = tempfile::tempdir().unwrap();
+    persist(state.path(), PreparedStorageOrigin::Adopted);
+    let dataset = dataset("tank");
+    let rows = format!("tank/ployz/volumes\tnone\n{}\t2048\n", dataset.as_str());
+    let mut runner = RecordingRunner::new([
+        success(),
+        stdout(VOLUME_MOUNTPOINT),
+        stdout("5120 4096\n"),
+        stdout("1024\n"),
+        stdout(&rows),
+        stdout("/wrong/path\nyes\n"),
+    ]);
+
+    let error = ensure_dataset(
+        &mut runner,
+        state.path(),
+        &dataset,
+        VolumeMaxSizeBytes::try_new(2048).unwrap(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        ZfsEffectError::PreparedStateMismatch { .. }
+    ));
+    assert_eq!(runner.invocations.len(), 6);
+}
+
+#[test]
+fn dataset_quota_growth_rejects_an_unmounted_canonical_child() {
+    let state = tempfile::tempdir().unwrap();
+    persist(state.path(), PreparedStorageOrigin::Adopted);
+    let dataset = dataset("tank");
+    let rows = format!("tank/ployz/volumes\tnone\n{}\t1024\n", dataset.as_str());
+    let leaf = dataset.as_str().rsplit('/').next().unwrap();
+    let mut runner = RecordingRunner::new([
+        success(),
+        stdout(VOLUME_MOUNTPOINT),
+        stdout("5120 4096\n"),
+        stdout("1024\n"),
+        stdout(&rows),
+        stdout(&format!("{PROVISIONED_VOLUME_MOUNTPOINT}/{leaf}\nno\n")),
+    ]);
+
+    let error = ensure_dataset(
+        &mut runner,
+        state.path(),
+        &dataset,
+        VolumeMaxSizeBytes::try_new(2048).unwrap(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        ZfsEffectError::PreparedStateMismatch { .. }
+    ));
+    assert_eq!(runner.invocations.len(), 6);
 }
 
 #[test]
@@ -730,10 +970,11 @@ fn dataset_quota_admission_rejects_total_above_available_capacity() {
     let mut runner = RecordingRunner::new([
         success(),
         stdout(VOLUME_MOUNTPOINT),
-        stdout("100\n"),
+        stdout("200 100\n"),
+        stdout("0\n"),
         stdout("tank/ployz/volumes\tnone\n"),
     ]);
-    let error = create_dataset(
+    let error = ensure_dataset(
         &mut runner,
         state.path(),
         &dataset("tank"),
@@ -743,57 +984,334 @@ fn dataset_quota_admission_rejects_total_above_available_capacity() {
     assert_eq!(
         error,
         ZfsEffectError::QuotaCapacityExceeded {
-            available: 100,
-            requested_total: 101,
+            total_bytes: 200,
+            provisioned_used_bytes: 0,
+            free_bytes: 100,
+            required_headroom_bytes: 101,
+            requested_total_bytes: 101,
         }
     );
-    assert_eq!(runner.invocations.len(), 4);
+    assert_eq!(runner.invocations.len(), 5);
 }
 
 #[test]
-fn dataset_facts_use_zfs_used_bytes_and_mount_directory_metadata_time() {
+fn dataset_ensure_lock_serializes_one_prepared_pool() {
+    use std::fs::OpenOptions;
+    use std::sync::mpsc;
+
+    let state = tempfile::tempdir().unwrap();
+    let path = dataset_ensure_lock_path(state.path(), "tank");
+    let holder = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .unwrap();
+    holder.lock().unwrap();
+    let state_path = state.path().to_owned();
+    let (sender, receiver) = mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        let lock = DatasetEnsureLock::acquire(&state_path, "tank").unwrap();
+        sender.send(()).unwrap();
+        drop(lock);
+    });
+
+    assert!(receiver.recv_timeout(Duration::from_millis(75)).is_err());
+    holder.unlock().unwrap();
+    receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+    waiter.join().unwrap();
+}
+
+#[test]
+fn dataset_facts_use_zfs_used_bytes_and_latest_recursive_entry_time() {
     let state = tempfile::tempdir().unwrap();
     persist(state.path(), PreparedStorageOrigin::Adopted);
     let mut runner = RecordingRunner::new([
         success(),
         stdout(VOLUME_MOUNTPOINT),
         stdout("4096\n"),
-        stdout("1700000000\n"),
+        stdout("1699999999.2500000000\n1700000000.7500000000\n"),
     ]);
 
     let facts = gather_dataset_facts(&mut runner, state.path(), &dataset("tank")).unwrap();
 
     assert_eq!(
         facts,
-        DatasetFacts {
+        VolumeUsageFacts {
             used_bytes: 4096,
-            mount_directory_modified_unix_seconds: 1_700_000_000,
+            last_write_unix_seconds: 1_700_000_000,
         }
     );
-    assert_eq!(invocation(&runner, 3).program, "stat");
+    assert_eq!(invocation(&runner, 3).program, "find");
     let expected_path = format!(
         "/var/lib/ployz/volumes/{}",
         dataset("tank").as_str().rsplit('/').next().unwrap()
     );
     assert_eq!(
         invocation(&runner, 3).args,
-        vec!["-c".to_owned(), "%Y".to_owned(), expected_path]
+        vec![
+            expected_path,
+            "-xdev".to_owned(),
+            "-printf".to_owned(),
+            "%T@\n".to_owned(),
+        ]
     );
 }
 
 #[test]
-fn destroy_is_bounded_and_non_recursive() {
+fn dataset_facts_reject_malformed_or_empty_recursive_timestamps() {
+    for timestamps in ["not-a-time\n", ""] {
+        let state = tempfile::tempdir().unwrap();
+        persist(state.path(), PreparedStorageOrigin::Adopted);
+        let mut runner = RecordingRunner::new([
+            success(),
+            stdout(VOLUME_MOUNTPOINT),
+            stdout("4096\n"),
+            stdout(timestamps),
+        ]);
+
+        assert!(matches!(
+            gather_dataset_facts(&mut runner, state.path(), &dataset("tank")),
+            Err(ZfsEffectError::GatherParse { .. })
+        ));
+    }
+}
+
+#[test]
+fn dataset_facts_reject_truncated_recursive_timestamps() {
     let state = tempfile::tempdir().unwrap();
     persist(state.path(), PreparedStorageOrigin::Adopted);
-    let mut runner = RecordingRunner::new([success(), stdout(VOLUME_MOUNTPOINT), success()]);
+    let mut runner = RecordingRunner::new([
+        success(),
+        stdout(VOLUME_MOUNTPOINT),
+        stdout("4096\n"),
+        truncated_stdout("1700000000.1\n"),
+    ]);
+
+    assert!(matches!(
+        gather_dataset_facts(&mut runner, state.path(), &dataset("tank")),
+        Err(ZfsEffectError::GatherParse { message })
+            if message.contains("exceeded the capture limit")
+    ));
+}
+
+#[test]
+fn destroy_lists_direct_children_then_destroys_present_exact_dataset_non_recursively() {
+    let state = tempfile::tempdir().unwrap();
+    persist(state.path(), PreparedStorageOrigin::Adopted);
     let dataset = dataset("tank");
+    let listing = format!("tank/ployz/volumes\n{}\n", dataset.as_str());
+    let mut runner = RecordingRunner::new([
+        success(),
+        stdout(VOLUME_MOUNTPOINT),
+        stdout(&listing),
+        success(),
+    ]);
     destroy_dataset(&mut runner, state.path(), &dataset).unwrap();
     assert_eq!(
         invocation(&runner, 2),
         &Invocation {
             program: "zfs".to_owned(),
-            args: vec!["destroy".to_owned(), dataset.as_str().to_owned()],
-            timeout: COMMAND_TIMEOUT,
+            args: vec![
+                "list".to_owned(),
+                "-H".to_owned(),
+                "-d".to_owned(),
+                "1".to_owned(),
+                "-o".to_owned(),
+                "name".to_owned(),
+                "tank/ployz/volumes".to_owned(),
+            ],
+            timeout: DATASET_DESTROY_INNER_COMMAND_TIMEOUT,
         }
     );
+    assert_eq!(
+        invocation(&runner, 3),
+        &Invocation {
+            program: "zfs".to_owned(),
+            args: vec!["destroy".to_owned(), dataset.as_str().to_owned()],
+            timeout: DATASET_DESTROY_INNER_COMMAND_TIMEOUT,
+        }
+    );
+    assert!(
+        runner
+            .invocations
+            .iter()
+            .all(|invocation| invocation.timeout == DATASET_DESTROY_INNER_COMMAND_TIMEOUT)
+    );
+}
+
+#[test]
+fn owned_image_destroy_uses_five_inner_commands_with_the_destroy_budget() {
+    let state = tempfile::tempdir().unwrap();
+    persist(
+        state.path(),
+        PreparedStorageOrigin::OwnedImage {
+            backing_file: PathBuf::from(PLOYZ_OWNED_ZFS_BACKING_FILE),
+        },
+    );
+    let dataset = dataset(PLOYZ_OWNED_ZFS_POOL);
+    let root = format!("{PLOYZ_OWNED_ZFS_POOL}/ployz/volumes");
+    let listing = format!("{root}\n{}\n", dataset.as_str());
+    let mut runner = RecordingRunner::new([
+        success(),
+        stdout(VOLUME_MOUNTPOINT),
+        stdout(PLOYZ_OWNED_ZFS_BACKING_FILE),
+        stdout(&listing),
+        success(),
+    ]);
+
+    destroy_dataset(&mut runner, state.path(), &dataset).unwrap();
+
+    assert_eq!(
+        runner.invocations.len(),
+        ployz_core::storage::DATASET_DESTROY_MAX_INNER_COMMANDS as usize
+    );
+    assert!(
+        runner
+            .invocations
+            .iter()
+            .all(|invocation| invocation.timeout == DATASET_DESTROY_INNER_COMMAND_TIMEOUT)
+    );
+}
+
+#[test]
+fn destroy_treats_valid_listing_omission_as_no_op() {
+    let state = tempfile::tempdir().unwrap();
+    persist(state.path(), PreparedStorageOrigin::Adopted);
+    let mut runner = RecordingRunner::new([
+        success(),
+        stdout(VOLUME_MOUNTPOINT),
+        stdout("tank/ployz/volumes\n"),
+    ]);
+
+    destroy_dataset(&mut runner, state.path(), &dataset("tank")).unwrap();
+
+    assert_eq!(runner.invocations.len(), 3);
+    assert_eq!(
+        invocation(&runner, 2).args.first().map(String::as_str),
+        Some("list")
+    );
+}
+
+#[test]
+fn destroy_rejects_wrong_root_before_listing_or_destroy() {
+    let state = tempfile::tempdir().unwrap();
+    persist(state.path(), PreparedStorageOrigin::Adopted);
+    let mut runner = RecordingRunner::new([success(), stdout(VOLUME_MOUNTPOINT)]);
+
+    assert!(matches!(
+        destroy_dataset(&mut runner, state.path(), &dataset("other")),
+        Err(ZfsEffectError::DestructiveEffect { .. })
+    ));
+
+    assert_eq!(runner.invocations.len(), 2);
+}
+
+#[test]
+fn destroy_retains_failed_malformed_foreign_and_ambiguous_listing_testimony() {
+    let requested = dataset("tank");
+    let foreign = dataset("other");
+    let cases = [
+        (
+            failed("listing failed"),
+            "failed",
+            ZfsEffectError::DestructiveEffect {
+                message: "listing failed".to_owned(),
+            },
+        ),
+        (
+            stdout("tank/ployz/volumes\n\n"),
+            "malformed",
+            ZfsEffectError::GatherParse {
+                message: "invalid direct-child dataset row \"\"".to_owned(),
+            },
+        ),
+        (
+            stdout(&format!("tank/ployz/volumes\n{}\n", foreign.as_str())),
+            "foreign",
+            ZfsEffectError::DestructiveEffect {
+                message: format!(
+                    "dataset {} is not a direct child of tank/ployz/volumes",
+                    foreign.as_str()
+                ),
+            },
+        ),
+        (
+            stdout(&format!(
+                "tank/ployz/volumes\n{}\n{}\n",
+                requested.as_str(),
+                requested.as_str()
+            )),
+            "ambiguous",
+            ZfsEffectError::GatherParse {
+                message: format!(
+                    "duplicate direct-child dataset row {:?}",
+                    requested.as_str()
+                ),
+            },
+        ),
+        (
+            stdout(&format!(
+                "tank/ployz/volumes\n{}\ntank/ployz/volumes\n",
+                requested.as_str()
+            )),
+            "duplicate-root",
+            ZfsEffectError::GatherParse {
+                message: "duplicate direct-child dataset root row \"tank/ployz/volumes\""
+                    .to_owned(),
+            },
+        ),
+        (
+            stdout(requested.as_str()),
+            "missing-root",
+            ZfsEffectError::GatherParse {
+                message: "direct-child dataset listing omitted root tank/ployz/volumes".to_owned(),
+            },
+        ),
+        (
+            truncated_stdout("tank/ployz/volumes\n"),
+            "capture-limited",
+            ZfsEffectError::GatherParse {
+                message: "direct-child dataset listing exceeded the command output capture limit"
+                    .to_owned(),
+            },
+        ),
+    ];
+
+    for (listing, label, expected) in cases {
+        let state = tempfile::tempdir().unwrap();
+        persist(state.path(), PreparedStorageOrigin::Adopted);
+        let mut runner = RecordingRunner::new([success(), stdout(VOLUME_MOUNTPOINT), listing]);
+
+        assert_eq!(
+            destroy_dataset(&mut runner, state.path(), &requested),
+            Err(expected),
+            "{label} listing"
+        );
+        assert_eq!(runner.invocations.len(), 3, "{label} listing");
+    }
+}
+
+#[test]
+fn destroy_validates_but_does_not_deduplicate_unrelated_siblings() {
+    let state = tempfile::tempdir().unwrap();
+    persist(state.path(), PreparedStorageOrigin::Adopted);
+    let requested = dataset("tank");
+    let sibling = DatasetName::for_volume(
+        &ZfsPoolName::try_new("tank").unwrap(),
+        &NamespaceId::try_new("default").unwrap(),
+        &VolumeName::try_new("logs").unwrap(),
+    )
+    .unwrap();
+    let listing = format!(
+        "tank/ployz/volumes\n{}\n{}\n",
+        sibling.as_str(),
+        sibling.as_str()
+    );
+    let mut runner = RecordingRunner::new([success(), stdout(VOLUME_MOUNTPOINT), stdout(&listing)]);
+
+    destroy_dataset(&mut runner, state.path(), &requested).unwrap();
+
+    assert_eq!(runner.invocations.len(), 3);
 }

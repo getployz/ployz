@@ -1,3 +1,4 @@
+use ployz_core::build::{BuildAdapter, BuildPlatforms, GitSourceEvidence};
 use ployz_core::deploy::{DeployReservationId, VolumeName};
 use ployz_core::ids::{CertId, MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::ingress::IngressConfiguration;
@@ -104,6 +105,21 @@ pub struct DeployOperationSubmission {
     pub idempotency_key: OperationIdempotencyKey,
     pub reservation_id: DeployReservationId,
     pub target: ployz_core::deploy::DeployRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildOperationSubmission {
+    pub operation_id: OperationId,
+    pub source: GitSourceEvidence,
+    pub adapter: BuildAdapter,
+    pub platforms: BuildPlatforms,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct BuildOperationPayload {
+    pub(super) source: GitSourceEvidence,
+    pub(super) adapter: BuildAdapter,
+    pub(super) platforms: BuildPlatforms,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -237,6 +253,16 @@ pub struct VolumeRemoveOperationSubmission {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VolumeCreateOperationSubmission {
+    pub request: ployz_core::operation::VolumeCreateRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct VolumeCreatePayload {
+    pub(super) request: ployz_core::operation::VolumeCreateRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct VolumeRemovePayload {
     pub(super) namespace_id: NamespaceId,
     pub(super) volume_name: VolumeName,
@@ -247,6 +273,16 @@ pub struct AcceptedDeploySubmission {
     pub operation_id: OperationId,
     pub start_sequence: EventSequence,
     pub target: ployz_core::deploy::DeployRequest,
+    pub should_start_execution: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedBuildSubmission {
+    pub operation_id: OperationId,
+    pub start_sequence: EventSequence,
+    pub source: GitSourceEvidence,
+    pub adapter: BuildAdapter,
+    pub platforms: BuildPlatforms,
     pub should_start_execution: bool,
 }
 
@@ -344,6 +380,13 @@ pub struct AcceptedVolumeRemoveSubmission {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedVolumeCreateSubmission {
+    pub request: ployz_core::operation::VolumeCreateRequest,
+    pub start_sequence: EventSequence,
+    pub should_start_execution: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptedManagedDnsReconcileSubmission {
     pub operation_id: OperationId,
 }
@@ -434,6 +477,8 @@ pub enum RecordOperationEventError {
 }
 
 pub type RecordDeployTransitionError = RecordOperationEventError;
+pub type RecordBuildTransitionError = RecordOperationEventError;
+pub type RecordBuildEvidenceError = RecordOperationEventError;
 pub type RecordCertTransitionError = RecordOperationEventError;
 pub type RecordDeployEvidenceError = RecordOperationEventError;
 pub type RecordServiceRestartTransitionError = RecordOperationEventError;

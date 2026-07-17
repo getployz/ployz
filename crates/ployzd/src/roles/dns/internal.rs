@@ -851,6 +851,7 @@ mod tests {
                 available_bytes: 40,
                 total_bytes: 100,
             },
+            None,
             ployz_core::image::OciPlatform::current(),
             1,
         )

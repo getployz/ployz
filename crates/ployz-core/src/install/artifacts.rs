@@ -14,6 +14,7 @@ pub struct FirstMachineInstallArtifacts {
     pub ployzd: InstallArtifactSpec,
     pub ebpf_bytecode: InstallArtifactSpec,
     pub ebpf_ctl: InstallArtifactSpec,
+    pub railpack: InstallArtifactSpec,
     /// Absent when the release manifest ships no `nats-server` (a dev
     /// substrate push). Installs that found or promote a core require it.
     pub nats_server: Option<NatsServerInstallSpec>,
@@ -26,6 +27,7 @@ pub struct MachineJoinArtifactBundleSpec {
     pub ployzd: InstallArtifactSpec,
     pub ebpf_bytecode: InstallArtifactSpec,
     pub ebpf_ctl: InstallArtifactSpec,
+    pub railpack: InstallArtifactSpec,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

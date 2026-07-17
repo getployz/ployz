@@ -22,8 +22,8 @@ use std::process::ExitCode;
 
 use cli::HostRunnerCommand;
 use execution::{
-    HostRunnerCommandRunner, PoolSelection, SystemHostRunnerCommandRunner, create_dataset,
-    destroy_dataset, gather_dataset_facts, gather_pool_capacity, grow_dataset_quota,
+    HostRunnerCommandRunner, PoolSelection, SystemHostRunnerCommandRunner, destroy_dataset,
+    ensure_dataset, gather_dataset_facts, gather_pool_capacity, observe_storage_capability,
     prepare_storage_for_operation,
 };
 
@@ -85,23 +85,21 @@ pub fn run_host_runner_command(command: HostRunnerCommand) -> ExitCode {
             )
             .map_err(|error| error.to_string())
         }),
+        HostRunnerCommand::StorageCapability => run_storage_effect(|| {
+            observe_storage_capability(
+                &mut SystemHostRunnerCommandRunner::default(),
+                std::path::Path::new(HOST_RUNNER_STATE_DIRECTORY),
+                std::path::Path::new("/sys/module/zfs"),
+            )
+        }),
         HostRunnerCommand::StoragePoolFacts => run_storage_effect(|| {
             gather_pool_capacity(
                 &mut SystemHostRunnerCommandRunner::default(),
                 std::path::Path::new(HOST_RUNNER_STATE_DIRECTORY),
             )
         }),
-        HostRunnerCommand::StorageDatasetCreate(effect) => run_storage_effect(|| {
-            create_dataset(
-                &mut SystemHostRunnerCommandRunner::default(),
-                std::path::Path::new(HOST_RUNNER_STATE_DIRECTORY),
-                &effect.dataset,
-                effect.quota,
-            )
-            .map(|()| serde_json::Value::Null)
-        }),
-        HostRunnerCommand::StorageDatasetGrow(effect) => run_storage_effect(|| {
-            grow_dataset_quota(
+        HostRunnerCommand::StorageDatasetEnsure(effect) => run_typed_storage_effect(|| {
+            ensure_dataset(
                 &mut SystemHostRunnerCommandRunner::default(),
                 std::path::Path::new(HOST_RUNNER_STATE_DIRECTORY),
                 &effect.dataset,
@@ -116,7 +114,7 @@ pub fn run_host_runner_command(command: HostRunnerCommand) -> ExitCode {
                 &dataset,
             )
         }),
-        HostRunnerCommand::StorageDatasetDestroy(dataset) => run_storage_effect(|| {
+        HostRunnerCommand::StorageDatasetDestroy(dataset) => run_typed_storage_effect(|| {
             destroy_dataset(
                 &mut SystemHostRunnerCommandRunner::default(),
                 std::path::Path::new(HOST_RUNNER_STATE_DIRECTORY),
@@ -124,6 +122,30 @@ pub fn run_host_runner_command(command: HostRunnerCommand) -> ExitCode {
             )
             .map(|()| serde_json::Value::Null)
         }),
+    }
+}
+
+fn run_typed_storage_effect<T: serde::Serialize>(
+    effect: impl FnOnce() -> Result<T, ployz_core::storage::StorageEffectFailure>,
+) -> ExitCode {
+    match effect() {
+        Ok(value) => match serde_json::to_string(&value) {
+            Ok(value) => {
+                println!("{value}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("failed to encode storage result: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        Err(error) => {
+            match serde_json::to_string(&error) {
+                Ok(error) => eprintln!("{error}"),
+                Err(encode_error) => eprintln!("failed to encode storage failure: {encode_error}"),
+            }
+            ExitCode::FAILURE
+        }
     }
 }
 

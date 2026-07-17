@@ -232,6 +232,24 @@ async fn deploy_execution_facts(
                 .map(|answer| (facts.machine_id.clone(), answer.platform.clone()))
         })
         .collect();
+    let seed_clock_testimony = placement_facts
+        .iter()
+        .filter_map(|facts| {
+            facts
+                .answer
+                .as_ref()
+                .map(|answer| (facts.machine_id.clone(), answer.clock))
+        })
+        .collect();
+    let machine_storage_testimony = placement_facts
+        .iter()
+        .filter_map(|facts| {
+            facts
+                .answer
+                .as_ref()
+                .map(|answer| (facts.machine_id.clone(), answer.storage.clone()))
+        })
+        .collect();
     let dataplane_members = operation_dataplane_members(request, &active_machines);
     let gateway_certificate_targets =
         gateway_certificate_targets(&active_machines, &placement_facts);
@@ -256,6 +274,8 @@ async fn deploy_execution_facts(
         dataplane_members,
         observed_machines,
         machine_platforms,
+        seed_clock_testimony,
+        machine_storage_testimony,
         namespace_cleanup_candidates,
         automatic_hostname_mode,
         gateway_certificate_targets,
