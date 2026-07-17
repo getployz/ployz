@@ -18,12 +18,13 @@ use ployz_sdk_types::{
     CoreReplaceReportRequest, CoreReplaceReported, CoreReplaceRequest, CredentialAddError,
     CredentialAddRequest, CredentialListError, CredentialListRequest, CredentialListResult,
     CredentialRemoveError, CredentialRemoveRequest, DependencyCondition, DeployOperationState,
-    DeployPhaseNumber, DeployPhaseNumberError, DeployRequest, DeployReservationId,
-    DeployReserveError, DeployReserveRequest, DeployReserved, DeployRunningStage,
-    DeployServiceSpec, DeploySubmitError, DeploySubmitRequest, DeploySubmitResponse, EventSequence,
-    EventSequenceError, GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessHealth,
-    GatewayStatusPublishFailure, GatewayWatchFailure, GitSource, HostPortAssurance, ImageReference,
-    ImageReferenceError, IngressConfiguration, IngressConfigureError, IngressConfigureRequest,
+    DeployPhaseNumber, DeployPhaseNumberError, DeployPreview, DeployPreviewError,
+    DeployPreviewRequest, DeployRequest, DeployReservationId, DeployReserveError,
+    DeployReserveRequest, DeployReserved, DeployRunningStage, DeployServiceSpec, DeploySubmitError,
+    DeploySubmitRequest, DeploySubmitResponse, EventSequence, EventSequenceError,
+    GatewayHttpFailure, GatewayProcessAttempt, GatewayProcessHealth, GatewayStatusPublishFailure,
+    GatewayWatchFailure, GitSource, HostPortAssurance, ImageReference, ImageReferenceError,
+    IngressConfiguration, IngressConfigureError, IngressConfigureRequest,
     IngressEndpointProjectionIdentity, InitFirstMachineActivateError,
     InitFirstMachineActivateRequest, InitFirstMachineActivated, InstallContractError,
     InstallRolePolicy, LogsTailError, LogsTailRequest, LogsTailResult,
@@ -53,13 +54,13 @@ use ployz_sdk_types::{
     VolumeSnapshot, VolumeStatus, VolumeTestimony,
     operation_api::{
         BuildCancelApi, BuildSubmitApi, CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi,
-        CredentialListApi, CredentialRemoveApi, DeployReserveApi, DeploySubmitApi,
-        IngressConfigureApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
-        MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi, MachineListApi,
-        MachineStoragePrepareApi, MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi,
-        NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi,
-        OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi,
-        VolumeCreateApi, VolumeListApi, VolumeRemoveApi,
+        CredentialListApi, CredentialRemoveApi, DeployPreviewApi, DeployReserveApi,
+        DeploySubmitApi, IngressConfigureApi, InitFirstMachineActivateApi, LogsTailApi,
+        MachineAddApi, MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi,
+        MachineListApi, MachineStoragePrepareApi, MachineUpdateApi, NamespaceRemoveApi,
+        NetworkRepairApi, NetworkResolveApi, NetworkStatusApi, OperationApiContract, OpsListApi,
+        OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi,
+        ServiceRestartApi, VolumeCreateApi, VolumeListApi, VolumeRemoveApi,
     },
 };
 use ts_rs::{Config, TS};
@@ -483,6 +484,11 @@ fn typescript_contract_fixture_matches_rust_wire_types() {
     .expect("fixture is json");
 
     assert_fixture::<DeploySubmitRequest>(&fixture, "deploy_submit_request");
+    assert_fixture::<DeployPreviewRequest>(&fixture, "deploy_preview_request");
+    assert_fixture::<OperationApiResponse<DeployPreview, DeployPreviewError>>(
+        &fixture,
+        "deploy_preview_response",
+    );
     assert_fixture::<DeployReserveRequest>(&fixture, "deploy_reserve_request");
     assert_fixture::<InitFirstMachineActivateRequest>(
         &fixture,
@@ -529,6 +535,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
     assert_contract::<BuildSubmitApi, BuildSubmitRequest, AcceptedOperation, BuildSubmitError>();
     assert_contract::<BuildCancelApi, BuildCancelRequest, AcceptedOperation, BuildCancelError>();
     assert_contract::<DeployReserveApi, DeployReserveRequest, DeployReserved, DeployReserveError>();
+    assert_contract::<DeployPreviewApi, DeployPreviewRequest, DeployPreview, DeployPreviewError>();
     assert_contract::<DeploySubmitApi, DeploySubmitRequest, AcceptedOperation, DeploySubmitError>();
     assert_contract::<
         InitFirstMachineActivateApi,

@@ -114,6 +114,27 @@ impl DeployPlan {
         machines.dedup();
         machines
     }
+
+    #[must_use]
+    pub fn service_target_machines(&self, service_id: &ServiceId) -> Option<Vec<MachineId>> {
+        let service = self
+            .phases
+            .iter()
+            .flat_map(|phase| &phase.services)
+            .find(|service| &service.service_id == service_id)?;
+        let mut machines = service
+            .steps
+            .iter()
+            .map(|step| match step {
+                DeployPlanStep::UseExistingContainer { machine_id, .. }
+                | DeployPlanStep::RunContainer { machine_id, .. } => machine_id.clone(),
+            })
+            .chain(service.pre_start.iter().map(|step| step.machine_id.clone()))
+            .collect::<Vec<_>>();
+        machines.sort();
+        machines.dedup();
+        Some(machines)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -833,4 +854,45 @@ fn deploy_service<'a>(
         .ok_or_else(|| DeployPlanError::UnknownService {
             service_id: service_id.clone(),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn service_target_machines_are_deduplicated_across_replicas_and_pre_start() {
+        let machine = MachineId::try_new("machine_a").expect("machine id");
+        let service_id = ServiceId::try_new("api").expect("service id");
+        let plan = DeployPlan {
+            namespace_id: NamespaceId::try_new("default").expect("namespace id"),
+            namespace_revision_id: NamespaceRevisionId::try_new("rev_test").expect("revision id"),
+            phases: vec![DeployPhasePlan {
+                services: vec![DeployServicePlan {
+                    service_id: service_id.clone(),
+                    steps: vec![
+                        DeployPlanStep::RunContainer {
+                            machine_id: machine.clone(),
+                            slot: ReplicaSlot::try_new(1).expect("slot"),
+                        },
+                        DeployPlanStep::RunContainer {
+                            machine_id: machine.clone(),
+                            slot: ReplicaSlot::try_new(2).expect("slot"),
+                        },
+                    ],
+                    pre_start: Some(PreStartHookStep {
+                        machine_id: machine.clone(),
+                    }),
+                }],
+            }],
+            volume_pin_commits: Vec::new(),
+            volume_ensures: Vec::new(),
+            cleanup_actions: Vec::new(),
+        };
+
+        assert_eq!(
+            plan.service_target_machines(&service_id),
+            Some(vec![machine])
+        );
+    }
 }

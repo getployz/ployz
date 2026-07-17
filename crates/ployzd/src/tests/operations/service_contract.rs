@@ -2,10 +2,10 @@ use crate::control::operator_api::{ops_status_missing, owned_operation};
 use crate::service_catalog::DaemonServiceCatalog;
 use ployz_nats::services::{EndpointExecution, ServiceDiscoveryQuery};
 use ployz_nats::subjects::{
-    INGRESS_ENDPOINT_GET, INTENT_GET, JOIN_MACHINE_REPORT, OPERATOR_DEPLOY_RESERVE,
-    OPERATOR_DEPLOY_SUBMIT, OPERATOR_MACHINE_ADD, OPERATOR_MACHINE_INSPECT, OPERATOR_MACHINE_LIST,
-    OPERATOR_OPS_STATUS, OPERATOR_OPS_WATCH, OPERATOR_SERVICE_INSPECT, OPERATOR_SERVICE_LIST,
-    OperationProgressScope, RUNTIME_SNAPSHOT_SEED,
+    INGRESS_ENDPOINT_GET, INTENT_GET, JOIN_MACHINE_REPORT, OPERATOR_DEPLOY_PREVIEW,
+    OPERATOR_DEPLOY_RESERVE, OPERATOR_DEPLOY_SUBMIT, OPERATOR_MACHINE_ADD,
+    OPERATOR_MACHINE_INSPECT, OPERATOR_MACHINE_LIST, OPERATOR_OPS_STATUS, OPERATOR_OPS_WATCH,
+    OPERATOR_SERVICE_INSPECT, OPERATOR_SERVICE_LIST, OperationProgressScope, RUNTIME_SNAPSHOT_SEED,
 };
 use ployz_sdk_types::OpsStatusError;
 use ployz_test_support::ids::{event_sequence, machine_id, operation_id};
@@ -134,6 +134,23 @@ fn ops_watch_is_a_query_endpoint() {
         .expect("ops.watch endpoint is registered");
 
     assert_eq!(ops_watch.execution, EndpointExecution::Query);
+}
+
+#[test]
+fn deploy_preview_is_a_query_endpoint() {
+    let catalog = DaemonServiceCatalog::for_control();
+    let api = catalog
+        .services()
+        .iter()
+        .find(|service| service.name == "plz-api")
+        .expect("api service is registered");
+    let deploy_preview = api
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.subject == OPERATOR_DEPLOY_PREVIEW)
+        .expect("deploy.preview endpoint is registered");
+
+    assert_eq!(deploy_preview.execution, EndpointExecution::Query);
 }
 
 #[test]

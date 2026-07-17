@@ -458,7 +458,7 @@ export type CoreReplaceOperationState = { "state": "accepted" } | { "state": "co
 
 export type CoreReplaceFailure = { "kind": "demote_failed", message: FailureMessage, };
 
-export type MachineUsabilityReason = { "kind": "platform_mismatch", required: OciPlatform, reported: OciPlatform, } | { "kind": "draining" } | { "kind": "facts_unavailable" } | { "kind": "build_unavailable" } | { "kind": "storage_testimony_not_reported" } | { "kind": "storage_unprepared" } | { "kind": "storage_unavailable", reason: StorageUnavailableReason, } | { "kind": "storage_pool_mismatch", expected: ZfsPoolName, reported: ZfsPoolName, } | { "kind": "dataplane_unavailable", reason: DataplaneUnavailableReason, };
+export type MachineUsabilityReason = { "kind": "platform_mismatch", supported: BuildPlatforms, reported: OciPlatform, } | { "kind": "draining" } | { "kind": "facts_unavailable" } | { "kind": "build_unavailable" } | { "kind": "storage_testimony_not_reported" } | { "kind": "storage_unprepared" } | { "kind": "storage_unavailable", reason: StorageUnavailableReason, } | { "kind": "storage_pool_mismatch", expected: ZfsPoolName, reported: ZfsPoolName, } | { "kind": "dataplane_unavailable", reason: DataplaneUnavailableReason, };
 
 export type DataplaneUnavailableReason = { "kind": "not_declared" } | { "kind": "testimony_missing" } | { "kind": "admission", failure: DataplaneProjectionAdmissionFailure, };
 
@@ -707,6 +707,20 @@ export type InitFirstMachineActivateError = { "error": "invalid_plan" } | { "err
 export type DeployReserveRequest = { namespace_id: NamespaceId, };
 
 export type DeployReserved = { reservation_id: DeployReservationId, expires_at: DeployReservationExpiresAt, };
+
+export type DeployPreviewRequest = { target: DeployPreviewTarget, };
+
+export type DeployPreviewTarget = { namespace_id: NamespaceId, origin?: DeployOrigin | null, volumes?: { [key in VolumeName]: VolumeSpec }, services: Array<DeployPreviewService>, };
+
+export type DeployPreviewService = { service_id: ServiceId, image: DeployPreviewImage, replicas: ReplicaCount, keep?: ContainerRetentionCount | null, runtime: ContainerRuntimeSpec, pre_start?: PreStartHook | null, depends_on?: Array<ServiceDependency>, routes?: Array<DeployRoute>, };
+
+export type DeployPreviewImage = { "state": "concrete", image: ImageReference, image_source: ImageSource, } | { "state": "pending_build" };
+
+export type DeployPreview = { projection: DeployPreviewProjection, build_platform_requirements: { [key in ServiceId]: BuildPlatforms }, unusable_machines?: Array<UnusableMachine>, };
+
+export type DeployPreviewProjection = { namespace_id: NamespaceId, phases: Array<DeployPhasePlan>, volume_pins?: Array<VolumePinState>, volume_preparations?: Array<VolumePinState>, cleanup_candidates?: Array<DeployCleanupAction>, };
+
+export type DeployPreviewError = { "error": "invalid_target", message: FailureMessage, } | { "error": "planning_failed", message: FailureMessage, unusable_machines?: Array<UnusableMachine>, } | { "error": "unavailable", message: string, };
 
 export type DeploySubmitRequest = { idempotency_key: OperationIdempotencyKey, reservation_id: DeployReservationId, target: DeployRequest, registry_credentials?: { [key in ServiceId]: RegistryCredential }, };
 
@@ -1041,6 +1055,8 @@ export type BuildCancelResponse = OperationApiResponse<AcceptedOperation, BuildC
 
 export type DeployReserveResponse = OperationApiResponse<DeployReserved, DeployReserveError>;
 
+export type DeployPreviewResponse = OperationApiResponse<DeployPreview, DeployPreviewError>;
+
 export type DeploySubmitResponse = OperationApiResponse<AcceptedOperation, DeploySubmitError>;
 
 export type InitFirstMachineActivateResponse = OperationApiResponse<InitFirstMachineActivated, InitFirstMachineActivateError>;
@@ -1111,6 +1127,7 @@ export const OPERATION_API_CONTRACTS = [
   { name: "build.submit", subject: "plz.v1.rpc.operator.command.build.submit", execution: "accepts_operation", request: "BuildSubmitRequest", success: "AcceptedOperation", error: "BuildSubmitError", response: "BuildSubmitResponse" },
   { name: "build.cancel", subject: "plz.v1.rpc.operator.command.build.cancel", execution: "mutates_operation", request: "BuildCancelRequest", success: "AcceptedOperation", error: "BuildCancelError", response: "BuildCancelResponse" },
   { name: "deploy.reserve", subject: "plz.v1.rpc.operator.command.deploy.reserve", execution: "mutates_operation", request: "DeployReserveRequest", success: "DeployReserved", error: "DeployReserveError", response: "DeployReserveResponse" },
+  { name: "deploy.preview", subject: "plz.v1.rpc.operator.query.deploy.preview", execution: "query", request: "DeployPreviewRequest", success: "DeployPreview", error: "DeployPreviewError", response: "DeployPreviewResponse" },
   { name: "deploy.submit", subject: "plz.v1.rpc.operator.command.deploy.submit", execution: "accepts_operation", request: "DeploySubmitRequest", success: "AcceptedOperation", error: "DeploySubmitError", response: "DeploySubmitResponse" },
   { name: "init.first_machine.activate", subject: "plz.v1.rpc.operator.command.init.first_machine.activate", execution: "mutates_operation", request: "InitFirstMachineActivateRequest", success: "InitFirstMachineActivated", error: "InitFirstMachineActivateError", response: "InitFirstMachineActivateResponse" },
   { name: "machine.add", subject: "plz.v1.rpc.operator.command.machine.add", execution: "accepts_operation", request: "MachineAddRequest", success: "MachineAddAccepted", error: "MachineAddError", response: "MachineAddResponse" },
@@ -1151,6 +1168,7 @@ export type OperationApiRequestByEndpoint = {
   "build.submit": BuildSubmitRequest;
   "build.cancel": BuildCancelRequest;
   "deploy.reserve": DeployReserveRequest;
+  "deploy.preview": DeployPreviewRequest;
   "deploy.submit": DeploySubmitRequest;
   "init.first_machine.activate": InitFirstMachineActivateRequest;
   "machine.add": MachineAddRequest;
@@ -1189,6 +1207,7 @@ export type OperationApiResponseByEndpoint = {
   "build.submit": BuildSubmitResponse;
   "build.cancel": BuildCancelResponse;
   "deploy.reserve": DeployReserveResponse;
+  "deploy.preview": DeployPreviewResponse;
   "deploy.submit": DeploySubmitResponse;
   "init.first_machine.activate": InitFirstMachineActivateResponse;
   "machine.add": MachineAddResponse;

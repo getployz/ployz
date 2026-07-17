@@ -389,13 +389,23 @@ pub(super) fn failure_cause(target: &DeployRequest, failure: &DeployOperationFai
             let details = reasons
                 .iter()
                 .map(|reason| match &reason.reason {
-                    MachineUsabilityReason::PlatformMismatch { required, reported } => format!(
-                        "{} reports platform {}/{}, expected {}/{}",
+                    MachineUsabilityReason::PlatformMismatch {
+                        supported,
+                        reported,
+                    } => format!(
+                        "{} reports platform {}/{}, supported platforms: {}",
                         reason.machine_id.as_str(),
                         reported.os(),
                         reported.architecture(),
-                        required.os(),
-                        required.architecture(),
+                        supported
+                            .iter()
+                            .map(|platform| format!(
+                                "{}/{}",
+                                platform.os(),
+                                platform.architecture()
+                            ))
+                            .collect::<Vec<_>>()
+                            .join(", "),
                     ),
                     MachineUsabilityReason::Draining => {
                         format!("{} is draining", reason.machine_id.as_str())

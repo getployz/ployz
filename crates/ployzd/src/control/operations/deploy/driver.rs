@@ -41,6 +41,7 @@ const DEPLOY_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// before deploy completion commits it: a fast-exiting process can be
 /// sampled alive once, and one running observation is not survival.
 const DEPLOY_RUNNING_CONFIRMATION_WINDOW: Duration = Duration::from_millis(1_500);
+const DEPLOY_PREVIEW_GATHER_TIMEOUT: Duration = Duration::from_secs(8);
 
 impl CertificateProvisioner for CertificateManager {
     async fn ensure(
@@ -523,6 +524,26 @@ impl DeployOperationDriver {
             }),
         )
         .await;
+    }
+
+    pub async fn preview(
+        &self,
+        request: ployz_sdk_types::DeployPreviewRequest,
+    ) -> Result<ployz_sdk_types::DeployPreview, ployz_sdk_types::DeployPreviewError> {
+        let client = self.stores.intent_change_client.clone();
+        let gather_timeout = self.step_timeout.min(DEPLOY_PREVIEW_GATHER_TIMEOUT);
+        let facts_reader =
+            NatsMachineFactsReader::new(client.clone()).with_request_timeout(gather_timeout);
+        let intent_reader = NatsIntentReader::new(client).with_request_timeout(gather_timeout);
+        super::preview_deploy_from_nats(
+            request,
+            &intent_reader,
+            &facts_reader,
+            &self.stores.ployz_dns_target,
+            &self.stores.ingress_projection,
+            gather_timeout,
+        )
+        .await
     }
 
     pub async fn run(

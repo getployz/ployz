@@ -41,6 +41,7 @@ pub const IMPLEMENTED_OPERATION_API_ENDPOINTS: &[OperationApiEndpoint] = &[
     OperationApiEndpoint::CredentialRemove,
     OperationApiEndpoint::IngressConfigure,
     OperationApiEndpoint::DeployReserve,
+    OperationApiEndpoint::DeployPreview,
     OperationApiEndpoint::DeploySubmit,
     OperationApiEndpoint::ServiceRestart,
     OperationApiEndpoint::NamespaceRemove,

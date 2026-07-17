@@ -14,9 +14,8 @@ use crate::control::sequencer::{
     VolumeCreateSubmitCommand, VolumeRemoveSubmitCommand,
 };
 use ployz_core::deploy::ImageSource;
-use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
+use ployz_core::ids::{MachineId, OperationId};
 use ployz_core::machine::MachineLifecycle;
-use ployz_core::network::internal_dns::InternalServiceName;
 use ployz_core::operation::{CredentialGrantAction, EventSequence, VolumeCreateRequest};
 use ployz_nats::subjects::{OperationProgressScope, operation_progress_watch};
 use ployz_sdk_types::{
@@ -338,14 +337,12 @@ pub async fn deploy_submit(
 ) -> Result<AcceptedOperation, DeploySubmitError> {
     let command = normalize_deploy_submit(request)?;
     let operation_id = command.operation_id.clone();
-    for service in command.target.services() {
-        validate_internal_dns_name(command.target.namespace_id(), &service.service_id).map_err(
-            |message| DeploySubmitError::InvalidTarget {
-                operation_id: operation_id.clone(),
-                message,
-            },
-        )?;
-    }
+    crate::control::operations::deploy::validate_deploy_service_names(&command.target).map_err(
+        |message| DeploySubmitError::InvalidTarget {
+            operation_id: operation_id.clone(),
+            message,
+        },
+    )?;
     validate_registry_credentials(&command)?;
     validate_pushed_image_seeds(handlers, &command).await?;
     validate_deploy_route_admission(
@@ -379,22 +376,6 @@ pub async fn deploy_submit(
     Ok(operation)
 }
 
-fn validate_internal_dns_name(
-    namespace_id: &NamespaceId,
-    service_id: &ServiceId,
-) -> Result<(), ployz_core::operation::FailureMessage> {
-    InternalServiceName::try_from_ids(service_id, namespace_id)
-        .map(|_| ())
-        .map_err(|_| {
-            ployz_core::operation::FailureMessage::try_new(format!(
-                "service {} in namespace {} cannot form internal DNS name because each label is limited to 63 bytes",
-                service_id.as_str(),
-                namespace_id.as_str()
-            ))
-            .expect("generated internal DNS validation message is non-empty")
-        })
-}
-
 fn validate_registry_credentials(command: &DeploySubmitCommand) -> Result<(), DeploySubmitError> {
     let services = command.target.services();
     for service_id in command.registry_credentials.keys() {
@@ -418,22 +399,14 @@ fn validate_registry_credentials(command: &DeploySubmitCommand) -> Result<(), De
     }
 
     for service in command.target.services() {
-        let ImageSource::PushedToSeed(receipt) = &service.image_source else {
+        let ImageSource::PushedToSeed(_) = &service.image_source else {
             continue;
         };
-        let Some(pinned_digest) = service.image.pinned_digest() else {
-            return Err(invalid_pushed_image(
-                command,
-                service,
-                "must be digest-pinned",
-            ));
-        };
-        if &pinned_digest != receipt.index_digest() {
-            return Err(invalid_pushed_image(
-                command,
-                service,
-                "digest must match its pushed index digest",
-            ));
+        if let Err(error) = ployz_core::deploy::validate_pushed_image_reference(
+            &service.image,
+            &service.image_source,
+        ) {
+            return Err(invalid_pushed_image(command, service, &error.to_string()));
         }
     }
     Ok(())
@@ -473,9 +446,27 @@ async fn validate_pushed_image_seeds(
     handlers: &OperationApiHandlers,
     command: &DeploySubmitCommand,
 ) -> Result<(), DeploySubmitError> {
-    let services = command.target.services();
+    validate_pushed_image_seed_roster(&handlers.machine_roster, &command.target)
+        .await
+        .map_err(|error| match error {
+            PushedImageSeedValidationError::Unavailable { message } => {
+                DeploySubmitError::Unavailable {
+                    operation_id: command.operation_id.clone(),
+                    message,
+                }
+            }
+            PushedImageSeedValidationError::Invalid { seed, reason } => {
+                invalid_image_seed(command, &seed, reason)
+            }
+        })
+}
+
+pub(super) async fn validate_pushed_image_seed_roster(
+    machine_roster: &crate::control::intent::machine_roster::MachineRosterStore,
+    target: &ployz_core::deploy::VolumeDeclaredDeployRequest,
+) -> Result<(), PushedImageSeedValidationError> {
     let mut seeds = std::collections::BTreeSet::new();
-    for service in services {
+    for service in target.services() {
         let ImageSource::PushedToSeed(receipt) = &service.image_source else {
             continue;
         };
@@ -483,31 +474,36 @@ async fn validate_pushed_image_seeds(
     }
 
     for seed in &seeds {
-        let active = handlers
-            .machine_roster
-            .active_machine(seed)
-            .await
-            .map_err(|error| DeploySubmitError::Unavailable {
-                operation_id: command.operation_id.clone(),
+        let active = machine_roster.active_machine(seed).await.map_err(|error| {
+            PushedImageSeedValidationError::Unavailable {
                 message: error.to_string(),
-            })?;
+            }
+        })?;
         let Some(active) = active else {
-            return Err(invalid_image_seed(
-                command,
-                seed,
-                "is not in the active roster",
-            ));
+            return Err(PushedImageSeedValidationError::Invalid {
+                seed: seed.clone(),
+                reason: "is not in the active roster",
+            });
         };
         if !matches!(active.lifecycle, MachineLifecycle::Active) {
-            return Err(invalid_image_seed(
-                command,
-                seed,
-                "is not in the active lifecycle",
-            ));
+            return Err(PushedImageSeedValidationError::Invalid {
+                seed: seed.clone(),
+                reason: "is not in the active lifecycle",
+            });
         }
     }
 
     Ok(())
+}
+
+pub(super) enum PushedImageSeedValidationError {
+    Unavailable {
+        message: String,
+    },
+    Invalid {
+        seed: MachineId,
+        reason: &'static str,
+    },
 }
 
 fn invalid_image_seed(

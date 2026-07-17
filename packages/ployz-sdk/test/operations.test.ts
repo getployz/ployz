@@ -597,6 +597,15 @@ test("sdk exports the Rust operation API contract registry", () => {
       response: "DeployReserveResponse",
     },
     {
+      name: "deploy.preview",
+      subject: "plz.v1.rpc.operator.query.deploy.preview",
+      execution: "query",
+      request: "DeployPreviewRequest",
+      success: "DeployPreview",
+      error: "DeployPreviewError",
+      response: "DeployPreviewResponse",
+    },
+    {
       name: "deploy.submit",
       subject: "plz.v1.rpc.operator.command.deploy.submit",
       execution: "accepts_operation",

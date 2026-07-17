@@ -9,6 +9,7 @@ mod phase;
 mod placement;
 mod ports;
 mod preparation;
+mod preview;
 mod step;
 mod types;
 
@@ -18,6 +19,7 @@ use ployz_core::deploy::{
 };
 use ployz_core::ids::{OperationId, StepId, SubjectTokenError};
 use ployz_core::machine::runtime::ManagedContainerKind;
+use ployz_core::network::internal_dns::InternalServiceName;
 use ployz_core::operation::{
     ControlPlaneCommitScope, DeployCleanupFailure, DeployEvidence, DeployImageCleanup,
     DeployPhaseNumber, DeployPhaseOutcome, DeployRunningStage, DeployServiceResult,
@@ -49,6 +51,7 @@ pub use ports::{
 pub use preparation::{AutomaticHostnameMode, DeployExecutionFacts, DeployExecutionInput};
 #[cfg(test)]
 pub use preparation::{namespace_cleanup_candidates, prepare_deploy_execution_command};
+pub use preview::preview_deploy_from_nats;
 use step::with_step_timeout;
 pub use step::{DeployExecutionStep, DeployFailureRecordError, DeployOperationRecordError};
 
@@ -62,6 +65,24 @@ pub use types::{
     DeployExecutionPorts, DeployServiceExecutionCommand, DeployTerminalEvent,
     RunContainerDisposition,
 };
+
+pub fn validate_deploy_service_names(
+    request: &ployz_core::deploy::VolumeDeclaredDeployRequest,
+) -> Result<(), FailureMessage> {
+    for service in request.services() {
+        InternalServiceName::try_from_ids(&service.service_id, request.namespace_id()).map_err(
+            |_| {
+                FailureMessage::try_new(format!(
+                    "service {} in namespace {} cannot form internal DNS name because each label is limited to 63 bytes",
+                    service.service_id.as_str(),
+                    request.namespace_id().as_str()
+                ))
+                .expect("generated internal DNS validation message is non-empty")
+            },
+        )?;
+    }
+    Ok(())
+}
 
 pub async fn execute_deploy_operation<R, N, H, C, S>(
     input: DeployExecutionInput,

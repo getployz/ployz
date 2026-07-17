@@ -17,6 +17,7 @@ use crate::wire::{positive_u64_wire_error, positive_u64_wire_newtype};
 
 pub mod images;
 pub mod planning;
+pub mod preview;
 pub mod request;
 mod retention;
 pub mod revision;
@@ -28,6 +29,7 @@ mod volume_planning;
 
 pub use images::*;
 pub use planning::*;
+pub use preview::*;
 pub use request::{
     ContainerRetentionCount, DEFAULT_DEPLOY_RESERVATION_TTL_SECONDS, DependencyCondition,
     DeployImageReplacementError, DeployOrigin, DeployOriginError, DeployRequest,

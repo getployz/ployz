@@ -54,13 +54,14 @@ use ployz_nats::subjects::{
     machine_service,
 };
 use ployz_sdk_types::{
-    ControlCertificateRenewalAttempt, ControlCertificateRenewalOutcome, DeployReserveRequest,
+    ControlCertificateRenewalAttempt, ControlCertificateRenewalOutcome, DeployPreviewImage,
+    DeployPreviewRequest, DeployPreviewService, DeployPreviewTarget, DeployReserveRequest,
     DeploySubmitRequest, MachineAddError, MachineAddRequest, MachineInspectRequest,
     MachineJoinReportOutcome, MachineJoinReportRequest, MachineListRequest, MachineTestimony,
-    MachineUpdateError, MachineUpdateRequest, OpsWatchRequest, RuntimeDerivedCollectionStatus,
-    RuntimePloyzDnsTargetAllocation, RuntimePloyzDnsTargetPublication, RuntimeSnapshot,
-    RuntimeSnapshotRequest, ServiceInspectRequest, ServiceListRequest, VolumeListRequest,
-    VolumeStatus,
+    MachineUpdateError, MachineUpdateRequest, OpsListRequest, OpsWatchRequest,
+    RuntimeDerivedCollectionStatus, RuntimePloyzDnsTargetAllocation,
+    RuntimePloyzDnsTargetPublication, RuntimeSnapshot, RuntimeSnapshotRequest,
+    ServiceInspectRequest, ServiceListRequest, VolumeListRequest, VolumeStatus,
 };
 use ployz_test_support::ops::wait_for_terminal_status;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -780,6 +781,114 @@ async fn control_runtime_runs_deploy_submit_and_commits_active_state() {
 }
 
 #[tokio::test]
+async fn deploy_preview_returns_pending_service_platforms_without_runtime_effects() {
+    let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
+    let config = nats
+        .control_config()
+        .with_deploy_machines(vec![machine_id("machine_a")])
+        .with_deploy_step_timeout(Duration::from_secs(2));
+    let machine_roster = machine_roster(&config).await;
+    let runtime = nats.start_control(&config).await;
+    let machine_client = nats.machine_client(&machine_id("machine_a")).await;
+    machine_roster
+        .replace_active_machine(&active_machine("machine_a"))
+        .await
+        .expect("active machine stores");
+    let runner = ObservingContainerRunner::new(machine_id("machine_a"));
+    let machine_runtime = start_machine_role_runtime(
+        machine_client,
+        machine_id("machine_a"),
+        runner.clone(),
+        ReadyWireGuardEbpf::for_machine(&machine_id("machine_a")),
+        runner.clone(),
+    )
+    .await
+    .expect("machine runtime starts");
+    wait_for_dataplane_projection(&nats, &machine_id("machine_a")).await;
+    let operations_before = nats
+        .api()
+        .ops_list(&OpsListRequest {
+            active_only: false,
+            before: None,
+        })
+        .await
+        .expect("operations list reads")
+        .operations;
+
+    let preview = nats
+        .api()
+        .deploy_preview(&DeployPreviewRequest {
+            target: pending_preview_target(deploy_target("svc_api")),
+        })
+        .await
+        .expect("deploy preview succeeds");
+
+    let target_machines = preview
+        .projection
+        .phases
+        .iter()
+        .flat_map(|phase| &phase.services)
+        .flat_map(|service| &service.steps)
+        .map(|step| match step {
+            ployz_core::deploy::DeployPlanStep::UseExistingContainer { machine_id, .. }
+            | ployz_core::deploy::DeployPlanStep::RunContainer { machine_id, .. } => machine_id,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(target_machines, [&machine_id("machine_a")]);
+    assert_eq!(
+        preview
+            .build_platform_requirements
+            .get(&service_id("svc_api"))
+            .expect("pending service has build platforms")
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>(),
+        [ployz_core::image::OciPlatform::current()]
+    );
+    let mut duplicate_service_target = pending_preview_target(deploy_target("svc_api"));
+    let [service] = duplicate_service_target.services.as_slice() else {
+        panic!("preview target fixture has one service");
+    };
+    duplicate_service_target.services.push(service.clone());
+    let duplicate_error = nats
+        .api()
+        .deploy_preview(&DeployPreviewRequest {
+            target: duplicate_service_target,
+        })
+        .await
+        .expect_err("route admission rejects duplicate service ids");
+    assert!(matches!(
+        duplicate_error,
+        OperationApiClientError::Domain {
+            error: ployz_sdk_types::DeployPreviewError::InvalidTarget { message },
+            ..
+        }
+            if message.as_str().contains("declared more than once")
+    ));
+    assert!(runner.snapshot().containers().is_empty());
+    assert_eq!(
+        nats.api()
+            .ops_list(&OpsListRequest {
+                active_only: false,
+                before: None,
+            })
+            .await
+            .expect("operations list reads")
+            .operations,
+        operations_before
+    );
+
+    machine_runtime
+        .shutdown()
+        .await
+        .expect("machine runtime shuts down");
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
 async fn control_runtime_records_typed_planning_failure_when_tag_cannot_resolve() {
     let nats = TestNats::start_with_machines(&[machine_id("machine_a")]).await;
     let config = nats
@@ -1341,6 +1450,33 @@ fn deploy_target(service_id: &str) -> DeployRequest {
             pre_start: None,
             depends_on: Vec::new(),
             routes: Vec::new(),
+        }],
+    }
+}
+
+fn pending_preview_target(target: DeployRequest) -> DeployPreviewTarget {
+    let DeployRequest {
+        namespace_id,
+        origin,
+        volumes,
+        services,
+    } = target;
+    let [service] = services.as_slice() else {
+        panic!("deploy target fixture has one service");
+    };
+    DeployPreviewTarget {
+        namespace_id,
+        origin,
+        volumes,
+        services: vec![DeployPreviewService {
+            service_id: service.service_id.clone(),
+            image: DeployPreviewImage::PendingBuild,
+            replicas: service.replicas,
+            keep: service.keep,
+            runtime: service.runtime.clone(),
+            pre_start: service.pre_start.clone(),
+            depends_on: service.depends_on.clone(),
+            routes: service.routes.clone(),
         }],
     }
 }

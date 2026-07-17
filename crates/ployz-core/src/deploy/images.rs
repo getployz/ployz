@@ -221,6 +221,70 @@ impl ImageSource {
     }
 }
 
+pub fn validate_pushed_image_reference(
+    image: &ImageReference,
+    image_source: &ImageSource,
+) -> Result<(), PushedImageReferenceError> {
+    let ImageSource::PushedToSeed(receipt) = image_source else {
+        return Ok(());
+    };
+    let Some(pinned_digest) = image.pinned_digest() else {
+        return Err(PushedImageReferenceError::NotDigestPinned);
+    };
+    if &pinned_digest != receipt.index_digest() {
+        return Err(PushedImageReferenceError::IndexDigestMismatch);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PushedImageReferenceError {
+    #[error("must be digest-pinned")]
+    NotDigestPinned,
+    #[error("digest must match its pushed index digest")]
+    IndexDigestMismatch,
+}
+
+/// Apply a concrete pushed receipt's native-platform coverage to placement.
+/// Registry and preview-pending images do not use this policy.
+#[must_use]
+pub fn classify_image_platform_usability(
+    candidates: &[MachineId],
+    machine_platforms: &BTreeMap<MachineId, OciPlatform>,
+    image_source: &ImageSource,
+) -> (Vec<MachineId>, Vec<crate::operation::UnusableMachine>) {
+    let ImageSource::PushedToSeed(receipt) = image_source else {
+        return (candidates.to_vec(), Vec::new());
+    };
+    let supported = crate::build::BuildPlatforms::try_new(
+        receipt.platforms().map(|(platform, _)| platform.clone()),
+    )
+    .expect("validated pushed receipts contain at least one unique platform");
+    let mut eligible = Vec::new();
+    let mut unusable = Vec::new();
+    for machine_id in candidates {
+        let Some(reported) = machine_platforms.get(machine_id) else {
+            unusable.push(crate::operation::UnusableMachine {
+                machine_id: machine_id.clone(),
+                reason: crate::machine::MachineUsabilityReason::FactsUnavailable,
+            });
+            continue;
+        };
+        if receipt.platform(reported).is_some() {
+            eligible.push(machine_id.clone());
+        } else {
+            unusable.push(crate::operation::UnusableMachine {
+                machine_id: machine_id.clone(),
+                reason: crate::machine::MachineUsabilityReason::PlatformMismatch {
+                    supported: supported.clone(),
+                    reported: reported.clone(),
+                },
+            });
+        }
+    }
+    (eligible, unusable)
+}
+
 fn receipt_index_digest(platforms: &BTreeMap<OciPlatform, PlatformImage>) -> OciDigest {
     let mut hasher = Sha256::new();
     receipt_index_frame(
@@ -608,6 +672,57 @@ mod tests {
             left.index_digest().as_str(),
             "sha256:d66f93797a558cc78021e66cba67c1e1212f082847582dd283a613f2d4d96308"
         );
+    }
+
+    #[test]
+    fn pushed_receipt_eligibility_reports_the_complete_supported_set() {
+        let amd64 = platform("amd64");
+        let arm64 = platform("arm64");
+        let reported = platform("s390x");
+        let machine = MachineId::try_new("machine_target").expect("machine id");
+        let source = ImageSource::PushedToSeed(
+            PushedImageReceipt::try_new([
+                (arm64.clone(), platform_image('b')),
+                (amd64.clone(), platform_image('c')),
+            ])
+            .expect("receipt"),
+        );
+
+        let (eligible, unusable) = classify_image_platform_usability(
+            std::slice::from_ref(&machine),
+            &BTreeMap::from([(machine.clone(), reported.clone())]),
+            &source,
+        );
+
+        assert!(eligible.is_empty());
+        let [unusable] = unusable.as_slice() else {
+            panic!("one machine is unusable");
+        };
+        assert!(matches!(
+            &unusable.reason,
+            crate::machine::MachineUsabilityReason::PlatformMismatch { supported, reported: actual }
+                if supported.iter().cloned().collect::<Vec<_>>() == [amd64, arm64]
+                    && actual == &reported
+        ));
+    }
+
+    #[test]
+    fn pushed_image_reference_must_pin_the_receipt_index() {
+        let source = pushed_source();
+        let ImageSource::PushedToSeed(receipt) = &source else {
+            panic!("pushed fixture");
+        };
+        let unpinned = ImageReference::try_new("local/api:build").expect("image");
+        let pinned = unpinned
+            .clone()
+            .with_digest(receipt.index_digest())
+            .expect("pinned image");
+
+        assert_eq!(
+            validate_pushed_image_reference(&unpinned, &source),
+            Err(PushedImageReferenceError::NotDigestPinned)
+        );
+        assert_eq!(validate_pushed_image_reference(&pinned, &source), Ok(()));
     }
 
     fn pushed_source() -> ImageSource {

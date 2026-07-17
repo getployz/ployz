@@ -43,6 +43,8 @@ use crate::{
     DeployCleanupContainer, DeployCleanupFailure, DeployCompletionOutcome, DeployImageCleanup,
     DeployInterruptionStage, DeployOperationFailure, DeployOperationState, DeployOrigin,
     DeployPhaseNumber, DeployPhaseOutcome, DeployPhasePlan, DeployPlan, DeployPlanStep,
+    DeployPreview, DeployPreviewError, DeployPreviewImage, DeployPreviewProjection,
+    DeployPreviewRequest, DeployPreviewResponse, DeployPreviewService, DeployPreviewTarget,
     DeployRequest, DeployReservationExpiresAt, DeployReservationId, DeployReserveError,
     DeployReserveRequest, DeployReserveResponse, DeployReserved, DeployRoute, DeployRouteTarget,
     DeployRunningStage, DeployServicePlan, DeployServiceResult, DeployServiceSpec,
@@ -516,6 +518,13 @@ macro_rules! exported_types {
             InitFirstMachineActivateError,
             DeployReserveRequest,
             DeployReserved,
+            DeployPreviewRequest,
+            DeployPreviewTarget,
+            DeployPreviewService,
+            DeployPreviewImage,
+            DeployPreview,
+            DeployPreviewProjection,
+            DeployPreviewError,
             DeploySubmitRequest,
             BuildSubmitRequest,
             BuildSubmitError,
@@ -862,8 +871,56 @@ pub fn operation_contract_fixture() -> Value {
     let machine = cloud_machine_facts();
     let trusted_nats = trusted_nats();
     let join_secret_delivery = machine_join_secret_delivery();
+    let Some(preview_service) = deploy_target.services.first() else {
+        panic!("fixture deploy has one service");
+    };
+    let preview_target = DeployPreviewTarget {
+        namespace_id: deploy_target.namespace_id.clone(),
+        origin: deploy_target.origin.clone(),
+        volumes: deploy_target.volumes.clone(),
+        services: vec![DeployPreviewService {
+            service_id: preview_service.service_id.clone(),
+            image: DeployPreviewImage::PendingBuild,
+            replicas: preview_service.replicas,
+            keep: preview_service.keep,
+            runtime: preview_service.runtime.clone(),
+            pre_start: preview_service.pre_start.clone(),
+            depends_on: preview_service.depends_on.clone(),
+            routes: preview_service.routes.clone(),
+        }],
+    };
 
     json!({
+        "deploy_preview_request": value(DeployPreviewRequest {
+            target: preview_target,
+        }),
+        "deploy_preview_response": value(DeployPreviewResponse::Ok {
+            value: DeployPreview {
+                projection: DeployPreviewProjection {
+                    namespace_id: deploy_target.namespace_id.clone(),
+                    phases: vec![DeployPhasePlan {
+                        services: vec![DeployServicePlan {
+                            service_id: service_id("svc_api"),
+                            steps: vec![DeployPlanStep::RunContainer {
+                                machine_id: machine_id("machine_2"),
+                                slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
+                            }],
+                            pre_start: None,
+                        }],
+                    }],
+                    volume_pins: Vec::new(),
+                    volume_preparations: Vec::new(),
+                    cleanup_candidates: Vec::new(),
+                },
+                build_platform_requirements: std::collections::BTreeMap::from([(
+                    service_id("svc_api"),
+                    BuildPlatforms::try_new([OciPlatform::try_new("linux", "amd64")
+                        .expect("valid platform")])
+                    .expect("build platforms"),
+                )]),
+                unusable_machines: Vec::new(),
+            },
+        }),
         "deploy_submit_request": value(DeploySubmitRequest {
             registry_credentials: std::collections::BTreeMap::new(),
             idempotency_key: OperationIdempotencyKey::try_new("idem_deploy_123")

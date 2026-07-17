@@ -13,8 +13,7 @@ use ployz_sdk_types::{DeploySubmitError, DeploySubmitRequest, NetworkRepairError
 use crate::control::sequencer::DeploySubmitCommand;
 
 use super::{
-    normalize_deploy_submit, validate_internal_dns_name, validate_network_repair_preconditions,
-    validate_registry_credentials,
+    normalize_deploy_submit, validate_network_repair_preconditions, validate_registry_credentials,
 };
 
 fn operation_id() -> OperationId {
@@ -53,7 +52,24 @@ fn deploy_admission_rejects_ids_that_cannot_form_internal_dns_labels() {
     let namespace_id = NamespaceId::try_new("default").expect("namespace id");
     let service_id = ServiceId::try_new("s".repeat(64)).expect("service id");
 
-    let failure = validate_internal_dns_name(&namespace_id, &service_id)
+    let request = VolumeDeclaredDeployRequest::try_new(DeployRequest {
+        namespace_id,
+        origin: None,
+        volumes: BTreeMap::new(),
+        services: vec![DeployServiceSpec {
+            keep: None,
+            service_id,
+            image: ImageReference::try_new("nginx:latest").expect("image"),
+            image_source: ImageSource::Registry,
+            replicas: ReplicaCount::try_new(1).expect("replicas"),
+            runtime: ContainerRuntimeSpec::image_defaults(),
+            pre_start: None,
+            depends_on: Vec::new(),
+            routes: Vec::new(),
+        }],
+    })
+    .expect("deploy request");
+    let failure = crate::control::operations::deploy::validate_deploy_service_names(&request)
         .expect_err("oversized DNS label must be rejected");
 
     assert!(failure.as_str().contains("limited to 63 bytes"));

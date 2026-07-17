@@ -2,8 +2,8 @@
 
 use crate::control::operator_api::{
     OperationApiHandlers, build_cancel, build_submit, core_replace, core_replace_report,
-    credential_add, credential_list, credential_remove, deploy_reserve, deploy_submit,
-    ingress_configure, init_first_machine_activate, machine_add, machine_drain,
+    credential_add, credential_list, credential_remove, deploy_preview, deploy_reserve,
+    deploy_submit, ingress_configure, init_first_machine_activate, machine_add, machine_drain,
     machine_join_redeem, machine_join_report, machine_resume, machine_storage_prepare,
     machine_update, namespace_remove, network_repair, ops_list, ops_status, ops_watch,
     service_restart, submit_volume_create, volume_remove,
@@ -18,14 +18,14 @@ use ployz_sdk_types::{
     OperationApiResponse,
     operation_api::{
         BuildCancelApi, BuildSubmitApi, CoreReplaceApi, CoreReplaceReportApi, CredentialAddApi,
-        CredentialListApi, CredentialRemoveApi, DeployReserveApi, DeploySubmitApi,
-        IngressConfigureApi, InitFirstMachineActivateApi, LogsTailApi, MachineAddApi,
-        MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi, MachineJoinReportApi,
-        MachineListApi, MachineResumeApi, MachineStoragePrepareApi, MachineUpdateApi,
-        NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi, NetworkStatusApi,
-        OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi, RuntimeSnapshotApi,
-        ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeCreateApi, VolumeListApi,
-        VolumeRemoveApi,
+        CredentialListApi, CredentialRemoveApi, DeployPreviewApi, DeployReserveApi,
+        DeploySubmitApi, IngressConfigureApi, InitFirstMachineActivateApi, LogsTailApi,
+        MachineAddApi, MachineDrainApi, MachineInspectApi, MachineJoinRedeemApi,
+        MachineJoinReportApi, MachineListApi, MachineResumeApi, MachineStoragePrepareApi,
+        MachineUpdateApi, NamespaceRemoveApi, NetworkRepairApi, NetworkResolveApi,
+        NetworkStatusApi, OperationApiContract, OpsListApi, OpsStatusApi, OpsWatchApi,
+        RuntimeSnapshotApi, ServiceInspectApi, ServiceListApi, ServiceRestartApi, VolumeCreateApi,
+        VolumeListApi, VolumeRemoveApi,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -71,6 +71,14 @@ async fn bind_operation_endpoint(
                 runtime,
                 handlers,
                 |handlers, request| async move { deploy_reserve(&handlers, request).await },
+            )
+            .await
+        }
+        OperationApiEndpoint::DeployPreview => {
+            bind_operation_contract::<DeployPreviewApi, _, _>(
+                runtime,
+                handlers,
+                |handlers, request| async move { deploy_preview(&handlers, request).await },
             )
             .await
         }

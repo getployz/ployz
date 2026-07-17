@@ -1,9 +1,10 @@
 //! Convert current cluster facts into a deploy execution command.
 
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployPreparationInput, ExistingReplicaPolicy, RegistryCredential,
-    VolumeDeclaredDeployRequest, auto_hostname_route_binding_commits,
-    namespace_route_binding_removals, namespace_serving_target_removals, prepare_deploy,
+    DeployCleanupContainer, DeployPreparationInput, ExistingReplicaPolicy, ImageSource,
+    RegistryCredential, VolumeDeclaredDeployRequest, auto_hostname_route_binding_commits,
+    classify_image_platform_usability, namespace_route_binding_removals,
+    namespace_serving_target_removals, prepare_deploy,
 };
 use ployz_core::ids::{MachineId, OperationId, RouteBindingId, ServiceId};
 use ployz_core::image::OciPlatform;
@@ -205,10 +206,21 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
     let mut services = Vec::new();
     let mut unusable_machines = facts.unusable_machines.clone();
     for service in request.services() {
+        let (platform_eligible_machines, platform_unusable_machines) =
+            classify_image_platform_usability(
+                &facts.eligible_machines,
+                &facts.machine_platforms,
+                &service.image_source,
+            );
+        for unusable in platform_unusable_machines {
+            if !unusable_machines.contains(&unusable) {
+                unusable_machines.push(unusable);
+            }
+        }
         let storage_requirement =
             provisioned_storage_requirement(&request, service, &facts.namespace_volume_pins);
         let (service_eligible_machines, storage_unusable_machines) = classify_storage_usability(
-            &facts.eligible_machines,
+            &platform_eligible_machines,
             &facts.machine_storage_testimony,
             &storage_requirement,
         );
@@ -223,7 +235,7 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
                 && entry.namespace_revision_entry_id
                     == service.namespace_revision_entry_id(request.namespace_id())
         });
-        let prepared = prepare_deploy(
+        let mut prepared = prepare_deploy(
             DeployPreparationInput {
                 request: &request,
                 service_id: service.service_id.clone(),
@@ -246,6 +258,21 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
             mint_route_binding_id,
         )
         .expect("route bindings were validated while loading deploy facts");
+        if matches!(service.image_source, ImageSource::PushedToSeed(_)) {
+            let replica_machines = prepared
+                .existing_replicas
+                .iter()
+                .map(|replica| replica.machine_id.clone())
+                .collect::<Vec<_>>();
+            let (covered_replica_machines, _) = classify_image_platform_usability(
+                &replica_machines,
+                &facts.machine_platforms,
+                &service.image_source,
+            );
+            prepared
+                .existing_replicas
+                .retain(|replica| covered_replica_machines.contains(&replica.machine_id));
+        }
         occupied_bindings.extend(prepared.route_commits.iter().cloned());
         let mut route_commits = prepared.route_commits;
         route_commits.extend(

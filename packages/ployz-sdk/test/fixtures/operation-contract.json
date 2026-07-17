@@ -86,6 +86,58 @@
       "os": "linux"
     }
   },
+  "deploy_preview_request": {
+    "target": {
+      "namespace_id": "default",
+      "services": [
+        {
+          "image": {
+            "state": "pending_build"
+          },
+          "replicas": 2,
+          "runtime": {
+            "command": null,
+            "entrypoint": null,
+            "environment": {},
+            "stop_grace_period": 10
+          },
+          "service_id": "svc_api"
+        }
+      ]
+    }
+  },
+  "deploy_preview_response": {
+    "status": "ok",
+    "value": {
+      "build_platform_requirements": {
+        "svc_api": [
+          {
+            "architecture": "amd64",
+            "os": "linux"
+          }
+        ]
+      },
+      "projection": {
+        "namespace_id": "default",
+        "phases": [
+          {
+            "services": [
+              {
+                "service_id": "svc_api",
+                "steps": [
+                  {
+                    "machine_id": "machine_2",
+                    "slot": 1,
+                    "step": "run_container"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
   "deploy_reserve_request": {
     "namespace_id": "default"
   },

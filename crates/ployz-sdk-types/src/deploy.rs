@@ -31,6 +31,38 @@ pub enum DeployReserveError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
+pub struct DeployPreviewRequest {
+    pub target: DeployPreviewTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct DeployPreview {
+    pub projection: DeployPreviewProjection,
+    pub build_platform_requirements: BTreeMap<ServiceId, BuildPlatforms>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unusable_machines: Vec<UnusableMachine>,
+}
+
+pub type DeployPreviewResponse = OperationApiResponse<DeployPreview, DeployPreviewError>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, thiserror::Error)]
+#[serde(tag = "error", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeployPreviewError {
+    #[error("deploy preview target invalid: {message}")]
+    InvalidTarget { message: FailureMessage },
+    #[error("deploy preview planning failed: {message}")]
+    PlanningFailed {
+        message: FailureMessage,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        unusable_machines: Vec<UnusableMachine>,
+    },
+    #[error("deploy preview unavailable: {message}")]
+    Unavailable { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
 pub struct DeploySubmitRequest {
     pub idempotency_key: OperationIdempotencyKey,
     pub reservation_id: DeployReservationId,
@@ -118,4 +150,33 @@ pub enum DeploySubmitError {
         operation_id: OperationId,
         sequence: EventSequence,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn authoritative_deploy_rejects_pending_build_input() {
+        let request = super::DeploySubmitRequest {
+            idempotency_key: ployz_core::operation::OperationIdempotencyKey::try_new(
+                "idem_preview",
+            )
+            .expect("idempotency key"),
+            reservation_id: ployz_core::deploy::DeployReservationId::first(),
+            target: ployz_core::deploy::DeployRequest {
+                namespace_id: ployz_core::ids::NamespaceId::try_new("default")
+                    .expect("namespace id"),
+                origin: None,
+                volumes: std::collections::BTreeMap::new(),
+                services: Vec::new(),
+            },
+            registry_credentials: std::collections::BTreeMap::new(),
+        };
+        let mut request = serde_json::to_value(request).expect("deploy request serializes");
+        request
+            .as_object_mut()
+            .expect("deploy request is an object")
+            .insert("pending_builds".to_owned(), serde_json::json!(["api"]));
+
+        assert!(serde_json::from_value::<super::DeploySubmitRequest>(request).is_err());
+    }
 }

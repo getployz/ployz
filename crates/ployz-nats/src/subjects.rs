@@ -24,6 +24,7 @@ pub const RUNTIME_SNAPSHOT_STREAM: &str = "plz.v1.projection.runtime.snapshot";
 pub const RUNTIME_SNAPSHOT_SEED: &str = "plz.v1.rpc.operator.query.runtime.snapshot.seed";
 
 pub const OPERATOR_DEPLOY_SUBMIT: &str = "plz.v1.rpc.operator.command.deploy.submit";
+pub const OPERATOR_DEPLOY_PREVIEW: &str = "plz.v1.rpc.operator.query.deploy.preview";
 pub const OPERATOR_BUILD_SUBMIT: &str = "plz.v1.rpc.operator.command.build.submit";
 pub const OPERATOR_BUILD_CANCEL: &str = "plz.v1.rpc.operator.command.build.cancel";
 pub const OPERATOR_DEPLOY_RESERVE: &str = "plz.v1.rpc.operator.command.deploy.reserve";
@@ -66,6 +67,7 @@ pub enum OperationApiEndpoint {
     BuildSubmit,
     BuildCancel,
     DeployReserve,
+    DeployPreview,
     DeploySubmit,
     InitFirstMachineActivate,
     MachineAdd,
@@ -114,6 +116,7 @@ impl OperationApiEndpoint {
             Self::BuildSubmit => "build.submit",
             Self::BuildCancel => "build.cancel",
             Self::DeployReserve => "deploy.reserve",
+            Self::DeployPreview => "deploy.preview",
             Self::DeploySubmit => "deploy.submit",
             Self::InitFirstMachineActivate => "init.first_machine.activate",
             Self::MachineAdd => "machine.add",
@@ -155,6 +158,7 @@ impl OperationApiEndpoint {
             Self::BuildSubmit => OPERATOR_BUILD_SUBMIT,
             Self::BuildCancel => OPERATOR_BUILD_CANCEL,
             Self::DeployReserve => OPERATOR_DEPLOY_RESERVE,
+            Self::DeployPreview => OPERATOR_DEPLOY_PREVIEW,
             Self::DeploySubmit => OPERATOR_DEPLOY_SUBMIT,
             Self::InitFirstMachineActivate => OPERATOR_INIT_FIRST_MACHINE_ACTIVATE,
             Self::MachineAdd => OPERATOR_MACHINE_ADD,
@@ -216,6 +220,7 @@ impl OperationApiEndpoint {
             | Self::MachineJoinReport
             | Self::CoreReplaceReport => OperationApiEndpointExecution::MutatesOperation,
             Self::MachineList
+            | Self::DeployPreview
             | Self::MachineInspect
             | Self::NetworkStatus
             | Self::NetworkResolve
@@ -240,6 +245,7 @@ impl From<ployz_sdk_types::operation_api::OperationApiEndpoint> for OperationApi
             Core::BuildSubmit => Self::BuildSubmit,
             Core::BuildCancel => Self::BuildCancel,
             Core::DeployReserve => Self::DeployReserve,
+            Core::DeployPreview => Self::DeployPreview,
             Core::DeploySubmit => Self::DeploySubmit,
             Core::InitFirstMachineActivate => Self::InitFirstMachineActivate,
             Core::MachineAdd => Self::MachineAdd,

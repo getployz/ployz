@@ -49,7 +49,8 @@ pub(crate) fn place_build_platforms(
                 unusable.push(UnusableMachine {
                     machine_id: candidate.machine_id.clone(),
                     reason: MachineUsabilityReason::PlatformMismatch {
-                        required: platform.clone(),
+                        supported: BuildPlatforms::try_new([platform.clone()])
+                            .expect("one requested platform is non-empty"),
                         reported: candidate.platform.clone(),
                     },
                 });
