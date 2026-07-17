@@ -9,7 +9,8 @@ use super::protocol::{
 use super::response::{failure_message, inspect_hint, log_hint};
 use super::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
-    MachineContainerRunner, MachineContainerRunnerError,
+    MachineContainerCreateError, MachineContainerRunner, MachineContainerRunnerError,
+    MachineContainerStartError, MachineContainerStopError, MachineContainerWaitError,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,14 +47,14 @@ where
     let existing = runner
         .existing_managed_containers()
         .await
-        .map_err(ServiceContainerRunError::Runner)?;
+        .map_err(|error| ServiceContainerRunError::Runner(error.into()))?;
     match decide_container_run(&command.identity, existing) {
         MachineContainerRunDecision::Create => {
             let service_id = command.identity.service_id.clone();
             let namespace_revision_entry_id = command.identity.namespace_revision_entry_id.clone();
             let container_id = match runner.create_managed_container(command).await {
                 Ok(container_id) => container_id,
-                Err(MachineContainerRunnerError::ImagePull { message }) => {
+                Err(MachineContainerCreateError::ImagePull { message }) => {
                     return Err(ServiceContainerRunError::Domain(
                         MachineContainerRunDomainError::ImagePullFailed {
                             service_id,
@@ -62,17 +63,10 @@ where
                         },
                     ));
                 }
-                Err(error @ MachineContainerRunnerError::ListExisting { .. })
-                | Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. })
-                | Err(error @ MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. })
-                | Err(error @ MachineContainerRunnerError::Create { .. })
-                | Err(error @ MachineContainerRunnerError::Start { .. })
-                | Err(error @ MachineContainerRunnerError::Wait { .. })
-                | Err(error @ MachineContainerRunnerError::Stop { .. })
-                | Err(error @ MachineContainerRunnerError::Restart { .. })
-                | Err(error @ MachineContainerRunnerError::Remove { .. })
-                | Err(error @ MachineContainerRunnerError::RemoveVolume { .. }) => {
-                    return Err(ServiceContainerRunError::Runner(error));
+                Err(error @ MachineContainerCreateError::Create { .. })
+                | Err(error @ MachineContainerCreateError::EnsureEndpointNetwork { .. })
+                | Err(error @ MachineContainerCreateError::EndpointNetworkSubnetMismatch { .. }) => {
+                    return Err(ServiceContainerRunError::Runner(error.into()));
                 }
             };
 
@@ -121,14 +115,14 @@ where
     let existing = runner
         .existing_managed_containers()
         .await
-        .map_err(HookContainerRunError::Runner)?;
+        .map_err(|error| HookContainerRunError::Runner(error.into()))?;
     let expected_identity = command.identity.clone();
 
     let container_id = match decide_container_run(&command.identity, existing) {
         MachineContainerRunDecision::Create => {
             let container_id = match runner.create_managed_container(command).await {
                 Ok(container_id) => container_id,
-                Err(MachineContainerRunnerError::Create { message }) => {
+                Err(MachineContainerCreateError::Create { message }) => {
                     return Err(HookContainerRunError::Domain(
                         MachineContainerRunHookDomainError::CreateFailed {
                             message: failure_message(format!(
@@ -137,17 +131,10 @@ where
                         },
                     ));
                 }
-                Err(error @ MachineContainerRunnerError::ListExisting { .. })
-                | Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. })
-                | Err(error @ MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. })
-                | Err(error @ MachineContainerRunnerError::ImagePull { .. })
-                | Err(error @ MachineContainerRunnerError::Start { .. })
-                | Err(error @ MachineContainerRunnerError::Wait { .. })
-                | Err(error @ MachineContainerRunnerError::Stop { .. })
-                | Err(error @ MachineContainerRunnerError::Restart { .. })
-                | Err(error @ MachineContainerRunnerError::Remove { .. })
-                | Err(error @ MachineContainerRunnerError::RemoveVolume { .. }) => {
-                    return Err(HookContainerRunError::Runner(error));
+                Err(error @ MachineContainerCreateError::ImagePull { .. })
+                | Err(error @ MachineContainerCreateError::EnsureEndpointNetwork { .. })
+                | Err(error @ MachineContainerCreateError::EndpointNetworkSubnetMismatch { .. }) => {
+                    return Err(HookContainerRunError::Runner(error.into()));
                 }
             };
             start_hook_container(runner, container_id).await?
@@ -176,7 +163,7 @@ where
     let exit_code =
         match tokio::time::timeout(timeout, runner.wait_managed_container(&container_id)).await {
             Ok(Ok(exit_code)) => exit_code,
-            Ok(Err(MachineContainerRunnerError::Wait { message, .. })) => {
+            Ok(Err(MachineContainerWaitError::Wait { message, .. })) => {
                 return Err(HookContainerRunError::Domain(
                     MachineContainerRunHookDomainError::WaitFailed {
                         container_id: container_id.clone(),
@@ -184,18 +171,6 @@ where
                         log_hint: log_hint(&container_id),
                     },
                 ));
-            }
-            Ok(Err(error @ MachineContainerRunnerError::ListExisting { .. }))
-            | Ok(Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. }))
-            | Ok(Err(error @ MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. }))
-            | Ok(Err(error @ MachineContainerRunnerError::Create { .. }))
-            | Ok(Err(error @ MachineContainerRunnerError::ImagePull { .. }))
-            | Ok(Err(error @ MachineContainerRunnerError::Start { .. }))
-            | Ok(Err(error @ MachineContainerRunnerError::Stop { .. }))
-            | Ok(Err(error @ MachineContainerRunnerError::Restart { .. }))
-            | Ok(Err(error @ MachineContainerRunnerError::Remove { .. }))
-            | Ok(Err(error @ MachineContainerRunnerError::RemoveVolume { .. })) => {
-                return Err(HookContainerRunError::Runner(error));
             }
             Err(_) => {
                 let message = match runner
@@ -206,25 +181,12 @@ where
                         "hook timed out after {}ms and was stopped",
                         timeout.as_millis()
                     ),
-                    Err(MachineContainerRunnerError::Stop { message, .. }) => format!(
+                    Err(MachineContainerStopError::Stop { message, .. }) => format!(
                         "hook timed out after {}ms and could not be stopped: {message}",
                         timeout.as_millis()
                     ),
-                    Err(error @ MachineContainerRunnerError::ListExisting { .. })
-                    | Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. })
-                    | Err(
-                        error @ MachineContainerRunnerError::EndpointNetworkSubnetMismatch {
-                            ..
-                        },
-                    )
-                    | Err(error @ MachineContainerRunnerError::Create { .. })
-                    | Err(error @ MachineContainerRunnerError::ImagePull { .. })
-                    | Err(error @ MachineContainerRunnerError::Start { .. })
-                    | Err(error @ MachineContainerRunnerError::Wait { .. })
-                    | Err(error @ MachineContainerRunnerError::Restart { .. })
-                    | Err(error @ MachineContainerRunnerError::Remove { .. })
-                    | Err(error @ MachineContainerRunnerError::RemoveVolume { .. }) => {
-                        return Err(HookContainerRunError::Runner(error));
+                    Err(error @ MachineContainerStopError::ListExisting { .. }) => {
+                        return Err(HookContainerRunError::Runner(error.into()));
                     }
                 };
                 return Err(HookContainerRunError::Domain(
@@ -259,7 +221,7 @@ where
                 MachineRunContainerOutcome::StartedExisting { container_id }
             }
         }),
-        Err(MachineContainerRunnerError::Start { message, .. }) => {
+        Err(MachineContainerStartError::Start { message, .. }) => {
             let message = failure_message(format!("container start failed: {message}"));
             let inspect_hint = inspect_hint(&container_id);
             Err(ServiceContainerRunError::Domain(match start {
@@ -279,18 +241,6 @@ where
                 }
             }))
         }
-        Err(error @ MachineContainerRunnerError::ListExisting { .. })
-        | Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. })
-        | Err(error @ MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. })
-        | Err(error @ MachineContainerRunnerError::Create { .. })
-        | Err(error @ MachineContainerRunnerError::ImagePull { .. })
-        | Err(error @ MachineContainerRunnerError::Wait { .. })
-        | Err(error @ MachineContainerRunnerError::Stop { .. })
-        | Err(error @ MachineContainerRunnerError::Restart { .. })
-        | Err(error @ MachineContainerRunnerError::Remove { .. })
-        | Err(error @ MachineContainerRunnerError::RemoveVolume { .. }) => {
-            Err(ServiceContainerRunError::Runner(error))
-        }
     }
 }
 
@@ -303,25 +253,13 @@ where
 {
     match runner.start_managed_container(&container_id).await {
         Ok(()) => Ok(container_id),
-        Err(MachineContainerRunnerError::Start { message, .. }) => Err(
+        Err(MachineContainerStartError::Start { message, .. }) => Err(
             HookContainerRunError::Domain(MachineContainerRunHookDomainError::StartFailed {
                 container_id: container_id.clone(),
                 message: failure_message(format!("hook container start failed: {message}")),
                 inspect_hint: inspect_hint(&container_id),
             }),
         ),
-        Err(error @ MachineContainerRunnerError::ListExisting { .. })
-        | Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. })
-        | Err(error @ MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. })
-        | Err(error @ MachineContainerRunnerError::Create { .. })
-        | Err(error @ MachineContainerRunnerError::ImagePull { .. })
-        | Err(error @ MachineContainerRunnerError::Wait { .. })
-        | Err(error @ MachineContainerRunnerError::Stop { .. })
-        | Err(error @ MachineContainerRunnerError::Restart { .. })
-        | Err(error @ MachineContainerRunnerError::Remove { .. })
-        | Err(error @ MachineContainerRunnerError::RemoveVolume { .. }) => {
-            Err(HookContainerRunError::Runner(error))
-        }
     }
 }
 

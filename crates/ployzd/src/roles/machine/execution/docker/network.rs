@@ -6,7 +6,7 @@ use ployz_core::network::{EndpointBridgeStatus, MachineEndpointSubnet};
 use std::collections::HashMap;
 
 use super::labels::MANAGED_LABEL;
-use crate::roles::machine::runner::MachineContainerRunnerError;
+use crate::roles::machine::runner::{MachineContainerCreateError, MachineEndpointNetworkError};
 
 pub(super) const ENDPOINT_NETWORK_NAME: &str = "ployz";
 pub(super) const DRIVER_MTU_OPTION: &str = "com.docker.network.driver.mtu";
@@ -47,7 +47,7 @@ pub(super) async fn ensure_endpoint_network(
     endpoint_network_subnet: &str,
     endpoint_bridge_ifname: &str,
     endpoint_mtu: u32,
-) -> Result<(), MachineContainerRunnerError> {
+) -> Result<(), MachineEndpointNetworkError> {
     match docker
         .inspect_network(ENDPOINT_NETWORK_NAME, None::<InspectNetworkOptions>)
         .await
@@ -62,7 +62,7 @@ pub(super) async fn ensure_endpoint_network(
         }
         Err(error) if is_docker_object_missing(&error) => {}
         Err(error) => {
-            return Err(MachineContainerRunnerError::EnsureEndpointNetwork {
+            return Err(MachineEndpointNetworkError::EnsureEndpointNetwork {
                 message: format!("inspect Docker network {ENDPOINT_NETWORK_NAME}: {error}"),
             });
         }
@@ -77,7 +77,7 @@ pub(super) async fn ensure_endpoint_network(
         Ok(_) => {}
         Err(error) if is_network_already_exists(&error) => {}
         Err(error) => {
-            return Err(MachineContainerRunnerError::EnsureEndpointNetwork {
+            return Err(MachineEndpointNetworkError::EnsureEndpointNetwork {
                 message: format!("create Docker network {ENDPOINT_NETWORK_NAME}: {error}"),
             });
         }
@@ -86,7 +86,7 @@ pub(super) async fn ensure_endpoint_network(
     let network = docker
         .inspect_network(ENDPOINT_NETWORK_NAME, None::<InspectNetworkOptions>)
         .await
-        .map_err(|error| MachineContainerRunnerError::EnsureEndpointNetwork {
+        .map_err(|error| MachineEndpointNetworkError::EnsureEndpointNetwork {
             message: format!(
                 "inspect Docker network {ENDPOINT_NETWORK_NAME} after create: {error}"
             ),
@@ -104,7 +104,7 @@ pub(super) async fn require_endpoint_network(
     endpoint_network_subnet: &str,
     endpoint_bridge_ifname: &str,
     endpoint_mtu: u32,
-) -> Result<(), MachineContainerRunnerError> {
+) -> Result<(), MachineContainerCreateError> {
     let network = required_endpoint_network_from_inspect(
         docker
             .inspect_network(ENDPOINT_NETWORK_NAME, None::<InspectNetworkOptions>)
@@ -116,12 +116,20 @@ pub(super) async fn require_endpoint_network(
         endpoint_bridge_ifname,
         endpoint_mtu,
     )
+    .map_err(|error| match error {
+        MachineEndpointNetworkError::EnsureEndpointNetwork { message } => {
+            MachineContainerCreateError::EnsureEndpointNetwork { message }
+        }
+        MachineEndpointNetworkError::EndpointNetworkSubnetMismatch { expected, observed } => {
+            MachineContainerCreateError::EndpointNetworkSubnetMismatch { expected, observed }
+        }
+    })
 }
 
 fn required_endpoint_network_from_inspect(
     result: Result<NetworkInspect, BollardError>,
-) -> Result<NetworkInspect, MachineContainerRunnerError> {
-    result.map_err(|error| MachineContainerRunnerError::Create {
+) -> Result<NetworkInspect, MachineContainerCreateError> {
+    result.map_err(|error| MachineContainerCreateError::Create {
         message: if is_docker_object_missing(&error) {
             format!("required Docker network {ENDPOINT_NETWORK_NAME} is missing")
         } else {
@@ -158,7 +166,7 @@ pub(super) async fn read_endpoint_network_status(
         endpoint_mtu,
     ) {
         Ok(()) => EndpointBridgeStatus::Ready { subnet: expected },
-        Err(MachineContainerRunnerError::EndpointNetworkSubnetMismatch { expected, observed }) => {
+        Err(MachineEndpointNetworkError::EndpointNetworkSubnetMismatch { expected, observed }) => {
             EndpointBridgeStatus::SubnetMismatch { expected, observed }
         }
         Err(error) => EndpointBridgeStatus::Unavailable {
@@ -205,18 +213,18 @@ fn validate_endpoint_network(
     expected_subnet: &str,
     expected_bridge: &str,
     expected_mtu: u32,
-) -> Result<(), MachineContainerRunnerError> {
+) -> Result<(), MachineEndpointNetworkError> {
     if endpoint_network_subnet(network) != Some(expected_subnet) {
         if let (Ok(expected), Some(Ok(observed))) = (
             MachineEndpointSubnet::try_new(expected_subnet),
             endpoint_network_subnet(network).map(MachineEndpointSubnet::try_new),
         ) {
-            return Err(MachineContainerRunnerError::EndpointNetworkSubnetMismatch {
+            return Err(MachineEndpointNetworkError::EndpointNetworkSubnetMismatch {
                 expected,
                 observed,
             });
         }
-        return Err(MachineContainerRunnerError::EnsureEndpointNetwork {
+        return Err(MachineEndpointNetworkError::EnsureEndpointNetwork {
             message: format!(
                 "Docker network {ENDPOINT_NETWORK_NAME} has subnet {}, expected {expected_subnet}",
                 endpoint_network_subnet(network).unwrap_or("unset")
@@ -227,7 +235,7 @@ fn validate_endpoint_network(
         || endpoint_network_bridge(network) != Some(expected_bridge)
         || !endpoint_network_mtu_matches(network, expected_mtu)
     {
-        return Err(MachineContainerRunnerError::EnsureEndpointNetwork {
+        return Err(MachineEndpointNetworkError::EnsureEndpointNetwork {
             message: format!(
                 "Docker network {ENDPOINT_NETWORK_NAME} does not match bridge {expected_bridge} and MTU {expected_mtu}"
             ),
@@ -300,7 +308,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(MachineContainerRunnerError::Create { message })
+            Err(MachineContainerCreateError::Create { message })
                 if message.contains("required Docker network ployz is missing")
         ));
     }
@@ -359,7 +367,7 @@ mod tests {
         assert!(validate_endpoint_network(&exact, "10.198.1.0/24", "br-ployz", 1420).is_ok());
         assert!(matches!(
             validate_endpoint_network(&exact, "10.198.2.0/24", "br-ployz", 1420),
-            Err(MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. })
+            Err(MachineEndpointNetworkError::EndpointNetworkSubnetMismatch { .. })
         ));
         assert!(validate_endpoint_network(&exact, "10.198.1.0/24", "other-bridge", 1420).is_err());
         assert!(validate_endpoint_network(&exact, "10.198.1.0/24", "br-ployz", 1400).is_err());

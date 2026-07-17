@@ -538,8 +538,11 @@ mod tests {
     use crate::roles::machine::facts::observation_state;
     use crate::roles::machine::runner::{
         CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
-        MachineContainerRunner, MachineContainerRunnerError, MachineImageRemovalRunner,
-        MachineLogReader, MachineLogReaderError, MachineLogTail, MachineVolumeUsageReader,
+        MachineContainerCreateError, MachineContainerListError, MachineContainerRemoveError,
+        MachineContainerRestartError, MachineContainerRunner, MachineContainerStartError,
+        MachineContainerStopError, MachineContainerWaitError, MachineEndpointNetworkError,
+        MachineImageRemovalRunner, MachineLogReader, MachineLogReaderError, MachineLogTail,
+        MachineRegistryImageResolveError, MachineVolumeRemoveError, MachineVolumeUsageReader,
     };
     use futures_util::StreamExt;
     use ployz_core::ids::{ContainerId, NamespaceRevisionEntryId, OperationId, ServiceId, StepId};
@@ -658,12 +661,12 @@ mod tests {
 
         async fn existing_managed_containers(
             &self,
-        ) -> Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError> {
+        ) -> Result<Vec<ExistingManagedContainer>, MachineContainerListError> {
             match &self.containers {
                 StaticContainerList::Ready(containers) => containers
                     .lock()
                     .map(|containers| containers.clone())
-                    .map_err(|error| MachineContainerRunnerError::ListExisting {
+                    .map_err(|error| MachineContainerListError::ListExisting {
                         message: error.to_string(),
                     }),
                 StaticContainerList::Blocked(blocked) => {
@@ -674,14 +677,14 @@ mod tests {
             }
         }
 
-        async fn ensure_endpoint_network(&self) -> Result<(), MachineContainerRunnerError> {
+        async fn ensure_endpoint_network(&self) -> Result<(), MachineEndpointNetworkError> {
             Ok(())
         }
 
         async fn ensure_projection_endpoint_network(
             &self,
             _expected_subnet: &ployz_core::network::MachineEndpointSubnet,
-        ) -> Result<(), MachineContainerRunnerError> {
+        ) -> Result<(), MachineEndpointNetworkError> {
             Ok(())
         }
 
@@ -693,7 +696,7 @@ mod tests {
             &self,
             reference: &ployz_core::deploy::ImageReference,
             _credential: Option<&ployz_core::deploy::RegistryCredential>,
-        ) -> Result<ployz_core::image::OciDigest, MachineContainerRunnerError> {
+        ) -> Result<ployz_core::image::OciDigest, MachineRegistryImageResolveError> {
             Ok(ployz_core::image::OciDigest::sha256(
                 reference.as_str().as_bytes(),
             ))
@@ -702,8 +705,8 @@ mod tests {
         async fn create_managed_container(
             &self,
             _command: CreateManagedContainer,
-        ) -> Result<ContainerId, MachineContainerRunnerError> {
-            Err(MachineContainerRunnerError::Create {
+        ) -> Result<ContainerId, MachineContainerCreateError> {
+            Err(MachineContainerCreateError::Create {
                 message: "not used".to_owned(),
             })
         }
@@ -711,8 +714,8 @@ mod tests {
         async fn start_managed_container(
             &self,
             container_id: &ContainerId,
-        ) -> Result<(), MachineContainerRunnerError> {
-            Err(MachineContainerRunnerError::Start {
+        ) -> Result<(), MachineContainerStartError> {
+            Err(MachineContainerStartError::Start {
                 container_id: container_id.clone(),
                 message: "not used".to_owned(),
             })
@@ -721,7 +724,7 @@ mod tests {
         async fn wait_managed_container(
             &self,
             _container_id: &ContainerId,
-        ) -> Result<i64, MachineContainerRunnerError> {
+        ) -> Result<i64, MachineContainerWaitError> {
             Ok(0)
         }
 
@@ -729,8 +732,8 @@ mod tests {
             &self,
             container_id: &ContainerId,
             _expected_identity: &ManagedContainerIdentity,
-        ) -> Result<(), MachineContainerRunnerError> {
-            Err(MachineContainerRunnerError::Remove {
+        ) -> Result<(), MachineContainerRemoveError> {
+            Err(MachineContainerRemoveError::Remove {
                 container_id: container_id.clone(),
                 message: "not used".to_owned(),
             })
@@ -739,8 +742,8 @@ mod tests {
         async fn remove_volume(
             &self,
             docker_volume_name: &str,
-        ) -> Result<(), MachineContainerRunnerError> {
-            Err(MachineContainerRunnerError::RemoveVolume {
+        ) -> Result<(), MachineVolumeRemoveError> {
+            Err(MachineVolumeRemoveError::RemoveVolume {
                 docker_volume_name: docker_volume_name.to_owned(),
                 message: "not used".to_owned(),
             })
@@ -759,8 +762,8 @@ mod tests {
             &self,
             container_id: &ContainerId,
             _expected_identity: &ManagedContainerIdentity,
-        ) -> Result<(), MachineContainerRunnerError> {
-            Err(MachineContainerRunnerError::Restart {
+        ) -> Result<(), MachineContainerRestartError> {
+            Err(MachineContainerRestartError::Restart {
                 container_id: container_id.clone(),
                 message: "not used".to_owned(),
             })
@@ -770,8 +773,8 @@ mod tests {
             &self,
             container_id: &ContainerId,
             _expected_identity: &ManagedContainerIdentity,
-        ) -> Result<(), MachineContainerRunnerError> {
-            Err(MachineContainerRunnerError::Stop {
+        ) -> Result<(), MachineContainerStopError> {
+            Err(MachineContainerStopError::Stop {
                 container_id: container_id.clone(),
                 message: "not used".to_owned(),
             })
@@ -833,14 +836,14 @@ mod tests {
 
         async fn existing_managed_containers(
             &self,
-        ) -> Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError> {
-            Err(MachineContainerRunnerError::ListExisting {
+        ) -> Result<Vec<ExistingManagedContainer>, MachineContainerListError> {
+            Err(MachineContainerListError::ListExisting {
                 message: "docker unavailable".to_owned(),
             })
         }
 
-        async fn ensure_endpoint_network(&self) -> Result<(), MachineContainerRunnerError> {
-            Err(MachineContainerRunnerError::EnsureEndpointNetwork {
+        async fn ensure_endpoint_network(&self) -> Result<(), MachineEndpointNetworkError> {
+            Err(MachineEndpointNetworkError::EnsureEndpointNetwork {
                 message: "docker unavailable".to_owned(),
             })
         }
@@ -848,7 +851,7 @@ mod tests {
         async fn ensure_projection_endpoint_network(
             &self,
             _expected_subnet: &ployz_core::network::MachineEndpointSubnet,
-        ) -> Result<(), MachineContainerRunnerError> {
+        ) -> Result<(), MachineEndpointNetworkError> {
             self.ensure_endpoint_network().await
         }
 
@@ -863,8 +866,8 @@ mod tests {
             &self,
             _reference: &ployz_core::deploy::ImageReference,
             _credential: Option<&ployz_core::deploy::RegistryCredential>,
-        ) -> Result<ployz_core::image::OciDigest, MachineContainerRunnerError> {
-            Err(MachineContainerRunnerError::ImagePull {
+        ) -> Result<ployz_core::image::OciDigest, MachineRegistryImageResolveError> {
+            Err(MachineRegistryImageResolveError::ImagePull {
                 message: "docker unavailable".to_owned(),
             })
         }
@@ -872,8 +875,8 @@ mod tests {
         async fn create_managed_container(
             &self,
             _command: CreateManagedContainer,
-        ) -> Result<ContainerId, MachineContainerRunnerError> {
-            Err(MachineContainerRunnerError::Create {
+        ) -> Result<ContainerId, MachineContainerCreateError> {
+            Err(MachineContainerCreateError::Create {
                 message: "not used".to_owned(),
             })
         }
@@ -881,8 +884,8 @@ mod tests {
         async fn start_managed_container(
             &self,
             container_id: &ContainerId,
-        ) -> Result<(), MachineContainerRunnerError> {
-            Err(MachineContainerRunnerError::Start {
+        ) -> Result<(), MachineContainerStartError> {
+            Err(MachineContainerStartError::Start {
                 container_id: container_id.clone(),
                 message: "not used".to_owned(),
             })
@@ -891,7 +894,7 @@ mod tests {
         async fn wait_managed_container(
             &self,
             _container_id: &ContainerId,
-        ) -> Result<i64, MachineContainerRunnerError> {
+        ) -> Result<i64, MachineContainerWaitError> {
             Ok(0)
         }
 
@@ -899,8 +902,8 @@ mod tests {
             &self,
             container_id: &ContainerId,
             _expected_identity: &ManagedContainerIdentity,
-        ) -> Result<(), MachineContainerRunnerError> {
-            Err(MachineContainerRunnerError::Remove {
+        ) -> Result<(), MachineContainerRemoveError> {
+            Err(MachineContainerRemoveError::Remove {
                 container_id: container_id.clone(),
                 message: "not used".to_owned(),
             })
@@ -909,8 +912,8 @@ mod tests {
         async fn remove_volume(
             &self,
             docker_volume_name: &str,
-        ) -> Result<(), MachineContainerRunnerError> {
-            Err(MachineContainerRunnerError::RemoveVolume {
+        ) -> Result<(), MachineVolumeRemoveError> {
+            Err(MachineVolumeRemoveError::RemoveVolume {
                 docker_volume_name: docker_volume_name.to_owned(),
                 message: "not used".to_owned(),
             })
@@ -929,8 +932,8 @@ mod tests {
             &self,
             container_id: &ContainerId,
             _expected_identity: &ManagedContainerIdentity,
-        ) -> Result<(), MachineContainerRunnerError> {
-            Err(MachineContainerRunnerError::Restart {
+        ) -> Result<(), MachineContainerRestartError> {
+            Err(MachineContainerRestartError::Restart {
                 container_id: container_id.clone(),
                 message: "not used".to_owned(),
             })
@@ -940,8 +943,8 @@ mod tests {
             &self,
             container_id: &ContainerId,
             _expected_identity: &ManagedContainerIdentity,
-        ) -> Result<(), MachineContainerRunnerError> {
-            Err(MachineContainerRunnerError::Stop {
+        ) -> Result<(), MachineContainerStopError> {
+            Err(MachineContainerStopError::Stop {
                 container_id: container_id.clone(),
                 message: "not used".to_owned(),
             })

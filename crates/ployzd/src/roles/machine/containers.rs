@@ -23,7 +23,9 @@ use crate::roles::machine::protocol::{
     MachineVolumeRemoveRpcResponse,
 };
 use crate::roles::machine::runner::{
-    CreateManagedContainer, MachineContainerRunner, MachineContainerRunnerError,
+    CreateManagedContainer, MachineContainerRemoveError, MachineContainerRestartError,
+    MachineContainerRunner, MachineContainerStopError, MachineRegistryImageResolveError,
+    MachineVolumeRemoveError,
 };
 use crate::roles::machine::volume::docker_volume_name;
 use ployz_core::ids::{ContainerId, MachineId};
@@ -172,7 +174,7 @@ where
         Ok(digest) => machine_success(MachineContainerResolveImageRpcResponse::Ok(
             MachineContainerResolveImageRpcOk { machine_id, digest },
         )),
-        Err(MachineContainerRunnerError::ImagePull { message }) => {
+        Err(MachineRegistryImageResolveError::ImagePull { message }) => {
             let message = match request.credential.as_ref() {
                 Some(credential) => credential.redact_secret_in(message),
                 None => message,
@@ -184,7 +186,6 @@ where
                 },
             })
         }
-        Err(error) => runner_error(error),
     }
 }
 
@@ -220,7 +221,7 @@ where
                 },
             ))
         }
-        Err(MachineContainerRunnerError::Remove {
+        Err(MachineContainerRemoveError::Remove {
             container_id,
             message,
         }) => machine_domain_error(MachineContainerRemoveRpcResponse::DomainError {
@@ -231,7 +232,7 @@ where
                 inspect_hint: inspect_hint(&container_id),
             },
         }),
-        Err(error) => runner_error(error),
+        Err(error @ MachineContainerRemoveError::ListExisting { .. }) => runner_error(error),
     }
 }
 
@@ -270,7 +271,7 @@ where
                 Ok(()) => machine_success(MachineVolumeRemoveRpcResponse::Ok(
                     MachineVolumeRemoveRpcOk { machine_id },
                 )),
-                Err(MachineContainerRunnerError::RemoveVolume { message, .. }) => {
+                Err(MachineVolumeRemoveError::RemoveVolume { message, .. }) => {
                     machine_domain_error(MachineVolumeRemoveRpcResponse::DomainError {
                         machine_id,
                         error: MachineVolumeRemoveDomainError::DockerRemoveFailed {
@@ -278,7 +279,6 @@ where
                         },
                     })
                 }
-                Err(error) => runner_error(error),
             }
         }
         MachineVolumeRemoveRpcRequest::ProvisionedDataset { volume, .. } => {
@@ -287,7 +287,7 @@ where
             let docker_volume_name = docker_volume_name(pin.namespace_id(), pin.volume_name());
             if let Err(error) = runner.remove_volume(&docker_volume_name).await {
                 return match error {
-                    MachineContainerRunnerError::RemoveVolume { message, .. } => {
+                    MachineVolumeRemoveError::RemoveVolume { message, .. } => {
                         machine_domain_error(MachineVolumeRemoveRpcResponse::DomainError {
                             machine_id,
                             error: MachineVolumeRemoveDomainError::DockerRemoveFailed {
@@ -297,18 +297,6 @@ where
                             },
                         })
                     }
-                    error @ (MachineContainerRunnerError::ListExisting { .. }
-                    | MachineContainerRunnerError::EnsureEndpointNetwork { .. }
-                    | MachineContainerRunnerError::EndpointNetworkSubnetMismatch {
-                        ..
-                    }
-                    | MachineContainerRunnerError::Create { .. }
-                    | MachineContainerRunnerError::ImagePull { .. }
-                    | MachineContainerRunnerError::Start { .. }
-                    | MachineContainerRunnerError::Wait { .. }
-                    | MachineContainerRunnerError::Stop { .. }
-                    | MachineContainerRunnerError::Restart { .. }
-                    | MachineContainerRunnerError::Remove { .. }) => runner_error(error),
                 };
             }
             match runner.destroy_provisioned_dataset(dataset).await {
@@ -400,7 +388,7 @@ where
                 container_id: request.container_id,
             }))
         }
-        Err(MachineContainerRunnerError::Stop {
+        Err(MachineContainerStopError::Stop {
             container_id,
             message,
         }) => machine_domain_error(MachineContainerStopRpcResponse::DomainError {
@@ -411,7 +399,7 @@ where
                 inspect_hint: inspect_hint(&container_id),
             },
         }),
-        Err(error) => runner_error(error),
+        Err(error @ MachineContainerStopError::ListExisting { .. }) => runner_error(error),
     }
 }
 
@@ -448,7 +436,7 @@ where
                 },
             ))
         }
-        Err(MachineContainerRunnerError::Restart {
+        Err(MachineContainerRestartError::Restart {
             container_id,
             message,
         }) => machine_domain_error(MachineContainerRestartRpcResponse::DomainError {
@@ -459,7 +447,7 @@ where
                 inspect_hint: inspect_hint(&container_id),
             },
         }),
-        Err(error) => runner_error(error),
+        Err(error @ MachineContainerRestartError::ListExisting { .. }) => runner_error(error),
     }
 }
 

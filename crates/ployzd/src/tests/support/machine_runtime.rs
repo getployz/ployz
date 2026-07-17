@@ -1,8 +1,11 @@
 use crate::roles::machine::protocol::MachineImagePull;
 use crate::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
-    MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
-    MachineLogTail,
+    MachineContainerCreateError, MachineContainerListError, MachineContainerRemoveError,
+    MachineContainerRestartError, MachineContainerRunner, MachineContainerStartError,
+    MachineContainerStopError, MachineContainerWaitError, MachineEndpointNetworkError,
+    MachineLogReader, MachineLogReaderError, MachineLogTail, MachineRegistryImageResolveError,
+    MachineVolumeRemoveError,
 };
 use crate::roles::machine::service::MachinePloyzNativeMeshPreparer;
 use ployz_core::deploy::{ImageReference, RegistryCredential};
@@ -117,7 +120,7 @@ impl MachineContainerRunner for ObservingContainerRunner {
 
     async fn existing_managed_containers(
         &self,
-    ) -> Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError> {
+    ) -> Result<Vec<ExistingManagedContainer>, MachineContainerListError> {
         Ok(self
             .snapshot()
             .containers()
@@ -126,17 +129,17 @@ impl MachineContainerRunner for ObservingContainerRunner {
             .collect())
     }
 
-    async fn ensure_endpoint_network(&self) -> Result<(), MachineContainerRunnerError> {
+    async fn ensure_endpoint_network(&self) -> Result<(), MachineEndpointNetworkError> {
         Ok(())
     }
 
     async fn ensure_projection_endpoint_network(
         &self,
         expected_subnet: &MachineEndpointSubnet,
-    ) -> Result<(), MachineContainerRunnerError> {
+    ) -> Result<(), MachineEndpointNetworkError> {
         self.state
             .lock()
-            .map_err(|error| MachineContainerRunnerError::EnsureEndpointNetwork {
+            .map_err(|error| MachineEndpointNetworkError::EnsureEndpointNetwork {
                 message: error.to_string(),
             })?
             .endpoint_subnet = Some(expected_subnet.clone());
@@ -158,18 +161,18 @@ impl MachineContainerRunner for ObservingContainerRunner {
         &self,
         reference: &ImageReference,
         credential: Option<&RegistryCredential>,
-    ) -> Result<OciDigest, MachineContainerRunnerError> {
+    ) -> Result<OciDigest, MachineRegistryImageResolveError> {
         let mut state =
             self.state
                 .lock()
-                .map_err(|error| MachineContainerRunnerError::ImagePull {
+                .map_err(|error| MachineRegistryImageResolveError::ImagePull {
                     message: error.to_string(),
                 })?;
         state
             .resolutions
             .push((reference.clone(), credential.cloned()));
         if let Some(message) = &state.resolution_failure {
-            return Err(MachineContainerRunnerError::ImagePull {
+            return Err(MachineRegistryImageResolveError::ImagePull {
                 message: message.clone(),
             });
         }
@@ -179,10 +182,10 @@ impl MachineContainerRunner for ObservingContainerRunner {
     async fn create_managed_container(
         &self,
         command: CreateManagedContainer,
-    ) -> Result<ContainerId, MachineContainerRunnerError> {
+    ) -> Result<ContainerId, MachineContainerCreateError> {
         self.state
             .lock()
-            .map_err(|error| MachineContainerRunnerError::Create {
+            .map_err(|error| MachineContainerCreateError::Create {
                 message: error.to_string(),
             })?
             .pulls
@@ -200,7 +203,7 @@ impl MachineContainerRunner for ObservingContainerRunner {
         let snapshot = self
             .snapshot()
             .with_container_replaced(observation)
-            .map_err(|error| MachineContainerRunnerError::Create {
+            .map_err(|error| MachineContainerCreateError::Create {
                 message: error.to_string(),
             })?;
         self.replace_snapshot(snapshot);
@@ -211,7 +214,7 @@ impl MachineContainerRunner for ObservingContainerRunner {
     async fn start_managed_container(
         &self,
         container_id: &ContainerId,
-    ) -> Result<(), MachineContainerRunnerError> {
+    ) -> Result<(), MachineContainerStartError> {
         let snapshot = self.snapshot();
         let Some(observation) = snapshot.container(container_id).cloned() else {
             return Err(missing_container_start_error(container_id));
@@ -227,7 +230,7 @@ impl MachineContainerRunner for ObservingContainerRunner {
                 },
                 ..observation
             })
-            .map_err(|error| MachineContainerRunnerError::Start {
+            .map_err(|error| MachineContainerStartError::Start {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             })?;
@@ -238,10 +241,10 @@ impl MachineContainerRunner for ObservingContainerRunner {
     async fn wait_managed_container(
         &self,
         container_id: &ContainerId,
-    ) -> Result<i64, MachineContainerRunnerError> {
+    ) -> Result<i64, MachineContainerWaitError> {
         let snapshot = self.snapshot();
         let Some(observation) = snapshot.container(container_id).cloned() else {
-            return Err(MachineContainerRunnerError::Wait {
+            return Err(MachineContainerWaitError::Wait {
                 container_id: container_id.clone(),
                 message: "container not found".to_owned(),
             });
@@ -251,7 +254,7 @@ impl MachineContainerRunner for ObservingContainerRunner {
                 state: ContainerRuntimeState::Exited,
                 ..observation
             })
-            .map_err(|error| MachineContainerRunnerError::Wait {
+            .map_err(|error| MachineContainerWaitError::Wait {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             })?;
@@ -263,7 +266,7 @@ impl MachineContainerRunner for ObservingContainerRunner {
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
-    ) -> Result<(), MachineContainerRunnerError> {
+    ) -> Result<(), MachineContainerRemoveError> {
         let snapshot = self.snapshot();
 
         let existing = snapshot
@@ -274,7 +277,7 @@ impl MachineContainerRunner for ObservingContainerRunner {
             return Ok(());
         };
         if observation_identity(existing) != *expected_identity {
-            return Err(MachineContainerRunnerError::Remove {
+            return Err(MachineContainerRemoveError::Remove {
                 container_id: container_id.clone(),
                 message: "container identity did not match cleanup target".to_owned(),
             });
@@ -288,7 +291,7 @@ impl MachineContainerRunner for ObservingContainerRunner {
             .collect::<Vec<_>>();
         let snapshot =
             MachineContainerObservationSnapshot::try_new(self.machine_id.clone(), containers)
-                .map_err(|error| MachineContainerRunnerError::Remove {
+                .map_err(|error| MachineContainerRemoveError::Remove {
                     container_id: container_id.clone(),
                     message: error.to_string(),
                 })?;
@@ -299,7 +302,7 @@ impl MachineContainerRunner for ObservingContainerRunner {
     async fn remove_volume(
         &self,
         _docker_volume_name: &str,
-    ) -> Result<(), MachineContainerRunnerError> {
+    ) -> Result<(), MachineVolumeRemoveError> {
         Ok(())
     }
 
@@ -314,14 +317,14 @@ impl MachineContainerRunner for ObservingContainerRunner {
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
-    ) -> Result<(), MachineContainerRunnerError> {
+    ) -> Result<(), MachineContainerStopError> {
         let snapshot = self.snapshot();
 
         let Some(existing) = snapshot.container(container_id).cloned() else {
             return Ok(());
         };
         if observation_identity(&existing) != *expected_identity {
-            return Err(MachineContainerRunnerError::Stop {
+            return Err(MachineContainerStopError::Stop {
                 container_id: container_id.clone(),
                 message: "container identity did not match stop target".to_owned(),
             });
@@ -332,7 +335,7 @@ impl MachineContainerRunner for ObservingContainerRunner {
                 state: ContainerRuntimeState::Exited,
                 ..existing
             })
-            .map_err(|error| MachineContainerRunnerError::Stop {
+            .map_err(|error| MachineContainerStopError::Stop {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             })?;
@@ -344,17 +347,17 @@ impl MachineContainerRunner for ObservingContainerRunner {
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
-    ) -> Result<(), MachineContainerRunnerError> {
+    ) -> Result<(), MachineContainerRestartError> {
         let snapshot = self.snapshot();
 
         let Some(existing) = snapshot.container(container_id).cloned() else {
-            return Err(MachineContainerRunnerError::Restart {
+            return Err(MachineContainerRestartError::Restart {
                 container_id: container_id.clone(),
                 message: "container was not found".to_owned(),
             });
         };
         if observation_identity(&existing) != *expected_identity {
-            return Err(MachineContainerRunnerError::Restart {
+            return Err(MachineContainerRestartError::Restart {
                 container_id: container_id.clone(),
                 message: "container identity did not match restart target".to_owned(),
             });
@@ -369,7 +372,7 @@ impl MachineContainerRunner for ObservingContainerRunner {
                 },
                 ..existing
             })
-            .map_err(|error| MachineContainerRunnerError::Restart {
+            .map_err(|error| MachineContainerRestartError::Restart {
                 container_id: container_id.clone(),
                 message: error.to_string(),
             })?;
@@ -403,11 +406,11 @@ fn observation_identity(observation: &ManagedContainerObservation) -> ManagedCon
 }
 
 impl ObservingContainerRunner {
-    fn next_container_id(&self) -> Result<ContainerId, MachineContainerRunnerError> {
+    fn next_container_id(&self) -> Result<ContainerId, MachineContainerCreateError> {
         let mut state = self
             .state
             .lock()
-            .map_err(|error| MachineContainerRunnerError::Create {
+            .map_err(|error| MachineContainerCreateError::Create {
                 message: error.to_string(),
             })?;
         state.next_container_id()
@@ -425,10 +428,10 @@ struct ObservingContainerRunnerState {
 }
 
 impl ObservingContainerRunnerState {
-    fn next_container_id(&mut self) -> Result<ContainerId, MachineContainerRunnerError> {
+    fn next_container_id(&mut self) -> Result<ContainerId, MachineContainerCreateError> {
         self.next_container_number += 1;
         ContainerId::try_new(format!("ctr_{}", self.next_container_number)).map_err(|error| {
-            MachineContainerRunnerError::Create {
+            MachineContainerCreateError::Create {
                 message: error.to_string(),
             }
         })
@@ -593,8 +596,8 @@ fn empty_snapshot(machine_id: &MachineId) -> MachineContainerObservationSnapshot
         .expect("empty machine snapshot is valid")
 }
 
-fn missing_container_start_error(container_id: &ContainerId) -> MachineContainerRunnerError {
-    MachineContainerRunnerError::Start {
+fn missing_container_start_error(container_id: &ContainerId) -> MachineContainerStartError {
+    MachineContainerStartError::Start {
         container_id: container_id.clone(),
         message: "container is missing from observed runner state".to_owned(),
     }

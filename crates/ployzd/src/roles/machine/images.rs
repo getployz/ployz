@@ -776,24 +776,11 @@ fn header<'a>(request: &'a NatsServiceRequest, name: &str) -> Option<&'a str> {
 }
 
 fn runner_error_message(
-    error: crate::roles::machine::runner::MachineContainerRunnerError,
+    error: crate::roles::machine::execution::docker::runner::DockerImagePullError,
 ) -> String {
-    use crate::roles::machine::runner::MachineContainerRunnerError;
-
+    use crate::roles::machine::execution::docker::runner::DockerImagePullError;
     match error {
-        MachineContainerRunnerError::ListExisting { message }
-        | MachineContainerRunnerError::EnsureEndpointNetwork { message }
-        | MachineContainerRunnerError::Create { message }
-        | MachineContainerRunnerError::ImagePull { message }
-        | MachineContainerRunnerError::Start { message, .. }
-        | MachineContainerRunnerError::Wait { message, .. }
-        | MachineContainerRunnerError::Stop { message, .. }
-        | MachineContainerRunnerError::Restart { message, .. }
-        | MachineContainerRunnerError::Remove { message, .. }
-        | MachineContainerRunnerError::RemoveVolume { message, .. } => message,
-        MachineContainerRunnerError::EndpointNetworkSubnetMismatch { expected, observed } => {
-            format!("endpoint network subnet is {observed:?}, expected {expected:?}")
-        }
+        DockerImagePullError::ImagePull { message } => message,
     }
 }
 

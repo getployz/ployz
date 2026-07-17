@@ -11,7 +11,8 @@ pub(crate) fn machine_domain_error(response: impl serde::Serialize) -> NatsServi
     NatsServiceResponse::json_domain_error(&response)
 }
 
-pub(crate) fn runner_error(error: MachineContainerRunnerError) -> NatsServiceResponse {
+pub(crate) fn runner_error(error: impl Into<MachineContainerRunnerError>) -> NatsServiceResponse {
+    let error = error.into();
     match error {
         MachineContainerRunnerError::ListExisting { message } => {
             NatsServiceResponse::transport_error(NatsServiceError::internal(format!(

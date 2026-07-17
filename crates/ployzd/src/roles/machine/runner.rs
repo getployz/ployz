@@ -46,7 +46,102 @@ pub struct CreateManagedContainer {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MachineContainerRunnerError {
+pub enum MachineContainerListError {
+    ListExisting { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineEndpointNetworkError {
+    EnsureEndpointNetwork {
+        message: String,
+    },
+    EndpointNetworkSubnetMismatch {
+        expected: MachineEndpointSubnet,
+        observed: MachineEndpointSubnet,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineRegistryImageResolveError {
+    ImagePull { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineContainerCreateError {
+    Create {
+        message: String,
+    },
+    ImagePull {
+        message: String,
+    },
+    EnsureEndpointNetwork {
+        message: String,
+    },
+    EndpointNetworkSubnetMismatch {
+        expected: MachineEndpointSubnet,
+        observed: MachineEndpointSubnet,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineContainerStartError {
+    Start {
+        container_id: ContainerId,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineContainerWaitError {
+    Wait {
+        container_id: ContainerId,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineContainerStopError {
+    ListExisting {
+        message: String,
+    },
+    Stop {
+        container_id: ContainerId,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineContainerRestartError {
+    ListExisting {
+        message: String,
+    },
+    Restart {
+        container_id: ContainerId,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineContainerRemoveError {
+    ListExisting {
+        message: String,
+    },
+    Remove {
+        container_id: ContainerId,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineVolumeRemoveError {
+    RemoveVolume {
+        docker_volume_name: String,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MachineContainerRunnerError {
     ListExisting {
         message: String,
     },
@@ -89,6 +184,139 @@ pub enum MachineContainerRunnerError {
     },
 }
 
+impl From<MachineContainerListError> for MachineContainerRunnerError {
+    fn from(error: MachineContainerListError) -> Self {
+        match error {
+            MachineContainerListError::ListExisting { message } => Self::ListExisting { message },
+        }
+    }
+}
+
+impl From<MachineEndpointNetworkError> for MachineContainerRunnerError {
+    fn from(error: MachineEndpointNetworkError) -> Self {
+        match error {
+            MachineEndpointNetworkError::EnsureEndpointNetwork { message } => {
+                Self::EnsureEndpointNetwork { message }
+            }
+            MachineEndpointNetworkError::EndpointNetworkSubnetMismatch { expected, observed } => {
+                Self::EndpointNetworkSubnetMismatch { expected, observed }
+            }
+        }
+    }
+}
+
+impl From<MachineRegistryImageResolveError> for MachineContainerRunnerError {
+    fn from(error: MachineRegistryImageResolveError) -> Self {
+        match error {
+            MachineRegistryImageResolveError::ImagePull { message } => Self::ImagePull { message },
+        }
+    }
+}
+
+impl From<MachineContainerCreateError> for MachineContainerRunnerError {
+    fn from(error: MachineContainerCreateError) -> Self {
+        match error {
+            MachineContainerCreateError::Create { message } => Self::Create { message },
+            MachineContainerCreateError::ImagePull { message } => Self::ImagePull { message },
+            MachineContainerCreateError::EnsureEndpointNetwork { message } => {
+                Self::EnsureEndpointNetwork { message }
+            }
+            MachineContainerCreateError::EndpointNetworkSubnetMismatch { expected, observed } => {
+                Self::EndpointNetworkSubnetMismatch { expected, observed }
+            }
+        }
+    }
+}
+
+impl From<MachineContainerStartError> for MachineContainerRunnerError {
+    fn from(error: MachineContainerStartError) -> Self {
+        match error {
+            MachineContainerStartError::Start {
+                container_id,
+                message,
+            } => Self::Start {
+                container_id,
+                message,
+            },
+        }
+    }
+}
+
+impl From<MachineContainerWaitError> for MachineContainerRunnerError {
+    fn from(error: MachineContainerWaitError) -> Self {
+        match error {
+            MachineContainerWaitError::Wait {
+                container_id,
+                message,
+            } => Self::Wait {
+                container_id,
+                message,
+            },
+        }
+    }
+}
+
+impl From<MachineContainerStopError> for MachineContainerRunnerError {
+    fn from(error: MachineContainerStopError) -> Self {
+        match error {
+            MachineContainerStopError::ListExisting { message } => Self::ListExisting { message },
+            MachineContainerStopError::Stop {
+                container_id,
+                message,
+            } => Self::Stop {
+                container_id,
+                message,
+            },
+        }
+    }
+}
+
+impl From<MachineContainerRestartError> for MachineContainerRunnerError {
+    fn from(error: MachineContainerRestartError) -> Self {
+        match error {
+            MachineContainerRestartError::ListExisting { message } => {
+                Self::ListExisting { message }
+            }
+            MachineContainerRestartError::Restart {
+                container_id,
+                message,
+            } => Self::Restart {
+                container_id,
+                message,
+            },
+        }
+    }
+}
+
+impl From<MachineContainerRemoveError> for MachineContainerRunnerError {
+    fn from(error: MachineContainerRemoveError) -> Self {
+        match error {
+            MachineContainerRemoveError::ListExisting { message } => Self::ListExisting { message },
+            MachineContainerRemoveError::Remove {
+                container_id,
+                message,
+            } => Self::Remove {
+                container_id,
+                message,
+            },
+        }
+    }
+}
+
+impl From<MachineVolumeRemoveError> for MachineContainerRunnerError {
+    fn from(error: MachineVolumeRemoveError) -> Self {
+        match error {
+            MachineVolumeRemoveError::RemoveVolume {
+                docker_volume_name,
+                message,
+            } => Self::RemoveVolume {
+                docker_volume_name,
+                message,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MachineLogReaderError {
     NotFound {
@@ -127,16 +355,16 @@ pub trait MachineContainerRunner {
 
     fn existing_managed_containers(
         &self,
-    ) -> impl Future<Output = Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<Vec<ExistingManagedContainer>, MachineContainerListError>> + Send;
 
     fn ensure_endpoint_network(
         &self,
-    ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<(), MachineEndpointNetworkError>> + Send;
 
     fn ensure_projection_endpoint_network(
         &self,
         expected_subnet: &MachineEndpointSubnet,
-    ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<(), MachineEndpointNetworkError>> + Send;
 
     fn read_endpoint_network_status(&self) -> impl Future<Output = EndpointBridgeStatus> + Send;
 
@@ -144,45 +372,45 @@ pub trait MachineContainerRunner {
         &self,
         reference: &ImageReference,
         credential: Option<&RegistryCredential>,
-    ) -> impl Future<Output = Result<OciDigest, MachineContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<OciDigest, MachineRegistryImageResolveError>> + Send;
 
     fn create_managed_container(
         &self,
         command: CreateManagedContainer,
-    ) -> impl Future<Output = Result<ContainerId, MachineContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<ContainerId, MachineContainerCreateError>> + Send;
 
     fn start_managed_container(
         &self,
         container_id: &ContainerId,
-    ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<(), MachineContainerStartError>> + Send;
 
     fn wait_managed_container(
         &self,
         container_id: &ContainerId,
-    ) -> impl Future<Output = Result<i64, MachineContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<i64, MachineContainerWaitError>> + Send;
 
     fn stop_managed_container(
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
-    ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<(), MachineContainerStopError>> + Send;
 
     fn restart_managed_container(
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
-    ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<(), MachineContainerRestartError>> + Send;
 
     fn remove_managed_container(
         &self,
         container_id: &ContainerId,
         expected_identity: &ManagedContainerIdentity,
-    ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<(), MachineContainerRemoveError>> + Send;
 
     fn remove_volume(
         &self,
         docker_volume_name: &str,
-    ) -> impl Future<Output = Result<(), MachineContainerRunnerError>> + Send;
+    ) -> impl Future<Output = Result<(), MachineVolumeRemoveError>> + Send;
 
     fn destroy_provisioned_dataset(
         &self,

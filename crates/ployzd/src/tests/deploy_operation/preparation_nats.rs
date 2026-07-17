@@ -13,8 +13,11 @@ use crate::roles::machine::protocol::{
 };
 use crate::roles::machine::runner::{
     CreateManagedContainer, ExistingManagedContainer, ExistingManagedContainerState,
-    MachineContainerRunner, MachineContainerRunnerError, MachineLogReader, MachineLogReaderError,
-    MachineLogTail,
+    MachineContainerCreateError, MachineContainerListError, MachineContainerRemoveError,
+    MachineContainerRestartError, MachineContainerRunner, MachineContainerStartError,
+    MachineContainerStopError, MachineContainerWaitError, MachineEndpointNetworkError,
+    MachineLogReader, MachineLogReaderError, MachineLogTail, MachineRegistryImageResolveError,
+    MachineVolumeRemoveError,
 };
 use crate::roles::machine::service::{RunningMachineRoleRuntime, start_machine_role_runtime};
 use ployz_core::deploy::{
@@ -495,12 +498,12 @@ impl MachineContainerRunner for StaticRunner {
 
     async fn existing_managed_containers(
         &self,
-    ) -> Result<Vec<ExistingManagedContainer>, MachineContainerRunnerError> {
+    ) -> Result<Vec<ExistingManagedContainer>, MachineContainerListError> {
         Ok(self.existing.clone())
     }
 
-    async fn ensure_endpoint_network(&self) -> Result<(), MachineContainerRunnerError> {
-        Err(MachineContainerRunnerError::EnsureEndpointNetwork {
+    async fn ensure_endpoint_network(&self) -> Result<(), MachineEndpointNetworkError> {
+        Err(MachineEndpointNetworkError::EnsureEndpointNetwork {
             message: "not used".to_owned(),
         })
     }
@@ -508,7 +511,7 @@ impl MachineContainerRunner for StaticRunner {
     async fn ensure_projection_endpoint_network(
         &self,
         expected_subnet: &ployz_core::network::MachineEndpointSubnet,
-    ) -> Result<(), MachineContainerRunnerError> {
+    ) -> Result<(), MachineEndpointNetworkError> {
         *self
             .endpoint_subnet
             .lock()
@@ -531,7 +534,7 @@ impl MachineContainerRunner for StaticRunner {
         &self,
         reference: &ployz_core::deploy::ImageReference,
         _credential: Option<&ployz_core::deploy::RegistryCredential>,
-    ) -> Result<ployz_core::image::OciDigest, MachineContainerRunnerError> {
+    ) -> Result<ployz_core::image::OciDigest, MachineRegistryImageResolveError> {
         Ok(ployz_core::image::OciDigest::sha256(
             reference.as_str().as_bytes(),
         ))
@@ -540,8 +543,8 @@ impl MachineContainerRunner for StaticRunner {
     async fn create_managed_container(
         &self,
         _command: CreateManagedContainer,
-    ) -> Result<ployz_core::ids::ContainerId, MachineContainerRunnerError> {
-        Err(MachineContainerRunnerError::Create {
+    ) -> Result<ployz_core::ids::ContainerId, MachineContainerCreateError> {
+        Err(MachineContainerCreateError::Create {
             message: "not used".to_owned(),
         })
     }
@@ -549,8 +552,8 @@ impl MachineContainerRunner for StaticRunner {
     async fn start_managed_container(
         &self,
         container_id: &ployz_core::ids::ContainerId,
-    ) -> Result<(), MachineContainerRunnerError> {
-        Err(MachineContainerRunnerError::Start {
+    ) -> Result<(), MachineContainerStartError> {
+        Err(MachineContainerStartError::Start {
             container_id: container_id.clone(),
             message: "not used".to_owned(),
         })
@@ -559,7 +562,7 @@ impl MachineContainerRunner for StaticRunner {
     async fn wait_managed_container(
         &self,
         _container_id: &ployz_core::ids::ContainerId,
-    ) -> Result<i64, MachineContainerRunnerError> {
+    ) -> Result<i64, MachineContainerWaitError> {
         Ok(0)
     }
 
@@ -567,8 +570,8 @@ impl MachineContainerRunner for StaticRunner {
         &self,
         container_id: &ployz_core::ids::ContainerId,
         _expected_identity: &ployz_core::machine::runtime::ManagedContainerIdentity,
-    ) -> Result<(), MachineContainerRunnerError> {
-        Err(MachineContainerRunnerError::Stop {
+    ) -> Result<(), MachineContainerStopError> {
+        Err(MachineContainerStopError::Stop {
             container_id: container_id.clone(),
             message: "not used".to_owned(),
         })
@@ -578,8 +581,8 @@ impl MachineContainerRunner for StaticRunner {
         &self,
         container_id: &ployz_core::ids::ContainerId,
         _expected_identity: &ployz_core::machine::runtime::ManagedContainerIdentity,
-    ) -> Result<(), MachineContainerRunnerError> {
-        Err(MachineContainerRunnerError::Restart {
+    ) -> Result<(), MachineContainerRestartError> {
+        Err(MachineContainerRestartError::Restart {
             container_id: container_id.clone(),
             message: "not used".to_owned(),
         })
@@ -589,8 +592,8 @@ impl MachineContainerRunner for StaticRunner {
         &self,
         container_id: &ployz_core::ids::ContainerId,
         _expected_identity: &ployz_core::machine::runtime::ManagedContainerIdentity,
-    ) -> Result<(), MachineContainerRunnerError> {
-        Err(MachineContainerRunnerError::Remove {
+    ) -> Result<(), MachineContainerRemoveError> {
+        Err(MachineContainerRemoveError::Remove {
             container_id: container_id.clone(),
             message: "not used".to_owned(),
         })
@@ -599,8 +602,8 @@ impl MachineContainerRunner for StaticRunner {
     async fn remove_volume(
         &self,
         docker_volume_name: &str,
-    ) -> Result<(), MachineContainerRunnerError> {
-        Err(MachineContainerRunnerError::RemoveVolume {
+    ) -> Result<(), MachineVolumeRemoveError> {
+        Err(MachineVolumeRemoveError::RemoveVolume {
             docker_volume_name: docker_volume_name.to_owned(),
             message: "not used".to_owned(),
         })
