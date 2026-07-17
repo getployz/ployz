@@ -1,7 +1,5 @@
-use super::{
-    ExistingManagedContainer, ExistingManagedContainerState, MachineContainerRunDecision,
-    decide_container_run,
-};
+use super::{MachineContainerRunDecision, decide_container_run};
+use crate::roles::machine::runner::{ExistingManagedContainer, ExistingManagedContainerState};
 use ployz_core::machine::runtime::ManagedContainerIdentity;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{container_id, operation_id, step_id};

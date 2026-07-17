@@ -12,6 +12,7 @@
 mod build;
 mod containers;
 mod dataplane;
+mod deploy_container_run;
 mod endpoints;
 pub mod execution;
 mod facts;

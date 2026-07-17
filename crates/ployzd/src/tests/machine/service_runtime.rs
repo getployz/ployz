@@ -1,5 +1,6 @@
 use crate::control::operations::deploy::{
     MachineContainerRuntime, MachineContainerRuntimeError, MachineRuntimeUnavailableReason,
+    PreStartHookRuntimeError,
 };
 use crate::control::role_client::machine::{
     MachineVolumeTestimonyReadError, NatsMachineContainerRuntime, NatsMachineFactsReader,
@@ -301,6 +302,191 @@ async fn machine_role_service_retains_failed_hook_container() {
 
     assert_eq!(outcome.exit_code, 7);
     assert!(state.removes().is_empty());
+}
+
+#[tokio::test]
+async fn machine_role_service_reports_hook_create_failure() {
+    let nats = test_nats().await;
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(RecordingRunnerState::default()).with_create_failure("disk full"),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a.flush().await.expect("flush machine service");
+    let mut client = NatsMachineContainerRuntime::new(nats.client);
+
+    let error = client
+        .run_pre_start_hook(&machine_id("machine_a"), hook_request())
+        .await
+        .expect_err("hook create failure is returned");
+
+    assert_eq!(
+        error,
+        PreStartHookRuntimeError::CreateFailed {
+            machine_id: machine_id("machine_a"),
+            message: failure_message("hook container create failed: disk full"),
+        }
+    );
+}
+
+#[tokio::test]
+async fn machine_role_service_reports_hook_start_failure_with_container_evidence() {
+    let nats = test_nats().await;
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(RecordingRunnerState::default())
+            .with_start_failure("ctr_hook", "exec format error"),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a.flush().await.expect("flush machine service");
+    let mut client = NatsMachineContainerRuntime::new(nats.client);
+
+    let error = client
+        .run_pre_start_hook(&machine_id("machine_a"), hook_request())
+        .await
+        .expect_err("hook start failure is returned");
+
+    assert_eq!(
+        error,
+        PreStartHookRuntimeError::StartFailed {
+            machine_id: machine_id("machine_a"),
+            container_id: container_id("ctr_hook"),
+            message: failure_message("hook container start failed: exec format error"),
+            inspect_hint: inspect_hint("ctr_hook"),
+        }
+    );
+}
+
+#[tokio::test]
+async fn machine_role_service_reports_hook_wait_failure_with_log_evidence() {
+    let nats = test_nats().await;
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(RecordingRunnerState::default())
+            .with_next_container("ctr_hook")
+            .with_wait_failure("runtime disconnected"),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a.flush().await.expect("flush machine service");
+    let mut client = NatsMachineContainerRuntime::new(nats.client);
+
+    let error = client
+        .run_pre_start_hook(&machine_id("machine_a"), hook_request())
+        .await
+        .expect_err("hook wait failure is returned");
+
+    assert_eq!(
+        error,
+        PreStartHookRuntimeError::WaitFailed {
+            machine_id: machine_id("machine_a"),
+            container_id: container_id("ctr_hook"),
+            message: failure_message("hook container wait failed: runtime disconnected"),
+            log_hint: log_hint("ctr_hook"),
+        }
+    );
+}
+
+#[tokio::test]
+async fn machine_role_service_stops_hook_after_timeout() {
+    let nats = test_nats().await;
+    let state = RecordingRunnerState::default();
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(state.clone())
+            .with_next_container("ctr_hook")
+            .with_pending_wait(),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a.flush().await.expect("flush machine service");
+    let mut client = NatsMachineContainerRuntime::new(nats.client);
+    let mut request = hook_request();
+    request.timeout_millis = 0;
+    let target_machine_id = machine_id("machine_a");
+    let run =
+        tokio::spawn(async move { client.run_pre_start_hook(&target_machine_id, request).await });
+    state.wait_started().await;
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_millis(1)).await;
+    tokio::time::resume();
+    let error = run
+        .await
+        .expect("hook request task completes")
+        .expect_err("hook timeout is returned");
+
+    assert_eq!(
+        error,
+        PreStartHookRuntimeError::TimedOut {
+            machine_id: machine_id("machine_a"),
+            container_id: container_id("ctr_hook"),
+            timeout_millis: 0,
+            message: failure_message("hook timed out after 1ms and was stopped"),
+            inspect_hint: inspect_hint("ctr_hook"),
+        }
+    );
+    assert_eq!(state.stops(), vec![container_id("ctr_hook")]);
+}
+
+#[tokio::test]
+async fn machine_role_service_reports_failed_stop_after_hook_timeout() {
+    let nats = test_nats().await;
+    let state = RecordingRunnerState::default();
+    let _service = start_machine_role_service(
+        nats.machine_a.clone(),
+        machine_id("machine_a"),
+        RecordingRunner::new(state.clone())
+            .with_next_container("ctr_hook")
+            .with_pending_wait()
+            .with_stop_failure("ctr_hook", "runtime busy"),
+        ready_wireguard_ebpf(),
+        idle_logs(),
+    )
+    .await
+    .expect("machine runtime service starts");
+    nats.machine_a.flush().await.expect("flush machine service");
+    let mut client = NatsMachineContainerRuntime::new(nats.client);
+    let mut request = hook_request();
+    request.timeout_millis = 10;
+    let target_machine_id = machine_id("machine_a");
+    let run =
+        tokio::spawn(async move { client.run_pre_start_hook(&target_machine_id, request).await });
+    state.wait_started().await;
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_millis(10)).await;
+    tokio::time::resume();
+    let error = run
+        .await
+        .expect("hook request task completes")
+        .expect_err("hook timeout is returned");
+
+    assert_eq!(
+        error,
+        PreStartHookRuntimeError::TimedOut {
+            machine_id: machine_id("machine_a"),
+            container_id: container_id("ctr_hook"),
+            timeout_millis: 10,
+            message: failure_message(
+                "hook timed out after 10ms and could not be stopped: runtime busy"
+            ),
+            inspect_hint: inspect_hint("ctr_hook"),
+        }
+    );
+    assert!(state.stops().is_empty());
 }
 
 #[tokio::test]
@@ -1488,6 +1674,7 @@ async fn machine_volume_ensure_requires_the_subject_machine_and_runs_once() {
 #[derive(Clone, Default)]
 struct RecordingRunnerState {
     inner: Arc<Mutex<RecordingRunnerInner>>,
+    wait_started: Arc<tokio::sync::Notify>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1507,6 +1694,10 @@ async fn next_container_fact_delta(
 }
 
 impl RecordingRunnerState {
+    async fn wait_started(&self) {
+        self.wait_started.notified().await;
+    }
+
     fn creates(&self) -> Vec<CreateManagedContainer> {
         self.inner
             .lock()
@@ -1614,8 +1805,15 @@ struct RecordingRunner {
     stop_failure: Option<(ContainerId, String)>,
     remove_failure: Option<(ContainerId, String)>,
     volume_remove_failure: Option<String>,
-    wait_exit_code: i64,
     volume_usage: BTreeMap<VolumeName, VolumeUsageFacts>,
+    wait_behavior: RecordingWaitBehavior,
+}
+
+#[derive(Clone)]
+enum RecordingWaitBehavior {
+    Exit(i64),
+    Fail(String),
+    Pending,
 }
 
 impl RecordingRunner {
@@ -1630,8 +1828,8 @@ impl RecordingRunner {
             stop_failure: None,
             remove_failure: None,
             volume_remove_failure: None,
-            wait_exit_code: 0,
             volume_usage: BTreeMap::new(),
+            wait_behavior: RecordingWaitBehavior::Exit(0),
         }
     }
 
@@ -1687,7 +1885,17 @@ impl RecordingRunner {
     }
 
     fn with_wait_exit_code(mut self, exit_code: i64) -> Self {
-        self.wait_exit_code = exit_code;
+        self.wait_behavior = RecordingWaitBehavior::Exit(exit_code);
+        self
+    }
+
+    fn with_wait_failure(mut self, message: &str) -> Self {
+        self.wait_behavior = RecordingWaitBehavior::Fail(message.to_owned());
+        self
+    }
+
+    fn with_pending_wait(mut self) -> Self {
+        self.wait_behavior = RecordingWaitBehavior::Pending;
         self
     }
 
@@ -1814,9 +2022,17 @@ impl MachineContainerRunner for RecordingRunner {
 
     async fn wait_managed_container(
         &self,
-        _container_id: &ContainerId,
+        container_id: &ContainerId,
     ) -> Result<i64, MachineContainerRunnerError> {
-        Ok(self.wait_exit_code)
+        self.state.wait_started.notify_one();
+        match &self.wait_behavior {
+            RecordingWaitBehavior::Exit(exit_code) => Ok(*exit_code),
+            RecordingWaitBehavior::Fail(message) => Err(MachineContainerRunnerError::Wait {
+                container_id: container_id.clone(),
+                message: message.clone(),
+            }),
+            RecordingWaitBehavior::Pending => std::future::pending().await,
+        }
     }
 
     async fn remove_managed_container(
@@ -2155,6 +2371,11 @@ fn hook_request() -> MachineContainerRunHookRpcRequest {
 fn inspect_hint(container_id: &str) -> ployz_core::operation::OperatorHint {
     ployz_core::operation::OperatorHint::try_new(format!("ployz container inspect {container_id}"))
         .expect("valid inspect hint")
+}
+
+fn log_hint(container_id: &str) -> ployz_core::operation::OperatorHint {
+    ployz_core::operation::OperatorHint::try_new(format!("ployzctl logs {container_id}"))
+        .expect("valid log hint")
 }
 
 fn managed_container_spec() -> ManagedContainerIdentity {

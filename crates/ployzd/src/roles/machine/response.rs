@@ -1,8 +1,5 @@
-use crate::roles::machine::protocol::{
-    MachineContainerRunDomainError, MachineContainerRunRpcResponse,
-};
 use crate::roles::machine::runner::MachineContainerRunnerError;
-use ployz_core::ids::{ContainerId, MachineId};
+use ployz_core::ids::ContainerId;
 use ployz_core::operation::{FailureMessage, OperatorHint};
 use ployz_nats::service_runtime::{NatsServiceError, NatsServiceResponse};
 
@@ -61,42 +58,6 @@ pub(crate) fn runner_error(error: MachineContainerRunnerError) -> NatsServiceRes
                 "volume remove failed: {message}"
             )))
         }
-    }
-}
-
-/// Map a start failure to the endpoint's domain error, parameterized by which
-/// start-failed variant (created vs existing) the caller is reporting.
-pub(crate) fn container_start_error(
-    machine_id: MachineId,
-    container_id: ContainerId,
-    error: MachineContainerRunnerError,
-    start_failed: impl FnOnce(
-        ContainerId,
-        FailureMessage,
-        OperatorHint,
-    ) -> MachineContainerRunDomainError,
-) -> NatsServiceResponse {
-    match error {
-        MachineContainerRunnerError::Start { message, .. } => {
-            machine_domain_error(MachineContainerRunRpcResponse::DomainError {
-                machine_id,
-                error: start_failed(
-                    container_id.clone(),
-                    failure_message(format!("container start failed: {message}")),
-                    inspect_hint(&container_id),
-                ),
-            })
-        }
-        error @ (MachineContainerRunnerError::ListExisting { .. }
-        | MachineContainerRunnerError::EnsureEndpointNetwork { .. }
-        | MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. }
-        | MachineContainerRunnerError::Create { .. }
-        | MachineContainerRunnerError::ImagePull { .. }
-        | MachineContainerRunnerError::Wait { .. }
-        | MachineContainerRunnerError::Stop { .. }
-        | MachineContainerRunnerError::Restart { .. }
-        | MachineContainerRunnerError::Remove { .. }
-        | MachineContainerRunnerError::RemoveVolume { .. }) => runner_error(error),
     }
 }
 
