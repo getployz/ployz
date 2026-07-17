@@ -1,9 +1,187 @@
 use std::pin::Pin;
 
 use super::*;
+use crate::control::operation_evidence::OperationRepository;
+use crate::control::sequencer::{
+    BuildSubmitCommand, MachineAddBootstrapConfig, OperationControllers,
+};
+use crate::control::store::CoreStore;
 use crate::roles::machine::protocol::MachineBuildLogFrame;
-use ployz_core::image::OciPlatform;
-use ployz_core::operation::BuildLogChunk;
+use crate::tasks::TaskRegistry;
+use ployz_core::build::{BuildAdapter, BuildCacheScope, BuildPlatforms, GitSource};
+use ployz_core::deploy::{ImageAvailabilityExpiresAt, PlatformImage};
+use ployz_core::image::{OciDigest, OciPlatform};
+use ployz_core::install::{DEFAULT_MACHINE_BOOTSTRAP_URL, MachineBootstrapUrl};
+use ployz_core::operation::{
+    BuildLogChunk, BuildOperationState, OperationEvent, OperationEventReplayRequest,
+};
+use ployz_test_support::ids::{event_replay_limit, event_sequence, machine_id, operation_id};
+
+#[tokio::test]
+async fn mixed_platform_failure_publishes_no_image_index() {
+    let nats = ployz_test_support::nats::TestNats::start().await;
+    let store = CoreStore::open_in_memory().await.expect("core store opens");
+    let repository = OperationRepository::open(store, nats.controller.clone());
+    let controllers = OperationControllers::new(
+        repository.clone(),
+        MachineAddBootstrapConfig::new(
+            MachineBootstrapUrl::try_new(DEFAULT_MACHINE_BOOTSTRAP_URL)
+                .expect("default bootstrap URL is valid"),
+        ),
+    );
+    let amd64 = OciPlatform::try_new("linux", "amd64").expect("amd64 platform");
+    let arm64 = OciPlatform::try_new("linux", "arm64").expect("arm64 platform");
+    let operation_id = operation_id("build_mixed_platform_failure");
+    let accepted = controllers
+        .submit_build(BuildSubmitCommand {
+            operation_id: operation_id.clone(),
+            source: GitSource::try_new(
+                "https://example.com/repository.git",
+                "0123456789abcdef0123456789abcdef01234567",
+                "git",
+                "private-token",
+                None::<String>,
+            )
+            .expect("valid git source"),
+            adapter: BuildAdapter::Railpack {
+                cache_scope: BuildCacheScope::try_new("mixed-platform").expect("valid cache scope"),
+            },
+            platforms: BuildPlatforms::try_new([amd64.clone(), arm64.clone()])
+                .expect("two platforms"),
+        })
+        .await
+        .expect("build submits");
+    repository
+        .record_build_transition(&operation_id, BuildTransition::Placing)
+        .await
+        .expect("record placement");
+    repository
+        .record_build_transition(&operation_id, BuildTransition::Building)
+        .await
+        .expect("record execution start");
+
+    let amd64_machine = machine_id("machine_amd64");
+    let arm64_machine = machine_id("machine_arm64");
+    let completed_image = PlatformImage {
+        seed: amd64_machine.clone(),
+        manifest_digest: OciDigest::try_new(format!("sha256:{}", "1".repeat(64)))
+            .expect("manifest digest"),
+        image_id: OciDigest::try_new(format!("sha256:{}", "2".repeat(64))).expect("image id"),
+        availability_expires_at: ImageAvailabilityExpiresAt::try_new(4_102_444_800)
+            .expect("availability expiry"),
+    };
+    let platform_failure = BuildPlatformFailure::AdapterFailed {
+        message: FailureMessage::try_new("railpack exited with status 1").expect("failure message"),
+    };
+    let operation_failure = BuildOperationFailure::PlatformFailed {
+        platform: arm64.clone(),
+        machine_id: arm64_machine.clone(),
+        failure: platform_failure.clone(),
+    };
+    repository
+        .record_build_evidence(
+            &operation_id,
+            BuildEvidence::PlatformCompleted {
+                platform: amd64.clone(),
+                machine_id: amd64_machine.clone(),
+                image: completed_image.clone(),
+            },
+        )
+        .await
+        .expect("record completed platform evidence");
+    repository
+        .record_build_evidence(
+            &operation_id,
+            BuildEvidence::PlatformFailed {
+                platform: arm64.clone(),
+                machine_id: arm64_machine.clone(),
+                failure: platform_failure.clone(),
+            },
+        )
+        .await
+        .expect("record failed platform evidence");
+
+    let tasks = TaskRegistry::default();
+    let driver = BuildOperationDriver::new(
+        nats.controller.clone(),
+        NatsMachineFactsReader::new(nats.controller.clone()),
+        NatsIntentReader::new(nats.controller.clone()),
+        controllers,
+        Duration::from_secs(30),
+        tasks.spawner(),
+    );
+    driver
+        .active
+        .start(operation_id.clone(), accepted.submission.start_sequence)
+        .await;
+    let result = driver
+        .finalize_joined_outcomes(
+            &operation_id,
+            vec![
+                Ok(PlatformOutcome::Completed {
+                    platform: amd64.clone(),
+                    image: completed_image.clone(),
+                }),
+                Ok(PlatformOutcome::Failed(operation_failure.clone())),
+            ],
+        )
+        .await;
+    driver.record_run_result(&operation_id, result).await;
+
+    let snapshot = repository
+        .operation_status_snapshot(&operation_id)
+        .await
+        .expect("read build status")
+        .expect("build status exists");
+    let OperationStatus::Build { state, .. } = &snapshot.status else {
+        panic!("submitted build projects build status");
+    };
+    assert_eq!(
+        state,
+        &BuildOperationState::Failed {
+            failure: operation_failure,
+        }
+    );
+    assert!(
+        !serde_json::to_string(&snapshot)
+            .expect("status serializes")
+            .contains("index_digest")
+    );
+
+    let replay = repository
+        .replay_operation_events(OperationEventReplayRequest {
+            operation_id,
+            start_sequence: event_sequence(1),
+            limit: event_replay_limit(20),
+        })
+        .await
+        .expect("replay build evidence");
+    assert!(replay.events.iter().any(|record| matches!(
+        &record.event,
+        OperationEvent::BuildPlatformCompleted { platform, machine_id, image, .. }
+            if platform == &amd64
+                && machine_id == &amd64_machine
+                && image == &completed_image
+    )));
+    assert!(replay.events.iter().any(|record| matches!(
+        &record.event,
+        OperationEvent::BuildPlatformFailed { platform, machine_id, failure, .. }
+            if platform == &arm64
+                && machine_id == &arm64_machine
+                && failure == &platform_failure
+    )));
+    assert!(
+        !replay
+            .events
+            .iter()
+            .any(|record| matches!(record.event, OperationEvent::BuildCompleted { .. }))
+    );
+    assert!(
+        !serde_json::to_string(&replay)
+            .expect("replay serializes")
+            .contains("index_digest")
+    );
+}
 
 #[tokio::test(start_paused = true)]
 async fn placement_deadline_is_a_typed_control_failure() {
