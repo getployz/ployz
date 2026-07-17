@@ -30,6 +30,12 @@ pub(crate) enum HookContainerRunError {
     Runner(MachineContainerRunnerError),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServiceContainerStart {
+    Created,
+    Existing,
+}
+
 pub(crate) async fn run_service_container<R>(
     runner: &R,
     command: CreateManagedContainer,
@@ -41,26 +47,11 @@ where
         .existing_managed_containers()
         .await
         .map_err(ServiceContainerRunError::Runner)?;
-    let CreateManagedContainer {
-        pull,
-        runtime,
-        provisioned_volumes,
-        identity,
-    } = command;
-
-    match decide_container_run(&identity, existing) {
-        MachineContainerRunDecision::Create { identity } => {
-            let service_id = identity.service_id.clone();
-            let namespace_revision_entry_id = identity.namespace_revision_entry_id.clone();
-            let container_id = match runner
-                .create_managed_container(CreateManagedContainer {
-                    pull,
-                    runtime,
-                    provisioned_volumes,
-                    identity,
-                })
-                .await
-            {
+    match decide_container_run(&command.identity, existing) {
+        MachineContainerRunDecision::Create => {
+            let service_id = command.identity.service_id.clone();
+            let namespace_revision_entry_id = command.identity.namespace_revision_entry_id.clone();
+            let container_id = match runner.create_managed_container(command).await {
                 Ok(container_id) => container_id,
                 Err(MachineContainerRunnerError::ImagePull { message }) => {
                     return Err(ServiceContainerRunError::Domain(
@@ -85,59 +76,13 @@ where
                 }
             };
 
-            match runner.start_managed_container(&container_id).await {
-                Ok(()) => Ok(MachineRunContainerOutcome::Created { container_id }),
-                Err(MachineContainerRunnerError::Start { message, .. }) => {
-                    Err(ServiceContainerRunError::Domain(
-                        MachineContainerRunDomainError::CreatedContainerStartFailed {
-                            container_id: container_id.clone(),
-                            message: failure_message(format!("container start failed: {message}")),
-                            inspect_hint: inspect_hint(&container_id),
-                        },
-                    ))
-                }
-                Err(error @ MachineContainerRunnerError::ListExisting { .. })
-                | Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. })
-                | Err(error @ MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. })
-                | Err(error @ MachineContainerRunnerError::Create { .. })
-                | Err(error @ MachineContainerRunnerError::ImagePull { .. })
-                | Err(error @ MachineContainerRunnerError::Wait { .. })
-                | Err(error @ MachineContainerRunnerError::Stop { .. })
-                | Err(error @ MachineContainerRunnerError::Restart { .. })
-                | Err(error @ MachineContainerRunnerError::Remove { .. })
-                | Err(error @ MachineContainerRunnerError::RemoveVolume { .. }) => {
-                    Err(ServiceContainerRunError::Runner(error))
-                }
-            }
+            start_service_container(runner, container_id, ServiceContainerStart::Created).await
         }
         MachineContainerRunDecision::ReuseRunning { container_id } => {
             Ok(MachineRunContainerOutcome::ReusedRunning { container_id })
         }
         MachineContainerRunDecision::StartExisting { container_id } => {
-            match runner.start_managed_container(&container_id).await {
-                Ok(()) => Ok(MachineRunContainerOutcome::StartedExisting { container_id }),
-                Err(MachineContainerRunnerError::Start { message, .. }) => {
-                    Err(ServiceContainerRunError::Domain(
-                        MachineContainerRunDomainError::ExistingContainerStartFailed {
-                            container_id: container_id.clone(),
-                            message: failure_message(format!("container start failed: {message}")),
-                            inspect_hint: inspect_hint(&container_id),
-                        },
-                    ))
-                }
-                Err(error @ MachineContainerRunnerError::ListExisting { .. })
-                | Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. })
-                | Err(error @ MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. })
-                | Err(error @ MachineContainerRunnerError::Create { .. })
-                | Err(error @ MachineContainerRunnerError::ImagePull { .. })
-                | Err(error @ MachineContainerRunnerError::Wait { .. })
-                | Err(error @ MachineContainerRunnerError::Stop { .. })
-                | Err(error @ MachineContainerRunnerError::Restart { .. })
-                | Err(error @ MachineContainerRunnerError::Remove { .. })
-                | Err(error @ MachineContainerRunnerError::RemoveVolume { .. }) => {
-                    Err(ServiceContainerRunError::Runner(error))
-                }
-            }
+            start_service_container(runner, container_id, ServiceContainerStart::Existing).await
         }
         MachineContainerRunDecision::NotStartable {
             container_id,
@@ -177,25 +122,11 @@ where
         .existing_managed_containers()
         .await
         .map_err(HookContainerRunError::Runner)?;
-    let CreateManagedContainer {
-        pull,
-        runtime,
-        provisioned_volumes,
-        identity,
-    } = command;
-    let expected_identity = identity.clone();
+    let expected_identity = command.identity.clone();
 
-    let container_id = match decide_container_run(&identity, existing) {
-        MachineContainerRunDecision::Create { identity } => {
-            let container_id = match runner
-                .create_managed_container(CreateManagedContainer {
-                    pull,
-                    runtime,
-                    provisioned_volumes,
-                    identity,
-                })
-                .await
-            {
+    let container_id = match decide_container_run(&command.identity, existing) {
+        MachineContainerRunDecision::Create => {
+            let container_id = match runner.create_managed_container(command).await {
                 Ok(container_id) => container_id,
                 Err(MachineContainerRunnerError::Create { message }) => {
                     return Err(HookContainerRunError::Domain(
@@ -313,6 +244,56 @@ where
     })
 }
 
+async fn start_service_container<R>(
+    runner: &R,
+    container_id: ContainerId,
+    start: ServiceContainerStart,
+) -> Result<MachineRunContainerOutcome, ServiceContainerRunError>
+where
+    R: MachineContainerRunner,
+{
+    match runner.start_managed_container(&container_id).await {
+        Ok(()) => Ok(match start {
+            ServiceContainerStart::Created => MachineRunContainerOutcome::Created { container_id },
+            ServiceContainerStart::Existing => {
+                MachineRunContainerOutcome::StartedExisting { container_id }
+            }
+        }),
+        Err(MachineContainerRunnerError::Start { message, .. }) => {
+            let message = failure_message(format!("container start failed: {message}"));
+            let inspect_hint = inspect_hint(&container_id);
+            Err(ServiceContainerRunError::Domain(match start {
+                ServiceContainerStart::Created => {
+                    MachineContainerRunDomainError::CreatedContainerStartFailed {
+                        container_id,
+                        message,
+                        inspect_hint,
+                    }
+                }
+                ServiceContainerStart::Existing => {
+                    MachineContainerRunDomainError::ExistingContainerStartFailed {
+                        container_id,
+                        message,
+                        inspect_hint,
+                    }
+                }
+            }))
+        }
+        Err(error @ MachineContainerRunnerError::ListExisting { .. })
+        | Err(error @ MachineContainerRunnerError::EnsureEndpointNetwork { .. })
+        | Err(error @ MachineContainerRunnerError::EndpointNetworkSubnetMismatch { .. })
+        | Err(error @ MachineContainerRunnerError::Create { .. })
+        | Err(error @ MachineContainerRunnerError::ImagePull { .. })
+        | Err(error @ MachineContainerRunnerError::Wait { .. })
+        | Err(error @ MachineContainerRunnerError::Stop { .. })
+        | Err(error @ MachineContainerRunnerError::Restart { .. })
+        | Err(error @ MachineContainerRunnerError::Remove { .. })
+        | Err(error @ MachineContainerRunnerError::RemoveVolume { .. }) => {
+            Err(ServiceContainerRunError::Runner(error))
+        }
+    }
+}
+
 async fn start_hook_container<R>(
     runner: &R,
     container_id: ContainerId,
@@ -346,9 +327,7 @@ where
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum MachineContainerRunDecision {
-    Create {
-        identity: ManagedContainerIdentity,
-    },
+    Create,
     ReuseRunning {
         container_id: ContainerId,
     },
@@ -376,9 +355,7 @@ fn decide_container_run(
         .filter(|container| container.identity == *expected);
 
     let Some(first) = matches.next() else {
-        return MachineContainerRunDecision::Create {
-            identity: expected.clone(),
-        };
+        return MachineContainerRunDecision::Create;
     };
 
     let rest = matches.collect::<Vec<_>>();

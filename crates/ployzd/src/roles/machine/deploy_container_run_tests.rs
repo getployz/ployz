@@ -33,7 +33,7 @@ fn same_operation_step_with_different_service_creates_container() {
             &expected,
             [existing_container("ctr_existing", sibling_service)]
         ),
-        MachineContainerRunDecision::Create { identity: expected }
+        MachineContainerRunDecision::Create
     );
 }
 
@@ -44,7 +44,7 @@ fn different_step_does_not_reuse_container() {
 
     assert_eq!(
         decide_container_run(&expected, [existing_container("ctr_other", other_step)]),
-        MachineContainerRunDecision::Create { identity: expected }
+        MachineContainerRunDecision::Create
     );
 }
 
