@@ -552,9 +552,11 @@ impl DeployExecutionError {
                     message: failure_message("planning input names a service outside the deploy"),
                 }
             }
-            Self::Plan(DeployPlanError::NoEligibleMachines) => {
+            Self::Plan(DeployPlanError::NoEligibleMachines { service_id }) => {
                 DeployOperationFailure::NoUsableMachines {
-                    reasons: command.unusable_machines.clone(),
+                    reasons: command
+                        .unusable_machines_for_service(service_id)
+                        .unwrap_or_else(|| command.unusable_machines.clone()),
                 }
             }
             Self::Plan(DeployPlanError::ConflictingVolumePins { .. }) => {

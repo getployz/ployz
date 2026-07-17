@@ -484,7 +484,9 @@ fn service_keep_breaks_created_time_ties_deterministically_after_excluding_selec
 fn deploy_plan_requires_eligible_machine() {
     assert_eq!(
         plan_single_service(&planning_input(1, [])),
-        Err(DeployPlanError::NoEligibleMachines)
+        Err(DeployPlanError::NoEligibleMachines {
+            service_id: service_id("svc_api"),
+        })
     );
 }
 
@@ -525,6 +527,7 @@ fn deploy_preparation_rejects_a_service_id_outside_the_validated_request() {
                 service_id: service_id("svc_foreign"),
                 occupied_route_bindings: Vec::new(),
                 eligible_machines: Vec::new(),
+                machine_platforms: BTreeMap::new(),
                 draining_machines: Vec::new(),
                 observed_machines: Vec::new(),
                 existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
@@ -958,7 +961,9 @@ fn volume_backed_service_fails_when_existing_pin_is_not_eligible() {
 
     assert_eq!(
         plan_single_service(&input),
-        Err(DeployPlanError::NoEligibleMachines)
+        Err(DeployPlanError::NoEligibleMachines {
+            service_id: service_id("svc_api"),
+        })
     );
 }
 
@@ -1157,6 +1162,7 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
             service_id: request.service_id.clone(),
             occupied_route_bindings: Vec::new(),
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+            machine_platforms: BTreeMap::new(),
             draining_machines: Vec::new(),
             observed_machines: vec![observed_machine(
                 "machine_b",
@@ -1223,6 +1229,74 @@ fn deploy_preparation_uses_active_revision_and_running_target_replicas() {
 }
 
 #[test]
+fn deploy_preparation_applies_receipt_platforms_to_candidates_and_reusable_replicas_once() {
+    let amd64 = OciPlatform::try_new("linux", "amd64").expect("platform");
+    let arm64 = OciPlatform::try_new("linux", "arm64").expect("platform");
+    let mut request = deploy_request(1);
+    request.image_source = pushed_image_source([('a', "amd64", "machine_seed")], 4_000_000_000);
+    let ImageSource::PushedToSeed(receipt) = &request.image_source else {
+        panic!("pushed fixture");
+    };
+    request.image = request
+        .image
+        .clone()
+        .with_digest(receipt.index_digest())
+        .expect("pinned image");
+    let entry_id = request.namespace_revision_entry_id(&namespace_id("default"));
+    let normalized = normalized_services(vec![request.clone()], BTreeMap::new());
+
+    let prepared = prepare_deploy(
+        DeployPreparationInput {
+            request: &normalized,
+            service_id: request.service_id,
+            occupied_route_bindings: Vec::new(),
+            eligible_machines: vec![machine_id("machine_arm")],
+            machine_platforms: BTreeMap::from([
+                (machine_id("machine_arm"), arm64.clone()),
+                (machine_id("machine_existing"), amd64),
+            ]),
+            draining_machines: Vec::new(),
+            observed_machines: vec![observed_machine(
+                "machine_existing",
+                [observed_container(
+                    "machine_existing",
+                    "ctr_existing",
+                    "svc_api",
+                    entry_id.as_str(),
+                    ManagedContainerKind::Service,
+                    ContainerRuntimeState::running_unroutable(),
+                )],
+            )],
+            existing_replica_policy: ExistingReplicaPolicy::Promoted {
+                interrupted_operation_ids: BTreeSet::new(),
+            },
+        },
+        route_binding_id_for,
+    )
+    .expect("deploy preparation");
+
+    assert!(prepared.eligible_machines.is_empty());
+    assert_eq!(
+        prepared
+            .existing_replicas
+            .iter()
+            .map(|replica| replica.machine_id.clone())
+            .collect::<Vec<_>>(),
+        [machine_id("machine_existing")]
+    );
+    assert!(matches!(
+        prepared.unusable_machines.as_slice(),
+        [ployz_core::operation::UnusableMachine {
+            machine_id: actual_machine,
+            reason: ployz_core::machine::MachineUsabilityReason::PlatformMismatch {
+                reported,
+                ..
+            },
+        }] if actual_machine == &machine_id("machine_arm") && reported == &arm64
+    ));
+}
+
+#[test]
 fn deploy_preparation_marks_interrupted_replicas_for_creation_gating() {
     let request = deploy_request(2);
     let entry_id = request.namespace_revision_entry_id(&namespace_id("default"));
@@ -1233,6 +1307,7 @@ fn deploy_preparation_marks_interrupted_replicas_for_creation_gating() {
             service_id: request.service_id.clone(),
             occupied_route_bindings: Vec::new(),
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+            machine_platforms: BTreeMap::new(),
             draining_machines: Vec::new(),
             observed_machines: vec![observed_machine(
                 "machine_b",
@@ -1292,6 +1367,7 @@ fn promoted_entry_still_gates_replica_from_interrupted_provenance() {
             service_id: request.service_id,
             occupied_route_bindings: Vec::new(),
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+            machine_platforms: BTreeMap::new(),
             draining_machines: Vec::new(),
             observed_machines: vec![
                 observed_machine("machine_a", [completed]),
@@ -1332,6 +1408,7 @@ fn deploy_preparation_evacuates_draining_machine_replicas() {
             service_id: request.service_id.clone(),
             occupied_route_bindings: Vec::new(),
             eligible_machines: vec![machine_id("machine_a")],
+            machine_platforms: BTreeMap::new(),
             draining_machines: vec![machine_id("machine_b")],
             observed_machines: vec![observed_machine(
                 "machine_b",
@@ -1399,6 +1476,7 @@ fn routed_deploy_preparation_reuses_matching_identity_regardless_of_endpoint_por
             service_id: request.service_id.clone(),
             occupied_route_bindings: Vec::new(),
             eligible_machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+            machine_platforms: BTreeMap::new(),
             draining_machines: Vec::new(),
             observed_machines: vec![observed_machine(
                 "machine_b",
@@ -1456,6 +1534,7 @@ fn deploy_preparation_commits_multiple_routes_per_service() {
             service_id: request.service_id.clone(),
             occupied_route_bindings: Vec::new(),
             eligible_machines: vec![machine_id("machine_a")],
+            machine_platforms: BTreeMap::new(),
             draining_machines: Vec::new(),
             observed_machines: Vec::new(),
             existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
@@ -1501,6 +1580,7 @@ fn declared_route_reroute_reuses_the_binding_identity_and_updates_endpoint_port(
             service_id: request.service_id.clone(),
             occupied_route_bindings: vec![existing],
             eligible_machines: Vec::new(),
+            machine_platforms: BTreeMap::new(),
             draining_machines: Vec::new(),
             observed_machines: Vec::new(),
             existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
@@ -1535,6 +1615,7 @@ fn declared_route_rejects_duplicate_target_regardless_of_endpoint_port() {
                 service_id: request.service_id.clone(),
                 occupied_route_bindings: Vec::new(),
                 eligible_machines: Vec::new(),
+                machine_platforms: BTreeMap::new(),
                 draining_machines: Vec::new(),
                 observed_machines: Vec::new(),
                 existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
@@ -1574,6 +1655,7 @@ fn declared_route_reroute_rejects_other_owners_and_automatic_bindings() {
                 service_id: request.service_id.clone(),
                 occupied_route_bindings: vec![occupied],
                 eligible_machines: Vec::new(),
+                machine_platforms: BTreeMap::new(),
                 draining_machines: Vec::new(),
                 observed_machines: Vec::new(),
                 existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
@@ -1655,6 +1737,7 @@ fn deploy_preparation_updates_endpoint_port_without_container_plan_changes() {
             service_id: request.service_id.clone(),
             occupied_route_bindings: Vec::new(),
             eligible_machines: Vec::new(),
+            machine_platforms: BTreeMap::new(),
             draining_machines: Vec::new(),
             observed_machines: Vec::new(),
             existing_replica_policy: ExistingReplicaPolicy::ExcludeUnpromoted,
@@ -1885,6 +1968,7 @@ fn deploy_preparation_ignores_same_service_id_in_other_namespace() {
             service_id: request.service_id.clone(),
             occupied_route_bindings: Vec::new(),
             eligible_machines: vec![machine_id("machine_a")],
+            machine_platforms: BTreeMap::new(),
             draining_machines: Vec::new(),
             observed_machines: vec![observed_machine("machine_a", [foreign])],
             existing_replica_policy: ExistingReplicaPolicy::Promoted {

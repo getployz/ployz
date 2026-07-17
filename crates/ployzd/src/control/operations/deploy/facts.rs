@@ -9,8 +9,8 @@ use crate::control::intent::service::NatsIntentReader;
 use crate::control::role_client::machine::{NatsMachineFactsReader, read_machine_placement_facts};
 use crate::control::role_client::machine_convergence::gather_dataplane_statuses;
 use ployz_core::deploy::{
-    AutoHostnameRouteBindingError, DeployRouteBindingValidationError, DeployRouteTarget,
-    VolumeDeclaredDeployRequest,
+    AutoHostnameRouteBindingError, DeployPlanningTarget, DeployRouteBindingValidationError,
+    DeployRouteTarget, VolumeDeclaredDeployPreviewTarget, VolumeDeclaredDeployRequest,
 };
 use ployz_core::ids::MachineId;
 use ployz_core::ingress::{AutomaticHostnameConfiguration, IngressConfiguration};
@@ -34,8 +34,46 @@ pub async fn load_deploy_execution_facts_from_nats(
     projection_store: &IngressProjectionStore,
     step_timeout: Duration,
 ) -> Result<DeployExecutionFacts, DeployFactLoadError> {
+    load_planning_facts_from_nats(
+        DeployPlanningTarget::Deploy(request),
+        intent_reader,
+        facts_reader,
+        target_store,
+        projection_store,
+        step_timeout,
+    )
+    .await
+}
+
+pub async fn load_deploy_preview_facts_from_nats(
+    target: &VolumeDeclaredDeployPreviewTarget,
+    intent_reader: &NatsIntentReader,
+    facts_reader: &NatsMachineFactsReader,
+    target_store: &PloyzDnsTargetStore,
+    projection_store: &IngressProjectionStore,
+    step_timeout: Duration,
+) -> Result<DeployExecutionFacts, DeployFactLoadError> {
+    load_planning_facts_from_nats(
+        DeployPlanningTarget::Preview(target),
+        intent_reader,
+        facts_reader,
+        target_store,
+        projection_store,
+        step_timeout,
+    )
+    .await
+}
+
+async fn load_planning_facts_from_nats(
+    target: DeployPlanningTarget<'_>,
+    intent_reader: &NatsIntentReader,
+    facts_reader: &NatsMachineFactsReader,
+    target_store: &PloyzDnsTargetStore,
+    projection_store: &IngressProjectionStore,
+    step_timeout: Duration,
+) -> Result<DeployExecutionFacts, DeployFactLoadError> {
     let intent = read_intent(intent_reader).await?;
-    let allocation = if has_auto_hostname_service(request)
+    let allocation = if has_auto_hostname_service(target)
         && matches!(
             &intent.automatic_hostname_configuration,
             AutomaticHostnameConfiguration::Ployz
@@ -50,7 +88,7 @@ pub async fn load_deploy_execution_facts_from_nats(
         None
     };
     let automatic_hostname_mode = resolve_automatic_hostname_mode(
-        request,
+        target,
         Some(&intent.automatic_hostname_configuration),
         allocation.as_ref(),
     )?;
@@ -66,7 +104,7 @@ pub async fn load_deploy_execution_facts_from_nats(
     };
     let projection = intent.dataplane_projection.clone();
     deploy_execution_facts(
-        request,
+        target,
         facts_reader,
         intent,
         projection,
@@ -78,11 +116,11 @@ pub async fn load_deploy_execution_facts_from_nats(
 }
 
 fn resolve_automatic_hostname_mode(
-    request: &VolumeDeclaredDeployRequest,
+    target: DeployPlanningTarget<'_>,
     configuration: Option<&AutomaticHostnameConfiguration>,
     allocation: Option<&PloyzDnsTargetAllocation>,
 ) -> Result<AutomaticHostnameMode, DeployFactLoadError> {
-    if !has_auto_hostname_service(request) {
+    if !has_auto_hostname_service(target) {
         return Ok(AutomaticHostnameMode::Disabled);
     }
     let Some(configuration) = configuration else {
@@ -117,10 +155,10 @@ fn resolve_automatic_hostname_mode(
     }
 }
 
-fn has_auto_hostname_service(request: &VolumeDeclaredDeployRequest) -> bool {
-    request.services().iter().any(|service| {
+fn has_auto_hostname_service(target: DeployPlanningTarget<'_>) -> bool {
+    target.services().into_iter().any(|service| {
         service
-            .routes
+            .routes()
             .iter()
             .any(|route| matches!(route.target, DeployRouteTarget::AutoHostname { .. }))
     })
@@ -139,7 +177,7 @@ pub async fn validate_deploy_route_admission(
             .map_err(|error| DeployFactLoadError::IngressState {
                 message: error.to_string(),
             })?;
-    let allocation = if has_auto_hostname_service(request)
+    let allocation = if has_auto_hostname_service(DeployPlanningTarget::Deploy(request))
         && configuration.as_ref().is_some_and(|configuration| {
             matches!(
                 configuration.automatic_hostnames(),
@@ -156,7 +194,7 @@ pub async fn validate_deploy_route_admission(
         None
     };
     let automatic_hostname_mode = resolve_automatic_hostname_mode(
-        request,
+        DeployPlanningTarget::Deploy(request),
         configuration
             .as_ref()
             .map(IngressConfiguration::automatic_hostnames),
@@ -169,7 +207,11 @@ pub async fn validate_deploy_route_admission(
             message: error.to_string(),
         })?
         .route_bindings;
-    validate_route_bindings(request, automatic_hostname_mode.suffix(), &existing)
+    validate_route_bindings(
+        DeployPlanningTarget::Deploy(request),
+        automatic_hostname_mode.suffix(),
+        &existing,
+    )
 }
 
 async fn read_intent(
@@ -184,7 +226,7 @@ async fn read_intent(
 }
 
 async fn deploy_execution_facts(
-    request: &VolumeDeclaredDeployRequest,
+    target: DeployPlanningTarget<'_>,
     facts_reader: &NatsMachineFactsReader,
     intent: IntentSnapshot,
     projection: DataplaneProjection,
@@ -201,12 +243,12 @@ async fn deploy_execution_facts(
     let namespace_serving_entries = intent
         .serving_target_entries
         .into_iter()
-        .filter(|entry| entry.namespace_id == *request.namespace_id())
+        .filter(|entry| entry.namespace_id == *target.namespace_id())
         .collect::<Vec<_>>();
     let namespace_volume_pins = intent
         .volume_pins
         .into_iter()
-        .filter(|pin| pin.namespace_id() == request.namespace_id())
+        .filter(|pin| pin.namespace_id() == target.namespace_id())
         .collect::<Vec<_>>();
     let placement_facts = read_machine_placement_facts(facts_reader, machine_lifecycles).await;
     let dataplane_statuses = gather_dataplane_statuses(
@@ -255,7 +297,7 @@ async fn deploy_execution_facts(
                 .map(|answer| (facts.machine_id.clone(), answer.storage.clone()))
         })
         .collect();
-    let dataplane_members = operation_dataplane_members(request, &active_machines);
+    let dataplane_members = operation_dataplane_members(target, &active_machines);
     let gateway_certificate_targets =
         gateway_certificate_targets(&active_machines, &placement_facts);
     let ployz_gateway_certificate_targets = gateway_certificate_targets
@@ -264,9 +306,9 @@ async fn deploy_execution_facts(
         .cloned()
         .collect();
     let namespace_cleanup_candidates =
-        namespace_cleanup_candidates(request.namespace_id(), &observed_machines);
+        namespace_cleanup_candidates(target.namespace_id(), &observed_machines);
     validate_route_bindings(
-        request,
+        target,
         automatic_hostname_mode.suffix(),
         &namespace_route_bindings,
     )?;
@@ -290,30 +332,44 @@ async fn deploy_execution_facts(
 }
 
 fn validate_route_bindings(
-    request: &VolumeDeclaredDeployRequest,
+    target: DeployPlanningTarget<'_>,
     automatic_hostname_suffix: Option<&RouteHostname>,
     existing: &[ployz_core::intent::RouteBindingState],
 ) -> Result<(), DeployFactLoadError> {
-    ployz_core::deploy::validate_deploy_route_bindings(
-        request,
-        automatic_hostname_suffix,
-        existing,
-        mint_route_binding_id,
-    )
+    match target {
+        DeployPlanningTarget::Deploy(request) => {
+            ployz_core::deploy::validate_deploy_route_bindings(
+                request,
+                automatic_hostname_suffix,
+                existing,
+                mint_route_binding_id,
+            )
+        }
+        DeployPlanningTarget::Preview(target) => {
+            ployz_core::deploy::validate_deploy_preview_route_bindings(
+                target,
+                automatic_hostname_suffix,
+                existing,
+                mint_route_binding_id,
+            )
+        }
+    }
     .map(|_| ())
     .map_err(|failure| DeployFactLoadError::InvalidRouteBindings { failure })
 }
 
 fn operation_dataplane_members(
-    request: &VolumeDeclaredDeployRequest,
+    target: DeployPlanningTarget<'_>,
     active_machines: &[ActiveMachineState],
 ) -> Vec<DataplaneMember> {
-    let needs_membership = request.services().iter().any(|service| {
-        !service.routes.is_empty()
-            || matches!(
-                &service.image_source,
-                ployz_core::deploy::ImageSource::PushedToSeed(_)
-            )
+    let needs_membership = target.services().into_iter().any(|service| {
+        !service.routes().is_empty()
+            || service.concrete_image().is_some_and(|(_, image_source)| {
+                matches!(
+                    image_source,
+                    ployz_core::deploy::ImageSource::PushedToSeed(_)
+                )
+            })
     });
     if !needs_membership {
         return Vec::new();

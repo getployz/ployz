@@ -24,8 +24,9 @@ use crate::service_catalog::machine_role_service;
 use crate::tests::support::machine_runtime::{ObservingContainerRunner, ReadyWireGuardEbpf};
 use futures_util::StreamExt;
 use ployz_core::deploy::{
-    DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageReference,
-    RegistryCredential, ReplicaCount, VolumeName,
+    DeployRequest, DeployRoute, DeployRouteTarget, DeployServiceSpec, ImageAvailabilityExpiresAt,
+    ImageReference, ImageSource, PlatformImage, PushedImageReceipt, RegistryCredential,
+    ReplicaCount, VolumeName,
 };
 use ployz_core::ids::{MachineId, RouteBindingId};
 use ployz_core::image::OciDigest;
@@ -845,26 +846,6 @@ async fn deploy_preview_returns_pending_service_platforms_without_runtime_effect
             .collect::<Vec<_>>(),
         [ployz_core::image::OciPlatform::current()]
     );
-    let mut duplicate_service_target = pending_preview_target(deploy_target("svc_api"));
-    let [service] = duplicate_service_target.services.as_slice() else {
-        panic!("preview target fixture has one service");
-    };
-    duplicate_service_target.services.push(service.clone());
-    let duplicate_error = nats
-        .api()
-        .deploy_preview(&DeployPreviewRequest {
-            target: duplicate_service_target,
-        })
-        .await
-        .expect_err("route admission rejects duplicate service ids");
-    assert!(matches!(
-        duplicate_error,
-        OperationApiClientError::Domain {
-            error: ployz_sdk_types::DeployPreviewError::InvalidTarget { message },
-            ..
-        }
-            if message.as_str().contains("declared more than once")
-    ));
     assert!(runner.snapshot().containers().is_empty());
     assert_eq!(
         nats.api()
@@ -882,6 +863,103 @@ async fn deploy_preview_returns_pending_service_platforms_without_runtime_effect
         .shutdown()
         .await
         .expect("machine runtime shuts down");
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn deploy_preview_rejects_an_expired_concrete_receipt_without_runtime_effects() {
+    let machine = machine_id("machine_a");
+    let nats = TestNats::start_with_machines(std::slice::from_ref(&machine)).await;
+    let config = nats
+        .control_config()
+        .with_deploy_machines(vec![machine.clone()])
+        .with_deploy_step_timeout(Duration::from_secs(2));
+    let machine_roster = machine_roster(&config).await;
+    let runtime = nats.start_control(&config).await;
+    machine_roster
+        .replace_active_machine(&active_machine(machine.as_str()))
+        .await
+        .expect("active machine stores");
+    let runner = ObservingContainerRunner::new(machine.clone());
+    let machine_runtime = start_machine_role_runtime(
+        nats.machine_client(&machine).await,
+        machine.clone(),
+        runner.clone(),
+        ReadyWireGuardEbpf::for_machine(&machine),
+        runner.clone(),
+    )
+    .await
+    .expect("machine runtime starts");
+    wait_for_dataplane_projection(&nats, &machine).await;
+
+    let error = nats
+        .api()
+        .deploy_preview(&DeployPreviewRequest {
+            target: concrete_pushed_preview_target(
+                deploy_target("svc_api"),
+                machine,
+                ImageAvailabilityExpiresAt::try_new(1).expect("expired timestamp"),
+            ),
+        })
+        .await
+        .expect_err("expired receipt is rejected");
+
+    assert!(matches!(
+        error,
+        OperationApiClientError::Domain {
+            error: ployz_sdk_types::DeployPreviewError::PlanningFailed { message, .. },
+            ..
+        } if message.as_str().contains("PlatformImageExpired")
+    ));
+    assert!(runner.snapshot().containers().is_empty());
+    assert!(
+        nats.api()
+            .ops_list(&OpsListRequest {
+                active_only: false,
+                before: None,
+            })
+            .await
+            .expect("operations list reads")
+            .operations
+            .is_empty()
+    );
+
+    machine_runtime
+        .shutdown()
+        .await
+        .expect("machine runtime shuts down");
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
+async fn deploy_preview_rejects_duplicate_service_ids() {
+    let nats = TestNats::start().await;
+    let runtime = nats.start_control(&nats.control_config()).await;
+    let mut target = pending_preview_target(deploy_target("svc_api"));
+    let [service] = target.services.as_slice() else {
+        panic!("preview target fixture has one service");
+    };
+    target.services.push(service.clone());
+
+    let error = nats
+        .api()
+        .deploy_preview(&DeployPreviewRequest { target })
+        .await
+        .expect_err("duplicate service ids are rejected");
+
+    assert!(matches!(
+        error,
+        OperationApiClientError::Domain {
+            error: ployz_sdk_types::DeployPreviewError::InvalidTarget { message },
+            ..
+        } if message.as_str().contains("declared more than once")
+    ));
     runtime
         .shutdown()
         .await
@@ -1471,6 +1549,54 @@ fn pending_preview_target(target: DeployRequest) -> DeployPreviewTarget {
         services: vec![DeployPreviewService {
             service_id: service.service_id.clone(),
             image: DeployPreviewImage::PendingBuild,
+            replicas: service.replicas,
+            keep: service.keep,
+            runtime: service.runtime.clone(),
+            pre_start: service.pre_start.clone(),
+            depends_on: service.depends_on.clone(),
+            routes: service.routes.clone(),
+        }],
+    }
+}
+
+fn concrete_pushed_preview_target(
+    target: DeployRequest,
+    seed: MachineId,
+    availability_expires_at: ImageAvailabilityExpiresAt,
+) -> DeployPreviewTarget {
+    let DeployRequest {
+        namespace_id,
+        origin,
+        volumes,
+        services,
+    } = target;
+    let [service] = services.as_slice() else {
+        panic!("deploy target fixture has one service");
+    };
+    let receipt = PushedImageReceipt::try_new([(
+        ployz_core::image::OciPlatform::current(),
+        PlatformImage {
+            seed,
+            manifest_digest: OciDigest::sha256(b"preview manifest"),
+            image_id: OciDigest::sha256(b"preview image"),
+            availability_expires_at,
+        },
+    )])
+    .expect("pushed receipt");
+    let image = ImageReference::try_new("local/preview:build")
+        .expect("image")
+        .with_digest(receipt.index_digest())
+        .expect("pinned image");
+    DeployPreviewTarget {
+        namespace_id,
+        origin,
+        volumes,
+        services: vec![DeployPreviewService {
+            service_id: service.service_id.clone(),
+            image: DeployPreviewImage::Concrete {
+                image,
+                image_source: ImageSource::PushedToSeed(receipt),
+            },
             replicas: service.replicas,
             keep: service.keep,
             runtime: service.runtime.clone(),

@@ -911,6 +911,10 @@ pub fn operation_contract_fixture() -> Value {
                     volume_pins: Vec::new(),
                     volume_preparations: Vec::new(),
                     cleanup_candidates: Vec::new(),
+                    route_binding_commits: Vec::new(),
+                    route_binding_removals: Vec::new(),
+                    serving_target_commits: Vec::new(),
+                    serving_target_removals: Vec::new(),
                 },
                 build_platform_requirements: std::collections::BTreeMap::from([(
                     service_id("svc_api"),

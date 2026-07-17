@@ -155,7 +155,7 @@ pub enum DeploySubmitError {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn authoritative_deploy_rejects_pending_build_input() {
+    fn authoritative_deploy_rejects_unknown_pending_builds_field() {
         let request = super::DeploySubmitRequest {
             idempotency_key: ployz_core::operation::OperationIdempotencyKey::try_new(
                 "idem_preview",

@@ -511,6 +511,9 @@ fn deploy_request_requires_a_declaration_for_every_mounted_volume() {
     let error =
         VolumeDeclaredDeployRequest::try_new(request).expect_err("undeclared mount is invalid");
 
+    let ployz_core::deploy::DeployTargetValidationError::UndeclaredVolume(error) = error else {
+        panic!("expected undeclared volume error");
+    };
     assert_eq!(error.service_id, service_id("svc_api"));
     assert_eq!(error.volume_name, volume_name("data"));
 }
@@ -521,6 +524,9 @@ fn planner_service_constructor_rejects_an_undeclared_mount() {
     let error = VolumeDeclaredDeployRequest::try_new(request)
         .expect_err("planner views are unavailable for an undeclared mount");
 
+    let ployz_core::deploy::DeployTargetValidationError::UndeclaredVolume(error) = error else {
+        panic!("expected undeclared volume error");
+    };
     assert_eq!(error.service_id, service_id("svc_api"));
     assert_eq!(error.volume_name, volume_name("data"));
 }

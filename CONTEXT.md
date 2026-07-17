@@ -380,10 +380,6 @@ _Avoid_: Garbage, orphan
 Explicit removal of runtime material that is outside the desired namespace revision. Cleanup happens after service phases in a deploy or through another named operation, not through a hidden background reconciler.
 _Avoid_: Garbage collection
 
-**Deploy Plan**:
-The phase-ordered changes computed to move a namespace from runtime state to a namespace revision. A deploy plan is produced for an attempt; it is not durable desired state.
-_Avoid_: Workflow definition
-
 **Service**:
 A named workload inside a namespace. A service's desired definition belongs to a namespace revision, and its runtime presence is one or more service containers.
 _Avoid_: Cluster-global service

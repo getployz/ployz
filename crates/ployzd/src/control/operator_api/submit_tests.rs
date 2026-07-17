@@ -52,7 +52,7 @@ fn deploy_admission_rejects_ids_that_cannot_form_internal_dns_labels() {
     let namespace_id = NamespaceId::try_new("default").expect("namespace id");
     let service_id = ServiceId::try_new("s".repeat(64)).expect("service id");
 
-    let request = VolumeDeclaredDeployRequest::try_new(DeployRequest {
+    let failure = VolumeDeclaredDeployRequest::try_new(DeployRequest {
         namespace_id,
         origin: None,
         volumes: BTreeMap::new(),
@@ -68,11 +68,9 @@ fn deploy_admission_rejects_ids_that_cannot_form_internal_dns_labels() {
             routes: Vec::new(),
         }],
     })
-    .expect("deploy request");
-    let failure = crate::control::operations::deploy::validate_deploy_service_names(&request)
-        .expect_err("oversized DNS label must be rejected");
+    .expect_err("oversized DNS label must be rejected");
 
-    assert!(failure.as_str().contains("limited to 63 bytes"));
+    assert!(failure.to_string().contains("internal service name"));
 }
 
 #[test]

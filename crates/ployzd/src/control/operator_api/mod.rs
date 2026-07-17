@@ -20,7 +20,7 @@ pub(crate) use queries::ControlHealthReaders;
 pub use queries::ops_status_missing;
 pub use queries::{
     LogsQueryService, MachineQueryService, RuntimeSnapshotQueryService, ServiceQueryService,
-    VolumeQueryService, credential_list, ops_list, ops_status, ops_watch,
+    VolumeQueryService, credential_list, deploy_preview, ops_list, ops_status, ops_watch,
 };
 #[cfg(test)]
 pub use submit::owned_operation;
@@ -29,52 +29,6 @@ pub use submit::{
     deploy_submit, ingress_configure, machine_add, machine_drain, machine_resume, machine_update,
     namespace_remove, network_repair, service_restart, submit_volume_create, volume_remove,
 };
-
-pub async fn deploy_preview(
-    handlers: &OperationApiHandlers,
-    request: ployz_sdk_types::DeployPreviewRequest,
-) -> Result<ployz_sdk_types::DeployPreview, ployz_sdk_types::DeployPreviewError> {
-    let (target, _) = request.target.clone().into_planning_target();
-    let target =
-        ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(target).map_err(|error| {
-            ployz_sdk_types::DeployPreviewError::InvalidTarget {
-                message: ployz_core::operation::FailureMessage::try_new(error.to_string())
-                    .expect("deploy target validation failure is non-empty"),
-            }
-        })?;
-    submit::validate_pushed_image_seed_roster(&handlers.machine_roster, &target)
-        .await
-        .map_err(|error| match error {
-            submit::PushedImageSeedValidationError::Unavailable { message } => {
-                ployz_sdk_types::DeployPreviewError::Unavailable { message }
-            }
-            submit::PushedImageSeedValidationError::Invalid { seed, reason } => {
-                ployz_sdk_types::DeployPreviewError::InvalidTarget {
-                    message: ployz_core::operation::FailureMessage::try_new(format!(
-                        "pushed image seed {} {reason}",
-                        seed.as_str()
-                    ))
-                    .expect("pushed image seed validation failure is non-empty"),
-                }
-            }
-        })?;
-    crate::control::operations::deploy::validate_deploy_route_admission(
-        &target,
-        &handlers.ingress_intent,
-        &crate::control::intent::ingress_intent::PloyzDnsTargetStore::new(
-            handlers.core_store.clone(),
-        ),
-        &crate::control::intent::namespace_intent::NamespaceIntentStore::new(
-            handlers.core_store.clone(),
-        ),
-    )
-    .await
-    .map_err(|error| ployz_sdk_types::DeployPreviewError::InvalidTarget {
-        message: ployz_core::operation::FailureMessage::try_new(error.to_string())
-            .expect("route admission validation failure is non-empty"),
-    })?;
-    handlers.deploy_driver.preview(request).await
-}
 
 use crate::control::authorization::MachineCredentialMint;
 use crate::control::intent::ingress_intent::IngressIntentStore;

@@ -337,12 +337,6 @@ pub async fn deploy_submit(
 ) -> Result<AcceptedOperation, DeploySubmitError> {
     let command = normalize_deploy_submit(request)?;
     let operation_id = command.operation_id.clone();
-    crate::control::operations::deploy::validate_deploy_service_names(&command.target).map_err(
-        |message| DeploySubmitError::InvalidTarget {
-            operation_id: operation_id.clone(),
-            message,
-        },
-    )?;
     validate_registry_credentials(&command)?;
     validate_pushed_image_seeds(handlers, &command).await?;
     validate_deploy_route_admission(

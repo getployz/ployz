@@ -1,6 +1,7 @@
 use ployz_core::deploy::{
-    DeployCleanupContainer, DeployServiceSpec, ExistingServiceReplica, ObservedCleanupCandidate,
-    RegistryCredential, VolumeDeclaredDeployRequest,
+    DeployCleanupContainer, DeployPlanningInput, DeployServiceSpec, ExistingServiceReplica,
+    ObservedCleanupCandidate, RegistryCredential, VolumeDeclaredDeployPreviewTarget,
+    VolumeDeclaredDeployRequest,
 };
 use ployz_core::ids::{
     ContainerId, MachineId, NamespaceId, NamespaceRevisionEntryId, NamespaceRevisionId,
@@ -22,6 +23,24 @@ use crate::certificate::GatewayCertificateTarget;
 use crate::control::role_client::machine::MachineClockTestimony;
 
 const DEFAULT_STEP_TIMEOUT: Duration = Duration::from_secs(180);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct DeployPreviewPlanningCommand {
+    pub(super) target: VolumeDeclaredDeployPreviewTarget,
+    pub(super) planning_inputs: Vec<DeployPlanningInput>,
+    pub(super) route_binding_commits: Vec<RouteBindingState>,
+    pub(super) route_binding_removals: Vec<RouteBindingState>,
+    pub(super) serving_target_commits: Vec<ServingTargetEntry>,
+    pub(super) serving_target_removals: Vec<ServingTargetEntry>,
+    pub(super) namespace_cleanup_candidates: Vec<DeployCleanupContainer>,
+    pub(super) storage_testimony:
+        BTreeMap<MachineId, Option<ployz_core::machine::StorageCapability>>,
+    pub(super) machine_platforms: BTreeMap<MachineId, OciPlatform>,
+    pub(super) seed_clock_testimony: BTreeMap<MachineId, MachineClockTestimony>,
+    pub(super) unusable_machines: Vec<ployz_core::operation::UnusableMachine>,
+    pub(super) unusable_machines_by_service:
+        BTreeMap<ServiceId, Vec<ployz_core::operation::UnusableMachine>>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployExecutionCommand {
@@ -51,6 +70,7 @@ pub struct DeployServiceExecutionCommand {
     pub(super) route_commits: Vec<RouteBindingState>,
     pub(super) volume_pins: Vec<VolumePinState>,
     pub(super) eligible_machines: Vec<MachineId>,
+    pub(super) unusable_machines: Vec<ployz_core::operation::UnusableMachine>,
     pub(super) existing_replicas: Vec<ExistingServiceReplica>,
     pub(super) cleanup_candidates: Vec<ObservedCleanupCandidate>,
 }
@@ -64,6 +84,29 @@ impl DeployExecutionCommand {
     #[must_use]
     pub fn services(&self) -> &[DeployServiceExecutionCommand] {
         &self.services
+    }
+
+    #[must_use]
+    pub fn service(&self, service_id: &ServiceId) -> Option<&DeployServiceExecutionCommand> {
+        self.services
+            .iter()
+            .find(|service| &service.service.service_id == service_id)
+    }
+
+    #[must_use]
+    pub fn unusable_machines_for_service(
+        &self,
+        service_id: &ServiceId,
+    ) -> Option<Vec<ployz_core::operation::UnusableMachine>> {
+        let service = self.service(service_id)?;
+        let mut unusable = self.unusable_machines.clone();
+        for machine in &service.unusable_machines {
+            if !unusable.contains(machine) {
+                unusable.push(machine.clone());
+            }
+        }
+        unusable.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
+        Some(unusable)
     }
 
     #[must_use]
@@ -154,6 +197,12 @@ impl MissingTargetPlatform {
 }
 
 impl DeployServiceExecutionCommand {
+    #[must_use]
+    #[cfg(test)]
+    pub fn unusable_machines(&self) -> &[ployz_core::operation::UnusableMachine] {
+        &self.unusable_machines
+    }
+
     #[must_use]
     pub fn registry_credential(&self) -> Option<&RegistryCredential> {
         self.registry_credential.as_ref()

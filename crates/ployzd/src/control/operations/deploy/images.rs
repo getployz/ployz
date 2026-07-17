@@ -211,15 +211,13 @@ pub(super) fn validate_pushed_platforms(
             let ImageSource::PushedToSeed(receipt) = &service.service.image_source else {
                 continue;
             };
-            let target_machines = service_plan
-                .pre_start
-                .iter()
-                .map(|pre_start| &pre_start.machine_id)
-                .chain(service_plan.steps.iter().map(|step| match step {
-                    DeployPlanStep::UseExistingContainer { machine_id, .. }
-                    | DeployPlanStep::RunContainer { machine_id, .. } => machine_id,
+            let Some(target_machines) = plan.service_target_machines(&service_plan.service_id)
+            else {
+                return Err(Box::new(DeployExecutionError::PlanInconsistent {
+                    service_id: service_plan.service_id.clone(),
                 }));
-            for machine_id in target_machines {
+            };
+            for machine_id in &target_machines {
                 let target_platform = command
                     .target_platform(machine_id)
                     .map_err(|error| Box::new(error.into_execution_error()))?;
@@ -370,6 +368,13 @@ where
     R: DeployOperationRecorder,
     N: MachineContainerRuntime,
 {
+    if command
+        .services()
+        .iter()
+        .any(|service| matches!(&service.service.image_source, ImageSource::PushedToSeed(_)))
+    {
+        validate_pushed_image_availability(command, service_plans, current_unix_seconds()?)?;
+    }
     for service in command.services() {
         let Some(service_plan) = service_plans
             .iter()
@@ -403,25 +408,6 @@ where
                     }),
                 });
             };
-            if let Some(failure) = seed_clock_failure(
-                &service.service.service_id,
-                platform_image,
-                command.seed_clock_testimony.get(&platform_image.seed),
-            ) {
-                return Err(DeployExecutionError::Image {
-                    failure: Box::new(failure),
-                });
-            }
-            if let Some(failure) = expired_platform_failure(
-                &service.service.service_id,
-                &target_platform,
-                platform_image,
-                current_unix_seconds()?,
-            ) {
-                return Err(DeployExecutionError::Image {
-                    failure: Box::new(failure),
-                });
-            }
             let request = ImageEnsureRequest {
                 repository: ImageRepository::for_service(
                     command.request.namespace_id(),
@@ -468,6 +454,95 @@ where
     Ok(())
 }
 
+pub(super) fn validate_pushed_image_availability(
+    command: &DeployExecutionCommand,
+    service_plans: &[DeployServicePlan],
+    now_unix_seconds: u64,
+) -> Result<(), DeployExecutionError> {
+    for service in command.services() {
+        let Some(service_plan) = service_plans
+            .iter()
+            .find(|plan| plan.service_id == service.service.service_id)
+        else {
+            continue;
+        };
+        let ImageSource::PushedToSeed(receipt) = &service.service.image_source else {
+            continue;
+        };
+        let target_machines = service_plan
+            .steps
+            .iter()
+            .map(|step| match step {
+                DeployPlanStep::UseExistingContainer { machine_id, .. }
+                | DeployPlanStep::RunContainer { machine_id, .. } => machine_id.clone(),
+            })
+            .collect::<Vec<_>>();
+        validate_pushed_service_availability(
+            &service.service.service_id,
+            receipt,
+            &target_machines,
+            &command.machine_platforms,
+            &command.seed_clock_testimony,
+            now_unix_seconds,
+        )?;
+    }
+    Ok(())
+}
+
+pub(super) fn validate_pushed_service_availability(
+    service_id: &ployz_core::ids::ServiceId,
+    receipt: &ployz_core::deploy::PushedImageReceipt,
+    target_machines: &[ployz_core::ids::MachineId],
+    machine_platforms: &BTreeMap<ployz_core::ids::MachineId, ployz_core::image::OciPlatform>,
+    seed_clock_testimony: &BTreeMap<ployz_core::ids::MachineId, MachineClockTestimony>,
+    now_unix_seconds: u64,
+) -> Result<(), DeployExecutionError> {
+    let mut target_platforms = BTreeMap::new();
+    for machine_id in target_machines {
+        let Some(target_platform) = machine_platforms.get(machine_id) else {
+            return Err(DeployExecutionError::InternalInvariant {
+                message: format!(
+                    "placed target machine {} has no answered platform facts",
+                    machine_id.as_str()
+                ),
+            });
+        };
+        target_platforms
+            .entry(target_platform.clone())
+            .or_insert_with(|| machine_id.clone());
+    }
+    for (target_platform, machine_id) in target_platforms {
+        let Some(platform_image) = receipt.platform(&target_platform) else {
+            return Err(DeployExecutionError::Image {
+                failure: Box::new(DeployOperationFailure::PlatformImageUnavailable {
+                    service_id: service_id.clone(),
+                    machine_id,
+                    target_platform,
+                }),
+            });
+        };
+        let failure = seed_clock_failure(
+            service_id,
+            platform_image,
+            seed_clock_testimony.get(&platform_image.seed),
+        )
+        .or_else(|| {
+            expired_platform_failure(
+                service_id,
+                &target_platform,
+                platform_image,
+                now_unix_seconds,
+            )
+        });
+        if let Some(failure) = failure {
+            return Err(DeployExecutionError::Image {
+                failure: Box::new(failure),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn seed_clock_failure(
     service_id: &ployz_core::ids::ServiceId,
     platform_image: &ployz_core::deploy::PlatformImage,
@@ -497,7 +572,7 @@ fn seed_clock_failure(
     })
 }
 
-fn current_unix_seconds() -> Result<u64, DeployExecutionError> {
+pub(super) fn current_unix_seconds() -> Result<u64, DeployExecutionError> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
@@ -896,6 +971,7 @@ mod tests {
             route_commits: Vec::new(),
             volume_pins: Vec::new(),
             eligible_machines: Vec::new(),
+            unusable_machines: Vec::new(),
             existing_replicas: Vec::new(),
             cleanup_candidates: Vec::new(),
         }

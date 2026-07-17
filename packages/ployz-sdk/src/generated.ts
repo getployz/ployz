@@ -718,7 +718,7 @@ export type DeployPreviewImage = { "state": "concrete", image: ImageReference, i
 
 export type DeployPreview = { projection: DeployPreviewProjection, build_platform_requirements: { [key in ServiceId]: BuildPlatforms }, unusable_machines?: Array<UnusableMachine>, };
 
-export type DeployPreviewProjection = { namespace_id: NamespaceId, phases: Array<DeployPhasePlan>, volume_pins?: Array<VolumePinState>, volume_preparations?: Array<VolumePinState>, cleanup_candidates?: Array<DeployCleanupAction>, };
+export type DeployPreviewProjection = { namespace_id: NamespaceId, phases: Array<DeployPhasePlan>, volume_pins?: Array<VolumePinState>, volume_preparations?: Array<VolumePinState>, cleanup_candidates?: Array<DeployCleanupAction>, route_binding_commits?: Array<RouteBindingState>, route_binding_removals?: Array<RouteBindingState>, serving_target_commits?: Array<ServingTargetEntry>, serving_target_removals?: Array<ServingTargetEntry>, };
 
 export type DeployPreviewError = { "error": "invalid_target", message: FailureMessage, } | { "error": "planning_failed", message: FailureMessage, unusable_machines?: Array<UnusableMachine>, } | { "error": "unavailable", message: string, };
 
