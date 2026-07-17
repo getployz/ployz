@@ -86,6 +86,16 @@
       "os": "linux"
     }
   },
+  "deploy_preview_image_unavailable_response": {
+    "error": {
+      "error": "image_unavailable",
+      "failure": {
+        "kind": "no_usable_machines",
+        "reasons": []
+      }
+    },
+    "status": "domain_error"
+  },
   "deploy_preview_request": {
     "target": {
       "namespace_id": "default",
@@ -133,6 +143,17 @@
                 ]
               }
             ]
+          }
+        ],
+        "route_binding_additions": [
+          {
+            "endpoint_port": 8080,
+            "namespace_id": "default",
+            "origin": "declared",
+            "service_id": "svc_api",
+            "target": {
+              "hostname": "api.example.com"
+            }
           }
         ]
       }

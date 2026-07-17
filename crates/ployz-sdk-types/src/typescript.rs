@@ -136,6 +136,7 @@ use crate::{
     WireGuardPublicKey, WireGuardReadinessFailure, WireGuardReady, WireGuardReadyEvidence,
     WireGuardRttStatus, WireGuardStatus, WrappedCaKey, WrappedCoreSeeds, ZfsPoolName,
 };
+use ployz_core::deploy::DeployRouteBindingAddition;
 use ployz_core::nats_config::{NatsCaCertificatePem, NatsUserSeed};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -307,6 +308,7 @@ macro_rules! exported_types {
             PreStartHook,
             DeployRoute,
             DeployRouteTarget,
+            DeployRouteBindingAddition,
             DeployPlan,
             DeployPhasePlan,
             DeployServicePlan,
@@ -911,7 +913,15 @@ pub fn operation_contract_fixture() -> Value {
                     volume_pins: Vec::new(),
                     volume_preparations: Vec::new(),
                     cleanup_candidates: Vec::new(),
-                    route_binding_commits: Vec::new(),
+                    route_binding_additions: vec![DeployRouteBindingAddition {
+                        namespace_id: deploy_target.namespace_id.clone(),
+                        target: RouteTarget::new(
+                            RouteHostname::try_new("api.example.com").expect("valid hostname"),
+                        ),
+                        endpoint_port: RoutePort::try_new(8080).expect("valid route port"),
+                        service_id: service_id("svc_api"),
+                        origin: RouteBindingOrigin::Declared,
+                    }],
                     route_binding_removals: Vec::new(),
                     serving_target_commits: Vec::new(),
                     serving_target_removals: Vec::new(),
@@ -922,6 +932,14 @@ pub fn operation_contract_fixture() -> Value {
                         .expect("valid platform")])
                     .expect("build platforms"),
                 )]),
+                unusable_machines: Vec::new(),
+            },
+        }),
+        "deploy_preview_image_unavailable_response": value(DeployPreviewResponse::DomainError {
+            error: DeployPreviewError::ImageUnavailable {
+                failure: Box::new(DeployOperationFailure::NoUsableMachines {
+                    reasons: Vec::new(),
+                }),
                 unusable_machines: Vec::new(),
             },
         }),

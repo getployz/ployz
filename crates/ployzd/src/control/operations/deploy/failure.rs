@@ -39,7 +39,7 @@ fn failure_commit_scope(command: &DeployExecutionCommand) -> ControlPlaneCommitS
         service_id: service.service.service_id.clone(),
         namespace_revision_entry_id: service
             .service
-            .namespace_revision_entry_id(command.request.namespace_id()),
+            .namespace_revision_entry_id(&command.request.namespace_id),
     }
 }
 

@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use ployz_core::deploy::{
-    ContainerMountPath, ContainerRuntimeSpec, DeployRequest, DeployReservationId,
-    DeployServiceSpec, ImageReference, ImageSource, ReplicaCount, ServiceVolumeMount,
-    VolumeDeclaredDeployRequest, VolumeName,
+    ContainerMountPath, ContainerRuntimeSpec, DeployPlanningTarget, DeployRequest,
+    DeployReservationId, DeployServiceSpec, ImageReference, ImageSource, ReplicaCount,
+    ServiceVolumeMount, VolumeName,
 };
 use ployz_core::ids::{MachineId, NamespaceId, OperationId, ServiceId};
 use ployz_core::image::OciDigest;
@@ -52,7 +52,7 @@ fn deploy_admission_rejects_ids_that_cannot_form_internal_dns_labels() {
     let namespace_id = NamespaceId::try_new("default").expect("namespace id");
     let service_id = ServiceId::try_new("s".repeat(64)).expect("service id");
 
-    let failure = VolumeDeclaredDeployRequest::try_new(DeployRequest {
+    let request = DeployRequest {
         namespace_id,
         origin: None,
         volumes: BTreeMap::new(),
@@ -67,10 +67,15 @@ fn deploy_admission_rejects_ids_that_cannot_form_internal_dns_labels() {
             depends_on: Vec::new(),
             routes: Vec::new(),
         }],
-    })
-    .expect_err("oversized DNS label must be rejected");
+    };
+    let failure = DeployPlanningTarget::try_from_deploy(&request)
+        .expect_err("oversized DNS label must be rejected");
 
-    assert!(failure.to_string().contains("internal service name"));
+    assert!(
+        failure
+            .to_string()
+            .contains("cannot form an internal DNS name")
+    );
 }
 
 #[test]
@@ -84,7 +89,7 @@ fn pushed_image_digest_must_match_the_index_digest() {
         idempotency_key: OperationIdempotencyKey::try_new("idem_test")
             .expect("valid idempotency key"),
         reservation_id: DeployReservationId::first(),
-        target: VolumeDeclaredDeployRequest::try_new(DeployRequest {
+        target: DeployRequest {
             namespace_id: NamespaceId::try_new("default").expect("valid namespace id"),
             origin: None,
             volumes: std::collections::BTreeMap::new(),
@@ -115,8 +120,7 @@ fn pushed_image_digest_must_match_the_index_digest() {
                 depends_on: Vec::new(),
                 routes: Vec::new(),
             }],
-        })
-        .expect("deploy request normalizes"),
+        },
         registry_credentials: BTreeMap::new(),
     };
 

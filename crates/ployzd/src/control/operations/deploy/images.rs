@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ployz_core::deploy::{
-    DeployCleanupAction, DeployPlan, DeployPlanStep, DeployServicePlan,
-    IMAGE_AVAILABILITY_SAFETY_MARGIN, ImageSource, VolumeDeclaredDeployRequest,
+    DeployCleanupAction, DeployPlan, DeployPlanStep, DeployRequest, DeployServicePlan,
+    IMAGE_AVAILABILITY_SAFETY_MARGIN, ImageSource,
 };
 use ployz_core::image::{
     ImageEnsureRequest, ImageRemoveDomainError, ImageRepository, ImageRpcDomainError,
@@ -238,7 +238,7 @@ pub(super) fn validate_pushed_platforms(
 
 pub(super) async fn resolve_registry_images<R, N>(
     command: &DeployExecutionCommand,
-    request: &mut VolumeDeclaredDeployRequest,
+    request: &mut DeployRequest,
     recorder: &mut R,
     machine_runtime: &mut N,
 ) -> Result<(), DeployExecutionError>
@@ -248,7 +248,7 @@ where
 {
     let provisional_plan = deploy_plan(command)?;
     let targets = request
-        .services()
+        .services
         .iter()
         .filter(|target| {
             matches!(target.image_source, ImageSource::Registry)
@@ -410,7 +410,7 @@ where
             };
             let request = ImageEnsureRequest {
                 repository: ImageRepository::for_service(
-                    command.request.namespace_id(),
+                    &command.request.namespace_id,
                     &service.service.service_id,
                 ),
                 manifest_digest: platform_image.manifest_digest.clone(),
@@ -706,7 +706,7 @@ mod tests {
     use super::*;
     use ployz_core::deploy::{
         ContainerRuntimeSpec, DeployPhasePlan, DeployRequest, DeployServiceSpec, ImageReference,
-        PlatformImage, PushedImageReceipt, ReplicaCount, ReplicaSlot, VolumeDeclaredDeployRequest,
+        PlatformImage, PushedImageReceipt, ReplicaCount, ReplicaSlot,
     };
     use ployz_core::ids::{MachineId, NamespaceId, NamespaceRevisionId, OperationId, ServiceId};
     use ployz_core::image::{OciDigest, OciPlatform};
@@ -869,13 +869,12 @@ mod tests {
         let service = pushed_service();
         let target_machine = machine_id("machine_arm");
         let target_platform = platform("arm64");
-        let request = VolumeDeclaredDeployRequest::try_new(DeployRequest {
+        let request = DeployRequest {
             namespace_id: NamespaceId::try_new("default").expect("namespace id"),
             origin: None,
             volumes: BTreeMap::new(),
             services: vec![service.service.clone()],
-        })
-        .expect("deploy request");
+        };
         let command = DeployExecutionCommand {
             operation_id: OperationId::try_new("op_platform_validation").expect("operation id"),
             request,
@@ -897,7 +896,7 @@ mod tests {
             step_timeout: std::time::Duration::from_secs(1),
         };
         let plan = DeployPlan {
-            namespace_id: command.request.namespace_id().clone(),
+            namespace_id: command.request.namespace_id.clone(),
             namespace_revision_id: NamespaceRevisionId::try_new("revision_platform_validation")
                 .expect("revision id"),
             phases: vec![

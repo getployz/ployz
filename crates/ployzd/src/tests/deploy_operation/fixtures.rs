@@ -1747,8 +1747,7 @@ fn deploy_execution_input(
     }
     DeployExecutionInput::new(
         operation_id,
-        ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(request)
-            .expect("fixture deploy request normalizes"),
+        request,
         facts,
         std::collections::BTreeMap::new(),
         std::collections::BTreeSet::new(),

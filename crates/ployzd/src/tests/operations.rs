@@ -452,10 +452,10 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
     };
     resolved_service.image = resolved_image.clone();
     let normalized_resolved_target =
-        ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(resolved_target.clone())
+        ployz_core::deploy::DeployPlanningTarget::try_from_deploy(&resolved_target)
             .expect("request normalizes");
-    let resolved_service_target = normalized_resolved_target
-        .services()
+    let resolved_service_target = resolved_target
+        .services
         .first()
         .expect("resolved deploy target has one service")
         .clone();
@@ -504,7 +504,8 @@ async fn e2e_control_and_machine_complete_deploy_over_real_nats()
                         storage_testimony: &std::collections::BTreeMap::new(),
                     },
                 )
-                .expect("single-machine deploy plan is valid"),
+                .expect("single-machine deploy plan is valid")
+                .with_revision(resolved_target.namespace_revision_id()),
             },
             OperationEvent::DeployRunning {
                 operation_id: deploy_operation.clone(),

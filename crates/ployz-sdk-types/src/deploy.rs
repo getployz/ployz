@@ -57,6 +57,12 @@ pub enum DeployPreviewError {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         unusable_machines: Vec<UnusableMachine>,
     },
+    #[error("deploy preview image unavailable")]
+    ImageUnavailable {
+        failure: Box<DeployOperationFailure>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        unusable_machines: Vec<UnusableMachine>,
+    },
     #[error("deploy preview unavailable: {message}")]
     Unavailable { message: String },
 }

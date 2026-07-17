@@ -403,8 +403,12 @@ where
 pub(super) fn deploy_plan(
     command: &DeployExecutionCommand,
 ) -> Result<DeployPlan, DeployExecutionError> {
+    let target = ployz_core::deploy::DeployPlanningTarget::try_from_deploy(&command.request)
+        .map_err(|error| DeployExecutionError::InternalInvariant {
+            message: error.to_string(),
+        })?;
     plan_namespace_deploy(
-        &command.request,
+        &target,
         command
             .services()
             .iter()
@@ -421,6 +425,7 @@ pub(super) fn deploy_plan(
             storage_testimony: &command.storage_testimony,
         },
     )
+    .map(|plan| plan.with_revision(command.request.namespace_revision_id()))
     .map_err(DeployExecutionError::from)
 }
 
@@ -462,18 +467,18 @@ where
     runtime.healthcheck = None;
     runtime.restart_policy = ContainerRestartPolicy::No;
     let identity = ManagedContainerIdentity {
-        namespace_id: command.request.namespace_id().clone(),
+        namespace_id: command.request.namespace_id.clone(),
         service_id: service.service.service_id.clone(),
         namespace_revision_entry_id: service
             .service
-            .namespace_revision_entry_id(command.request.namespace_id()),
+            .namespace_revision_entry_id(&command.request.namespace_id),
         operation_id: command.operation_id.clone(),
         step_id,
         kind: ManagedContainerKind::Predeploy,
     };
     let request = MachineContainerRunHookRpcRequest {
         pull: machine_image_pull(
-            command.request.namespace_id(),
+            &command.request.namespace_id,
             service,
             &step.machine_id,
             command
@@ -631,7 +636,7 @@ fn retained_container_identity(
     container: &DeployContainer,
 ) -> ManagedContainerIdentity {
     ManagedContainerIdentity {
-        namespace_id: command.request.namespace_id().clone(),
+        namespace_id: command.request.namespace_id.clone(),
         service_id: container.service_id.clone(),
         namespace_revision_entry_id: container.namespace_revision_entry_id.clone(),
         operation_id: command.operation_id.clone(),
@@ -917,7 +922,7 @@ where
     let requires_docker_healthcheck = requires_docker_healthcheck(service);
     let request = MachineContainerRunRpcRequest {
         pull: machine_image_pull(
-            command.request.namespace_id(),
+            &command.request.namespace_id,
             service,
             machine_id,
             command
@@ -928,11 +933,11 @@ where
         runtime: service.service.runtime.clone(),
         provisioned_volumes: provisioned_volume_names(service),
         container: ManagedContainerIdentity {
-            namespace_id: command.request.namespace_id().clone(),
+            namespace_id: command.request.namespace_id.clone(),
             service_id: service.service.service_id.clone(),
             namespace_revision_entry_id: service
                 .service
-                .namespace_revision_entry_id(command.request.namespace_id()),
+                .namespace_revision_entry_id(&command.request.namespace_id),
             operation_id: command.operation_id.clone(),
             step_id: step_id.clone(),
             kind: ManagedContainerKind::Service,
@@ -959,7 +964,7 @@ where
                     service_id: service.service.service_id.clone(),
                     namespace_revision_entry_id: service
                         .service
-                        .namespace_revision_entry_id(command.request.namespace_id()),
+                        .namespace_revision_entry_id(&command.request.namespace_id),
                     machine_id: machine_id.clone(),
                     container_id: outcome.container_id().clone(),
                     step_id,

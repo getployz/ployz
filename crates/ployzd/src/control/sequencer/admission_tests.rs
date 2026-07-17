@@ -305,8 +305,7 @@ async fn duplicate_deploy_submission_keeps_ingress_fence_owned_by_original() {
         operation_id: operation_id("op_original"),
         idempotency_key: idempotency_key("idem_original"),
         reservation_id,
-        target: VolumeDeclaredDeployRequest::try_new(automatic_deploy_request())
-            .expect("deploy request normalizes"),
+        target: automatic_deploy_request(),
         registry_credentials: BTreeMap::new(),
     };
 
@@ -328,8 +327,7 @@ async fn duplicate_deploy_submission_keeps_ingress_fence_owned_by_original() {
             operation_id: operation_id("op_conflicting"),
             idempotency_key: idempotency_key("idem_conflicting"),
             reservation_id: conflicting_reservation,
-            target: VolumeDeclaredDeployRequest::try_new(automatic_deploy_request())
-                .expect("deploy request normalizes"),
+            target: automatic_deploy_request(),
             registry_credentials: BTreeMap::new(),
         })
         .await

@@ -62,13 +62,11 @@ async fn accepted_deploy_runs_from_nats_facts_and_commits_active_state() {
         .await
         .expect("subscribe intent changes");
     let resolved_request = resolved_deploy_request(1);
-    let resolved_entry_id =
-        ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(resolved_request.clone())
-            .expect("request normalizes")
-            .services()
-            .first()
-            .expect("resolved fixture has one service")
-            .namespace_revision_entry_id(&namespace_id("default"));
+    let resolved_entry_id = resolved_request
+        .services
+        .first()
+        .expect("resolved fixture has one service")
+        .namespace_revision_entry_id(&namespace_id("default"));
 
     let outcome = run_deploy_operation(
         accepted,
@@ -1246,14 +1244,15 @@ async fn deploy_submit_command(
         operation_id: operation_id("op_123"),
         idempotency_key: idempotency_key("idem_deploy_123"),
         reservation_id: reserve_deploy(controllers).await,
-        target: ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(target)
-            .expect("deploy request normalizes"),
+        target,
     }
 }
 
-fn normalized_deploy_request(replicas: u16) -> ployz_core::deploy::VolumeDeclaredDeployRequest {
-    ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(deploy_request(replicas))
-        .expect("deploy request normalizes")
+fn normalized_deploy_request(replicas: u16) -> DeployRequest {
+    let request = deploy_request(replicas);
+    ployz_core::deploy::DeployPlanningTarget::try_from_deploy(&request)
+        .expect("deploy request normalizes");
+    request
 }
 
 async fn reserve_deploy(

@@ -49,7 +49,7 @@ impl VolumePlan {
 }
 
 pub(super) fn build_namespace_volume_plan(
-    target: DeployPlanningTarget<'_>,
+    target: &DeployPlanningTarget,
     phases: &[Vec<DeployPlanningInput>],
     context: DeployPlanningContext<'_>,
 ) -> Result<VolumePlan, DeployPlanError> {
@@ -202,7 +202,7 @@ struct ServiceVolumeTarget {
     mounted: Vec<VolumeName>,
 }
 
-fn mounted_volume_names(service: DeployPlanningService<'_>) -> Vec<VolumeName> {
+fn mounted_volume_names(service: &DeployPlanningService) -> Vec<VolumeName> {
     service
         .runtime()
         .volume_mounts
@@ -214,8 +214,8 @@ fn mounted_volume_names(service: DeployPlanningService<'_>) -> Vec<VolumeName> {
 }
 
 fn resolve_service_machine(
-    target: DeployPlanningTarget<'_>,
-    service: DeployPlanningService<'_>,
+    target: &DeployPlanningTarget,
+    service: &DeployPlanningService,
     mounted: &[VolumeName],
     eligible_machines: &[MachineId],
     durable_pins: &[VolumePinState],

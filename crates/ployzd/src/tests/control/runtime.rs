@@ -870,6 +870,86 @@ async fn deploy_preview_returns_pending_service_platforms_without_runtime_effect
 }
 
 #[tokio::test]
+async fn deploy_preview_returns_silent_roster_evidence_before_the_client_deadline() {
+    let responding = machine_id("machine_a");
+    let silent = machine_id("machine_silent");
+    let nats = TestNats::start_with_machines(&[responding.clone(), silent.clone()]).await;
+    let config = nats
+        .control_config()
+        .with_deploy_machines(vec![responding.clone()]);
+    let machine_roster = machine_roster(&config).await;
+    let mut responding_machine = active_machine(responding.as_str());
+    responding_machine.mesh_endpoints =
+        vec!["8.8.8.8:51820".parse().expect("responding mesh endpoint")];
+    machine_roster
+        .replace_active_machine(&responding_machine)
+        .await
+        .expect("responding machine stores");
+    let mut silent_machine = active_machine(silent.as_str());
+    silent_machine.endpoint_subnet =
+        ployz_core::network::MachineEndpointSubnet::try_new("10.199.0.0/24")
+            .expect("silent machine endpoint subnet");
+    silent_machine.mesh_endpoints = vec!["1.1.1.1:51820".parse().expect("silent mesh endpoint")];
+    machine_roster
+        .replace_active_machine(&silent_machine)
+        .await
+        .expect("silent machine stores");
+    let runtime = nats.start_control(&config).await;
+    let runner = ObservingContainerRunner::new(responding.clone());
+    let machine_runtime = start_machine_role_runtime(
+        nats.machine_client(&responding).await,
+        responding.clone(),
+        runner.clone(),
+        ReadyWireGuardEbpf::for_machine(&responding),
+        runner,
+    )
+    .await
+    .expect("responding machine runtime starts");
+    let silent_runner = ObservingContainerRunner::new(silent.clone());
+    let silent_runtime = start_machine_role_runtime(
+        nats.machine_client(&silent).await,
+        silent.clone(),
+        silent_runner.clone(),
+        ReadyWireGuardEbpf::for_machine(&silent),
+        silent_runner,
+    )
+    .await
+    .expect("silent machine initially starts");
+    wait_for_dataplane_projection(&nats, &responding).await;
+    silent_runtime
+        .shutdown()
+        .await
+        .expect("silent machine runtime shuts down before preview");
+
+    let preview = tokio::time::timeout(
+        Duration::from_secs(7),
+        nats.api().deploy_preview(&DeployPreviewRequest {
+            target: pending_preview_target(deploy_target("svc_api")),
+        }),
+    )
+    .await
+    .expect("deploy preview returns before its client deadline")
+    .expect("deploy preview succeeds with one responding machine");
+
+    assert_eq!(
+        preview.unusable_machines,
+        [ployz_core::operation::UnusableMachine {
+            machine_id: silent,
+            reason: ployz_core::machine::MachineUsabilityReason::FactsUnavailable,
+        }]
+    );
+
+    machine_runtime
+        .shutdown()
+        .await
+        .expect("machine runtime shuts down");
+    runtime
+        .shutdown()
+        .await
+        .expect("control runtime shuts down");
+}
+
+#[tokio::test]
 async fn deploy_preview_rejects_an_expired_concrete_receipt_without_runtime_effects() {
     let machine = machine_id("machine_a");
     let nats = TestNats::start_with_machines(std::slice::from_ref(&machine)).await;
@@ -910,9 +990,12 @@ async fn deploy_preview_rejects_an_expired_concrete_receipt_without_runtime_effe
     assert!(matches!(
         error,
         OperationApiClientError::Domain {
-            error: ployz_sdk_types::DeployPreviewError::PlanningFailed { message, .. },
+            error: ployz_sdk_types::DeployPreviewError::ImageUnavailable { failure, .. },
             ..
-        } if message.as_str().contains("PlatformImageExpired")
+        } if matches!(
+            *failure,
+            ployz_core::operation::DeployOperationFailure::PlatformImageExpired { .. }
+        )
     ));
     assert!(runner.snapshot().containers().is_empty());
     assert!(

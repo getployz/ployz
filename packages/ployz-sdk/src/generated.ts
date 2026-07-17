@@ -239,6 +239,8 @@ export type DeployRoute = { target: DeployRouteTarget, endpoint_port: RoutePort,
 
 export type DeployRouteTarget = { "kind": "auto_hostname", label: AutomaticHostnameLabel, } | { "kind": "hostname", hostname: RouteHostname, };
 
+export type DeployRouteBindingAddition = { namespace_id: NamespaceId, target: RouteTarget, endpoint_port: RoutePort, service_id: ServiceId, origin: RouteBindingOrigin, };
+
 export type DeployPlan = { namespace_id: NamespaceId, namespace_revision_id: NamespaceRevisionId, phases: Array<DeployPhasePlan>,
 /**
  * Desired pins committed after image availability is ensured and before
@@ -718,9 +720,9 @@ export type DeployPreviewImage = { "state": "concrete", image: ImageReference, i
 
 export type DeployPreview = { projection: DeployPreviewProjection, build_platform_requirements: { [key in ServiceId]: BuildPlatforms }, unusable_machines?: Array<UnusableMachine>, };
 
-export type DeployPreviewProjection = { namespace_id: NamespaceId, phases: Array<DeployPhasePlan>, volume_pins?: Array<VolumePinState>, volume_preparations?: Array<VolumePinState>, cleanup_candidates?: Array<DeployCleanupAction>, route_binding_commits?: Array<RouteBindingState>, route_binding_removals?: Array<RouteBindingState>, serving_target_commits?: Array<ServingTargetEntry>, serving_target_removals?: Array<ServingTargetEntry>, };
+export type DeployPreviewProjection = { namespace_id: NamespaceId, phases: Array<DeployPhasePlan>, volume_pins?: Array<VolumePinState>, volume_preparations?: Array<VolumePinState>, cleanup_candidates?: Array<DeployCleanupAction>, route_binding_additions?: Array<DeployRouteBindingAddition>, route_binding_removals?: Array<RouteBindingState>, serving_target_commits?: Array<ServingTargetEntry>, serving_target_removals?: Array<ServingTargetEntry>, };
 
-export type DeployPreviewError = { "error": "invalid_target", message: FailureMessage, } | { "error": "planning_failed", message: FailureMessage, unusable_machines?: Array<UnusableMachine>, } | { "error": "unavailable", message: string, };
+export type DeployPreviewError = { "error": "invalid_target", message: FailureMessage, } | { "error": "planning_failed", message: FailureMessage, unusable_machines?: Array<UnusableMachine>, } | { "error": "image_unavailable", failure: DeployOperationFailure, unusable_machines?: Array<UnusableMachine>, } | { "error": "unavailable", message: string, };
 
 export type DeploySubmitRequest = { idempotency_key: OperationIdempotencyKey, reservation_id: DeployReservationId, target: DeployRequest, registry_credentials?: { [key in ServiceId]: RegistryCredential }, };
 

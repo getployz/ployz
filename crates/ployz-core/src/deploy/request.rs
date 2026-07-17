@@ -122,61 +122,6 @@ impl DeployRequest {
                 .expect("namespace id is a valid service id fallback")
         })
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VolumeDeclaredDeployRequest(DeployRequest);
-
-impl VolumeDeclaredDeployRequest {
-    pub fn try_new(request: DeployRequest) -> Result<Self, DeployTargetValidationError> {
-        validate_deploy_target(
-            &request.namespace_id,
-            &request.volumes,
-            request
-                .services
-                .iter()
-                .map(|service| (&service.service_id, &service.runtime)),
-        )?;
-        Ok(Self(request))
-    }
-
-    #[must_use]
-    pub fn namespace_id(&self) -> &NamespaceId {
-        &self.0.namespace_id
-    }
-
-    #[must_use]
-    pub fn namespace_revision_id(&self) -> NamespaceRevisionId {
-        self.0.namespace_revision_id()
-    }
-
-    #[must_use]
-    pub fn status_service_id(&self) -> ServiceId {
-        self.0.status_service_id()
-    }
-
-    #[must_use]
-    pub fn request(&self) -> &DeployRequest {
-        &self.0
-    }
-
-    #[must_use]
-    pub fn services(&self) -> &[DeployServiceSpec] {
-        &self.0.services
-    }
-
-    #[must_use]
-    pub fn service(&self, service_id: &ServiceId) -> Option<&DeployServiceSpec> {
-        self.0
-            .services
-            .iter()
-            .find(|service| service.service_id == *service_id)
-    }
-
-    #[must_use]
-    pub fn into_request(self) -> DeployRequest {
-        self.0
-    }
 
     pub fn replace_service_image(
         &mut self,
@@ -184,7 +129,6 @@ impl VolumeDeclaredDeployRequest {
         image: ImageReference,
     ) -> Result<(), DeployImageReplacementError> {
         let Some(service) = self
-            .0
             .services
             .iter_mut()
             .find(|service| service.service_id == *service_id)
@@ -200,7 +144,7 @@ impl VolumeDeclaredDeployRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DeployImageReplacementError {
-    #[error("volume-declared deploy does not contain service {}", .service_id.as_str())]
+    #[error("deploy request does not contain service {}", .service_id.as_str())]
     UnknownService { service_id: ServiceId },
 }
 
@@ -227,6 +171,12 @@ pub enum DeployTargetValidationError {
     InvalidInternalServiceName {
         service_id: ServiceId,
         namespace_id: NamespaceId,
+    },
+    #[error("service {} pushed image reference {source}", .service_id.as_str())]
+    InvalidPushedImage {
+        service_id: ServiceId,
+        #[source]
+        source: PushedImageReferenceError,
     },
 }
 
@@ -266,7 +216,7 @@ mod tests {
     fn deploy_normalization_rejects_an_invalid_internal_service_name() {
         let service_id = ServiceId::try_new("a".repeat(64)).expect("service id");
         let namespace_id = NamespaceId::try_new("default").expect("namespace id");
-        let error = VolumeDeclaredDeployRequest::try_new(DeployRequest {
+        let request = DeployRequest {
             namespace_id: namespace_id.clone(),
             origin: None,
             volumes: BTreeMap::new(),
@@ -281,8 +231,9 @@ mod tests {
                 depends_on: Vec::new(),
                 routes: Vec::new(),
             }],
-        })
-        .expect_err("internal service name is invalid");
+        };
+        let error = DeployPlanningTarget::try_from_deploy(&request)
+            .expect_err("internal service name is invalid");
 
         assert_eq!(
             error,

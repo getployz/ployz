@@ -3,9 +3,8 @@ use std::time::Duration;
 
 use ployz_core::build::BuildPlatforms;
 use ployz_core::deploy::{
-    DeployPlanError, DeployPlanningContext, DeployPreviewImage, ImageSource,
-    VolumeDeclaredDeployPreviewTarget, plan_namespace_deploy_preview,
-    validate_pushed_image_reference,
+    DeployPlanError, DeployPlanningContext, DeployPlanningTarget, DeployPreviewImage, ImageSource,
+    plan_namespace_deploy,
 };
 use ployz_core::machine::MachineUsabilityReason;
 use ployz_core::operation::{FailureMessage, UnusableMachine};
@@ -25,9 +24,9 @@ pub async fn preview_deploy_from_nats(
     projection_store: &IngressProjectionStore,
     step_timeout: Duration,
 ) -> Result<DeployPreview, DeployPreviewError> {
-    let target = VolumeDeclaredDeployPreviewTarget::try_new(request.target)
+    let target = request.target;
+    DeployPlanningTarget::try_from_preview(&target)
         .map_err(|error| invalid_target(error.to_string()))?;
-    validate_concrete_pushed_images(&target)?;
     let facts = load_deploy_preview_facts_from_nats(
         &target,
         intent_reader,
@@ -40,8 +39,10 @@ pub async fn preview_deploy_from_nats(
     .map_err(preview_fact_load_error)?;
     validate_pushed_image_seeds(&target, &facts)?;
     let command = super::preparation::prepare_deploy_preview_command(target, facts);
-    let plan = plan_namespace_deploy_preview(
-        &command.target,
+    let planning_target = DeployPlanningTarget::try_from_preview(&command.target)
+        .expect("deploy preview command contains a validated planning target");
+    let plan = plan_namespace_deploy(
+        &planning_target,
         command.planning_inputs.clone(),
         command.namespace_cleanup_candidates.clone(),
         DeployPlanningContext {
@@ -52,7 +53,7 @@ pub async fn preview_deploy_from_nats(
 
     let now_unix_seconds = super::images::current_unix_seconds()
         .map_err(|error| planning_failed(error.to_string(), command.unusable_machines.clone()))?;
-    for service in command.target.services() {
+    for service in &command.target.services {
         let DeployPreviewImage::Concrete {
             image_source: ImageSource::PushedToSeed(receipt),
             ..
@@ -80,20 +81,45 @@ pub async fn preview_deploy_from_nats(
             now_unix_seconds,
         )
         .map_err(|error| {
-            planning_failed(
-                error.to_string(),
-                command
-                    .unusable_machines_by_service
-                    .get(&service.service_id)
-                    .cloned()
-                    .unwrap_or_else(|| command.unusable_machines.clone()),
-            )
+            let unusable_machines = command
+                .unusable_machines_by_service
+                .get(&service.service_id)
+                .cloned()
+                .unwrap_or_else(|| command.unusable_machines.clone());
+            match error {
+                super::DeployExecutionError::Image { failure } => {
+                    DeployPreviewError::ImageUnavailable {
+                        failure,
+                        unusable_machines,
+                    }
+                }
+                error @ (super::DeployExecutionError::Plan(_)
+                | super::DeployExecutionError::PlanInconsistent { .. }
+                | super::DeployExecutionError::StepId(_)
+                | super::DeployExecutionError::InvalidImagePull { .. }
+                | super::DeployExecutionError::InternalInvariant { .. }
+                | super::DeployExecutionError::StepTimedOut { .. }
+                | super::DeployExecutionError::RecordTransition(_)
+                | super::DeployExecutionError::RecordEvidence(_)
+                | super::DeployExecutionError::RunContainer(_)
+                | super::DeployExecutionError::EnsureVolume(_)
+                | super::DeployExecutionError::PreStartHook(_)
+                | super::DeployExecutionError::PreStartHookExited { .. }
+                | super::DeployExecutionError::WaitHealthy(_)
+                | super::DeployExecutionError::ProvisionCertificate { .. }
+                | super::DeployExecutionError::CommitNamespaceState(_)
+                | super::DeployExecutionError::Failed { .. }) => {
+                    planning_failed(error.to_string(), unusable_machines)
+                }
+            }
         })?;
     }
 
-    let build_platform_requirements = command
-        .target
-        .pending_build_service_ids()
+    let build_platform_requirements = planning_target
+        .services()
+        .iter()
+        .filter(|service| service.concrete_image().is_none())
+        .map(|service| service.service_id())
         .map(|service_id| {
             let target_machines = plan.service_target_machines(service_id).ok_or_else(|| {
                 planning_failed(
@@ -129,7 +155,7 @@ pub async fn preview_deploy_from_nats(
     Ok(DeployPreview {
         projection: ployz_core::deploy::DeployPreviewProjection::from_plan(
             plan,
-            command.route_binding_commits,
+            command.route_binding_additions,
             command.route_binding_removals,
             command.serving_target_commits,
             command.serving_target_removals,
@@ -140,10 +166,10 @@ pub async fn preview_deploy_from_nats(
 }
 
 fn validate_pushed_image_seeds(
-    target: &ployz_core::deploy::VolumeDeclaredDeployPreviewTarget,
+    target: &ployz_core::deploy::DeployPreviewTarget,
     facts: &DeployExecutionFacts,
 ) -> Result<(), DeployPreviewError> {
-    for service in target.services() {
+    for service in &target.services {
         let DeployPreviewImage::Concrete {
             image_source: ImageSource::PushedToSeed(receipt),
             ..
@@ -173,27 +199,6 @@ fn validate_pushed_image_seeds(
                 )));
             }
         }
-    }
-    Ok(())
-}
-
-fn validate_concrete_pushed_images(
-    target: &ployz_core::deploy::VolumeDeclaredDeployPreviewTarget,
-) -> Result<(), DeployPreviewError> {
-    for service in target.services() {
-        let DeployPreviewImage::Concrete {
-            image,
-            image_source,
-        } = &service.image
-        else {
-            continue;
-        };
-        validate_pushed_image_reference(image, image_source).map_err(|error| {
-            invalid_target(format!(
-                "pushed image for service {} {error}",
-                service.service_id.as_str()
-            ))
-        })?;
     }
     Ok(())
 }

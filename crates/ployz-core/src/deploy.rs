@@ -37,7 +37,7 @@ pub use request::{
     DeployImageReplacementError, DeployOrigin, DeployOriginError, DeployRequest,
     DeployReservationExpiresAt, DeployReservationId, DeployReservationNumberError,
     DeployServiceSpec, DeployTargetValidationError, DeployVolumeDeclarationError, PreStartHook,
-    ReplicaCount, ReplicaCountError, ServiceDependency, VolumeDeclaredDeployRequest,
+    ReplicaCount, ReplicaCountError, ServiceDependency,
 };
 pub use retention::{DeployCleanupAction, DeployCleanupContainer, ObservedCleanupCandidate};
 pub use revision::{

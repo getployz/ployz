@@ -124,14 +124,13 @@ fn normalize_deploy_submit(
         target,
         registry_credentials,
     } = value;
-    let target =
-        ployz_core::deploy::VolumeDeclaredDeployRequest::try_new(target).map_err(|error| {
-            DeploySubmitError::InvalidTarget {
-                operation_id: operation_id.clone(),
-                message: ployz_core::operation::FailureMessage::try_new(error.to_string())
-                    .expect("volume declaration validation error is non-empty"),
-            }
-        })?;
+    ployz_core::deploy::DeployPlanningTarget::try_from_deploy(&target).map_err(|error| {
+        DeploySubmitError::InvalidTarget {
+            operation_id: operation_id.clone(),
+            message: ployz_core::operation::FailureMessage::try_new(error.to_string())
+                .expect("deploy target validation error is non-empty"),
+        }
+    })?;
     Ok(DeploySubmitCommand {
         operation_id,
         idempotency_key,
@@ -371,7 +370,7 @@ pub async fn deploy_submit(
 }
 
 fn validate_registry_credentials(command: &DeploySubmitCommand) -> Result<(), DeploySubmitError> {
-    let services = command.target.services();
+    let services = &command.target.services;
     for service_id in command.registry_credentials.keys() {
         let Some(service) = services
             .iter()
@@ -392,7 +391,7 @@ fn validate_registry_credentials(command: &DeploySubmitCommand) -> Result<(), De
         }
     }
 
-    for service in command.target.services() {
+    for service in &command.target.services {
         let ImageSource::PushedToSeed(_) = &service.image_source else {
             continue;
         };
@@ -457,10 +456,10 @@ async fn validate_pushed_image_seeds(
 
 pub(super) async fn validate_pushed_image_seed_roster(
     machine_roster: &crate::control::intent::machine_roster::MachineRosterStore,
-    target: &ployz_core::deploy::VolumeDeclaredDeployRequest,
+    target: &ployz_core::deploy::DeployRequest,
 ) -> Result<(), PushedImageSeedValidationError> {
     let mut seeds = std::collections::BTreeSet::new();
-    for service in target.services() {
+    for service in &target.services {
         let ImageSource::PushedToSeed(receipt) = &service.image_source else {
             continue;
         };

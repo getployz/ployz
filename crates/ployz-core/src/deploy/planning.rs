@@ -19,165 +19,208 @@ pub struct DeployPlanningContext<'a> {
         &'a std::collections::BTreeMap<MachineId, Option<crate::machine::StorageCapability>>,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum DeployPlanningTarget<'a> {
-    Deploy(&'a VolumeDeclaredDeployRequest),
-    Preview(&'a VolumeDeclaredDeployPreviewTarget),
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployPlanningTarget {
+    namespace_id: NamespaceId,
+    volumes: BTreeMap<VolumeName, VolumeSpec>,
+    services: Vec<DeployPlanningService>,
 }
 
-impl<'a> DeployPlanningTarget<'a> {
-    #[must_use]
-    pub fn namespace_id(self) -> &'a NamespaceId {
-        match self {
-            Self::Deploy(request) => request.namespace_id(),
-            Self::Preview(target) => target.namespace_id(),
-        }
+impl DeployPlanningTarget {
+    pub fn try_from_deploy(request: &DeployRequest) -> Result<Self, DeployTargetValidationError> {
+        let services = request
+            .services
+            .iter()
+            .map(DeployPlanningService::from_deploy)
+            .collect::<Vec<_>>();
+        Self::try_new(
+            request.namespace_id.clone(),
+            request.volumes.clone(),
+            services,
+        )
     }
 
-    #[must_use]
-    pub fn status_service_id(self) -> ServiceId {
-        match self {
-            Self::Deploy(request) => request.status_service_id(),
-            Self::Preview(target) => target.status_service_id(),
-        }
+    pub fn try_from_preview(
+        target: &DeployPreviewTarget,
+    ) -> Result<Self, DeployTargetValidationError> {
+        let services = target
+            .services
+            .iter()
+            .map(DeployPlanningService::from_preview)
+            .collect::<Vec<_>>();
+        Self::try_new(
+            target.namespace_id.clone(),
+            target.volumes.clone(),
+            services,
+        )
     }
 
-    #[must_use]
-    pub fn volumes(self) -> &'a BTreeMap<VolumeName, VolumeSpec> {
-        match self {
-            Self::Deploy(request) => &request.request().volumes,
-            Self::Preview(target) => &target.target().volumes,
-        }
-    }
-
-    #[must_use]
-    pub fn service(self, service_id: &ServiceId) -> Option<DeployPlanningService<'a>> {
-        match self {
-            Self::Deploy(request) => request
-                .service(service_id)
-                .map(DeployPlanningService::from_deploy),
-            Self::Preview(target) => target
-                .service(service_id)
-                .map(DeployPlanningService::from_preview),
-        }
-    }
-
-    #[must_use]
-    pub fn services(self) -> Vec<DeployPlanningService<'a>> {
-        match self {
-            Self::Deploy(request) => request
-                .services()
+    fn try_new(
+        namespace_id: NamespaceId,
+        volumes: BTreeMap<VolumeName, VolumeSpec>,
+        services: Vec<DeployPlanningService>,
+    ) -> Result<Self, DeployTargetValidationError> {
+        super::request::validate_deploy_target(
+            &namespace_id,
+            &volumes,
+            services
                 .iter()
-                .map(DeployPlanningService::from_deploy)
-                .collect(),
-            Self::Preview(target) => target
-                .services()
-                .iter()
-                .map(DeployPlanningService::from_preview)
-                .collect(),
+                .map(|service| (&service.service_id, &service.runtime)),
+        )?;
+        for service in &services {
+            if let DeployPlanningImage::Concrete {
+                image,
+                image_source,
+            } = &service.image
+            {
+                validate_pushed_image_reference(image, image_source).map_err(|source| {
+                    DeployTargetValidationError::InvalidPushedImage {
+                        service_id: service.service_id.clone(),
+                        source,
+                    }
+                })?;
+            }
         }
+        Ok(Self {
+            namespace_id,
+            volumes,
+            services,
+        })
+    }
+
+    #[must_use]
+    pub fn namespace_id(&self) -> &NamespaceId {
+        &self.namespace_id
+    }
+
+    #[must_use]
+    pub fn status_service_id(&self) -> ServiceId {
+        self.services.first().map_or_else(
+            || {
+                ServiceId::try_new(self.namespace_id.as_str().to_owned())
+                    .expect("namespace id is a valid service id fallback")
+            },
+            |service| service.service_id.clone(),
+        )
+    }
+
+    #[must_use]
+    pub fn volumes(&self) -> &BTreeMap<VolumeName, VolumeSpec> {
+        &self.volumes
+    }
+
+    #[must_use]
+    pub fn service(&self, service_id: &ServiceId) -> Option<&DeployPlanningService> {
+        self.services
+            .iter()
+            .find(|service| service.service_id == *service_id)
+    }
+
+    #[must_use]
+    pub fn services(&self) -> &[DeployPlanningService] {
+        &self.services
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct DeployPlanningService<'a> {
-    service_id: &'a ServiceId,
-    image: DeployPlanningImage<'a>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployPlanningService {
+    service_id: ServiceId,
+    image: DeployPlanningImage,
     replicas: ReplicaCount,
     keep: Option<ContainerRetentionCount>,
-    runtime: &'a ContainerRuntimeSpec,
-    pre_start: Option<&'a PreStartHook>,
-    dependencies: &'a [ServiceDependency],
-    routes: &'a [DeployRoute],
+    runtime: ContainerRuntimeSpec,
+    pre_start: Option<PreStartHook>,
+    dependencies: Vec<ServiceDependency>,
+    routes: Vec<DeployRoute>,
 }
 
-#[derive(Debug, Clone, Copy)]
-enum DeployPlanningImage<'a> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeployPlanningImage {
     Concrete {
-        image: &'a ImageReference,
-        image_source: &'a ImageSource,
+        image: ImageReference,
+        image_source: ImageSource,
     },
     PendingBuild,
 }
 
-impl<'a> DeployPlanningService<'a> {
-    pub(super) fn from_deploy(service: &'a DeployServiceSpec) -> Self {
+impl DeployPlanningService {
+    fn from_deploy(service: &DeployServiceSpec) -> Self {
         Self {
-            service_id: &service.service_id,
+            service_id: service.service_id.clone(),
             image: DeployPlanningImage::Concrete {
-                image: &service.image,
-                image_source: &service.image_source,
+                image: service.image.clone(),
+                image_source: service.image_source.clone(),
             },
             replicas: service.replicas,
             keep: service.keep,
-            runtime: &service.runtime,
-            pre_start: service.pre_start.as_ref(),
-            dependencies: &service.depends_on,
-            routes: &service.routes,
+            runtime: service.runtime.clone(),
+            pre_start: service.pre_start.clone(),
+            dependencies: service.depends_on.clone(),
+            routes: service.routes.clone(),
         }
     }
 
-    pub(super) fn from_preview(service: &'a DeployPreviewService) -> Self {
+    fn from_preview(service: &DeployPreviewService) -> Self {
         let image = match &service.image {
             DeployPreviewImage::Concrete {
                 image,
                 image_source,
             } => DeployPlanningImage::Concrete {
-                image,
-                image_source,
+                image: image.clone(),
+                image_source: image_source.clone(),
             },
             DeployPreviewImage::PendingBuild => DeployPlanningImage::PendingBuild,
         };
         Self {
-            service_id: &service.service_id,
+            service_id: service.service_id.clone(),
             image,
             replicas: service.replicas,
             keep: service.keep,
-            runtime: &service.runtime,
-            pre_start: service.pre_start.as_ref(),
-            dependencies: &service.depends_on,
-            routes: &service.routes,
+            runtime: service.runtime.clone(),
+            pre_start: service.pre_start.clone(),
+            dependencies: service.depends_on.clone(),
+            routes: service.routes.clone(),
         }
     }
 
     #[must_use]
-    pub fn service_id(self) -> &'a ServiceId {
-        self.service_id
+    pub fn service_id(&self) -> &ServiceId {
+        &self.service_id
     }
 
     #[must_use]
-    pub fn replicas(self) -> ReplicaCount {
+    pub fn replicas(&self) -> ReplicaCount {
         self.replicas
     }
 
     #[must_use]
-    pub fn keep(self) -> Option<ContainerRetentionCount> {
+    pub fn keep(&self) -> Option<ContainerRetentionCount> {
         self.keep
     }
 
     #[must_use]
-    pub fn runtime(self) -> &'a ContainerRuntimeSpec {
-        self.runtime
+    pub fn runtime(&self) -> &ContainerRuntimeSpec {
+        &self.runtime
     }
 
     #[must_use]
-    pub fn pre_start(self) -> Option<&'a PreStartHook> {
-        self.pre_start
+    pub fn pre_start(&self) -> Option<&PreStartHook> {
+        self.pre_start.as_ref()
     }
 
     #[must_use]
-    pub fn dependencies(self) -> &'a [ServiceDependency] {
-        self.dependencies
+    pub fn dependencies(&self) -> &[ServiceDependency] {
+        &self.dependencies
     }
 
     #[must_use]
-    pub fn routes(self) -> &'a [DeployRoute] {
-        self.routes
+    pub fn routes(&self) -> &[DeployRoute] {
+        &self.routes
     }
 
     #[must_use]
-    pub fn concrete_image(self) -> Option<(&'a ImageReference, &'a ImageSource)> {
-        match self.image {
+    pub fn concrete_image(&self) -> Option<(&ImageReference, &ImageSource)> {
+        match &self.image {
             DeployPlanningImage::Concrete {
                 image,
                 image_source,
@@ -188,19 +231,19 @@ impl<'a> DeployPlanningService<'a> {
 
     #[must_use]
     pub fn namespace_revision_entry_id(
-        self,
+        &self,
         namespace_id: &NamespaceId,
     ) -> Option<NamespaceRevisionEntryId> {
-        match self.image {
+        match &self.image {
             DeployPlanningImage::Concrete {
                 image,
                 image_source,
             } => Some(namespace_revision_entry_id_for(
                 namespace_id,
-                self.service_id,
+                &self.service_id,
                 image,
                 image_source,
-                self.runtime,
+                &self.runtime,
             )),
             DeployPlanningImage::PendingBuild => None,
         }
@@ -243,7 +286,7 @@ pub enum ExistingReplicaPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployPreparationInput<'a> {
-    pub request: &'a VolumeDeclaredDeployRequest,
+    pub target: &'a DeployPlanningTarget,
     pub service_id: ServiceId,
     pub occupied_route_bindings: Vec<RouteBindingState>,
     pub eligible_machines: Vec<MachineId>,
@@ -261,35 +304,25 @@ pub struct DeployPreparationInput<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeployPreviewPreparationInput<'a> {
-    pub target: &'a VolumeDeclaredDeployPreviewTarget,
-    pub service_id: ServiceId,
-    pub occupied_route_bindings: Vec<RouteBindingState>,
-    pub eligible_machines: Vec<MachineId>,
-    pub machine_platforms: BTreeMap<MachineId, OciPlatform>,
-    pub draining_machines: Vec<MachineId>,
-    pub observed_machines: Vec<MachineContainerObservationSnapshot>,
-    pub existing_replica_policy: ExistingReplicaPolicy,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedDeploy {
-    pub service: DeployServiceSpec,
-    pub route_commits: Vec<RouteBindingState>,
+    pub route_additions: Vec<DeployRouteBindingAddition>,
     pub eligible_machines: Vec<MachineId>,
     pub unusable_machines: Vec<crate::operation::UnusableMachine>,
     pub existing_replicas: Vec<ExistingServiceReplica>,
     pub cleanup_candidates: Vec<ObservedCleanupCandidate>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PreparedDeployPreview {
-    pub service: DeployPreviewService,
-    pub route_commits: Vec<RouteBindingState>,
-    pub eligible_machines: Vec<MachineId>,
-    pub unusable_machines: Vec<crate::operation::UnusableMachine>,
-    pub existing_replicas: Vec<ExistingServiceReplica>,
-    pub cleanup_candidates: Vec<ObservedCleanupCandidate>,
+/// A validated route addition before an authoritative operation assigns or
+/// preserves its durable binding identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct DeployRouteBindingAddition {
+    pub namespace_id: NamespaceId,
+    pub target: RouteTarget,
+    pub endpoint_port: RoutePort,
+    pub service_id: ServiceId,
+    pub origin: RouteBindingOrigin,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -331,6 +364,18 @@ impl DeployPlan {
 }
 
 impl DeployPlacementPlan {
+    #[must_use]
+    pub fn with_revision(self, namespace_revision_id: NamespaceRevisionId) -> DeployPlan {
+        DeployPlan {
+            namespace_id: self.namespace_id,
+            namespace_revision_id,
+            phases: self.phases,
+            volume_pin_commits: self.volume_pin_commits,
+            volume_ensures: self.volume_ensures,
+            cleanup_actions: self.cleanup_actions,
+        }
+    }
+
     #[must_use]
     pub fn target_machines(&self) -> Vec<MachineId> {
         target_machines(&self.phases)
@@ -498,50 +543,7 @@ pub enum DeployPlanError {
 }
 
 pub fn plan_namespace_deploy(
-    request: &VolumeDeclaredDeployRequest,
-    services: Vec<DeployPlanningInput>,
-    cleanup_containers: Vec<DeployCleanupContainer>,
-    context: DeployPlanningContext<'_>,
-) -> Result<DeployPlan, DeployPlanError> {
-    let placement = plan_namespace(
-        DeployPlanningTarget::Deploy(request),
-        services,
-        cleanup_containers,
-        context,
-    )?;
-    let DeployPlacementPlan {
-        namespace_id,
-        phases,
-        volume_pin_commits,
-        volume_ensures,
-        cleanup_actions,
-    } = placement;
-    Ok(DeployPlan {
-        namespace_id,
-        namespace_revision_id: request.namespace_revision_id(),
-        phases,
-        volume_pin_commits,
-        volume_ensures,
-        cleanup_actions,
-    })
-}
-
-pub fn plan_namespace_deploy_preview(
-    target: &VolumeDeclaredDeployPreviewTarget,
-    services: Vec<DeployPlanningInput>,
-    cleanup_containers: Vec<DeployCleanupContainer>,
-    context: DeployPlanningContext<'_>,
-) -> Result<DeployPlacementPlan, DeployPlanError> {
-    plan_namespace(
-        DeployPlanningTarget::Preview(target),
-        services,
-        cleanup_containers,
-        context,
-    )
-}
-
-fn plan_namespace(
-    target: DeployPlanningTarget<'_>,
+    target: &DeployPlanningTarget,
     services: Vec<DeployPlanningInput>,
     cleanup_containers: Vec<DeployCleanupContainer>,
     context: DeployPlanningContext<'_>,
@@ -592,7 +594,7 @@ fn plan_namespace(
 }
 
 fn dependency_ordered_phases(
-    target: DeployPlanningTarget<'_>,
+    target: &DeployPlanningTarget,
     services: Vec<DeployPlanningInput>,
 ) -> Result<Vec<Vec<DeployPlanningInput>>, DeployPlanError> {
     let service_healthchecks = services
@@ -697,7 +699,7 @@ pub struct DeploySingleServicePlan {
 }
 
 fn plan_deploy_service(
-    target: DeployPlanningTarget<'_>,
+    target: &DeployPlanningTarget,
     input: DeployPlanningInput,
     volume_plan: &VolumePlan,
 ) -> Result<DeploySingleServicePlan, DeployPlanError> {
@@ -793,9 +795,9 @@ fn plan_deploy_service(
 }
 
 fn planning_service<'a>(
-    target: DeployPlanningTarget<'a>,
+    target: &'a DeployPlanningTarget,
     service_id: &ServiceId,
-) -> Result<DeployPlanningService<'a>, DeployPlanError> {
+) -> Result<&'a DeployPlanningService, DeployPlanError> {
     let Some(service) = target.service(service_id) else {
         return Err(DeployPlanError::UnknownService {
             service_id: service_id.clone(),

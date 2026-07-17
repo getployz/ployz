@@ -4,95 +4,15 @@ use super::*;
 
 pub fn prepare_deploy(
     input: DeployPreparationInput<'_>,
-    mut new_route_binding_id: impl FnMut(&RouteTarget) -> RouteBindingId,
 ) -> Result<PreparedDeploy, DeployPreparationError> {
-    let Some(service) = input.request.service(&input.service_id) else {
-        return Err(DeployPreparationError::UnknownService {
-            service_id: input.service_id,
-        });
-    };
-    let prepared = prepare_planning_service(
-        PlanningPreparationInput {
-            target: DeployPlanningTarget::Deploy(input.request),
-            service: DeployPlanningService::from_deploy(service),
-            occupied_route_bindings: input.occupied_route_bindings,
-            eligible_machines: input.eligible_machines,
-            machine_platforms: input.machine_platforms,
-            draining_machines: input.draining_machines,
-            observed_machines: input.observed_machines,
-            existing_replica_policy: input.existing_replica_policy,
-        },
-        &mut new_route_binding_id,
-    )?;
-
-    Ok(PreparedDeploy {
-        service: service.clone(),
-        route_commits: prepared.route_commits,
-        eligible_machines: prepared.eligible_machines,
-        unusable_machines: prepared.unusable_machines,
-        existing_replicas: prepared.existing_replicas,
-        cleanup_candidates: prepared.cleanup_candidates,
-    })
-}
-
-pub fn prepare_deploy_preview(
-    input: DeployPreviewPreparationInput<'_>,
-    mut new_route_binding_id: impl FnMut(&RouteTarget) -> RouteBindingId,
-) -> Result<PreparedDeployPreview, DeployPreparationError> {
     let Some(service) = input.target.service(&input.service_id) else {
         return Err(DeployPreparationError::UnknownService {
             service_id: input.service_id,
         });
     };
-    let prepared = prepare_planning_service(
-        PlanningPreparationInput {
-            target: DeployPlanningTarget::Preview(input.target),
-            service: DeployPlanningService::from_preview(service),
-            occupied_route_bindings: input.occupied_route_bindings,
-            eligible_machines: input.eligible_machines,
-            machine_platforms: input.machine_platforms,
-            draining_machines: input.draining_machines,
-            observed_machines: input.observed_machines,
-            existing_replica_policy: input.existing_replica_policy,
-        },
-        &mut new_route_binding_id,
-    )?;
-    Ok(PreparedDeployPreview {
-        service: service.clone(),
-        route_commits: prepared.route_commits,
-        eligible_machines: prepared.eligible_machines,
-        unusable_machines: prepared.unusable_machines,
-        existing_replicas: prepared.existing_replicas,
-        cleanup_candidates: prepared.cleanup_candidates,
-    })
-}
-
-struct PreparedPlanningService {
-    route_commits: Vec<RouteBindingState>,
-    eligible_machines: Vec<MachineId>,
-    unusable_machines: Vec<crate::operation::UnusableMachine>,
-    existing_replicas: Vec<ExistingServiceReplica>,
-    cleanup_candidates: Vec<ObservedCleanupCandidate>,
-}
-
-struct PlanningPreparationInput<'a> {
-    target: DeployPlanningTarget<'a>,
-    service: DeployPlanningService<'a>,
-    occupied_route_bindings: Vec<RouteBindingState>,
-    eligible_machines: Vec<MachineId>,
-    machine_platforms: BTreeMap<MachineId, OciPlatform>,
-    draining_machines: Vec<MachineId>,
-    observed_machines: Vec<MachineContainerObservationSnapshot>,
-    existing_replica_policy: ExistingReplicaPolicy,
-}
-
-fn prepare_planning_service(
-    input: PlanningPreparationInput<'_>,
-    new_route_binding_id: &mut impl FnMut(&RouteTarget) -> RouteBindingId,
-) -> Result<PreparedPlanningService, DeployPreparationError> {
-    let PlanningPreparationInput {
+    let DeployPreparationInput {
         target,
-        service,
+        service_id: _,
         occupied_route_bindings,
         eligible_machines,
         machine_platforms,
@@ -100,11 +20,11 @@ fn prepare_planning_service(
         observed_machines,
         existing_replica_policy,
     } = input;
-    let route_commits = planning_route_binding_commits(
+    let route_additions = declared_route_binding_additions(
         target.namespace_id(),
         service,
         &occupied_route_bindings,
-        new_route_binding_id,
+        &[],
     )?;
     let mut existing_replicas = existing_replicas(
         target.namespace_id(),
@@ -135,8 +55,8 @@ fn prepare_planning_service(
         .collect();
     existing_replicas.retain(|replica| platform_usable_machines.contains(&replica.machine_id));
 
-    Ok(PreparedPlanningService {
-        route_commits,
+    Ok(PreparedDeploy {
+        route_additions,
         eligible_machines,
         unusable_machines,
         existing_replicas,
@@ -194,7 +114,7 @@ pub fn namespace_serving_target_removals(
 /// replacement on an eligible machine and cleanup removes the original.
 fn existing_replicas(
     namespace_id: &NamespaceId,
-    service: DeployPlanningService<'_>,
+    service: &DeployPlanningService,
     observed_machines: &[MachineContainerObservationSnapshot],
     draining_machines: &[MachineId],
     policy: &ExistingReplicaPolicy,
@@ -247,7 +167,7 @@ fn existing_replicas(
 
 fn cleanup_candidates(
     namespace_id: &NamespaceId,
-    service: DeployPlanningService<'_>,
+    service: &DeployPlanningService,
     observed_machines: &[MachineContainerObservationSnapshot],
 ) -> Vec<ObservedCleanupCandidate> {
     observed_machines
@@ -271,93 +191,14 @@ fn cleanup_candidates(
         .collect()
 }
 
-fn planning_route_binding_commits(
-    namespace_id: &NamespaceId,
-    service: DeployPlanningService<'_>,
-    occupied: &[RouteBindingState],
-    new_route_binding_id: &mut impl FnMut(&RouteTarget) -> RouteBindingId,
-) -> Result<Vec<RouteBindingState>, RouteBindingCommitError> {
-    let mut bindings = Vec::<RouteBindingState>::new();
-    for route in service.routes() {
-        let Some(target) = route.target.concrete_target() else {
-            continue;
-        };
-        if let Some(existing) = bindings.iter().find(|binding| binding.target == target) {
-            return Err(RouteBindingCommitError::HostnameCollision {
-                hostname: target.hostname,
-                route_binding_id: existing.id.clone(),
-            });
-        }
-        if let Some(existing) = occupied.iter().find(|binding| binding.target == target) {
-            if existing.origin == RouteBindingOrigin::Declared
-                && existing.namespace_id == *namespace_id
-                && existing.service_id == *service.service_id()
-            {
-                bindings.push(RouteBindingState {
-                    endpoint_port: route.endpoint_port,
-                    ..existing.clone()
-                });
-                continue;
-            }
-            return Err(RouteBindingCommitError::HostnameCollision {
-                hostname: target.hostname,
-                route_binding_id: existing.id.clone(),
-            });
-        }
-        bindings.push(RouteBindingState {
-            id: new_route_binding_id(&target),
-            namespace_id: namespace_id.clone(),
-            target,
-            endpoint_port: route.endpoint_port,
-            service_id: service.service_id().clone(),
-            origin: RouteBindingOrigin::Declared,
-        });
-    }
-    Ok(bindings)
-}
-
-/// Validate every route mutation in one deploy against current cluster intent.
-///
-/// Automatic bindings are derived first because declared and automatic routes
-/// share one hostname namespace. The returned bindings include identical
-/// existing bindings, making this the same policy used by execution planning.
+/// Validate every prospective route addition against current cluster intent.
 pub fn validate_deploy_route_bindings(
-    request: &VolumeDeclaredDeployRequest,
+    target: &DeployPlanningTarget,
     automatic_hostname_suffix: Option<&RouteHostname>,
     existing: &[RouteBindingState],
-    new_route_binding_id: impl FnMut(&RouteTarget) -> RouteBindingId,
-) -> Result<Vec<RouteBindingState>, DeployRouteBindingValidationError> {
-    validate_planning_route_bindings(
-        DeployPlanningTarget::Deploy(request),
-        automatic_hostname_suffix,
-        existing,
-        new_route_binding_id,
-    )
-}
-
-pub fn validate_deploy_preview_route_bindings(
-    target: &VolumeDeclaredDeployPreviewTarget,
-    automatic_hostname_suffix: Option<&RouteHostname>,
-    existing: &[RouteBindingState],
-    new_route_binding_id: impl FnMut(&RouteTarget) -> RouteBindingId,
-) -> Result<Vec<RouteBindingState>, DeployRouteBindingValidationError> {
-    validate_planning_route_bindings(
-        DeployPlanningTarget::Preview(target),
-        automatic_hostname_suffix,
-        existing,
-        new_route_binding_id,
-    )
-}
-
-fn validate_planning_route_bindings(
-    target: DeployPlanningTarget<'_>,
-    automatic_hostname_suffix: Option<&RouteHostname>,
-    existing: &[RouteBindingState],
-    mut new_route_binding_id: impl FnMut(&RouteTarget) -> RouteBindingId,
-) -> Result<Vec<RouteBindingState>, DeployRouteBindingValidationError> {
-    let mut occupied = existing.to_vec();
-    let mut commits = Vec::new();
-    let mut services = target.services();
+) -> Result<Vec<DeployRouteBindingAddition>, DeployRouteBindingValidationError> {
+    let mut additions = Vec::new();
+    let mut services = target.services().iter().collect::<Vec<_>>();
     services.sort_by(|left, right| left.service_id().cmp(right.service_id()));
     let duplicate_service_id = services.windows(2).find_map(|pair| {
         let [first, second] = pair else {
@@ -369,26 +210,49 @@ fn validate_planning_route_bindings(
         return Err(DeployRouteBindingValidationError::DuplicateServiceId { service_id });
     }
     for service in services {
-        let automatic = planning_auto_hostname_route_binding_commits(
+        let automatic = auto_hostname_route_binding_additions(
             target.namespace_id(),
             service,
             automatic_hostname_suffix,
-            &occupied,
-            &mut new_route_binding_id,
+            existing,
+            &additions,
         )?;
-        occupied.extend(automatic.iter().cloned());
-        commits.extend(automatic);
+        additions.extend(automatic);
 
-        let declared = planning_route_binding_commits(
-            target.namespace_id(),
-            service,
-            &occupied,
-            &mut new_route_binding_id,
-        )?;
-        occupied.extend(declared.iter().cloned());
-        commits.extend(declared);
+        let declared =
+            declared_route_binding_additions(target.namespace_id(), service, existing, &additions)?;
+        additions.extend(declared);
     }
-    Ok(commits)
+    Ok(additions)
+}
+
+/// Authoritative-only conversion from prospective additions to durable state.
+#[must_use]
+pub fn commit_deploy_route_bindings(
+    additions: Vec<DeployRouteBindingAddition>,
+    existing: &[RouteBindingState],
+    mut new_route_binding_id: impl FnMut(&RouteTarget) -> RouteBindingId,
+) -> Vec<RouteBindingState> {
+    additions
+        .into_iter()
+        .map(|addition| {
+            let id = existing
+                .iter()
+                .find(|binding| binding.target == addition.target)
+                .map_or_else(
+                    || new_route_binding_id(&addition.target),
+                    |binding| binding.id.clone(),
+                );
+            RouteBindingState {
+                id,
+                namespace_id: addition.namespace_id,
+                target: addition.target,
+                endpoint_port: addition.endpoint_port,
+                service_id: addition.service_id,
+                origin: addition.origin,
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -403,6 +267,8 @@ pub enum DeployRouteBindingValidationError {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RouteBindingCommitError {
+    #[error("declared hostname {} is declared more than once", .hostname.as_str())]
+    DuplicateHostname { hostname: RouteHostname },
     #[error(
         "declared hostname {} collides with route binding {}",
         .hostname.as_str(),
@@ -414,47 +280,55 @@ pub enum RouteBindingCommitError {
     },
 }
 
-/// Derive exact automatic hostnames and reuse only identical requests.
-pub fn auto_hostname_route_binding_commits(
+fn declared_route_binding_additions(
     namespace_id: &NamespaceId,
-    service: &DeployServiceSpec,
-    configured_suffix: Option<&RouteHostname>,
-    occupied: &[RouteBindingState],
-    new_route_binding_id: impl FnMut(&RouteTarget) -> RouteBindingId,
-) -> Result<Vec<RouteBindingState>, AutoHostnameRouteBindingError> {
-    planning_auto_hostname_route_binding_commits(
-        namespace_id,
-        DeployPlanningService::from_deploy(service),
-        configured_suffix,
-        occupied,
-        new_route_binding_id,
-    )
+    service: &DeployPlanningService,
+    existing: &[RouteBindingState],
+    planned: &[DeployRouteBindingAddition],
+) -> Result<Vec<DeployRouteBindingAddition>, RouteBindingCommitError> {
+    let mut additions = Vec::new();
+    for route in service.routes() {
+        let Some(target) = route.target.concrete_target() else {
+            continue;
+        };
+        if planned
+            .iter()
+            .chain(&additions)
+            .any(|addition| addition.target == target)
+        {
+            return Err(RouteBindingCommitError::DuplicateHostname {
+                hostname: target.hostname,
+            });
+        }
+        if let Some(binding) = existing.iter().find(|binding| binding.target == target)
+            && (binding.origin != RouteBindingOrigin::Declared
+                || binding.namespace_id != *namespace_id
+                || binding.service_id != *service.service_id())
+        {
+            return Err(RouteBindingCommitError::HostnameCollision {
+                hostname: target.hostname,
+                route_binding_id: binding.id.clone(),
+            });
+        }
+        additions.push(DeployRouteBindingAddition {
+            namespace_id: namespace_id.clone(),
+            target,
+            endpoint_port: route.endpoint_port,
+            service_id: service.service_id().clone(),
+            origin: RouteBindingOrigin::Declared,
+        });
+    }
+    Ok(additions)
 }
 
-pub fn auto_hostname_preview_route_binding_commits(
+fn auto_hostname_route_binding_additions(
     namespace_id: &NamespaceId,
-    service: &DeployPreviewService,
+    service: &DeployPlanningService,
     configured_suffix: Option<&RouteHostname>,
-    occupied: &[RouteBindingState],
-    new_route_binding_id: impl FnMut(&RouteTarget) -> RouteBindingId,
-) -> Result<Vec<RouteBindingState>, AutoHostnameRouteBindingError> {
-    planning_auto_hostname_route_binding_commits(
-        namespace_id,
-        DeployPlanningService::from_preview(service),
-        configured_suffix,
-        occupied,
-        new_route_binding_id,
-    )
-}
-
-fn planning_auto_hostname_route_binding_commits(
-    namespace_id: &NamespaceId,
-    service: DeployPlanningService<'_>,
-    configured_suffix: Option<&RouteHostname>,
-    occupied: &[RouteBindingState],
-    mut new_route_binding_id: impl FnMut(&RouteTarget) -> RouteBindingId,
-) -> Result<Vec<RouteBindingState>, AutoHostnameRouteBindingError> {
-    let mut bindings = Vec::<RouteBindingState>::new();
+    existing: &[RouteBindingState],
+    planned: &[DeployRouteBindingAddition],
+) -> Result<Vec<DeployRouteBindingAddition>, AutoHostnameRouteBindingError> {
+    let mut additions = Vec::new();
 
     for route in service.routes() {
         let DeployRouteTarget::AutoHostname { label } = &route.target else {
@@ -468,30 +342,26 @@ fn planning_auto_hostname_route_binding_commits(
                 message: error.to_string(),
             })?;
         let target = RouteTarget::new(hostname);
-        if let Some(existing) = bindings.iter().find(|binding| binding.target == target) {
-            return Err(AutoHostnameRouteBindingError::HostnameCollision {
+        if planned
+            .iter()
+            .chain(&additions)
+            .any(|addition| addition.target == target)
+        {
+            return Err(AutoHostnameRouteBindingError::DuplicateHostname {
                 hostname: target.hostname,
-                route_binding_id: existing.id.clone(),
             });
         }
-        if let Some(existing) = occupied.iter().find(|binding| binding.target == target) {
-            if existing.origin == RouteBindingOrigin::Automatic
-                && existing.namespace_id == *namespace_id
-                && existing.service_id == *service.service_id()
-            {
-                bindings.push(RouteBindingState {
-                    endpoint_port: route.endpoint_port,
-                    ..existing.clone()
-                });
-                continue;
-            }
+        if let Some(binding) = existing.iter().find(|binding| binding.target == target)
+            && (binding.origin != RouteBindingOrigin::Automatic
+                || binding.namespace_id != *namespace_id
+                || binding.service_id != *service.service_id())
+        {
             return Err(AutoHostnameRouteBindingError::HostnameCollision {
                 hostname: target.hostname,
-                route_binding_id: existing.id.clone(),
+                route_binding_id: binding.id.clone(),
             });
         }
-        bindings.push(RouteBindingState {
-            id: new_route_binding_id(&target),
+        additions.push(DeployRouteBindingAddition {
             namespace_id: namespace_id.clone(),
             target,
             endpoint_port: route.endpoint_port,
@@ -499,7 +369,7 @@ fn planning_auto_hostname_route_binding_commits(
             origin: RouteBindingOrigin::Automatic,
         });
     }
-    Ok(bindings)
+    Ok(additions)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -508,6 +378,8 @@ pub enum AutoHostnameRouteBindingError {
     AutomaticHostnamesDisabled,
     #[error("derived automatic hostname is invalid: {message}")]
     InvalidHostname { message: String },
+    #[error("automatic hostname {} is declared more than once", .hostname.as_str())]
+    DuplicateHostname { hostname: RouteHostname },
     #[error(
         "automatic hostname {} collides with route binding {}",
         .hostname.as_str(),
