@@ -16,7 +16,8 @@ use crate::control::operation_evidence::OperationRepository;
 use crate::control::role_client::machine::NatsMachineFactsReader;
 
 use super::{
-    DeployFactLoadError, MachineContainerRuntime, facts::load_planning_facts_from_nats,
+    DeployFactLoadError, MachineContainerRuntime,
+    facts::{PlacementFactsGatherPolicy, load_planning_facts_from_nats},
     images::ImagePreparationError,
 };
 
@@ -50,6 +51,7 @@ pub async fn preview_deploy_from_nats(
         stores.target_store,
         stores.projection_store,
         step_timeout,
+        PlacementFactsGatherPolicy::OverallDeadline(step_timeout),
     )
     .await
     .map_err(preview_fact_load_error)?;

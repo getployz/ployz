@@ -6,7 +6,10 @@ use crate::control::intent::ingress_intent::{
 };
 use crate::control::intent::namespace_intent::NamespaceIntentStore;
 use crate::control::intent::service::NatsIntentReader;
-use crate::control::role_client::machine::{NatsMachineFactsReader, read_machine_placement_facts};
+use crate::control::role_client::machine::{
+    NatsMachineFactsReader, read_machine_placement_facts,
+    read_machine_placement_facts_with_gather_timeout,
+};
 use crate::control::role_client::machine_convergence::gather_dataplane_statuses;
 use ployz_core::deploy::{
     AutoHostnameRouteBindingError, DeployPlanningTarget, DeployRequest,
@@ -25,6 +28,18 @@ use std::time::Duration;
 use super::placement::classify_machine_usability;
 use super::preparation::namespace_cleanup_candidates;
 use super::{AutomaticHostnameMode, DeployExecutionFacts};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PlacementFactsGatherPolicy {
+    CompleteAll,
+    OverallDeadline(Duration),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DeployFactGatherPolicy {
+    step_timeout: Duration,
+    placement_facts: PlacementFactsGatherPolicy,
+}
 
 pub async fn load_deploy_execution_facts_from_nats(
     request: &DeployRequest,
@@ -46,6 +61,7 @@ pub async fn load_deploy_execution_facts_from_nats(
         target_store,
         projection_store,
         step_timeout,
+        PlacementFactsGatherPolicy::CompleteAll,
     )
     .await
 }
@@ -57,6 +73,7 @@ pub(super) async fn load_planning_facts_from_nats(
     target_store: &PloyzDnsTargetStore,
     projection_store: &IngressProjectionStore,
     step_timeout: Duration,
+    placement_facts_gather: PlacementFactsGatherPolicy,
 ) -> Result<DeployExecutionFacts, DeployFactLoadError> {
     let intent = read_intent(intent_reader).await?;
     let allocation = if has_auto_hostname_service(target)
@@ -96,7 +113,10 @@ pub(super) async fn load_planning_facts_from_nats(
         projection,
         automatic_hostname_mode,
         publishable_gateway_ids,
-        step_timeout,
+        DeployFactGatherPolicy {
+            step_timeout,
+            placement_facts: placement_facts_gather,
+        },
     )
     .await
 }
@@ -219,7 +239,7 @@ async fn deploy_execution_facts(
     projection: DataplaneProjection,
     automatic_hostname_mode: AutomaticHostnameMode,
     publishable_gateway_ids: Vec<MachineId>,
-    step_timeout: Duration,
+    gather_policy: DeployFactGatherPolicy,
 ) -> Result<DeployExecutionFacts, DeployFactLoadError> {
     let active_machines = intent.active_machines.clone();
     let machine_lifecycles = load_machine_lifecycles(&intent);
@@ -237,7 +257,19 @@ async fn deploy_execution_facts(
         .into_iter()
         .filter(|pin| pin.namespace_id() == target.namespace_id())
         .collect::<Vec<_>>();
-    let placement_facts = read_machine_placement_facts(facts_reader, machine_lifecycles).await;
+    let placement_facts = match gather_policy.placement_facts {
+        PlacementFactsGatherPolicy::CompleteAll => {
+            read_machine_placement_facts(facts_reader, machine_lifecycles).await
+        }
+        PlacementFactsGatherPolicy::OverallDeadline(timeout) => {
+            read_machine_placement_facts_with_gather_timeout(
+                facts_reader,
+                machine_lifecycles,
+                timeout,
+            )
+            .await
+        }
+    };
     let dataplane_statuses = gather_dataplane_statuses(
         facts_reader,
         projection
@@ -314,7 +346,7 @@ async fn deploy_execution_facts(
         automatic_hostname_mode,
         gateway_certificate_targets,
         ployz_gateway_certificate_targets,
-        step_timeout,
+        step_timeout: gather_policy.step_timeout,
     })
 }
 

@@ -406,8 +406,63 @@ pub(crate) async fn read_machine_placement_facts(
     facts_reader: &NatsMachineFactsReader,
     machine_lifecycles: impl IntoIterator<Item = (MachineId, MachineLifecycle)>,
 ) -> Vec<MachinePlacementFacts> {
-    let mut reads = stream::iter(machine_lifecycles)
-        .map(|(machine_id, lifecycle)| async move {
+    let mut reads = machine_placement_fact_reads(
+        facts_reader,
+        machine_lifecycles.into_iter().collect::<Vec<_>>(),
+    );
+
+    let mut facts = Vec::new();
+    while let Some(machine) = reads.next().await {
+        facts.push(machine);
+    }
+    facts.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
+    facts
+}
+
+pub(crate) async fn read_machine_placement_facts_with_gather_timeout(
+    facts_reader: &NatsMachineFactsReader,
+    machine_lifecycles: impl IntoIterator<Item = (MachineId, MachineLifecycle)>,
+    gather_timeout: Duration,
+) -> Vec<MachinePlacementFacts> {
+    let candidates = machine_lifecycles.into_iter().collect::<Vec<_>>();
+    let reads = machine_placement_fact_reads(facts_reader, candidates.clone());
+    collect_machine_placement_facts_until(candidates, reads, gather_timeout).await
+}
+
+async fn collect_machine_placement_facts_until(
+    candidates: Vec<(MachineId, MachineLifecycle)>,
+    reads: impl futures_util::Stream<Item = MachinePlacementFacts>,
+    gather_timeout: Duration,
+) -> Vec<MachinePlacementFacts> {
+    let mut unfinished = candidates.into_iter().collect::<BTreeMap<_, _>>();
+    futures_util::pin_mut!(reads);
+    let mut facts = Vec::new();
+    let _ = tokio::time::timeout(gather_timeout, async {
+        while let Some(machine) = reads.next().await {
+            unfinished.remove(&machine.machine_id);
+            facts.push(machine);
+        }
+    })
+    .await;
+    facts.extend(
+        unfinished
+            .into_iter()
+            .map(|(machine_id, lifecycle)| MachinePlacementFacts {
+                machine_id,
+                lifecycle,
+                answer: None,
+            }),
+    );
+    facts.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
+    facts
+}
+
+fn machine_placement_fact_reads(
+    facts_reader: &NatsMachineFactsReader,
+    machine_lifecycles: Vec<(MachineId, MachineLifecycle)>,
+) -> impl futures_util::Stream<Item = MachinePlacementFacts> + '_ {
+    stream::iter(machine_lifecycles)
+        .map(move |(machine_id, lifecycle)| async move {
             let control_request_started_at_unix_ms = current_unix_millis();
             let answer = facts_reader
                 .machine_facts_response(&machine_id)
@@ -420,14 +475,7 @@ pub(crate) async fn read_machine_placement_facts(
                 answer,
             }
         })
-        .buffer_unordered(MAX_CONCURRENT_MACHINE_READS);
-
-    let mut facts = Vec::new();
-    while let Some(machine) = reads.next().await {
-        facts.push(machine);
-    }
-    facts.sort_by(|left, right| left.machine_id.cmp(&right.machine_id));
-    facts
+        .buffer_unordered(MAX_CONCURRENT_MACHINE_READS)
 }
 
 fn placement_answer(
@@ -1024,6 +1072,7 @@ fn machine_service_failure_reason(error: NatsServiceError) -> MachineRuntimeUnav
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::stream;
     use ployz_core::image::OciPlatform;
     use ployz_core::machine::runtime::{MachineContainerObservationSnapshot, MachineDiskSpace};
 
@@ -1059,5 +1108,60 @@ mod tests {
                 machine_observed_at_unix_ms: 1_234,
             }
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn bounded_placement_gather_preserves_answers_and_types_every_unfinished_candidate() {
+        let candidates = (0_u8..18)
+            .map(|index| {
+                (
+                    MachineId::try_new(format!("machine-{index:02}"))
+                        .expect("candidate machine id"),
+                    MachineLifecycle::Active,
+                )
+            })
+            .collect::<Vec<_>>();
+        let [(completed_id, _), ..] = candidates.as_slice() else {
+            panic!("candidate fixture is non-empty");
+        };
+        let completed_id = completed_id.clone();
+        let completed = MachinePlacementFacts {
+            machine_id: completed_id.clone(),
+            lifecycle: MachineLifecycle::Active,
+            answer: Some(placement_answer(
+                MachineFactsGetRpcOk {
+                    facts: MachineFactsSnapshot::try_new(
+                        completed_id.clone(),
+                        MachineContainerObservationSnapshot::try_new(completed_id.clone(), [])
+                            .expect("containers"),
+                        None,
+                        MachineDiskSpace {
+                            available_bytes: 1,
+                            total_bytes: 2,
+                        },
+                        None,
+                        OciPlatform::try_new("linux", "amd64").expect("platform"),
+                        1_234,
+                    )
+                    .expect("facts"),
+                    build: MachineBuildCapability::Available,
+                },
+                1_000,
+            )),
+        };
+        let reads = stream::once(async move { completed }).chain(stream::pending());
+
+        let gathered =
+            collect_machine_placement_facts_until(candidates, reads, Duration::from_secs(2)).await;
+
+        assert_eq!(gathered.len(), 18);
+        for facts in gathered {
+            if facts.machine_id == completed_id {
+                assert!(facts.answer.is_some());
+            } else {
+                assert_eq!(facts.lifecycle, MachineLifecycle::Active);
+                assert!(facts.answer.is_none());
+            }
+        }
     }
 }
