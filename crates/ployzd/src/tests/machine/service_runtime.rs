@@ -1548,14 +1548,8 @@ struct RecordingRunnerInner {
 struct RecordingRunner {
     state: RecordingRunnerState,
     existing: Vec<ExistingManagedContainer>,
-    list_failure: Option<String>,
     next_container: Option<ContainerId>,
-    create_failure: Option<String>,
-    start_failure: Option<(ContainerId, String)>,
-    restart_failure: Option<(ContainerId, String)>,
-    stop_failure: Option<(ContainerId, String)>,
-    remove_failure: Option<(ContainerId, String)>,
-    volume_remove_failure: Option<String>,
+    failure: Option<RecordingRunnerFailure>,
     volume_usage: BTreeMap<VolumeName, VolumeUsageFacts>,
     wait_behavior: RecordingWaitBehavior,
 }
@@ -1567,95 +1561,142 @@ enum RecordingWaitBehavior {
     Pending,
 }
 
+#[derive(Clone)]
+enum RecordingRunnerFailure {
+    List(String),
+    Create(String),
+    Start {
+        container_id: ContainerId,
+        message: String,
+    },
+    Restart {
+        container_id: ContainerId,
+        message: String,
+    },
+    Stop {
+        container_id: ContainerId,
+        message: String,
+    },
+    Remove {
+        container_id: ContainerId,
+        message: String,
+    },
+    VolumeRemove(String),
+}
+
 impl RecordingRunner {
+    #[must_use]
     fn new(state: RecordingRunnerState) -> Self {
         Self {
             state,
             existing: Vec::new(),
-            list_failure: None,
             next_container: None,
-            create_failure: None,
-            start_failure: None,
-            restart_failure: None,
-            stop_failure: None,
-            remove_failure: None,
-            volume_remove_failure: None,
+            failure: None,
             volume_usage: BTreeMap::new(),
             wait_behavior: RecordingWaitBehavior::Exit(0),
         }
     }
 
+    #[must_use]
     fn with_existing(mut self, existing: ExistingManagedContainer) -> Self {
         self.existing.push(existing);
         self
     }
 
+    #[must_use]
     fn with_list_failure(mut self, message: &str) -> Self {
-        self.list_failure = Some(message.to_owned());
+        self.failure = Some(RecordingRunnerFailure::List(message.to_owned()));
         self
     }
 
+    #[must_use]
     fn with_next_container(mut self, container_id: &str) -> Self {
         self.next_container = Some(self::container_id(container_id));
         self
     }
 
+    #[must_use]
     fn with_create_failure(mut self, message: &str) -> Self {
-        self.create_failure = Some(message.to_owned());
+        self.failure = Some(RecordingRunnerFailure::Create(message.to_owned()));
         self
     }
 
+    #[must_use]
     fn with_start_failure(mut self, container_id: &str, message: &str) -> Self {
         self.next_container = Some(self::container_id(container_id));
-        self.start_failure = Some((self::container_id(container_id), message.to_owned()));
+        self.failure = Some(RecordingRunnerFailure::Start {
+            container_id: self::container_id(container_id),
+            message: message.to_owned(),
+        });
         self
     }
 
+    #[must_use]
     fn with_existing_start_failure(mut self, container_id: &str, message: &str) -> Self {
         self.existing.push(existing_container_with_state(
             container_id,
             managed_identity(),
             ExistingManagedContainerState::StartableStopped,
         ));
-        self.start_failure = Some((self::container_id(container_id), message.to_owned()));
+        self.failure = Some(RecordingRunnerFailure::Start {
+            container_id: self::container_id(container_id),
+            message: message.to_owned(),
+        });
         self
     }
 
+    #[must_use]
     fn with_remove_failure(mut self, container_id: &str, message: &str) -> Self {
-        self.remove_failure = Some((self::container_id(container_id), message.to_owned()));
+        self.failure = Some(RecordingRunnerFailure::Remove {
+            container_id: self::container_id(container_id),
+            message: message.to_owned(),
+        });
         self
     }
 
+    #[must_use]
     fn with_volume_remove_failure(mut self, message: &str) -> Self {
-        self.volume_remove_failure = Some(message.to_owned());
+        self.failure = Some(RecordingRunnerFailure::VolumeRemove(message.to_owned()));
         self
     }
 
+    #[must_use]
     fn with_stop_failure(mut self, container_id: &str, message: &str) -> Self {
-        self.stop_failure = Some((self::container_id(container_id), message.to_owned()));
+        self.failure = Some(RecordingRunnerFailure::Stop {
+            container_id: self::container_id(container_id),
+            message: message.to_owned(),
+        });
         self
     }
 
+    #[must_use]
     fn with_restart_failure(mut self, container_id: &str, message: &str) -> Self {
-        self.restart_failure = Some((self::container_id(container_id), message.to_owned()));
+        self.failure = Some(RecordingRunnerFailure::Restart {
+            container_id: self::container_id(container_id),
+            message: message.to_owned(),
+        });
         self
     }
 
+    #[must_use]
     fn with_wait_exit_code(mut self, exit_code: i64) -> Self {
         self.wait_behavior = RecordingWaitBehavior::Exit(exit_code);
         self
     }
 
+    #[must_use]
     fn with_wait_failure(mut self, message: &str) -> Self {
         self.wait_behavior = RecordingWaitBehavior::Fail(message.to_owned());
         self
     }
 
+    #[must_use]
     fn with_pending_wait(mut self) -> Self {
         self.wait_behavior = RecordingWaitBehavior::Pending;
         self
     }
 
+    #[must_use]
     fn with_volume_usage(mut self, volume: &str, facts: VolumeUsageFacts) -> Self {
         self.volume_usage
             .insert(VolumeName::try_new(volume).expect("volume"), facts);
@@ -1701,8 +1742,10 @@ impl MachineContainerRunner for RecordingRunner {
     async fn existing_managed_containers(
         &self,
     ) -> Result<Vec<ExistingManagedContainer>, MachineContainerListError> {
-        if let Some(message) = self.list_failure.clone() {
-            return Err(MachineContainerListError::ListExisting { message });
+        if let Some(RecordingRunnerFailure::List(message)) = &self.failure {
+            return Err(MachineContainerListError::ListExisting {
+                message: message.clone(),
+            });
         }
         Ok(self.existing.clone())
     }
@@ -1741,8 +1784,10 @@ impl MachineContainerRunner for RecordingRunner {
         &self,
         command: CreateManagedContainer,
     ) -> Result<ContainerId, MachineContainerCreateError> {
-        if let Some(message) = self.create_failure.clone() {
-            return Err(MachineContainerCreateError::Create { message });
+        if let Some(RecordingRunnerFailure::Create(message)) = &self.failure {
+            return Err(MachineContainerCreateError::Create {
+                message: message.clone(),
+            });
         }
 
         self.state
@@ -1762,12 +1807,15 @@ impl MachineContainerRunner for RecordingRunner {
         &self,
         container_id: &ContainerId,
     ) -> Result<(), MachineContainerStartError> {
-        if let Some((failed_container_id, message)) = self.start_failure.clone()
-            && failed_container_id == *container_id
+        if let Some(RecordingRunnerFailure::Start {
+            container_id: failed_container_id,
+            message,
+        }) = &self.failure
+            && failed_container_id == container_id
         {
             return Err(MachineContainerStartError::Start {
                 container_id: container_id.clone(),
-                message,
+                message: message.clone(),
             });
         }
 
@@ -1800,12 +1848,15 @@ impl MachineContainerRunner for RecordingRunner {
         container_id: &ContainerId,
         _expected_identity: &ManagedContainerIdentity,
     ) -> Result<(), MachineContainerRemoveError> {
-        if let Some((failed_container_id, message)) = self.remove_failure.clone()
-            && failed_container_id == *container_id
+        if let Some(RecordingRunnerFailure::Remove {
+            container_id: failed_container_id,
+            message,
+        }) = &self.failure
+            && failed_container_id == container_id
         {
             return Err(MachineContainerRemoveError::Remove {
                 container_id: container_id.clone(),
-                message,
+                message: message.clone(),
             });
         }
 
@@ -1833,7 +1884,7 @@ impl MachineContainerRunner for RecordingRunner {
             .push(RecordedVolumeRemoveEffect::DockerReference(
                 docker_volume_name.to_owned(),
             ));
-        if let Some(message) = &self.volume_remove_failure {
+        if let Some(RecordingRunnerFailure::VolumeRemove(message)) = &self.failure {
             return Err(MachineVolumeRemoveError::RemoveVolume {
                 docker_volume_name: docker_volume_name.to_owned(),
                 message: message.clone(),
@@ -1865,12 +1916,15 @@ impl MachineContainerRunner for RecordingRunner {
         container_id: &ContainerId,
         _expected_identity: &ManagedContainerIdentity,
     ) -> Result<(), MachineContainerStopError> {
-        if let Some((failed_container_id, message)) = self.stop_failure.clone()
-            && failed_container_id == *container_id
+        if let Some(RecordingRunnerFailure::Stop {
+            container_id: failed_container_id,
+            message,
+        }) = &self.failure
+            && failed_container_id == container_id
         {
             return Err(MachineContainerStopError::Stop {
                 container_id: container_id.clone(),
-                message,
+                message: message.clone(),
             });
         }
 
@@ -1888,12 +1942,15 @@ impl MachineContainerRunner for RecordingRunner {
         container_id: &ContainerId,
         _expected_identity: &ManagedContainerIdentity,
     ) -> Result<(), MachineContainerRestartError> {
-        if let Some((failed_container_id, message)) = self.restart_failure.clone()
-            && failed_container_id == *container_id
+        if let Some(RecordingRunnerFailure::Restart {
+            container_id: failed_container_id,
+            message,
+        }) = &self.failure
+            && failed_container_id == container_id
         {
             return Err(MachineContainerRestartError::Restart {
                 container_id: container_id.clone(),
-                message,
+                message: message.clone(),
             });
         }
 

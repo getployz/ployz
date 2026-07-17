@@ -1,4 +1,4 @@
-use crate::roles::machine::runner::MachineContainerRunnerError;
+use crate::roles::machine::runner::MachineContainerListError;
 use ployz_core::ids::ContainerId;
 use ployz_core::operation::{FailureMessage, OperatorHint};
 use ployz_nats::service_runtime::{NatsServiceError, NatsServiceResponse};
@@ -11,52 +11,11 @@ pub(crate) fn machine_domain_error(response: impl serde::Serialize) -> NatsServi
     NatsServiceResponse::json_domain_error(&response)
 }
 
-pub(crate) fn runner_error(error: impl Into<MachineContainerRunnerError>) -> NatsServiceResponse {
-    let error = error.into();
+pub(crate) fn container_list_error(error: MachineContainerListError) -> NatsServiceResponse {
     match error {
-        MachineContainerRunnerError::ListExisting { message } => {
+        MachineContainerListError::ListExisting { message } => {
             NatsServiceResponse::transport_error(NatsServiceError::internal(format!(
                 "container list failed: {message}"
-            )))
-        }
-        MachineContainerRunnerError::EnsureEndpointNetwork { message } => {
-            NatsServiceResponse::transport_error(NatsServiceError::internal(format!(
-                "endpoint network ensure failed: {message}"
-            )))
-        }
-        MachineContainerRunnerError::EndpointNetworkSubnetMismatch { expected, observed } => {
-            NatsServiceResponse::transport_error(NatsServiceError::internal(format!(
-                "endpoint network subnet is {observed:?}, expected {expected:?}"
-            )))
-        }
-        MachineContainerRunnerError::Create { message } => NatsServiceResponse::transport_error(
-            NatsServiceError::internal(format!("container create failed: {message}")),
-        ),
-        MachineContainerRunnerError::ImagePull { message } => NatsServiceResponse::transport_error(
-            NatsServiceError::internal(format!("image pull failed: {message}")),
-        ),
-        MachineContainerRunnerError::Start { message, .. } => NatsServiceResponse::transport_error(
-            NatsServiceError::internal(format!("container start failed: {message}")),
-        ),
-        MachineContainerRunnerError::Wait { message, .. } => NatsServiceResponse::transport_error(
-            NatsServiceError::internal(format!("container wait failed: {message}")),
-        ),
-        MachineContainerRunnerError::Stop { message, .. } => NatsServiceResponse::transport_error(
-            NatsServiceError::internal(format!("container stop failed: {message}")),
-        ),
-        MachineContainerRunnerError::Restart { message, .. } => {
-            NatsServiceResponse::transport_error(NatsServiceError::internal(format!(
-                "container restart failed: {message}"
-            )))
-        }
-        MachineContainerRunnerError::Remove { message, .. } => {
-            NatsServiceResponse::transport_error(NatsServiceError::internal(format!(
-                "container remove failed: {message}"
-            )))
-        }
-        MachineContainerRunnerError::RemoveVolume { message, .. } => {
-            NatsServiceResponse::transport_error(NatsServiceError::internal(format!(
-                "volume remove failed: {message}"
             )))
         }
     }

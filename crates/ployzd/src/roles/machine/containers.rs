@@ -1,10 +1,11 @@
 use super::current_unix_ms;
 use super::deploy_container_run::{
-    HookContainerRunError, ServiceContainerRunError, run_hook_container, run_service_container,
+    HookContainerInfrastructureError, HookContainerRunError, ServiceContainerInfrastructureError,
+    ServiceContainerRunError, run_hook_container, run_service_container,
 };
 use super::facts::observation_state;
 use super::response::{
-    failure_message, inspect_hint, machine_domain_error, machine_success, runner_error,
+    container_list_error, failure_message, inspect_hint, machine_domain_error, machine_success,
 };
 use crate::roles::machine::protocol::{
     MachineContainerInspectDomainError, MachineContainerInspectRpcOk,
@@ -23,16 +24,18 @@ use crate::roles::machine::protocol::{
     MachineVolumeRemoveRpcResponse,
 };
 use crate::roles::machine::runner::{
-    CreateManagedContainer, MachineContainerRemoveError, MachineContainerRestartError,
-    MachineContainerRunner, MachineContainerStopError, MachineRegistryImageResolveError,
-    MachineVolumeRemoveError,
+    CreateManagedContainer, MachineContainerListError, MachineContainerRemoveError,
+    MachineContainerRestartError, MachineContainerRunner, MachineContainerStopError,
+    MachineRegistryImageResolveError, MachineVolumeRemoveError,
 };
 use crate::roles::machine::volume::docker_volume_name;
 use ployz_core::ids::{ContainerId, MachineId};
 use ployz_core::intent::VolumePinState;
 use ployz_core::machine::VolumeEnsureFailure;
 use ployz_core::machine::runtime::{MachineContainerFactDelta, ManagedContainerObservation};
-use ployz_nats::service_runtime::{NatsServiceRequest, NatsServiceResponse, decode_json_request};
+use ployz_nats::service_runtime::{
+    NatsServiceError, NatsServiceRequest, NatsServiceResponse, decode_json_request,
+};
 use ployz_nats::subjects::machine_container_facts;
 
 #[derive(Clone)]
@@ -70,7 +73,9 @@ where
         Err(ServiceContainerRunError::Domain(error)) => {
             machine_domain_error(MachineContainerRunRpcResponse::DomainError { machine_id, error })
         }
-        Err(ServiceContainerRunError::Runner(error)) => runner_error(error),
+        Err(ServiceContainerRunError::Infrastructure(error)) => {
+            service_container_infrastructure_error(error)
+        }
     }
 }
 
@@ -111,7 +116,9 @@ where
                 error,
             })
         }
-        Err(HookContainerRunError::Runner(error)) => runner_error(error),
+        Err(HookContainerRunError::Infrastructure(error)) => {
+            hook_container_infrastructure_error(error)
+        }
     }
 }
 
@@ -232,7 +239,9 @@ where
                 inspect_hint: inspect_hint(&container_id),
             },
         }),
-        Err(error @ MachineContainerRemoveError::ListExisting { .. }) => runner_error(error),
+        Err(MachineContainerRemoveError::ListExisting { message }) => {
+            container_list_error(MachineContainerListError::ListExisting { message })
+        }
     }
 }
 
@@ -399,7 +408,9 @@ where
                 inspect_hint: inspect_hint(&container_id),
             },
         }),
-        Err(error @ MachineContainerStopError::ListExisting { .. }) => runner_error(error),
+        Err(MachineContainerStopError::ListExisting { message }) => {
+            container_list_error(MachineContainerListError::ListExisting { message })
+        }
     }
 }
 
@@ -447,8 +458,52 @@ where
                 inspect_hint: inspect_hint(&container_id),
             },
         }),
-        Err(error @ MachineContainerRestartError::ListExisting { .. }) => runner_error(error),
+        Err(MachineContainerRestartError::ListExisting { message }) => {
+            container_list_error(MachineContainerListError::ListExisting { message })
+        }
     }
+}
+
+fn service_container_infrastructure_error(
+    error: ServiceContainerInfrastructureError,
+) -> NatsServiceResponse {
+    let message = match error {
+        ServiceContainerInfrastructureError::List { message } => {
+            format!("container list failed: {message}")
+        }
+        ServiceContainerInfrastructureError::Create { message } => {
+            format!("container create failed: {message}")
+        }
+        ServiceContainerInfrastructureError::EnsureEndpointNetwork { message } => {
+            format!("endpoint network ensure failed: {message}")
+        }
+        ServiceContainerInfrastructureError::EndpointNetworkSubnetMismatch {
+            expected,
+            observed,
+        } => format!("endpoint network subnet is {observed:?}, expected {expected:?}"),
+    };
+    NatsServiceResponse::transport_error(NatsServiceError::internal(message))
+}
+
+fn hook_container_infrastructure_error(
+    error: HookContainerInfrastructureError,
+) -> NatsServiceResponse {
+    let message = match error {
+        HookContainerInfrastructureError::List { message }
+        | HookContainerInfrastructureError::TimeoutStopList { message } => {
+            format!("container list failed: {message}")
+        }
+        HookContainerInfrastructureError::ImagePull { message } => {
+            format!("image pull failed: {message}")
+        }
+        HookContainerInfrastructureError::EnsureEndpointNetwork { message } => {
+            format!("endpoint network ensure failed: {message}")
+        }
+        HookContainerInfrastructureError::EndpointNetworkSubnetMismatch { expected, observed } => {
+            format!("endpoint network subnet is {observed:?}, expected {expected:?}")
+        }
+    };
+    NatsServiceResponse::transport_error(NatsServiceError::internal(message))
 }
 
 fn container_run_ok(

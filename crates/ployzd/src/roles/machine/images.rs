@@ -582,7 +582,7 @@ pub(crate) async fn handle_image_ensure(
                 return image_error(
                     machine_id,
                     ImageRpcDomainError::SelfPullFailed {
-                        message: failure_message(runner_error_message(error)),
+                        message: failure_message(error.0),
                     },
                 );
             }
@@ -773,15 +773,6 @@ fn header<'a>(request: &'a NatsServiceRequest, name: &str) -> Option<&'a str> {
         .as_ref()
         .and_then(|headers| headers.get(name))
         .map(|value| value.as_str())
-}
-
-fn runner_error_message(
-    error: crate::roles::machine::execution::docker::runner::DockerImagePullError,
-) -> String {
-    use crate::roles::machine::execution::docker::runner::DockerImagePullError;
-    match error {
-        DockerImagePullError::ImagePull { message } => message,
-    }
 }
 
 fn unavailable(machine_id: MachineId) -> NatsServiceResponse {

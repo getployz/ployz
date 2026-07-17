@@ -64,9 +64,7 @@ const REGISTRY_RESOLVE_RETRY_DELAYS: [Duration; 2] =
     [Duration::from_millis(250), Duration::from_secs(1)];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum DockerImagePullError {
-    ImagePull { message: String },
-}
+pub(crate) struct DockerImagePullError(pub(crate) String);
 
 #[derive(Debug, Clone)]
 pub struct DockerManagedContainerRunner {
@@ -385,13 +383,9 @@ impl MachineContainerRunner for DockerManagedContainerRunner {
             MachineImagePull::Registry { credential, .. } => credential.as_ref(),
             MachineImagePull::MeshSeed { .. } => None,
         };
-        self.pull_image(&pull_reference, credential)
-            .await
-            .map_err(|error| match error {
-                DockerImagePullError::ImagePull { message } => {
-                    MachineContainerCreateError::ImagePull { message }
-                }
-            })?;
+        self.pull_image(&pull_reference, credential).await.map_err(
+            |DockerImagePullError(message)| MachineContainerCreateError::ImagePull { message },
+        )?;
         // Every service container joins the already-converged endpoint
         // network; route state alone decides whether anything dials it.
         let response = docker
@@ -723,18 +717,16 @@ impl DockerManagedContainerRunner {
         let docker = self
             .docker()
             .await
-            .map_err(|error| DockerImagePullError::ImagePull {
-                message: error.to_string(),
-            })?;
+            .map_err(|error| DockerImagePullError(error.to_string()))?;
         let options = CreateImageOptionsBuilder::new().from_image(image).build();
         let mut stream = docker.create_image(Some(options), None, docker_credentials(credential));
 
         while let Some(result) = stream.next().await {
-            result.map_err(|error| DockerImagePullError::ImagePull {
-                message: redact_registry_credential(
+            result.map_err(|error| {
+                DockerImagePullError(redact_registry_credential(
                     format!("pull Docker image {image}: {error}"),
                     credential,
-                ),
+                ))
             })?;
         }
 
