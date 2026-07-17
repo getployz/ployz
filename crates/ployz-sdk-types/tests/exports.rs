@@ -659,6 +659,7 @@ fn operation_api_contract_registry_owns_endpoint_shapes() {
             OperationApiEndpoint::BuildSubmit,
             OperationApiEndpoint::BuildCancel,
             OperationApiEndpoint::DeployReserve,
+            OperationApiEndpoint::DeployPreview,
             OperationApiEndpoint::DeploySubmit,
             OperationApiEndpoint::InitFirstMachineActivate,
             OperationApiEndpoint::MachineAdd,

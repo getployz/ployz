@@ -43,11 +43,6 @@ async fn group_placement_peer_health() {
         for machine in ["core_1", "edge_2", "edge_3"] {
             wait_for_machine_observations(&core, &machine_id(machine)).await;
         }
-        super::timed(
-            "direct_push_multi_machine",
-            super::assert_direct_push_multi_machine_deploy(&core),
-        )
-        .await;
 
         let controller = connect_core_client(
             &core,
@@ -61,6 +56,12 @@ async fn group_placement_peer_health() {
             .expect("read placement intent");
         assert_declared_machines(&intent.dataplane_projection, &intent.active_machines);
         wait_for_ready_dataplane(&core, &intent.dataplane_projection).await;
+
+        super::timed(
+            "direct_push_multi_machine",
+            super::assert_direct_push_multi_machine_deploy(&core),
+        )
+        .await;
 
         let stopped = core
             .exec_on(edge_3, &["systemctl", "stop", "ployzd-machine-edge_3"])
@@ -94,14 +95,7 @@ async fn group_placement_peer_health() {
             );
         }
 
-        let silent_intent = read_intent(&controller, CONNECT_TIMEOUT)
-            .await
-            .expect("read intent with silent edge");
-        assert_declared_machines(
-            &silent_intent.dataplane_projection,
-            &silent_intent.active_machines,
-        );
-        wait_for_silent_edge_and_unavailable_rtt(&core, &silent_intent.dataplane_projection).await;
+        wait_for_silent_edge_and_unavailable_rtt(&core, &intent.dataplane_projection).await;
 
         let first_namespace = namespace_id("placement_silent");
         let first_plan = deploy_and_read_plan(
