@@ -7,7 +7,7 @@ use crate::roles::machine::protocol::{
     MachineFactsRefreshRpcOk, MachineFactsRefreshRpcRequest, MachineFactsRefreshRpcResponse,
 };
 use crate::roles::machine::runner::{
-    ExistingManagedContainerState, MachineContainerRunner, MachineContainerRunnerError,
+    ExistingManagedContainerState, MachineContainerListError, MachineContainerRunner,
 };
 use crate::roles::machine::volume::observe_storage_capability;
 use ployz_core::ids::MachineId;
@@ -286,7 +286,7 @@ where
 #[derive(Debug, thiserror::Error)]
 pub enum MachineFactsReadError {
     #[error("failed to list managed Docker containers: {0:?}")]
-    ListContainers(MachineContainerRunnerError),
+    ListContainers(MachineContainerListError),
     #[error("failed to build container snapshot: {0}")]
     BuildContainerSnapshot(MachineContainerObservationSnapshotError),
     #[error("failed to read disk space: {0}")]

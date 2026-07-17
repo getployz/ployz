@@ -1,7 +1,5 @@
-use super::{
-    ExistingManagedContainer, ExistingManagedContainerState, MachineContainerRunDecision,
-    decide_container_run,
-};
+use super::{MachineContainerRunDecision, decide_container_run};
+use crate::roles::machine::runner::{ExistingManagedContainer, ExistingManagedContainerState};
 use ployz_core::machine::runtime::ManagedContainerIdentity;
 use ployz_test_support::containers;
 use ployz_test_support::ids::{container_id, operation_id, step_id};
@@ -35,7 +33,7 @@ fn same_operation_step_with_different_service_creates_container() {
             &expected,
             [existing_container("ctr_existing", sibling_service)]
         ),
-        MachineContainerRunDecision::Create { identity: expected }
+        MachineContainerRunDecision::Create
     );
 }
 
@@ -46,7 +44,7 @@ fn different_step_does_not_reuse_container() {
 
     assert_eq!(
         decide_container_run(&expected, [existing_container("ctr_other", other_step)]),
-        MachineContainerRunDecision::Create { identity: expected }
+        MachineContainerRunDecision::Create
     );
 }
 
