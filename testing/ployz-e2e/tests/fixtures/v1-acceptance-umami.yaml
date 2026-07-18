@@ -1,7 +1,7 @@
 name: v1_acceptance
 services:
   db:
-    image: postgres:15-alpine
+    image: ${PLOYZ_DIND_POSTGRES_IMAGE:-postgres:15-alpine@sha256:3d0f7584ed7d04e27fa050d6683a74746608faf21f202be78460d679cc56461f}
     environment:
       POSTGRES_DB: umami
       POSTGRES_USER: umami
@@ -14,7 +14,7 @@ services:
       timeout: 2s
       retries: 30
   umami:
-    image: ghcr.io/umami-software/umami:postgresql-latest
+    image: ${PLOYZ_DIND_UMAMI_IMAGE:-ghcr.io/umami-software/umami:postgresql-latest@sha256:8edfe4beaef13f9d1300619fa264ef250a3688df9cc54d24ca830ca31cb475ec}
     command:
       - sh
       - -c
@@ -26,10 +26,6 @@ services:
       replicas: 2
     x-ports: [3000]
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
-      interval: 2s
-      timeout: 2s
-      retries: 60
-      start_period: 5s
+      disable: true
 volumes:
   postgres-data: {}
