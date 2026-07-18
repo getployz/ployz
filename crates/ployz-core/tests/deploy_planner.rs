@@ -809,6 +809,126 @@ fn provisioned_volume_birth_commits_and_ensures_the_same_dataset_backed_pin() {
 }
 
 #[test]
+fn provisioned_volume_birth_skips_a_full_machine_for_later_capacity() {
+    let mut input = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
+    declare_volume_mounts(
+        &mut input,
+        vec![(
+            volume_mount("data", "/data"),
+            VolumeSpec::Provisioned {
+                max_size_bytes: VolumeMaxSizeBytes::try_new(600).expect("non-zero size"),
+            },
+        )],
+    );
+    input.storage_testimony = BTreeMap::from([
+        (
+            machine_id("machine_a"),
+            Some(ready_storage_with_capacity(500, Vec::new())),
+        ),
+        (
+            machine_id("machine_b"),
+            Some(ready_storage_with_capacity(1_000, Vec::new())),
+        ),
+    ]);
+
+    let plan = plan_single_service(&input).expect("later capacity admits the volume birth");
+
+    assert_eq!(plan.target_machines(), vec![machine_id("machine_b")]);
+    assert_eq!(
+        plan.volume_pin_commits,
+        vec![provisioned_volume_pin_with_size("data", "machine_b", 600)]
+    );
+    assert_eq!(plan.volume_pin_commits, plan.volume_ensures);
+}
+
+#[test]
+fn provisioned_volume_birth_skips_silent_and_unprepared_machines() {
+    let mut input = planning_input(
+        1,
+        [
+            machine_id("machine_silent"),
+            machine_id("machine_unprepared"),
+            machine_id("machine_ready"),
+        ],
+    );
+    declare_volume_mounts(
+        &mut input,
+        vec![(
+            volume_mount("data", "/data"),
+            VolumeSpec::Provisioned {
+                max_size_bytes: VolumeMaxSizeBytes::try_new(600).expect("non-zero size"),
+            },
+        )],
+    );
+    input.storage_testimony = BTreeMap::from([
+        (
+            machine_id("machine_unprepared"),
+            Some(ployz_core::machine::StorageCapability::Unprepared),
+        ),
+        (
+            machine_id("machine_ready"),
+            Some(ready_storage_with_capacity(1_000, Vec::new())),
+        ),
+    ]);
+
+    let plan = plan_single_service(&input).expect("later ready testimony admits the volume birth");
+
+    assert_eq!(plan.target_machines(), vec![machine_id("machine_ready")]);
+}
+
+#[test]
+fn provisioned_volume_birth_returns_the_first_candidate_failure_when_all_reject() {
+    let mut input = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
+    declare_volume_mounts(
+        &mut input,
+        vec![(
+            volume_mount("data", "/data"),
+            VolumeSpec::Provisioned {
+                max_size_bytes: VolumeMaxSizeBytes::try_new(600).expect("non-zero size"),
+            },
+        )],
+    );
+    input.storage_testimony = BTreeMap::from([(
+        machine_id("machine_b"),
+        Some(ployz_core::machine::StorageCapability::Unprepared),
+    )]);
+
+    assert!(matches!(
+        plan_single_service(&input),
+        Err(DeployPlanError::VolumeAdmissionOnMachine {
+            service_id: failed_service,
+            machine_id: failed_machine,
+            failure,
+        }) if failed_service == service_id("svc_api")
+            && failed_machine == machine_id("machine_a")
+            && matches!(failure.as_ref(), VolumeAdmissionFailure::MachineSilent {
+                machine_id: silent_machine,
+            } if silent_machine == &machine_id("machine_a"))
+    ));
+}
+
+#[test]
+fn provisioned_volume_birth_without_candidates_retains_no_eligible_machines() {
+    let mut input = planning_input(1, []);
+    declare_volume_mounts(
+        &mut input,
+        vec![(
+            volume_mount("data", "/data"),
+            VolumeSpec::Provisioned {
+                max_size_bytes: VolumeMaxSizeBytes::try_new(600).expect("non-zero size"),
+            },
+        )],
+    );
+
+    assert_eq!(
+        plan_single_service(&input),
+        Err(DeployPlanError::NoEligibleMachines {
+            service_id: service_id("svc_api"),
+        })
+    );
+}
+
+#[test]
 fn provisioned_pin_is_ensured_even_when_live_testimony_omits_its_dataset() {
     let mut input = planning_input(1, [machine_id("machine_a")]);
     declare_volume_mounts(
@@ -1024,7 +1144,7 @@ fn volume_backed_service_reuses_only_replicas_on_pinned_machine() {
 }
 
 #[test]
-fn namespace_volume_pin_commits_are_visible_to_later_service_plans() {
+fn later_pinned_service_constrains_an_earlier_shared_volume_assignment() {
     let mut first = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
     declare_plain_volume_mounts(&mut first, vec![volume_mount("data", "/data")]);
     let mut second = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
@@ -1040,12 +1160,41 @@ fn namespace_volume_pin_commits_are_visible_to_later_service_plans() {
     );
     second.volume_pins = vec![volume_pin("uploads", "machine_b")];
 
+    let plan = plan_inputs(vec![first, second], Vec::new())
+        .expect("durable colocation applies before tentative placement");
+
+    assert_eq!(plan.target_machines(), vec![machine_id("machine_b")]);
     assert_eq!(
-        plan_inputs(vec![first, second], Vec::new(),),
-        Err(DeployPlanError::ConflictingVolumePins {
-            service_id: service_id("svc_worker"),
-            machines: vec![machine_id("machine_a"), machine_id("machine_b")],
-        })
+        plan.volume_pin_commits,
+        vec![volume_pin("data", "machine_b")]
+    );
+}
+
+#[test]
+fn later_phase_pin_constrains_an_earlier_phase_shared_volume() {
+    let mut api = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
+    declare_plain_volume_mounts(&mut api, vec![volume_mount("shared", "/data")]);
+    let mut worker = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
+    update_request(&mut worker.service, |request| {
+        request.service_id = service_id("svc_worker");
+        request.depends_on = vec![dependency("svc_api", DependencyCondition::Started)];
+    });
+    declare_plain_volume_mounts(
+        &mut worker,
+        vec![
+            volume_mount("shared", "/work"),
+            volume_mount("worker_data", "/state"),
+        ],
+    );
+    worker.volume_pins = vec![volume_pin("worker_data", "machine_b")];
+
+    let plan = plan_inputs(vec![api, worker], Vec::new())
+        .expect("later phase durable colocation precedes tentative placement");
+
+    assert_eq!(plan.target_machines(), vec![machine_id("machine_b")]);
+    assert_eq!(
+        plan.volume_pin_commits,
+        vec![volume_pin("shared", "machine_b")]
     );
 }
 
@@ -1139,6 +1288,153 @@ fn multi_service_provisioned_births_share_one_machine_capacity_snapshot() {
 }
 
 #[test]
+fn provisioned_births_reserve_tentative_quota_before_later_placement() {
+    let candidates = [machine_id("machine_a"), machine_id("machine_b")];
+    let mut api = planning_input(1, candidates.clone());
+    declare_volume_mounts(
+        &mut api,
+        vec![(
+            volume_mount("api_data", "/data"),
+            VolumeSpec::Provisioned {
+                max_size_bytes: VolumeMaxSizeBytes::try_new(600).expect("non-zero size"),
+            },
+        )],
+    );
+    let mut worker = planning_input(1, candidates);
+    update_request(&mut worker.service, |request| {
+        request.service_id = service_id("svc_worker");
+    });
+    declare_volume_mounts(
+        &mut worker,
+        vec![(
+            volume_mount("worker_data", "/work"),
+            VolumeSpec::Provisioned {
+                max_size_bytes: VolumeMaxSizeBytes::try_new(600).expect("non-zero size"),
+            },
+        )],
+    );
+    let testimony = BTreeMap::from([
+        (
+            machine_id("machine_a"),
+            Some(ready_storage_with_capacity(1_000, Vec::new())),
+        ),
+        (
+            machine_id("machine_b"),
+            Some(ready_storage_with_capacity(1_000, Vec::new())),
+        ),
+    ]);
+    api.storage_testimony = testimony.clone();
+    worker.storage_testimony = testimony;
+
+    let plan = plan_inputs(vec![api, worker], Vec::new())
+        .expect("later birth uses capacity not reserved by the earlier birth");
+
+    assert_eq!(
+        plan.volume_pin_commits,
+        vec![
+            provisioned_volume_pin_with_size("api_data", "machine_a", 600),
+            provisioned_volume_pin_with_size("worker_data", "machine_b", 600),
+        ]
+    );
+}
+
+#[test]
+fn unpinned_birth_accounts_for_later_phase_pinned_quota_growth() {
+    let candidates = [machine_id("machine_a"), machine_id("machine_b")];
+    let mut api = planning_input(1, candidates.clone());
+    declare_volume_mounts(
+        &mut api,
+        vec![(
+            volume_mount("api_data", "/data"),
+            VolumeSpec::Provisioned {
+                max_size_bytes: VolumeMaxSizeBytes::try_new(400).expect("non-zero size"),
+            },
+        )],
+    );
+    let mut worker = planning_input(1, candidates);
+    update_request(&mut worker.service, |request| {
+        request.service_id = service_id("svc_worker");
+        request.depends_on = vec![dependency("svc_api", DependencyCondition::Started)];
+    });
+    declare_volume_mounts(
+        &mut worker,
+        vec![(
+            volume_mount("worker_data", "/work"),
+            VolumeSpec::Provisioned {
+                max_size_bytes: VolumeMaxSizeBytes::try_new(700).expect("non-zero size"),
+            },
+        )],
+    );
+    worker.volume_pins = vec![provisioned_volume_pin_with_size(
+        "worker_data",
+        "machine_a",
+        400,
+    )];
+    let testimony = BTreeMap::from([
+        (
+            machine_id("machine_a"),
+            Some(ready_storage_with_quota_and_capacity(
+                "worker_data",
+                400,
+                1_000,
+            )),
+        ),
+        (
+            machine_id("machine_b"),
+            Some(ready_storage_with_capacity(1_000, Vec::new())),
+        ),
+    ]);
+    api.storage_testimony = testimony.clone();
+    worker.storage_testimony = testimony;
+
+    let plan = plan_inputs(vec![api, worker], Vec::new())
+        .expect("unpinned birth avoids capacity reserved by a later pinned phase");
+
+    assert_eq!(
+        plan.volume_pin_commits,
+        vec![
+            provisioned_volume_pin_with_size("api_data", "machine_b", 400),
+            provisioned_volume_pin_with_size("worker_data", "machine_a", 700),
+        ]
+    );
+}
+
+#[test]
+fn provisioned_durable_pin_never_moves_to_later_capacity() {
+    let mut input = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
+    declare_volume_mounts(
+        &mut input,
+        vec![(
+            volume_mount("data", "/data"),
+            VolumeSpec::Provisioned {
+                max_size_bytes: VolumeMaxSizeBytes::try_new(600).expect("non-zero size"),
+            },
+        )],
+    );
+    input.volume_pins = vec![provisioned_volume_pin_with_size("data", "machine_a", 400)];
+    input.storage_testimony = BTreeMap::from([
+        (
+            machine_id("machine_a"),
+            Some(ready_storage_with_quota_and_capacity("data", 400, 500)),
+        ),
+        (
+            machine_id("machine_b"),
+            Some(ready_storage_with_capacity(1_000, Vec::new())),
+        ),
+    ]);
+
+    assert!(matches!(
+        plan_single_service(&input),
+        Err(DeployPlanError::VolumeAdmissionOnMachine {
+            machine_id: selected_machine_id,
+            failure,
+            ..
+        }) if selected_machine_id == machine_id("machine_a")
+            && matches!(failure.as_ref(), VolumeAdmissionFailure::CapacityExceeded { .. })
+    ));
+}
+
+#[test]
 fn admitted_provisioned_birth_reaches_container_planning_with_an_ensure() {
     let mut input = planning_input(1, [machine_id("machine_a")]);
     declare_volume_mounts(
@@ -1175,6 +1471,55 @@ fn service_with_volumes_on_different_pinned_machines_fails_planning() {
         plan_single_service(&input),
         Err(DeployPlanError::ConflictingVolumePins {
             service_id: service_id("svc_api"),
+            machines: vec![machine_id("machine_a"), machine_id("machine_b")],
+        })
+    );
+}
+
+#[test]
+fn pinned_colocation_conflict_precedes_an_earlier_live_admission_failure() {
+    let mut api = planning_input(1, [machine_id("machine_silent")]);
+    declare_volume_mounts(
+        &mut api,
+        vec![(
+            volume_mount("api_data", "/data"),
+            VolumeSpec::Provisioned {
+                max_size_bytes: VolumeMaxSizeBytes::try_new(600).expect("non-zero size"),
+            },
+        )],
+    );
+    api.storage_testimony = BTreeMap::new();
+
+    let mut left = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
+    update_request(&mut left.service, |request| {
+        request.service_id = service_id("svc_left");
+    });
+    declare_plain_volume_mounts(
+        &mut left,
+        vec![
+            volume_mount("left_pin", "/left"),
+            volume_mount("shared", "/shared"),
+        ],
+    );
+    left.volume_pins = vec![volume_pin("left_pin", "machine_a")];
+
+    let mut right = planning_input(1, [machine_id("machine_a"), machine_id("machine_b")]);
+    update_request(&mut right.service, |request| {
+        request.service_id = service_id("svc_right");
+    });
+    declare_plain_volume_mounts(
+        &mut right,
+        vec![
+            volume_mount("right_pin", "/right"),
+            volume_mount("shared", "/shared"),
+        ],
+    );
+    right.volume_pins = vec![volume_pin("right_pin", "machine_b")];
+
+    assert_eq!(
+        plan_inputs(vec![api, left, right], Vec::new()),
+        Err(DeployPlanError::ConflictingVolumePins {
+            service_id: service_id("svc_right"),
             machines: vec![machine_id("machine_a"), machine_id("machine_b")],
         })
     );
@@ -2252,14 +2597,22 @@ fn ready_storage_with_quota(
     volume_name: &str,
     quota_bytes: u64,
 ) -> ployz_core::machine::StorageCapability {
+    ready_storage_with_quota_and_capacity(volume_name, quota_bytes, 1024 * 1024)
+}
+
+fn ready_storage_with_quota_and_capacity(
+    volume_name: &str,
+    quota_bytes: u64,
+    free_bytes: u64,
+) -> ployz_core::machine::StorageCapability {
     let pool = ZfsPoolName::try_new("tank").expect("pool name");
     let volume_name = VolumeName::try_new(volume_name).expect("valid volume name");
     ployz_core::machine::StorageCapability::Ready {
         pool: pool.clone(),
         capacity: ployz_core::machine::PoolCapacityFacts {
-            total_bytes: 1024 * 1024,
+            total_bytes: free_bytes,
             provisioned_used_bytes: 0,
-            free_bytes: 1024 * 1024,
+            free_bytes,
             child_quotas: vec![ployz_core::machine::DatasetQuotaFact {
                 dataset: DatasetName::for_volume(&pool, &namespace_id("default"), &volume_name)
                     .expect("dataset name"),
