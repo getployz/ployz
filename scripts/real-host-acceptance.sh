@@ -278,9 +278,9 @@ configure_acceptance_architecture() {
       EDGE_ARCHITECTURE_LABEL='amd64 Ubuntu edge (ZFS waiver)'
       EDGE_ACCEPTED_ARCHITECTURES=x86_64
       ARCHITECTURE_WAIVER_METADATA=$'edge_arch_waiver=arm64_provider_capacity_unavailable\narchitecture_mode=amd64-only-non-mixed\nbuild_platforms=linux/amd64\nissue_391_arm_native_build=not-applicable\n'
-      ARCHITECTURE_RESULT_METADATA=$'issue_536_result=valid\n'
+      ARCHITECTURE_RESULT_METADATA=$'issue_536_result=valid\nissue_391_full_acceptance=not-certified\nmanaged_dns_tls=not-certified\n'
       ZFS_SUCCESS_MARKER='ZFS REAL-HOST CERTIFICATION PASSED: AMD64 EDGE WAIVER (NON-MIXED)'
-      ACCEPTANCE_SUCCESS_MARKER='ACCEPTANCE PASSED: amd64 edge waiver; mixed architecture not certified'
+      ACCEPTANCE_SUCCESS_MARKER='ACCEPTANCE PASSED: ZFS-only under amd64 edge waiver; mixed architecture and managed DNS/TLS not certified'
       ;;
     *)
       log "PLOYZ_REAL_HOST_AMD64_EDGE_WAIVER must be 0 or 1"
@@ -332,6 +332,8 @@ run_real_host_acceptance_regression_test() {
   local cancel_watch_status_guard json_assertion
   local cancel_command_line cancel_status_capture_line cancel_status_guard_line cancel_watch_line
   local cancel_watch_status_capture_line cancel_watch_status_guard_line json_assertion_line
+  local managed_guard managed_deploy_log restart_invisibility_log zfs_invocation
+  local managed_guard_line managed_deploy_log_line restart_invisibility_log_line zfs_invocation_line
   evidence=$(mktemp -d)
   trap 'rm -rf "$evidence"' RETURN
   : > "$evidence/metadata.env"
@@ -376,6 +378,22 @@ run_real_host_acceptance_regression_test() {
   [ "$(sed -n "$((cancel_watch_status_capture_line + 1))p" "$0")" = 'set -e' ]
   [ "$cancel_watch_status_guard_line" -eq $((cancel_watch_status_capture_line + 2)) ]
   [ "$json_assertion_line" -gt "$cancel_watch_status_guard_line" ]
+
+  managed_guard='if [ "$ACCEPTANCE_ARCHITECTURE_MODE" = mixed-amd64-arm64 ]; then'
+  managed_deploy_log='log "deploying image-based Compose app (2 replicas, managed HTTPS URL)"'
+  restart_invisibility_log='log "  continuous HTTPS probe saw no interruption"'
+  zfs_invocation='  run_zfs_real_host_certification'
+  [ "$(grep -Fxc "$managed_guard" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$managed_deploy_log" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$restart_invisibility_log" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$zfs_invocation" "$0")" -eq 1 ]
+  managed_guard_line=$(grep -Fnx "$managed_guard" "$0" | cut -d: -f1)
+  managed_deploy_log_line=$(grep -Fnx "$managed_deploy_log" "$0" | cut -d: -f1)
+  restart_invisibility_log_line=$(grep -Fnx "$restart_invisibility_log" "$0" | cut -d: -f1)
+  zfs_invocation_line=$(grep -Fnx "$zfs_invocation" "$0" | cut -d: -f1)
+  [ "$managed_deploy_log_line" -eq $((managed_guard_line + 1)) ]
+  [ "$(sed -n "$((restart_invisibility_log_line + 1))p" "$0")" = fi ]
+  [ "$zfs_invocation_line" -gt "$restart_invisibility_log_line" ]
 
   rendered_git_program="$evidence/authenticated-git-fixture.sh"
   write_authenticated_git_fixture_program 192.0.2.1 > "$rendered_git_program"
@@ -441,11 +459,11 @@ run_real_host_acceptance_regression_test() {
   [ "$EDGE_ARCHITECTURE_LABEL" = 'amd64 Ubuntu edge (ZFS waiver)' ]
   [ "$EDGE_ACCEPTED_ARCHITECTURES" = x86_64 ]
   [ "$ARCHITECTURE_WAIVER_METADATA" = $'edge_arch_waiver=arm64_provider_capacity_unavailable\narchitecture_mode=amd64-only-non-mixed\nbuild_platforms=linux/amd64\nissue_391_arm_native_build=not-applicable\n' ]
-  [ "$ARCHITECTURE_RESULT_METADATA" = $'issue_536_result=valid\n' ]
+  [ "$ARCHITECTURE_RESULT_METADATA" = $'issue_536_result=valid\nissue_391_full_acceptance=not-certified\nmanaged_dns_tls=not-certified\n' ]
   [ "$ZFS_SUCCESS_MARKER" = \
     'ZFS REAL-HOST CERTIFICATION PASSED: AMD64 EDGE WAIVER (NON-MIXED)' ]
   [ "$ACCEPTANCE_SUCCESS_MARKER" = \
-    'ACCEPTANCE PASSED: amd64 edge waiver; mixed architecture not certified' ]
+    'ACCEPTANCE PASSED: ZFS-only under amd64 edge waiver; mixed architecture and managed DNS/TLS not certified' ]
   child_status=0
   configure_acceptance_architecture 0 1 > "$evidence/waiver-without-zfs.stdout" \
     || child_status=$?
@@ -898,6 +916,7 @@ for port in 53/udp 80/tcp 443/tcp 51820/udp; do
   remote "$EDGE" "ufw status verbose | awk '\$1 != \"${port}\" { next } \$2 == \"(v6)\" { next } { found=1; assured=(\$2 == \"ALLOW\" && \$3 == \"IN\" && \$4 == \"Anywhere\"); exit } END { exit !(found && assured) }'"
 done
 
+if [ "$ACCEPTANCE_ARCHITECTURE_MODE" = mixed-amd64-arm64 ]; then
 log "deploying image-based Compose app (2 replicas, managed HTTPS URL)"
 core 'cat > /tmp/ployz-acceptance.yml <<"YAML"
 name: acceptance
@@ -982,6 +1001,7 @@ probe_pid=
 rm -rf "$probe_dir"
 probe_dir=
 log "  continuous HTTPS probe saw no interruption"
+fi
 
 core_before_deadline() {
   local deadline=$1
