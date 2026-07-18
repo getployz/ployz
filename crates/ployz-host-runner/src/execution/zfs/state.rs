@@ -245,7 +245,7 @@ fn prepare_owned_pool(
         COMMAND_TIMEOUT,
         EffectClass::OwnedPool,
     ) {
-        return Err(cleanup_new_owned_backing_file(runner, failure));
+        return Err(cleanup_after_failed_owned_pool_create(runner, failure));
     }
     Ok((
         ZfsPoolName::try_new(PLOYZ_OWNED_ZFS_POOL).expect("owned pool constant is valid"),
@@ -253,6 +253,54 @@ fn prepare_owned_pool(
             backing_file: PathBuf::from(PLOYZ_OWNED_ZFS_BACKING_FILE),
         },
     ))
+}
+
+enum OwnedBackingFileUse {
+    CanonicalPool,
+    Unused,
+}
+
+fn observe_owned_backing_file_use(
+    runner: &mut impl HostRunnerCommandRunner,
+) -> Result<OwnedBackingFileUse, ZfsEffectError> {
+    let pool = ZfsPoolName::try_new(PLOYZ_OWNED_ZFS_POOL).expect("owned pool constant is valid");
+    if !imported_pools(runner)?.contains(&pool) {
+        return Ok(OwnedBackingFileUse::Unused);
+    }
+    let status = checked(
+        runner,
+        "zpool",
+        &["status", "-P", PLOYZ_OWNED_ZFS_POOL],
+        COMMAND_TIMEOUT,
+        EffectClass::OwnedPool,
+    )?;
+    if status
+        .stdout
+        .lines()
+        .any(|line| line.trim() == PLOYZ_OWNED_ZFS_BACKING_FILE)
+    {
+        return Ok(OwnedBackingFileUse::CanonicalPool);
+    }
+    Ok(OwnedBackingFileUse::Unused)
+}
+
+fn cleanup_after_failed_owned_pool_create(
+    runner: &mut impl HostRunnerCommandRunner,
+    failure: ZfsEffectError,
+) -> ZfsEffectError {
+    match observe_owned_backing_file_use(runner) {
+        Ok(OwnedBackingFileUse::Unused) => cleanup_new_owned_backing_file(runner, failure),
+        Ok(OwnedBackingFileUse::CanonicalPool) => ZfsEffectError::OwnedPool {
+            message: format!(
+                "{failure}; backing file retained because pool {PLOYZ_OWNED_ZFS_POOL} reports it as a vdev"
+            ),
+        },
+        Err(observation_failure) => ZfsEffectError::OwnedPool {
+            message: format!(
+                "{failure}; backing file retained because ownership observation failed: {observation_failure}"
+            ),
+        },
+    }
 }
 
 fn create_new_owned_backing_file(

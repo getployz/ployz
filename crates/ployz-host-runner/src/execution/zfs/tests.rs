@@ -129,6 +129,27 @@ fn failed(message: &str) -> HostRunnerCommandOutput {
     }
 }
 
+fn failed_owned_pool_create_outputs(
+    observation: impl IntoIterator<Item = HostRunnerCommandOutput>,
+) -> Vec<HostRunnerCommandOutput> {
+    [
+        success(),
+        success(),
+        success(),
+        stdout(""),
+        failed("backing file absent"),
+        success(),
+        stdout("1B-blocks Avail\n25769803776 23622320128\n"),
+        success(),
+        success(),
+        stdout("1B-blocks Avail\n25769803776 10737418240\n"),
+        failed("pool create failed"),
+    ]
+    .into_iter()
+    .chain(observation)
+    .collect()
+}
+
 fn profile(value: &str) -> HostPlatformProfile {
     super::super::detect_host_platform(value).expect("profile is supported")
 }
@@ -777,20 +798,7 @@ fn failed_allocation_and_pool_create_remove_only_the_new_backing_file() {
             failed("allocation failed"),
             success(),
         ],
-        vec![
-            success(),
-            success(),
-            success(),
-            stdout(""),
-            failed("backing file absent"),
-            success(),
-            stdout("1B-blocks Avail\n25769803776 23622320128\n"),
-            success(),
-            success(),
-            stdout("1B-blocks Avail\n25769803776 10737418240\n"),
-            failed("pool create failed"),
-            success(),
-        ],
+        failed_owned_pool_create_outputs([stdout(""), success()]),
     ] {
         let state = tempfile::tempdir().unwrap();
         let mut runner = RecordingRunner::new(outputs);
@@ -808,6 +816,91 @@ fn failed_allocation_and_pool_create_remove_only_the_new_backing_file() {
         let cleanup = runner.invocations.last().expect("cleanup invocation");
         assert_eq!(cleanup.program, "rm");
         assert_eq!(cleanup.args, vec!["-f", "--", PLOYZ_OWNED_ZFS_BACKING_FILE]);
+    }
+}
+
+#[test]
+fn failed_pool_create_cleanup_requires_conclusive_unused_observation() {
+    let command = |program: &str, args: &[&str]| Invocation {
+        program: program.to_owned(),
+        args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+        timeout: COMMAND_TIMEOUT,
+    };
+    let create = || {
+        command(
+            "zpool",
+            &[
+                "create",
+                "-f",
+                PLOYZ_OWNED_ZFS_POOL,
+                PLOYZ_OWNED_ZFS_BACKING_FILE,
+            ],
+        )
+    };
+    let list = || command("zpool", &["list", "-H", "-o", "name"]);
+    let status = || command("zpool", &["status", "-P", PLOYZ_OWNED_ZFS_POOL]);
+    let remove = || command("rm", &["-f", "--", PLOYZ_OWNED_ZFS_BACKING_FILE]);
+    let cases = [
+        (
+            "canonical backing vdev",
+            vec![
+                stdout("ployz\n"),
+                stdout(&format!("  {PLOYZ_OWNED_ZFS_BACKING_FILE}\n")),
+            ],
+            vec![create(), list(), status()],
+            Some("backing file retained"),
+        ),
+        (
+            "failed pool listing",
+            vec![failed("pool observation failed")],
+            vec![create(), list()],
+            Some("ownership observation failed"),
+        ),
+        (
+            "malformed pool identity",
+            vec![stdout("ployz\ninvalid/pool/name\n")],
+            vec![create(), list()],
+            Some("ownership observation failed"),
+        ),
+        (
+            "other canonical-pool vdev",
+            vec![stdout("ployz\n"), stdout("  /dev/loop0\n"), success()],
+            vec![create(), list(), status(), remove()],
+            None,
+        ),
+    ];
+
+    for (name, observation, expected_commands, evidence) in cases {
+        let state = tempfile::tempdir().unwrap();
+        let mut runner = RecordingRunner::new(failed_owned_pool_create_outputs(observation));
+
+        let failure = prepare_storage(
+            &mut runner,
+            &profile("ID=ubuntu\nVERSION_ID=24.04\n"),
+            &PoolSelection::Automatic,
+            state.path(),
+            &state.path().join("docker.service.d"),
+        )
+        .unwrap_err();
+
+        let ZfsEffectError::OwnedPool { message } = failure else {
+            panic!("{name}: expected owned-pool failure")
+        };
+        match evidence {
+            Some(evidence) => {
+                assert!(message.contains("pool create failed"), "{name}: {message}");
+                assert!(message.contains(evidence), "{name}: {message}");
+            }
+            None => assert_eq!(message, "pool create failed", "{name}"),
+        }
+        assert_eq!(
+            runner
+                .invocations
+                .get(10..)
+                .expect("create-failure command suffix"),
+            expected_commands,
+            "{name}"
+        );
     }
 }
 
