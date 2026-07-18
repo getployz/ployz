@@ -280,6 +280,10 @@ mod tests {
         }
     }
 
+    fn workspace(temp: &tempfile::TempDir) -> PathBuf {
+        fs::canonicalize(temp.path()).expect("workspace")
+    }
+
     #[test]
     fn dockerfile_lowers_to_one_native_build_with_verified_commit() {
         let temp = tempfile::tempdir().expect("temp");
@@ -290,8 +294,14 @@ mod tests {
             target: None,
         };
         let toolchain = toolchain_for_platform(&platform, &adapter).expect("toolchain");
-        let plan = lower_build_adapter(&checkout, &adapter, &platform, temp.path(), &toolchain)
-            .expect("plan");
+        let plan = lower_build_adapter(
+            &checkout,
+            &adapter,
+            &platform,
+            &workspace(&temp),
+            &toolchain,
+        )
+        .expect("plan");
         assert!(plan.prepare.is_none());
         assert!(
             plan.buildctl_arguments
@@ -312,8 +322,14 @@ mod tests {
             cache_scope: BuildCacheScope::try_new("scope_01J0Y1").expect("scope"),
         };
         let toolchain = toolchain_for_platform(&platform, &adapter).expect("toolchain");
-        let plan = lower_build_adapter(&checkout, &adapter, &platform, temp.path(), &toolchain)
-            .expect("plan");
+        let plan = lower_build_adapter(
+            &checkout,
+            &adapter,
+            &platform,
+            &workspace(&temp),
+            &toolchain,
+        )
+        .expect("plan");
         let prepare = plan.prepare.expect("prepare");
         assert_eq!(
             prepare.program,
