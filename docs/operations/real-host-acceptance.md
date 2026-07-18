@@ -150,12 +150,16 @@ requires Ubuntu 24.04 x86_64, submits and asserts amd64-only Dockerfile and
 Railpack builds, writes
 `edge_arch_waiver=arm64_provider_capacity_unavailable`,
 `architecture_mode=amd64-only-non-mixed`, `build_platforms=linux/amd64`,
-`issue_536_result=valid`, and
-`issue_391_arm_native_build=not-applicable` to `metadata.env`, and emits a
-distinct non-mixed success marker. This is valid evidence for #536's real ZFS
-storage, reboot, failure, and recovery assertions. It does not validate #391's
-ARM edge or native arm64 build claims; record those claims as not applicable,
-not passed. Omitting the waiver preserves the ordinary ARM edge path.
+`issue_536_result=valid`, `issue_391_arm_native_build=not-applicable`,
+`issue_391_full_acceptance=not-certified`, and
+`managed_dns_tls=not-certified` to `metadata.env`, and emits a distinct
+ZFS-only success marker. This is valid evidence for #536's real ZFS storage,
+reboot, failure, and recovery assertions. It skips and does not certify the
+managed Compose ingress, DNS/TLS, cross-machine routing, control-daemon restart
+invisibility, or CLI smoke portions of #391 full acceptance. Record those
+claims and the ARM edge/native arm64 build claims as not certified or not
+applicable, never passed. Omitting the waiver preserves the ordinary ARM edge
+path and the full managed-ingress capstone.
 
 The script records `issue_536_result=valid` only after every ZFS certification
 phase succeeds; a failed run retains the waiver and architecture metadata but
@@ -192,7 +196,7 @@ An amd64-edge waiver run instead prints:
 
 ```text
 ZFS REAL-HOST CERTIFICATION PASSED: AMD64 EDGE WAIVER (NON-MIXED)
-ACCEPTANCE PASSED: amd64 edge waiver; mixed architecture not certified
+ACCEPTANCE PASSED: ZFS-only under amd64 edge waiver; mixed architecture and managed DNS/TLS not certified
 ```
 
 That marker is necessary but not sufficient: inspect every assertion below
