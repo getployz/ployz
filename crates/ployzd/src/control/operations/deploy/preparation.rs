@@ -166,7 +166,11 @@ pub(super) fn prepare_deploy_execution_command_with_credentials(
                 .cloned()
                 .collect(),
             volume_pins: prepared.planning_input.volume_pins,
+            candidate_machines: prepared.planning_input.candidate_machines,
             eligible_machines: prepared.planning_input.eligible_machines,
+            deferred_machines: prepared.planning_input.deferred_machines,
+            draining_machines: prepared.planning_input.draining_machines,
+            equivalent_target_promoted: prepared.planning_input.equivalent_target_promoted,
             unusable_machines: prepared.unusable_machines,
             existing_replicas: prepared.planning_input.existing_replicas,
             cleanup_candidates: prepared.planning_input.cleanup_candidates,
@@ -265,6 +269,7 @@ fn prepare_deploy_command(
                     entry.namespace_id == *target.namespace_id()
                         && entry.service_id == *service.service_id()
                         && entry.namespace_revision_entry_id == entry_id
+                        && entry.mode == service.mode()
                 })
             });
         let prepared = prepare_planning_service(
@@ -275,21 +280,48 @@ fn prepare_deploy_command(
             facts,
             existing_replica_policy(is_promoted, reusable_interrupted_operation_ids),
         );
+        let merged_unusable = merged_unusable_machines(
+            &facts.unusable_machines,
+            merged_unusable_machines(
+                &service_unusable_machines,
+                prepared.unusable_machines.clone(),
+            ),
+        );
+        let mut candidate_machines = facts.eligible_machines.clone();
+        candidate_machines.extend(
+            facts
+                .unusable_machines
+                .iter()
+                .map(|machine| machine.machine_id.clone()),
+        );
+        candidate_machines.sort();
+        candidate_machines.dedup();
+        let deferred_machines = merged_unusable
+            .iter()
+            .filter(|machine| {
+                !matches!(
+                    machine.reason,
+                    ployz_core::machine::MachineUsabilityReason::Draining
+                )
+            })
+            .cloned()
+            .collect();
         if let Some(entry) = preview_serving_target_entry(target.namespace_id(), service) {
             serving_target_commits.push(entry);
         }
         services.push(PreparedDeployService {
             planning_input: DeployPlanningInput {
                 service_id: service.service_id().clone(),
+                candidate_machines,
                 eligible_machines: prepared.eligible_machines,
+                deferred_machines,
+                draining_machines: draining_machines.clone(),
+                equivalent_target_promoted: is_promoted,
                 existing_replicas: prepared.existing_replicas,
                 cleanup_candidates: prepared.cleanup_candidates,
                 volume_pins: facts.namespace_volume_pins.clone(),
             },
-            unusable_machines: merged_unusable_machines(
-                &service_unusable_machines,
-                prepared.unusable_machines,
-            ),
+            unusable_machines: merged_unusable,
         });
     }
     let namespace_cleanup_candidates = facts
@@ -415,7 +447,7 @@ fn preview_serving_target_entry(
         service.service_id(),
         namespace_revision_entry_id,
         image,
-        service.replicas(),
+        service.mode(),
         service.runtime(),
     ))
 }

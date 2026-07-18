@@ -144,7 +144,9 @@ async fn deploy_worker_runs_containers_then_completes() {
             service_id: service_id("svc_api"),
             namespace_revision_entry_id: target_namespace_revision_entry_id(),
             image: resolved_registry_image("registry.example/api:rev_2"),
-            desired_replicas: ReplicaCount::try_new(2).expect("valid replica count"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(2).expect("valid replica count")
+            },
             volume_names: Vec::new(),
         }]
     );

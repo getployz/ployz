@@ -69,7 +69,11 @@ pub struct DeployServiceExecutionCommand {
     pub(super) registry_credential: Option<RegistryCredential>,
     pub(super) route_commits: Vec<RouteBindingState>,
     pub(super) volume_pins: Vec<VolumePinState>,
+    pub(super) candidate_machines: Vec<MachineId>,
     pub(super) eligible_machines: Vec<MachineId>,
+    pub(super) deferred_machines: Vec<ployz_core::operation::UnusableMachine>,
+    pub(super) draining_machines: Vec<MachineId>,
+    pub(super) equivalent_target_promoted: bool,
     pub(super) unusable_machines: Vec<ployz_core::operation::UnusableMachine>,
     pub(super) existing_replicas: Vec<ExistingServiceReplica>,
     pub(super) cleanup_candidates: Vec<ObservedCleanupCandidate>,
@@ -243,7 +247,7 @@ impl DeployServiceExecutionCommand {
             &self.service.service_id,
             self.service.namespace_revision_entry_id(namespace_id),
             &self.service.image,
-            self.service.replicas,
+            self.service.mode,
             &self.service.runtime,
         )
     }
@@ -259,7 +263,7 @@ pub(super) fn serving_target_entry(
     service_id: &ServiceId,
     namespace_revision_entry_id: NamespaceRevisionEntryId,
     image: &ployz_core::deploy::ImageReference,
-    desired_replicas: ployz_core::deploy::ReplicaCount,
+    mode: ployz_core::deploy::ServiceMode,
     runtime: &ployz_core::deploy::ContainerRuntimeSpec,
 ) -> ServingTargetEntry {
     let mut volume_names = runtime
@@ -274,7 +278,7 @@ pub(super) fn serving_target_entry(
         service_id: service_id.clone(),
         namespace_revision_entry_id,
         image: image.clone(),
-        desired_replicas,
+        mode,
         volume_names,
     }
 }

@@ -2,7 +2,8 @@
 //! freshness, and terminal rules.
 
 use ployz_core::deploy::{
-    DeployOrigin, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployServicePlan, ReplicaSlot,
+    DeployOrigin, DeployPhasePlan, DeployPlan, DeployPlanStep, DeployServicePlacement,
+    DeployServicePlan, ReplicaSlot, ReplicatedReplicaSlot,
 };
 use ployz_core::operation::{
     DeployCompletionOutcome, DeployOperationState, DeployRunningStage, DeployTransition,
@@ -13,6 +14,12 @@ use ployz_test_support::ids::{
     container_id, event_sequence, machine_id, namespace_id, namespace_revision_id, operation_id,
     service_id,
 };
+
+fn replica_slot(number: u16) -> ReplicaSlot {
+    ReplicaSlot::Replicated {
+        number: ReplicatedReplicaSlot::try_new(number).expect("valid replica slot"),
+    }
+}
 
 #[test]
 fn deploy_transition_updates_status_sequence() {
@@ -638,9 +645,10 @@ fn plan_created_event() -> OperationEvent {
             phases: vec![DeployPhasePlan {
                 services: vec![DeployServicePlan {
                     service_id: service_id("svc_api"),
+                    placement: DeployServicePlacement::Replicated,
                     steps: vec![DeployPlanStep::RunContainer {
                         machine_id: machine_id("machine_a"),
-                        slot: ReplicaSlot::try_new(1).expect("valid replica slot"),
+                        slot: replica_slot(1),
                     }],
                     pre_start: None,
                 }],

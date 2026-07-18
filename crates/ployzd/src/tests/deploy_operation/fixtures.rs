@@ -1315,7 +1315,9 @@ fn routed_deploy_request(replicas: u16) -> DeployRequest {
             service_id: service_id("svc_api"),
             image: image("registry.example/api:rev_2"),
             image_source: ployz_core::deploy::ImageSource::Registry,
-            replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+            },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
             depends_on: Vec::new(),
@@ -1342,7 +1344,9 @@ pub(super) fn ployz_automatic_deploy_command() -> DeployExecutionInput {
                 service_id: service_id("svc_api"),
                 image: image("registry.example/api:rev_2"),
                 image_source: ployz_core::deploy::ImageSource::Registry,
-                replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                mode: ployz_core::deploy::ServiceMode::Replicated {
+                    replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+                },
                 runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
                 pre_start: None,
                 depends_on: Vec::new(),
@@ -1435,7 +1439,9 @@ fn pushed_deploy_command(
             service_id: service_id("svc_api"),
             image,
             image_source: ployz_core::deploy::ImageSource::PushedToSeed(receipt),
-            replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+            },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
             depends_on: Vec::new(),
@@ -1762,7 +1768,9 @@ pub(super) fn target_deploy_request(replicas: u16) -> DeployRequest {
             service_id: service_id("svc_api"),
             image: image("registry.example/api:rev_2"),
             image_source: ployz_core::deploy::ImageSource::Registry,
-            replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(replicas).expect("valid replica count"),
+            },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
             depends_on: Vec::new(),

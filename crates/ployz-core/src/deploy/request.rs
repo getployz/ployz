@@ -180,16 +180,27 @@ pub enum DeployTargetValidationError {
         #[source]
         source: PushedImageReferenceError,
     },
+    #[error("global service {} cannot mount volume {}", .service_id.as_str(), .volume_name.as_str())]
+    GlobalVolumeMount {
+        service_id: ServiceId,
+        volume_name: VolumeName,
+    },
 }
 
 pub(super) fn validate_deploy_target<'a>(
     namespace_id: &NamespaceId,
     volumes: &BTreeMap<VolumeName, VolumeSpec>,
-    services: impl IntoIterator<Item = (&'a ServiceId, &'a ContainerRuntimeSpec)>,
+    services: impl IntoIterator<Item = (&'a ServiceId, &'a ServiceMode, &'a ContainerRuntimeSpec)>,
 ) -> Result<(), DeployTargetValidationError> {
     let services = services.into_iter().collect::<Vec<_>>();
-    for (service_id, runtime) in &services {
+    for (service_id, mode, runtime) in &services {
         for mount in &runtime.volume_mounts {
+            if matches!(mode, ServiceMode::Global) {
+                return Err(DeployTargetValidationError::GlobalVolumeMount {
+                    service_id: (*service_id).clone(),
+                    volume_name: mount.volume_name.clone(),
+                });
+            }
             if !volumes.contains_key(&mount.volume_name) {
                 return Err(DeployVolumeDeclarationError {
                     service_id: (*service_id).clone(),
@@ -199,7 +210,7 @@ pub(super) fn validate_deploy_target<'a>(
             }
         }
     }
-    for (service_id, _) in services {
+    for (service_id, _, _) in services {
         if InternalServiceName::try_from_ids(service_id, namespace_id).is_err() {
             return Err(DeployTargetValidationError::InvalidInternalServiceName {
                 service_id: service_id.clone(),
@@ -226,7 +237,9 @@ mod tests {
                 service_id: service_id.clone(),
                 image: ImageReference::try_new("ghcr.io/acme/api:current").expect("image"),
                 image_source: ImageSource::Registry,
-                replicas: ReplicaCount::try_new(1).expect("replicas"),
+                mode: ServiceMode::Replicated {
+                    replicas: ReplicaCount::try_new(1).expect("replicas"),
+                },
                 keep: None,
                 runtime: ContainerRuntimeSpec::image_defaults(),
                 pre_start: None,
@@ -253,7 +266,9 @@ mod tests {
             service_id: service_id.clone(),
             image: ImageReference::try_new("ghcr.io/acme/api:current").expect("image"),
             image_source: ImageSource::Registry,
-            replicas: ReplicaCount::try_new(1).expect("replicas"),
+            mode: ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(1).expect("replicas"),
+            },
             keep: None,
             runtime: ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
@@ -286,7 +301,7 @@ pub struct DeployServiceSpec {
         skip_serializing_if = "ImageSource::is_registry"
     )]
     pub image_source: ImageSource,
-    pub replicas: ReplicaCount,
+    pub mode: ServiceMode,
     /// Number of newest stopped superseded containers retained for inspection.
     /// Absence preserves full container cleanup and disables image reclamation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -361,7 +376,7 @@ impl DeployServiceSpec {
     pub(super) const NAMESPACE_REVISION_ENTRY_ENCODING_VERSION: &'static str =
         "ployz.namespace_revision_entry.v9";
     pub(super) const NAMESPACE_REVISION_ENCODING_VERSION: &'static str =
-        "ployz.namespace_revision.v6";
+        "ployz.namespace_revision.v7";
 
     #[must_use]
     pub fn namespace_revision_entry_id(
@@ -376,6 +391,14 @@ impl DeployServiceSpec {
             &self.runtime,
         )
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ServiceMode {
+    Replicated { replicas: ReplicaCount },
+    Global,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

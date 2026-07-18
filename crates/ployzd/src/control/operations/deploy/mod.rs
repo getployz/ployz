@@ -17,12 +17,12 @@ use ployz_core::deploy::{
     ContainerRestartPolicy, DeployCleanupContainer, DeployPlan, DeployPlanStep,
     DeployPlanningContext, DeployPlanningInput, ImageSource, ReplicaSlot, plan_namespace_deploy,
 };
-use ployz_core::ids::{OperationId, StepId, SubjectTokenError};
+use ployz_core::ids::{MachineId, OperationId, StepId, SubjectTokenError};
 use ployz_core::machine::runtime::ManagedContainerKind;
 use ployz_core::operation::{
-    ControlPlaneCommitScope, DeployCleanupFailure, DeployEvidence, DeployImageCleanup,
-    DeployPhaseNumber, DeployPhaseOutcome, DeployRunningStage, DeployServiceResult,
-    DeployTransition, FailureMessage, OperatorHint, RetainedArtifact,
+    ControlPlaneCommitScope, DeployCleanupFailure, DeployCompletionOutcome, DeployEvidence,
+    DeployImageCleanup, DeployPhaseNumber, DeployPhaseOutcome, DeployRunningStage,
+    DeployServiceResult, DeployTransition, FailureMessage, OperatorHint, RetainedArtifact,
 };
 
 pub use crate::control::role_client::machine::MachineVolumeEnsureError;
@@ -371,6 +371,7 @@ where
         &mut *ports.recorder,
         &cleanup,
         image_cleanup.clone(),
+        plan_has_global_deferrals(&plan),
     )
     .await;
 
@@ -414,7 +415,11 @@ pub(super) fn deploy_plan(
             .iter()
             .map(|service| DeployPlanningInput {
                 service_id: service.service.service_id.clone(),
+                candidate_machines: service.candidate_machines.clone(),
                 eligible_machines: service.eligible_machines.clone(),
+                deferred_machines: service.deferred_machines.clone(),
+                draining_machines: service.draining_machines.clone(),
+                equivalent_target_promoted: service.equivalent_target_promoted,
                 existing_replicas: service.existing_replicas.clone(),
                 cleanup_candidates: service.cleanup_candidates.clone(),
                 volume_pins: service.volume_pins.clone(),
@@ -697,6 +702,7 @@ async fn record_terminal_state<R>(
     recorder: &mut R,
     cleanup: &[DeployCleanupResult],
     images: Vec<DeployImageCleanup>,
+    global_deferrals: bool,
 ) -> DeployTerminalEvent
 where
     R: DeployOperationRecorder,
@@ -707,7 +713,7 @@ where
             DeployImageCleanup::MissingIdentity { .. } | DeployImageCleanup::Failed { .. }
         )
     });
-    let outcome = DeployCleanupResult::completion_outcome(cleanup, &images);
+    let outcome = deploy_completion_outcome(cleanup, &images, global_deferrals);
     if !cleanup.is_empty() || !images.is_empty() {
         let record_cleanup =
             record_evidence(command, recorder, cleanup_evidence(cleanup, images)).await;
@@ -720,6 +726,31 @@ where
         Ok(()) => DeployTerminalEvent::Recorded,
         Err(_) => DeployTerminalEvent::Missing,
     }
+}
+
+fn deploy_completion_outcome(
+    cleanup: &[DeployCleanupResult],
+    images: &[DeployImageCleanup],
+    global_deferrals: bool,
+) -> DeployCompletionOutcome {
+    if global_deferrals {
+        DeployCompletionOutcome::CompletedWithWarnings
+    } else {
+        DeployCleanupResult::completion_outcome(cleanup, images)
+    }
+}
+
+fn plan_has_global_deferrals(plan: &DeployPlan) -> bool {
+    plan.phases
+        .iter()
+        .flat_map(|phase| &phase.services)
+        .any(|service| {
+            matches!(
+                &service.placement,
+                ployz_core::deploy::DeployServicePlacement::Global { deferred, .. }
+                    if !deferred.is_empty()
+            )
+        })
 }
 
 async fn commit_volume_pins<S>(
@@ -918,7 +949,7 @@ async fn run_deploy_step<N>(
 where
     N: MachineContainerRuntime,
 {
-    let step_id = deploy_step_id(slot).map_err(DeployExecutionError::StepId)?;
+    let step_id = deploy_step_id(slot, machine_id).map_err(DeployExecutionError::StepId)?;
     let requires_docker_healthcheck = requires_docker_healthcheck(service);
     let request = MachineContainerRunRpcRequest {
         pull: machine_image_pull(
@@ -992,6 +1023,84 @@ fn provisioned_volume_names(
     names
 }
 
-fn deploy_step_id(slot: ReplicaSlot) -> Result<StepId, SubjectTokenError> {
-    StepId::try_new(format!("run_{}", slot.get()))
+fn deploy_step_id(slot: ReplicaSlot, machine_id: &MachineId) -> Result<StepId, SubjectTokenError> {
+    match slot {
+        ReplicaSlot::Replicated { number } => StepId::try_new(format!("run_{}", number.get())),
+        ReplicaSlot::Global => StepId::try_new(format!("run_global_{}", machine_id.as_str())),
+    }
+}
+
+#[cfg(test)]
+mod global_mode_tests {
+    use super::*;
+    use ployz_core::deploy::{
+        DeployPhasePlan, DeployServicePlacement, DeployServicePlan, ReplicatedReplicaSlot,
+    };
+    use ployz_core::operation::UnusableMachine;
+
+    fn machine(value: &str) -> MachineId {
+        MachineId::try_new(value).expect("machine id")
+    }
+
+    #[test]
+    fn deploy_step_ids_are_mode_specific_and_global_ids_are_machine_keyed() {
+        assert_eq!(
+            deploy_step_id(
+                ReplicaSlot::Replicated {
+                    number: ReplicatedReplicaSlot::try_new(2).expect("slot"),
+                },
+                &machine("machine_a"),
+            )
+            .expect("step id")
+            .as_str(),
+            "run_2"
+        );
+        assert_eq!(
+            deploy_step_id(ReplicaSlot::Global, &machine("machine_a"))
+                .expect("step id")
+                .as_str(),
+            "run_global_machine_a"
+        );
+    }
+
+    #[test]
+    fn only_global_deferrals_add_a_completion_warning() {
+        let mut plan = DeployPlan {
+            namespace_id: ployz_core::ids::NamespaceId::try_new("default").expect("namespace"),
+            namespace_revision_id: ployz_core::ids::NamespaceRevisionId::try_new("revision")
+                .expect("revision"),
+            phases: vec![DeployPhasePlan {
+                services: vec![DeployServicePlan {
+                    service_id: ployz_core::ids::ServiceId::try_new("api").expect("service"),
+                    placement: DeployServicePlacement::Global {
+                        candidates: vec![machine("machine_a")],
+                        selected: Vec::new(),
+                        deferred: Vec::new(),
+                        draining: vec![machine("machine_a")],
+                    },
+                    steps: Vec::new(),
+                    pre_start: None,
+                }],
+            }],
+            volume_pin_commits: Vec::new(),
+            volume_ensures: Vec::new(),
+            cleanup_actions: Vec::new(),
+        };
+        assert!(!plan_has_global_deferrals(&plan));
+
+        let DeployServicePlacement::Global { deferred, .. } =
+            &mut plan.phases[0].services[0].placement
+        else {
+            panic!("global placement")
+        };
+        deferred.push(UnusableMachine {
+            machine_id: machine("machine_a"),
+            reason: ployz_core::machine::MachineUsabilityReason::FactsUnavailable,
+        });
+        assert!(plan_has_global_deferrals(&plan));
+        assert_eq!(
+            deploy_completion_outcome(&[], &[], plan_has_global_deferrals(&plan)),
+            DeployCompletionOutcome::CompletedWithWarnings
+        );
+    }
 }

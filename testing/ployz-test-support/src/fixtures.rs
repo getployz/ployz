@@ -45,7 +45,9 @@ pub fn serving_target_entry_in(namespace: &str, service: &str, entry: &str) -> S
         service_id: service_id(service),
         namespace_revision_entry_id: namespace_revision_entry_id(entry),
         image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
-        desired_replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+        mode: ployz_core::deploy::ServiceMode::Replicated {
+            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+        },
         volume_names: Vec::new(),
     }
 }
@@ -115,7 +117,9 @@ pub fn deploy_target(service: &str) -> DeployRequest {
             service_id: service_id(service),
             image: ImageReference::try_new("ghcr.io/acme/api:rev-2").expect("valid image"),
             image_source: ployz_core::deploy::ImageSource::Registry,
-            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
             depends_on: Vec::new(),

@@ -501,7 +501,9 @@ fn automatic_deploy_request() -> DeployRequest {
             image: ImageReference::try_new("registry.example/api:latest")
                 .expect("image reference is valid"),
             image_source: ImageSource::Registry,
-            replicas: ReplicaCount::try_new(1).expect("replica count is valid"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(1).expect("replica count is valid"),
+            },
             runtime: ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
             depends_on: Vec::new(),

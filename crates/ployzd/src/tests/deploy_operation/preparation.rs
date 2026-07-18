@@ -739,7 +739,9 @@ fn deploy_request() -> DeployRequest {
             image: ImageReference::try_new("registry.example/api:rev_2")
                 .expect("valid image reference"),
             image_source: ployz_core::deploy::ImageSource::Registry,
-            replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            mode: ployz_core::deploy::ServiceMode::Replicated {
+                replicas: ReplicaCount::try_new(1).expect("valid replica count"),
+            },
             runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
             pre_start: None,
             depends_on: Vec::new(),
@@ -768,7 +770,9 @@ fn pushed_service(service: &str, platform: ployz_core::image::OciPlatform) -> De
             .with_digest(receipt.index_digest())
             .expect("pinned image"),
         image_source: ImageSource::PushedToSeed(receipt),
-        replicas: ReplicaCount::try_new(1).expect("replicas"),
+        mode: ployz_core::deploy::ServiceMode::Replicated {
+            replicas: ReplicaCount::try_new(1).expect("replicas"),
+        },
         runtime: ployz_core::deploy::ContainerRuntimeSpec::image_defaults(),
         pre_start: None,
         depends_on: Vec::new(),

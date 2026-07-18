@@ -4,7 +4,7 @@ pub mod recovery;
 
 use serde::{Deserialize, Serialize};
 
-use crate::deploy::{DatasetName, ImageReference, ReplicaCount, VolumeMaxSizeBytes, VolumeName};
+use crate::deploy::{DatasetName, ImageReference, ServiceMode, VolumeMaxSizeBytes, VolumeName};
 use crate::ids::{
     MachineId, NamespaceId, NamespaceRevisionEntryId, OperationId, RouteBindingId, ServiceId,
 };
@@ -30,7 +30,7 @@ pub struct ServingTargetEntry {
     pub service_id: ServiceId,
     pub namespace_revision_entry_id: NamespaceRevisionEntryId,
     pub image: ImageReference,
-    pub desired_replicas: ReplicaCount,
+    pub mode: ServiceMode,
     #[serde(default)]
     pub volume_names: Vec<VolumeName>,
 }
