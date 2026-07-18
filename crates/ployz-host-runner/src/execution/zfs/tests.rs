@@ -6,7 +6,7 @@ use ployz_core::deploy::{DatasetName, VolumeMaxSizeBytes, VolumeName, ZfsPoolNam
 use ployz_core::ids::{NamespaceId, OperationId};
 use ployz_core::machine::{DatasetQuotaFact, PoolCapacityFacts, VolumeUsageFacts};
 use ployz_core::operation::FailureMessage;
-use ployz_core::storage::PROVISIONED_VOLUME_MOUNTPOINT;
+use ployz_core::storage::{MACHINE_STORAGE_PREPARE_BUDGET, PROVISIONED_VOLUME_MOUNTPOINT};
 
 use super::dataset::{DatasetEnsureLock, dataset_ensure_lock_path};
 use super::state::{imported_pools, persist_prepared_storage_state};
@@ -399,6 +399,12 @@ fn package_failure_is_typed_and_the_invocation_is_bounded() {
         }
     );
     assert_eq!(invocation(&runner, 0).timeout, INSTALL_TIMEOUT);
+}
+
+#[test]
+fn package_install_timeout_fits_within_storage_prepare_budget() {
+    assert_eq!(INSTALL_TIMEOUT, Duration::from_secs(20 * 60));
+    assert!(INSTALL_TIMEOUT < MACHINE_STORAGE_PREPARE_BUDGET);
 }
 
 #[test]
