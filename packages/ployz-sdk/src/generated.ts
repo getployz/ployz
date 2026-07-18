@@ -296,7 +296,9 @@ export type OperationEventReplayRequest = { operation_id: OperationId, start_seq
 
 export type OperationEventReplayPage = { events: Array<ReplayedOperationEvent>, cursor: OperationEventReplayCursor, };
 
-export type OperationEventReplayCursor = { "state": "caught_up" } | { "state": "terminal" } | { "state": "more", next_start_sequence: EventSequence, };
+export type OperationEventReplayCursor = { "state": "caught_up" } | { "state": "terminal", outcome: OperationOutcome, } | { "state": "more", next_start_sequence: EventSequence, };
+
+export type OperationOutcome = "succeeded" | "failed" | "cancelled";
 
 export type ReplayedOperationEvent = { sequence: EventSequence, recorded_at_unix_ms: OperationEventRecordedAtUnixMs, event: OperationEvent, };
 

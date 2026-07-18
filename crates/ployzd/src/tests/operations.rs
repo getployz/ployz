@@ -1011,7 +1011,12 @@ async fn operation_events(
             limit: event_replay_limit(32),
         })
         .await?;
-    assert_eq!(page.cursor, OperationEventReplayCursor::Terminal);
+    assert_eq!(
+        page.cursor,
+        OperationEventReplayCursor::Terminal {
+            outcome: ployz_core::operation::OperationOutcome::Succeeded,
+        }
+    );
 
     Ok(page.events.into_iter().map(|event| event.event).collect())
 }

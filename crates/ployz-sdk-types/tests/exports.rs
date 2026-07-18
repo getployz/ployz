@@ -42,10 +42,10 @@ use ployz_sdk_types::{
     NetworkResolveResult, NetworkStatusError, NetworkStatusRequest, NetworkStatusResult,
     NonEmptyTextError, OperationApiResponse, OperationEvent, OperationEventReplayCursor,
     OperationEventReplayLimit, OperationEventReplayLimitError, OperationEventReplayPage,
-    OperationEventReplayRequest, OperationIdempotencyKey, OperationStatus, OperationStatusSnapshot,
-    OperationSubject, OpsListError, OpsListRequest, OpsListResult, OpsStatusError,
-    OpsStatusRequest, OpsStatusResponse, OpsWatchResponse, PloyzDnsTargetIntent, ReplicaCount,
-    ReplicaCountError, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
+    OperationEventReplayRequest, OperationIdempotencyKey, OperationOutcome, OperationStatus,
+    OperationStatusSnapshot, OperationSubject, OpsListError, OpsListRequest, OpsListResult,
+    OpsStatusError, OpsStatusRequest, OpsStatusResponse, OpsWatchResponse, PloyzDnsTargetIntent,
+    ReplicaCount, ReplicaCountError, RouteHostname, RouteHostnameError, RoutePort, RoutePortError,
     RuntimeSnapshotError, RuntimeSnapshotRequest, RuntimeSnapshotResult, ServiceDependency,
     ServiceId, ServiceInspectError, ServiceInspectRequest, ServiceListError, ServiceListRequest,
     ServiceListResult, ServiceRestartError, ServiceRestartRequest, ServiceSnapshot,
@@ -112,6 +112,8 @@ fn sdk_exports_core_wire_types() {
         limit: OperationEventReplayLimit::try_new(100).expect("valid replay limit"),
     };
     let replay_page = OperationEventReplayPage::caught_up(Vec::new());
+    let terminal_replay_page =
+        OperationEventReplayPage::terminal(Vec::new(), OperationOutcome::Failed);
     let dependency = ServiceDependency {
         service_id: ServiceId::try_new("svc_database").expect("valid service id"),
         condition: DependencyCondition::Healthy,
@@ -135,6 +137,10 @@ fn sdk_exports_core_wire_types() {
     );
     assert_eq!(replay_request.limit.get(), 100);
     assert_eq!(replay_page.cursor, OperationEventReplayCursor::CaughtUp);
+    assert_eq!(
+        serde_json::to_string(&terminal_replay_page).expect("terminal replay page serializes"),
+        r#"{"events":[],"cursor":{"state":"terminal","outcome":"failed"}}"#
+    );
     assert_eq!(
         serde_json::to_string(&dependency).expect("dependency serializes"),
         r#"{"service_id":"svc_database","condition":"healthy"}"#

@@ -34,11 +34,11 @@ impl PloyzctlExecutionOutput {
     }
 
     /// Records the terminal outcome of a followed operation on the output: a
-    /// failed or cancelled operation exits non-zero, a successful one (or one
-    /// whose outcome could not be determined) leaves the exit unchanged.
+    /// failed or cancelled operation exits non-zero and a successful one
+    /// leaves the exit unchanged.
     #[must_use]
-    pub fn with_operation_outcome(mut self, outcome: Option<OperationOutcome>) -> Self {
-        if matches!(outcome, Some(outcome) if !outcome.is_success()) {
+    pub fn with_operation_outcome(mut self, outcome: OperationOutcome) -> Self {
+        if !outcome.is_success() {
             self.exit = CommandExit::Failure;
         }
         self
@@ -53,18 +53,16 @@ mod tests {
     #[test]
     fn failed_and_cancelled_operations_exit_non_zero() {
         for outcome in [OperationOutcome::Failed, OperationOutcome::Cancelled] {
-            let output = PloyzctlExecutionOutput::stdout(String::new())
-                .with_operation_outcome(Some(outcome));
+            let output =
+                PloyzctlExecutionOutput::stdout(String::new()).with_operation_outcome(outcome);
             assert_eq!(output.exit, CommandExit::Failure, "outcome {outcome:?}");
         }
     }
 
     #[test]
-    fn successful_or_unknown_operations_keep_success_exit() {
-        for outcome in [Some(OperationOutcome::Succeeded), None] {
-            let output =
-                PloyzctlExecutionOutput::stdout(String::new()).with_operation_outcome(outcome);
-            assert_eq!(output.exit, CommandExit::Success, "outcome {outcome:?}");
-        }
+    fn successful_operations_keep_success_exit() {
+        let output = PloyzctlExecutionOutput::stdout(String::new())
+            .with_operation_outcome(OperationOutcome::Succeeded);
+        assert_eq!(output.exit, CommandExit::Success);
     }
 }
