@@ -253,7 +253,6 @@ run_real_host_acceptance_regression_test() {
   local evidence failure_output success_output reboot_output recovery_output rescue_root fake_bin
   local module_contents module_sha module_mode module_uid module_gid child_status=0
   local restored_inode ssh_restore_output restore_function_output
-  local online_health=ONLINE degraded_health=DEGRADED
   evidence=$(mktemp -d)
   trap 'rm -rf "$evidence"' RETURN
   : > "$evidence/metadata.env"
@@ -299,8 +298,6 @@ run_real_host_acceptance_regression_test() {
     | cmp -s - "$restore_function_output"
   bash -n "$ssh_restore_output"
 
-  [ "$online_health" = ONLINE ]
-  [ "$degraded_health" != ONLINE ]
   "$0" --storage-ready-probe > "$evidence/storage-ready.stdout"
   grep -Fx 'storage ready pool=probe-pool' "$evidence/storage-ready.stdout" >/dev/null
   grep -Fx 'storage-alarms none' "$evidence/storage-ready.stdout" >/dev/null
