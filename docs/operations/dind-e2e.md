@@ -18,8 +18,10 @@ owns the Ployz Native Mesh dataplane proof.
 - Host-arch Linux artifacts. Everything is built for the Docker server's
   architecture (`docker info --format '{{.Architecture}}'`); nothing
   hardcodes amd64, so Apple Silicon hosts build and run arm64 throughout.
-- No registry access at test time: the machine image bakes `nats-server` and
-  the workload image tarball, and the ployz binaries are volume-mounted.
+- Valid acceptance images are sealed into the machine image at build time,
+  and the ployz binaries are volume-mounted. Runtime image delivery exercises
+  the CLI push path without reaching the build-time registry or mirror; only
+  the deliberately absent bad-image case falls back to registry resolution.
 
 ## One Command
 
@@ -100,6 +102,8 @@ prerequisite evidence; they do not add steps to this scenario.
 | `PLOYZ_DIND_ARTIFACT_DIR` | Host directory with the linux binaries (default `/tmp/ployz-dind-machine-target/release`). |
 | `PLOYZ_DIND_TARGET_DIR` | Build target dir used by the build script and the wrapper's marker file (default `/tmp/ployz-dind-machine-target`). |
 | `PLOYZ_DIND_BUILDER_IMAGE` | Shared native/eBPF builder image (default `ployz-dind-builder:rust-1.91-bookworm-v2`). |
+| `PLOYZ_DIND_UMAMI_IMAGE` | Build-time registry or mirror reference for Umami (default `ghcr.io/umami-software/umami:postgresql-latest@sha256:8edfe4beaef13f9d1300619fa264ef250a3688df9cc54d24ca830ca31cb475ec`). The selected image is sealed into the machine image and passed to acceptance at runtime. |
+| `PLOYZ_DIND_POSTGRES_IMAGE` | Build-time registry or mirror reference for Postgres (default `postgres:15-alpine@sha256:3d0f7584ed7d04e27fa050d6683a74746608faf21f202be78460d679cc56461f`). The selected image is sealed into the machine image and passed to acceptance at runtime. |
 | `PLOYZ_DIND_WORKERS` | Concurrent compatible groups: `1`, `2` (default), or `3`. The heavyweight acceptance group stays serial. |
 
 ## Evidence

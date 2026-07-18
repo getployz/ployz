@@ -849,14 +849,23 @@ fn seed_workload_tars(fake: &FakeDocker) {
     for (name, image) in [
         ("nginx", "nginx:1.27-alpine"),
         ("registry", "registry:2.8.3"),
-        ("umami", "ghcr.io/umami-software/umami:postgresql-latest"),
-        ("postgres", "postgres:15-alpine"),
+        (
+            "umami",
+            "ghcr.io/umami-software/umami:postgresql-latest@sha256:8edfe4beaef13f9d1300619fa264ef250a3688df9cc54d24ca830ca31cb475ec",
+        ),
+        (
+            "postgres",
+            "postgres:15-alpine@sha256:3d0f7584ed7d04e27fa050d6683a74746608faf21f202be78460d679cc56461f",
+        ),
     ] {
+        let saved_image = image
+            .split_once('@')
+            .map_or(image, |(reference, _)| reference);
         fs::write(fake.context().join(format!("{name}.tar")), "tar")
             .expect("workload tar can be written");
         fs::write(
             stamps.join(format!("{name}.stamp")),
-            format!("linux/amd64 {image} sha256:{image}\n"),
+            format!("linux/amd64 {image} sha256:{saved_image}\n"),
         )
         .expect("workload stamp can be written");
     }
