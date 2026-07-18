@@ -620,7 +620,7 @@ impl NatsMachineSubstrateUpdater {
     ) -> Result<ployz_core::operation::BuildCachePruneEvidence, MachineBuildCachePruneError> {
         call_machine::<MachineBuildCachePruneRpcOk, MachineBuildCachePruneDomainError>(
             &self.client,
-            ployz_core::build::BUILD_START_ENDPOINT_TIMEOUT,
+            ployz_core::build::BUILD_CACHE_PRUNE_ENDPOINT_TIMEOUT,
             machine_id,
             MachineServiceEndpoint::BuildCachePrune,
             &MachineBuildCachePruneRpcRequest {

@@ -12,7 +12,8 @@ use super::protocol::{
 };
 use super::response::{failure_message, machine_domain_error, machine_success};
 use ployz_core::build::{
-    BUILD_FORCE_CLEANUP_TIMEOUT, BUILD_MAX_EXECUTION_TIMEOUT, BUILD_TASK_DRAIN_TIMEOUT,
+    BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT, BUILD_FORCE_CLEANUP_TIMEOUT,
+    BUILD_MAX_EXECUTION_TIMEOUT, BUILD_TASK_DRAIN_TIMEOUT,
 };
 use ployz_core::deploy::PlatformImage;
 use ployz_core::ids::{MachineId, OperationId};
@@ -157,13 +158,20 @@ impl MachineBuildRuntime {
                 log_summary: BuildLogSummary::none(),
             });
         }
-        match &self.effects {
-            BuildEffects::Docker(effects) => effects.executor.prune_cache().await,
-            #[cfg(test)]
-            BuildEffects::Test(_) => Ok(ployz_core::operation::BuildCachePruneEvidence {
-                before_available_bytes: 0,
-                reclaimed_bytes: 0,
-                after_available_bytes: 0,
+        match tokio::time::timeout(
+            BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT,
+            self.effects.prune_cache(),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(BuildExecutionError::Infrastructure {
+                action: "prune build cache",
+                message: format!(
+                    "build cache prune timed out after {}s",
+                    BUILD_CACHE_PRUNE_MAX_EXECUTION_TIMEOUT.as_secs()
+                ),
+                log_summary: BuildLogSummary::none(),
             }),
         }
     }
@@ -469,6 +477,16 @@ struct ResidualBuild {
 }
 
 impl BuildEffects {
+    async fn prune_cache(
+        &self,
+    ) -> Result<ployz_core::operation::BuildCachePruneEvidence, BuildExecutionError> {
+        match self {
+            Self::Docker(effects) => effects.executor.prune_cache().await,
+            #[cfg(test)]
+            Self::Test(effects) => effects.prune_cache().await,
+        }
+    }
+
     async fn execute_and_ingest(
         &self,
         machine_id: MachineId,
