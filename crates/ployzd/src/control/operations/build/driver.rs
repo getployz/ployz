@@ -376,6 +376,7 @@ impl BuildOperationDriver {
         .await;
         let placement = place_build_platforms(
             &accepted.submission.platforms,
+            &accepted.submission.adapter,
             &facts,
             &projection,
             &dataplane_statuses,

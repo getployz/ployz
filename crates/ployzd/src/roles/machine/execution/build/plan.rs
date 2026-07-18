@@ -64,34 +64,41 @@ pub(super) fn toolchain_for_platform(
     platform: &OciPlatform,
     adapter: &BuildAdapter,
 ) -> Result<BuildToolchain, BuildPlanError> {
-    let pins = railpack_pins().map_err(invalid_pin)?;
+    let railpack = railpack_toolchain_for_platform(platform)?;
     let (buildkit_reference, buildkit_manifest_digest) = buildkit_for_platform(platform)?;
+    let adapter = match adapter {
+        BuildAdapter::Dockerfile { .. } => BuildAdapterToolchain::Dockerfile,
+        BuildAdapter::Railpack { .. } => railpack,
+    };
+    Ok(BuildToolchain {
+        buildkit_reference,
+        buildkit_manifest_digest,
+        adapter,
+    })
+}
+
+pub(super) fn railpack_toolchain_for_platform(
+    platform: &OciPlatform,
+) -> Result<BuildAdapterToolchain, BuildPlanError> {
+    let pins = railpack_pins().map_err(invalid_pin)?;
     let railpack = pins
         .for_architecture(platform.architecture())
         .ok_or_else(|| BuildPlanError::UnsupportedPlatform {
             platform: platform.clone(),
         })?;
     let frontend_manifest_digest = digest(railpack.frontend_digest())?;
-    let adapter = match adapter {
-        BuildAdapter::Dockerfile { .. } => BuildAdapterToolchain::Dockerfile,
-        BuildAdapter::Railpack { .. } => BuildAdapterToolchain::Railpack {
-            helper_path: PathBuf::from(pins.install_path()),
-            helper_version: InstallArtifactVersion::try_new(pins.version())
-                .map_err(|error| invalid_pin(error.to_string()))?,
-            helper_sha256: InstallSha256Digest::try_new(railpack.binary_sha256())
-                .map_err(|error| invalid_pin(error.to_string()))?,
-            frontend_reference: format!(
-                "{}@{}",
-                pins.frontend_reference(),
-                railpack.frontend_digest()
-            ),
-            frontend_manifest_digest,
-        },
-    };
-    Ok(BuildToolchain {
-        buildkit_reference,
-        buildkit_manifest_digest,
-        adapter,
+    Ok(BuildAdapterToolchain::Railpack {
+        helper_path: PathBuf::from(pins.install_path()),
+        helper_version: InstallArtifactVersion::try_new(pins.version())
+            .map_err(|error| invalid_pin(error.to_string()))?,
+        helper_sha256: InstallSha256Digest::try_new(railpack.binary_sha256())
+            .map_err(|error| invalid_pin(error.to_string()))?,
+        frontend_reference: format!(
+            "{}@{}",
+            pins.frontend_reference(),
+            railpack.frontend_digest()
+        ),
+        frontend_manifest_digest,
     })
 }
 
