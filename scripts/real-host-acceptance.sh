@@ -252,9 +252,11 @@ REMOTE_RESTORE
 configure_acceptance_architecture() {
   local zfs_certify=$1
   local amd64_edge_waiver=$2
+  RUN_ZFS_CERTIFICATION=$zfs_certify
 
   case "$amd64_edge_waiver" in
     0)
+      RUN_MANAGED_CAPSTONE=1
       ACCEPTANCE_ARCHITECTURE_MODE=mixed-amd64-arm64
       BUILD_PLATFORM_ARGUMENTS='--platform linux/amd64 --platform linux/arm64'
       BUILD_EXPECTED_PLATFORMS='linux/amd64,linux/arm64'
@@ -271,6 +273,7 @@ configure_acceptance_architecture() {
         log "PLOYZ_REAL_HOST_AMD64_EDGE_WAIVER=1 is only valid with PLOYZ_REAL_HOST_ZFS_CERTIFY=1"
         return 1
       fi
+      RUN_MANAGED_CAPSTONE=0
       ACCEPTANCE_ARCHITECTURE_MODE=amd64-only-non-mixed
       BUILD_PLATFORM_ARGUMENTS='--platform linux/amd64'
       BUILD_EXPECTED_PLATFORMS='linux/amd64'
@@ -385,10 +388,10 @@ run_real_host_acceptance_regression_test() {
   railpack_build_log="log \"building authenticated exact SHA for \${BUILD_ARCHITECTURES_LABEL} with Railpack\""
   cancellation_log='log "cancelling a blocking authenticated build and checking cleanup evidence"'
   firewall_log='log "checking keeper-managed firewall rules"'
-  managed_guard="if [ \"\$ACCEPTANCE_ARCHITECTURE_MODE\" = mixed-amd64-arm64 ]; then"
+  managed_guard="if [ \"\$RUN_MANAGED_CAPSTONE\" = 1 ]; then"
   managed_deploy_log='log "deploying image-based Compose app (2 replicas, managed HTTPS URL)"'
   restart_invisibility_log='log "  continuous HTTPS probe saw no interruption"'
-  zfs_guard="if [ \"\$ZFS_CERTIFY\" = 1 ]; then"
+  zfs_guard="if [ \"\$RUN_ZFS_CERTIFICATION\" = 1 ]; then"
   zfs_invocation='  run_zfs_real_host_certification'
   [ "$(grep -Fxc "$dockerfile_build_log" "$0")" -eq 1 ]
   [ "$(grep -Fxc "$railpack_build_log" "$0")" -eq 1 ]
@@ -475,6 +478,8 @@ run_real_host_acceptance_regression_test() {
   grep -Fx 'inspect_calls=3' "$evidence/storage-ready.stdout" >/dev/null
 
   configure_acceptance_architecture 1 1
+  [ "$RUN_MANAGED_CAPSTONE" = 0 ]
+  [ "$RUN_ZFS_CERTIFICATION" = 1 ]
   [ "$ACCEPTANCE_ARCHITECTURE_MODE" = amd64-only-non-mixed ]
   [ "$BUILD_PLATFORM_ARGUMENTS" = '--platform linux/amd64' ]
   [ "$BUILD_EXPECTED_PLATFORMS" = linux/amd64 ]
@@ -494,6 +499,8 @@ run_real_host_acceptance_regression_test() {
   grep -F 'PLOYZ_REAL_HOST_AMD64_EDGE_WAIVER=1 is only valid with PLOYZ_REAL_HOST_ZFS_CERTIFY=1' \
     "$evidence/waiver-without-zfs.stdout" >/dev/null
   configure_acceptance_architecture 1 0
+  [ "$RUN_MANAGED_CAPSTONE" = 1 ]
+  [ "$RUN_ZFS_CERTIFICATION" = 1 ]
   [ "$ACCEPTANCE_ARCHITECTURE_MODE" = mixed-amd64-arm64 ]
   [ "$BUILD_PLATFORM_ARGUMENTS" = '--platform linux/amd64 --platform linux/arm64' ]
   [ "$BUILD_EXPECTED_PLATFORMS" = linux/amd64,linux/arm64 ]
@@ -505,6 +512,9 @@ run_real_host_acceptance_regression_test() {
   [ "$ZFS_SUCCESS_MARKER" = 'ZFS REAL-HOST CERTIFICATION PASSED' ]
   [ "$ACCEPTANCE_SUCCESS_MARKER" = \
     'ACCEPTANCE PASSED: mixed-arch + firewalld/UFW + public HTTPS' ]
+  configure_acceptance_architecture 0 0
+  [ "$RUN_MANAGED_CAPSTONE" = 1 ]
+  [ "$RUN_ZFS_CERTIFICATION" = 0 ]
 
   rescue_root="$evidence/original-root"
   fake_bin="$evidence/bin"
@@ -677,7 +687,7 @@ if [ "$ZFS_CERTIFY" != 0 ] && [ "$ZFS_CERTIFY" != 1 ]; then
 fi
 configure_acceptance_architecture \
   "$ZFS_CERTIFY" "${PLOYZ_REAL_HOST_AMD64_EDGE_WAIVER:-0}" || exit 1
-if [ "$ZFS_CERTIFY" = 1 ]; then
+if [ "$RUN_ZFS_CERTIFICATION" = 1 ]; then
   [ -n "$ZFS_EVIDENCE_DIR" ] || {
     log "PLOYZ_REAL_HOST_EVIDENCE_DIR is required for ZFS certification"
     exit 1
@@ -777,7 +787,7 @@ core 'grep -qE "^(ID|ID_LIKE)=.*(rhel|fedora|rocky)" /etc/os-release' || {
 remote "$EDGE" 'grep -q "^ID=ubuntu" /etc/os-release' || {
   log "edge must be Ubuntu"; exit 1;
 }
-if [ "$ZFS_CERTIFY" = 1 ]; then
+if [ "$RUN_ZFS_CERTIFICATION" = 1 ]; then
   core 'source /etc/os-release; [ "$ID" = rocky ] && [[ "$VERSION_ID" = 9* ]]' || {
     log "ZFS certification requires Rocky Linux 9 on the core"; exit 1;
   }
@@ -809,7 +819,7 @@ core "ssh-keyscan -T 8 ${CORE} 127.0.0.1 >> ~/.ssh/known_hosts 2>/dev/null"
 log "installing the public alpha CLI on the core"
 core "timeout 10m sh -c 'curl --connect-timeout 20 --max-time 120 -fsSL https://ployz.sh | sh -s -- --channel alpha >/dev/null'"
 log "version: $(core 'grep -h PLOYZ_VERSION /etc/ployz/release.env')"
-if [ "$ZFS_CERTIFY" = 1 ]; then
+if [ "$RUN_ZFS_CERTIFICATION" = 1 ]; then
   curl --connect-timeout 20 --max-time 120 -fsSL https://ployz.sh/channels/alpha.env \
     -o "$ZFS_EVIDENCE_DIR/live-alpha.env"
   live_alpha_tag=$(awk -F= '$1 == "PLOYZ_RELEASE_TAG" { print substr($0, index($0, "=") + 1); exit }' "$ZFS_EVIDENCE_DIR/live-alpha.env")
@@ -845,7 +855,7 @@ t0=$(ts)
 core "timeout 15m ployz machine add root@${EDGE} --name ployz-edge"
 log "TIMING machine-add=$(( $(ts)-t0 ))s"
 core 'ployz machine list'
-if [ "$ZFS_CERTIFY" = 1 ]; then
+if [ "$RUN_ZFS_CERTIFICATION" = 1 ]; then
   edge_installed_tag=$(remote "$EDGE" "awk -F= '\$1 == \"PLOYZ_RELEASE_TAG\" { print substr(\$0, index(\$0, \"=\") + 1); exit }' /etc/ployz/release.env")
   edge_installed_manifest=$(remote "$EDGE" "awk -F= '\$1 == \"PLOYZ_RELEASE_MANIFEST_URL\" { print substr(\$0, index(\$0, \"=\") + 1); exit }' /etc/ployz/release.env")
   [ "$edge_installed_tag" = "$EXPECTED_RELEASE_TAG" ] || {
@@ -939,7 +949,7 @@ for port in 53/udp 80/tcp 443/tcp 51820/udp; do
   remote "$EDGE" "ufw status verbose | awk '\$1 != \"${port}\" { next } \$2 == \"(v6)\" { next } { found=1; assured=(\$2 == \"ALLOW\" && \$3 == \"IN\" && \$4 == \"Anywhere\"); exit } END { exit !(found && assured) }'"
 done
 
-if [ "$ACCEPTANCE_ARCHITECTURE_MODE" = mixed-amd64-arm64 ]; then
+if [ "$RUN_MANAGED_CAPSTONE" = 1 ]; then
 log "deploying image-based Compose app (2 replicas, managed HTTPS URL)"
 core 'cat > /tmp/ployz-acceptance.yml <<"YAML"
 name: acceptance
@@ -1540,7 +1550,7 @@ EOF
   log "$ZFS_SUCCESS_MARKER"
 }
 
-if [ "$ZFS_CERTIFY" = 1 ]; then
+if [ "$RUN_ZFS_CERTIFICATION" = 1 ]; then
   run_zfs_real_host_certification
 fi
 
