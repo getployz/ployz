@@ -54,153 +54,14 @@ pub(super) fn build_namespace_volume_plan(
     context: DeployPlanningContext<'_>,
 ) -> Result<VolumePlan, DeployPlanError> {
     let durable_pins = canonical_volume_pins(phases);
-    let mut assignments = durable_pins
-        .iter()
-        .filter(|pin| pin.namespace_id() == target.namespace_id())
-        .map(|pin| (pin.volume_name().clone(), pin.machine_id().clone()))
-        .collect::<BTreeMap<_, _>>();
-    let mut services = Vec::new();
-    let mut mounted_by_machine = BTreeMap::<MachineId, BTreeSet<VolumeName>>::new();
-
-    // Resolve durable constraints for the whole namespace before live
-    // admission. This makes pinned quota and colocation visible even when the
-    // pinned service belongs to a later deploy phase.
-    for input in phases.iter().flatten() {
-        let Some(service) = target.service(&input.service_id) else {
-            return Err(DeployPlanError::UnknownService {
-                service_id: input.service_id.clone(),
-            });
-        };
-        let mounted = mounted_volume_names(service);
-        if mounted.is_empty() {
-            services.push(ServiceVolumeTarget {
-                service_id: service.service_id().clone(),
-                machine_id: None,
-                mounted,
-                eligible_machines: input.eligible_machines.clone(),
-            });
-            continue;
-        }
-        let machine_id = resolve_durable_service_machine(target, service, &mounted, &durable_pins)?;
-        let structural_machine = match &machine_id {
-            Some(machine_id) => machine_id,
-            None => input.eligible_machines.first().ok_or_else(|| {
-                DeployPlanError::NoEligibleMachines {
-                    service_id: service.service_id().clone(),
-                }
-            })?,
-        };
-        validate_mounted_volume_structure(VolumeAdmissionInput {
-            namespace_id: target.namespace_id(),
-            mounted_volume_names: &mounted,
-            declarations: target.volumes(),
-            volume_pins: &durable_pins,
-            selected_machine_id: structural_machine,
-            storage_testimony: StorageTestimony::NoAnswer,
-        })
-        .map_err(|failure| DeployPlanError::VolumeAdmissionOnMachine {
-            service_id: service.service_id().clone(),
-            machine_id: structural_machine.clone(),
-            failure: Box::new(failure),
-        })?;
-        if let Some(machine_id) = &machine_id {
-            if !input.eligible_machines.contains(machine_id) {
-                return Err(DeployPlanError::NoEligibleMachines {
-                    service_id: service.service_id().clone(),
-                });
-            }
-            assigned_machine_for_service(service.service_id(), &mounted, &assignments)?;
-            for volume_name in &mounted {
-                assignments
-                    .entry(volume_name.clone())
-                    .or_insert_with(|| machine_id.clone());
-            }
-            mounted_by_machine
-                .entry(machine_id.clone())
-                .or_default()
-                .extend(mounted.iter().cloned());
-        }
-        services.push(ServiceVolumeTarget {
-            service_id: service.service_id().clone(),
-            machine_id,
-            mounted,
-            eligible_machines: input.eligible_machines.clone(),
-        });
-    }
-
-    // Place unpinned services in stable phase/service order. Each candidate is
-    // admitted with the full union already assigned to that machine.
-    for service in &mut services {
-        if service.mounted.is_empty() {
-            continue;
-        }
-        if service.machine_id.is_some() {
-            continue;
-        }
-        let fixed_machine =
-            assigned_machine_for_service(&service.service_id, &service.mounted, &assignments)?;
-        let candidates = match fixed_machine {
-            Some(machine_id) => {
-                if !service.eligible_machines.contains(&machine_id) {
-                    return Err(DeployPlanError::NoEligibleMachines {
-                        service_id: service.service_id.clone(),
-                    });
-                }
-                vec![machine_id]
-            }
-            None => service.eligible_machines.clone(),
-        };
-        let mut first_failure = None;
-        let selected = candidates.iter().find_map(|machine_id| {
-            let mut mounted = mounted_by_machine
-                .get(machine_id)
-                .cloned()
-                .unwrap_or_default();
-            mounted.extend(service.mounted.iter().cloned());
-            let mounted = mounted.into_iter().collect::<Vec<_>>();
-            match admit_mounted_volumes(VolumeAdmissionInput {
-                namespace_id: target.namespace_id(),
-                mounted_volume_names: &mounted,
-                declarations: target.volumes(),
-                volume_pins: &durable_pins,
-                selected_machine_id: machine_id,
-                storage_testimony: operation_storage_testimony(
-                    context.storage_testimony,
-                    machine_id,
-                ),
-            }) {
-                Ok(_) => Some(machine_id.clone()),
-                Err(failure) => {
-                    if first_failure.is_none() {
-                        first_failure = Some((machine_id.clone(), failure));
-                    }
-                    None
-                }
-            }
-        });
-        let Some(machine_id) = selected else {
-            let Some((machine_id, failure)) = first_failure else {
-                return Err(DeployPlanError::NoEligibleMachines {
-                    service_id: service.service_id.clone(),
-                });
-            };
-            return Err(DeployPlanError::VolumeAdmissionOnMachine {
-                service_id: service.service_id.clone(),
-                machine_id,
-                failure: Box::new(failure),
-            });
-        };
-        for volume_name in &service.mounted {
-            assignments
-                .entry(volume_name.clone())
-                .or_insert_with(|| machine_id.clone());
-        }
-        mounted_by_machine
-            .entry(machine_id.clone())
-            .or_default()
-            .extend(service.mounted.iter().cloned());
-        service.machine_id = Some(machine_id);
-    }
+    let services = collect_services(target, phases, &durable_pins)?;
+    let mut components = connected_components(&services);
+    resolve_component_constraints(target, &services, &durable_pins, &mut components)?;
+    place_unpinned_components(target, &services, &durable_pins, context, &mut components)?;
+    let MaterializedPlacements {
+        placements,
+        mounted_by_machine,
+    } = materialize_placements(&services, &components)?;
 
     // The aggregate admission remains the sole producer of durable commits
     // and machine-local ensures.
@@ -240,17 +101,6 @@ pub(super) fn build_namespace_volume_plan(
             .then_with(|| left.volume_name().cmp(right.volume_name()))
     });
     ensures.dedup();
-    let placements = services
-        .into_iter()
-        .map(|target| {
-            (
-                target.service_id,
-                VolumePlacement {
-                    machine_id: target.machine_id,
-                },
-            )
-        })
-        .collect();
     Ok(VolumePlan {
         placements,
         commits,
@@ -261,9 +111,313 @@ pub(super) fn build_namespace_volume_plan(
 #[derive(Debug)]
 struct ServiceVolumeTarget {
     service_id: ServiceId,
-    machine_id: Option<MachineId>,
     mounted: Vec<VolumeName>,
     eligible_machines: Vec<MachineId>,
+}
+
+#[derive(Debug)]
+struct VolumeComponent {
+    members: Vec<usize>,
+    mounted: BTreeSet<VolumeName>,
+    candidates: Vec<MachineId>,
+    machine_id: Option<MachineId>,
+}
+
+struct MaterializedPlacements {
+    placements: BTreeMap<ServiceId, VolumePlacement>,
+    mounted_by_machine: BTreeMap<MachineId, BTreeSet<VolumeName>>,
+}
+
+fn collect_services(
+    target: &DeployPlanningTarget,
+    phases: &[Vec<DeployPlanningInput>],
+    durable_pins: &[VolumePinState],
+) -> Result<Vec<ServiceVolumeTarget>, DeployPlanError> {
+    phases
+        .iter()
+        .flatten()
+        .map(|input| {
+            let Some(service) = target.service(&input.service_id) else {
+                return Err(DeployPlanError::UnknownService {
+                    service_id: input.service_id.clone(),
+                });
+            };
+            let mounted = mounted_volume_names(service);
+            if !mounted.is_empty() {
+                let structural_machine =
+                    resolve_durable_service_machine(target, service, &mounted, durable_pins)?
+                        .or_else(|| input.eligible_machines.first().cloned())
+                        .ok_or_else(|| DeployPlanError::NoEligibleMachines {
+                            service_id: service.service_id().clone(),
+                        })?;
+                validate_mounted_volume_structure(VolumeAdmissionInput {
+                    namespace_id: target.namespace_id(),
+                    mounted_volume_names: &mounted,
+                    declarations: target.volumes(),
+                    volume_pins: durable_pins,
+                    selected_machine_id: &structural_machine,
+                    storage_testimony: StorageTestimony::NoAnswer,
+                })
+                .map_err(|failure| DeployPlanError::VolumeAdmissionOnMachine {
+                    service_id: service.service_id().clone(),
+                    machine_id: structural_machine,
+                    failure: Box::new(failure),
+                })?;
+            }
+            Ok(ServiceVolumeTarget {
+                service_id: service.service_id().clone(),
+                mounted,
+                eligible_machines: input.eligible_machines.clone(),
+            })
+        })
+        .collect()
+}
+
+fn connected_components(services: &[ServiceVolumeTarget]) -> Vec<VolumeComponent> {
+    let mut services_by_volume = BTreeMap::<VolumeName, Vec<usize>>::new();
+    for (index, service) in services.iter().enumerate() {
+        for volume_name in &service.mounted {
+            services_by_volume
+                .entry(volume_name.clone())
+                .or_default()
+                .push(index);
+        }
+    }
+
+    let mut visited = vec![false; services.len()];
+    let mut components = Vec::new();
+    for (start, service) in services.iter().enumerate() {
+        let Some(is_visited) = visited.get(start) else {
+            unreachable!("visited entries match collected services");
+        };
+        if *is_visited || service.mounted.is_empty() {
+            continue;
+        }
+        let mut pending = BTreeSet::from([start]);
+        let mut members = Vec::new();
+        let mut mounted = BTreeSet::new();
+        while let Some(index) = pending.pop_first() {
+            let Some(was_visited) = visited.get_mut(index) else {
+                unreachable!("volume adjacency contains only collected services");
+            };
+            if std::mem::replace(was_visited, true) {
+                continue;
+            }
+            members.push(index);
+            let Some(service) = services.get(index) else {
+                unreachable!("volume adjacency contains only collected services");
+            };
+            for volume_name in &service.mounted {
+                mounted.insert(volume_name.clone());
+                if let Some(linked) = services_by_volume.get(volume_name) {
+                    pending.extend(linked.iter().copied().filter(|linked| {
+                        let Some(visited) = visited.get(*linked) else {
+                            unreachable!("volume adjacency contains only collected services");
+                        };
+                        !visited
+                    }));
+                }
+            }
+        }
+        components.push(VolumeComponent {
+            members,
+            mounted,
+            candidates: Vec::new(),
+            machine_id: None,
+        });
+    }
+    components
+}
+
+fn resolve_component_constraints(
+    target: &DeployPlanningTarget,
+    services: &[ServiceVolumeTarget],
+    durable_pins: &[VolumePinState],
+    components: &mut [VolumeComponent],
+) -> Result<(), DeployPlanError> {
+    for component in components {
+        let mut fixed_machine = None;
+        let mut machines = BTreeSet::new();
+        for &member in &component.members {
+            let Some(service) = services.get(member) else {
+                unreachable!("component members come from collected services");
+            };
+            let Some(machine_id) =
+                resolve_durable_service_machine_for_target(target, service, durable_pins)?
+            else {
+                continue;
+            };
+            machines.insert(machine_id.clone());
+            if fixed_machine
+                .as_ref()
+                .is_some_and(|fixed| fixed != &machine_id)
+            {
+                return Err(DeployPlanError::ConflictingVolumePins {
+                    service_id: service.service_id.clone(),
+                    machines: machines.into_iter().collect(),
+                });
+            }
+            fixed_machine = Some(machine_id);
+        }
+
+        if let Some(machine_id) = fixed_machine {
+            for &member in &component.members {
+                let Some(service) = services.get(member) else {
+                    unreachable!("component members come from collected services");
+                };
+                if !service.eligible_machines.contains(&machine_id) {
+                    return Err(DeployPlanError::NoEligibleMachines {
+                        service_id: service.service_id.clone(),
+                    });
+                }
+            }
+            component.candidates = vec![machine_id.clone()];
+            component.machine_id = Some(machine_id);
+            continue;
+        }
+
+        let [first_member, remaining @ ..] = component.members.as_slice() else {
+            unreachable!("every volume component has at least one member");
+        };
+        let Some(first) = services.get(*first_member) else {
+            unreachable!("component members come from collected services");
+        };
+        let mut candidates = first.eligible_machines.clone();
+        for &member in remaining {
+            let Some(service) = services.get(member) else {
+                unreachable!("component members come from collected services");
+            };
+            candidates.retain(|machine_id| service.eligible_machines.contains(machine_id));
+        }
+        if candidates.is_empty() {
+            return Err(DeployPlanError::NoEligibleMachines {
+                service_id: first.service_id.clone(),
+            });
+        }
+        component.candidates = candidates;
+    }
+    Ok(())
+}
+
+fn place_unpinned_components(
+    target: &DeployPlanningTarget,
+    services: &[ServiceVolumeTarget],
+    durable_pins: &[VolumePinState],
+    context: DeployPlanningContext<'_>,
+    components: &mut [VolumeComponent],
+) -> Result<(), DeployPlanError> {
+    for index in 0..components.len() {
+        let Some(component) = components.get(index) else {
+            unreachable!("component indices come from the component slice");
+        };
+        if component.machine_id.is_some() {
+            continue;
+        }
+        let Some(first_member) = component.members.first() else {
+            unreachable!("every volume component has at least one member");
+        };
+        let Some(first_service) = services.get(*first_member) else {
+            unreachable!("component members come from collected services");
+        };
+        let service_id = first_service.service_id.clone();
+        let candidates = component.candidates.clone();
+        let component_mounted = component.mounted.clone();
+        let mut first_failure = None;
+        for machine_id in candidates {
+            let mut mounted = component_mounted.clone();
+            for component in components.iter() {
+                if component.machine_id.as_ref() == Some(&machine_id) {
+                    mounted.extend(component.mounted.iter().cloned());
+                }
+            }
+            let mounted = mounted.into_iter().collect::<Vec<_>>();
+            match admit_mounted_volumes(VolumeAdmissionInput {
+                namespace_id: target.namespace_id(),
+                mounted_volume_names: &mounted,
+                declarations: target.volumes(),
+                volume_pins: durable_pins,
+                selected_machine_id: &machine_id,
+                storage_testimony: operation_storage_testimony(
+                    context.storage_testimony,
+                    &machine_id,
+                ),
+            }) {
+                Ok(_) => {
+                    let Some(component) = components.get_mut(index) else {
+                        unreachable!("component indices come from the component slice");
+                    };
+                    component.machine_id = Some(machine_id);
+                    break;
+                }
+                Err(failure) if first_failure.is_none() => {
+                    first_failure = Some((machine_id, failure));
+                }
+                Err(_) => {}
+            }
+        }
+        if components
+            .get(index)
+            .is_some_and(|component| component.machine_id.is_none())
+        {
+            let Some((machine_id, failure)) = first_failure else {
+                return Err(DeployPlanError::NoEligibleMachines { service_id });
+            };
+            return Err(DeployPlanError::VolumeAdmissionOnMachine {
+                service_id,
+                machine_id,
+                failure: Box::new(failure),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn materialize_placements(
+    services: &[ServiceVolumeTarget],
+    components: &[VolumeComponent],
+) -> Result<MaterializedPlacements, DeployPlanError> {
+    let mut placements = services
+        .iter()
+        .map(|service| {
+            (
+                service.service_id.clone(),
+                VolumePlacement { machine_id: None },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut mounted_by_machine = BTreeMap::<MachineId, BTreeSet<VolumeName>>::new();
+    for component in components {
+        let Some(machine_id) = &component.machine_id else {
+            let Some(first_member) = component.members.first() else {
+                unreachable!("every volume component has at least one member");
+            };
+            let Some(service) = services.get(*first_member) else {
+                unreachable!("component members come from collected services");
+            };
+            return Err(DeployPlanError::NoEligibleMachines {
+                service_id: service.service_id.clone(),
+            });
+        };
+        for &member in &component.members {
+            let Some(service) = services.get(member) else {
+                unreachable!("component members come from collected services");
+            };
+            let Some(placement) = placements.get_mut(&service.service_id) else {
+                return Err(DeployPlanError::UnknownService {
+                    service_id: service.service_id.clone(),
+                });
+            };
+            placement.machine_id = Some(machine_id.clone());
+        }
+        mounted_by_machine
+            .entry(machine_id.clone())
+            .or_default()
+            .extend(component.mounted.iter().cloned());
+    }
+    Ok(MaterializedPlacements {
+        placements,
+        mounted_by_machine,
+    })
 }
 
 fn mounted_volume_names(service: &DeployPlanningService) -> Vec<VolumeName> {
@@ -283,6 +437,23 @@ fn resolve_durable_service_machine(
     mounted: &[VolumeName],
     durable_pins: &[VolumePinState],
 ) -> Result<Option<MachineId>, DeployPlanError> {
+    resolve_durable_machine(target, service.service_id(), mounted, durable_pins)
+}
+
+fn resolve_durable_service_machine_for_target(
+    target: &DeployPlanningTarget,
+    service: &ServiceVolumeTarget,
+    durable_pins: &[VolumePinState],
+) -> Result<Option<MachineId>, DeployPlanError> {
+    resolve_durable_machine(target, &service.service_id, &service.mounted, durable_pins)
+}
+
+fn resolve_durable_machine(
+    target: &DeployPlanningTarget,
+    service_id: &ServiceId,
+    mounted: &[VolumeName],
+    durable_pins: &[VolumePinState],
+) -> Result<Option<MachineId>, DeployPlanError> {
     let mut machines = BTreeSet::new();
     for volume_name in mounted {
         let matching = durable_pins
@@ -298,7 +469,7 @@ fn resolve_durable_service_machine(
             }
             pins => {
                 return Err(DeployPlanError::VolumeAdmission {
-                    service_id: service.service_id().clone(),
+                    service_id: service_id.clone(),
                     failure: VolumeAdmissionFailure::AmbiguousPins {
                         volume_name: volume_name.clone(),
                         pin_count: pins.len(),
@@ -307,27 +478,7 @@ fn resolve_durable_service_machine(
             }
         }
     }
-    match machines.into_iter().collect::<Vec<_>>().as_slice() {
-        [] => Ok(None),
-        [machine_id] => Ok(Some(machine_id.clone())),
-        several => Err(DeployPlanError::ConflictingVolumePins {
-            service_id: service.service_id().clone(),
-            machines: several.to_vec(),
-        }),
-    }
-}
-
-fn assigned_machine_for_service(
-    service_id: &ServiceId,
-    mounted: &[VolumeName],
-    assignments: &BTreeMap<VolumeName, MachineId>,
-) -> Result<Option<MachineId>, DeployPlanError> {
-    let machines = mounted
-        .iter()
-        .filter_map(|volume_name| assignments.get(volume_name).cloned())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
+    let machines = machines.into_iter().collect::<Vec<_>>();
     match machines.as_slice() {
         [] => Ok(None),
         [machine_id] => Ok(Some(machine_id.clone())),
