@@ -333,7 +333,9 @@ run_real_host_acceptance_regression_test() {
   local cancel_command_line cancel_status_capture_line cancel_status_guard_line cancel_watch_line
   local cancel_watch_status_capture_line cancel_watch_status_guard_line json_assertion_line
   local managed_guard managed_deploy_log restart_invisibility_log zfs_invocation
-  local managed_guard_line managed_deploy_log_line restart_invisibility_log_line zfs_invocation_line
+  local dockerfile_build_log railpack_build_log cancellation_log firewall_log zfs_guard
+  local dockerfile_build_log_line railpack_build_log_line cancellation_log_line firewall_log_line
+  local managed_guard_line managed_deploy_log_line restart_invisibility_log_line zfs_guard_line zfs_invocation_line
   evidence=$(mktemp -d)
   trap 'rm -rf "$evidence"' RETURN
   : > "$evidence/metadata.env"
@@ -379,21 +381,42 @@ run_real_host_acceptance_regression_test() {
   [ "$cancel_watch_status_guard_line" -eq $((cancel_watch_status_capture_line + 2)) ]
   [ "$json_assertion_line" -gt "$cancel_watch_status_guard_line" ]
 
-  managed_guard='if [ "$ACCEPTANCE_ARCHITECTURE_MODE" = mixed-amd64-arm64 ]; then'
+  dockerfile_build_log="log \"building authenticated exact SHA for \${BUILD_ARCHITECTURES_LABEL} with Dockerfile\""
+  railpack_build_log="log \"building authenticated exact SHA for \${BUILD_ARCHITECTURES_LABEL} with Railpack\""
+  cancellation_log='log "cancelling a blocking authenticated build and checking cleanup evidence"'
+  firewall_log='log "checking keeper-managed firewall rules"'
+  managed_guard="if [ \"\$ACCEPTANCE_ARCHITECTURE_MODE\" = mixed-amd64-arm64 ]; then"
   managed_deploy_log='log "deploying image-based Compose app (2 replicas, managed HTTPS URL)"'
   restart_invisibility_log='log "  continuous HTTPS probe saw no interruption"'
+  zfs_guard="if [ \"\$ZFS_CERTIFY\" = 1 ]; then"
   zfs_invocation='  run_zfs_real_host_certification'
+  [ "$(grep -Fxc "$dockerfile_build_log" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$railpack_build_log" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$cancellation_log" "$0")" -eq 1 ]
+  [ "$(grep -Fxc "$firewall_log" "$0")" -eq 1 ]
   [ "$(grep -Fxc "$managed_guard" "$0")" -eq 1 ]
   [ "$(grep -Fxc "$managed_deploy_log" "$0")" -eq 1 ]
   [ "$(grep -Fxc "$restart_invisibility_log" "$0")" -eq 1 ]
   [ "$(grep -Fxc "$zfs_invocation" "$0")" -eq 1 ]
+  dockerfile_build_log_line=$(grep -Fnx "$dockerfile_build_log" "$0" | cut -d: -f1)
+  railpack_build_log_line=$(grep -Fnx "$railpack_build_log" "$0" | cut -d: -f1)
+  cancellation_log_line=$(grep -Fnx "$cancellation_log" "$0" | cut -d: -f1)
+  firewall_log_line=$(grep -Fnx "$firewall_log" "$0" | cut -d: -f1)
   managed_guard_line=$(grep -Fnx "$managed_guard" "$0" | cut -d: -f1)
   managed_deploy_log_line=$(grep -Fnx "$managed_deploy_log" "$0" | cut -d: -f1)
   restart_invisibility_log_line=$(grep -Fnx "$restart_invisibility_log" "$0" | cut -d: -f1)
   zfs_invocation_line=$(grep -Fnx "$zfs_invocation" "$0" | cut -d: -f1)
+  zfs_guard_line=$((zfs_invocation_line - 1))
+  [ "$dockerfile_build_log_line" -lt "$railpack_build_log_line" ]
+  [ "$railpack_build_log_line" -lt "$cancellation_log_line" ]
+  [ "$cancellation_log_line" -lt "$firewall_log_line" ]
+  [ "$firewall_log_line" -lt "$managed_guard_line" ]
   [ "$managed_deploy_log_line" -eq $((managed_guard_line + 1)) ]
-  [ "$(sed -n "$((restart_invisibility_log_line + 1))p" "$0")" = fi ]
-  [ "$zfs_invocation_line" -gt "$restart_invisibility_log_line" ]
+  [ "$(sed -n "$((restart_invisibility_log_line + 1))p" "$0")" = 'fi' ]
+  [ "$zfs_guard_line" -gt "$restart_invisibility_log_line" ]
+  [ "$(sed -n "${zfs_guard_line}p" "$0")" = "$zfs_guard" ]
+  [ "$zfs_invocation_line" -eq $((zfs_guard_line + 1)) ]
+  [ "$(sed -n "$((zfs_invocation_line + 1))p" "$0")" = 'fi' ]
 
   rendered_git_program="$evidence/authenticated-git-fixture.sh"
   write_authenticated_git_fixture_program 192.0.2.1 > "$rendered_git_program"
