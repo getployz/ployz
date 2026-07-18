@@ -86,8 +86,10 @@ fn managed_host_ports_query_before_open() {
         succeeded_command("Status: active\n"),
         succeeded_command("Status: active\n"),
         succeeded_command(""),
+        succeeded_command("Status: active\n\n53/udp                     ALLOW IN    Anywhere\n"),
         succeeded_command("Status: active\n"),
         succeeded_command(""),
+        succeeded_command("Status: active\n\n51820/udp                  ALLOW IN    Anywhere\n"),
     ]
     .into();
     let mut effects = HostRunnerLocalEffects::new(local_config(&root, &systemd_dir), runner);
@@ -109,7 +111,9 @@ fn managed_host_ports_query_before_open() {
             "ufw status verbose",
             "ufw insert 1 allow 53/udp",
             "ufw status verbose",
+            "ufw status verbose",
             "ufw insert 1 allow 51820/udp",
+            "ufw status verbose",
         ]
     );
 }
