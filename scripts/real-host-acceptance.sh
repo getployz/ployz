@@ -364,10 +364,13 @@ run_real_host_acceptance_regression_test() {
   cancel_watch_status_capture_line=$(grep -Fnx "$cancel_watch_status_capture" "$0" | cut -d: -f1)
   cancel_watch_status_guard_line=$(grep -Fnx "$cancel_watch_status_guard" "$0" | cut -d: -f1)
   json_assertion_line=$(grep -Fnx "$json_assertion" "$0" | cut -d: -f1)
+  [ "$(sed -n "$((cancel_command_line - 1)),$cancel_watch_status_guard_line p" "$0" | grep -Fxc 'set +e')" -eq 2 ]
+  [ "$(sed -n "$((cancel_command_line - 1)),$cancel_watch_status_guard_line p" "$0" | grep -Fxc 'set -e')" -eq 2 ]
   [ "$(sed -n "$((cancel_command_line - 1))p" "$0")" = 'set +e' ]
   [ "$cancel_status_capture_line" -eq $((cancel_command_line + 1)) ]
   [ "$(sed -n "$((cancel_status_capture_line + 1))p" "$0")" = 'set -e' ]
   [ "$cancel_status_guard_line" -eq $((cancel_status_capture_line + 2)) ]
+  [ "$cancel_watch_line" -eq $((cancel_status_guard_line + 2)) ]
   [ "$(sed -n "$((cancel_watch_line - 1))p" "$0")" = 'set +e' ]
   [ "$cancel_watch_status_capture_line" -eq $((cancel_watch_line + 1)) ]
   [ "$(sed -n "$((cancel_watch_status_capture_line + 1))p" "$0")" = 'set -e' ]
